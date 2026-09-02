@@ -6,7 +6,7 @@
     "review": "scratchpad/p673/r3-review.md MA4 -- CLOSED",
     "filetype": ".rs",
     "quote": "observed the warning fire at `= 1` in every landed-bytes gate run including the failing one, per `review-baseline.log`",
-    "note": "Reviewer-verified true after the round-3 fix; deliberately includes a same-paragraph evidence-log citation (backtick-quoted, matching real house style) to test that the exemption path works, not just the trigger."
+    "note": "Reviewer-verified true after the round-3 fix. It carries a same-paragraph evidence-log citation (`review-baseline.log`), but that log was never committed to the tree, so since R2 -- where a cited path has to RESOLVE before it can exempt anything (review M1) -- this specimen is FLAGGED. That is the M1 tradeoff in one sentence: a true claim citing an uncommitted artifact now needs a claim-lint:ok annotation. Before R2 it passed clean."
   },
   {
     "id": "T2",

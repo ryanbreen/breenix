@@ -1,37 +1,45 @@
 #!/usr/bin/env python3
 """
-claim-lint.py — mechanical detector for the "claim discipline" violations that
+claim-lint.py -- mechanical detector for the "claim discipline" violations that
 made up 56% of blocking review findings in the 2026-08/09 green-program campaign
 (37 of 66 blockers, per ~/Downloads/breenix-progress-assessment-2026-09-01.html):
 factually wrong, checkable sentences shipped in EVIDENCE/CONFIRM docs, PR bodies,
-gate-script headers and source comments — not code defects.
+gate-script headers and source comments -- not code defects.
 
 This tool does not know whether a claim is TRUE. It cannot execute a gate or
-replay a mutation. What it catches is the SHAPE that every one of those 37
-false claims shared: an unquantified absolute ("every", "zero", "airtight",
-"guaranteed", "structurally"), a "proven"/"PROVEN" with no named mutation next
-to it, an "observed live"/"confirmed live" with no artifact path next to it, or
-a "preserved/attached/committed at <path>" citing a path that does not exist in
-the tree. Every rule below was reverse-engineered from a verbatim quote in the
-review corpus — see scripts/claim_lint_corpus/historical_false_claims.json for
-the specimen each rule was built to catch, and docs/planning/green-program/
-claim-linting.md for how to run this and how to discharge a hit honestly.
+replay a mutation. What it catches is a SHAPE: an unquantified absolute
+("every", "zero", "airtight", "guaranteed", "structurally"), a "proven" with no
+named mutation next to it, an "observed live" with no artifact path next to it,
+or a "preserved/attached/committed at <path>" citing a path that does not exist
+in the tree. Every rule below was reverse-engineered from a verbatim quote in
+the review corpus -- see scripts/claim_lint_corpus/historical_false_claims.json
+for the specimen each rule was built to catch, and docs/planning/green-program/
+claim-linting.md for how to run this, what it measurably does not reach, and how
+to discharge a hit honestly.
 
 Usage:
-    scripts/claim-lint.py                       # lint files changed vs origin/main
+    scripts/claim-lint.py                       # changed HUNKS vs origin/main
     scripts/claim-lint.py --base main
-    scripts/claim-lint.py --files a.md b.rs
-    scripts/claim-lint.py --all                 # lint every tracked text file (slow)
+    scripts/claim-lint.py --whole-file          # diff mode, but whole files
+    scripts/claim-lint.py --files a.md b.rs     # explicit files, always whole
+    scripts/claim-lint.py --all                 # every tracked text file (slow)
     scripts/claim-lint.py --format json ...
 
+Diff mode reports only findings whose paragraph overlaps a line this branch
+actually changed (`--changed-only`, the default; `--whole-file` restores the
+old behaviour). The base is resolved to `git merge-base <ref> HEAD`, so a stale
+local `main` does not drag in files the branch never touched.
+
 Discharge: an author who has genuinely checked a strong claim marks it in the
-same paragraph with a `claim-lint:ok` annotation naming the artifact, e.g.:
+same paragraph with a `claim-lint:ok:` annotation that NAMES the artifact --
+an N-of-M count, a path that resolves on disk, an issue number, or a review
+file. A bare `claim-lint:ok` with nothing after it does not silence anything:
 
     <!-- claim-lint:ok: 12/12 arms -- review-baseline.log -->
     every arm passed the baseline run.
 
-    // claim-lint:ok: mutation-proven, see fix2-review.md B1
-    every close path decrements the refcount.
+    // claim-lint:ok: mutation-proven, see scripts/test_claim_lint.py
+    // every close path decrements the refcount.
 
 Exit codes: 0 = clean, 1 = un-discharged findings, 2 = usage/internal error.
 """
@@ -43,7 +51,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 REPO_ROOT = subprocess.run(
@@ -52,15 +60,24 @@ REPO_ROOT = subprocess.run(
 
 TEXT_EXTENSIONS = {".md", ".rs", ".sh", ".py", ".txt"}
 
-DISCHARGE_RE = re.compile(r"claim-lint:\s*ok\b", re.IGNORECASE)
+# Captured artifacts are evidence, not prose: nobody can "discharge" a claim
+# written inside a serial log a gate script emitted. Skip those trees outright
+# rather than reporting findings no author can act on.
+CAPTURE_DIR_RE = re.compile(r"(^|/)(serials?|confirm)/", re.IGNORECASE)
+
+# A `claim-lint:ok` marker plus whatever the author wrote after it, to the end
+# of the paragraph. The marker on its own does not silence a finding: the text
+# that follows it has to carry a citation (see discharge_citation()).
+DISCHARGE_RE = re.compile(r"claim-lint:\s*ok\b[:\s-]*", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
-# Rule vocabulary. claim-lint:ok -- traceable one-for-one against
+# Rule vocabulary. claim-lint:ok: traceable one-for-one against
 # scripts/claim_lint_corpus/historical_false_claims.json's `expected_rules`;
 # see that file for the verbatim quote each word was added to catch. Do not
 # add words on spec; add a specimen to the corpus first (calibrate against
 # the real thing) -- see the "each" decision in claim-linting.md for what
-# happens when you don't.
+# happens when you don't, and the R2 vocabulary table for the words that were
+# measured and dropped.
 # ---------------------------------------------------------------------------
 
 UNIVERSAL_WORDS = [
@@ -76,8 +93,9 @@ UNIVERSAL_IDIOM_EXEMPT = [
 UNIVERSAL_RE = re.compile(
     r"\b(" + "|".join(UNIVERSAL_WORDS) + r")\b(?!-\w)", re.IGNORECASE
 )
-
-PROVEN_RE = re.compile(r"\b(proven|proves|proof|PROVEN)\b", re.IGNORECASE)
+PROVEN_RE = re.compile(
+    r"\b(proven|proves|prove|proved|proving|proof|demonstrated)\b", re.IGNORECASE
+)
 PROVEN_EVIDENCE_RE = re.compile(
     r"\b(mutat\w*|revert\w*|redden\w*|falsif\w*|counter-?example\w*|"
     r"reproduc\w*|regression|--boots|bisect\w*)\b",
@@ -91,19 +109,33 @@ ABSOLUTE_GUARANTEE_RE = re.compile(
 )
 
 # claim-lint:ok: this comment describes the exemption logic the code right
-# below it implements; see test_evidence_log_path_clears_a_universal and
-# test_source_path_does_not_clear_a_universal in test_claim_lint.py.
+# below it implements; see test_evidence_log_path_clears_a_universal,
+# test_source_path_does_not_clear_a_universal and
+# test_nonexistent_evidence_path_does_not_clear_a_universal in
+# scripts/test_claim_lint.py.
 # A citation that counts as "evidence attached in this paragraph" for the
 # UNIVERSAL / PROVEN / LIVE_CLAIM / ABSOLUTE_GUARANTEE rules: either a proper
-# N-of-M count, or a path/filename that looks like a captured log/serial
-# rather than a bare source-code pointer (source paths name the code under
-# discussion, they do not establish the claim -- see gtty fix2-review
-# BLOCKING 1, where the false universal cites two *.rs paths in one sentence).
+# N-of-M count, or a path that (a) looks like a captured log/serial rather
+# than a bare source-code pointer -- source paths name the code under
+# discussion, they do not establish the claim, see gtty fix2-review
+# BLOCKING 1 -- and (b) RESOLVES ON DISK. A cited artifact that does not
+# exist is the corpus's own F2 specimen; it cannot exempt anything.
 NM_COUNT_RE = re.compile(r"\b\d+\s*(?:/|of)\s*\d+\b", re.IGNORECASE)
 EVIDENCE_PATH_RE = re.compile(
     r"[`\"]([^`\"\s]*(?:serials?/|confirm/|scratchpad/)[^`\"\s]*"
     r"|[^`\"\s]+\.(?:log|txt))[`\"]",
     re.IGNORECASE,
+)
+
+# Citations that make a `claim-lint:ok:` annotation a citation rather than a
+# mute button: an N-of-M count, an issue number, a review file, or a path --
+# path tokens are additionally required to resolve on disk (see
+# discharge_citation()).
+DISCHARGE_ISSUE_RE = re.compile(r"#\d{2,}\b")
+DISCHARGE_REVIEW_RE = re.compile(r"\b(?:\w+[-/])?(?:fix\d*-)?review(?:\.md)?\b",
+                                 re.IGNORECASE)
+DISCHARGE_PATH_RE = re.compile(
+    r"\b([\w./-]+\.(?:log|txt|md|json|rs|sh|py|toml|S))\b"
 )
 
 # Matches "preserved/attached/committed/saved/written" + "at/to/in" + a
@@ -124,6 +156,11 @@ class Finding:
     rule: str
     text: str
     detail: str = ""
+    end_line: int = 0
+
+    def __post_init__(self):
+        if not self.end_line:
+            self.end_line = self.line
 
 
 @dataclass
@@ -131,11 +168,17 @@ class Paragraph:
     file: str
     start_line: int
     text: str
+    end_line: int = 0
+
+    def __post_init__(self):
+        if not self.end_line:
+            self.end_line = self.start_line
 
 
 # claim-lint:ok: this design choice and its cost are measured, not asserted --
-# see the "unit is the paragraph, not the sentence" section of claim-linting.md
-# and RealDocumentReportTests in test_claim_lint.py for the actual counts.
+# see the "unit is the paragraph" section of docs/planning/green-program/
+# claim-linting.md and RealDocumentReportTests in scripts/test_claim_lint.py
+# for the actual counts, re-derived in R2.
 # ---------------------------------------------------------------------------
 # Extraction: turn a source file into a list of prose paragraphs worth
 # checking. Granularity is the paragraph, not the sentence -- a single claim
@@ -143,11 +186,24 @@ class Paragraph:
 # row, and paragraph-level exemption search (does *this* paragraph carry a
 # citation anywhere) matches how these docs actually cite evidence: often in
 # a different clause of the same bullet than the trigger word.
+#
+# R2 change: a list item or an ATX heading STARTS a new paragraph even with no
+# blank line before it. Markdown-wise a hanging-indent bullet list is one
+# block; claim-wise it is one claim per bullet, and merging them let a count
+# in bullet 3 exempt an absolute in bullet 1 (corpus F1, review B1/M3).
 # ---------------------------------------------------------------------------
 
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]\s+|\(?\d+[.)]\s+)")
+HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
+HTML_COMMENT_START_RE = re.compile(r"^\s*<!--")
+# A block containing only HTML comments is an ANNOTATION, and an annotation
+# belongs to what follows it, not to what precedes it. Without this, a
+# `claim-lint:ok` written above a bullet silently discharges the PREVIOUS
+# bullet (caught while dogfooding R2 on this tool's own doc).
+COMMENT_ONLY_RE = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
 
 
 def extract_markdown_paragraphs(file: str, lines: list) -> list:
@@ -165,12 +221,15 @@ def extract_markdown_paragraphs(file: str, lines: list) -> list:
     paragraphs = []
     buf = []
     buf_start = [0]
+    buf_end = [0]
 
     def flush():
         if buf:
             text = " ".join(s.strip() for s in buf if s.strip())
             if text:
-                paragraphs.append(Paragraph(file, buf_start[0], text))
+                paragraphs.append(
+                    Paragraph(file, buf_start[0], text, buf_end[0])
+                )
         buf.clear()
 
     for i, raw in enumerate(scrubbed):
@@ -183,21 +242,48 @@ def extract_markdown_paragraphs(file: str, lines: list) -> list:
             flush()
             cell_text = stripped.strip("|")
             if cell_text.strip():
-                paragraphs.append(Paragraph(file, lineno, cell_text))
+                paragraphs.append(Paragraph(file, lineno, cell_text, lineno))
             buf_start[0] = lineno + 1
             continue
         if not stripped:
             flush()
             buf_start[0] = lineno + 1
             continue
+        if (LIST_ITEM_RE.match(raw) or HEADING_RE.match(raw)
+                or HTML_COMMENT_START_RE.match(raw)):
+            # A new bullet / heading / annotation block is a new paragraph,
+            # blank line or not.
+            flush()
+            buf_start[0] = lineno
         text = stripped
         if text.startswith(">"):
             text = text.lstrip(">").strip()
         if not buf:
             buf_start[0] = lineno
         buf.append(text)
+        buf_end[0] = lineno
     flush()
-    return paragraphs
+    return attach_annotations_forward(paragraphs)
+
+
+def attach_annotations_forward(paragraphs: list) -> list:
+    """Fold a comment-only block into the paragraph that follows it."""
+    out = []
+    pending = []
+    for p in paragraphs:
+        if COMMENT_ONLY_RE.match(p.text.strip()):
+            pending.append(p)
+            continue
+        if pending:
+            p = Paragraph(
+                p.file, pending[0].start_line,
+                " ".join(q.text for q in pending) + " " + p.text,
+                p.end_line,
+            )
+            pending = []
+        out.append(p)
+    out.extend(pending)
+    return out
 
 
 LINE_COMMENT_PREFIXES = {
@@ -212,12 +298,15 @@ def extract_comment_paragraphs(file: str, lines: list, ext: str) -> list:
     paragraphs = []
     buf = []
     buf_start = [0]
+    buf_end = [0]
 
     def flush():
         if buf:
             text = " ".join(s for s in buf if s)
             if text.strip():
-                paragraphs.append(Paragraph(file, buf_start[0], text))
+                paragraphs.append(
+                    Paragraph(file, buf_start[0], text, buf_end[0])
+                )
         buf.clear()
 
     for i, raw in enumerate(lines):
@@ -241,9 +330,13 @@ def extract_comment_paragraphs(file: str, lines: list, ext: str) -> list:
             flush()
             buf_start[0] = lineno + 1
             continue
+        if LIST_ITEM_RE.match(content):
+            flush()
+            buf_start[0] = lineno
         if not buf:
             buf_start[0] = lineno
         buf.append(content)
+        buf_end[0] = lineno
     flush()
     return paragraphs
 
@@ -259,18 +352,86 @@ def extract_paragraphs(file: str, content: str) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Path resolution -- shared by the exemption path and the artifact-path rule
+# ---------------------------------------------------------------------------
+
+def path_resolves(path: str, citing_file: str, repo_root: str) -> bool:
+    """Does a cited path name something that actually exists?
+
+    Evidence docs cite a path either relative to their own directory
+    (`serials/foo.txt` inside .../tty/EVIDENCE-*.md) or relative to the repo
+    root. Both resolutions are accepted; a URL is not a filesystem citation
+    and never resolves here.
+    """
+    path = path.strip().rstrip(".,;:)")
+    if not path or path.startswith(("http://", "https://")):
+        return False
+    if os.path.isabs(path):
+        candidates = [path]
+    else:
+        doc_dir = os.path.dirname(os.path.join(repo_root, citing_file))
+        candidates = [os.path.join(doc_dir, path), os.path.join(repo_root, path)]
+    return any(os.path.exists(c) for c in candidates)
+
+
+def resolving_evidence_paths(p: Paragraph, repo_root: str) -> list:
+    """Cited artifact paths in this paragraph that exist on disk."""
+    return [m.group(1) for m in EVIDENCE_PATH_RE.finditer(p.text)
+            if path_resolves(m.group(1), p.file, repo_root)]
+
+
+def dangling_evidence_paths(p: Paragraph, repo_root: str) -> list:
+    return [m.group(1) for m in EVIDENCE_PATH_RE.finditer(p.text)
+            if not path_resolves(m.group(1), p.file, repo_root)]
+
+
+# ---------------------------------------------------------------------------
 # Rules
 # ---------------------------------------------------------------------------
 
-def has_discharge(text: str) -> bool:
-    return bool(DISCHARGE_RE.search(text))
+def discharge_citation(p: Paragraph, repo_root: str) -> Optional[str]:
+    """The citation a `claim-lint:ok:` annotation carries, or None.
+
+    A bare marker silences nothing (review M2). What follows the marker, to
+    the end of the paragraph, has to contain at least one of: an N-of-M count,
+    an issue number, a review reference, or a path that resolves on disk.
+    """
+    m = DISCHARGE_RE.search(p.text)
+    if not m:
+        return None
+    tail = p.text[m.end():].strip()
+    if not tail:
+        return None
+    if NM_COUNT_RE.search(tail):
+        return tail
+    if DISCHARGE_ISSUE_RE.search(tail):
+        return tail
+    if DISCHARGE_REVIEW_RE.search(tail):
+        return tail
+    for pm in DISCHARGE_PATH_RE.finditer(tail):
+        if path_resolves(pm.group(1), p.file, repo_root):
+            return tail
+    return None
 
 
-def has_nm_or_evidence_path(text: str) -> bool:
-    return bool(NM_COUNT_RE.search(text) or EVIDENCE_PATH_RE.search(text))
+def has_discharge(p: Paragraph, repo_root: str) -> bool:
+    return discharge_citation(p, repo_root) is not None
 
 
-def check_universal(p: Paragraph) -> Optional[Finding]:
+def has_nm_or_evidence_path(p: Paragraph, repo_root: str) -> bool:
+    return bool(NM_COUNT_RE.search(p.text)
+                or resolving_evidence_paths(p, repo_root))
+
+
+def _dangling_note(p: Paragraph, repo_root: str) -> str:
+    dangling = dangling_evidence_paths(p, repo_root)
+    if not dangling:
+        return ""
+    return (" (cited path %s does not resolve, so it does not count as "
+            "evidence)" % ", ".join("`%s`" % d for d in dangling[:2]))
+
+
+def check_universal(p: Paragraph, repo_root: str) -> Optional[Finding]:
     m = UNIVERSAL_RE.search(p.text)
     if not m:
         return None
@@ -283,62 +444,71 @@ def check_universal(p: Paragraph) -> Optional[Finding]:
             stripped = stripped.replace(idiom, "")
         if not UNIVERSAL_RE.search(stripped):
             return None
-    if has_discharge(p.text):
+    trigger = m.group(1)
+    if has_discharge(p, repo_root):
         return None
-    if has_nm_or_evidence_path(p.text):
+    if has_nm_or_evidence_path(p, repo_root):
         return None
     return Finding(
         p.file, p.start_line, "universal-claim", p.text,
-        "unquantified absolute ('%s') with no N-of-M count, "
-        "evidence-log citation, or claim-lint:ok in this paragraph" % m.group(1),
+        "unquantified absolute ('%s') with no N-of-M count, resolving "
+        "evidence-log citation, or claim-lint:ok in this paragraph%s"
+        % (trigger, _dangling_note(p, repo_root)),
+        p.end_line,
     )
 
 
-def check_proven(p: Paragraph) -> Optional[Finding]:
+def check_proven(p: Paragraph, repo_root: str) -> Optional[Finding]:
     m = PROVEN_RE.search(p.text)
     if not m:
         return None
-    if has_discharge(p.text):
+    if has_discharge(p, repo_root):
         return None
     if PROVEN_EVIDENCE_RE.search(p.text):
         return None
-    if has_nm_or_evidence_path(p.text):
+    if has_nm_or_evidence_path(p, repo_root):
         return None
     return Finding(
         p.file, p.start_line, "unproven-claim", p.text,
         "'%s' with no named mutation/experiment (mutation, revert, "
         "redden, falsify, reproduce, regression, --boots, bisect), "
-        "N-of-M count, or evidence-log citation in this paragraph" % m.group(1),
+        "N-of-M count, or resolving evidence-log citation in this paragraph%s"
+        % (m.group(1), _dangling_note(p, repo_root)),
+        p.end_line,
     )
 
 
-def check_live_claim(p: Paragraph) -> Optional[Finding]:
+def check_live_claim(p: Paragraph, repo_root: str) -> Optional[Finding]:
     m = LIVE_CLAIM_RE.search(p.text)
     if not m:
         return None
-    if has_discharge(p.text):
+    if has_discharge(p, repo_root):
         return None
-    if EVIDENCE_PATH_RE.search(p.text):
+    if resolving_evidence_paths(p, repo_root):
         return None
     return Finding(
         p.file, p.start_line, "live-no-artifact", p.text,
-        "'%s' with no artifact path (serials/, confirm/, "
-        "scratchpad/, .log, .txt) in this paragraph" % m.group(0),
+        "'%s' with no resolving artifact path (serials/, confirm/, "
+        "scratchpad/, .log, .txt) in this paragraph%s"
+        % (m.group(0), _dangling_note(p, repo_root)),
+        p.end_line,
     )
 
 
-def check_absolute_guarantee(p: Paragraph) -> Optional[Finding]:
+def check_absolute_guarantee(p: Paragraph, repo_root: str) -> Optional[Finding]:
     m = ABSOLUTE_GUARANTEE_RE.search(p.text)
     if not m:
         return None
-    if has_discharge(p.text):
+    if has_discharge(p, repo_root):
         return None
-    if has_nm_or_evidence_path(p.text):
+    if has_nm_or_evidence_path(p, repo_root):
         return None
     return Finding(
         p.file, p.start_line, "absolute-guarantee", p.text,
-        "'%s' asserted with no N-of-M count, evidence-log "
-        "citation, or claim-lint:ok in this paragraph" % m.group(1),
+        "'%s' asserted with no N-of-M count, resolving evidence-log "
+        "citation, or claim-lint:ok in this paragraph%s"
+        % (m.group(1), _dangling_note(p, repo_root)),
+        p.end_line,
     )
 
 
@@ -346,42 +516,31 @@ def check_artifact_path(p: Paragraph, repo_root: str) -> Optional[Finding]:
     m = ARTIFACT_CLAIM_RE.search(p.text)
     if not m:
         return None
-    if has_discharge(p.text):
+    if has_discharge(p, repo_root):
         return None
     path = m.group(2).strip()
     if path.startswith(("http://", "https://")):
         return None
-    if os.path.isabs(path):
-        candidates = [path]
-    else:
-        # Evidence docs commonly cite a path relative to their own directory
-        # (e.g. `serials/foo.txt` cited from inside .../tty/EVIDENCE-*.md,
-        # meaning .../tty/serials/foo.txt) as well as repo-root-relative
-        # paths. Accept either resolution.
-        doc_dir = os.path.dirname(os.path.join(repo_root, p.file))
-        candidates = [os.path.join(doc_dir, path), os.path.join(repo_root, path)]
-    if any(os.path.exists(c) for c in candidates):
+    if path_resolves(path, p.file, repo_root):
         return None
     return Finding(
         p.file, p.start_line, "artifact-path-missing", p.text,
         "claims '%s at/to/in `%s`' but that path does not "
         "exist in the tree" % (m.group(1), path),
+        p.end_line,
     )
 
 
 RULES = [check_universal, check_proven, check_live_claim,
-         check_absolute_guarantee]
+         check_absolute_guarantee, check_artifact_path]
 
 
 def lint_paragraph(p: Paragraph, repo_root: str) -> list:
     findings = []
     for rule in RULES:
-        f = rule(p)
+        f = rule(p, repo_root)
         if f:
             findings.append(f)
-    f = check_artifact_path(p, repo_root)
-    if f:
-        findings.append(f)
     return findings
 
 
@@ -400,18 +559,23 @@ def lint_file(path: str, repo_root: str = None) -> list:
     ext = os.path.splitext(path)[1]
     if ext not in TEXT_EXTENSIONS:
         return []
+    rel = os.path.relpath(path, repo_root) if os.path.isabs(path) else path
+    if CAPTURE_DIR_RE.search(rel):
+        return []
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             content = fh.read()
     except (FileNotFoundError, IsADirectoryError):
         return []
-    rel = os.path.relpath(path, repo_root) if os.path.isabs(path) else path
     return lint_text(rel, content, repo_root)
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
 
 def git_changed_files(base: str, repo_root: str) -> list:
     out = subprocess.run(
@@ -426,6 +590,38 @@ def git_changed_files(base: str, repo_root: str) -> list:
     return [line for line in out.stdout.splitlines() if line.strip()]
 
 
+def changed_line_ranges(base: str, path: str, repo_root: str,
+                        head: str = None) -> list:
+    """Post-image line ranges changed in `path`, from git diff -U0.
+
+    With no `head`, the comparison is base vs the WORKING TREE (the normal
+    pre-review case, so uncommitted edits are covered). With `head`, it is
+    base vs that commit -- used to replay a historical round.
+    """
+    cmd = ["git", "diff", "-U0", base]
+    if head:
+        cmd.append(head)
+    cmd += ["--", path]
+    out = subprocess.run(cmd, capture_output=True, text=True, cwd=repo_root)
+    ranges = []
+    for line in out.stdout.splitlines():
+        m = HUNK_RE.match(line)
+        if not m:
+            continue
+        start = int(m.group(1))
+        count = 1 if m.group(2) is None else int(m.group(2))
+        if count > 0:
+            ranges.append((start, start + count - 1))
+    return ranges
+
+
+def overlaps(finding: Finding, ranges: list) -> bool:
+    for a, b in ranges:
+        if a <= finding.end_line and b >= finding.line:
+            return True
+    return False
+
+
 def git_all_tracked(repo_root: str) -> list:
     out = subprocess.run(
         ["git", "ls-files"], capture_output=True, text=True, cwd=repo_root,
@@ -434,18 +630,34 @@ def git_all_tracked(repo_root: str) -> list:
 
 
 def resolve_base(explicit, repo_root: str) -> str:
-    if explicit:
-        return explicit
-    for candidate in ("origin/main", "main"):
-        check = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", candidate],
-            capture_output=True, text=True, cwd=repo_root,
+    """Resolve a base ref to the branch point (`base...HEAD` semantics).
+
+    Diffing a stale local `main` against the working tree reports files the
+    branch never touched (review m4); the merge-base is the branch point, so
+    only this branch's own changes are reported -- while still diffing against
+    the WORKING TREE, so uncommitted edits are linted (the pre-review case).
+    """
+    ref = explicit
+    if not ref:
+        for candidate in ("origin/main", "main"):
+            check = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", candidate],
+                capture_output=True, text=True, cwd=repo_root,
+            )
+            if check.returncode == 0:
+                ref = candidate
+                break
+    if not ref:
+        raise SystemExit(
+            "claim-lint: could not find origin/main or main; pass --base <ref>"
         )
-        if check.returncode == 0:
-            return candidate
-    raise SystemExit(
-        "claim-lint: could not find origin/main or main; pass --base <ref>"
+    mb = subprocess.run(
+        ["git", "merge-base", ref, "HEAD"],
+        capture_output=True, text=True, cwd=repo_root,
     )
+    if mb.returncode == 0 and mb.stdout.strip():
+        return mb.stdout.strip()
+    return ref
 
 
 def format_text(findings: list) -> str:
@@ -466,11 +678,17 @@ def main(argv: list) -> int:
     ap.add_argument("--base", help="git ref to diff against (default: origin/main, else main)")
     ap.add_argument("--files", nargs="*", help="explicit file list, bypasses git diff")
     ap.add_argument("--all", action="store_true", help="lint every tracked text file")
+    ap.add_argument(
+        "--whole-file", action="store_true",
+        help="in diff mode, report findings anywhere in a changed file "
+             "instead of only in changed hunks",
+    )
     ap.add_argument("--format", choices=["text", "json"], default="text")
     ap.add_argument("--repo-root", default=REPO_ROOT)
     args = ap.parse_args(argv)
 
     repo_root = args.repo_root
+    base = None
 
     if args.files:
         targets = args.files
@@ -480,25 +698,42 @@ def main(argv: list) -> int:
         base = resolve_base(args.base, repo_root)
         targets = git_changed_files(base, repo_root)
 
+    changed_only = base is not None and not args.whole_file
+
     all_findings = []
+    suppressed = 0
     for rel in targets:
         path = rel if os.path.isabs(rel) else os.path.join(repo_root, rel)
-        all_findings.extend(lint_file(path, repo_root))
+        found = lint_file(path, repo_root)
+        if changed_only and found:
+            ranges = changed_line_ranges(base, rel, repo_root)
+            kept = [f for f in found if overlaps(f, ranges)]
+            suppressed += len(found) - len(kept)
+            found = kept
+        all_findings.extend(found)
 
     if args.format == "json":
         print(format_json(all_findings))
     else:
+        scope = ("changed hunks vs %s" % base[:12]) if changed_only else (
+            "whole files" if base is None else "whole changed files vs %s" % base[:12])
         if all_findings:
             print(format_text(all_findings))
             print(
-                "\nclaim-lint: %d finding(s) across %d file(s). Discharge a "
-                "legitimate universal with a same-paragraph "
-                "`claim-lint:ok: <citation>` annotation. See "
+                "\nclaim-lint: %d finding(s) across %d file(s) [%s]. Discharge a "
+                "legitimate claim with a same-paragraph "
+                "`claim-lint:ok: <citation>` annotation naming an N-of-M count, "
+                "a resolving path, an issue, or a review. See "
                 "docs/planning/green-program/claim-linting.md."
-                % (len(all_findings), len(targets))
+                % (len(all_findings), len(targets), scope)
             )
         else:
-            print("claim-lint: clean (%d file(s) checked)." % len(targets))
+            print("claim-lint: clean (%d file(s) checked, %s)."
+                  % (len(targets), scope))
+        if changed_only and suppressed:
+            print("claim-lint: %d pre-existing finding(s) outside this "
+                  "branch's changed hunks not reported (--whole-file shows them)."
+                  % suppressed)
 
     return 1 if all_findings else 0
 

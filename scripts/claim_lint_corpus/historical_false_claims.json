@@ -2,12 +2,18 @@
   {
     "id": "F1",
     "arc": "gtty",
-    "source": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md §9 (round-1 landed bytes)",
+    "source": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md \u00a79 (round-1 landed bytes)",
     "review": "scratchpad/gtty/review.md B2",
     "filetype": ".md",
     "quote": "Zero open issues against the TTY layer: satisfied. No open issue targets TTY or PTY.",
     "why_false": "The arc's own round-1 filings, #704 and #705, were open TTY/PTY issues at the moment this line landed.",
-    "expected_rules": ["universal-claim"]
+    "expected_rules": [
+      "universal-claim"
+    ],
+    "surface": "repo",
+    "shipped_commit": "68fa457b",
+    "shipped_path": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md",
+    "probe": "Zero open issues against the TTY layer"
   },
   {
     "id": "F2",
@@ -17,48 +23,71 @@
     "filetype": ".md",
     "quote": "Full serial preserved at `docs/planning/green-program/tty/serials/ss-gate-cortex-a72-boot19-unattributed-timeout-20260830.txt` as the record of the boot.",
     "why_false": "That path did not exist on the branch, in the working tree, or anywhere in the repo (verified: still absent at HEAD of this campaign).",
-    "expected_rules": ["artifact-path-missing"]
+    "expected_rules": [
+      "artifact-path-missing"
+    ],
+    "surface": "issue-comment",
+    "surface_note": "Shipped as a closing comment on GitHub issue #706. The linter reads tracked repo files; an issue comment is not one of them, so this specimen can only be tested as an isolated quote."
   },
   {
     "id": "F3",
     "arc": "gtty",
-    "source": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md §3b, mirrored into kernel/src/syscall/fs.rs:2486-2496",
+    "source": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md \u00a73b, mirrored into kernel/src/syscall/fs.rs:2486-2496",
     "review": "scratchpad/gtty/fix2-review.md BLOCKING 1",
     "filetype": ".md",
     "quote": "while every close path (`kernel/src/ipc/fd.rs`, `kernel/src/task/process_task.rs`) calls `pair.slave_close()` unconditionally for any `FdKind::PtySlave` being released",
     "why_false": "close_cloexec() (kernel/src/ipc/fd.rs:607), the exec-path close, does not call slave_close() -- a tenth path the sentence's own citation missed.",
-    "expected_rules": ["universal-claim"]
+    "expected_rules": [
+      "universal-claim"
+    ],
+    "surface": "repo",
+    "shipped_commit": "02fe4051",
+    "shipped_path": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md",
+    "probe": "every close path (`kernel/src/ipc/fd.rs`"
   },
   {
     "id": "F4",
     "arc": "gtty",
-    "source": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md §7/§9",
+    "source": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md \u00a77/\u00a79",
     "review": "scratchpad/gtty/fix2-review.md BLOCKING 2",
     "filetype": ".md",
     "quote": "x86 beast battery: **PROVEN, PASS.**",
     "why_false": "The only x86 run was `run-x86-gate.sh` with no arguments, which defaults to the kthread_test_only profile that compiles userspace (and every PTY syscall) out entirely -- zero PTY code paths executed.",
-    "expected_rules": ["unproven-claim"]
+    "expected_rules": [
+      "unproven-claim"
+    ],
+    "surface": "repo",
+    "shipped_commit": "cd77e41c",
+    "shipped_path": "docs/planning/green-program/tty/EVIDENCE-2026-08-30.md",
+    "probe": "x86 beast battery: **PROVEN, PASS.**",
+    "in_context_known_miss": "In situ this quote sits inside one 1,200-character bullet in EVIDENCE-2026-08-30.md \u00a77 whose next sentence carries a real `1/1 boot tests passed` count. One N-of-M anywhere in a paragraph exempts every claim in it, so the true count inoculates the false 'PROVEN, PASS'. R2's list-item paragraph break does not separate them -- they are in the SAME bullet. Fixing this needs a rule that pairs one citation to one claim, which was measured and not shipped; see claim-linting.md."
   },
   {
     "id": "F5",
     "arc": "gbus",
-    "source": "scratchpad/gbus/CONFIRM-2026-08-31.md §5",
+    "source": "scratchpad/gbus/CONFIRM-2026-08-31.md \u00a75",
     "review": "scratchpad/gbus/review-bus.md B2",
     "filetype": ".md",
     "quote": "every x86 boot in this pass (kthread x3, full x1, boot-tests x3, prod-profile x3, mutation x2 = 12 boots) reached its respective clean verdict with no red matching any of these signatures.",
     "why_false": "Two of the twelve boots reddened by construction (the mutation legs) and a boot-tests leg reddened on the arc's own self-count bug, documented two sections earlier in the same file.",
-    "expected_rules": ["universal-claim"]
+    "expected_rules": [
+      "universal-claim"
+    ],
+    "surface": "scratchpad",
+    "surface_note": "Shipped in scratchpad/gbus/CONFIRM-2026-08-31.md, which is not tracked in this repo -- the campaign's scratchpad lives outside the working tree. Isolated-quote layer only."
   },
   {
     "id": "F6",
     "arc": "gbus",
-    "source": "scratchpad/gbus/EVIDENCE-2026-08-31.md §4",
+    "source": "scratchpad/gbus/EVIDENCE-2026-08-31.md \u00a74",
     "review": "scratchpad/gbus/review-bus.md B3",
     "filetype": ".md",
     "quote": "each assertion was proven able to redden via a single-hunk kernel-log mutation, on a real boot, then reverted",
     "why_false": "run-aarch64-service-sequence-gate.sh's census arm was never mutated and never executed once, by either slot, in either profile.",
     "expected_rules": [],
-    "known_miss": "The universal here is 'each', not one of this tool's trigger words, and the sentence also names a real mutation technique ('kernel-log mutation ... reverted'), which exempts the unproven-claim rule too -- the falseness is that ONE of four gates was never mutated at all, not that no mutation occurred anywhere. 'each' was deliberately left out of UNIVERSAL_WORDS: adding it was tried and it raised ~20 new raw trigger sites in WORKLOAD-ENVELOPES.md alone (most legitimate uses like 'each cell', 'each gate script'), for this one additional historical catch -- not a good trade at this tool's current exemption precision."
+    "known_miss": "The universal here is 'each', not one of this tool's trigger words, and the sentence also names a real mutation technique ('kernel-log mutation ... reverted'), which exempts the unproven-claim rule too -- the falseness is that ONE of four gates was never mutated at all, not that no mutation occurred anywhere. 'each' was deliberately left out of UNIVERSAL_WORDS: adding it was tried and it raised ~20 new raw trigger sites in WORKLOAD-ENVELOPES.md alone (most legitimate uses like 'each cell', 'each gate script'), for this one additional historical catch -- not a good trade at this tool's current exemption precision.",
+    "surface": "scratchpad",
+    "surface_note": "Shipped in scratchpad/gbus/EVIDENCE-2026-08-31.md, not tracked in this repo. Isolated-quote layer only."
   },
   {
     "id": "F7",
@@ -68,7 +97,11 @@
     "filetype": ".md",
     "quote": "the aarch64 view has zero open issues against it.",
     "why_false": "#702 is filed against kernel/src/drivers/pci.rs, inside this layer's own file list, and the aarch64 VMware leg exercises that same code.",
-    "expected_rules": ["universal-claim"]
+    "expected_rules": [
+      "universal-claim"
+    ],
+    "surface": "scratchpad",
+    "surface_note": "Shipped in scratchpad/gbus/EVIDENCE-2026-08-31.md, not tracked in this repo. Isolated-quote layer only."
   },
   {
     "id": "F8",
@@ -78,7 +111,13 @@
     "filetype": ".rs",
     "quote": "(observed live: `EXT2_LOCK_PARK_FIRST` fired during an unrelated tombstone-join test, well before the dedicated leg's own threads ever ran)",
     "why_false": "fix-notes.md retracts this: run_x86_tombstone_join_gate() is the literal last call before run_ext2_lock_race_leg() in main.rs, so there is no 'well before' window -- the hypothesis never happened.",
-    "expected_rules": ["live-no-artifact"]
+    "expected_rules": [
+      "live-no-artifact"
+    ],
+    "surface": "repo",
+    "shipped_commit": "c6ef13bc",
+    "shipped_path": "kernel/src/fs/ext2/mod.rs",
+    "probe": "observed live: `EXT2_LOCK_PARK_FIRST`"
   },
   {
     "id": "F9",
@@ -88,7 +127,13 @@
     "filetype": ".sh",
     "quote": "confirmed live on x86: the first probe run's marker fired during an unrelated tombstone-join test well before the leg's own threads ever ran",
     "why_false": "Same retracted premise as F8 -- the two gates run back-to-back with no window between them.",
-    "expected_rules": ["live-no-artifact"]
+    "expected_rules": [
+      "live-no-artifact"
+    ],
+    "surface": "repo",
+    "shipped_commit": "b7fe5766",
+    "shipped_path": "docker/qemu/run-ext2-lock-race-gate.sh",
+    "probe": "confirmed live on x86"
   },
   {
     "id": "F10",
@@ -98,7 +143,13 @@
     "filetype": ".sh",
     "quote": "Using the prior tick's count is airtight: if entry wasn't visible on that prior poll, no leg-caused park can exist yet either.",
     "why_false": "The reviewer demonstrated the counterexample directly: injecting a pre-leg park followed by the spawn line inside one poll window produces the exact misattribution the baseline claims to prevent.",
-    "expected_rules": ["absolute-guarantee"]
+    "expected_rules": [
+      "absolute-guarantee"
+    ],
+    "surface": "repo",
+    "shipped_commit": "b7fe5766",
+    "shipped_path": "docker/qemu/run-ext2-lock-race-gate.sh",
+    "probe": "count is airtight"
   },
   {
     "id": "F11",
@@ -108,27 +159,46 @@
     "filetype": ".md",
     "quote": "structurally always exactly 2 on this port's design",
     "why_false": "tty_oracle.rs's emit() prints every line twice as a deliberate shred-guard; the branch's own committed mutation serial shows a shredded copy that drops the count to 1, so the count is flaky by construction, not structurally fixed.",
-    "expected_rules": ["absolute-guarantee", "universal-claim"]
+    "expected_rules": [
+      "absolute-guarantee",
+      "universal-claim"
+    ],
+    "surface": "repo",
+    "shipped_commit": "66dd9b9f",
+    "shipped_path": "docs/planning/green-program/tty/EVIDENCE-x86-confirm-2026-08-31.md",
+    "probe": "structurally always exactly 2"
   },
   {
     "id": "F12",
     "arc": "gttyx86",
-    "source": "docs/planning/green-program/tty/EVIDENCE-x86-confirm-2026-08-31.md (round-2 replacement text)",
+    "source": "docs/planning/green-program/tty/EVIDENCE-x86-fix-round-2026-08-31.md:80 (round-2 replacement text)",
     "review": "scratchpad/gttyx86/fix2-review.md M-A",
     "filetype": ".md",
     "quote": "structurally exactly 1, not merely observed to be so",
     "why_false": "The honest bound is 'structurally at most 1' -- the same shred risk from the round-1 finding still applies; the replacement text overclaimed in the paragraph written to fix the previous overclaim.",
-    "expected_rules": ["absolute-guarantee"]
+    "expected_rules": [
+      "absolute-guarantee"
+    ],
+    "surface": "repo",
+    "shipped_commit": "8c848bc0",
+    "shipped_path": "docs/planning/green-program/tty/EVIDENCE-x86-fix-round-2026-08-31.md",
+    "probe": "structurally exactly 1, not"
   },
   {
     "id": "F13",
     "arc": "r4",
-    "source": "docs/planning/green-program/WORKLOAD-ENVELOPES.md §2 (pre-fix draft)",
+    "source": "docs/planning/green-program/WORKLOAD-ENVELOPES.md \u00a72 (pre-fix draft)",
     "review": "scratchpad/r4/review.md B3",
     "filetype": ".md",
     "quote": "Because the ext2 disk is mounted `readonly=on` at the device level, `root_fs_write()` cannot succeed on this workload even if something called it -- not merely 'nothing calls it,' as on aarch64, but a hardware-level guarantee.",
     "why_false": "root_fs_write() is a lock acquisition, not a device write -- it succeeds the moment it wins the lock, long before any block I/O. The flag bounds persistence, not lock-path reachability; #728 is a lock defect the flag does not touch.",
-    "expected_rules": ["absolute-guarantee"]
+    "expected_rules": [
+      "absolute-guarantee"
+    ],
+    "surface": "repo",
+    "shipped_commit": "4951fba9",
+    "shipped_path": "docs/planning/green-program/WORKLOAD-ENVELOPES.md",
+    "probe": "hardware-level guarantee"
   },
   {
     "id": "F14",
@@ -138,38 +208,57 @@
     "filetype": ".rs",
     "quote": "the CPU-count mitigation above is a real, verifiable structural property of aarch64's actual configs (all `-smp >= 4`), not an 'it hasn't happened yet' coincidence.",
     "why_false": "Readers spin at acquisition regardless of CPU count; the livelock generalises to N CPUs given N concurrent ext2 lock acquirers. The aarch64 status is 'not exercised by today's workload,' not 'structurally mitigated.'",
-    "expected_rules": ["universal-claim"]
+    "expected_rules": [
+      "universal-claim"
+    ],
+    "surface": "not-in-history",
+    "surface_note": "The verbatim sentence is not recoverable from this repo's history: `git log --all -S` on four distinct fragments of it ('CPU-count mitigation', 'real, verifiable structural property', 'all `-smp >= 4`', \"it hasn't happened yet\") returns only 62d37564, this branch's own corpus file. It was quoted by scratchpad/p728/review.md B1 from bytes that were reworded before landing. Isolated-quote layer only."
   },
   {
     "id": "F15",
     "arc": "p728",
-    "source": "kernel/src/mm/layout.rs, MMAP_REGION_START doc comment (commit 3c51dbed)",
+    "source": "kernel/src/memory/layout.rs, MMAP_REGION_START doc comment (commit 3c51dbed)",
     "review": "scratchpad/p728/review.md B2",
     "filetype": ".rs",
     "quote": "Since #742, the same is true of `MMAP_REGION_START`: there is nowhere left for either bound and the allocators' seed/floor to drift apart again.",
     "why_false": "Nothing enforces this. The const-assert proves a property of is_valid_user_range only; the link to the six producers is a source-level fact with no ratchet behind it -- a future hardcoded floor literal reddens nothing.",
-    "expected_rules": ["universal-claim"]
+    "expected_rules": [
+      "universal-claim"
+    ],
+    "surface": "repo",
+    "shipped_commit": "3c51dbed",
+    "shipped_path": "kernel/src/memory/layout.rs",
+    "probe": "there is nowhere left for either bound"
   },
   {
     "id": "F16",
     "arc": "coreproof/rung2",
-    "source": "docs/planning/coreproof/rung2/PROVE-2026-08-30.md §1 [FIX-ROUND-2]",
+    "source": "docs/planning/coreproof/rung2/PROVE-2026-08-30.md \u00a71 [FIX-ROUND-2]",
     "review": "scratchpad/coreproof/rung2/fix2-review.md FB1",
     "filetype": ".md",
     "quote": "This is the direct, demonstrated proof that both halves of the B1 fix have teeth: the driver-only `DriverPreCycle` site is no longer satisfied by ordinary boot traffic, and the independent `iters=0` gate condition fires too.",
     "why_false": "The evidence file's own RUN record shows sites_visited=0 for ALL THREE sites, because dropping the budget to 1ns fires the record microseconds in, not by ordinary traffic reaching DriverPreCycle. It demonstrates the iters=0 condition only.",
-    "expected_rules": ["unproven-claim"]
+    "expected_rules": [
+      "unproven-claim"
+    ],
+    "surface": "repo",
+    "shipped_commit": "28263b11",
+    "shipped_path": "docs/planning/coreproof/rung2/PROVE-2026-08-30.md",
+    "probe": "direct, demonstrated proof that both halves",
+    "in_context_known_miss": "In situ the quote sits in a bullet that also says 'The mutation was reverted', which satisfies PROVEN_EVIDENCE_RE and exempts unproven-claim for the whole paragraph. Same one-citation-inoculates-the-paragraph mechanism as F4, via the mutation-keyword exemption rather than an N-of-M (review minor m2)."
   },
   {
     "id": "F17",
     "arc": "gbus",
-    "source": "scratchpad/gbus/CONFIRM-2026-08-31.md §6",
+    "source": "scratchpad/gbus/CONFIRM-2026-08-31.md \u00a76",
     "review": "scratchpad/gbus/review-bus.md B1",
     "filetype": ".md",
     "quote": "9 of 10 binaries: fully green (... `tty_oracle_structure` 8/8, `x86_gate_verdict_test` 5/5).",
     "why_false": "Cargo's fail-fast stopped after the first failing test target; those two binaries never ran in this capture, and the cited numbers equal the #[test] counts in the files -- a derived-not-measured number wearing a measured shape.",
     "expected_rules": [],
-    "known_miss": "Correct N-of-M form on both counts -- the claim is well-shaped and false anyway (fabricated execution, not an unquantified universal). No mechanical rule in this tool checks that a cited count was actually produced by the log it names; that would need to parse and cross-check the log, not just the sentence."
+    "known_miss": "Correct N-of-M form on both counts -- the claim is well-shaped and false anyway (fabricated execution, not an unquantified universal). No mechanical rule in this tool checks that a cited count was actually produced by the log it names; that would need to parse and cross-check the log, not just the sentence.",
+    "surface": "scratchpad",
+    "surface_note": "Shipped in scratchpad/gbus/CONFIRM-2026-08-31.md, not tracked in this repo. Isolated-quote layer only."
   },
   {
     "id": "F18",
@@ -180,6 +269,10 @@
     "quote": "Leg 4 (adversarial hunt): unchanged from the original measurement, not re-run this pass, no fix-round change touched its inputs.",
     "why_false": "The fix round changed every one of that leg's inputs: the site census, a second armed seam, the ticks transform, quiesce.rs's designated roles, the seqlock/CAS path, and the driver loop.",
     "expected_rules": [],
-    "known_miss": "A negated-change claim ('no fix-round change touched its inputs') rather than a universal/proof/live/guarantee word from this tool's vocabulary. Would need a dedicated 'unchanged-since' rule cross-checked against the actual diff -- out of scope for a text-shape linter."
+    "known_miss": "A negated-change claim ('no fix-round change touched its inputs') rather than a universal/proof/live/guarantee word from this tool's vocabulary. Would need a dedicated 'unchanged-since' rule cross-checked against the actual diff -- out of scope for a text-shape linter.",
+    "surface": "repo",
+    "shipped_commit": "28263b11",
+    "shipped_path": "docs/planning/coreproof/rung2/PROVE-2026-08-30.md",
+    "probe": "unchanged from the original measurement"
   }
 ]
