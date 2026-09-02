@@ -63,6 +63,7 @@ EXPECTED_ARMS=(
     foreground_pgrp
     hangup
     ctty
+    cloexec_exec
 )
 EXPECTED_ARM_COUNT=${#EXPECTED_ARMS[@]}
 
