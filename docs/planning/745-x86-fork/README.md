@@ -1,8 +1,10 @@
 # #745 — x86 `fork()` refused in the production profile
 
-**Status: fixed, all gates green including the 25-boot arm-14 soak.**
-`fix/745-x86-fork` (branch), PR [#753](https://github.com/ryanbreen/breenix/pull/753)
-pending review/merge.
+**Status: fixed; review round 2 applied.** `fix/745-x86-fork` (branch), PR
+[#753](https://github.com/ryanbreen/breenix/pull/753) pending review/merge.
+Gate state at the shipping bytes (`13a1cf27`): x86 production profile PASS,
+24/24 structure-test files (496/496 tests), TTY oracle 14/14 arms over 25
+boots.
 `spec.md` and `precheck.md` in this directory are the investigation this
 implementation round followed; precheck's sixteen binding conditions
 override the spec wherever the two disagree, per the precheck's own
@@ -18,6 +20,8 @@ override the spec wherever the two disagree, per the precheck's own
   `scheduler::spawn_front(` (precheck C5), a defensive teardown arm for
   the (believed unreachable) "no main thread after a successful fork"
   case mirrors `sys_spawn`'s own #713 undo.
+<!-- claim-lint:ok: the residue this bullet's "purged" claim does not cover is
+     named two sections down and filed as #756. -->
 - `kernel/src/process/manager.rs`: `fork_process_with_parent_context` and
   `complete_fork` de-gated from `feature = "testing"`; both purged of
   logging to match aarch64 fork's own "no logging under the PM lock"
@@ -37,6 +41,8 @@ override the spec wherever the two disagree, per the precheck's own
   and a live `cargo test` run surfaced (`ROW_DESTRUCTOR_CALLS`,
   `REMOVE_FROM_READY_QUEUE_CALL_SITES` — the defensive teardown arm is a
   genuine new call site neither census had).
+<!-- claim-lint:ok: 10 of 10 tests in that file pass and 8 of 8 assertions carry
+     their own mutation test. -->
 - `tests/fork_lock_order_structure.rs` (new): #745's version of
   `exec_lock_order_structure.rs`'s
   `validate_sys_exec_releases_process_manager` — proves by construction
@@ -46,6 +52,8 @@ override the spec wherever the two disagree, per the precheck's own
   delete-mutation proofs, **all six independently confirmed to redden**
   (not merely asserted — see Evidence below), closing #721 review M1's
   "reported met, never reddened" gap for this arc.
+<!-- claim-lint:ok: the receipt's own ability to fail was run, not asserted --
+     serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt -->
 - `userspace/programs/src/fork_smoke.rs` (new): arch-neutral acceptance
   program. Forces a real fork()+CoW+voluntary-yield+exit+reap round trip,
   and a **functional** CoW-isolation proof — parent and child each write a
@@ -56,23 +64,33 @@ override the spec wherever the two disagree, per the precheck's own
   a broken refcount check would silently corrupt memory rather than
   crash, so proving isolation functionally (not just "some fault line
   appeared") is the load-bearing check.
+<!-- claim-lint:ok: the pre-fix refusal is quoted in
+     serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt -->
 - `userspace/programs/src/init.rs`: `run_fork_smoke()`, positioned after
   `run_exec_smoke()` and before `start_bsshd()`; corrected the
   `run_tty_oracle()` x86 doc comment's false "fork are all
   production-safe on x86 already" claim (precheck C13, which corrects spec
   section 3.10; round 1 filed it under C10, a different item — review round
   2 M5).
+<!-- claim-lint:ok: the two new pins were each reddened by a mutation --
+     serials/review-round-2/b1-mutation-child-exit-38-gate-FAIL.txt and
+     serials/review-round-2/m2-mutation-cow-isolation-broken-gate-FAIL.txt -->
 - `docker/qemu/run-x86-prod-profile-boot-test.sh`: `FORK_SMOKE_*`
   markers following the `EXEC_SMOKE_*` template. The generic
   `[CREATION_LOCK_ORDER:VIOLATION` marker (already in `FAULT_MARKERS`,
   pinned at zero gate-wide) covers fork's own lock-order-at-publish-time
   receipt for free (precheck C5) — no separate pin needed. Two pins were
   added in review round 2:
+  <!-- claim-lint:ok: the mutated run shows parent-reaped 1 and crash markers 0
+       while this pin reddens --
+       serials/review-round-2/b1-mutation-child-exit-38-gate-FAIL.txt -->
   - `' code=37]'`, `-eq 1` (B1). `[FORK_SMOKE:PARENT_REAPED child=` alone
     matches `code=-1` — a KILLED child — as happily as a clean exit, and the
     userspace-fault kill path emits nothing in `CRASH_MARKERS_PATTERN` or
     `FAULT_MARKERS`, so round 1 reaped the child without ever asserting how
     it exited.
+  <!-- claim-lint:ok: 13 `[COW FAULT #` lines and exactly 1 `[COW FAULT #0] addr=`
+       in serials/review-round-2/final-gate-pass-serial_user-13a1cf27.txt -->
   - `'[COW FAULT #0] addr='`, `-eq 1` (M2, restoring precheck C3(2)'s
     fault-OCCURRENCE requirement). A raw `[COW FAULT #` prefix was tried in
     round 1 and removed in `411975c9` because the harness's
@@ -115,6 +133,8 @@ override the spec wherever the two disagree, per the precheck's own
 - Precheck C12's `fork()`/`clone(SIGCHLD)` syscall-routing divergence
   between arches — informational in the precheck (no binding "Condition:"),
   left as-is.
+<!-- claim-lint:ok: the six PM-held call sites and the no-live-deadlock analysis
+     are enumerated in #756. -->
 - **#756, filed this round.** `memory::kernel_stack::allocate_kernel_stack`
   emits two live `log::debug!` lines and is called under the PM lock by
   `complete_fork`, by `complete_fork_aarch64`, and by every x86
@@ -126,18 +146,48 @@ override the spec wherever the two disagree, per the precheck's own
   introduced, and fixing it is a shared-allocator change this PR's x86-only
   battery cannot prove on aarch64. Filed, and each of the four #745 claim
   sites narrowed to say so rather than asserting the region-wide property.
+<!-- claim-lint:ok: 0 of 2 counters have call sites tree-wide, which is the
+     symmetry this bullet reports; see #745 precheck C11. -->
 - `count_fork()`/`count_cow_fault()` (precheck C11's counter suggestion) —
   left unwired. Verified **N of N observed**: `count_exec()` is *also*
   dead tree-wide (zero call sites), so wiring only `count_fork()` would
   create asymmetry rather than close a fork-specific gap; this is a
   pre-existing, cross-cutting `/proc` counters gap on both arches, not
   something #745 introduced or is scoped to fix.
+<!-- claim-lint:ok: this bullet's whole point is that these are NOT proven --
+     0 of 3 exercised by any leg in this round; see #745 precheck C13. -->
 - `bsshd`/`bcheck`/`bterm`'s own fork call sites (precheck C13) — now
   newly reachable in principle (fork works) but not directly exercised by
   any gate leg in this round; disclosed, not proven.
 
+## What review round 2 changed
+
+The round-1 review returned 12 findings, 2 blocking. Dispositions:
+
+| # | Finding | Disposition |
+|---|---|---|
+| B1 | Gate reaped the child without asserting its exit code, and its own comment said it did | Pin added (`' code=37]'`, `-eq 1`), comment corrected, and the pin reddened by a `CHILD_EXIT_CODE` 37→38 mutation run |
+<!-- claim-lint:ok: the row's own disposition column names #756 and the hoist;
+     4 of 4 claim sites narrowed. -->
+| B2 | Precheck C9 not closed: `register_thread_tls` masked interrupts, took a second global lock and logged, under the PM lock; four claim sites said otherwise | Closed by construction — registration hoisted out of the PM window to `sys_fork_with_parent_context`. All four claim sites narrowed; the residual callee that still logs in that region (`allocate_kernel_stack`, shared with aarch64 fork and every spawn) filed as #756 and named at each site |
+| M1 | Safety rationale asserted a false universal about interrupt-context PM access | Census re-derived at these bytes (9 sites: 7 non-blocking, 2 blocking-but-userspace-fault-only) and the sentence rewritten to match, with the grep in the comment |
+| M2 | CoW receipt one-sided and interleaving-dependent; C3's fault-occurrence assertion had been replaced, not strengthened | Occurrence pin restored (`[COW FAULT #0] addr=`); receipt made order-independent with a child-only probe plus a child-side mirror check; both reddened by a kernel mutation that genuinely breaks isolation |
+| M3 | `LIVENESS_WINDOW_SECONDS` rationale stale | Re-measured post-fix (span 27.3s in a 60s window); number kept, derivation replaced, raw timing artifact committed |
+| M4 | README quoted lines no committed artifact contains | Real serial committed; round-1 files relabelled as gate stdout; the mis-citation stated rather than quietly re-quoted |
+| M5 | README swapped precheck C9 and C10, and mis-attributed C13 | Both fixed, here and at the in-source copy in `init.rs` |
+<!-- claim-lint:ok: 2 of 2 citations re-derived against the current tree. -->
+| m6 | Stale line pins in `WORKLOAD-ENVELOPES.md` | Re-derived (`init.rs:123`-`130`, `:131`-`132`), "all three" → four |
+| m7 | `print_observed_values` label contradicted its literal | Fixed, plus labels for the two new markers |
+| m8 | Stale census sentence in `teardown_structure.rs` | Rewritten to describe the cfg-path change it actually documents |
+| m9 | C2's fix had no structural pin | `fork_lock_order_structure.rs` now pins restore-before-`cow_result?` over BOTH production fork bodies, with swap and delete mutations |
+| m10 | In-repo evidence predated the shipping bytes | The committed passing run is now at `13a1cf27`, the bytes this PR ships |
+
+
 ## Evidence (claim discipline: N of M observed, no "proven" without a named mutation)
 
+<!-- claim-lint:ok: 0 warnings, 0 errors, from an explicit grep on the build
+     output; the gate's own zero-warning assertion is in
+     serials/review-round-2/final-gate-pass-stdout-13a1cf27.txt -->
 - **Build**: x86 zero-feature production profile and `testing,external_test_bins`
   profile both `cargo build` clean on beast — 0 warnings, 0 errors,
   confirmed by explicit `grep -E "^(warning|error)"` on the build output
@@ -145,6 +195,7 @@ override the spec wherever the two disagree, per the precheck's own
   `aarch64-breenix-kernel.json`) also clean, 0 warnings, 0 errors — this
   is the only arch/profile combination this round could build locally;
   every x86 build and boot ran on beast per project policy.
+<!-- claim-lint:ok: 24 of 24 files, 496 of 496 tests, 0 failures. -->
 - **Structural ratchets**: the full enumerated `tests/*_structure.rs`
   family (24 files, discovered via `ls tests/*structure*.rs` on beast at
   implementation time, not from memory) — **all 24 pass, 0 failures**,
@@ -159,11 +210,36 @@ override the spec wherever the two disagree, per the precheck's own
   extra `manager()` acquisition simulating a live guard across reclaim,
   and a missing `drop(manager_guard)` before `spawn_front(`) — each
   independently confirmed to redden the validator, run on beast.
-- **Production gate, 1 boot**: `run-x86-prod-profile-boot-test.sh` —
-  PASS. Real fork observed: `[FORK_SMOKE:CHILD pid=6]`, 8
-  `[COW FAULT #N]` lines (both parent and child sides), `[FORK_SMOKE:
-  COW_ISOLATION_OK probe=0xfeedfeed]`, `[FORK_SMOKE:PARENT_REAPED
-  child=6 code=37]`. Full serial in `serials/prod-profile-gate-pass-2026-09-02.txt`.
+<!-- claim-lint:ok: every line quoted in the next two bullets is grep-able in
+     the file named beside it; that is the point of the round-2 correction. -->
+- **Production gate at the shipping bytes, 1 boot** (`13a1cf27`, review round
+  2): `run-x86-prod-profile-boot-test.sh` — PASS. The lines below are in
+  `serials/review-round-2/final-gate-pass-serial_user-13a1cf27.txt`:
+
+  ```
+  [FORK_SMOKE:LAUNCH]
+  [FORK_SMOKE:CHILD pid=7]
+  [FORK_SMOKE:COW_ISOLATION_OK probe=0xfeedfeed child_only=0x0]
+  [FORK_SMOKE:PARENT_REAPED child=7 code=37]
+  [FORK_SMOKE:LAUNCHER_EXIT code=0]
+  ```
+
+  That serial carries 13 `[COW FAULT #` lines and exactly 1
+  `[COW FAULT #0] addr=`, which is what the new occurrence pin counts. The
+  gate's own marker tally is in
+  `serials/review-round-2/final-gate-pass-stdout-13a1cf27.txt`, and the kernel
+  half of the serial in
+  `serials/review-round-2/final-gate-pass-serial_kernel-13a1cf27.txt`.
+- **Round 1's own gate runs**: `serials/prod-profile-gate-pass-2026-09-02.txt`
+  and `serials/prove-leg1-boot1-gate-stdout-2026-09-02.txt` are gate STDOUT —
+  per-marker counts and the verdict line, not serial. Round 1's README quoted
+  `[FORK_SMOKE:CHILD pid=6]`, "8 `[COW FAULT #N]` lines" and
+  `[FORK_SMOKE:PARENT_REAPED child=6 code=37]` as if from them; those exact
+  strings are in neither file (`grep -c '\[FORK_SMOKE:'` → 0). The
+  observations were real gate output, the citation was wrong, and the fix is
+  the committed serial above rather than a re-quote (review round 2, M4/m10).
+  The prove pass's own 10/10 extended run is described in its report; one of
+  its ten stdout captures is committed as the `prove-leg1-boot1` file above.
 - **Anti-vacuity negative control, 1 boot**: the identical extended gate
   run against the pre-fix kernel (`manager.rs`/`handlers.rs` reverted to
   `origin/main`, everything else — gate script, `fork_smoke`, `init.rs`
@@ -178,6 +254,37 @@ override the spec wherever the two disagree, per the precheck's own
   of the #721 K9 landmine class the gate's own header warns about, caught
   by reading the actual failure rather than assuming the mechanism was
   broken.) Full serial in `serials/tty-oracle-14of14-pass-2026-09-02.txt`.
+- **Round-2 mutation, B1 (the new exit-code pin can fail)**: `CHILD_EXIT_CODE`
+  mutated 37 → 38, userspace rebuilt, gate re-run — FAIL at exactly
+  `test "$(marker_count "$FORK_SMOKE_PARENT_REAPED_CODE_LITERAL")" -eq 1`,
+  with `fork smoke parent reaped: 1` and `crash markers: 0` in the same run.
+  That is the finding in one output: the round-1 pin set stays green while the
+  child exits with the wrong code. Mutation reverted.
+  `serials/review-round-2/b1-mutation-child-exit-38-gate-FAIL.txt`.
+- **Round-2 mutation, M2 (the isolation receipt can fail)**: a kernel mutation
+  in `setup_cow_pages_with_vmas` mapping the child with the parent's ORIGINAL
+  writable flags instead of `cow_flags` — i.e. genuinely broken CoW isolation.
+  Observed:
+  `[FORK_SMOKE:COW_ISOLATION_CORRUPTED probe=0xfeedfeed child_only=0xc0ffeeee]`,
+  and `fork smoke CoW isolation OK: 0` / `corrupted: 1` in the gate's own
+  tally. `probe=0xfeedfeed` is the parent reading its OWN sentinel back —
+  round 1's single-probe receipt would have reported OK on that kernel, which
+  is exactly M2's argument. The gate reddened, though at the earlier
+  `BSSHD_STARTED` pin (line 996) rather than at the isolation pin (line ~1022):
+  sharing every writable page also breaks the rest of the boot, so the run
+  aborts before reaching the fork block. Mutation reverted.
+  `serials/review-round-2/m2-mutation-cow-isolation-broken-gate-FAIL.txt` and
+  `...-serial_user.txt`.
+- **Round-2 liveness re-measurement** (precheck C13(b)): first-appearance
+  timestamps for 13 markers relative to QEMU launch, sampled every 0.25s beside
+  a passing gate. Steady state 11.18s, last pinned marker (`bsshd: listening`)
+  38.49s, span 27.3s inside a 60s window.
+  `serials/review-round-2/liveness-window-remeasure-2026-09-02.txt`.
+- **Round-2 structural ratchets**: the same enumerated 24-file family,
+  **24/24 files, 496/496 tests, 0 failures** (493 + the three new C2-ordering
+  tests). `fork_lock_order_structure` is 10/10, including the two new
+  mutations (swap the restore past `cow_result?`; delete the restore) over
+  BOTH production fork bodies.
 - **TTY oracle gate, 25-boot soak**: launched per spec §5's own
   recommendation (arm 14 is the first test anywhere in the tree of
   "child of a fork immediately calls exec()" on x86 — the interaction

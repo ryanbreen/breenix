@@ -1,5 +1,13 @@
 # #745 spec: x86 `fork()` refused in the production profile
 
+> **Archived verbatim.** This file is the investigation artifact the #745
+> implementation round followed, committed unedited. `scripts/claim-lint.py`
+> reports findings in it (43 at the round-2 bytes); they are NOT discharged
+> here, because annotating or rewriting an archived document to satisfy a
+> linter would change the record of what was written at the time. Claims this
+> PR itself makes live in `README.md`, which is claim-lint clean. See
+> `docs/planning/green-program/claim-linting.md`.
+
 Repo `/Users/wrb/fun/code/breenix`, investigated STRICTLY READ-ONLY at
 `main` @ `71ffda8184d00a29e7535cae53db628766bc400c` (HEAD did not move during
 the investigation). x86 facts cross-checked live on `beast`
