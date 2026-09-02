@@ -1261,7 +1261,6 @@ fn kernel_main_continue() -> ! {
         let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
         let loopback_wake_test_buf =
             kernel::userspace_test::get_test_binary("loopback_wake_test");
-        let poll_tcp_oracle_buf = kernel::userspace_test::get_test_binary("poll_tcp_oracle");
         let clonevm_exec_test_buf =
             kernel::userspace_test::get_test_binary("clonevm_exec_test");
         let futex_handoff_oracle_buf =
@@ -1477,35 +1476,30 @@ fn kernel_main_continue() -> ! {
                 }
             }
 
-            // The #568 blocking-poll-on-connected-TCP oracle (poll_tcp_oracle).
-            // It was un-wired here at the #568 landing because it fork()s a peer
-            // per retry attempt and so shifts the tombstone census
-            // docker/qemu/run-x86-boot-tests.sh pins (CENSUS_REMOVED = 6 +
-            // attempts, exact on 30/30 boots), and because its late_lost_wake
-            // verdict could not be told apart from TCG starvation. The second of
-            // those is what #693 is blocked on, and the oracle cannot be
-            // observed on x86 at all while it is un-wired, so it is launched
-            // again here to carry the #693 investigation.
+            // The #568 blocking-poll-on-connected-TCP oracle (poll_tcp_oracle)
+            // is deliberately NOT launched here. It runs on aarch64, where eight
+            // gates pin its marker and its verdict, and it is green there. On x86
+            // it is not gate-compatible yet: it fork()s a peer per retry attempt,
+            // so it shifts the tombstone census this file's own boot gate pins
+            // (CENSUS_REMOVED = 6 + attempts, exact on 30/30 boots), and its
+            // late_lost_wake verdict carries neither the peer's exit status nor
+            // its token_ms/write_ms stamps, so a red cannot be told apart from
+            // TCG starvation. Re-wiring it here, together with the marker
+            // assertion removed from docker/qemu/run-boot-parallel.sh, is
+            // tracked by #697. The #568 kernel fix itself is proven on x86
+            // without the oracle, by the strand census in the A/B battery.
             //
-            // The census shift is NOT fixed by this: run-x86-boot-tests.sh's
-            // frozen CENSUS_REMOVED literal still disagrees with any boot that
-            // runs this oracle. Making that gate compatible is #697's scope, and
-            // until it is done this launch site is exercised by the bespoke #693
-            // repeat driver rather than by that gate.
-            {
-                serial_println!("RING3_SMOKE: creating poll_tcp_oracle userspace process");
-                match process::creation::create_user_process(
-                    String::from("poll_tcp_oracle"),
-                    &poll_tcp_oracle_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!("Created poll_tcp_oracle process with PID {}", pid.as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create poll_tcp_oracle process: {}", e);
-                    }
-                }
-            }
+            // #693's x86 batteries DID need it launched, so they ran on bytes
+            // carrying an investigation patch that adds this launch site back,
+            // committed as an apply/revert pair next to the drivers
+            // (docs/planning/green-program/sockets/serials/693-fix/
+            // x86-launch-site-apply.sh and -revert.sh). That patch is NOT in
+            // the branch's bytes, because with it applied this file's own x86
+            // boot gate cannot satisfy the census assertion at
+            // docker/qemu/run-x86-boot-tests.sh:548: the oracle's stage-3 and
+            // stage-4 ladders each fork at least 1 peer, so CENSUS_REMOVED is
+            // at least 8 against a pin of 6, and the 1 gate boot the round-2
+            // review ran at eba15887 reaped 5 peers. That is #697's scope.
 
             {
                 serial_println!("RING3_SMOKE: creating clonevm_exec_test userspace process");
