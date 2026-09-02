@@ -28,7 +28,9 @@ Usage:
 Diff mode reports only findings whose paragraph overlaps a line this branch
 actually changed (`--changed-only`, the default; `--whole-file` restores the
 old behaviour). The base is resolved to `git merge-base <ref> HEAD`, so a stale
-local `main` does not drag in files the branch never touched.
+local `main` does not drag in files the branch never touched. New files that
+are not yet `git add`ed are included too, whole -- a brand-new EVIDENCE doc is
+exactly the shape `git diff` cannot see.
 
 Discharge: an author who has genuinely checked a strong claim marks it in the
 same paragraph with a `claim-lint:ok:` annotation that NAMES the artifact --
@@ -61,9 +63,27 @@ REPO_ROOT = subprocess.run(
 TEXT_EXTENSIONS = {".md", ".rs", ".sh", ".py", ".txt"}
 
 # Captured artifacts are evidence, not prose: nobody can "discharge" a claim
-# written inside a serial log a gate script emitted. Skip those trees outright
-# rather than reporting findings no author can act on.
-CAPTURE_DIR_RE = re.compile(r"(^|/)(serials?|confirm)/", re.IGNORECASE)
+# written inside a serial log a gate script emitted. The skip is scoped by
+# EXTENSION, not by directory (review R2-B1): `serials/` and `confirm/` trees
+# in this repo also hold hand-authored PROVE narratives, RCA write-ups,
+# per-arc READMEs and mutation scripts -- prose a human wrote and can
+# discharge. Skipping by directory alone removed 30 such files from the tool --
+# 124 findings, measured after this change; 123 under the R2 code -- including
+# the file a blocking review finding of this campaign was raised against.
+# The directory pattern is also plural-only and matched as
+# a whole path COMPONENT, so `kernel/src/serial/` -- a source directory whose
+# only relationship to the rule was its name -- is not a capture tree.
+CAPTURE_DIR_RE = re.compile(r"(^|/)(serials|confirm)/", re.IGNORECASE)
+CAPTURE_EXTENSIONS = {".txt", ".log"}
+
+
+def is_capture_file(rel: str) -> bool:
+    """True for machine-emitted captures only: a `.txt`/`.log` file that lives
+    under a `serials/` or `confirm/` path component. A `.md`, `.sh`, `.rs` or
+    `.py` file under the same tree is hand-authored prose and IS linted."""
+    if os.path.splitext(rel)[1].lower() not in CAPTURE_EXTENSIONS:
+        return False
+    return bool(CAPTURE_DIR_RE.search(rel))
 
 # A `claim-lint:ok` marker plus whatever the author wrote after it, to the end
 # of the paragraph. The marker on its own does not silence a finding: the text
@@ -128,22 +148,29 @@ EVIDENCE_PATH_RE = re.compile(
 )
 
 # Citations that make a `claim-lint:ok:` annotation a citation rather than a
-# mute button: an N-of-M count, an issue number, a review file, or a path --
-# path tokens are additionally required to resolve on disk (see
-# discharge_citation()).
+# mute button: an N-of-M count, an issue or PR number, a review FILE, a named
+# test function, or a path -- path tokens are additionally required to resolve
+# on disk (see discharge_citation()). What the accepted forms have in common
+# is that a reader can open the thing they name.
+#
+# R3 (review r2-m2): the bare English word "review" used to discharge, so
+# `claim-lint:ok: see the review` silenced a claim without naming anything a
+# reader could open. A review reference now has to be a filename.
 DISCHARGE_ISSUE_RE = re.compile(r"#\d{2,}\b")
-DISCHARGE_REVIEW_RE = re.compile(r"\b(?:\w+[-/])?(?:fix\d*-)?review(?:\.md)?\b",
-                                 re.IGNORECASE)
+DISCHARGE_REVIEW_RE = re.compile(r"\b[\w.-]*review[\w.-]*\.md\b", re.IGNORECASE)
+DISCHARGE_TEST_RE = re.compile(r"\btest_\w{4,}\b")
 DISCHARGE_PATH_RE = re.compile(
     r"\b([\w./-]+\.(?:log|txt|md|json|rs|sh|py|toml|S))\b"
 )
 
-# Matches "preserved/attached/committed/saved/written" + "at/to/in" + a
-# backtick-quoted path -- a mechanically checkable claim (gtty review.md B4:
+# Matches "preserved/attached/committed/saved/written/archived" + "at/to/in" +
+# a backtick-quoted path -- a mechanically checkable claim (gtty review.md B4:
 # the cited path did not exist on the branch). Captures the path following
-# the verb so its existence can be checked on disk.
+# the verb so its existence can be checked on disk. `archived` was added in R3
+# because it is the verb both of sweep2 B1's dangling in-repo citations use;
+# see the R3 note in claim-linting.md for what that did and did not reach.
 ARTIFACT_CLAIM_RE = re.compile(
-    r"\b(preserved|attached|committed|saved|written)\s+(?:at|to|in)\b"
+    r"\b(preserved|attached|committed|saved|written|archived)\s+(?:at|to|in)\b"
     r"[^`]{0,40}`([^`]+)`",
     re.IGNORECASE,
 )
@@ -356,12 +383,17 @@ def extract_paragraphs(file: str, content: str) -> list:
 # ---------------------------------------------------------------------------
 
 def path_resolves(path: str, citing_file: str, repo_root: str) -> bool:
-    """Does a cited path name something that actually exists?
+    """Does a cited path name a FILE that actually exists?
 
     Evidence docs cite a path either relative to their own directory
     (`serials/foo.txt` inside .../tty/EVIDENCE-*.md) or relative to the repo
     root. Both resolutions are accepted; a URL is not a filesystem citation
     and never resolves here.
+
+    A directory does not resolve (review R2-M1). "Every serial referenced here
+    is in `serials/`" used to clear a whole paragraph by naming the folder
+    beside the doc -- a folder establishes nothing about the claim, which is
+    the same principle that refuses a bare source path.
     """
     path = path.strip().rstrip(".,;:)")
     if not path or path.startswith(("http://", "https://")):
@@ -371,7 +403,7 @@ def path_resolves(path: str, citing_file: str, repo_root: str) -> bool:
     else:
         doc_dir = os.path.dirname(os.path.join(repo_root, citing_file))
         candidates = [os.path.join(doc_dir, path), os.path.join(repo_root, path)]
-    return any(os.path.exists(c) for c in candidates)
+    return any(os.path.isfile(c) for c in candidates)
 
 
 def resolving_evidence_paths(p: Paragraph, repo_root: str) -> list:
@@ -394,7 +426,9 @@ def discharge_citation(p: Paragraph, repo_root: str) -> Optional[str]:
 
     A bare marker silences nothing (review M2). What follows the marker, to
     the end of the paragraph, has to contain at least one of: an N-of-M count,
-    an issue number, a review reference, or a path that resolves on disk.
+    an issue or PR number, a review FILE (`*review*.md`), a named test
+    function (`test_*`), or a path that resolves on disk. The English word
+    "review" on its own is not a citation (review r2-m2).
     """
     m = DISCHARGE_RE.search(p.text)
     if not m:
@@ -407,6 +441,8 @@ def discharge_citation(p: Paragraph, repo_root: str) -> Optional[str]:
     if DISCHARGE_ISSUE_RE.search(tail):
         return tail
     if DISCHARGE_REVIEW_RE.search(tail):
+        return tail
+    if DISCHARGE_TEST_RE.search(tail):
         return tail
     for pm in DISCHARGE_PATH_RE.finditer(tail):
         if path_resolves(pm.group(1), p.file, repo_root):
@@ -525,8 +561,8 @@ def check_artifact_path(p: Paragraph, repo_root: str) -> Optional[Finding]:
         return None
     return Finding(
         p.file, p.start_line, "artifact-path-missing", p.text,
-        "claims '%s at/to/in `%s`' but that path does not "
-        "exist in the tree" % (m.group(1), path),
+        "claims '%s at/to/in `%s`' but that path does not name a file "
+        "in the tree (a directory is not an artifact)" % (m.group(1), path),
         p.end_line,
     )
 
@@ -560,7 +596,7 @@ def lint_file(path: str, repo_root: str = None) -> list:
     if ext not in TEXT_EXTENSIONS:
         return []
     rel = os.path.relpath(path, repo_root) if os.path.isabs(path) else path
-    if CAPTURE_DIR_RE.search(rel):
+    if is_capture_file(rel):
         return []
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -587,6 +623,21 @@ def git_changed_files(base: str, repo_root: str) -> list:
             "claim-lint: `git diff --name-only %s` failed: %s"
             % (base, out.stderr.strip())
         )
+    return [line for line in out.stdout.splitlines() if line.strip()]
+
+
+def git_untracked_files(repo_root: str) -> list:
+    """New, not-yet-`git add`ed, non-ignored files.
+
+    `git diff` cannot see them, so before R3 a brand-new EVIDENCE doc -- the
+    shape an arc in this campaign starts with -- was invisible in the mode the
+    checklist prescribes (review R2-M2). A whole new file counts as entirely
+    changed.
+    """
+    out = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        capture_output=True, text=True, cwd=repo_root,
+    )
     return [line for line in out.stdout.splitlines() if line.strip()]
 
 
@@ -689,6 +740,7 @@ def main(argv: list) -> int:
 
     repo_root = args.repo_root
     base = None
+    untracked = set()
 
     if args.files:
         targets = args.files
@@ -697,6 +749,11 @@ def main(argv: list) -> int:
     else:
         base = resolve_base(args.base, repo_root)
         targets = git_changed_files(base, repo_root)
+        seen = set(targets)
+        for rel in git_untracked_files(repo_root):
+            if rel not in seen:
+                targets.append(rel)
+                untracked.add(rel)
 
     changed_only = base is not None and not args.whole_file
 
@@ -705,7 +762,8 @@ def main(argv: list) -> int:
     for rel in targets:
         path = rel if os.path.isabs(rel) else os.path.join(repo_root, rel)
         found = lint_file(path, repo_root)
-        if changed_only and found:
+        # A new file has no diff to intersect with; it is linted whole.
+        if changed_only and found and rel not in untracked:
             ranges = changed_line_ranges(base, rel, repo_root)
             kept = [f for f in found if overlaps(f, ranges)]
             suppressed += len(found) - len(kept)

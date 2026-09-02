@@ -233,6 +233,21 @@ If a test cannot pass because the underlying code is broken:
 
 A test that passes without testing what it claims to test is worse than a failing test - it gives false confidence and hides real bugs.
 
+### Claim Discipline - REQUIRED
+
+A round that touches markdown or shell prose runs `scripts/claim-lint.py` before
+requesting review and records the invocation and its exit status in the round's
+notes:
+
+```
+claim-lint: scripts/claim-lint.py                         -> exit 0
+claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md -> exit 0
+```
+
+The review slot checks for those lines the way it checks gate serials. A round
+with no claim-lint line is itself a review finding. What the tool reaches and
+what it measurably does not: `docs/planning/green-program/claim-linting.md`.
+
 ### Testing
 - Most tests use shared QEMU (`tests/shared_qemu.rs`)
 - Special tests marked `#[ignore]` require specific configs

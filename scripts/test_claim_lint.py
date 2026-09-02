@@ -78,6 +78,25 @@ def norm(s: str) -> str:
     return " ".join(s.split()).lower()
 
 
+# Which rule's trigger vocabulary fired, so a CAUGHT specimen can be split
+# into "flagged on the false sentence's own words" vs "flagged because a
+# NEIGHBOURING sentence of the same paragraph carried a trigger" (review
+# R2-M3). Both put the author's eye on the paragraph; only the first is the
+# tool reading the claim.
+RULE_TRIGGER_RE = {
+    "universal-claim": cl.UNIVERSAL_RE,
+    "unproven-claim": cl.PROVEN_RE,
+    "live-no-artifact": cl.LIVE_CLAIM_RE,
+    "absolute-guarantee": cl.ABSOLUTE_GUARANTEE_RE,
+    "artifact-path-missing": cl.ARTIFACT_CLAIM_RE,
+}
+
+
+def trigger_is_in(rule: str, sentence: str) -> bool:
+    rx = RULE_TRIGGER_RE.get(rule)
+    return bool(rx and rx.search(sentence))
+
+
 def git_show(commit: str, path: str):
     """Bytes of `path` as of `commit`, or None if this checkout can't reach it."""
     out = subprocess.run(
@@ -275,7 +294,7 @@ class MechanicsTests(unittest.TestCase):
             findings = cl.lint_text(rel, text, repo_root=tmp)
             self.assertEqual(findings, [])
 
-    def test_capture_directories_are_skipped(self):
+    def test_captured_serial_txt_is_skipped(self):
         # Review m3: nobody can annotate a claim inside a captured serial.
         with tempfile.TemporaryDirectory() as tmp:
             d = os.path.join(tmp, "docs", "arc", "serials")
@@ -284,6 +303,105 @@ class MechanicsTests(unittest.TestCase):
             with open(path, "w") as fh:
                 fh.write("every arm passed, zero reds, PROVEN\n")
             self.assertEqual(cl.lint_file(path, tmp), [])
+
+    def test_hand_authored_prose_under_a_serials_dir_is_linted(self):
+        # Review R2-B1: the R2 skip was by DIRECTORY, so the PROVE/RCA
+        # narratives and mutation scripts that live beside the captures were
+        # skipped too -- 30 files, 124 findings, including the file a
+        # blocking finding of this campaign was raised against.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, "docs", "arc", "serials")
+            os.makedirs(d)
+            for name, body in (
+                ("fix2-prove.md", "Every arm of the gate passed.\n"),
+                ("mutation1-apply.sh",
+                 "#!/bin/bash\n# Every close path decrements the refcount.\n"),
+            ):
+                path = os.path.join(d, name)
+                with open(path, "w") as fh:
+                    fh.write(body)
+                self.assertTrue(
+                    any(f.rule == "universal-claim"
+                        for f in cl.lint_file(path, tmp)),
+                    "%s is hand-authored prose, not a capture" % name,
+                )
+
+    def test_a_source_dir_named_serial_is_not_a_capture_tree(self):
+        # kernel/src/serial/ is a source directory whose only relationship to
+        # the rule was the word "serial" in its name (review R2-B1).
+        self.assertFalse(cl.is_capture_file("kernel/src/serial/command.rs"))
+        self.assertFalse(cl.is_capture_file("docs/arc/serials/README.md"))
+        self.assertTrue(cl.is_capture_file("docs/arc/serials/boot-1.txt"))
+        self.assertTrue(cl.is_capture_file("docs/arc/confirm/run.log"))
+
+    def test_cited_directory_does_not_clear_a_universal(self):
+        # Review R2-M1: `os.path.exists` was true for a directory, so a
+        # paragraph could be cleared by citing the folder beside the doc
+        # instead of a file inside it.
+        with tempfile.TemporaryDirectory() as tmp:
+            doc_dir = os.path.join(tmp, "docs", "arc")
+            os.makedirs(os.path.join(doc_dir, "serials"))
+            rel = os.path.join("docs", "arc", "EVIDENCE.md")
+            text = "Every serial referenced here is in `serials/`.\n"
+            findings = cl.lint_text(rel, text, tmp)
+            self.assertTrue(
+                any(f.rule == "universal-claim" for f in findings),
+                "a directory is not an artifact and cannot exempt a claim",
+            )
+
+    def test_archived_at_a_missing_path_is_flagged(self):
+        # Review r2-m1: `archived` is the verb both of sweep2 B1's dangling
+        # in-repo citations use, and it was not in the verb list.
+        text = ("Every failing serial was archived at "
+                "`docs/planning/green-program/tty/serials/no-such-file.txt`.\n")
+        findings = cl.lint_text("x.md", text, REPO_ROOT)
+        self.assertTrue(
+            any(f.rule == "artifact-path-missing" for f in findings))
+
+    def test_bare_word_review_does_not_discharge(self):
+        # Review r2-m2: "review" as an English word did not name anything a
+        # reader could open.
+        text = ("<!-- claim-lint:ok: see the review -->\n"
+                "Every close path decrements the refcount.\n")
+        findings = cl.lint_text("x.md", text, REPO_ROOT)
+        self.assertTrue(any(f.rule == "universal-claim" for f in findings))
+
+    def test_named_review_file_discharges(self):
+        text = ("<!-- claim-lint:ok: fix2-review.md B1 -->\n"
+                "Every close path decrements the refcount.\n")
+        self.assertEqual(cl.lint_text("x.md", text, REPO_ROOT), [])
+
+    def test_named_test_function_discharges(self):
+        text = ("<!-- claim-lint:ok: test_bare_universal_is_flagged -->\n"
+                "Every close path decrements the refcount.\n")
+        self.assertEqual(cl.lint_text("x.md", text, REPO_ROOT), [])
+
+    def test_untracked_new_file_is_linted_in_diff_mode(self):
+        # Review R2-M2: `git diff` does not list untracked files, so a
+        # brand-new EVIDENCE doc -- the shape an arc starts with -- was
+        # invisible in the mode the checklist prescribes.
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args):
+                return subprocess.run(["git"] + list(args), cwd=tmp,
+                                      capture_output=True, text=True)
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            with open(os.path.join(tmp, "seed.md"), "w") as fh:
+                fh.write("seed\n")
+            git("add", "-A")
+            git("commit", "-qm", "seed")
+            base = git("rev-parse", "HEAD").stdout.strip()
+            with open(os.path.join(tmp, "EVIDENCE-new.md"), "w") as fh:
+                fh.write("Every arm of the gate was exercised.\n")
+            out = subprocess.run(
+                [sys.executable, CLAIM_LINT_PATH, "--base", base,
+                 "--repo-root", tmp],
+                cwd=tmp, capture_output=True, text=True,
+            )
+            self.assertIn("EVIDENCE-new.md", out.stdout,
+                          "an untracked new file must be linted in diff mode")
+            self.assertEqual(out.returncode, 1)
 
     def test_rust_doc_comment_is_scanned(self):
         text = "/// Every close path calls slave_close() unconditionally.\nfn f() {}\n"
@@ -344,7 +462,12 @@ class HistoricalCorpusInContextTests(unittest.TestCase):
             )
             findings = cl.lint_text(e["shipped_path"], content, REPO_ROOT)
             hit = [f for f in findings if norm(e["probe"]) in norm(f.text)]
-            (caught if hit else missed).append(e)
+            if hit:
+                e = dict(e, on_claim=any(
+                    trigger_is_in(f.rule, e["probe"]) for f in hit))
+                caught.append(e)
+            else:
+                missed.append(e)
 
         if unreachable:
             self.skipTest(
@@ -353,13 +476,18 @@ class HistoricalCorpusInContextTests(unittest.TestCase):
             )
 
         total = len(recoverable)
+        on_claim = [e for e in caught if e.get("on_claim")]
         print(
             "\n[historical corpus, IN CONTEXT -- whole file as shipped] "
-            "caught %d of %d recoverable specimens:" % (len(caught), total)
+            "caught %d of %d recoverable specimens; %d of those %d catches "
+            "fire on a rule whose trigger is inside the false sentence "
+            "itself, the rest only on a neighbouring sentence of the same "
+            "paragraph:" % (len(caught), total, len(on_claim), len(caught))
         )
         for e in caught:
-            print("  CAUGHT %-4s %s@%s" % (e["id"], e["shipped_path"].split("/")[-1],
-                                           e["shipped_commit"]))
+            print("  CAUGHT %-4s %-9s %s@%s"
+                  % (e["id"], "on-claim" if e.get("on_claim") else "incidental",
+                     e["shipped_path"].split("/")[-1], e["shipped_commit"]))
         for e in missed:
             print("  MISS   %-4s %s@%s" % (e["id"], e["shipped_path"].split("/")[-1],
                                            e["shipped_commit"]))
@@ -526,10 +654,23 @@ class PerRoundLoadReportTests(unittest.TestCase):
     both ways. Whole-file is what the tool did before the --changed-only
     default; changed-hunks-only is the shipping default. Report, not gate."""
 
+    # Eleven rounds, not three. R2 published a per-round range measured on the
+    # three rounds it chose; the R2 review measured eight more of its own and
+    # the range did not hold (review R2-M4). The eleven are replayed here so
+    # the published range is re-derived on each run, and so the set is not
+    # the set that produced the flattering number.
     ROUNDS = [
         ("aa5f0fd8", "#721 fix round"),
         ("a6679e7c", "sweep-3 fix round"),
         ("9a77c3dc", "#748 fix round"),
+        ("6ba3bcc4", "R4 doc fix round"),
+        ("2a2328aa", "coreproof rung-2 prove"),
+        ("73c58fda", "#540 x86 prod gate"),
+        ("16d6ff5b", "x86 TTY oracle gate"),
+        ("cbc6873b", "nic-bus doc-truth"),
+        ("1f098d11", "tracing x86 evidence"),
+        ("06a1c1a6", "TTY x86 fix-round"),
+        ("5777bb7b", "#717 trap guard"),
     ]
 
     def test_per_round_load(self):
@@ -539,6 +680,7 @@ class PerRoundLoadReportTests(unittest.TestCase):
         if head.returncode != 0:
             self.skipTest("this checkout does not contain the round commits")
         print("\n[per-round load]")
+        wholes, changeds = [], []
         for commit, label in self.ROUNDS:
             files = subprocess.run(
                 ["git", "diff", "--name-only", "--diff-filter=ACMR",
@@ -550,7 +692,7 @@ class PerRoundLoadReportTests(unittest.TestCase):
                 ext = os.path.splitext(rel)[1]
                 if ext not in cl.TEXT_EXTENSIONS:
                     continue
-                if cl.CAPTURE_DIR_RE.search(rel):
+                if cl.is_capture_file(rel):
                     continue
                 nfiles += 1
                 content = subprocess.run(
@@ -562,8 +704,16 @@ class PerRoundLoadReportTests(unittest.TestCase):
                 ranges = cl.changed_line_ranges("%s^" % commit, rel, REPO_ROOT,
                                                head=commit)
                 changed += len([f for f in found if cl.overlaps(f, ranges)])
-            print("  %s (%-18s) files=%2d  whole-file=%3d  changed-hunks=%3d"
+            wholes.append(whole)
+            changeds.append(changed)
+            print("  %s (%-22s) files=%2d  whole-file=%3d  changed-hunks=%3d"
                   % (commit, label, nfiles, whole, changed))
+        print("  RANGE over %d rounds: whole-file %d-%d, changed-hunks %d-%d; "
+              "hunk scoping suppressed %d%%-%d%% per round"
+              % (len(self.ROUNDS), min(wholes), max(wholes),
+                 min(changeds), max(changeds),
+                 min(round(100 * (w - c) / w) for w, c in zip(wholes, changeds) if w),
+                 max(round(100 * (w - c) / w) for w, c in zip(wholes, changeds) if w)))
 
 
 if __name__ == "__main__":
