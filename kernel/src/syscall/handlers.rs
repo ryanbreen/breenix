@@ -4178,13 +4178,16 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
 }
 
 /// A blocking `poll()` shorter than this does not get the informational timeout
-/// line. `bssh` and `bsshd` poll connected TCP fds on a 100 ms cadence and time
-/// out on most calls by design, so a line each would be noise; 120 ms is the
-/// smallest bound that excludes them.
+/// line. `bssh` and `bsshd` poll connected TCP fds on a 100 ms cadence
+/// (`bssh.rs:160`, `bssh.rs:515`, `bsshd.rs:344` -- 3 of the 3 `io::poll`
+/// calls in those two programs) and time out on most calls by design, so a
+/// line each would be noise. 101 would exclude them too: what 120 is, is the
+/// LARGEST bound that still ADMITS `poll_tcp_oracle`'s stage 1, which asks for
+/// exactly 120 ms.
 ///
-/// It is deliberately not higher. `poll_tcp_oracle`'s stage 1 asks for exactly
-/// 120 ms and stage 4 for 150 ms, and both are built to time out, so a boot
-/// that runs the oracle emits this line twice. That is the point: a reporting
+/// That is the property this constant needs. `poll_tcp_oracle`'s stage 1 asks
+/// for exactly 120 ms and stage 4 for 150 ms, and both are built to time out,
+/// so a boot that runs the oracle emits this line twice. That is the point: a reporting
 /// path that runs only on the rare failure is a path whose death goes unnoticed
 /// until the failure arrives and the path stays silent.
 const POLL_TIMEOUT_REPORT_MS: i32 = 120;
