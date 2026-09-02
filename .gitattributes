@@ -10,3 +10,7 @@ docs/planning/t3g-prb/serials/prb-stage3-ss-gate-cortexa72-boot10-timer-not-adva
 # VT escape sequences from the guest console, and a CRLF normalisation would edit
 # preserved evidence). Same treatment as the p5b/t3g-prb serials above.
 docs/planning/green-program/sockets/serials/693-rca/*.txt -text
+
+# #693 fix serials: same treatment, and for the same reason -- these are raw
+# aarch64 and x86 console captures whose CR bytes are part of the evidence.
+docs/planning/green-program/sockets/serials/693-fix/*.txt -text
