@@ -194,6 +194,13 @@ fn run_one(is_home: bool) -> RaceOutcome {
     let label = if is_home { "HOME" } else { "ROOT" };
     let stalls_before = crate::fs::ext2::ext2_lock_spin_stalls();
     let parks_before = crate::fs::ext2::ext2_lock_parks();
+    // #748: re-arm the one-shot EXT2_LOCK_PARK_FIRST marker so a park
+    // during THIS race attempt prints again, even if some earlier
+    // boot_tests activity already consumed the boot's very first one (see
+    // `ext2_reset_lock_park_first_marker()`'s doc comment) -- this is what
+    // lets a gate script observe "this specific holder/contender
+    // construction parked" without waiting for run_one() itself to return.
+    crate::fs::ext2::ext2_reset_lock_park_first_marker();
 
     HOLDER_SCRATCH.reset();
 
