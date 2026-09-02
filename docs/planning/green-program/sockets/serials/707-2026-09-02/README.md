@@ -304,17 +304,53 @@ pre-existing and unrelated to #707:
    `"tcp_cloexec_exec_test"` entry has exactly one consumer,
    `load_test_binaries_from_ext2()`, gated
    `#[cfg(feature = "testing")]` at `kernel/src/main_aarch64.rs:1362`
-   (definition at `:1471`). Every committed aarch64 gate script was
-   checked this round (claim-lint:ok: `grep -n -- "--features"
-   docker/qemu/run-aarch64-*.sh`, re-run this round):
+   (definition at `:1471`).
+
+   **Correction (review-707.md finding F5):** this item previously
+   reported a 5-script census from the command below and is wrong; the
+   command's own output names 9. Re-run this round:
+   `docker/qemu/run-aarch64-*.sh` glob-matches **16** scripts, and
+   `grep -n -- "--features" docker/qemu/run-aarch64-*.sh` finds the
+   substring in **9** of them, not 5 -- 4 gate scripts were left off the
+   original list: `run-aarch64-refusal-drain-gate.sh:45` (`--features
+   boot_tests,resume_pc_foreign_oracle`), `run-aarch64-percpu-stack-custody-gate.sh:68`
+   (`--features boot_tests,percpu_stack_custody_oracle`),
+   `run-aarch64-tty-oracle-gate.sh:109` (no `--features`, deliberate per
+   its own comment), and `run-aarch64-arma609-arm.sh` (mentions
+   `--features arm_a_609`/`boot_tests` only inside error-path `echo`
+   suggestions -- it does not build itself; it requires a prebuilt
+   `--features arm_a_609` kernel and refuses any other). Of the 9,
    `run-aarch64-service-sequence-gate.sh:116` and
    `run-aarch64-full-test.sh:55` build `--features boot_tests`;
-   `run-aarch64-boot-test-native.sh`, `-strict.sh`, and
-   `-prod-profile-boot-test.sh:140` build with no `--features` at all
-   (the last one's own comment says the absence is deliberate). None of
-   the five builds `testing`, so `load_test_binaries_from_ext2()` is
-   compiled out of every one of them, and the `tcp_cloexec_exec_test`
-   line this branch adds is dead weight in every committed aarch64 gate.
+   `run-aarch64-prod-profile-boot-test.sh:140` builds with no
+   `--features` at all (deliberate, per its own comment).
+
+   Separately, `run-aarch64-boot-test-strict.sh` was mischaracterized as
+   building "with no `--features`," alongside `-native.sh` and
+   `-prod-profile-boot-test.sh`. It builds **nothing**: 0 of 2 `cargo
+   build` mentions in the file execute
+   (`grep 'cargo build' docker/qemu/run-aarch64-boot-test-strict.sh |
+   grep -vc echo` -> 0, re-run this round; both are `echo` suggestions)
+   -- it is the strict
+   kernel-merge gate ("Used for CI to catch regressions," per its own
+   header comment) and it **refuses** any kernel that is not `--features
+   boot_tests`, via a 7-marker literal census in
+   `require_boot_tests_kernel()` at
+   `docker/qemu/run-aarch64-boot-test-strict.sh:78-99` that exits 1 on a
+   miss. It is the one script in this census that would actively reject
+   a `testing`-profile kernel -- the opposite of what the original
+   sentence said.
+
+   **The conclusion is unchanged**: 0 of 9 named scripts build
+   `--features testing` in gate form except `run-aarch64-test-suite.sh`
+   below, which is not a gate. So `load_test_binaries_from_ext2()` is
+   compiled out of every committed aarch64 gate, and the
+   `tcp_cloexec_exec_test` line this branch adds is dead weight in all of
+   them -- but "the 5 gates" was never the right shape to reason from
+   (this campaign has been bitten by closed-name-list censuses three
+   times before: #549, #551, #527-r1), and "add `testing` to the 5
+   gates" would still have missed 4 more.
+
    The one committed script that *does* build `--features testing`,
    `run-aarch64-test-suite.sh:131`, is not a gate (no PASS/FAIL verdict
    aggregation, no allowlist) and would not exercise this wiring either
@@ -353,8 +389,10 @@ this repo's own standing rules) well outside a sockets/#707 prove round's
 scope.
 
 **Fixing #562 and #761 is necessary but not sufficient** (claim-lint:ok:
-see #763, which cites the 0-of-5 gate-script breakdown this claim rests
-on). Item 3 above is a separate, structural gap: no committed aarch64
+see #763, which cites the 0-of-9 gate-script breakdown this claim rests
+on -- **correction (review-707.md finding F5):** the census #763 and this
+document originally cited was 5 scripts, corrected to 9 in item 3 above).
+Item 3 above is a separate, structural gap: no committed aarch64
 gate script builds `--features testing`, so even a fully-booting profile
 would run `tcp_cloexec_exec_test` (this round's own wiring) and
 `tcp_dup_listener_test` (#724's) in zero aarch64 gates. Closing #562 and
