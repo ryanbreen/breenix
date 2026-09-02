@@ -1,15 +1,15 @@
-[finalU boot 1] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
-   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7556 returned=7711 elapsed_ms=155 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
+[gU boot 1] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7404 returned=7561 elapsed_ms=157 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
    latepub: <none>
-[finalU boot 2] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
-   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7228 returned=7389 elapsed_ms=161 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
+[gU boot 2] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7056 returned=7211 elapsed_ms=155 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
    latepub: <none>
-[finalU boot 3] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
-   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7025 returned=7177 elapsed_ms=152 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
+[gU boot 3] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7651 returned=7802 elapsed_ms=151 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
    latepub: <none>
-[finalU boot 4] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
-   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7447 returned=7603 elapsed_ms=156 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
+[gU boot 4] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7474 returned=7625 elapsed_ms=151 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
    latepub: <none>
-[finalU boot 5] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
-   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7688 returned=7839 elapsed_ms=151 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
+[gU boot 5] marker_seen=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:FAIL:late_lost_wake:ready=0 revents=0x0000 entry=7400 returned=7552 elapsed_ms=152 delay_ms=500 peer_reaped=true peer_status=0x00000000 peer_code=0]
    latepub: <none>
