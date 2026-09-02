@@ -31,7 +31,8 @@
 //!   5. Parent `waitpid()`s the child and checks its exit code is exactly
 //!      0, distinguishing a real `simple_exit0` run from a silently failed
 //!      `exec()` -- the latter exits 1 and would otherwise look identical
-//!      to "the fd leaked" on the ref-count check below (see 707-mutation.md
+//!      to "the fd leaked" on the ref-count check below (see
+//!      docs/planning/green-program/sockets/serials/707-2026-09-02/mutation1-apply.sh
 //!      for the single-arm revert that is the actual red/green evidence).
 //!   6. Parent closes its OWN copy of the listener fd. If `close_cloexec()`
 //!      correctly decremented at step 4, ref_count is 1 at this point and

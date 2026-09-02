@@ -147,9 +147,23 @@ directory a reasonable size, but every batch's gate-script stdout was
 captured live and is summarized above.
 
 **Mutation-red, one boot:** applied the pre-authored mutation
-(`707-mutation.md`, `crate::net::tcp::tcp_listener_ref_dec(*port)` ->
+(`crate::net::tcp::tcp_listener_ref_dec(*port)` ->
 `let _ = port;` in `kernel/src/ipc/fd.rs`'s `close_cloexec()`), transferred
-to beast via `incus file push` (uncommitted), rebuilt, ran one boot:
+to beast via `incus file push` (uncommitted at the time). **Correction
+(review-707.md finding B2):** the doc this paragraph originally cited by
+name, `707-mutation.md`, was never committed anywhere and does not exist in
+this tree or its history (claim-lint:ok: `git ls-files | grep 707-mutation`
+and `git log --all --oneline --diff-filter=A -- '*707-mutation*'` both
+return nothing, re-run this round, matching `review-707.md`'s B2 finding
+verbatim) -- the mutation was applied from an uncommitted scratch file, so
+the exact bytes behind this round's own red boot could not be independently
+re-derived. The mutation is now committed as an
+apply/revert script pair,
+`mutation1-apply.sh` / `mutation1-revert.sh`, in this same directory
+(mirroring `docs/planning/green-program/nic-bus/serials/`'s convention;
+see `prove-mutations.md` here for the fix slot's own re-verification that
+the committed script produces the byte-identical one-line diff described
+below). Rebuilt, ran one boot:
 `x86 userspace gate: FAIL - failing process is not allowlisted:
 tcp_cloexec_exec_test`, `TCP_CLOEXEC_EXEC_TEST_FAILED` fired, with the
 exact predicted mechanism in the log: `bind() after close returned
