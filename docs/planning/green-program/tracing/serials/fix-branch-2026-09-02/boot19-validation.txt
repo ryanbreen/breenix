@@ -1,0 +1,28 @@
+Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 105 event types known
+
+Parsed 16 CPU buffers:
+  CPU0: 90 events (write_idx=90, dropped=0)
+  CPU1: 0 events (write_idx=0, dropped=0)
+  CPU2: 0 events (write_idx=0, dropped=0)
+  CPU3: 0 events (write_idx=0, dropped=0)
+  CPU4: 0 events (write_idx=0, dropped=0)
+  CPU5: 0 events (write_idx=0, dropped=0)
+  CPU6: 0 events (write_idx=0, dropped=0)
+  CPU7: 0 events (write_idx=0, dropped=0)
+  CPU8: 0 events (write_idx=0, dropped=0)
+  CPU9: 0 events (write_idx=0, dropped=0)
+  CPU10: 0 events (write_idx=0, dropped=0)
+  CPU11: 0 events (write_idx=0, dropped=0)
+  CPU12: 0 events (write_idx=0, dropped=0)
+  CPU13: 0 events (write_idx=0, dropped=0)
+  CPU14: 0 events (write_idx=0, dropped=0)
+  CPU15: 0 events (write_idx=0, dropped=0)
+
+Validation results:
+  OK: 90 total events across 16 parsed CPU buffers
+  OK: CPU0 recorded 90 events (write_idx=90, dropped=0, wrapped=False)
+  OK: all 2 observed event types decode: CTX_SWITCH_ENTRY, TIMER_TICK
+  OK: TIMER_TICK events present
+  CENSUS: 0 timestamp inversion(s) total (not a failure; see comment)
+
+TRACE_VALIDATION:PASS
