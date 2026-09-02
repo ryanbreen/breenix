@@ -1,6 +1,8 @@
 # #745 — x86 `fork()` refused in the production profile
 
-**Status: fixed.** `fix/745-x86-fork` (branch), PR pending review/merge.
+**Status: fixed, all gates green including the 25-boot arm-14 soak.**
+`fix/745-x86-fork` (branch), PR [#753](https://github.com/ryanbreen/breenix/pull/753)
+pending review/merge.
 `spec.md` and `precheck.md` in this directory are the investigation this
 implementation round followed; precheck's sixteen binding conditions
 override the spec wherever the two disagree, per the precheck's own
@@ -154,8 +156,9 @@ override the spec wherever the two disagree, per the precheck's own
   recommendation (arm 14 is the first test anywhere in the tree of
   "child of a fork immediately calls exec()" on x86 — the interaction
   between fork's plain `publish_to_scheduler()` and exec's
-  `ExecSchedCommit` re-publish of that same, still-very-fresh thread has
-  no prior coverage). **Result recorded below once the soak completes**
-  — see the ledger note / final implementation notes for the actual
-  N-of-25 tally; do not treat this document as claiming that result until
-  it is filled in with a real count.
+  `ExecSchedCommit` re-publish of that same, still-very-fresh thread had
+  no prior coverage). **25/25 boots, 14/14 arms PASS every boot** —
+  `run-x86-tty-oracle-gate.sh --boots 25 --rebuild-userspace` on beast,
+  final line `PASS: x86 TTY oracle gate - 25/25 boots, 14 arms green on
+  the shipped production profile`. Full log:
+  `serials/tty-oracle-25boot-soak-2026-09-02.txt`.
