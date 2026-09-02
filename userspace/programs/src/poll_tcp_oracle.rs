@@ -9,26 +9,53 @@
 //! blocking poll on a connected TCP fd, so the path the issue is about was never
 //! executed again. This oracle is that missing caller, and it runs on every boot.
 //!
-//! Three stages, each a distinct failure mode:
+//! Four stages, each a distinct failure mode:
 //!
-//!   stage 1  `idle`   — block on a connected fd with nothing to read and a
+//!   stage 1  `idle`   — block on a connected fd with no readable bytes and a
 //!                       finite timeout. Must return 0 having actually slept.
-//!                       A wedge hangs here; a vacuous instant return (the
-//!                       blocking path never entered) is also a FAIL, because a
-//!                       poll that does not block cannot prove anything about
-//!                       blocking.
+//!                       A wedge hangs here; a vacuous instant return (one in
+//!                       which the blocking path was not entered) is also a
+//!                       FAIL, because a poll that does not block is not
+//!                       evidence about blocking.
 //!   stage 2  `armed`  — data is already pending when poll is called. Must
 //!                       report POLLIN from the entry scan.
 //!   stage 3  `late`   — THE LOST-WAKE STAGE. The poller enters `poll()` first
 //!                       and a forked peer writes only afterwards, so readiness
 //!                       is published while the poller is already blocked. This
 //!                       is the one stage a stale-snapshot or edge-triggered
-//!                       wake cannot pass by luck: a poll that misses the
-//!                       publication either returns 0 at the timeout (lost wake)
-//!                       or returns POLLIN only after the full timeout elapsed
-//!                       (woken by the clock, not by the data). Both are FAIL.
+//!                       wake cannot pass by luck.
+//!   stage 4  `forced` — THE CLASSIFICATION STAGE. The peer is made to publish
+//!                       AFTER the poll's deadline on purpose (a 150 ms poll
+//!                       against a 500 ms peer delay), so the poll returning 0
+//!                       is the CORRECT answer and the verdict has to say so.
 //!
 //! Do not weaken any stage to `timeout=0`.
+//!
+//! ## What a 0-ready return means, and what #693 made of it
+//!
+//! Stages 3 and 4 both end in a `poll()` that can hand back `ready=0` with
+//! empty `revents`, and the two reasons that happens are opposites:
+//!
+//!   * readiness was published while the poller was parked and the poll failed
+//!     to report it — a lost wake, and a kernel defect;
+//!   * the peer had not published by the poll's deadline — in which case 0 is
+//!     the correct answer for a socket with an empty receive buffer.
+//!
+//! Until #693, this file decided that fork from `ready != 1 || revents & POLLIN
+//! == 0` alone and named the result `late_lost_wake`: a kernel wake-loss
+//! verdict whose inputs did not include the peer's publication instant, so it
+//! emitted the same word for both. The #693 RCA read thirteen reproductions
+//! and the issue's own preserved specimen and found 14 of 14 of them to be the
+//! second kind — the peer's `nanosleep` overran by up to 10.3 s under round
+//! robin and its write landed after the poll's whole 5 s budget had expired.
+//!
+//! A timeout arm now recovers the peer's stamps before deciding: the peer's
+//! exit code says whether it published, and its `write_ms` says when.
+//! `write_ms <= returned` is a lost wake and stays a FAIL. `write_ms > returned`
+//! is a window the publication did not enter, so it decides neither way and is
+//! retried against a higher poll ceiling — and if the peer keeps overrunning,
+//! the FAIL that ends it is `late_peer_overrun` carrying the measured overrun,
+//! not a wake-loss claim.
 //!
 //! Stage 3's bounds are derived from instants the PEER measures and reports,
 //! never from either side's guess about the other's timing. The child stamps
@@ -116,6 +143,26 @@ const LATE_WRITE_DELAY_MS: u64 = 80;
 /// `send()` to the next syscall inside 1.28 s. That is a real pathology, and it
 /// is the only thing that turns a missed window into a FAIL.
 const LATE_MAX_ATTEMPTS: u32 = 5;
+/// The opposite inconclusive shape, and the one #693 is filed on: the parent
+/// reached `poll()` in time, but the PEER did not publish before the poll's
+/// deadline, so the window the trial is about did not contain a publication.
+/// Widening the delay makes that strictly worse, so this retry raises the
+/// poll's own ceiling instead -- 5 s, 10 s, 20 s. Raising the ceiling is free
+/// when the trial then succeeds, because the poll returns when the peer
+/// publishes and not when the timeout expires. Exhausting the budget means the
+/// peer could not get from a `nanosleep` deadline to the next instruction
+/// inside twenty seconds across three tries, which is a real pathology and is
+/// reported as `late_peer_overrun` with the measured overrun rather than as a
+/// lost wake, which is what the pre-#693 code called it.
+const LATE_MAX_PEER_LATE_ATTEMPTS: u32 = 3;
+
+/// Stage 4's poll timeout and peer delay. The peer is told to wait more than
+/// three times the poll's whole budget, so its publication lands after the
+/// return by construction and the arm that classifies a 0-ready return runs on
+/// each boot. Both are small because the stage's cost is the peer's delay, and
+/// it is paid once per boot on each arch.
+const FORCED_TIMEOUT_MS: i32 = 150;
+const FORCED_WRITE_DELAY_MS: u64 = 500;
 /// One byte, sent by the parent on its own end of the connection, that tells the
 /// child the parent is about to poll. It travels the opposite direction from the
 /// payload, so it cannot make the polled fd readable.
@@ -357,9 +404,23 @@ fn late_peer(server: Fd, delay_ms: u64) -> ! {
     }
 }
 
+/// What the probe of a timed-out poll found, and anything it took off the
+/// socket while looking.
+///
+/// The non-blocking read is destructive: on a genuine lost wake it is exactly
+/// the read that succeeds, and the bytes it takes are the peer's payload --
+/// the payload whose stamps decide the verdict. An earlier revision threw them
+/// away, which would have made the one case this stage exists to catch the one
+/// case it could not score.
+struct LostWakeProbe {
+    marker: String,
+    consumed: [u8; LATE_MSG_LEN],
+    consumed_len: usize,
+}
+
 /// Re-read the fd the blocking poll just gave up on, two ways, and render both
 /// results as one marker line. See the call site for what each probe decides.
-fn late_lost_wake_probe(client: Fd) -> String {
+fn late_lost_wake_probe(client: Fd) -> LostWakeProbe {
     // Stamp the probe on the same clock the peer stamps its write with. Marker
     // ORDER on the shared console decided three of the first four specimens and
     // left the fourth open, because the peer prints after its `send` returns and
@@ -374,13 +435,17 @@ fn late_lost_wake_probe(client: Fd) -> String {
         Err(e) => format!("rescan_err={}", e),
     };
 
+    let mut consumed = [0u8; LATE_MSG_LEN];
+    let mut consumed_len = 0usize;
     let nbread = match io::fcntl_getfl(client) {
         Ok(original) => {
             match io::fcntl_setfl(client, original as i32 | io::status_flags::O_NONBLOCK) {
                 Ok(_) => {
-                    let mut buf = [0u8; LATE_MSG_LEN];
-                    let outcome = match io::read(client, &mut buf) {
-                        Ok(n) => format!("nbread_n={}", n),
+                    let outcome = match io::read(client, &mut consumed) {
+                        Ok(n) => {
+                            consumed_len = n;
+                            format!("nbread_n={}", n)
+                        }
                         Err(e) => format!("nbread_err={}", e),
                     };
                     let _ = io::fcntl_setfl(client, original as i32);
@@ -392,20 +457,162 @@ fn late_lost_wake_probe(client: Fd) -> String {
         Err(e) => format!("nbread_getfl_err={}", e),
     };
 
-    format!(
-        "[POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms={} {} {}]",
-        probe_ms, rescan, nbread
-    )
+    LostWakeProbe {
+        marker: format!(
+            "[POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms={} {} {}]",
+            probe_ms, rescan, nbread
+        ),
+        consumed,
+        consumed_len,
+    }
 }
 
-/// The lost-wake stage: readiness is published while the poller is already
-/// parked inside `poll()`.
+/// The two stamps the peer ships inside its payload: when it received the
+/// readiness token, and the instant immediately before its `send`.
+struct PeerStamps {
+    token_ms: u64,
+    write_ms: u64,
+}
+
+fn decode_late_payload(buf: &[u8; LATE_MSG_LEN]) -> Result<PeerStamps, Failure> {
+    if &buf[..7] != PAYLOAD_LATE {
+        return Err(fail("late_payload", format!("tag={:?}", &buf[..7])));
+    }
+    let mut stamp = [0u8; 8];
+    stamp.copy_from_slice(&buf[7..15]);
+    let token_ms = u64::from_le_bytes(stamp);
+    stamp.copy_from_slice(&buf[15..]);
+    let write_ms = u64::from_le_bytes(stamp);
+    Ok(PeerStamps {
+        token_ms,
+        write_ms,
+    })
+}
+
+/// How long the parent will wait for a payload whose sender has already been
+/// reaped. The peer's `send` returned before it exited, so the bytes exist;
+/// this bounds the wait for them to become readable rather than betting the
+/// whole oracle on a blocking `recv` that a torn-down connection would not
+/// satisfy.
+const LATE_DRAIN_TIMEOUT_MS: i32 = 2_000;
+
+/// Recover the peer's stamps after a timeout return, starting from whatever the
+/// probe's destructive read already took off the socket.
 ///
-/// Returns `(elapsed_ms, park_ms, attempts)`, where `park_ms` is the measured
-/// span between the parent's poll entry and the peer's actual write.
-fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
-    let mut attempt: u32 = 1;
-    let mut delay_ms = LATE_WRITE_DELAY_MS;
+/// This is the fact #693 lacked. The issue's own text names its undecided fork
+/// as "whether the peer's `send()` was actually issued and its readiness lost,
+/// or whether the peer's own `recv` of the token never completed so it never
+/// wrote at all", and the arm that had to answer it reaped the peer and
+/// reported without ever reading the socket. The peer's exit code names the
+/// branch it took; these two stamps say WHEN it published, which is what
+/// separates a lost publication from one that had not happened yet.
+/// <!-- claim-lint:ok: the quoted sentence is #693's own text, verbatim; the
+///      RCA decided it 13 of 13 reproductions, docs/planning/green-program/
+///      sockets/693-RCA-2026-09-02.md §5. -->
+fn collect_late_payload(client: Fd, probe: &LostWakeProbe) -> Result<PeerStamps, Failure> {
+    let mut buf = [0u8; LATE_MSG_LEN];
+    let mut filled = probe.consumed_len.min(LATE_MSG_LEN);
+    buf[..filled].copy_from_slice(&probe.consumed[..filled]);
+
+    while filled < LATE_MSG_LEN {
+        let mut fds = [PollFd::new(client, POLLIN)];
+        match io::poll(&mut fds, LATE_DRAIN_TIMEOUT_MS) {
+            Ok(0) => {
+                return Err(fail(
+                    "late_payload_undelivered",
+                    format!(
+                        "filled={} want={} waited_ms={}",
+                        filled, LATE_MSG_LEN, LATE_DRAIN_TIMEOUT_MS
+                    ),
+                ))
+            }
+            Ok(_) => {}
+            Err(e) => return Err(fail("late_payload_poll", format!("{}", e))),
+        }
+        match socket::recv(client, &mut buf[filled..]) {
+            Ok(0) => {
+                return Err(fail(
+                    "late_payload_eof",
+                    format!("filled={} want={}", filled, LATE_MSG_LEN),
+                ))
+            }
+            Ok(n) => filled += n,
+            Err(e) => return Err(fail("late_payload_recv", format!("{}", e))),
+        }
+    }
+
+    decode_late_payload(&buf)
+}
+
+/// The two things a stage-3-shaped trial can be asking of the kernel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LateMode {
+    /// The peer's publication is meant to land INSIDE the poll's window, so a
+    /// poll that returns 0 ready fds either lost it or was not given one. This
+    /// is the lost-wake test proper, and it is the one whose window the peer's
+    /// own dispatch latency can overrun -- see `Forced` for why that matters.
+    Race,
+    /// The peer's publication is meant to land AFTER the poll's deadline, by
+    /// construction: a short poll timeout against a long peer delay. A poll that
+    /// returns 0 ready fds here is CORRECT, and the whole point of the arm is
+    /// that the verdict must say so.
+    ///
+    /// #693 is a boot in which the `Race` trial's peer published late by
+    /// accident, and the verdict called it a lost kernel wake. This arm makes
+    /// that same shape happen on purpose on each boot, so a verdict that cannot
+    /// tell "published after my deadline" from "you lost my publication" fails
+    /// here deterministically instead of once in twenty-four boots: the
+    /// pre-#693 predicate, restored as mutation 693-U, reddens this stage on
+    /// 5 of 5 aarch64 boots.
+    Forced,
+}
+
+/// One trial's configuration.
+struct LateTrial {
+    mode: LateMode,
+    stage: &'static str,
+    timeout_ms: i32,
+    delay_ms: u64,
+}
+
+/// How the timeout arm of a trial was decided, once the peer's publication
+/// instant is in hand.
+enum TimeoutVerdict {
+    /// Readiness was published at or before the poll's return and the poll did
+    /// not report it. This is a lost wake, and the only thing that is.
+    Lost,
+    /// The peer published after the poll had already given up. The poll's 0 is
+    /// the right answer for a socket that had not been written to yet.
+    PublishedAfterReturn,
+}
+
+/// The outcome of one completed trial.
+struct LateResult {
+    elapsed_ms: u64,
+    park_ms: u64,
+    late_by_ms: u64,
+}
+
+/// Run one stage-3-shaped trial to a verdict, retrying the two INCONCLUSIVE
+/// shapes and reserving a FAIL for the shapes that decide something.
+///
+/// The two inconclusive shapes are opposites and their retries pull in opposite
+/// directions, which is why they have separate budgets:
+///
+///   * the parent did not reach `poll()` before the peer's clock started
+///     (`entry > token_ms`) -- widen the peer's delay so the parent gets in;
+///   * the peer did not publish before the poll's deadline -- widening the
+///     delay makes this strictly worse, so raise the poll's own ceiling
+///     instead. Raising it is free when the trial then succeeds: the poll
+///     returns when the peer publishes, not when the timeout expires, so a
+///     larger ceiling buys only permission to wait.
+fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult, Failure> {
+    let mut window_attempt: u32 = 1;
+    let mut peer_late_attempt: u32 = 1;
+    let mut delay_ms = trial.delay_ms;
+    let mut timeout_ms = trial.timeout_ms;
+    let mut worst_late_by_ms: u64 = 0;
+
     loop {
         let child = match process::fork() {
             Ok(ForkResult::Child) => late_peer(server, delay_ms),
@@ -423,20 +630,21 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
 
         let mut fds = [PollFd::new(client, POLLIN)];
         let entry = monotonic_ms("late_entry")?;
-        let ready = match io::poll(&mut fds, LATE_TIMEOUT_MS) {
+        let ready = match io::poll(&mut fds, timeout_ms) {
             Ok(n) => n,
             Err(e) => return Err(fail("late_poll", format!("{}", e))),
         };
         let returned = monotonic_ms("late_return")?;
         let elapsed = returned.saturating_sub(entry);
 
-        if ready != 1 || fds[0].revents & POLLIN == 0 {
-            // #693: emit the discriminating facts BEFORE the reap, because the
-            // reap is the one step in this arm that can itself block without a
-            // bound -- a peer still parked in its own token receive has not
-            // reached its exit. Two probes and the peer's own branch line
-            // together separate "the kernel lost a readiness publication" from
-            // "the peer had not published one yet":
+        let timed_out = ready != 1 || fds[0].revents & POLLIN == 0;
+        let stamps = if timed_out {
+            // Emit the discriminating facts BEFORE the reap, because the reap is
+            // the one step in this arm that can itself block without a bound --
+            // a peer still parked in its own token receive has not reached its
+            // exit. Two probes and the peer's own branch line together separate
+            // "the kernel lost a readiness publication" from "the peer had not
+            // published one yet":
             //
             //   rescan  -- a timeout=0 poll on the same fd, immediately after
             //              the blocking poll gave up. Ready here means the
@@ -446,62 +654,174 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
             //   nbread  -- a non-blocking read of the same fd. Bytes here with
             //              rescan not ready means the data is in the socket and
             //              the readiness predicate does not see it, which is a
-            //              different defect from either candidate.
-            //
-            // Both probes run only on this already-failed arm, so neither can
-            // consume anything a passing trial needs.
-            emit(&late_lost_wake_probe(client));
+            //              different defect from either candidate. Whatever it
+            //              takes off the socket is carried into the payload
+            //              collection below rather than discarded.
+            let probe = late_lost_wake_probe(client);
+            emit(&probe.marker);
+
             let mut status = 0i32;
             let reaped = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
-            return Err(fail(
-                "late_lost_wake",
-                format!(
-                    "ready={} revents={:#06x} entry={} returned={} elapsed_ms={} delay_ms={} peer_reaped={} peer_status={:#010x} peer_code={}",
-                    ready,
-                    fds[0].revents,
-                    entry,
-                    returned,
-                    elapsed,
-                    delay_ms,
-                    reaped.is_ok(),
-                    status,
-                    (status >> 8) & 0xFF
-                ),
-            ));
-        }
-        reject_broken("late_broken", fds[0].revents)?;
+            let peer_code = (status >> 8) & 0xFF;
+            if !reaped.is_ok() || peer_code != PEER_EXIT_SENT {
+                // #693's second candidate, and now it is nameable: the peer did
+                // not reach its send at all. Its own branch line says where it
+                // stopped; this verdict says that it did.
+                return Err(fail(
+                    "late_peer_no_publish",
+                    format!(
+                        "stage={} ready={} revents={:#06x} entry={} returned={} elapsed_ms={} timeout={} delay_ms={} peer_reaped={} peer_status={:#010x} peer_code={}",
+                        trial.stage,
+                        ready,
+                        fds[0].revents,
+                        entry,
+                        returned,
+                        elapsed,
+                        timeout_ms,
+                        delay_ms,
+                        reaped.is_ok(),
+                        status,
+                        peer_code
+                    ),
+                ));
+            }
+            collect_late_payload(client, &probe)?
+        } else {
+            reject_broken("late_broken", fds[0].revents)?;
+            let mut buf = [0u8; LATE_MSG_LEN];
+            recv_exact(client, &mut buf, "late_recv")?;
+            let mut status = 0i32;
+            let _ = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
+            decode_late_payload(&buf)?
+        };
 
-        let mut buf = [0u8; LATE_MSG_LEN];
-        recv_exact(client, &mut buf, "late_recv")?;
-        let mut status = 0i32;
-        let _ = process::waitpid(child.raw() as i32, &mut status as *mut i32, 0);
-        if &buf[..7] != PAYLOAD_LATE {
-            return Err(fail("late_payload", format!("tag={:?}", &buf[..7])));
-        }
-        let mut stamp = [0u8; 8];
-        stamp.copy_from_slice(&buf[7..15]);
-        let token_ms = u64::from_le_bytes(stamp);
-        stamp.copy_from_slice(&buf[15..]);
-        let write_ms = u64::from_le_bytes(stamp);
+        let token_ms = stamps.token_ms;
+        let write_ms = stamps.write_ms;
 
         // The peer waits to an absolute instant on the same kernel clock, so a
         // short wait is not a scheduling artifact -- it is `nanosleep` or the
         // clock misbehaving, and it belongs in the verdict rather than in a
         // retry that would quietly paper over it. This is also the bound that
-        // keeps stage 3 from degenerating into stage 2: without it, a peer that
-        // publishes readiness immediately satisfies every other check with a
-        // proven parked span of zero.
+        // keeps a `Race` trial from degenerating into stage 2: without it, a
+        // peer that publishes readiness immediately satisfies the other checks
+        // with a measured parked span of 0.
         if write_ms < token_ms + delay_ms {
             return Err(fail(
                 "late_peer_short_wait",
                 format!(
-                    "token_ms={} write_ms={} waited_ms={} delay_ms={}",
+                    "stage={} token_ms={} write_ms={} waited_ms={} delay_ms={}",
+                    trial.stage,
                     token_ms,
                     write_ms,
                     write_ms.saturating_sub(token_ms),
                     delay_ms
                 ),
             ));
+        }
+
+        if timed_out {
+            let verdict = if write_ms <= returned {
+                TimeoutVerdict::Lost
+            } else {
+                TimeoutVerdict::PublishedAfterReturn
+            };
+            let late_by = write_ms.saturating_sub(returned);
+            // Report the classification and the numbers it was made from on
+            // each timeout arm, passing or failing. The overrun this prints is
+            // the quantity the #693 investigation had to reconstruct from
+            // kernel syscall ordering across thirteen preserved boots.
+            emit(&format!(
+                "[POLL_TCP_ORACLE:LATE_PUBLISH:stage={} decided={} entry={} returned={} token_ms={} write_ms={} late_by_ms={} delay_ms={} timeout={}]",
+                trial.stage,
+                match verdict {
+                    TimeoutVerdict::Lost => "published_before_return",
+                    TimeoutVerdict::PublishedAfterReturn => "published_after_return",
+                },
+                entry,
+                returned,
+                token_ms,
+                write_ms,
+                late_by,
+                delay_ms,
+                timeout_ms
+            ));
+
+            match verdict {
+                TimeoutVerdict::Lost => {
+                    // Readiness was on the socket before this poll handed back
+                    // 0 ready fds. THIS is a lost wake, and it is what this
+                    // verdict now names.
+                    return Err(fail(
+                        "late_lost_wake",
+                        format!(
+                            "stage={} ready={} revents={:#06x} entry={} returned={} token_ms={} write_ms={} published_before_return_ms={} elapsed_ms={} timeout={} delay_ms={}",
+                            trial.stage,
+                            ready,
+                            fds[0].revents,
+                            entry,
+                            returned,
+                            token_ms,
+                            write_ms,
+                            returned.saturating_sub(write_ms),
+                            elapsed,
+                            timeout_ms,
+                            delay_ms
+                        ),
+                    ));
+                }
+                TimeoutVerdict::PublishedAfterReturn => {
+                    if trial.mode == LateMode::Forced {
+                        // This is what the Forced arm exists to observe.
+                        return Ok(LateResult {
+                            elapsed_ms: elapsed,
+                            park_ms: write_ms.saturating_sub(entry),
+                            late_by_ms: late_by,
+                        });
+                    }
+                    // Race mode: no conclusion about wakes follows from a
+                    // window the publication did not enter. Raise the poll's
+                    // ceiling and try again.
+                    if late_by > worst_late_by_ms {
+                        worst_late_by_ms = late_by;
+                    }
+                    peer_late_attempt += 1;
+                    if peer_late_attempt > LATE_MAX_PEER_LATE_ATTEMPTS {
+                        return Err(fail(
+                            "late_peer_overrun",
+                            format!(
+                                "attempts={} worst_late_by_ms={} last_timeout={} delay_ms={}",
+                                LATE_MAX_PEER_LATE_ATTEMPTS, worst_late_by_ms, timeout_ms, delay_ms
+                            ),
+                        ));
+                    }
+                    timeout_ms = timeout_ms.saturating_mul(2);
+                    continue;
+                }
+            }
+        }
+
+        // From here the poll reported POLLIN.
+        if trial.mode == LateMode::Forced {
+            // The peer published inside a window it was told to stay out of.
+            // The trial decides neither way, so widen its delay and retry.
+            window_attempt += 1;
+            delay_ms *= 2;
+            if window_attempt > LATE_MAX_ATTEMPTS {
+                return Err(fail(
+                    "forced_not_late",
+                    format!(
+                        "attempts={} entry={} returned={} token_ms={} write_ms={} timeout={} delay_ms={}",
+                        LATE_MAX_ATTEMPTS,
+                        entry,
+                        returned,
+                        token_ms,
+                        write_ms,
+                        timeout_ms,
+                        delay_ms / 2
+                    ),
+                ));
+            }
+            continue;
         }
 
         if entry > token_ms {
@@ -511,9 +831,9 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
             // again. Reporting this as a failure is the bug two earlier
             // revisions of this bound had -- it is ordinary parent-side
             // scheduling latency, not a kernel defect.
-            attempt += 1;
+            window_attempt += 1;
             delay_ms *= 2;
-            if attempt > LATE_MAX_ATTEMPTS {
+            if window_attempt > LATE_MAX_ATTEMPTS {
                 return Err(fail(
                     "late_window_missed",
                     format!(
@@ -544,40 +864,87 @@ fn stage_late(client: Fd, server: Fd) -> Result<(u64, u64, u64), Failure> {
         // Upper bound: a poll that consumed its whole timeout was ended by the
         // clock, whatever its final scan then happened to find. That is the lost
         // wake wearing a passing revents.
-        if elapsed >= LATE_TIMEOUT_MS as u64 {
+        if elapsed >= timeout_ms as u64 {
             return Err(fail(
                 "late_woken_by_clock",
                 format!(
                     "entry={} returned={} write_ms={} elapsed_ms={} timeout={}",
-                    entry, returned, write_ms, elapsed, LATE_TIMEOUT_MS
+                    entry, returned, write_ms, elapsed, timeout_ms
                 ),
             ));
         }
 
-        return Ok((elapsed, write_ms - entry, attempt as u64));
+        return Ok(LateResult {
+            elapsed_ms: elapsed,
+            park_ms: write_ms.saturating_sub(entry),
+            late_by_ms: 0,
+        });
     }
 }
 
-fn run() -> Result<(u64, u64, u64, u64), Failure> {
+/// Stage 3: the lost-wake stage. Readiness is published while the poller is
+/// already parked inside `poll()`.
+fn stage_late(client: Fd, server: Fd) -> Result<LateResult, Failure> {
+    run_late_trial(
+        client,
+        server,
+        LateTrial {
+            mode: LateMode::Race,
+            stage: "late",
+            timeout_ms: LATE_TIMEOUT_MS,
+            delay_ms: LATE_WRITE_DELAY_MS,
+        },
+    )
+}
+
+/// Stage 4: the classification stage. The peer is made to publish AFTER the
+/// poll's deadline on purpose, so the arm that decides what a 0-ready return
+/// means runs on each boot instead of once in however many boots the peer
+/// happens to overrun by more than five seconds.
+fn stage_forced_late(client: Fd, server: Fd) -> Result<LateResult, Failure> {
+    run_late_trial(
+        client,
+        server,
+        LateTrial {
+            mode: LateMode::Forced,
+            stage: "forced",
+            timeout_ms: FORCED_TIMEOUT_MS,
+            delay_ms: FORCED_WRITE_DELAY_MS,
+        },
+    )
+}
+
+struct OracleResult {
+    idle_ms: u64,
+    late: LateResult,
+    forced: LateResult,
+}
+
+fn run() -> Result<OracleResult, Failure> {
     let (listener, client, server) = connect_loopback()?;
 
     let idle_ms = stage_idle(client)?;
     stage_armed(client, server)?;
-    let (late_ms, park_ms, attempts) = stage_late(client, server)?;
+    let late = stage_late(client, server)?;
+    let forced = stage_forced_late(client, server)?;
 
     let _ = io::close(server);
     let _ = io::close(client);
     let _ = io::close(listener);
 
-    Ok((idle_ms, late_ms, park_ms, attempts))
+    Ok(OracleResult {
+        idle_ms,
+        late,
+        forced,
+    })
 }
 
 fn main() {
     match run() {
-        Ok((idle_ms, late_ms, park_ms, attempts)) => {
+        Ok(r) => {
             emit(&format!(
-                "[POLL_TCP_ORACLE:PASS:stages=3:idle_ms={}:late_ms={}:park_ms={}:attempts={}]",
-                idle_ms, late_ms, park_ms, attempts
+                "[POLL_TCP_ORACLE:PASS:stages=4:idle_ms={}:late_ms={}:park_ms={}:forced_ms={}:forced_late_by_ms={}]",
+                r.idle_ms, r.late.elapsed_ms, r.late.park_ms, r.forced.elapsed_ms, r.forced.late_by_ms
             ));
             process::exit(0);
         }

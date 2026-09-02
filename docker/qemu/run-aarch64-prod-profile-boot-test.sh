@@ -32,6 +32,12 @@ BLOCK_EINTR_ORACLE_FAIL_LITERAL='[BLOCK_EINTR_ORACLE:FAIL'
 # a pair: presence, then absence-of-FAIL.
 POLL_TCP_ORACLE_LITERAL='[POLL_TCP_ORACLE:'
 POLL_TCP_ORACLE_FAIL_LITERAL='[POLL_TCP_ORACLE:FAIL'
+# #693: the kernel's own report from `sys_poll`. READY_LOST is the contradiction
+# -- readiness published inside a blocking poll's window, still buffered, and
+# not reported -- and TIMEOUT is the ordinary line the same function emits on
+# each boot, pinned so that a dead reporting path cannot pass for a clean one.
+POLL_TCP_READY_LOST_LITERAL='[POLL_TCP_READY_LOST]'
+POLL_TCP_TIMEOUT_LITERAL='[POLL_TCP_TIMEOUT]'
 # Green-program arc 4: the TTY evidence leg. /bin/tty_oracle is launched from
 # init, not from a boot_tests-only seam, so the production profile is where the
 # shipped kernel's PTY / line-discipline / termios surface is actually driven.
@@ -77,6 +83,8 @@ print_observed_values() {
     echo "Observed block EINTR oracle failure count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")"
     echo "Observed poll TCP oracle marker count: $(marker_count "$serial_file" "$POLL_TCP_ORACLE_LITERAL")"
     echo "Observed poll TCP oracle failure count: $(marker_count "$serial_file" "$POLL_TCP_ORACLE_FAIL_LITERAL")"
+    echo "Observed kernel poll timeout report count: $(marker_count "$serial_file" "$POLL_TCP_TIMEOUT_LITERAL")"
+    echo "Observed kernel lost-readiness report count: $(marker_count "$serial_file" "$POLL_TCP_READY_LOST_LITERAL")"
     echo "Observed TTY oracle marker count: $(marker_count "$serial_file" "$TTY_ORACLE_LITERAL")"
     echo "Observed TTY oracle failure count: $(marker_count "$serial_file" "$TTY_ORACLE_FAIL_LITERAL")"
     echo "Observed bsshd marker count: $(marker_count "$serial_file" "$BSSHD_LITERAL")"
@@ -217,6 +225,8 @@ BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITE
 BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
 POLL_TCP_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_ORACLE_LITERAL")
 POLL_TCP_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_ORACLE_FAIL_LITERAL")
+POLL_TCP_READY_LOST_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_READY_LOST_LITERAL")
+POLL_TCP_TIMEOUT_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_TIMEOUT_LITERAL")
 TTY_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$TTY_ORACLE_LITERAL")
 TTY_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$TTY_ORACLE_FAIL_LITERAL")
 BSSHD_COUNT=$(marker_count "$SERIAL_FILE" "$BSSHD_LITERAL")
@@ -265,6 +275,14 @@ fi
     echo "FAIL: Poll TCP oracle reported failure: $(grep -aF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$SERIAL_FILE" | tail -1)"
     exit 1
 }
+[ "$POLL_TCP_TIMEOUT_COUNT" -ge 1 ] || {
+    echo "FAIL: Kernel poll timeout report (#693) never emitted"
+    exit 1
+}
+[ "$POLL_TCP_READY_LOST_COUNT" -eq 0 ] || {
+    echo "FAIL: Kernel reported a lost TCP readiness publication (#693): $(grep -aF "$POLL_TCP_READY_LOST_LITERAL" "$SERIAL_FILE" | tail -1)"
+    exit 1
+}
 [ "$TTY_ORACLE_COUNT" -ge 1 ] || {
     echo "FAIL: TTY oracle marker missing - the shipped profile drove no TTY traffic"
     exit 1
@@ -291,6 +309,8 @@ echo "Observed block EINTR oracle marker count: $BLOCK_EINTR_ORACLE_COUNT"
 echo "Observed block EINTR oracle failure count: $BLOCK_EINTR_ORACLE_FAIL_COUNT"
 echo "Observed poll TCP oracle marker count: $POLL_TCP_ORACLE_COUNT"
 echo "Observed poll TCP oracle failure count: $POLL_TCP_ORACLE_FAIL_COUNT"
+echo "Observed kernel poll timeout report count: $POLL_TCP_TIMEOUT_COUNT"
+echo "Observed kernel lost-readiness report count: $POLL_TCP_READY_LOST_COUNT"
 echo "Observed TTY oracle marker count: $TTY_ORACLE_COUNT"
 echo "Observed TTY oracle failure count: $TTY_ORACLE_FAIL_COUNT"
 echo "Observed crash marker count: $CRASH_COUNT"

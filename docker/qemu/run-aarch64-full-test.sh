@@ -430,7 +430,14 @@ if [ -z "$FAIL_REASON" ]; then
 
     if $POLL_TCP_ORACLE_OK && [ -z "$FAIL_REASON" ]; then
         POLL_TCP_ORACLE_LINE=$(grep -F "[POLL_TCP_ORACLE:" "$OUTPUT_DIR/serial.txt" 2>/dev/null | tail -1)
-        if echo "$POLL_TCP_ORACLE_LINE" | grep -qF "[POLL_TCP_ORACLE:FAIL"; then
+        # #693: the kernel's own contradiction check, pinned independently of
+        # the oracle's verdict because it is a statement about kernel state
+        # rather than a userspace program's opinion: a blocking poll handed back
+        # a fd without POLLIN although bytes were published into that connection
+        # inside the poll's window and are still buffered.
+        if grep -qF "[POLL_TCP_READY_LOST]" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            FAIL_REASON="Phase 1a1: kernel reported a lost TCP readiness publication (#693): $(grep -aF -m1 "[POLL_TCP_READY_LOST]" "$OUTPUT_DIR/serial.txt")"
+        elif echo "$POLL_TCP_ORACLE_LINE" | grep -qF "[POLL_TCP_ORACLE:FAIL"; then
             FAIL_REASON="Phase 1a1: poll TCP oracle failed ($POLL_TCP_ORACLE_LINE)"
         else
             echo "  Observed: $POLL_TCP_ORACLE_LINE"

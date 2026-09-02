@@ -193,7 +193,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 if let Some(conn) = connections.get(conn_id) {
                     // Check for readable data
                     if (events & events::POLLIN) != 0 {
-                        if !conn.rx_buffer.is_empty() {
+                        if !conn.rx_is_empty() {
                             revents |= events::POLLIN;
                         }
                     }
@@ -328,4 +328,29 @@ pub fn check_writable(fd_entry: &FileDescriptor) -> bool {
 pub fn check_exception(fd_entry: &FileDescriptor) -> bool {
     let revents = poll_fd(fd_entry, events::POLLIN | events::POLLOUT);
     (revents & (events::POLLERR | events::POLLHUP)) != 0
+}
+
+/// The receive-side readiness state of a connected TCP fd: the monotonic
+/// nanosecond instant at which bytes were most recently published into its
+/// receive buffer (`0` before the first publication), and how many bytes are in
+/// that buffer now. `None` for fd kinds other than a TCP connection, and for a
+/// connection id that no longer resolves: 1 of 3 TCP-shaped `FdKind` variants
+/// answers with a value, and a listener or an unconnected socket does not.
+///
+/// #693 is the reason this exists. A blocking `poll()` that returns 0 ready fds
+/// after its whole timeout is indistinguishable, from outside, between
+/// "readiness was published while I was parked and I failed to report it" and
+/// "no bytes were published before my deadline" -- and the issue stalled on
+/// exactly that fork.
+/// These two numbers, read at the instant the poll gives up, decide it from
+/// kernel state: see `poll_report_timeout` in `syscall/handlers.rs`.
+pub fn tcp_rx_publication(fd_entry: &FileDescriptor) -> Option<(u64, usize)> {
+    match &fd_entry.kind {
+        FdKind::TcpConnection(conn_id) => crate::net::tcp::with_tcp_connections(|connections| {
+            connections
+                .get(conn_id)
+                .map(|conn| (conn.rx_publish_ns(), conn.rx_len()))
+        }),
+        _ => None,
+    }
 }

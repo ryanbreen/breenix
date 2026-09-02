@@ -464,8 +464,18 @@ pub struct TcpConnection {
     pub recv_window: u16,
     /// Remote's window size
     pub send_window: u16,
-    /// Pending data to receive
-    pub rx_buffer: VecDeque<u8>,
+    /// Pending data to receive.
+    ///
+    /// #693: private, and written only by `publish_rx`. The instant bytes enter
+    /// this buffer is the readiness-publication instant a blocking `poll()` has
+    /// to be scored against, so there is exactly one place that appends to it
+    /// and exactly one place that stamps `rx_publish_ns`. Making the field
+    /// private is what keeps those two facts from drifting apart: a new append
+    /// site outside this module does not compile.
+    rx_buffer: VecDeque<u8>,
+    /// Monotonic nanoseconds at which `publish_rx` last put bytes into
+    /// `rx_buffer`; `0` before the first publication on this connection.
+    rx_publish_ns: u64,
     /// Pending data to send (for future send buffering/retransmission)
     #[allow(dead_code)] // Part of TCP API, needed for send buffering when window is full
     pub tx_buffer: VecDeque<u8>,
@@ -485,6 +495,45 @@ pub struct TcpConnection {
 }
 
 impl TcpConnection {
+    /// The one path by which received bytes enter `rx_buffer`, and the one
+    /// place the publication instant is stamped.
+    ///
+    /// #693 turned on whether readiness had been published inside a blocking
+    /// `poll()`'s window or only after it expired, and the kernel held no
+    /// record that could answer it: the buffer records what arrived, not when.
+    /// This records when, so `sys_poll` can state the answer from kernel state
+    /// at the moment it gives up instead of leaving it to be reconstructed from
+    /// two userspace stamps and the ordering of console prints.
+    ///
+    /// An empty payload is not a publication and does not move the stamp: TCP
+    /// segments carrying only flags reach several of the call sites, and a
+    /// stamp moved by one of those would report a readiness no byte created.
+    pub fn publish_rx(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.rx_buffer.extend(bytes);
+        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+        self.rx_publish_ns = secs.saturating_mul(1_000_000_000).saturating_add(nanos);
+    }
+
+    /// True when the receive buffer holds no bytes. This is the predicate
+    /// `poll()` reports `POLLIN` from.
+    pub fn rx_is_empty(&self) -> bool {
+        self.rx_buffer.is_empty()
+    }
+
+    /// Bytes currently held in the receive buffer.
+    pub fn rx_len(&self) -> usize {
+        self.rx_buffer.len()
+    }
+
+    /// Monotonic nanoseconds of the most recent `publish_rx`, or `0` before
+    /// the first publication on this connection.
+    pub fn rx_publish_ns(&self) -> u64 {
+        self.rx_publish_ns
+    }
+
     /// Create a new connection in SYN_SENT state (for connect)
     pub fn new_outgoing(
         id: ConnectionId,
@@ -502,6 +551,7 @@ impl TcpConnection {
             recv_window: 65535,
             send_window: 0,
             rx_buffer: VecDeque::new(),
+            rx_publish_ns: 0,
             tx_buffer: VecDeque::new(),
             mss: 1460, // Default MSS for Ethernet
             owner_pid,
@@ -535,6 +585,7 @@ impl TcpConnection {
             recv_window: 65535,
             send_window: 0,
             rx_buffer: VecDeque::new(),
+            rx_publish_ns: 0,
             tx_buffer: VecDeque::new(),
             mss: 1460,
             owner_pid,
@@ -792,7 +843,7 @@ fn handle_tcp_for_connection(
                     log::debug!("TCP: Connection established (server)");
 
                     if !payload.is_empty() && header.seq_num == conn.recv_next {
-                        conn.rx_buffer.extend(payload);
+                        conn.publish_rx(payload);
                         conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
                         send_tcp_packet(
                             config,
@@ -854,7 +905,7 @@ fn handle_tcp_for_connection(
 
             // Process incoming data
             if !payload.is_empty() && header.seq_num == conn.recv_next {
-                conn.rx_buffer.extend(payload);
+                conn.publish_rx(payload);
                 conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
 
                 log::debug!("TCP: Received {} bytes of data", payload.len());
@@ -949,7 +1000,7 @@ fn handle_tcp_for_connection(
 
             // Process incoming data (half-close: we can still receive)
             if !payload.is_empty() && header.seq_num == conn.recv_next {
-                conn.rx_buffer.extend(payload);
+                conn.publish_rx(payload);
                 conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
 
                 log::debug!("TCP: Received {} bytes of data in FinWait1", payload.len());
@@ -997,7 +1048,7 @@ fn handle_tcp_for_connection(
             // In FinWait2, our FIN was ACKed but peer hasn't sent FIN yet
             // We can still receive data (half-close)
             if !payload.is_empty() && header.seq_num == conn.recv_next {
-                conn.rx_buffer.extend(payload);
+                conn.publish_rx(payload);
                 conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
 
                 log::debug!("TCP: Received {} bytes of data in FinWait2", payload.len());
@@ -1340,9 +1391,7 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
     conn.recv_next = pending.recv_next;
     // Copy any early data that arrived before accept()
     if !pending.early_data.is_empty() {
-        for byte in pending.early_data.iter() {
-            conn.rx_buffer.push_back(*byte);
-        }
+        conn.publish_rx(&pending.early_data);
         log::debug!(
             "TCP: Copied {} bytes of early data to connection rx_buffer",
             pending.early_data.len()
@@ -1375,9 +1424,7 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
                 }
 
                 if final_pending.early_data.len() > copied_early_data_len {
-                    for byte in &final_pending.early_data[copied_early_data_len..] {
-                        conn.rx_buffer.push_back(*byte);
-                    }
+                    conn.publish_rx(&final_pending.early_data[copied_early_data_len..]);
                     log::debug!(
                         "TCP: Copied {} bytes of early data to connection rx_buffer",
                         final_pending.early_data.len() - copied_early_data_len
