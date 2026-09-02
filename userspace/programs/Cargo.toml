@@ -466,6 +466,10 @@ name = "simple_exit"
 path = "src/simple_exit.rs"
 
 [[bin]]
+name = "simple_exit0"
+path = "src/simple_exit0.rs"
+
+[[bin]]
 name = "spawn_smoke_target"
 path = "src/spawn_smoke_target.rs"
 
@@ -504,6 +508,10 @@ path = "src/tcp_socket_test.rs"
 [[bin]]
 name = "tcp_dup_listener_test"
 path = "src/tcp_dup_listener_test.rs"
+
+[[bin]]
+name = "tcp_cloexec_exec_test"
+path = "src/tcp_cloexec_exec_test.rs"
 
 [[bin]]
 name = "telnetd"

@@ -1,0 +1,7 @@
+=== gate stdout for Test 2 (from batch log) ===
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=6646
+x86 userspace gate: FAIL - failing process is not allowlisted: /usr/local/test/bin/clon
+  Test 2: FAIL (see /tmp/breenix_gate_2/serial_kernel.log)
+
+=== TEST_TALLY (from serial_kernel.txt) ===
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=1 failed=[/usr/local/test/bin/clon:1]

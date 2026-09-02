@@ -1,0 +1,7 @@
+=== gate stdout for Test 1 (from batch log) ===
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=6040
+x86 userspace gate: FAIL - failing process is not allowlisted: loopback_wake_test_child
+  Test 1: FAIL (see /tmp/breenix_gate_1/serial_kernel.log)
+
+=== TEST_TALLY (from serial_kernel.txt) ===
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=4 failed=[loopback_wake_test_child:13,loopback_wake_test_child:-9,loopback_wake_test_child:-9,loopback_wake_test:1]
