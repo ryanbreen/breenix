@@ -31,10 +31,14 @@ main:scripts/test_tracing_via_gdb.sh` shows the missing device is identical on
 both branches — this fix's diff never touches that QEMU invocation block.
 
 This is a second, previously undocumented gap, separate from the KERNEL_BASE
-defect this round re-checked. It was not fixed here — this round's scope is
-the KERNEL_BASE fix only ("Do NOT touch kernel/ - this is a test-harness
-change only" / single-slot / no unrelated changes). It should be picked up in
-a follow-on round.
+defect this round re-checked. It was not fixed in the round that produced the
+30-boot evidence below — that round's scope was the KERNEL_BASE fix only ("Do
+NOT touch kernel/ - this is a test-harness change only" / single-slot / no
+unrelated changes). A follow-on correction round has since added the missing
+`testdisk` device directly to the committed script (see that commit's
+message); the 30 boots recorded in this directory (20 fix-branch + 10
+old-bytes, below) predate that fix and were gathered the way the next section
+describes, not by running the now-repaired committed script.
 <!-- claim-lint:ok: 0 of 2 unmodified-script attempts (one per branch) reached
      TRACE_VALIDATION:PASS in this round, both blocked on the same disk-device
      gap; see the "How evidence ... was actually gathered" section below for
@@ -42,19 +46,27 @@ a follow-on round.
 
 ## How evidence in this directory was actually gathered
 
-Because of the defect above, the committed `scripts/test_tracing_via_gdb.sh`
-did not complete a single boot in a from-scratch build on either branch in
-this round (0 of 2 attempts, as above). To still gather per-boot evidence
-about the KERNEL_BASE derivation logic specifically, each boot in this
-battery instead ran a local, uncommitted scratch copy of the harness
-(`scripts/test_tracing_via_gdb.LOCAL_ONLY.sh`, created for this round only,
-deleted afterward, never committed) with exactly one addition: the missing
-`testdisk` virtio-blk-pci device, wired identically to the existing pattern
-in `docker/qemu/run-boot-parallel.sh` (lines 88-90 there). The
-KERNEL_BASE-derivation lines exercised are otherwise byte-identical to the
-committed script — the derivation block on `fix/tracing-symbol-base`, and the
-hardcoded-constant block on `main` for the old-bytes comparison below — so
-the addition changes what a boot can reach, not what KERNEL_BASE logic runs.
+**Which script each boot in this directory ran, stated plainly:** at the time
+this 30-boot battery was gathered, the committed `scripts/test_tracing_via_gdb.sh`
+had not completed a single boot in a from-scratch build on either branch (0 of
+2 unmodified-script attempts, as above) — the missing `testdisk` device made
+every unmodified run panic with `FATAL: DISK LOADING FAILED` before the settle
+window. None of the 30 boots below ran that (at-the-time-broken) committed
+script. To still gather per-boot evidence about the KERNEL_BASE derivation
+logic specifically, each of the 30 boots instead ran a local, uncommitted
+scratch copy of the harness (`scripts/test_tracing_via_gdb.LOCAL_ONLY.sh`,
+created for that round only, deleted afterward, never committed) with exactly
+one addition: the missing `testdisk` virtio-blk-pci device, wired identically
+to the existing pattern in `docker/qemu/run-boot-parallel.sh` (lines 88-90
+there). The KERNEL_BASE-derivation lines exercised are otherwise
+byte-identical to the committed script as it stood at that time — the
+derivation block on `fix/tracing-symbol-base`, and the hardcoded-constant
+block on `main` for the old-bytes comparison below — so the addition changed
+what a boot could reach, not what KERNEL_BASE logic ran. A later correction
+round folded that same device addition into the committed script itself, so a
+fresh run of `scripts/test_tracing_via_gdb.sh` no longer needs the scratch
+copy — but that later fix produced no new boots of its own and is not
+represented in the evidence below.
 
 ## Fix-branch battery (`fix/tracing-symbol-base` @ `8612e830`)
 
@@ -66,13 +78,23 @@ derived-base line) where the boot reached that stage.
 
 - 17 of 20 boots reached the point of deriving `KERNEL_BASE` from serial. The
   other 3 (boot04, boot06, boot10) had their QEMU process killed by an
-  external signal during the settle window before any serial output could be
-  parsed — `bootNN-harness_stdout.txt` for each of the 3 shows `Killed` with
-  no further diagnostic and no `bootNN-kernel_base.txt` was written for any of
-  the 3. Most likely resource contention with an unrelated, concurrently
-  running boot loop in the same shared container (see the note below). Not a
-  KERNEL_BASE-derivation failure — no base line existed yet for any of the 3
-  to derive from.
+  external signal during the settle window — `bootNN-harness_stdout.txt` for
+  each of the 3 shows `Killed`, and the harness's pre-existing
+  `kill -0 "$QEMU_PID"` liveness check
+  (`scripts/test_tracing_via_gdb.sh:236-240`) exits with `Error: QEMU exited
+  during the settle window` before control ever reaches the derivation block
+  at :247. None of the 3 reached that block — no `bootNN-kernel_base.txt` was
+  written for any of them — so none of them ran the code under test. That is
+  not because no base line existed yet on their serial: boot06 and boot10
+  both printed `virtual_address_offset: 0x10000000000` at line 16 of their
+  own `bootNN-serial.txt` before the external kill landed, and the liveness
+  check simply exited before the harness ever read it. Only boot04's serial
+  is silent on the offset: 2 lines, ending in `BdsDxe: starting Boot0002`,
+  dead in UEFI before the bootloader printed anything. Most likely resource
+  contention with an unrelated, concurrently running boot loop in the same
+  shared container (see the note below). Not a KERNEL_BASE-derivation failure
+  either way — the liveness check that stopped these 3 predates this fix and
+  sits above the derivation block it gates.
 - Of the 17 that reached derivation, 17 of 17 derived `KERNEL_BASE =
   0x10000000000`; 0 of 17 derived `0x8000000000` (per each boot's own
   `bootNN-kernel_base.txt`).
@@ -137,10 +159,14 @@ The defect description this round re-checked states the bootloader "has been
 observed to pick" `0x8000000000` on some boots and `0x10000000000` on others,
 citing `breenix-gdb-chat/scripts/gdb_chat.py`'s header comment and CLAUDE.md's
 GDB section. This round does not contradict that claim; it simply did not
-reproduce it: 30 of 30 boots run in this round (both batteries, above), on
+reproduce it: of the 30 boots run in this round (both batteries, above), on
 identical QEMU/OVMF versions, identical `-m 512 -smp 1` fixed memory/CPU
-config, and (for the fix-branch battery) an identical binary, landed at
-`0x10000000000`. The base a UEFI bootloader picks depends on the memory map
+config, and (for the fix-branch battery) an identical binary, 29 of 30 landed
+at `0x10000000000` (per each boot's own serial-printed
+`virtual_address_offset:` line) and the remaining 1 (fix-branch boot04)
+attests nothing — its serial is 2 lines, dead in UEFI before the bootloader
+ran, with no offset line to read. 0 of 30 attested `0x8000000000`. The base a
+UEFI bootloader picks depends on the memory map
 the firmware hands it, which this harness's fixed `-m 512` may make
 effectively deterministic in this one environment even where it is not
 deterministic in general — different RAM sizes, different OVMF builds, or a
@@ -150,6 +176,6 @@ that is offered as a plausible explanation, not something this round
 independently checked. The KERNEL_BASE fix reads the base from each boot's
 own serial output regardless of which value it turns out to be, so it does
 not depend on this round having observed the alternate value to be correct by
-construction — but this round did not witness that alternate value in 30 of
-30 boots, and says so plainly rather than asserting a failure case that did
+construction — but this round witnessed that alternate value in 0 of the 30
+boots run, and says so plainly rather than asserting a failure case that did
 not occur here.

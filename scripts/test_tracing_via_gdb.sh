@@ -22,8 +22,7 @@
 #     in boot. The same binary has been observed to land at 0x8000000000 on
 #     some boots and 0x10000000000 on others -- a base baked into this script
 #     would silently make the symbol addresses derived below wrong on
-#     whichever boots picked the other slot (this is how the first x86 run of
-#     this harness once read TRACE_ENABLED as instruction bytes). The base is
+#     whichever boots picked the other slot. The base is
 #     instead read off each boot's own serial capture after the settle
 #     window, and the script fails loudly -- not silently -- if that line
 #     is missing. breenix-gdb-chat/scripts/gdb_chat.py's
@@ -214,6 +213,22 @@ else
         echo "Error: UEFI image not found (run the qemu-uefi build first)" >&2
         exit 1
     fi
+    # Pre-existing defect found by round 1 of the KERNEL_BASE-fix review, present
+    # on main and unchanged by that fix: a kernel built with the feature set this
+    # script itself instructs (testing,external_test_bins) gates get_test_binary()
+    # on `feature = "testing"` alone (kernel/src/userspace_test.rs) and requires a
+    # second VirtIO block device (index 1) unconditionally -- without it a boot
+    # panics with FATAL: DISK LOADING FAILED before the settle window completes
+    # (0 of 2 unmodified-script attempts, one per branch, reached
+    # TRACE_VALIDATION:PASS -- see the KERNEL_BASE-fix round's evidence README).
+    # This device is that second device, wired identically to
+    # docker/qemu/run-boot-parallel.sh's testdisk pair.
+    TEST_DISK_IMG="$BREENIX_ROOT/target/test_binaries.img"
+    if [ ! -f "$TEST_DISK_IMG" ]; then
+        echo "Error: test disk image not found at $TEST_DISK_IMG. Repack with:" >&2
+        echo "  cargo run -p xtask -- create-test-disk" >&2
+        exit 1
+    fi
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
     "$QEMU_BIN" \
@@ -221,6 +236,8 @@ else
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
         -drive "if=none,id=hd,format=raw,readonly=on,file=$UEFI_IMG" \
         -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
+        -drive "if=none,id=testdisk,format=raw,readonly=on,file=$TEST_DISK_IMG" \
+        -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
         -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
         -display none -no-reboot -no-shutdown \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
