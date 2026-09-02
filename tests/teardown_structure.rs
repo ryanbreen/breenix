@@ -2788,8 +2788,13 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     // #713: x86 spawn() got its own construction path (build_process_at's
     // sibling for real argv), a distinct row-map insert.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_with_argv_at => insert", 1),
-    // `complete_fork` is testing-only, so replacing its stale dead-code suppression with honest feature gating moved only this item path.
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(all(target_arch=x86_64,feature=testing))] fn complete_fork => insert", 1),
+    // #745: `complete_fork` lost its `feature = "testing"` gate and became a
+    // production x86 row writer. The item PATH is what changed here — the cfg
+    // string this census keys on lost its `feature=testing` term and became
+    // `#[cfg(target_arch=x86_64)]`. The insert itself is the same single one it
+    // had before (review round 2, m8: the entry was corrected in the fix commit
+    // but this sentence still described it as testing-only).
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
@@ -2843,7 +2848,7 @@ const QUARANTINE_CALLS: &[(&str, &str, usize)] = &[
 const KERNEL_STACK_MUTATIONS: &[(&str, &str, usize)] = &[
     // Hand-written fork/clone transfers collapsed into `publish_to_scheduler`; this census keeps it the only ownership-moving API.
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn complete_fork_aarch64", 1),
-    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(all(target_arch=x86_64,feature=testing))] fn complete_fork", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork", 1),
     ("kernel/src/task/thread.rs", "impl Thread::fn publish_to_scheduler", 1),
 ];
 /// The four legitimate leaks convert owned vectors into static test-binary
@@ -2853,10 +2858,13 @@ const KERNEL_STACK_MUTATIONS: &[(&str, &str, usize)] = &[
 const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/userspace_test.rs", "#[cfg(feature=testing)] fn get_test_binary_static", 4),
 ];
+/// claim-lint:ok: the census below IS the enumeration -- 23 of 23 occurrences
+/// across three classes, and a new one is a `+` row.
 /// DEBT-4 (ii): every call site that reaches the unconditional row destructor,
-/// occurrence-based and by enclosing item. Twenty-two occurrences across three
-/// exempt classes; the two live reaps are absent by construction, and an added
-/// one is a `+` row here.
+/// occurrence-based and by enclosing item. Twenty-three occurrences across
+/// three exempt classes (#745 added sys_fork_with_parent_context's own
+/// defensive teardown arm to class 2); the two live reaps are absent by
+/// construction, and an added one is a `+` row here.
 #[rustfmt::skip]
 const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     // Class 2 — creation-failure retire. Never reaped, never retired.
@@ -2865,6 +2873,10 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     // never published to the scheduler, so (like hold_init_publication) the row
     // was never reaped and will never be retired; the join would strand it.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
+    // Class 2 — #745: sys_fork_with_parent_context's own defensive teardown
+    // arm, same shape as sys_spawn's above (believed unreachable in
+    // practice; see its own doc comment).
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     // Class 4 — the p1_row_epoch_gate harness. It must keep bumping ROW_REMOVAL_EPOCH or P1's parked-reclaimer `{row}` arm stops being driven.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
     // Class 3 — the twenty in-kernel oracle callers, nine enclosing items.
@@ -3157,6 +3169,10 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     // #713: sys_spawn drains before consuming another finite kernel-stack pool
     // slot, mirroring sys_fork_with_parent_context's own ordering.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
+    // #745: sys_fork_with_parent_context itself gained the drain call it was
+    // missing (the comment above already assumed it did) -- narrow-window
+    // reclaim call, no PM guard live.
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     // #721 K12: sys_execv_with_frame's production arm drains before exec consumes
     // another finite kernel-stack-pool slot (the GuardedStack allocation
     // exec_process_with_argv makes for its manually-mapped user stack), mirroring
@@ -3250,6 +3266,16 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     // thread was never published, alongside retracting the parent's
     // `children` entry and the row itself.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
+    // claim-lint:ok: the "guarantees" clause names an invariant readable in
+    // complete_fork itself (set_main_thread, then the row insert, two
+    // statements before its Ok); this entry exists because the arm is kept
+    // anyway, 1 of 1 call site.
+    // #745: sys_fork_with_parent_context's own defensive teardown arm
+    // (believed unreachable -- complete_fork's own invariant guarantees
+    // main_thread is Some whenever fork_process_with_parent_context returns
+    // Ok -- but mirrors sys_spawn's identical undo above for defense in
+    // depth rather than leaving a half-published row behind).
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=aarch64)] fn terminate_thread_best_effort", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
@@ -6593,9 +6619,13 @@ fn validate_root_proof_architecture_legs(sources: &[(String, String)]) -> Result
     Ok(())
 }
 
-/// Exact drain membership. Both x86 production calls are normal-context sites;
-/// the interrupt-return function is explicitly excluded. The one boot-test
-/// caller is the #653 refusal injection, which must stay a single call.
+/// claim-lint:ok: 3 of 3 x86 production call sites are enumerated in the census
+/// this comment introduces.
+/// Exact drain membership. All three x86 production calls (sys_spawn,
+/// sys_execv_with_frame, and sys_fork_with_parent_context as of #745) are
+/// normal-context sites; the interrupt-return function is explicitly
+/// excluded. The one boot-test caller is the #653 refusal injection, which
+/// must stay a single call.
 fn validate_deferred_reclaim_drain_sites(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {

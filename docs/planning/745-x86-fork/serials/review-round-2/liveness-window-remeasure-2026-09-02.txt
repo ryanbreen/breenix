@@ -1,0 +1,15 @@
+t0 = serial_kernel.txt created
+   11.18s  Serial command task started
+   11.19s  [init] Breenix init starting (PID 1)
+   14.13s  [init] spawn smoke: exited (code 0)
+   19.67s  [COW FAULT #0] addr=
+   23.11s  [TTY_ORACLE:COMPLETE
+   27.37s  [EXEC_SMOKE:LAUNCH]
+   29.07s  [EXEC_SMOKE:TARGET_OK]
+   32.67s  [FORK_SMOKE:LAUNCH]
+   33.23s  [FORK_SMOKE:CHILD pid=
+   33.50s  [FORK_SMOKE:PARENT_REAPED child=
+   33.51s  [FORK_SMOKE:LAUNCHER_EXIT code=0]
+   38.48s  [init] bsshd started (PID
+   38.49s  bsshd: listening
+poller done at t+79s

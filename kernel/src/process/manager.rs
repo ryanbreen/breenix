@@ -2268,17 +2268,37 @@ impl ProcessManager {
     /// This is the preferred method as it captures the exact register values at fork time,
     /// not the stale values from the last context switch.
     /// Note: Fork requires architecture-specific register manipulation
+    ///
+    /// NOTE: No logging in this function's own body — it runs under the PM
+    /// lock (#745 precheck C9). x86's PM lock is a bare spinlock, and
+    /// `check_need_resched_and_switch` refuses to dispatch ANY thread while
+    /// it is held (`context_switch.rs`'s `try_manager()` fallback), so a
+    /// thread that blocks on the logger lock while holding PM here can
+    /// deadlock permanently if the logger's actual holder was preempted and
+    /// can never be rescheduled to release it. Use tracing events instead
+    /// (mirrors `fork_process_aarch64`'s own identical invariant below).
+    /// claim-lint:ok: scope and residue both stated below and filed as #756.
+    ///
+    /// This is a property of the FUNCTION, not of the whole PM-held region:
+    /// `complete_fork` below reaches
+    /// `memory::kernel_stack::allocate_kernel_stack`, which still emits two
+    /// `log::debug!` lines (#756). That call is shared with
+    /// `complete_fork_aarch64` and with every `create_user_process` on both
+    /// arches, so it is neither new here nor an x86-only divergence; it is
+    /// filed, not silently tolerated. #745 review round 2 (B2) is why this
+    /// says "in this function's own body" and not "in this region".
+    /// claim-lint:ok: the call-site census behind "every create_user_process"
+    /// is enumerated in #756.
     #[cfg(target_arch = "x86_64")]
     pub fn fork_process_with_parent_context(
         &mut self,
         parent_pid: ProcessId,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         parent_context: crate::task::thread::CpuContext,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))]
         mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
+        crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
+
         // Get the parent process info we need (including page table for memory copying)
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let (
             parent_name,
             parent_entry_point,
@@ -2325,13 +2345,6 @@ impl ProcessManager {
         // Allocate a new PID for the child
         let child_pid = self.allocate_ordinary_pid();
 
-        log::info!(
-            "Forking process {} '{}' -> child PID {}",
-            parent_pid.as_u64(),
-            parent_name,
-            child_pid.as_u64()
-        );
-
         // Create child process name
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
 
@@ -2343,12 +2356,11 @@ impl ProcessManager {
         child_process.sid = parent_sid;
         child_process.cwd = parent_cwd.clone();
 
-        // COPY-ON-WRITE FORK: Share pages between parent and child
-        // Pages are marked read-only and only copied when written to
-        #[cfg(feature = "testing")]
+        // COPY-ON-WRITE FORK: Share pages between parent and child.
+        // Pages are marked read-only and only copied when written to.
         {
-            // Get mutable access to parent's page table for CoW setup
-            // We temporarily take ownership to modify parent's page flags
+            // Get mutable access to parent's page table for CoW setup.
+            // We temporarily take ownership to modify parent's page flags.
             let parent = self
                 .processes
                 .live_row_mut(&parent_pid)
@@ -2360,19 +2372,25 @@ impl ProcessManager {
 
             // Set up Copy-on-Write sharing between parent and child.
             // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
-            let pages_shared = super::fork::setup_cow_pages_with_vmas(
+            let cow_result = super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
                 &parent_vmas,
-            )?;
+            );
 
-            // Put parent's page table back
+            // Restore the parent's page table on EVERY exit path, success or
+            // failure (#745 precheck C2) -- a CoW setup failure must not
+            // leave the live parent row with no page table: both x86
+            // dispatch consumers respond to a `None` page table by
+            // terminating the thread (`context_switch.rs`'s no-CR3
+            // refusal), which would turn a transient allocator failure
+            // inside fork into the CALLING process getting killed.
+            // claim-lint:ok: "every exit path" here is two -- the `?` below and
+            // the fall-through -- and the ordering is ratchet-pinned with swap
+            // and delete mutations in tests/fork_lock_order_structure.rs.
             parent.page_table = Some(parent_page_table);
 
-            log::info!(
-                "fork_process: Set up {} pages for CoW sharing",
-                pages_shared
-            );
+            cow_result?;
 
             // Child inherits parent's heap bounds and mmap state
             child_process.heap_start = parent_heap_start;
@@ -2385,27 +2403,19 @@ impl ProcessManager {
             child_process.memory_usage.heap_size = parent_heap_size;
             child_process.memory_usage.stack_size = parent_stack_size;
         }
-        #[cfg(not(feature = "testing"))]
-        {
-            log::error!("fork_process: Cannot fork - testing feature not enabled");
-            return Err("Cannot implement fork without testing feature");
-        }
 
-        #[cfg(feature = "testing")]
-        {
-            child_process.page_table = Some(child_page_table);
+        child_process.page_table = Some(child_page_table);
 
-            // Use the actual parent context from the syscall frame
-            self.complete_fork(
-                parent_pid,
-                child_pid,
-                &parent_thread_info,
-                Some(parent_context.rsp),
-                Some(parent_context.rip),
-                Some(parent_context), // Pass the actual parent context
-                child_process,
-            )
-        }
+        // Use the actual parent context from the syscall frame
+        self.complete_fork(
+            parent_pid,
+            child_pid,
+            &parent_thread_info,
+            Some(parent_context.rsp),
+            Some(parent_context.rip),
+            Some(parent_context), // Pass the actual parent context
+            child_process,
+        )
     }
 
     /// Fork a process on ARM64 with the ACTUAL parent register state from exception frame
@@ -2497,14 +2507,24 @@ impl ProcessManager {
 
             // Set up Copy-on-Write sharing between parent and child.
             // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
-            super::fork::setup_cow_pages_with_vmas(
+            let cow_result = super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
                 &parent_vmas,
-            )?;
+            );
 
-            // Put parent's page table back
+            // Restore the parent's page table on EVERY exit path, success or
+            // failure (#745 precheck C2 -- the x86 fork twin above carried
+            // the identical defect and is fixed the same way here): a CoW
+            // setup failure must not leave the live parent row with no page
+            // table, which would get the parent's next dispatch refused and
+            // the thread terminated.
+            // claim-lint:ok: "every exit path" here is two -- the `?` below and
+            // the fall-through -- and the ordering is ratchet-pinned with swap
+            // and delete mutations in tests/fork_lock_order_structure.rs.
             parent.page_table = Some(parent_page_table);
+
+            cow_result?;
 
             // Child inherits parent's heap bounds
             child_process.heap_start = parent_heap_start;
@@ -2681,7 +2701,32 @@ impl ProcessManager {
     /// If `parent_context_override` is provided, it will be used for the child's context
     /// instead of the stale values from `parent_thread.context`.
     /// Note: Uses architecture-specific register names
-    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+    ///
+    /// NOTE: No logging in this function's own body — it runs under the PM
+    /// lock (#745 precheck C9, mirrors `complete_fork_aarch64`'s own
+    /// identical invariant above). x86's PM lock is a bare spinlock and
+    /// `check_need_resched_and_switch` refuses to dispatch ANY thread while
+    /// it is held, so a thread that blocks on the logger lock while holding
+    /// PM here can deadlock permanently if the logger's actual holder was
+    /// preempted and can never be rescheduled to release it. Use tracing
+    /// events instead.
+    /// claim-lint:ok: scope and residue both stated below and filed as #756.
+    ///
+    /// Two disclosures about the REGION, which the body's own cleanliness
+    /// does not cover (#745 review round 2, B2):
+    /// - `allocate_kernel_stack()` below still emits two `log::debug!` lines
+    ///   (#756). `complete_fork_aarch64` makes the same call under its own
+    ///   (interrupt-masked) PM lock, and so does every
+    ///   `create_user_process`/`create_process_with_argv` on both arches, so
+    ///   this is pre-existing and arch-symmetric, not a fork-specific or
+    ///   x86-specific hazard.
+    ///   claim-lint:ok: the six call sites are enumerated in #756.
+    /// - TLS registration, which DID mask interrupts and log here, is no
+    ///   longer done in this function at all: `crate::tls::register_thread_tls`
+    ///   is now called by `sys_fork_with_parent_context` after it drops the PM
+    ///   guard (precheck C10 was the only x86-only divergence in this window,
+    ///   and it is closed by construction rather than by documentation).
+    #[cfg(target_arch = "x86_64")]
     fn complete_fork(
         &mut self,
         parent_pid: ProcessId,
@@ -2692,15 +2737,11 @@ impl ProcessManager {
         parent_context_override: Option<crate::task::thread::CpuContext>,
         mut child_process: Process,
     ) -> Result<ProcessId, &'static str> {
-        log::info!(
-            "Created page table for child process {}",
-            child_pid.as_u64()
-        );
-
         // CoW fork: The child's stack pages are already shared via setup_cow_pages().
         // We use the parent's stack virtual addresses directly. When the child writes
         // to the stack, the CoW page fault handler will allocate private copies.
         let child_stack_top = parent_thread.stack_top;
+        crate::tracing::providers::process::trace_stack_map(child_pid.as_u64() as u32);
 
         // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
         // In the future, we should properly copy parent's TLS data
@@ -2711,33 +2752,26 @@ impl ProcessManager {
         // uniqueness across all threads (kernel + user).
         let child_thread_id = crate::task::thread::allocate_thread_id();
 
-        // Allocate a TLS block for this thread ID
+        // Allocate a TLS block for this thread ID. Registering it with the
+        // TLS manager is deliberately NOT done here: `register_thread_tls`
+        // masks interrupts, takes a second global lock and logs, and doing
+        // that under the PM lock was the one property of this window that
+        // `complete_fork_aarch64` genuinely did not share (#745 precheck
+        // C9/C10, review round 2 B2). The caller
+        // (`syscall::handlers::sys_fork_with_parent_context`) performs the
+        // registration after it drops the PM guard and before it hands the
+        // child to `scheduler::spawn_front`, which is the first moment the
+        // child can be dispatched and therefore the first moment
+        // `context_switch`'s `switch_tls` can need it.
         let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
-
-        // Register this thread with the TLS system
-        if let Err(e) = crate::tls::register_thread_tls(child_thread_id, child_tls_block) {
-            log::warn!(
-                "Failed to register thread {} with TLS system: {}",
-                child_thread_id,
-                e
-            );
-        }
 
         // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
         let (child_kernel_stack_top, child_kernel_stack_allocation) =
             if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                 // Use the new global kernel stack allocator
-                let kernel_stack =
-                    crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
-                        log::error!("Failed to allocate kernel stack for child: {}", e);
-                        "Failed to allocate kernel stack for child thread"
-                    })?;
+                let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack()
+                    .map_err(|_e| "Failed to allocate kernel stack for child thread")?;
                 let kernel_stack_top = kernel_stack.top();
-
-                log::debug!(
-                    "✓ Allocated child kernel stack at {:#x} (globally visible)",
-                    kernel_stack_top
-                );
 
                 (Some(kernel_stack_top), Some(kernel_stack))
             } else {
@@ -2779,37 +2813,14 @@ impl ProcessManager {
         // CRITICAL: Use parent_context_override if provided - this contains the ACTUAL
         // register values from the syscall frame, not the stale values from last context switch
         child_thread.context = match parent_context_override {
-            Some(ctx) => {
-                log::debug!("fork: Using actual parent context from syscall frame");
-                log::debug!(
-                    "  Parent registers: rbx={:#x}, r12={:#x}, r13={:#x}, r14={:#x}, r15={:#x}",
-                    ctx.rbx,
-                    ctx.r12,
-                    ctx.r13,
-                    ctx.r14,
-                    ctx.r15
-                );
-                ctx
-            }
-            None => {
-                log::debug!(
-                    "fork: Using stale parent_thread.context (may have incorrect register values!)"
-                );
-                parent_thread.context.clone()
-            }
+            Some(ctx) => ctx,
+            None => parent_thread.context.clone(),
         };
 
         // CRITICAL: Set has_started=true for forked children so they use the
         // restore_userspace_context path which preserves the cloned register values
         // instead of the first-run path which zeros all registers.
         child_thread.has_started = true;
-
-        // Log the child's context for debugging
-        log::debug!("Child thread context after copy:");
-        log::debug!("  RIP: {:#x}", child_thread.context.rip);
-        log::debug!("  RSP: {:#x}", child_thread.context.rsp);
-        log::debug!("  CS: {:#x}", child_thread.context.cs);
-        log::debug!("  SS: {:#x}", child_thread.context.ss);
 
         // Crucial: Set the child's return value to 0
         // In x86_64, system call return values go in RAX
@@ -2820,29 +2831,13 @@ impl ProcessManager {
         // No stack copy needed - CoW will handle it on first write.
         let child_rsp = userspace_rsp.unwrap_or(parent_thread.context.rsp);
         child_thread.context.rsp = child_rsp;
-        log::info!(
-            "fork: CoW stack - child_rsp={:#x} (same VA as parent)",
-            child_rsp
-        );
 
-        // Update child's instruction pointer to return to the instruction after fork syscall
-        // The return RIP comes from RCX which was saved by the syscall instruction
+        // Update child's instruction pointer to return to the instruction after fork syscall.
+        // The return RIP comes from RCX which was saved by the syscall instruction; if it is
+        // absent, keep the parent's RIP (fallback for sys_fork without frame).
         if let Some(rip) = return_rip {
             child_thread.context.rip = rip;
-            log::info!("fork: Using return RIP {:#x} for child", rip);
-        } else {
-            // If no return RIP provided, keep the parent's RIP (fallback for sys_fork without frame)
-            log::info!(
-                "fork: No return RIP provided, using parent RIP {:#x}",
-                child_thread.context.rip
-            );
         }
-
-        log::info!(
-            "Created child thread {} with entry point {:#x}",
-            child_thread_id,
-            child_process.entry_point
-        );
 
         // Set the child process's main thread (also transitions Creating → Ready)
         child_process.set_main_thread(child_thread);
@@ -2872,20 +2867,8 @@ impl ProcessManager {
         // - Signal state forking (handlers and mask, NOT pending signals)
         // - Verification of pgid and sid inheritance
         if let Some(parent) = self.processes.live_row(&parent_pid) {
-            if let Err(e) = super::fork::copy_process_state(parent, &mut child_process) {
-                log::error!(
-                    "fork: Failed to copy process state from parent {} to child {}: {}",
-                    parent_pid.as_u64(),
-                    child_pid.as_u64(),
-                    e
-                );
-                return Err(e);
-            }
+            super::fork::copy_process_state(parent, &mut child_process)?;
         } else {
-            log::error!(
-                "fork: CRITICAL - Parent {} not found when copying process state!",
-                parent_pid.as_u64()
-            );
             return Err("Parent process not found during state copy");
         }
 
@@ -2895,15 +2878,10 @@ impl ProcessManager {
         }
 
         // Insert the child process into the process table
-        log::debug!("About to insert child process into process table");
         self.processes.insert(child_pid, child_process);
-        log::debug!("Child process inserted successfully");
 
-        log::info!(
-            "Fork complete: parent {} -> child {}",
-            parent_pid.as_u64(),
-            child_pid.as_u64()
-        );
+        // Lock-free trace: fork exit with child PID
+        crate::tracing::providers::process::trace_fork_exit(child_pid.as_u64() as u32);
 
         Ok(child_pid)
     }

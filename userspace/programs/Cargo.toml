@@ -275,6 +275,11 @@ path = "src/exec_smoke.rs"
 name = "exec_smoke_target"
 path = "src/exec_smoke_target.rs"
 
+# Fork smoke (#745 -- x86 production fork() coverage, arch-neutral)
+[[bin]]
+name = "fork_smoke"
+path = "src/fork_smoke.rs"
+
 [[bin]]
 name = "block_eintr_oracle"
 path = "src/block_eintr_oracle.rs"

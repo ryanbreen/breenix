@@ -23,14 +23,8 @@
 use libbreenix::error::Error;
 use libbreenix::fs;
 use libbreenix::io;
-// cloexec_exec (arm 14) is aarch64-only pending #745 (x86 fork() refused in
-// the production build; see the ARM_COUNT and arm_cloexec_exec() cfgs
-// below), so these two imports -- used only by that arm -- carry the same
-// gate rather than sitting unused on x86.
-#[cfg(target_arch = "aarch64")]
 use libbreenix::io::fd_flags::FD_CLOEXEC;
 use libbreenix::process;
-#[cfg(target_arch = "aarch64")]
 use libbreenix::process::ForkResult;
 use libbreenix::pty;
 use libbreenix::termios::{self, cc, iflag, lflag, oflag, Termios, Winsize, TCSANOW};
@@ -719,7 +713,6 @@ fn arm_ctty() -> Result<(), Failure> {
 /// reporting EAGAIN forever. Checked with an IDLE read, same framing as arm
 /// 13 (`ctty`) and for the same reason: `master_read()` drains any buffered
 /// data ahead of its hangup check, so a write-then-read would not discriminate.
-#[cfg(target_arch = "aarch64")]
 fn arm_cloexec_exec() -> Result<(), Failure> {
     const ARM: &str = "cloexec_exec";
 
@@ -822,19 +815,15 @@ fn arm_cloexec_exec() -> Result<(), Failure> {
     Ok(())
 }
 
-/// Arm count differs per arch: aarch64 runs 14 arms; x86 excludes
-/// cloexec_exec (arm 14). #721 (x86 exec() ENOSYS in the zero-feature
-/// production build) is CLOSED -- exec works -- but re-admitting this arm
-/// then surfaced a second, distinct gap: #745, x86 fork() is unconditionally
-/// refused in that same production build ("Cannot fork - testing feature
-/// not enabled", kernel/src/process/manager.rs's fork_process* family).
-/// arm_cloexec_exec() calls process::fork() before it ever execs, so it
-/// still cannot run on x86 today. Re-admit on x86 by deleting this split
-/// (and the arm_cloexec_exec()?; cfg in run() below) once #745 closes.
-#[cfg(target_arch = "aarch64")]
+/// claim-lint:ok: 14 of 14 arms observed PASS on the shipped x86 profile over
+/// 25 boots, docs/planning/745-x86-fork/serials/tty-oracle-25boot-soak-2026-09-02.txt
+/// All 14 arms run on both architectures. cloexec_exec (arm 14) was
+/// excluded on x86 first pending #721 (exec() ENOSYS in the zero-feature
+/// production build), then -- once #721 closed and re-admission surfaced a
+/// second, distinct blocker -- pending #745 (x86 fork() unconditionally
+/// refused in that same profile; arm_cloexec_exec() calls process::fork()
+/// before it ever execs). Both are now closed.
 const ARM_COUNT: u32 = 14;
-#[cfg(target_arch = "x86_64")]
-const ARM_COUNT: u32 = 13;
 
 fn run() -> Result<u32, Failure> {
     let (master, slave_path) = arm_openpt()?;
@@ -858,9 +847,6 @@ fn run() -> Result<u32, Failure> {
         arm_pgrp(master, slave)?;
         arm_hangup(master, slave)?;
         arm_ctty()?;
-        // #745: excluded on x86 pending fork_process's refusal in the
-        // zero-feature production build -- see the ARM_COUNT comment above.
-        #[cfg(target_arch = "aarch64")]
         arm_cloexec_exec()?;
         Ok(())
     })();

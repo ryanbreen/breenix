@@ -131,6 +131,9 @@ STD_BINARIES=(
     "exec_smoke"
     "exec_smoke_target"
 
+    # Fork smoke (#745 -- x86 production fork() coverage, arch-neutral)
+    "fork_smoke"
+
     # #575 block-EINTR oracle
     "block_eintr_oracle"
     # #568 blocking-poll-on-connected-TCP oracle
