@@ -1,0 +1,9 @@
+=== gate stdout for Test 4 (from batch log) ===
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=6255
+x86 userspace gate: FAIL - failing process is not allowlisted: clock_gettime_test
+  Test 4: FAIL (see /tmp/breenix_gate_4/serial_kernel.log)
+GATE: FAIL (3/4 passed, 1/4 failed; mode=full build=15s boot=600s total=624s)
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h
+
+=== TEST_TALLY (from serial_kernel.txt) ===
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=1 failed=[clock_gettime_test:1]
