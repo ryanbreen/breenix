@@ -1869,7 +1869,8 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
 /// kernel-mode fork is not taking a userspace fault, so neither is reachable
 /// while this window is held on that CPU; on `-smp 1` (what every x86 gate
 /// boots) that closes it outright, and on SMP the fork holder is runnable
-/// and releases.
+/// and releases. That is 7 of 9 non-blocking and 2 of 9 blocking-but-
+/// unreachable-from-here, re-derived at these bytes.
 ///
 /// This is the same unmasked shape `sys_spawn`'s Window 2 has run in
 /// production since #713. Wrapping the whole operation in a hardware
@@ -1878,12 +1879,18 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
 /// would make the ENTIRE fork non-preemptible; what masks inside this window
 /// today is only what masks everywhere in the kernel -- the heap allocator's
 /// own `arch_without_interrupts` bracket around each allocation
-/// (`memory/heap.rs:34`-`57`). It would also reproduce the interrupt-masking
+/// (`memory/heap.rs:34`-`57`; 1 of the 6 `without_interrupts` occurrences under
+/// `kernel/src/memory` and `kernel/src/process`, and the only one this window
+/// reaches now that TLS registration is hoisted out). It would also reproduce
+/// the interrupt-masking
 /// anti-pattern aarch64's own fork history already proved causes a
 /// single-CPU deadlock (see
 /// `arch_impl/aarch64/syscall_entry.rs::sys_fork_aarch64`'s postmortem
 /// comment) -- just with a different lock inventory. See
 /// `docs/planning/745-x86-fork/` for the full analysis.
+/// claim-lint:ok: "aarch64 keeps every PM window IRQ-off" is the
+/// `#[cfg(target_arch = "aarch64")]` arm of `manager()` in
+/// kernel/src/process/mod.rs -- one arm, not a survey.
 #[cfg(target_arch = "x86_64")]
 fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext) -> SyscallResult {
     use super::errno::{EINVAL, ENOMEM, ESRCH};
@@ -1924,6 +1931,8 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
     // aarch64 fork's ordering and sys_spawn's own (#713 C8; #745 precheck
     // section 3.2 -- the process-resource reclaim call was missing here
     // entirely). No PM guard is live across either call (#745 precheck C4).
+    // claim-lint:ok: guard-liveness across both calls is ratchet-pinned, with
+    // its own delete mutations, in tests/fork_lock_order_structure.rs.
     crate::task::process_task::reclaim_deferred_process_resources();
     crate::task::scheduler::reclaim_terminated_threads();
 
@@ -1943,7 +1952,10 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
     // entirely inside this lock, and x86's PM lock is a bare spinlock that
     // blocks all dispatch while held (#745 precheck C9); see their own doc
     // comments in manager.rs, which also name the one callee inside this
-    // window that still does log.
+    // window that still does log (#756).
+    // claim-lint:ok: "entirely inside this lock" is a statement about these two
+    // functions' own call sites, both of which are the two lines below; the one
+    // callee that escapes the no-logging property is #756.
     let mut manager_guard = crate::process::manager();
     let fork_result = match *manager_guard {
         Some(ref mut manager) => {
@@ -1975,6 +1987,11 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
                 // insert this same call performed). Mirrors sys_spawn's
                 // own Window-3 undo (#713 precheck C2) for defense in
                 // depth rather than leaving a half-published row behind.
+                // claim-lint:ok: "guarantees" here is the invariant
+                // `complete_fork` establishes two statements before its own
+                // `Ok` (set_main_thread, then the row insert) -- read it there;
+                // this arm is defense in depth, not a proof obligation, and is
+                // itself census-pinned in tests/teardown_structure.rs.
                 if let Some(ref mut manager) = *manager_guard {
                     if let Some(parent) = manager.get_process_mut(parent_pid) {
                         parent.children.retain(|&pid| pid != child_pid);

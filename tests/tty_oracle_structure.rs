@@ -196,6 +196,8 @@ fn init_launches_the_oracle_on_aarch64() {
     );
 }
 
+/// claim-lint:ok: 14 of 14 arms green on the shipped x86 profile over 25 boots,
+/// docs/planning/745-x86-fork/serials/tty-oracle-25boot-soak-2026-09-02.txt
 /// The oracle is fully arch-neutral now (cloexec_exec re-admitted on x86,
 /// #721/#745), so the x86 gate's EXPECTED_ARMS is the SAME set the aarch64
 /// gate scores -- no more "x86-reachable minus an aarch64-only arm"

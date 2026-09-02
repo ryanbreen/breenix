@@ -1,9 +1,12 @@
 //! Fork smoke launcher -- the boot-path fork() caller (#745).
 //!
+//! claim-lint:ok: the pre-#745 refusal is quoted verbatim in
+//! docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt
 //! x86 userland otherwise has no live production caller of `fork()` proven
 //! to run on a per-boot basis (`bsh`'s own three fork() call sites had never
 //! executed on x86 in production before this program existed -- #745
-//! precheck C13). This process forces a real fork()+CoW+voluntary-yield+
+//! precheck C13; the refusal itself is quoted in docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt).
+//! This process forces a real fork()+CoW+voluntary-yield+
 //! exit+reap round trip so #745's fix (the interrupt-masking restructure of
 //! `sys_fork_with_parent_context` and the de-gated CoW block, see
 //! `docs/planning/745-x86-fork/`) is proven by a live boot, not just a
@@ -24,6 +27,9 @@
 //! is still genuinely shared. The isolation receipt itself is then taken on a
 //! SECOND probe, `CHILD_ONLY_PROBE`, which only the child ever writes: after
 //! reaping the child the parent reads it and requires the PRE-FORK zero.
+//! claim-lint:ok: both sides' faults and the receipt's own failure mode were
+//! observed, not assumed -- see the mutation run cited two paragraphs below,
+//! docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt
 //!
 //! The two-probe split is what makes the receipt order-independent (#745
 //! review round 2, M2). Reading back the parent's own sentinel from a probe
@@ -37,6 +43,17 @@
 //! shared frame makes the child's value visible to the parent no matter how
 //! the two processes interleave. The parent's own-sentinel read is kept as
 //! well, as the check that the parent's copy is private *and* writable.
+//! claim-lint:ok: the "reports OK on a genuinely broken kernel" half is a run,
+//! not a hypothetical --
+//! docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt
+//!
+//! claim-lint:ok: the two-probe receipt was run against a deliberately broken
+//! kernel (child mapped with the parent's original writable flags) before it
+//! was believed. It printed
+//! `[FORK_SMOKE:COW_ISOLATION_CORRUPTED probe=0xfeedfeed child_only=0xc0ffeeee]`
+//! -- probe=0xfeedfeed is the parent reading its OWN sentinel back, i.e. the
+//! single-probe receipt this replaced would have reported OK on that kernel.
+//! docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt
 //!
 //! The child takes the mirror-image reading first, before it writes anything:
 //! a kernel that left the PARENT's page writable (so the parent's post-fork
@@ -45,6 +62,8 @@
 //! exactly the value it wrote. On a correct kernel the child's pre-write read
 //! is the pre-fork 0 regardless of scheduling, since the parent's write can
 //! only reach the parent's private copy.
+//! claim-lint:ok: same mutation run as above --
+//! docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt
 //!
 //! This is what makes the isolation proof functional rather than "some CoW
 //! fault log line appeared": the x86 CoW *fault* path
@@ -55,6 +74,9 @@
 //! yields and exits proves nothing about that. The gate pins the fault's
 //! OCCURRENCE separately, on the kernel's own `[COW FAULT #0] addr=` line
 //! (C3(2)); this program answers the other half, what the fault handler DID.
+//! claim-lint:ok: "had never executed in a zero-feature x86 build" is precheck
+//! C3's own census, docs/planning/745-x86-fork/precheck.md; the receipt's
+//! ability to fail is the mutation run cited above.
 
 use libbreenix::process::{fork, getpid, waitpid, wexitstatus, wifexited, yield_now, ForkResult};
 
@@ -74,6 +96,9 @@ static mut SHARED_WRITE_PROBE: u64 = 0;
 /// Writable global ONLY the child ever writes. The parent reads it after the
 /// reap and requires the pre-fork zero, which is the order-independent half
 /// of the isolation receipt (see module doc).
+/// claim-lint:ok: this file is the only writer of this symbol, and the receipt
+/// was reddened by mutation --
+/// docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt
 static mut CHILD_ONLY_PROBE: u64 = 0;
 
 /// Set once the child branch has begun its own work. If fork() were to
@@ -105,6 +130,9 @@ fn main() {
             // Observing PARENT_PROBE_VALUE means the parent's page stayed
             // writable-shared, which the parent-side check below cannot see
             // (the parent would still read its own value back).
+            // claim-lint:ok: that exact parent-side blindness was observed on a
+            // mutated kernel (probe=0xfeedfeed, the parent's own sentinel) --
+            // docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt
             let pre = unsafe { SHARED_WRITE_PROBE };
             if pre == PARENT_PROBE_VALUE {
                 println!(
@@ -148,7 +176,7 @@ fn main() {
                         -1
                     };
 
-                    // The child has now fully run and been reaped, so both
+                    // The child has now run to exit and been reaped, so both
                     // reads are race-free and, on CHILD_ONLY_PROBE,
                     // order-independent (see module doc): the child's write
                     // is sequenced before its exit, so a shared frame would

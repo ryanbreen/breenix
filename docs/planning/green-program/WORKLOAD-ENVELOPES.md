@@ -116,6 +116,10 @@ named as open gaps in `tty/EVIDENCE-2026-08-30.md` §7 (#705), not silently abse
 
 Declared 2026-08-31 (PR #732), fix round in `tty/EVIDENCE-x86-fix-round-2026-08-31.md`.
 
+<!-- claim-lint:ok: the "after all four" ordering is not prose-only -- it is
+     mechanically pinned by tests/green_program_envelope_structure.rs, whose
+     x86_tty_oracle_runs_with_no_persistent_background_process walks this exact
+     cfg-gated call sequence. -->
 **Concurrent userspace processes.** x86's launch sequence in the same `main()` is
 `run_spawn_smoke()` (spawn+`waitpid`, sequential) then `run_tty_oracle()` (spawn+
 `waitpid`) then `run_exec_smoke()` then, since #745, `run_fork_smoke()` —
@@ -135,6 +139,9 @@ already run sequentially before it never overlap with bsshd's own ext2 reads
 this document exists to make explicit is, for this one launcher, already named in
 the source by issue number.
 
+<!-- claim-lint:ok: the "always took an error branch" state is the refusal this
+     arc removed, quoted in
+     docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt -->
 **#745 addendum.** `run_fork_smoke()` was added to this same sequence, placed
 strictly AFTER `run_tty_oracle()` and before `start_bsshd()` (mechanically pinned
 by `tests/green_program_envelope_structure.rs`'s `persistent_count_before`, which
@@ -208,6 +215,8 @@ doc, but the oracle body driving both arches is the same, now-14-arm, surface).
 
 ## 3. TTY — blended
 
+<!-- claim-lint:ok: arm 14's x86 re-admission is 14 of 14 green over 25 boots,
+     docs/planning/745-x86-fork/serials/tty-oracle-25boot-soak-2026-09-02.txt -->
 Declared in the same fix round, `tty/EVIDENCE-x86-fix-round-2026-08-31.md` §4
 (coordinator ruling), **updated #745**: arm 14 (`cloexec_exec`, `fork`+`exec` inside
 a PTY session) was aarch64-only supplementary evidence at the time of that ruling,

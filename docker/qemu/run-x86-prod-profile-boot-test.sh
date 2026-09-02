@@ -531,6 +531,9 @@ FORK_SMOKE_PARENT_REAPED_PREFIX='[FORK_SMOKE:PARENT_REAPED child='
 # boot, so the exit-code half is pinned on its own: ` code=37]` cannot
 # collide with `[FORK_SMOKE:LAUNCHER_EXIT code=0]` (the DIFFERENT process
 # below) under grep -F, and 37 is fork_smoke.rs's CHILD_EXIT_CODE.
+# claim-lint:ok: run with CHILD_EXIT_CODE mutated 37 -> 38, this pin is the
+# assertion that reddens while PARENT_REAPED stays 1 and crash markers stay 0 --
+# docs/planning/745-x86-fork/serials/review-round-2/b1-mutation-child-exit-38-gate-FAIL.txt
 FORK_SMOKE_PARENT_REAPED_CODE_LITERAL=' code=37]'
 # fork_smoke's own top-level process (the one init directly spawns and
 # reaps here) exits 0 via its normal `main()` return once the PARENT branch
@@ -568,6 +571,10 @@ FORK_SMOKE_REAP_FAILED_PREFIX='[FORK_SMOKE:REAP_FAILED'
 #       earlier. Both are production forks that could not run on x86 before
 #       #745, which is the property C3 is about; the fork_smoke-specific half
 #       is the isolation receipt in (ii).
+# claim-lint:ok: the "never executed in a zero-feature x86 build" finding is
+# precheck C3, docs/planning/745-x86-fork/precheck.md; the receipt's own
+# ability to fire is a run, not an assertion --
+# docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-serial_user.txt
 #  (ii) the isolation actually HELD -- FORK_SMOKE_COW_ISOLATION_OK/CORRUPTED
 #       above, a functional receipt (a broken refcount check corrupts memory
 #       silently rather than crashing). This is a STRENGTHENING of C3, not
@@ -575,6 +582,8 @@ FORK_SMOKE_REAP_FAILED_PREFIX='[FORK_SMOKE:REAP_FAILED'
 #       count_cow_fault() counter, which this round still leaves unwired
 #       (see docs/planning/745-x86-fork/README.md).
 FORK_SMOKE_COW_FAULT_FIRST_LITERAL='[COW FAULT #0] addr='
+# claim-lint:ok: the two known-gap notes below restate filed issues rather than
+# making new claims -- #720 and #722.
 # #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
 # exhaustion after ~240 creations).
 # #722 — x86 prod-profile gate does not yet exercise init's full
@@ -619,6 +628,9 @@ POLL_BOUND_SECONDS=240
 # the script kills QEMU and reads final counts the moment this sleep returns.
 # The window opens once steady state is reached, so what has to fit inside it is
 # the span from `Serial command task started` to the LAST pinned marker.
+# claim-lint:ok: "every marker assertion below it" is this file's own assertion
+# block; the timings that bound them are in
+# docs/planning/745-x86-fork/serials/review-round-2/liveness-window-remeasure-2026-09-02.txt
 #
 # RE-MEASURED post-#745 (precheck C13(b) made this mandatory, not conditional:
 # the previous figure was taken before run_fork_smoke() and before TTY arm 14 --
@@ -639,7 +651,9 @@ POLL_BOUND_SECONDS=240
 # margin over it, without the "order of magnitude" POLL_BOUND_SECONDS margin
 # above, which would make every gate run needlessly slow for a bound this tight
 # to the measured figure. Raw timing artifact:
-# docs/planning/745-x86-fork/serials/liveness-window-remeasure-2026-09-02.txt.
+# docs/planning/745-x86-fork/serials/review-round-2/liveness-window-remeasure-2026-09-02.txt.
+# claim-lint:ok: every figure above is a first-appearance timestamp from that
+# one file, not an estimate: docs/planning/745-x86-fork/serials/review-round-2/liveness-window-remeasure-2026-09-02.txt
 LIVENESS_STIMULUS_BYTE=$'\n'
 LIVENESS_WINDOW_SECONDS=60
 
@@ -1035,7 +1049,10 @@ test "$(marker_count "$EXEC_LOCK_ORDER_NO_SCHED_THREAD_LITERAL")" -eq 0
 # check corrupts shared memory silently rather than crashing, so that half has
 # to be functional, not just "some fault line appeared"). Negative markers
 # (anti-vacuity) prove fork did not fail, corrupt memory, or resume twice into
-# the same branch.
+# the same branch. Both new pins were reddened by a mutation before being
+# believed: docs/planning/745-x86-fork/serials/review-round-2/b1-mutation-child-exit-38-gate-FAIL.txt
+# and docs/planning/745-x86-fork/serials/review-round-2/m2-mutation-cow-isolation-broken-gate-FAIL.txt
+# claim-lint:ok: the two mutation runs named on the previous two lines.
 test "$(marker_count "$FORK_SMOKE_LAUNCH_LITERAL")" -eq 1
 test "$(marker_count "$FORK_SMOKE_CHILD_PREFIX")" -eq 1
 test "$(marker_count "$FORK_SMOKE_COW_ISOLATION_OK_PREFIX")" -eq 1

@@ -59,17 +59,28 @@ override the spec wherever the two disagree, per the precheck's own
 - `userspace/programs/src/init.rs`: `run_fork_smoke()`, positioned after
   `run_exec_smoke()` and before `start_bsshd()`; corrected the
   `run_tty_oracle()` x86 doc comment's false "fork are all
-  production-safe on x86 already" claim (precheck C10).
+  production-safe on x86 already" claim (precheck C13, which corrects spec
+  section 3.10; round 1 filed it under C10, a different item — review round
+  2 M5).
 - `docker/qemu/run-x86-prod-profile-boot-test.sh`: `FORK_SMOKE_*`
   markers following the `EXEC_SMOKE_*` template. The generic
   `[CREATION_LOCK_ORDER:VIOLATION` marker (already in `FAULT_MARKERS`,
   pinned at zero gate-wide) covers fork's own lock-order-at-publish-time
-  receipt for free (precheck C5) — no separate pin needed. A raw
-  `[COW FAULT #N]` count was tried and removed: the harness's own
-  verdict-discipline rule requires every declared marker to be spent with
-  an exact `-eq 0`/`-eq 1` assertion, and the real count (8, observed) is
-  neither — the CoW-isolation receipt is the intended "or, better"
-  alternative precheck C3 itself names, and is what actually ships.
+  receipt for free (precheck C5) — no separate pin needed. Two pins were
+  added in review round 2:
+  - `' code=37]'`, `-eq 1` (B1). `[FORK_SMOKE:PARENT_REAPED child=` alone
+    matches `code=-1` — a KILLED child — as happily as a clean exit, and the
+    userspace-fault kill path emits nothing in `CRASH_MARKERS_PATTERN` or
+    `FAULT_MARKERS`, so round 1 reaped the child without ever asserting how
+    it exited.
+  - `'[COW FAULT #0] addr='`, `-eq 1` (M2, restoring precheck C3(2)'s
+    fault-OCCURRENCE requirement). A raw `[COW FAULT #` prefix was tried in
+    round 1 and removed in `411975c9` because the harness's
+    verdict-discipline rule requires an exact `-eq 0`/`-eq 1` and the total
+    count varies with page-touch behaviour; nothing replaced it, and the
+    round-1 comment wrongly described the isolation receipt as C3's own "or,
+    better" alternative (that phrase names C11's counter). Pinning fault
+    number ZERO makes occurrence exactly countable.
 - `docs/planning/green-program/WORKLOAD-ENVELOPES.md`: corrected the
   stale "arm 14 excluded because exec() is ENOSYS" claim (precheck C14 —
   false since #721; fork was the real blocker, closed here) and the
@@ -95,11 +106,26 @@ override the spec wherever the two disagree, per the precheck's own
   precedent (#721). Both carry the identical C2 page-table-restore defect
   `fork_process_with_parent_context`/`fork_process_aarch64` had; filed as
   **#752** rather than widening this PR's scope.
-- Precheck C9's TLS-registration-under-PM-lock cost (x86-only, no
-  unregister counterpart, monotonic growth per fork) and C12's
-  `fork()`/`clone(SIGCHLD)` syscall-routing divergence between arches —
-  both purely informational in the precheck (no binding "Condition:"),
+- Precheck C10's TLS-registration cost that remains after the hoist: there
+  is still no unregister counterpart, so `TLS_MANAGER.tls_blocks` grows
+  monotonically per fork. That half is unchanged and still x86-only
+  (`complete_fork_aarch64` registers no TLS at all); what round 2 removed is
+  the part that was a hazard — the masked, logging, second-global-lock
+  sub-window running inside the PM-held region.
+- Precheck C12's `fork()`/`clone(SIGCHLD)` syscall-routing divergence
+  between arches — informational in the precheck (no binding "Condition:"),
   left as-is.
+- **#756, filed this round.** `memory::kernel_stack::allocate_kernel_stack`
+  emits two live `log::debug!` lines and is called under the PM lock by
+  `complete_fork`, by `complete_fork_aarch64`, and by every x86
+  `create_user_process`/`create_process_with_argv`. So the "no logging under
+  the PM lock" invariant is true of the fork function BODIES and not of the
+  region they run in, on both arches. No live deadlock is constructible from
+  it (`_log_print` masks interrupts before taking `SERIAL2`, so the serial
+  holder cannot be preempted while holding it), it is not something #745
+  introduced, and fixing it is a shared-allocator change this PR's x86-only
+  battery cannot prove on aarch64. Filed, and each of the four #745 claim
+  sites narrowed to say so rather than asserting the region-wide property.
 - `count_fork()`/`count_cow_fault()` (precheck C11's counter suggestion) —
   left unwired. Verified **N of N observed**: `count_exec()` is *also*
   dead tree-wide (zero call sites), so wiring only `count_fork()` would

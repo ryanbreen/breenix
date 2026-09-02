@@ -2790,10 +2790,9 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn build_process_with_argv_at => insert", 1),
     // #745: `complete_fork` lost its `feature = "testing"` gate and became a
     // production x86 row writer. The item PATH is what changed here — the cfg
-    // string this census keys on went from
-    // `#[cfg(all(target_arch=x86_64,feature=testing))]` to
+    // string this census keys on lost its `feature=testing` term and became
     // `#[cfg(target_arch=x86_64)]`. The insert itself is the same single one it
-    // always had (review round 2, m8: the entry was corrected in the fix commit
+    // had before (review round 2, m8: the entry was corrected in the fix commit
     // but this sentence still described it as testing-only).
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
@@ -2859,6 +2858,8 @@ const KERNEL_STACK_MUTATIONS: &[(&str, &str, usize)] = &[
 const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/userspace_test.rs", "#[cfg(feature=testing)] fn get_test_binary_static", 4),
 ];
+/// claim-lint:ok: the census below IS the enumeration -- 23 of 23 occurrences
+/// across three classes, and a new one is a `+` row.
 /// DEBT-4 (ii): every call site that reaches the unconditional row destructor,
 /// occurrence-based and by enclosing item. Twenty-three occurrences across
 /// three exempt classes (#745 added sys_fork_with_parent_context's own
@@ -3265,6 +3266,10 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     // thread was never published, alongside retracting the parent's
     // `children` entry and the row itself.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
+    // claim-lint:ok: the "guarantees" clause names an invariant readable in
+    // complete_fork itself (set_main_thread, then the row insert, two
+    // statements before its Ok); this entry exists because the arm is kept
+    // anyway, 1 of 1 call site.
     // #745: sys_fork_with_parent_context's own defensive teardown arm
     // (believed unreachable -- complete_fork's own invariant guarantees
     // main_thread is Some whenever fork_process_with_parent_context returns
@@ -6614,6 +6619,8 @@ fn validate_root_proof_architecture_legs(sources: &[(String, String)]) -> Result
     Ok(())
 }
 
+/// claim-lint:ok: 3 of 3 x86 production call sites are enumerated in the census
+/// this comment introduces.
 /// Exact drain membership. All three x86 production calls (sys_spawn,
 /// sys_execv_with_frame, and sys_fork_with_parent_context as of #745) are
 /// normal-context sites; the interrupt-return function is explicitly

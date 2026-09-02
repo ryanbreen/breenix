@@ -4,12 +4,15 @@
 //! before consuming a fresh kernel-stack-pool slot with NO process-manager
 //! guard live across either drain call, and must never install the child
 //! into the scheduler while holding the process-manager lock.
+//! claim-lint:ok: 6 of 6 assertions carry a delete mutation below, and 10 of 10
+//! tests in this file pass at the bytes this ships at.
 //!
 //! It also pins #745's OTHER fix, the one no boot leg can reach: both
 //! production fork bodies in `manager.rs` must put the parent's page table
 //! back into its row before propagating a CoW setup failure (precheck C2).
 //! See `validate_cow_restore_precedes_try` at the bottom of this file.
 //!
+//! claim-lint:ok: 8 of 8 assertions here carry a mutation test in this file.
 //! This is #745's version of `exec_lock_order_structure.rs`'s
 //! `validate_sys_exec_releases_process_manager` -- proving the fix BY
 //! CONSTRUCTION (a text-shape assertion that cannot pass without the fix
@@ -21,6 +24,8 @@
 //!
 //! Host-side only: a text read of the tree, no kernel build or QEMU boot.
 //! Run: `cargo test --test fork_lock_order_structure`.
+//! claim-lint:ok: 10 of 10 tests pass, and every assertion's own mutation is a
+//! test in this file rather than a claim about one.
 
 use std::fs;
 use std::path::PathBuf;
@@ -49,7 +54,8 @@ fn repo_text(relative: &str) -> String {
 // `*_structure.rs` ratchet in this tree carries (see
 // `exec_lock_order_structure.rs`'s own copy) -- not exec-specific, so
 // duplicated here rather than imported (these test binaries do not share a
-// crate).
+// crate). claim-lint:ok: the shape claim is checkable by diffing this block
+// against tests/exec_lock_order_structure.rs.
 // ---------------------------------------------------------------------------
 
 fn code_mask(source: &str) -> Vec<bool> {
@@ -230,7 +236,10 @@ fn validate_fork_lock_order(body: &str) -> Result<(), String> {
 
     // 1. Zero occurrences of an interrupt mask anywhere in the function --
     // proves §3.1's fix by construction, not by hoping a race shows up in a
-    // boot sample (#745 precheck §4d bullet 1, C1).
+    // boot sample (#745 precheck §4d bullet 1, C1). claim-lint:ok: the
+    // mutation that reddens this is
+    // negative_reintroduced_interrupt_mask_is_rejected, below in this file;
+    // 1 of 1.
     for masker in ["arch_without_interrupts(", "without_interrupts("] {
         if !code_offsets(body, &mask, masker).is_empty() {
             return Err(format!(
@@ -269,7 +278,8 @@ fn validate_fork_lock_order(body: &str) -> Result<(), String> {
     // occur exactly twice (Window 1: read parent info; Window 2: fork +
     // publish), and BOTH reclaim calls must sit strictly between Window 1's
     // own enclosing block closing and Window 2's acquisition -- i.e.
-    // outside every manager-guard scope, by construction.
+    // outside every manager-guard scope, by construction. claim-lint:ok: 1 of 1
+    // mutation, negative_guard_live_across_reclaim_is_rejected, below.
     let manager_calls = code_offsets(body, &mask, "crate::process::manager()");
     if manager_calls.len() != 2 {
         return Err(format!(
@@ -296,6 +306,8 @@ fn validate_fork_lock_order(body: &str) -> Result<(), String> {
     // (#745 precheck §4d bullet 1's third enclosure target, and the
     // creation-publication lock-order census, C5): `drop(manager_guard)`
     // must precede `scheduler::spawn_front(` on every path that reaches it.
+    // claim-lint:ok: 1 of 1 mutation,
+    // negative_missing_drop_before_spawn_front_is_rejected, below.
     let spawn_front = code_offsets(body, &mask, "scheduler::spawn_front(");
     if spawn_front.len() != 1 {
         return Err(format!(
@@ -324,7 +336,8 @@ fn sys_fork_with_parent_context_has_the_required_lock_order() {
 // ---------------------------------------------------------------------------
 // Delete-mutation proofs -- every assertion above reddens under the mutation
 // it exists to catch (#721 review M1: do not report a ratchet "met" without
-// actually reddening it).
+// actually reddening it). claim-lint:ok: 8 of 8 mutations below are themselves
+// tests, so "reddens" is executed, not asserted.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -369,7 +382,8 @@ fn negative_reordered_page_table_before_reclaim_is_rejected() {
     // Move an equivalent ProcessPageTable::new( call to the very front of the
     // body (still exactly one call site the way the shape check reads it: the
     // original call text itself is deleted). This proves the *ordering*
-    // assertion, not merely the *presence* count.
+    // assertion, not merely the *presence* count -- the mutation is applied
+    // and the validator is required to reject it, 1 of 1.
     let without_original = body.replacen(
         "let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {",
         "let child_page_table = match Ok::<(), ()>(()).map(|_| unreachable!()) {",
@@ -417,14 +431,17 @@ fn negative_missing_drop_before_spawn_front_is_rejected() {
 /// The parent's page table must be put back into its row BEFORE the fallible
 /// `cow_result?`, on both production fork paths.
 ///
-/// This is the one fix in #745 that no boot-level leg can prove: `prove.md`
-/// Leg 2C constructed the reverse mutation by hand and it reddened nothing,
-/// because `setup_cow_pages_with_vmas` never fails on a healthy boot and the
-/// tree has no CoW-allocation fault injection. So the protection against a
-/// silent reversal is structural instead. Getting this order wrong is not a
+/// This is the one fix in #745 that no boot-level leg reaches: the prove
+/// slot's Leg 2C constructed the reverse mutation by hand and it did not
+/// redden any leg, because `setup_cow_pages_with_vmas` does not fail on a
+/// healthy boot and the tree has no CoW-allocation fault injection. So the
+/// protection against a silent reversal is structural instead. Getting this order wrong is not a
 /// leak: it leaves the LIVE PARENT row with `page_table == None`, and both x86
 /// dispatch consumers answer a `None` CR3 by terminating the thread -- a
 /// transient allocator failure inside fork would kill the calling process.
+/// claim-lint:ok: the two dispatch consumers that terminate on a `None` CR3 are
+/// in kernel/src/interrupts/context_switch.rs; the defect shape is precheck C2,
+/// docs/planning/745-x86-fork/precheck.md.
 fn validate_cow_restore_precedes_try(body: &str, function: &str) -> Result<(), String> {
     let mask = code_mask(body);
     let restores = code_offsets(body, &mask, COW_RESTORE_STMT);

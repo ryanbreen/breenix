@@ -13,6 +13,8 @@
 # below match run-x86-prod-profile-boot-test.sh's own invocation (three
 # virtio-blk devices: UEFI image, placeholder, ext2 at index 2).
 #
+# claim-lint:ok: the arm's pre-#745 failure is quoted verbatim in the arc's
+# negative control, docs/planning/745-x86-fork/serials/anti-vacuity-pre-fix-refused-gate-2026-09-02.txt
 # FULL PARITY WITH AARCH64: cloexec_exec (arm 14) is re-admitted. It was
 # excluded first pending #721 (sys_execv_with_frame returned ENOSYS in the
 # x86 zero-feature production build -- the arm's child could never actually
@@ -44,7 +46,9 @@ QEMU_PID=""
 CURRENT_RUN_DIR=""
 
 # Every arm the oracle is required to report PASS for on x86 -- all 14,
-# matching aarch64 (see the header, #721/#745).
+# matching aarch64 (see the header, #721/#745). 14 of 14 observed green on the
+# shipped profile, 25 boots running:
+# docs/planning/745-x86-fork/serials/tty-oracle-25boot-soak-2026-09-02.txt
 # tests/tty_oracle_structure.rs holds this list to the arms the oracle
 # actually drives on x86 (its own arch-aware census reads run()'s cfg
 # gates, not this array), so an arm can neither be dropped from the

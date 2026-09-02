@@ -815,6 +815,8 @@ fn arm_cloexec_exec() -> Result<(), Failure> {
     Ok(())
 }
 
+/// claim-lint:ok: 14 of 14 arms observed PASS on the shipped x86 profile over
+/// 25 boots, docs/planning/745-x86-fork/serials/tty-oracle-25boot-soak-2026-09-02.txt
 /// All 14 arms run on both architectures. cloexec_exec (arm 14) was
 /// excluded on x86 first pending #721 (exec() ENOSYS in the zero-feature
 /// production build), then -- once #721 closed and re-admission surfaced a

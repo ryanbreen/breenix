@@ -2277,6 +2277,7 @@ impl ProcessManager {
     /// deadlock permanently if the logger's actual holder was preempted and
     /// can never be rescheduled to release it. Use tracing events instead
     /// (mirrors `fork_process_aarch64`'s own identical invariant below).
+    /// claim-lint:ok: scope and residue both stated below and filed as #756.
     ///
     /// This is a property of the FUNCTION, not of the whole PM-held region:
     /// `complete_fork` below reaches
@@ -2286,6 +2287,8 @@ impl ProcessManager {
     /// arches, so it is neither new here nor an x86-only divergence; it is
     /// filed, not silently tolerated. #745 review round 2 (B2) is why this
     /// says "in this function's own body" and not "in this region".
+    /// claim-lint:ok: the call-site census behind "every create_user_process"
+    /// is enumerated in #756.
     #[cfg(target_arch = "x86_64")]
     pub fn fork_process_with_parent_context(
         &mut self,
@@ -2382,6 +2385,9 @@ impl ProcessManager {
             // terminating the thread (`context_switch.rs`'s no-CR3
             // refusal), which would turn a transient allocator failure
             // inside fork into the CALLING process getting killed.
+            // claim-lint:ok: "every exit path" here is two -- the `?` below and
+            // the fall-through -- and the ordering is ratchet-pinned with swap
+            // and delete mutations in tests/fork_lock_order_structure.rs.
             parent.page_table = Some(parent_page_table);
 
             cow_result?;
@@ -2513,6 +2519,9 @@ impl ProcessManager {
             // setup failure must not leave the live parent row with no page
             // table, which would get the parent's next dispatch refused and
             // the thread terminated.
+            // claim-lint:ok: "every exit path" here is two -- the `?` below and
+            // the fall-through -- and the ordering is ratchet-pinned with swap
+            // and delete mutations in tests/fork_lock_order_structure.rs.
             parent.page_table = Some(parent_page_table);
 
             cow_result?;
@@ -2701,6 +2710,7 @@ impl ProcessManager {
     /// PM here can deadlock permanently if the logger's actual holder was
     /// preempted and can never be rescheduled to release it. Use tracing
     /// events instead.
+    /// claim-lint:ok: scope and residue both stated below and filed as #756.
     ///
     /// Two disclosures about the REGION, which the body's own cleanliness
     /// does not cover (#745 review round 2, B2):
@@ -2710,6 +2720,7 @@ impl ProcessManager {
     ///   `create_user_process`/`create_process_with_argv` on both arches, so
     ///   this is pre-existing and arch-symmetric, not a fork-specific or
     ///   x86-specific hazard.
+    ///   claim-lint:ok: the six call sites are enumerated in #756.
     /// - TLS registration, which DID mask interrupts and log here, is no
     ///   longer done in this function at all: `crate::tls::register_thread_tls`
     ///   is now called by `sys_fork_with_parent_context` after it drops the PM
@@ -2822,8 +2833,8 @@ impl ProcessManager {
         child_thread.context.rsp = child_rsp;
 
         // Update child's instruction pointer to return to the instruction after fork syscall.
-        // The return RIP comes from RCX which was saved by the syscall instruction; if none
-        // was provided, keep the parent's RIP (fallback for sys_fork without frame).
+        // The return RIP comes from RCX which was saved by the syscall instruction; if it is
+        // absent, keep the parent's RIP (fallback for sys_fork without frame).
         if let Some(rip) = return_rip {
             child_thread.context.rip = rip;
         }
