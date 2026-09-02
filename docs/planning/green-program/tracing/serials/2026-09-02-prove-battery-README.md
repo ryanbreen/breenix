@@ -65,8 +65,10 @@ block on `main` for the old-bytes comparison below — so the addition changed
 what a boot could reach, not what KERNEL_BASE logic ran. A later correction
 round folded that same device addition into the committed script itself, so a
 fresh run of `scripts/test_tracing_via_gdb.sh` no longer needs the scratch
-copy — but that later fix produced no new boots of its own and is not
-represented in the evidence below.
+copy — that later fix's own evidence is
+`docs/planning/green-program/tracing/serials/committed-script-2026-09-02/README.md`,
+which records 10 of 10 fix-branch boots and 1 of 1 main-branch boot run
+through the repaired committed script.
 
 ## Fix-branch battery (`fix/tracing-symbol-base` @ `8612e830`)
 
