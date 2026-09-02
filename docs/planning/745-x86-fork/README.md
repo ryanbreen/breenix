@@ -2,9 +2,11 @@
 
 **Status: fixed; review round 2 applied.** `fix/745-x86-fork` (branch), PR
 [#753](https://github.com/ryanbreen/breenix/pull/753) pending review/merge.
-Gate state at the shipping bytes (`13a1cf27`): x86 production profile PASS,
-24/24 structure-test files (496/496 tests), TTY oracle 14/14 arms over 25
-boots.
+Gate state at `13a1cf27`, the last commit that changes anything the kernel or
+the gate executes (`182937dc` on top of it adds serials and this file only):
+x86 production-profile gate PASS, and 24/24 structure-test files (496/496
+tests) on the same bytes. The TTY-oracle 14/14-arms-over-25-boots soak was run
+in round 1, at `3bf42613`; round 2 changed no code that oracle drives.
 `spec.md` and `precheck.md` in this directory are the investigation this
 implementation round followed; precheck's sixteen binding conditions
 override the spec wherever the two disagree, per the precheck's own
