@@ -390,16 +390,32 @@ exactly the shape of thing that produced the #728 revert:
    envelope documents, on top of a 109-test kthread registry TTY's profile never
    runs at all. This document does not know, and does not claim to know, exactly how
    many userspace processes were alive at the moment either cell's measurement was
-   taken — see §4/§5-6's "uncheckable" notes. **This axis is not enforced going
-   forward.** `run-aarch64-full-test.sh` and `run-aarch64-service-sequence-gate.sh`
-   only rebuild with `--features boot_tests` inside an `if $REBUILD` block gated on
-   an explicit `--rebuild` flag; run without it, they boot whatever kernel binary is
-   already sitting in `target/`, unverified against any profile. `scripts/
-   test_tracing_via_gdb.sh` never builds at all (§4) and its own error text
-   recommends the zero-feature build. Nothing in this repository checks that a
-   `boot_tests`-profile binary is actually what these three scripts boot on any
-   given run; the profile claims above are sourced to the specific historical runs
-   the cited evidence docs measured, not to a standing guarantee.
+   taken — see §4/§5-6's "uncheckable" notes. **This axis is enforced on two of
+   the three scripts, and unenforced only on the third.** `run-aarch64-full-test.sh`
+   and `run-aarch64-service-sequence-gate.sh` each define and call
+   `require_boot_tests_kernel()` *unconditionally* — outside, and after, their
+   `if $REBUILD` block (which closes at line 61 and line 122 respectively; the guard
+   itself is called at line 111 and line 185) — so every run, `--rebuild` or not, is
+   checked against a census of marker literals that only a `--features boot_tests`
+   kernel emits, and the script `exit 1`s on any miss. The two censuses are not
+   identical: `run-aarch64-full-test.sh` checks 7 markers (`SCHED_STRAND_ORACLE`,
+   `STRAND_INJECT_ORACLE`, `CENSUS_WIDEN_ORACLE`, `FUTEX_HANDOFF_ORACLE`,
+   `CTX596_ORACLE`, `TOMBSTONE_JOIN_ORACLE`, `BOOT_TESTS`);
+   `run-aarch64-service-sequence-gate.sh` checks 6 (the same set minus
+   `TOMBSTONE_JOIN_ORACLE`). Both name themselves, in a code comment, the twin of
+   the #528 guard, and warn about the same landmine: any `cargo test` run in the
+   same session silently rebuilds the kernel without `boot_tests` and hardlinks it
+   into the shared output path in a fraction of a second, swapping the binary the
+   next gate boots. `scripts/test_tracing_via_gdb.sh` is the one script this axis
+   really is unenforced on: it never builds at all (§4 — its two `cargo build`
+   strings live only inside `--help` text) and carries no `boot_tests` guard of any
+   kind. What the two guarded scripts' census does *not* check is source freshness:
+   it verifies the binary belongs to the `boot_tests` *profile* (the right feature
+   set was compiled in), not that it was built from the exact commit the cited
+   evidence doc measured — a stale `boot_tests` binary from an earlier commit passes
+   the same census. So the profile claims above are still sourced to the specific
+   historical runs the cited evidence docs measured; the census is a standing
+   guarantee for profile membership, not for source-commit freshness.
 
 ---
 
