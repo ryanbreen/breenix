@@ -531,12 +531,16 @@ FORK_SMOKE_FORK_FAILED_PREFIX='[FORK_SMOKE:FORK_FAILED'
 FORK_SMOKE_CHILD_UNEXPECTED_RETURN_LITERAL='[FORK_SMOKE:CHILD_UNEXPECTED_RETURN]'
 FORK_SMOKE_REAP_FAILED_PREFIX='[FORK_SMOKE:REAP_FAILED'
 # #745 precheck C3: the x86 CoW *fault* path (handle_cow_fault et al.) had never
-# executed in a zero-feature x86 build before fork_smoke existed -- this is the
-# ONLY x86 production caller of setup_cow_pages_with_vmas as of #745 (spawn/exec
-# never create a CoW mapping), so every [COW FAULT #N] line on this gate is
-# fork_smoke's own doing. A loose lower bound (not an exact count): the child's
-# own stack usage after fork touches more than just the one explicit probe write.
-COW_FAULT_PREFIX='[COW FAULT #'
+# executed in a zero-feature x86 build before fork_smoke existed. Proven by
+# FORK_SMOKE_COW_ISOLATION_OK/CORRUPTED above -- a FUNCTIONAL isolation
+# receipt, not a raw [COW FAULT #N] literal count: the actual fault count
+# (8, observed) depends on how many distinct 4KB pages the child's own
+# stack usage touches after fork, which is not the kind of fact this
+# harness's own verdict-discipline rule (every marker assertion must be an
+# exact `-eq 0`/`-eq 1`, see teardown_structure.rs's
+# x86_production_profile_gate_verdict_discipline_holds) can pin honestly --
+# the isolation receipt is the intended "or, better" alternative precheck
+# C3 itself names.
 # #720 — x86 user-stack VA bump allocator never reclaims (spawn-heavy
 # exhaustion after ~240 creations).
 # #722 — x86 prod-profile gate does not yet exercise init's full
@@ -718,7 +722,6 @@ print_observed_values() {
     echo "  fork smoke fork failed (must be absent, #745): $(marker_count "$FORK_SMOKE_FORK_FAILED_PREFIX")"
     echo "  fork smoke child unexpected return (must be absent, #745): $(marker_count "$FORK_SMOKE_CHILD_UNEXPECTED_RETURN_LITERAL")"
     echo "  fork smoke reap failed (must be absent, #745): $(marker_count "$FORK_SMOKE_REAP_FAILED_PREFIX")"
-    echo "  CoW fault occurrences (#745 precheck C3): $(marker_count "$COW_FAULT_PREFIX")"
     # init's full boot-script chain (bsh --init-shell -> /etc/init.js's
     # further spawns) is still not pinned here -- see INIT SURVIVAL
     # EVIDENCE above and #722.
@@ -991,7 +994,6 @@ test "$(marker_count "$FORK_SMOKE_SPAWN_FAILED_PREFIX")" -eq 0
 test "$(marker_count "$FORK_SMOKE_FORK_FAILED_PREFIX")" -eq 0
 test "$(marker_count "$FORK_SMOKE_CHILD_UNEXPECTED_RETURN_LITERAL")" -eq 0
 test "$(marker_count "$FORK_SMOKE_REAP_FAILED_PREFIX")" -eq 0
-test "$(marker_count "$COW_FAULT_PREFIX")" -ge 2
 
 trap - ERR
 # #673 review, B5: an anti-vacuity leg must never print a bare production PASS

@@ -2854,9 +2854,10 @@ const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/userspace_test.rs", "#[cfg(feature=testing)] fn get_test_binary_static", 4),
 ];
 /// DEBT-4 (ii): every call site that reaches the unconditional row destructor,
-/// occurrence-based and by enclosing item. Twenty-two occurrences across three
-/// exempt classes; the two live reaps are absent by construction, and an added
-/// one is a `+` row here.
+/// occurrence-based and by enclosing item. Twenty-three occurrences across
+/// three exempt classes (#745 added sys_fork_with_parent_context's own
+/// defensive teardown arm to class 2); the two live reaps are absent by
+/// construction, and an added one is a `+` row here.
 #[rustfmt::skip]
 const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     // Class 2 — creation-failure retire. Never reaped, never retired.
@@ -2865,6 +2866,10 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     // never published to the scheduler, so (like hold_init_publication) the row
     // was never reaped and will never be retired; the join would strand it.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
+    // Class 2 — #745: sys_fork_with_parent_context's own defensive teardown
+    // arm, same shape as sys_spawn's above (believed unreachable in
+    // practice; see its own doc comment).
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     // Class 4 — the p1_row_epoch_gate harness. It must keep bumping ROW_REMOVAL_EPOCH or P1's parked-reclaimer `{row}` arm stops being driven.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
     // Class 3 — the twenty in-kernel oracle callers, nine enclosing items.
@@ -3254,6 +3259,12 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     // thread was never published, alongside retracting the parent's
     // `children` entry and the row itself.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_spawn", 1),
+    // #745: sys_fork_with_parent_context's own defensive teardown arm
+    // (believed unreachable -- complete_fork's own invariant guarantees
+    // main_thread is Some whenever fork_process_with_parent_context returns
+    // Ok -- but mirrors sys_spawn's identical undo above for defense in
+    // depth rather than leaving a half-published row behind).
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=aarch64)] fn terminate_thread_best_effort", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
