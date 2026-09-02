@@ -51,18 +51,31 @@
 //!
 //! A timeout arm now recovers the peer's stamps before deciding: the peer's
 //! exit code says whether it published, and its `write_ms` says when.
-//! A publication strictly before the poll's own deadline (`entry + timeout_ms`,
-//! a lower bound on the kernel's) is a lost wake and stays a FAIL. A
-//! publication at or after it is a window the publication did not enter, so it
-//! decides neither way and is retried against a higher poll ceiling — and if
-//! the peer keeps overrunning, the FAIL that ends it is `late_peer_overrun`
-//! carrying the measured overrun, not a wake-loss claim.
+//! `late_lost_wake` now needs TWO facts, and it is a FAIL only with both: the
+//! peer began its send before the poll's own deadline (`entry + timeout_ms`, a
+//! lower bound on the kernel's), and the bytes were on the socket the instant
+//! the poll gave up — which the probe reads directly. Anything else is a window
+//! the publication did not enter, decides neither way, and is retried against a
+//! higher poll ceiling; if the peer keeps overrunning, the FAIL that ends it is
+//! `late_peer_overrun` carrying the measured overrun, not a wake-loss claim.
 //!
-//! The comparison is against the DEADLINE and not against `returned`, the
-//! parent's post-syscall stamp. They differ by however long it took the parent
-//! to get the CPU back, which on beast KVM was measured at 543 ms for a 150 ms
-//! poll, and a publication landing in that gap is one the poll had already
-//! correctly declined to report.
+//! Both facts are needed because each alone is a stamp that can lie in a
+//! direction that manufactures #693's error again:
+//!
+//!   * `returned`, the parent's post-syscall stamp, is not the poll's deadline.
+//!     They differ by however long it took the parent to get the CPU back,
+//!     measured at 543 ms for a 150 ms poll on beast KVM. A publication landing
+//!     in that gap is one the poll had already correctly declined to report.
+//!   * `write_ms` is stamped BEFORE the peer's `send()`, so it is a lower bound
+//!     on the publication and not the publication itself. A peer descheduled
+//!     between the stamp and the syscall publishes later than it says, measured
+//!     at 762 ms on beast KVM. The probe closes that: an empty socket at the
+//!     instant the poll gave up is the kernel's state, not a stamp.
+//!
+//! The authoritative detector is on the kernel side —
+//! `[POLL_TCP_READY_LOST]` from `sys_poll`, which compares the connection's own
+//! publication instant against the kernel's own deadline. This verdict is the
+//! corroborating one, and the two agree on 5 of 5 boots under mutation 693-K.
 //!
 //! ## The anchor, and the three facts each trial establishes
 //!
@@ -460,6 +473,12 @@ struct LostWakeProbe {
     marker: String,
     consumed: [u8; LATE_MSG_LEN],
     consumed_len: usize,
+    /// True when either probe found bytes on the socket: the `timeout=0`
+    /// rescan reported a ready fd, or the non-blocking read returned bytes.
+    /// This is the fact that separates a lost wake from a late publication, and
+    /// the #693 RCA named it in advance -- "a real lost wake would show as
+    /// `rescan_ready=1` or a positive `nbread_n`".
+    data_present: bool,
 }
 
 /// Re-read the fd the blocking poll just gave up on, two ways, and render both
@@ -474,8 +493,14 @@ fn late_lost_wake_probe(client: Fd) -> LostWakeProbe {
     // when either side got to print.
     let probe_ms = monotonic_ms("late_probe").unwrap_or(0);
     let mut fds = [PollFd::new(client, POLLIN)];
+    let mut data_present = false;
     let rescan = match io::poll(&mut fds, 0) {
-        Ok(n) => format!("rescan_ready={} rescan_revents={:#06x}", n, fds[0].revents),
+        Ok(n) => {
+            if n > 0 {
+                data_present = true;
+            }
+            format!("rescan_ready={} rescan_revents={:#06x}", n, fds[0].revents)
+        }
         Err(e) => format!("rescan_err={}", e),
     };
 
@@ -488,6 +513,9 @@ fn late_lost_wake_probe(client: Fd) -> LostWakeProbe {
                     let outcome = match io::read(client, &mut consumed) {
                         Ok(n) => {
                             consumed_len = n;
+                            if n > 0 {
+                                data_present = true;
+                            }
                             format!("nbread_n={}", n)
                         }
                         Err(e) => format!("nbread_err={}", e),
@@ -508,6 +536,7 @@ fn late_lost_wake_probe(client: Fd) -> LostWakeProbe {
         ),
         consumed,
         consumed_len,
+        data_present,
     }
 }
 
@@ -622,14 +651,25 @@ struct LateTrial {
 /// How the timeout arm of a trial was decided, once the peer's publication
 /// instant is in hand.
 enum TimeoutVerdict {
-    /// Readiness was published strictly INSIDE the poll's own budget and the
-    /// poll did not report it. This is a lost wake, and it is what the verdict
-    /// names.
+    /// The peer began its send before the poll's budget expired AND the bytes
+    /// were on the socket the instant the poll gave up. This is a lost wake.
     Lost,
-    /// The peer published after the poll's budget had already expired. The
-    /// poll's 0 is the right answer for a socket that had not been written to
-    /// when the deadline passed.
+    /// The peer had not begun its send when the poll's budget expired. The
+    /// poll's 0 is the right answer for a socket that had not been written to.
     PublishedAfterDeadline,
+    /// The peer had begun its send before the deadline, but the socket was
+    /// still empty when the poll gave up -- so the bytes had not reached it
+    /// yet, and the poll's 0 was the right answer for the state it read.
+    ///
+    /// This case is why the verdict needs the probe. `write_ms` is stamped
+    /// BEFORE the peer's `send()`, so it is a lower bound on the publication
+    /// and not the publication itself: on beast KVM boot 14 of the second
+    /// 25-boot battery, a peer stamped 38488, was descheduled, and its send
+    /// landed after the poll's 39250 deadline. The kernel's own reading at that
+    /// deadline was `rx_len=0 publish=none_in_window`, and the parent's probe
+    /// agreed with it (`rescan_ready=0 … nbread_err=EAGAIN`). Calling that a
+    /// lost wake would have been #693's error committed a third time.
+    NotReadableAtReturn,
 }
 
 /// The outcome of one completed trial.
@@ -691,6 +731,10 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
         let elapsed = returned.saturating_sub(entry);
 
         let timed_out = ready != 1 || fds[0].revents & POLLIN == 0;
+        // Whether the socket held bytes at the instant the poll gave up. Read
+        // by the probe below on the timeout arm, and it is one of the two facts
+        // the `late_lost_wake` verdict needs.
+        let mut readable_at_return = false;
         let stamps = if timed_out {
             // Emit the discriminating facts BEFORE the reap, because the reap is
             // the one step in this arm that can itself block without a bound --
@@ -711,6 +755,7 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
             //              takes off the socket is carried into the payload
             //              collection below rather than discarded.
             let probe = late_lost_wake_probe(client);
+            readable_at_return = probe.data_present;
             emit(&probe.marker);
 
             let mut status = 0i32;
@@ -805,10 +850,12 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
             // report it lost it. The interval this gives up on is the kernel's
             // own syscall-entry latency, microseconds wide.
             let deadline = entry.saturating_add(timeout_ms.max(0) as u64);
-            let verdict = if write_ms < deadline {
+            let verdict = if write_ms >= deadline {
+                TimeoutVerdict::PublishedAfterDeadline
+            } else if readable_at_return {
                 TimeoutVerdict::Lost
             } else {
-                TimeoutVerdict::PublishedAfterDeadline
+                TimeoutVerdict::NotReadableAtReturn
             };
             let late_by = write_ms.saturating_sub(deadline);
             // Report the classification and the numbers it was made from on
@@ -819,8 +866,9 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
                 "[POLL_TCP_ORACLE:LATE_PUBLISH:stage={} decided={} anchor={} entry={} deadline={} returned={} write_ms={} late_by_ms={} delay_ms={} timeout={}]",
                 trial.stage,
                 match verdict {
-                    TimeoutVerdict::Lost => "published_before_deadline",
+                    TimeoutVerdict::Lost => "lost",
                     TimeoutVerdict::PublishedAfterDeadline => "published_after_deadline",
+                    TimeoutVerdict::NotReadableAtReturn => "not_readable_at_return",
                 },
                 anchor,
                 entry,
@@ -840,7 +888,7 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
                     return Err(fail(
                         "late_lost_wake",
                         format!(
-                            "stage={} ready={} revents={:#06x} anchor={} entry={} deadline={} returned={} write_ms={} published_before_deadline_ms={} elapsed_ms={} timeout={} delay_ms={}",
+                            "stage={} ready={} revents={:#06x} anchor={} entry={} deadline={} returned={} write_ms={} began_before_deadline_ms={} elapsed_ms={} timeout={} delay_ms={} readable_at_return=1",
                             trial.stage,
                             ready,
                             fds[0].revents,
@@ -856,7 +904,7 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
                         ),
                     ));
                 }
-                TimeoutVerdict::PublishedAfterDeadline => {
+                TimeoutVerdict::PublishedAfterDeadline | TimeoutVerdict::NotReadableAtReturn => {
                     if trial.mode == LateMode::Forced {
                         // This is what the Forced arm exists to observe.
                         return Ok(LateResult {
