@@ -95,7 +95,7 @@ specific, named, load-independent defects rather than to contention.
 | boot06 | `/usr/local/test/bin/clon:1` | `CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT` (serial_user.txt:912) | **#700** | yes |
 | boot10 | `/usr/local/test/bin/clon:1` | same exact string, `CLONEVM_EXEC_TEST: ERROR futex timeout did not return ETIMEDOUT` | **#700** | yes |
 | boot14 | `/usr/local/test/bin/clon:1` | same exact string | **#700** | yes |
-| boot20 | `clock_gettime_test:1` | `TEST_TALLY: exited=22 nonzero=1 failed=[clock_gettime_test:1]`, no discriminating message (the gap #631 itself names as its own first suggested fix) | **#631** | yes |
+| boot20 | `clock_gettime_test:1` | `TEST_TALLY: exited=22 nonzero=1 failed=[clock_gettime_test:1]` -- **correction (review-707.md F2):** this cell previously said "no discriminating message"; the boot's own serial names the failing assertion exactly: `boot20/serial_user.txt:626-628` reads `Test 3: Sub-millisecond precision` / `Elapsed: 1301721625 ns` / `FAIL: Elapsed time >= 1ms (possible PIT fallback)` -- 1301x the 1ms bound. The same boot's Test 4 refutes that message's own parenthetical: `Millisecond-aligned samples: 0/10` (`:631`) then `PASS: Nanosecond precision confirmed` (`:679`) -- 0/10 aligned samples is the test's own PIT-fallback discriminator saying it is *not* PIT fallback | **#631** | yes |
 | boot23 | `/usr/local/test/bin/clon:1` | same exact string | **#700** | yes |
 | boot24 | `loopback_wake_test_child:15`, `loopback_wake_test:1` | same `reader_exit_15` / `EOF_WAKE_BOUND_MS` shape as boot06 | **#692** | yes |
 
