@@ -36,6 +36,17 @@ BLOCK_EINTR_ORACLE_FAIL_LITERAL='[BLOCK_EINTR_ORACLE:FAIL'
 # where the program never started.
 POLL_TCP_ORACLE_LITERAL='[POLL_TCP_ORACLE:'
 POLL_TCP_ORACLE_FAIL_LITERAL='[POLL_TCP_ORACLE:FAIL'
+# #693: the kernel's own contradiction check. `[POLL_TCP_READY_LOST]` is
+# emitted from `sys_poll` when a blocking poll hands back a fd without POLLIN
+# although bytes were published into that connection inside the poll's own
+# window and are still buffered. It does not depend on any userspace program's
+# opinion, so it is pinned separately from the oracle verdict above.
+# `[POLL_TCP_TIMEOUT]` comes out of the same function on each ordinary boot
+# (the oracle's stage 1 and stage 4 are both built to time out) and is
+# required so that "no lost-wake marker" is a reading rather than an
+# assumption about a reporting path that might be dead.
+POLL_TCP_TIMEOUT_LITERAL='[POLL_TCP_TIMEOUT]'
+POLL_TCP_READY_LOST_LITERAL='[POLL_TCP_READY_LOST]'
 # The refusing setter's record.
 ALIEN_LITERAL='[PERCPU_STACK_ALIEN:'
 
@@ -173,6 +184,20 @@ fi
 if grep -qaF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
     echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
     echo "Poll TCP oracle reported failure: $(grep -aF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$OUTPUT_DIR/serial.txt" | tail -1)"
+    dump_reports
+    exit 1
+fi
+
+if ! grep -qaF "$POLL_TCP_TIMEOUT_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
+    echo "Missing marker: $POLL_TCP_TIMEOUT_LITERAL (kernel poll timeout report (#693) never emitted)"
+    dump_reports
+    exit 1
+fi
+
+if grep -qaF "$POLL_TCP_READY_LOST_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    echo "ARM64 PERCPU STACK CUSTODY GATE: FAILED"
+    echo "Kernel reported a lost TCP readiness publication (#693): $(grep -aF "$POLL_TCP_READY_LOST_LITERAL" "$OUTPUT_DIR/serial.txt" | tail -1)"
     dump_reports
     exit 1
 fi
