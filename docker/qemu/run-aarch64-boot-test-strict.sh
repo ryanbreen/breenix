@@ -214,6 +214,23 @@ score_serial() {
         echo "Poll TCP oracle reported failure ($(grep -aoF -m1 "[POLL_TCP_ORACLE:FAIL" "$serial_file"))"
         return 1
     fi
+    # #693: the kernel's own contradiction check. `[POLL_TCP_READY_LOST]` is
+    # emitted from `sys_poll` when a blocking poll hands back a fd without
+    # POLLIN although bytes were published into that connection inside the
+    # poll's own window and are still buffered. It does not depend on any
+    # userspace program's opinion, so it is pinned separately from the oracle
+    # verdict above. `[POLL_TCP_TIMEOUT]` comes out of the same function on
+    # each ordinary boot (the oracle's stage 1 and stage 4 are both built to
+    # time out) and is required so that "no lost-wake marker" is a reading
+    # rather than an assumption about a reporting path that might be dead.
+    if ! grep -qF "[POLL_TCP_TIMEOUT]" "$serial_file" 2>/dev/null; then
+        echo "Kernel poll timeout report (#693) never emitted"
+        return 1
+    fi
+    if grep -qF "[POLL_TCP_READY_LOST]" "$serial_file" 2>/dev/null; then
+        echo "Kernel reported a lost TCP readiness publication (#693): $(grep -aF -m1 "[POLL_TCP_READY_LOST]" "$serial_file")"
+        return 1
+    fi
     if ! grep -qE "$FUTEX_HANDOFF_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Futex handoff oracle marker missing or failed"
         return 1

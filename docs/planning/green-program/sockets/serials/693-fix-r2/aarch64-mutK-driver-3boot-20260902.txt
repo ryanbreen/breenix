@@ -1,0 +1,86 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_2e41c541-a2d-3/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_2e41c541-a2d-3/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 #575 Service Sequence Gate
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_2e41c541-a2d-3/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_2e41c541-a2d-3/target/ext2-aarch64.img
+Boots per profile: 3
+Profile selection: max
+Block IOPS throttle: 2000
+Per-boot timeout: 45s
+Output: /tmp/breenix_aarch64_service_sequence_gate_20260902T214541Z-39325
+
+Profile max: running 3 sequential boots
+qemu-system-aarch64: terminating on signal 15 from pid 39325 (<unknown process>)
+  Boot 1/3: UNATTRIBUTED — kernel reported a lost TCP readiness publication (#693): [POLL_TCP_READY_LOST] fd=4 timeout_ms=5000 publish_after_entry_us=80278 before_deadline_us=4919722 rx_len=23 revents=0x0000 [early, 14s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=8]
+qemu-system-aarch64: terminating on signal 15 from pid 39325 (<unknown process>)
+  Boot 2/3: UNATTRIBUTED — kernel reported a lost TCP readiness publication (#693): [POLL_TCP_READY_LOST] fd=4 timeout_ms=5000 publish_after_entry_us=81601 before_deadline_us=4918399 rx_len=23 revents=0x0000 [early, 14s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=8]
+qemu-system-aarch64: terminating on signal 15 from pid 39325 (<unknown process>)
+  Boot 3/3: UNATTRIBUTED — kernel reported a lost TCP readiness publication (#693): [POLL_TCP_READY_LOST] fd=4 timeout_ms=5000 publish_after_entry_us=81737 before_deadline_us=4918263 rx_len=23 revents=0x0000 [early, 14s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=8]
+
+Profile max census
+  575           0
+  576           0
+  626           0
+  635           0
+  641           0
+  690           0
+  DATA_ABORT    0
+  CLONE_EXEC    0
+  STRAND        0
+  BOOT_TEST_FAIL 0
+  596           0
+  612           0
+  609           0
+  P5B           0
+  GREEN         0
+  UNATTRIBUTED  3
+  GREEN rate: 0/3 (0.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+  CTX596 divergence: 1 marker line(s) across 1/3 boot(s) — reported, not gated
+  RET dispatch refused: 0 marker line(s) across 0/3 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/3 boot(s) — gate-failing
+  Per-CPU stack alien: 0 marker line(s) across 0/3 boot(s) — gate-failing
+  CPU identity split: 0 marker line(s) across 0/3 boot(s) — gate-failing
+  Ret-dispatch staging refused: 0 marker line(s) across 0/3 boot(s) — gate-failing
+  Saved-LR non-PC words: 24 marker line(s) across 3/3 boot(s) — reported, not gated
+Profile max gate: FAILED (575=0, 576=0, 626=0, 635=0, 641=0, 690=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=3, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)
+
+Total census
+  575           0
+  576           0
+  626           0
+  635           0
+  641           0
+  690           0
+  DATA_ABORT    0
+  CLONE_EXEC    0
+  STRAND        0
+  BOOT_TEST_FAIL 0
+  596           0
+  612           0
+  609           0
+  P5B           0
+  GREEN         0
+  UNATTRIBUTED  3
+  GREEN rate: 0/3 (0.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+  CTX596 divergence: 1 marker line(s) across 1/3 boot(s) — reported, not gated
+  RET dispatch refused: 0 marker line(s) across 0/3 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/3 boot(s) — gate-failing
+  Per-CPU stack alien: 0 marker line(s) across 0/3 boot(s) — gate-failing
+  CPU identity split: 0 marker line(s) across 0/3 boot(s) — gate-failing
+  Ret-dispatch staging refused: 0 marker line(s) across 0/3 boot(s) — gate-failing
+  Saved-LR non-PC words: 24 marker line(s) across 3/3 boot(s) — reported, not gated
+
+ARM64 #575 SERVICE SEQUENCE GATE: FAILED
+Non-GREEN boots:
+  /tmp/breenix_aarch64_service_sequence_gate_20260902T214541Z-39325/max/serial-1.txt: UNATTRIBUTED — kernel reported a lost TCP readiness publication (#693): [POLL_TCP_READY_LOST] fd=4 timeout_ms=5000 publish_after_entry_us=80278 before_deadline_us=4919722 rx_len=23 revents=0x0000 (qemu_status=0) [early, 14s]
+  /tmp/breenix_aarch64_service_sequence_gate_20260902T214541Z-39325/max/serial-2.txt: UNATTRIBUTED — kernel reported a lost TCP readiness publication (#693): [POLL_TCP_READY_LOST] fd=4 timeout_ms=5000 publish_after_entry_us=81601 before_deadline_us=4918399 rx_len=23 revents=0x0000 (qemu_status=0) [early, 14s]
+  /tmp/breenix_aarch64_service_sequence_gate_20260902T214541Z-39325/max/serial-3.txt: UNATTRIBUTED — kernel reported a lost TCP readiness publication (#693): [POLL_TCP_READY_LOST] fd=4 timeout_ms=5000 publish_after_entry_us=81737 before_deadline_us=4918263 rx_len=23 revents=0x0000 (qemu_status=0) [early, 14s]
+Preserved serials:
+  /tmp/breenix_aarch64_service_sequence_gate_20260902T214541Z-39325/max/serial-1.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260902T214541Z-39325/max/serial-2.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260902T214541Z-39325/max/serial-3.txt

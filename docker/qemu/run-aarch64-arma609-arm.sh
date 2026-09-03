@@ -391,6 +391,17 @@ classify_serial() {
         return
     fi
 
+    # #693: the same arm for the kernel's own lost-readiness report, which is a
+    # contradiction in kernel state rather than a userspace verdict and so is
+    # checked whether or not the oracle reached a verdict at all.
+    if grep -qF '[POLL_TCP_READY_LOST]' "$serial_file" 2>/dev/null; then
+        oracle_fail_line=$(grep -F '[POLL_TCP_READY_LOST]' "$serial_file" 2>/dev/null \
+            | head -1 | sed 's/[[:space:]]*$//')
+        CLASS="ORACLE_FAIL"
+        CLASS_REASON="kernel lost TCP readiness publication (#693): $oracle_fail_line"
+        return
+    fi
+
     if grep -qF '[BOOT_TESTS:FAIL' "$serial_file" 2>/dev/null \
         || grep -qE '\[TESTS_COMPLETE:[^]]*:FAILED:[1-9][0-9]*\]' "$serial_file" 2>/dev/null; then
         boot_test_fail_line=$(grep -ahoE '\[TEST:[^]]*:FAIL:[^]]*\]' \
@@ -500,6 +511,11 @@ for boot in $(seq 1 "$BOOTS"); do
             break
         fi
         if grep -qF '[POLL_TCP_ORACLE:FAIL' "$SERIAL_FILE" 2>/dev/null; then
+            BOOT_END="early"
+            kill "$QEMU_PID" 2>/dev/null || true
+            break
+        fi
+        if grep -qF '[POLL_TCP_READY_LOST]' "$SERIAL_FILE" 2>/dev/null; then
             BOOT_END="early"
             kill "$QEMU_PID" 2>/dev/null || true
             break

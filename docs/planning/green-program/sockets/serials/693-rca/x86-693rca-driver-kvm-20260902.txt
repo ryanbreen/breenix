@@ -1,0 +1,64 @@
+#!/bin/bash
+# #693 repeat driver, hermetic. Boots a PRIVATE copy of the branch's images with
+# the byte-identical QEMU argv the qemu-uefi runner emits under
+# BREENIX_NET_MODE=none, so a concurrent rebuild of /root/breenix cannot swap
+# the kernel under a running boot (that is what boot15 of the first battery hit:
+# it loaded tcp_cloexec_exec_test, a program this branch does not contain).
+set -u
+COUNT="${1:-60}"
+TAG="${2:-kvm2}"
+HARD_TIMEOUT="${HARD_TIMEOUT:-300}"
+GRACE="${GRACE:-6}"
+BIN=/root/r693/bin
+OUT="/root/r693/$TAG"
+mkdir -p "$OUT"
+
+for i in $(seq 1 "$COUNT"); do
+  D="$OUT/boot$i"
+  rm -rf "$D"; mkdir -p "$D"
+  cp "$BIN/vars.fd" "$D/OVMF_VARS.fd"
+  timeout "$HARD_TIMEOUT" qemu-system-x86_64 \
+    -pflash "$BIN/code.fd" \
+    -pflash "$D/OVMF_VARS.fd" \
+    -drive "if=none,id=hd,format=raw,media=disk,file=$BIN/breenix-uefi.img" \
+    -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
+    -drive "if=none,id=testdisk,format=raw,file=$BIN/test_binaries.img" \
+    -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
+    -drive "if=none,id=ext2disk,format=raw,file=$BIN/ext2.img" \
+    -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
+    -machine pc,accel=kvm -cpu host -smp 1 -m 512 \
+    -device virtio-vga,xres=1920,yres=1080 \
+    -display none -boot strict=on -no-reboot -no-shutdown -monitor none \
+    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+    -fw_cfg name=opt/org.tianocore/StdoutToSerial,string=1 \
+    -serial file:"$D/serial_user.log" \
+    -serial file:"$D/serial_kernel.log" \
+    > "$D/stdout.log" 2>&1 &
+  QPID=$!
+  SEEN=0
+  for ((t=0; t<HARD_TIMEOUT; t+=2)); do
+    sleep 2
+    kill -0 "$QPID" 2>/dev/null || break
+    if grep -qhE '\[POLL_TCP_ORACLE:(PASS|FAIL)' "$D/serial_user.log" "$D/serial_kernel.log" 2>/dev/null; then
+      SEEN=1; sleep "$GRACE"; break
+    fi
+  done
+  # Reap the qemu child too, not just the `timeout` wrapper: SIGKILL on the
+  # wrapper orphans qemu, which keeps the images' write lock and makes every
+  # later boot in the run fail to start. The -f pattern names this driver's own
+  # private image path, so it cannot match anyone else's run on this host.
+  pkill -P "$QPID" 2>/dev/null
+  kill -9 "$QPID" 2>/dev/null
+  wait "$QPID" 2>/dev/null
+  pkill -9 -f "$BIN/breenix-uefi.img" 2>/dev/null
+  sleep 2
+
+  VERDICT="$(grep -hoE '\[POLL_TCP_ORACLE:(PASS|FAIL):[^]]*\]' "$D"/serial_*.log 2>/dev/null | head -1)"
+  PEERS="$(grep -hoE '\[POLL_TCP_ORACLE:PEER:[^]]*\]' "$D"/serial_*.log 2>/dev/null | sort -u | tr '\n' '|')"
+  PROBE="$(grep -hoE '\[POLL_TCP_ORACLE:LOSTWAKE_PROBE:[^]]*\]' "$D"/serial_*.log 2>/dev/null | head -1)"
+  ORACLE_LOADED="$(grep -c "Loaded 'poll_tcp_oracle' from test disk" "$D/serial_kernel.log" 2>/dev/null || echo 0)"
+  echo "[$TAG boot $i] marker_seen=$SEEN oracle_loaded=$ORACLE_LOADED"
+  echo "   verdict: ${VERDICT:-<none>}"
+  echo "   peers:   ${PEERS:-<none>}"
+  echo "   probe:   ${PROBE:-<none>}"
+done

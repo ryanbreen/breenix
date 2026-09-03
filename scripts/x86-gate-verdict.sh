@@ -45,6 +45,23 @@ if (( strand_rc != 0 )); then
     fail "a thread was saved blocked in a kernel wait and never restored (see the strand census above)"
 fi
 
+# #693: the kernel's own lost-readiness report, checked before the terminal
+# markers for the same reason the strand census is: a boot that lost a readiness
+# publication should be named by that, not by whatever a program downstream of
+# it then failed to print.
+#
+# This is a failure check with no matching presence check, deliberately. The
+# ordinary companion line [POLL_TCP_TIMEOUT] is only emitted by a blocking poll
+# of at least 120 ms on a connected TCP fd, and whether any x86 boot profile
+# contains one depends on #697 (see kernel/src/main.rs). Requiring it here would
+# assert a property of the profile that this script cannot know; requiring the
+# ABSENCE of a contradiction is sound on any profile, including one that does
+# not poll a TCP fd.
+if grep -hFq '[POLL_TCP_READY_LOST]' "$@"; then
+    printf '%s\n' "$(grep -hF '[POLL_TCP_READY_LOST]' "$@" | head -1)"
+    fail "the kernel reported a lost TCP readiness publication (#693): a blocking poll() returned without POLLIN although bytes were published inside its window and are still buffered"
+fi
+
 if ! grep -hFq 'USERSPACE TEST COMPLETE' "$@"; then
     fail "USERSPACE TEST COMPLETE was absent; boot did not finish"
 fi

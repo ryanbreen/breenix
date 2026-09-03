@@ -1,0 +1,76 @@
+[r3-kvm boot 1] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=573:late_ms=862:park_ms=773:forced_ms=297:forced_late_by_ms=1102]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=30996 entry=31145 deadline=31295 returned=31442 write_ms=32397 late_by_ms=1102 delay_ms=1000 timeout=150]|
+[r3-kvm boot 2] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=601:late_ms=655:park_ms=550:forced_ms=369:forced_late_by_ms=956]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=29056 entry=29436 deadline=29586 returned=29805 write_ms=30542 late_by_ms=956 delay_ms=1000 timeout=150]|
+[r3-kvm boot 3] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=992:late_ms=900:park_ms=646:forced_ms=503:forced_late_by_ms=425]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=36110 entry=36257 deadline=36407 returned=36760 write_ms=36832 late_by_ms=425 delay_ms=500 timeout=150]|
+[r3-kvm boot 4] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1268:late_ms=600:park_ms=516:forced_ms=167:forced_late_by_ms=312]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=28971 entry=29192 deadline=29342 returned=29359 write_ms=29654 late_by_ms=312 delay_ms=500 timeout=150]|
+[r3-kvm boot 5] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1545:late_ms=517:park_ms=432:forced_ms=573:forced_late_by_ms=833]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=27888 entry=28574 deadline=28724 returned=29147 write_ms=29557 late_by_ms=833 delay_ms=500 timeout=150]|
+[r3-kvm boot 6] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1478:late_ms=753:park_ms=679:forced_ms=1288:forced_late_by_ms=636]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=29463 entry=29630 deadline=29780 returned=30918 write_ms=30416 late_by_ms=636 delay_ms=500 timeout=150]|
+[r3-kvm boot 7] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1212:late_ms=4225:park_ms=4152:forced_ms=311:forced_late_by_ms=565]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=31414 entry=31740 deadline=31890 returned=32051 write_ms=32455 late_by_ms=565 delay_ms=500 timeout=150]|
+[r3-kvm boot 8] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1534:late_ms=2244:park_ms=1664:forced_ms=193:forced_late_by_ms=381]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=32658 entry=32851 deadline=33001 returned=33044 write_ms=33382 late_by_ms=381 delay_ms=500 timeout=150]|
+[r3-kvm boot 9] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1090:late_ms=616:park_ms=230:forced_ms=424:forced_late_by_ms=814]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=32726 entry=32959 deadline=33109 returned=33383 write_ms=33923 late_by_ms=814 delay_ms=500 timeout=150]|
+[r3-kvm boot 10] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1415:late_ms=285:park_ms=211:forced_ms=311:forced_late_by_ms=259]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=31996 entry=32268 deadline=32418 returned=32579 write_ms=32677 late_by_ms=259 delay_ms=500 timeout=150]|
+[r3-kvm boot 11] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1586:late_ms=1372:park_ms=1118:forced_ms=538:forced_late_by_ms=1757]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=32264 entry=32424 deadline=32574 returned=32962 write_ms=34331 late_by_ms=1757 delay_ms=1000 timeout=150]|
+[r3-kvm boot 12] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1190:late_ms=152:park_ms=109:forced_ms=167:forced_late_by_ms=941]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=37574 entry=37774 deadline=37924 returned=37941 write_ms=38865 late_by_ms=941 delay_ms=500 timeout=150]|
+[r3-kvm boot 13] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=2135:late_ms=602:park_ms=530:forced_ms=225:forced_late_by_ms=587]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=31280 entry=31782 deadline=31932 returned=32007 write_ms=32519 late_by_ms=587 delay_ms=1000 timeout=150]|
+[r3-kvm boot 14] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1318:late_ms=2499:park_ms=1099:forced_ms=603:forced_late_by_ms=151]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=34501 entry=34894 deadline=35044 returned=35497 write_ms=35195 late_by_ms=151 delay_ms=500 timeout=150]|
+[r3-kvm boot 15] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1184:late_ms=469:park_ms=390:forced_ms=211:forced_late_by_ms=811]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=32420 entry=32622 deadline=32772 returned=32833 write_ms=33583 late_by_ms=811 delay_ms=1000 timeout=150]|
+[r3-kvm boot 16] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1321:late_ms=1075:park_ms=622:forced_ms=222:forced_late_by_ms=307]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=30877 entry=31094 deadline=31244 returned=31316 write_ms=31551 late_by_ms=307 delay_ms=500 timeout=150]|
+[r3-kvm boot 17] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=2592:late_ms=1053:park_ms=478:forced_ms=188:forced_late_by_ms=744]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=35654 entry=35842 deadline=35992 returned=36030 write_ms=36736 late_by_ms=744 delay_ms=1000 timeout=150]|
+[r3-kvm boot 18] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1209:late_ms=2182:park_ms=1613:forced_ms=231:forced_late_by_ms=183]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=34485 entry=34821 deadline=34971 returned=35052 write_ms=35154 late_by_ms=183 delay_ms=500 timeout=150]|
+[r3-kvm boot 19] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=782:late_ms=740:park_ms=545:forced_ms=626:forced_late_by_ms=1055]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=34385 entry=34578 deadline=34728 returned=35204 write_ms=35783 late_by_ms=1055 delay_ms=500 timeout=150]|
+[r3-kvm boot 20] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=2475:late_ms=964:park_ms=457:forced_ms=609:forced_late_by_ms=1349]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=37544 entry=37587 deadline=37737 returned=38196 write_ms=39086 late_by_ms=1349 delay_ms=1000 timeout=150]|
+[r3-kvm boot 21] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1697:late_ms=317:park_ms=184:forced_ms=830:forced_late_by_ms=732]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=33880 entry=34101 deadline=34251 returned=34931 write_ms=34983 late_by_ms=732 delay_ms=500 timeout=150]|
+[r3-kvm boot 22] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1783:late_ms=784:park_ms=508:forced_ms=434:forced_late_by_ms=1191]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=34802 entry=34969 deadline=35119 returned=35403 write_ms=36310 late_by_ms=1191 delay_ms=500 timeout=150]|
+[r3-kvm boot 23] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1495:late_ms=780:park_ms=348:forced_ms=176:forced_late_by_ms=1897]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=36163 entry=36364 deadline=36514 returned=36540 write_ms=38411 late_by_ms=1897 delay_ms=1000 timeout=150]|
+[r3-kvm boot 24] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=2363:late_ms=1265:park_ms=1183:forced_ms=382:forced_late_by_ms=889]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=32514 entry=32836 deadline=32986 returned=33218 write_ms=33875 late_by_ms=889 delay_ms=1000 timeout=150]|
+[r3-kvm boot 25] marker_seen=1 oracle_loaded=1 poll_tcp_timeout=2 ready_lost=0
+   verdict: [POLL_TCP_ORACLE:PASS:stages=4:idle_ms=1289:late_ms=1003:park_ms=825:forced_ms=425:forced_late_by_ms=436]
+   latepub: [POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=36970 entry=37379 deadline=37529 returned=37804 write_ms=37965 late_by_ms=436 delay_ms=500 timeout=150]|
+KVM_DONE

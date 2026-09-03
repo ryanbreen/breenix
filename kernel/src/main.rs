@@ -1513,6 +1513,18 @@ fn kernel_main_continue() -> ! {
             // assertion removed from docker/qemu/run-boot-parallel.sh, is
             // tracked by #697. The #568 kernel fix itself is proven on x86
             // without the oracle, by the strand census in the A/B battery.
+            //
+            // #693's x86 batteries DID need it launched, so they ran on bytes
+            // carrying an investigation patch that adds this launch site back,
+            // committed as an apply/revert pair next to the drivers
+            // (docs/planning/green-program/sockets/serials/693-fix/
+            // x86-launch-site-apply.sh and -revert.sh). That patch is NOT in
+            // the branch's bytes, because with it applied this file's own x86
+            // boot gate cannot satisfy the census assertion at
+            // docker/qemu/run-x86-boot-tests.sh:548: the oracle's stage-3 and
+            // stage-4 ladders each fork at least 1 peer, so CENSUS_REMOVED is
+            // at least 8 against a pin of 6, and the 1 gate boot the round-2
+            // review ran at eba15887 reaped 5 peers. That is #697's scope.
 
             {
                 serial_println!("RING3_SMOKE: creating clonevm_exec_test userspace process");

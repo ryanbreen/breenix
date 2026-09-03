@@ -527,6 +527,17 @@ classify_serial() {
         CLASS_REASON="poll TCP oracle (#568) reported failure: $(grep -aF "[POLL_TCP_ORACLE:FAIL" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
         return
     fi
+    # #693: the kernel's own statement that a blocking poll() returned without
+    # POLLIN while the bytes it should have reported were published inside that
+    # poll's window and are still in the receive buffer. That is a contradiction
+    # in kernel state rather than an oracle's opinion, and it does not depend on
+    # any userspace program running, so it is checked independently of the
+    # oracle's verdict above.
+    if grep -qF "[POLL_TCP_READY_LOST]" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="UNATTRIBUTED"
+        CLASS_REASON="kernel reported a lost TCP readiness publication (#693): $(grep -aF "[POLL_TCP_READY_LOST]" "$serial_file" | head -1 | sed 's/[[:space:]]*$//')"
+        return
+    fi
     if grep -qF "failed to spawn service: EIO" "$serial_file" 2>/dev/null; then
         CLASS_BUCKET="575"
         CLASS_REASON="service spawn returned EIO"
@@ -756,6 +767,18 @@ classify_serial() {
     if ! grep -qF "[POLL_TCP_ORACLE:" "$serial_file" 2>/dev/null; then
         CLASS_BUCKET="UNATTRIBUTED"
         CLASS_REASON="poll TCP oracle (#568) marker absent"
+        return
+    fi
+    # #693 anti-vacuity, and the reason the kernel's timeout report is emitted
+    # on ordinary boots: [POLL_TCP_READY_LOST] is a marker a healthy tree does
+    # not emit for months at a time, so its absence is not by itself evidence
+    # that the reporting path is alive. The ordinary [POLL_TCP_TIMEOUT] line
+    # comes out of the SAME function on each boot -- the oracle's stage 1 and
+    # stage 4 are both built to time out -- so requiring it here is what turns
+    # "no lost-wake marker" from an assumption into a reading.
+    if ! grep -qF "[POLL_TCP_TIMEOUT]" "$serial_file" 2>/dev/null; then
+        CLASS_BUCKET="UNATTRIBUTED"
+        CLASS_REASON="kernel poll timeout report (#693) never emitted"
         return
     fi
     # Anti-vacuity: a boot that never armed the #596 oracle cannot be scored
@@ -1111,6 +1134,11 @@ run_profile() {
                 break
             fi
             if grep -qF "[POLL_TCP_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
+                boot_end="early"
+                kill "$QEMU_PID" 2>/dev/null || true
+                break
+            fi
+            if grep -qF "[POLL_TCP_READY_LOST]" "$serial_file" 2>/dev/null; then
                 boot_end="early"
                 kill "$QEMU_PID" 2>/dev/null || true
                 break

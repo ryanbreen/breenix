@@ -29,6 +29,10 @@ POLL_TCP_ORACLE_LITERAL='[POLL_TCP_ORACLE:'
 # needed: presence alone passes a boot whose verdict was FAIL, and the FAIL
 # grep alone passes a boot where the program never started.
 POLL_TCP_ORACLE_FAIL_LITERAL='[POLL_TCP_ORACLE:FAIL'
+# #693: the kernel's own lost-readiness report from sys_poll. Pinned separately
+# from the oracle verdict because it is a statement about kernel state, not a
+# userspace program's opinion.
+POLL_TCP_READY_LOST_LITERAL='[POLL_TCP_READY_LOST]'
 # This proves the complete boot-tests sequence reported success.
 BOOT_TESTS_PASS_LITERAL='[BOOT_TESTS:PASS]'
 
@@ -133,6 +137,11 @@ fi
 if ! grep -qF "$POLL_TCP_ORACLE_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
     echo "ARM64 REFUSAL DRAIN GATE: FAILED"
     echo "Missing marker: $POLL_TCP_ORACLE_LITERAL"
+    exit 1
+fi
+if grep -qF "$POLL_TCP_READY_LOST_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    echo "ARM64 REFUSAL DRAIN GATE: FAILED"
+    echo "Kernel reported a lost TCP readiness publication (#693): $(grep -aF "$POLL_TCP_READY_LOST_LITERAL" "$OUTPUT_DIR/serial.txt" | tail -1)"
     exit 1
 fi
 if grep -qF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then

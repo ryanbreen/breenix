@@ -4037,6 +4037,12 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
     // re-check fds for responsiveness.
     let (s, n) = crate::time::get_monotonic_time_ns();
     let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
+    // #693: the instant the blocking phase begins, kept for the timeout report
+    // below. The entry scan above has already run and found no ready fd, so a
+    // publication stamped after this instant is one that landed while this
+    // thread was parked -- which is exactly the quantity #693 needed and could
+    // not obtain.
+    let entry_ns = now_ns;
     let deadline_ns = if timeout < 0 {
         u64::MAX // infinite — will keep looping until fds ready or signal
     } else {
@@ -4045,7 +4051,11 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
 
     // Block for a short interval (1ms) at a time so we can re-check fds.
     // Use block_current_for_timer to properly yield the CPU.
-    let poll_interval_ns: u64 = 1_000_000; // 1ms — one timer tick at 1000Hz
+    // 1 ms. This is a re-check cadence, not a tick count: on x86 the PIT runs at
+    // 200 Hz, so a tick is 5 ms and this interval is shorter than one tick. The
+    // comment it replaces said "one timer tick at 1000Hz", which is true on
+    // aarch64 and false on x86.
+    let poll_interval_ns: u64 = 1_000_000;
 
     loop {
         let (s, n) = crate::time::get_monotonic_time_ns();
@@ -4149,6 +4159,13 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
         }
     }
 
+    // #693: a blocking poll about to hand back 0 ready fds is the exact event
+    // the issue was filed on, and on its own bytes it was silent. Say it now,
+    // from kernel state, before the answer is unreachable.
+    if ready_count == 0 {
+        poll_report_timeout(&pollfds, &fd_snapshots, entry_ns, deadline_ns, timeout);
+    }
+
     // Write updated pollfds back to userspace
     unsafe {
         let dst = fds_ptr as *mut PollFd;
@@ -4158,6 +4175,120 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
     }
 
     SyscallResult::Ok(ready_count)
+}
+
+/// A blocking `poll()` shorter than this does not get the informational timeout
+/// line. `bssh` and `bsshd` poll connected TCP fds on a 100 ms cadence
+/// (`bssh.rs:160`, `bssh.rs:515`, `bsshd.rs:344` -- 3 of the 3 `io::poll`
+/// calls in those two programs) and time out on most calls by design, so a
+/// line each would be noise. 101 would exclude them too: what 120 is, is the
+/// LARGEST bound that still ADMITS `poll_tcp_oracle`'s stage 1, which asks for
+/// exactly 120 ms.
+///
+/// That is the property this constant needs. `poll_tcp_oracle`'s stage 1 asks
+/// for exactly 120 ms and stage 4 for 150 ms, and both are built to time out,
+/// so a boot that runs the oracle emits this line twice. That is the point: a reporting
+/// path that runs only on the rare failure is a path whose death goes unnoticed
+/// until the failure arrives and the path stays silent.
+const POLL_TIMEOUT_REPORT_MS: i32 = 120;
+
+/// Report what the kernel knows at the instant a blocking `poll()` gives up.
+///
+/// #693 is a `poll()` on a connected TCP fd that returned `ready=0`,
+/// `revents=0x0000` after its full 5 s timeout while a peer process wrote and
+/// exited. Two explanations fit that description -- the kernel lost a readiness
+/// publication, or the peer had not published one yet -- and no line the boot
+/// emitted separated them, so the issue stalled. The separating fact is the
+/// publication instant of the polled connection, which lives in the kernel and
+/// was simply not stated.
+///
+/// Both lines go to the console via `serial_println!`, not through `log::`, and
+/// that is load-bearing rather than a style choice: on aarch64 the `log::` sink
+/// is a second UART, and the aarch64 gate scripts boot QEMU with a single
+/// `-serial file:` (3 of 3 checked: the service-sequence, strict and
+/// prod-profile gates), so a marker emitted with `log::error!` is invisible to
+/// the gates that are supposed to fail on it. The #584 futex oracle marker in
+/// `syscall/futex_oracle.rs` is emitted the same way for the same reason.
+///
+/// Two lines come out of here, and they mean different things:
+///
+/// * `[POLL_TCP_READY_LOST]` -- bytes were published into this connection's
+///   receive buffer strictly inside this poll's own window, they are STILL in
+///   that buffer now, and this poll is nevertheless returning without `POLLIN`
+///   for the fd. The last in-loop scan ran at the deadline and reads the buffer
+///   live through the same connection lock, so it had to have seen those bytes.
+///   That is a contradiction in kernel state, it is the genuine lost wake, and
+///   gates fail on it. The "still in the buffer" clause is what keeps it sound:
+///   without it, a publication consumed by another thread on the same fd before
+///   the deadline would be reported as a loss. The strict `< deadline_ns` is the
+///   other half: bytes that land in the microseconds between the last scan and
+///   this report arrived after the poll's deadline, and reporting them would
+///   make an on-time timeout look like a defect.
+/// * `[POLL_TCP_TIMEOUT]` -- the ordinary case, emitted only for polls that
+///   asked for at least `POLL_TIMEOUT_REPORT_MS`. It carries the publication
+///   instant relative to entry, so "the peer had not published yet" is legible
+///   directly rather than being reconstructed afterwards from two userspace
+///   stamps and the interleaving of console prints, which is what the #693
+///   investigation had to do.
+fn poll_report_timeout(
+    pollfds: &[crate::ipc::poll::PollFd],
+    snapshots: &[Option<crate::ipc::fd::FileDescriptor>],
+    entry_ns: u64,
+    deadline_ns: u64,
+    timeout_ms: i32,
+) {
+    use crate::ipc::poll::events;
+
+    let mut reported_ordinary = false;
+    for (i, pollfd) in pollfds.iter().enumerate() {
+        if pollfd.fd < 0 || (pollfd.events & events::POLLIN) == 0 {
+            continue;
+        }
+        let fd_entry = match snapshots.get(i).and_then(|s| s.as_ref()) {
+            Some(entry) => entry,
+            None => continue,
+        };
+        let (publish_ns, rx_len) = match crate::ipc::poll::tcp_rx_publication(fd_entry) {
+            Some(state) => state,
+            None => continue,
+        };
+
+        let published_in_window = publish_ns > entry_ns && publish_ns < deadline_ns;
+        if published_in_window && rx_len > 0 && (pollfd.revents & events::POLLIN) == 0 {
+            crate::serial_println!(
+                "[POLL_TCP_READY_LOST] fd={} timeout_ms={} publish_after_entry_us={} before_deadline_us={} rx_len={} revents={:#06x}",
+                pollfd.fd,
+                timeout_ms,
+                (publish_ns - entry_ns) / 1_000,
+                (deadline_ns - publish_ns) / 1_000,
+                rx_len,
+                pollfd.revents
+            );
+            continue;
+        }
+
+        if timeout_ms >= POLL_TIMEOUT_REPORT_MS && !reported_ordinary {
+            reported_ordinary = true;
+            if published_in_window {
+                crate::serial_println!(
+                    "[POLL_TCP_TIMEOUT] fd={} timeout_ms={} publish=in_window publish_after_entry_us={} rx_len={} revents={:#06x}",
+                    pollfd.fd,
+                    timeout_ms,
+                    (publish_ns - entry_ns) / 1_000,
+                    rx_len,
+                    pollfd.revents
+                );
+            } else {
+                crate::serial_println!(
+                    "[POLL_TCP_TIMEOUT] fd={} timeout_ms={} publish=none_in_window rx_len={} revents={:#06x}",
+                    pollfd.fd,
+                    timeout_ms,
+                    rx_len,
+                    pollfd.revents
+                );
+            }
+        }
+    }
 }
 
 /// Block the current thread until `wake_ns` (monotonic nanoseconds).
