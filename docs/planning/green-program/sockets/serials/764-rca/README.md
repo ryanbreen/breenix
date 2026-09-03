@@ -160,11 +160,25 @@ boots whose serials sit alongside
 | 7 | 1 | 4740 -- that battery's exit 13 |
 
 (boot14 of that battery printed no accept-block line for port 54530, so it
-carries no census; it passed at 1422 ms.)
+carries no census; it passed at 1422 ms. Six of the remaining 24 boots --
+boot05, boot06, boot07, boot09, boot21, boot24 -- have no `unblock` line
+between the recv-block and the wake, so their turn count is measured from the
+recv-block line instead; 6 of 6 land at one turn.)
 
-Over this battery's 46 boots that have both an `unblock` line and a recv block:
-39 at one turn, 6 at two, 1 at six -- the six being `repro-boot-057`.
-`repro-boot-046` did not block in recv, so it has no census row.
+Over this battery's 46 boots that have both an `unblock` line and a recv block
+-- a narrower filter than the 25-boot table above, which counts from the
+recv-block line when no `unblock` line is present: 39 at one turn, 6 at two, 1
+at six -- the six being `repro-boot-057`. `repro-boot-046` did not block in
+recv, so it has no census row.
+
+29 boots have a recv block and a wake observation but no `unblock(<reader>)`
+line between them. That is not a hole in "the wake is published inside the
+writer's `write()`": the log line sits on the `!already_queued` arm of
+`Scheduler::unblock()` (`kernel/src/task/scheduler.rs:2941-2951`), after the
+unconditional `set_ready()` at `:2897` -- a thread already sitting in a
+`per_cpu_queues` entry when `unblock()` runs is transitioned to `Ready` with
+no enqueue and no log line. It is a logging artifact of that arm, not evidence
+the wake did not happen.
 
 ## A calibration worth keeping
 
