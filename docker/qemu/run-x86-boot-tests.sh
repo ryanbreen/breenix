@@ -142,11 +142,15 @@ readonly TOMBSTONE_FIXTURE_REMOVALS=2
 # PRODUCTION_REAPED_ROWS) red on every boot: a frozen literal pinned the
 # roster's SHAPE at a moment in time instead of the roster ITSELF, the
 # #549/#551/#527-r1 census-not-literal lesson.
-# claim-lint:ok: "red on every boot" restates #697's own filing, which reports
-# 2 of 4 boots failing at this assertion on the run named in that issue (the
-# other 2 of 4 are the pre-existing #692/#731 intermittents #697 excludes);
-# the branch's minimum possible CENSUS_REMOVED value never satisfies the old
-# literal, which is why every boot that reaches this assertion fails it.
+# claim-lint:ok: "red on every boot" is this round's own measurement, not a
+# restatement of #697 (#697's own body records main as green here --
+# "Main emits removed=6 exactly" -- and never mentions #731): both of the 2
+# unpatched-main boots run this round at 509802e5 fail at this exact
+# assertion (docs/planning/green-program/gates/serials/697-2026-09-02/
+# main-unpatched/boot1-gate.txt:426-427, main-unpatched/boot2-gate.txt:407-408,
+# both a FAIL at :548 on this same `test` line); the branch's minimum possible
+# CENSUS_REMOVED value never satisfies the old literal, which is why every
+# boot that reaches this assertion fails it.
 #
 # It is now derived from the same roster kernel_main launches. The
 # RING3_SMOKE block in kernel/src/main.rs loads its userspace test binaries
