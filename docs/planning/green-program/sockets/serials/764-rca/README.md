@@ -31,7 +31,8 @@ waiting to run.
 19 script invocations of 4 boots each; the four smoke boots that validated the
 instrumentation are counted in the 76 and use the same binary. Per-batch VM
 load is in `host-load.txt` (`uptime` before and after each batch; the VM's
-1-minute average stayed at or below 0.60 throughout). The beast host's own
+1-minute average ranged 0.21-0.97 across the run, with two batches at 0.94 and
+0.97 and every other sample at or below 0.35). The beast host's own
 1-minute average, sampled from this session, moved between 1.34 and 7.53 over
 the run.
 
