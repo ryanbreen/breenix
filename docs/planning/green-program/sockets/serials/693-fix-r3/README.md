@@ -8,10 +8,18 @@ was demoted in the same round the review found it; this slot re-runs the campaig
 default aarch64 gate plus mutation 693-K against those demoted bytes. On 3 of
 the 3 mutation-K boots below, `[POLL_TCP_READY_LOST]` (kernel) fails the gate
 and 0 of the 3 boots' oracle output contains `[POLL_TCP_ORACLE:FAIL` -- R93
-confirmed non-vacuously on both demoted arms.
+authority confirmed non-vacuously for the timeout arm (`lost_suspected`) via
+693-K. The `woken_by_clock` demotion is a different claim: mutation 693-K
+reaches only the timeout-return arm, not the POLLIN-return arm
+`woken_by_clock_suspected` sits on, and no battery in this round or FIX
+section 3 exercises that arm (FIX section 2.6 discloses this). Its demotion is
+verified by construction instead -- 0 `fail("late_woken_by_clock"` call sites
+and the literal itself absent from live source (section "Literal grep" below)
+-- not by a battery.
 <!-- claim-lint:ok: 3 of 3 mutation-K boots, 0 of 3 oracle FAILs -- see the
      Mutation 693-K section below and the committed driver/boot serials in
-     this directory -->
+     this directory; the woken_by_clock arm's unexercised status is round-3
+     review finding F2 -->
 
 <!-- claim-lint:ok: N-of-M counts below restated verbatim from the committed
      driver/gate output files in this directory -->
