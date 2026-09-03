@@ -12,9 +12,12 @@ use crate::task::process_context::{
 };
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
-use crate::tracing::providers::counters::{
-    DISPATCH_KERNEL_RESTORE_TOTAL, DISPATCH_NO_PROGRESS, DISPATCH_NO_PROGRESS_REFUSED,
-};
+use crate::tracing::providers::counters::{DISPATCH_KERNEL_RESTORE_TOTAL, DISPATCH_NO_PROGRESS};
+// Only the refusal arm increments this one, and that arm is what the
+// `no_progress_refusal_disabled` mutation compiles out. The counter itself
+// stays registered in both builds, so the anti-vacuity arm can read it as 0.
+#[cfg(not(feature = "no_progress_refusal_disabled"))]
+use crate::tracing::providers::counters::DISPATCH_NO_PROGRESS_REFUSED;
 use crate::tracing::providers::sched::trace_ctx_switch;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::idt::InterruptStackFrame;
@@ -312,17 +315,23 @@ pub extern "C" fn check_need_resched_and_switch(
                 }
                 crate::per_cpu::DispatchProgress::NoProgressRefusable => {
                     crate::trace_count!(DISPATCH_NO_PROGRESS);
-                    crate::per_cpu::spend_dispatch_refusal();
-                    crate::trace_count!(DISPATCH_NO_PROGRESS_REFUSED);
-                    // Re-arm: gate 4 cleared need_resched, and whoever raised
-                    // it is still owed a reschedule at the next interrupt.
-                    scheduler::set_need_resched();
-                    // Same signal handling the other early-return arms do, so
-                    // a refusal does not also defer signal delivery.
-                    if from_userspace {
-                        check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
+                    #[cfg(not(feature = "no_progress_refusal_disabled"))]
+                    {
+                        crate::per_cpu::spend_dispatch_refusal();
+                        crate::trace_count!(DISPATCH_NO_PROGRESS_REFUSED);
+                        // Re-arm: gate 4 cleared need_resched, and whoever raised
+                        // it is still owed a reschedule at the next interrupt.
+                        scheduler::set_need_resched();
+                        // Same signal handling the other early-return arms do, so
+                        // a refusal does not also defer signal delivery.
+                        if from_userspace {
+                            check_and_deliver_signals_for_current_thread(
+                                saved_regs,
+                                interrupt_frame,
+                            );
+                        }
+                        return;
                     }
-                    return;
                 }
             }
         }
