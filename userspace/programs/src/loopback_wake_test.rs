@@ -40,6 +40,7 @@
 
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
+use libbreenix::fs::{self, O_RDONLY};
 use libbreenix::io;
 use libbreenix::process::{fork, getpid, waitpid, wexitstatus, wifexited, ForkResult};
 use libbreenix::signal;
@@ -127,6 +128,54 @@ fn role_pid() -> u64 {
     }
 }
 
+/// Read the #772 experiment-lane recv-wait-loop counters from
+/// `/proc/trace/counters` (`RECV_WAIT_STILL_BLOCKED_TRUE` /
+/// `RECV_WAIT_STILL_BLOCKED_FALSE`, `kernel/src/tracing/providers/
+/// counters.rs`). Measurement only: a cold procfs read of an existing
+/// lock-free `TraceCounter` registry, taken from userspace after the syscall
+/// it observes has already returned -- it cannot perturb the recv wait loop
+/// itself. Returns (still_blocked_true_total, still_blocked_false_total) as
+/// of the moment of the read; callers difference two reads bracketing one
+/// blocking call to get that call's own contribution. A read failure (open or
+/// parse) returns (0, 0), which is why callers use a saturating difference
+/// rather than trusting either side to be nonzero on its own.
+fn read_recv_wait_counters() -> (u64, u64) {
+    let fd = match fs::open("/proc/trace/counters", O_RDONLY) {
+        Ok(fd) => fd,
+        Err(_) => return (0, 0),
+    };
+    let mut buf = [0u8; 16 * 1024];
+    let n = match io::read(fd, &mut buf) {
+        Ok(n) => n,
+        Err(_) => {
+            let _ = io::close(fd);
+            return (0, 0);
+        }
+    };
+    let _ = io::close(fd);
+    let text = core::str::from_utf8(&buf[..n]).unwrap_or("");
+    let mut still_blocked_true = 0u64;
+    let mut still_blocked_false = 0u64;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("RECV_WAIT_STILL_BLOCKED_TRUE:") {
+            still_blocked_true = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|tok| tok.parse::<u64>().ok())
+                .unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("RECV_WAIT_STILL_BLOCKED_FALSE:") {
+            still_blocked_false = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|tok| tok.parse::<u64>().ok())
+                .unwrap_or(0);
+        }
+    }
+    (still_blocked_true, still_blocked_false)
+}
+
 fn watchdog_sleep_until(epoch_ms: u64) {
     let target_ms = epoch_ms.saturating_add(WATCHDOG_AT_MS);
     loop {
@@ -149,6 +198,11 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
     let t_accept = role_now_or_exit(16);
 
     let mut buffer = [0u8; PAYLOAD_LEN];
+    // #772 experiment lane: baseline the recv-wait-loop counters immediately
+    // before the blocking read so the delta below is this call's own
+    // contribution, not the boot-wide total (other test binaries' TCP recv
+    // calls, if any, also touch this pair).
+    let (recv_wait_true_pre, recv_wait_false_pre) = read_recv_wait_counters();
     // Stamped into a local and printed only after the read returns: a print
     // here would put a console write between the accept and the blocking read
     // that the measurement is about.
@@ -158,6 +212,7 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
         Err(_) => std_process::exit(11),
     };
     let t_data = role_now_or_exit(16);
+    let (recv_wait_true_post, recv_wait_false_post) = read_recv_wait_counters();
     if data_bytes != PAYLOAD_LEN || &buffer[8..] != TAG {
         std_process::exit(12);
     }
@@ -188,6 +243,16 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
         t_pre_read.saturating_sub(peer_write_ms),
         t_data.saturating_sub(t_pre_read),
         data_latency_ms
+    );
+    // #772 experiment lane: how many times this recv() call's wait loop
+    // observed Blocked and looped back to sleep (RECV_WAIT_STILL_BLOCKED_TRUE)
+    // vs. observed not-Blocked and proceeded (RECV_WAIT_STILL_BLOCKED_FALSE).
+    // Delta of two /proc/trace/counters reads bracketing the read() above;
+    // see kernel/src/tracing/providers/counters.rs for the counter docs.
+    println!(
+        "LOOPBACK_WAKE_TEST: recv_wait_counters still_blocked_true={} still_blocked_false={}",
+        recv_wait_true_post.saturating_sub(recv_wait_true_pre),
+        recv_wait_false_post.saturating_sub(recv_wait_false_pre)
     );
     if data_latency_ms > DATA_WAKE_BOUND_MS {
         // The verdict is already decided; measuring now cannot change it. What
