@@ -216,6 +216,27 @@ const LATE_MAX_PEER_LATE_ATTEMPTS: u32 = 3;
 /// `[POLL_TCP_READY_LOST]` is the gate-failing authority for a lost wake and
 /// this arm cannot see what that check sees (round-2 review B2, ruling R93).
 const LATE_MAX_LOST_SUSPECTED_ATTEMPTS: u32 = 2;
+/// The fourth inconclusive shape, and F1 of the #693 round-2 review: the poll
+/// reported `POLLIN`, but the parent's own elapsed time (`entry` to `returned`)
+/// reached or passed the timeout it asked for. Read as "the clock ended this
+/// poll and its final scan just happened to find bytes", which is a lost wake
+/// wearing a passing revents -- and it is also what dispatch latency after a
+/// correct, on-time return produces (#766): `returned` is stamped only once
+/// the parent is rescheduled, and that gap alone reached 543 ms past the
+/// nominal deadline in the specimen this arm used to fail the gate on
+/// (`docs/planning/green-program/sockets/serials/693-rca/x86-693rca-tcg3-boot18-late_woken_by_clock-user-20260902.txt`,
+/// read by RCA section 5's own positive control as "late … but not lost").
+/// The kernel-side `[POLL_TCP_READY_LOST]` cannot speak to this boot either:
+/// it is gated on `ready_count == 0` (`kernel/src/syscall/handlers.rs:4165`)
+/// and this poll returned `POLLIN`. Retrying with a WIDER timeout ceiling is
+/// free the same way it is for `late_peer_overrun`: the poll returns when the
+/// peer's bytes are ready, not when the timeout expires, so raising the
+/// ceiling only buys the parent more room before the clock could end things.
+/// On exhaustion the trial completes and the shape stays a report, because
+/// the kernel-side detector is the gate-failing authority for a lost wake and
+/// this arm cannot see what that check sees (round-2 review F1, ruling R93
+/// applied to the second arm).
+const LATE_MAX_WOKEN_BY_CLOCK_ATTEMPTS: u32 = 2;
 
 /// Stage 4's poll timeout and peer delay. The peer is told to wait more than
 /// three times the poll's whole budget, so its publication lands after the
@@ -746,6 +767,7 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
     let mut window_attempt: u32 = 1;
     let mut peer_late_attempt: u32 = 1;
     let mut lost_suspected_seen: u32 = 0;
+    let mut woken_by_clock_seen: u32 = 0;
     let mut delay_ms = trial.delay_ms;
     let mut timeout_ms = trial.timeout_ms;
     let mut worst_late_by_ms: u64 = 0;
@@ -784,7 +806,7 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
         let timed_out = ready != 1 || fds[0].revents & POLLIN == 0;
         // Whether the socket held bytes at the instant the poll gave up. Read
         // by the probe below on the timeout arm, and it is one of the two facts
-        // the `late_lost_wake` verdict needs.
+        // the `LostSuspected` verdict needs.
         let mut readable_at_return = false;
         let stamps = if timed_out {
             // Emit the discriminating facts BEFORE the reap, because the reap is
@@ -1111,16 +1133,60 @@ fn run_late_trial(client: Fd, server: Fd, trial: LateTrial) -> Result<LateResult
             ));
         }
         // Upper bound: a poll that consumed its whole timeout was ended by the
-        // clock, whatever its final scan then happened to find. That is the lost
-        // wake wearing a passing revents.
+        // clock, whatever its final scan then happened to find. That SHAPE is
+        // what a lost wake looks like from userspace wearing a passing
+        // revents -- and it is also what two measured latencies produce on a
+        // CORRECT kernel, which is why this arm reports instead of failing
+        // (#693 round-2 review F1, ruling R93 applied to the second arm):
+        //
+        //   * `entry` and `returned` bracket the parent's own view of the
+        //     wait, and `returned` is stamped only after the parent is
+        //     rescheduled -- 543 ms after the nominal deadline in the
+        //     specimen this arm used to fail on, measured on beast KVM;
+        //   * the kernel-side `[POLL_TCP_READY_LOST]` cannot speak to this
+        //     boot at all, because it is gated on `ready_count == 0`
+        //     (`kernel/src/syscall/handlers.rs:4165`) and this poll returned
+        //     `POLLIN`.
+        //
+        // The kernel is the only place a lost-wake fact could be decided, and
+        // it did not decide one here, so `[POLL_TCP_READY_LOST]` is the
+        // gate-failing authority and this line is corroboration. Widening the
+        // timeout ceiling is free the same way it is for `late_peer_overrun`:
+        // the poll returns when the peer's bytes are ready, not when the
+        // timeout expires, so a larger ceiling only buys the parent more room
+        // before the clock could end things.
         if elapsed >= timeout_ms as u64 {
-            return Err(fail(
-                "late_woken_by_clock",
-                format!(
-                    "entry={} returned={} write_ms={} elapsed_ms={} timeout={}",
-                    entry, returned, write_ms, elapsed, timeout_ms
-                ),
+            woken_by_clock_seen += 1;
+            emit(&format!(
+                "[POLL_TCP_ORACLE:WOKEN_BY_CLOCK_SUSPECTED:stage={} attempt={} entry={} returned={} write_ms={} elapsed_ms={} timeout={}]",
+                trial.stage,
+                woken_by_clock_seen,
+                entry,
+                returned,
+                write_ms,
+                elapsed,
+                timeout_ms
             ));
+            if woken_by_clock_seen > LATE_MAX_WOKEN_BY_CLOCK_ATTEMPTS {
+                // Out of retries. This arm does not fail the gate on its own
+                // (R93): the shape is on the console with the fields it was
+                // decided from, the trial completes, and the boot is red if
+                // and only if the kernel reported losing something. The
+                // gate's anti-vacuity check -- `[POLL_TCP_TIMEOUT]` REQUIRED
+                // to be present -- is what stops that authority from going
+                // quiet unnoticed.
+                emit(&format!(
+                    "[POLL_TCP_ORACLE:WOKEN_BY_CLOCK_UNRESOLVED:stage={} attempts={} entry={} returned={} write_ms={} timeout={}]",
+                    trial.stage, woken_by_clock_seen, entry, returned, write_ms, timeout_ms
+                ));
+                return Ok(LateResult {
+                    elapsed_ms: elapsed,
+                    park_ms: write_ms.saturating_sub(entry),
+                    late_by_ms: 0,
+                });
+            }
+            timeout_ms = timeout_ms.saturating_mul(2);
+            continue;
         }
 
         return Ok(LateResult {
