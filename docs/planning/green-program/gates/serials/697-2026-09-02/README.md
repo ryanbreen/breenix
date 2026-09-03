@@ -165,3 +165,33 @@ failing command that also fires at `:608` on the mutated branch,
 intermittent (`mutation/revert-attempt1-692intermittent-gate.txt`), and the
 remaining 6 of 10 (5 of 5 branch boots plus 1 post-revert boot,
 `mutation/revert-clean-gate.txt`) are plain PASS.
+
+## Round-2 review correction, `907f096a` + review fixes -- `r2-confirm/`
+
+An independent review of the round-1 bytes (`907f096a` fix, `82587ab2`
+evidence) found six findings -- two blocking prose defects (a claim-lint
+suppression that cited #697 for a claim #697 does not support, and a
+per-file fork-count regex documented as recognising more idioms than it
+actually matched) plus four non-blocking minors -- 6 of 6 fixed on this
+branch, one per commit (`5c579312` f1, `cfd8ad88` f2, `7fed7273` f3,
+`147a9f1c` f4, `7f1ef7cb` f5, `3d1960ef` f6). 0 of the six touched the
+derivation's arithmetic: the
+widened fork-count regex (f2) still sums to 5 over the same 15-name roster
+(verified by direct re-derivation before committing, not by re-running the
+gate), so the branch's existing 5-of-5 boot evidence above still applies to
+the corrected bytes, and this section adds one confirming boot at the new
+head rather than a full new battery.
+
+Fresh scratch clone `/root/breenix-697-r2-confirm` on beast (`breenix-x86`
+Incus VM), cloned from `https://github.com/ryanbreen/breenix.git` (not
+derived from the host's own `/root/breenix` checkout), checked out at
+`3d1960ef`. One `run-x86-boot-tests.sh 1` invocation, result PASS:
+`r2-confirm/boot1-gate.txt:567` (`x86 frame-custody gate run 1: PASS`),
+census line `r2-confirm/boot1-gate.txt:564`
+(`[TOMBSTONE_CENSUS:resident=1:removed=6:...]`, `1 + 6 - 2 = 5 =
+PRODUCTION_REAPED_ROWS`). `r2-confirm/boot1-gate.txt:1` also carries this
+round's f5 fix in action -- `RING3_SMOKE fork census:
+PRODUCTION_REAPED_ROWS=5` -- printed once at the top of the log, the first
+time this pin has been directly readable from a gate log rather than
+re-derived by hand. `r2-confirm/boot1/` holds that boot's
+`serial_kernel.txt`, `serial_user.txt`, and `qemu.txt`.
