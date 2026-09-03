@@ -147,6 +147,60 @@ pub static GIC_SPI55_ACK_TOTAL: TraceCounter =
     TraceCounter::new("GIC_SPI55_ACK_TOTAL", "GIC acknowledged SPI 55");
 
 // =============================================================================
+// Socket recv wait-loop wasted-turn counters (#772 instrumentation)
+// =============================================================================
+
+/// TCP recv wait loop (`sys_read`, `FdKind::Socket` blocking path in
+/// `kernel/src/syscall/handlers.rs`) observed `ThreadState::Blocked` after a
+/// dispatch + `yield_current()` + halt cycle and went back to sleep without
+/// making progress.
+///
+/// This is the direct signal for issue #772's "wasted turn": the reader was
+/// scheduled, ran the loop body, and found itself still `Blocked` even though
+/// it had been given a CPU turn. A nonzero count here, correlated with
+/// `unblock()` having already run `set_ready()` for the same thread before
+/// this check executed, supports RCA reading (a) (the loop observes a state
+/// that is stale relative to `unblock()`). Per-CPU aggregate only — see
+/// `RECV_WAIT_STILL_BLOCKED_FALSE` doc comment for the per-tid caveat.
+///
+/// GDB: `print RECV_WAIT_STILL_BLOCKED_TRUE`
+#[no_mangle]
+pub static RECV_WAIT_STILL_BLOCKED_TRUE: TraceCounter = TraceCounter::new(
+    "RECV_WAIT_STILL_BLOCKED_TRUE",
+    "recv wait loop observed Blocked, looped back to sleep (#772)",
+);
+
+/// TCP recv wait loop observed a state other than `ThreadState::Blocked`
+/// (i.e. `unblock()`'s `set_ready()` was visible to this thread) and
+/// proceeded to clear `blocked_in_syscall` and return data to the caller.
+///
+/// Comparing this counter's growth against `RECV_WAIT_STILL_BLOCKED_TRUE`
+/// and against `CTX_SWITCH_TOTAL` / `SCHED_PICK` occurrences for the same
+/// thread distinguishes RCA reading (a) — the loop re-observes Blocked one
+/// or more times before this fires — from reading (b) — the thread is
+/// dispatched but this check (and everything else in the loop body) does
+/// not run before being switched out again, so that turn increments
+/// neither branch of this pair.
+///
+/// Per-tid tagging: `TraceCounter` (`kernel/src/tracing/counter.rs`) only
+/// carries a per-CPU dimension (`per_cpu: [CpuCounterSlot; MAX_CPUS]`); there
+/// is no per-tid slot in the counter primitive, and adding one would require
+/// either a lock or a fixed-size tid-indexed array allocated statically (the
+/// same pattern the scheduler's separate, non-tracing-framework
+/// `WAKE_LAST_READY_SITE: [AtomicU64; WAKE_ATTRIB_MAX_TIDS]` in
+/// `kernel/src/task/scheduler.rs` already uses for wake-site attribution).
+/// That mechanism exists but is outside `kernel/src/tracing/`'s counter
+/// registration, so these two counters stay global per-CPU aggregates as
+/// instructed when no cheap per-tid tag is available in the framework itself.
+///
+/// GDB: `print RECV_WAIT_STILL_BLOCKED_FALSE`
+#[no_mangle]
+pub static RECV_WAIT_STILL_BLOCKED_FALSE: TraceCounter = TraceCounter::new(
+    "RECV_WAIT_STILL_BLOCKED_FALSE",
+    "recv wait loop observed not-Blocked, proceeded (#772)",
+);
+
+// =============================================================================
 // Boot Test Counters (BTRT feature)
 // =============================================================================
 
@@ -204,6 +258,8 @@ pub fn init() {
     register_counter(&NET_RX_BUDGET_EXHAUSTED);
     register_counter(&NET_PCI_IRQ_RAISED_NETRX);
     register_counter(&GIC_SPI55_ACK_TOTAL);
+    register_counter(&RECV_WAIT_STILL_BLOCKED_TRUE);
+    register_counter(&RECV_WAIT_STILL_BLOCKED_FALSE);
 
     #[cfg(feature = "btrt")]
     {

@@ -1409,6 +1409,22 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     })
                     .unwrap_or(false);
 
+                    // #772 instrumentation (experiment lane, counters only): distinguish
+                    // a wasted turn (loop re-observes Blocked and sleeps again) from a
+                    // turn that actually consumed the wake. See
+                    // kernel/src/tracing/providers/counters.rs for the counter docs and
+                    // docs/planning/green-program/sockets/764-RCA-2026-09-03.md for the
+                    // RCA context these are meant to distinguish.
+                    if still_blocked {
+                        crate::trace_count!(
+                            crate::tracing::providers::counters::RECV_WAIT_STILL_BLOCKED_TRUE
+                        );
+                    } else {
+                        crate::trace_count!(
+                            crate::tracing::providers::counters::RECV_WAIT_STILL_BLOCKED_FALSE
+                        );
+                    }
+
                     if !still_blocked {
                         crate::per_cpu::preempt_disable();
                         log::debug!("TCP_BLOCK: Thread {} woken from recv blocking", thread_id);
