@@ -230,6 +230,11 @@ done
 unset _ring3_smoke_name _ring3_smoke_src _ring3_smoke_forks
 readonly PRODUCTION_REAPED_ROWS
 test "$PRODUCTION_REAPED_ROWS" -ge 1
+# This value is not otherwise echoed anywhere in this gate's output, so a
+# reader attributing a future census-assertion FAIL from the log alone
+# (rather than by re-running this derivation by hand) needs it on the
+# record (review finding F5).
+echo "  RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=$PRODUCTION_REAPED_ROWS"
 #
 # (1) End of the userspace phase, emitted from the `sys_exit` arm entered when no
 # userspace thread remains. This sample used to be pinnable as an exact literal
