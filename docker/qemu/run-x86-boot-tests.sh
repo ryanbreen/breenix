@@ -152,12 +152,19 @@ readonly TOMBSTONE_FIXTURE_REMOVALS=2
 # CENSUS_REMOVED value never satisfies the old literal, which is why every
 # boot that reaches this assertion fails it.
 #
-# It is now derived from the same roster kernel_main launches. The
-# RING3_SMOKE block in kernel/src/main.rs loads its userspace test binaries
-# by name between the "canonical list of test binaries is in
+# It is now derived from the roster kernel_main's FIRST RING3_SMOKE block
+# launches: that block in kernel/src/main.rs loads its userspace test
+# binaries by name between the "canonical list of test binaries is in
 # boot::test_list::TEST_BINARIES" comment and the without_interrupts() call
 # that creates them -- the get_test_binary("...") argument on each line in
-# between is the roster. Each name is a userspace/programs/src/<name>.rs
+# between is the roster. kernel_main has a SECOND, live RING3_SMOKE block
+# further down (same #[cfg], a single get_test_binary("hello_time") call
+# that creates smoke_hello_time) that sits past this awk window's end
+# anchor and so is not scanned -- it is not dead, only outside the window,
+# and missing it is safe: hello_time.rs is the same source the first
+# block's roster already names, has 0 fork() call sites, and would
+# contribute 0 to this pin whichever block created its process. Each
+# roster name is a userspace/programs/src/<name>.rs
 # source file, and every `fork()` call site introduced by `match` or by an
 # assignment (`=`), through zero or more `mod::` path segments, is one child
 # the program later reaps through a blocking waitpid() -- this recognises
