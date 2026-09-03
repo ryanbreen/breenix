@@ -189,14 +189,23 @@ instant the reader is one runnable thread among the boot's own population --
 `per_cpu_queues[0]`, re-enqueueing each preempted thread at the tail
 (`scheduler.rs:1863`), with a 50 ms slice reset per switch
 (`kernel/src/interrupts/timer.rs:33` `TIME_QUANTUM = 10` ticks at 200 Hz,
-reset at `kernel/src/interrupts/context_switch.rs:436`). One pass of that queue
-costs hundreds of milliseconds of wall clock in this profile, because the
-kernel's DEBUG-level serial logging costs about ten milliseconds a line. So the
-interval the test measures as `data_latency_ms` is the number of queue passes
-the reader waits, times the cost of a pass -- and the 4000 ms bound is between
-one pass and about seven of them. `repro-boot-046` shows the same delay with no
-wake in it at all: 3158 ms between a `clock_gettime` and a `read` that had data
-waiting.
+reset at `kernel/src/interrupts/context_switch.rs:436`). One turn through that
+queue costs hundreds of milliseconds of wall clock in this profile, because the
+kernel's DEBUG-level serial logging costs about ten milliseconds a line. Each
+turn is itself a full dispatch of the reader -- a restore
+(`context_switch.rs:962`), `set_running()` (`scheduler.rs:2103`), a fresh
+quantum (`context_switch.rs:436`) -- and `sys_read`'s wait loop breaks the
+moment `thread.state != Blocked` (`handlers.rs:1403-1410`), so a dispatched,
+already-woken reader should consume its wake on the first turn, as it does on
+39 of 46 census boots below. What `data_latency_ms` tracks is that turn count,
+not queue length or a uniform per-pass cost: one turn is 318-1480 ms across the
+707 battery's census, two is 2258 ms, three 2768 ms, four 3155 ms, and the
+issue's own seven-turn specimen is 4740 ms. `repro-boot-046` shows the same
+delay with no wake in it at all: 3158 ms between a `clock_gettime` and a `read`
+that had data waiting. Why a dispatched reader gives the CPU back without
+consuming a wake it already holds -- five of six turns on `repro-boot-057`, six
+of seven on the issue's own specimen -- is not explained here; see "What this
+does NOT establish", below.
 
 ## What this does NOT establish
 
