@@ -1,0 +1,831 @@
+   Compiling kernel v0.1.0 (/root/breenix-697-prove-main/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-697-prove-main)
+    Finished `release` profile [optimized] target(s) in 1m 38s
+   Compiling kernel v0.1.0 (/root/breenix-697-prove-main/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-697-prove-main)
+    Finished `release` profile [optimized] target(s) in 14.64s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-697-prove-main/target/release/build/breenix-27744f238db676e7/out/breenix-uefi.img (7405568 bytes)
+   Compiling proc-macro2 v1.0.107
+   Compiling version_check v0.9.5
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling syn v1.0.109
+   Compiling unicode-width v0.1.14
+   Compiling unicode-segmentation v1.13.3
+   Compiling bitflags v1.3.2
+   Compiling anyhow v1.0.104
+   Compiling lazy_static v1.5.0
+   Compiling glob v0.3.4
+   Compiling textwrap v0.11.0
+   Compiling proc-macro-error-attr v1.0.4
+   Compiling proc-macro-error v1.0.4
+   Compiling clap v2.34.0
+   Compiling heck v0.3.3
+   Compiling structopt-derive v0.4.18
+   Compiling structopt v0.3.26
+   Compiling xtask v0.1.0 (/root/breenix-697-prove-main/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.42s
+     Running `target/debug/xtask create-test-disk`
+Creating test disk image...
+  Including std test: hello_std_real (227088 bytes)
+  Found 149 test binaries
+  Added: access_test (177896 bytes, sectors 128-475)
+  Added: alarm_test (186808 bytes, sectors 476-840)
+  Added: argv_test (184296 bytes, sectors 841-1200)
+  Added: bcheck (299232 bytes, sectors 1201-1785)
+  Added: bfontpicker (346208 bytes, sectors 1786-2462)
+  Added: biconkit (248144 bytes, sectors 2463-2947)
+  Added: blauncher (325344 bytes, sectors 2948-3583)
+  Added: bless (185584 bytes, sectors 3584-3946)
+  Added: block_eintr_oracle (189952 bytes, sectors 3947-4317)
+  Added: blocking_recv_test (188064 bytes, sectors 4318-4685)
+  Added: blog (331072 bytes, sectors 4686-5332)
+  Added: blogd (181912 bytes, sectors 5333-5688)
+  Added: bounce (275120 bytes, sectors 5689-6226)
+  Added: brk_test (186536 bytes, sectors 6227-6591)
+  Added: bsh (579536 bytes, sectors 6592-7723)
+  Added: bssh (322392 bytes, sectors 7724-8353)
+  Added: bsshd (314136 bytes, sectors 8354-8967)
+  Added: bterm (342680 bytes, sectors 8968-9637)
+  Added: btop (184152 bytes, sectors 9638-9997)
+  Added: btrace (198888 bytes, sectors 9998-10386)
+  Added: burl (483232 bytes, sectors 10387-11330)
+  Added: bwm (331496 bytes, sectors 11331-11978)
+  Added: cat_test (187288 bytes, sectors 11979-12344)
+  Added: clock_gettime_test (188608 bytes, sectors 12345-12713)
+  Added: cloexec_test (192536 bytes, sectors 12714-13090)
+  Added: clonevm_exec_test (184624 bytes, sectors 13091-13451)
+  Added: concurrent_recv_stress (188896 bytes, sectors 13452-13820)
+  Added: confetti (189192 bytes, sectors 13821-14190)
+  Added: counter (177592 bytes, sectors 14191-14537)
+  Added: cow_cleanup_test (182488 bytes, sectors 14538-14894)
+  Added: cow_oom_test (186552 bytes, sectors 14895-15259)
+  Added: cow_readonly_test (187000 bytes, sectors 15260-15625)
+  Added: cow_signal_test (188264 bytes, sectors 15626-15993)
+  Added: cow_sole_owner_test (186960 bytes, sectors 15994-16359)
+  Added: cow_stress_test (187048 bytes, sectors 16360-16725)
+  Added: cp_mv_argv_test (182760 bytes, sectors 16726-17082)
+  Added: ctrl_c_test (187936 bytes, sectors 17083-17450)
+  Added: cwd_test (182576 bytes, sectors 17451-17807)
+  Added: demo (189656 bytes, sectors 17808-18178)
+  Added: devfs_test (182392 bytes, sectors 18179-18535)
+  Added: dns_test (195184 bytes, sectors 18536-18917)
+  Added: dup_test (189112 bytes, sectors 18918-19287)
+  Added: echo_argv_test (182424 bytes, sectors 19288-19644)
+  Added: epoll_test (182784 bytes, sectors 19645-20001)
+  Added: exec_argv_test (178160 bytes, sectors 20002-20349)
+  Added: exec_from_ext2_test (188032 bytes, sectors 20350-20717)
+  Added: exec_smoke (178016 bytes, sectors 20718-21065)
+  Added: exec_smoke_target (185000 bytes, sectors 21066-21427)
+  Added: exec_stack_argv_test (183384 bytes, sectors 21428-21786)
+  Added: false_test (182512 bytes, sectors 21787-22143)
+  Added: fart (191648 bytes, sectors 22144-22518)
+  Added: fbinfo_test (187520 bytes, sectors 22519-22885)
+  Added: fcntl_test (188704 bytes, sectors 22886-23254)
+  Added: fifo_test (198400 bytes, sectors 23255-23642)
+  Added: file_read_test (182360 bytes, sectors 23643-23999)
+  Added: fork_memory_test (188616 bytes, sectors 24000-24368)
+  Added: fork_pending_signal_test (187696 bytes, sectors 24369-24735)
+  Added: fork_smoke (187560 bytes, sectors 24736-25102)
+  Added: fork_state_test (189136 bytes, sectors 25103-25472)
+  Added: fork_test (188048 bytes, sectors 25473-25840)
+  Added: fs_block_alloc_test (188568 bytes, sectors 25841-26209)
+  Added: fs_directory_test (183112 bytes, sectors 26210-26567)
+  Added: fs_large_file_test (182568 bytes, sectors 26568-26924)
+  Added: fs_link_test (182760 bytes, sectors 26925-27281)
+  Added: fs_rename_test (182664 bytes, sectors 27282-27638)
+  Added: fs_write_test (182848 bytes, sectors 27639-27996)
+  Added: futex_handoff_oracle (182872 bytes, sectors 27997-28354)
+  Added: getdents_test (183944 bytes, sectors 28355-28714)
+  Added: guskit (391536 bytes, sectors 28715-29479)
+  Added: head_test (183016 bytes, sectors 29480-29837)
+  Added: heartbeat (189056 bytes, sectors 29838-30207)
+  Added: hello_std_real (227088 bytes, sectors 30208-30651)
+  Added: hello_time (177584 bytes, sectors 30652-30998)
+  Added: hello_world (227088 bytes, sectors 30999-31442)
+  Added: http_fetch_test (464304 bytes, sectors 31443-32349)
+  Added: http_test (468456 bytes, sectors 32350-33264)
+  Added: init (187440 bytes, sectors 33265-33631)
+  Added: init_shell (262584 bytes, sectors 33632-34144)
+  Added: itimer_test (187248 bytes, sectors 34145-34510)
+  Added: job_control_test (187600 bytes, sectors 34511-34877)
+  Added: job_table_test (192184 bytes, sectors 34878-35253)
+  Added: kill_process_group_test (188440 bytes, sectors 35254-35622)
+  Added: loopback_wake_test (189728 bytes, sectors 35623-35993)
+  Added: ls_test (183248 bytes, sectors 35994-36351)
+  Added: lseek_test (182464 bytes, sectors 36352-36708)
+  Added: mkdir_argv_test (182624 bytes, sectors 36709-37065)
+  Added: net_test (191536 bytes, sectors 37066-37440)
+  Added: nonblock_eagain_test (183664 bytes, sectors 37441-37799)
+  Added: nonblock_test (188696 bytes, sectors 37800-38168)
+  Added: particles (193888 bytes, sectors 38169-38547)
+  Added: pause_test (188312 bytes, sectors 38548-38915)
+  Added: pipe2_test (188872 bytes, sectors 38916-39284)
+  Added: pipe_concurrent_test (188672 bytes, sectors 39285-39653)
+  Added: pipe_fork_test (188776 bytes, sectors 39654-40022)
+  Added: pipe_refcount_test (199904 bytes, sectors 40023-40413)
+  Added: pipe_test (188200 bytes, sectors 40414-40781)
+  Added: pipeline_test (191536 bytes, sectors 40782-41156)
+  Added: poll_tcp_oracle (195680 bytes, sectors 41157-41539)
+  Added: poll_test (188976 bytes, sectors 41540-41909)
+  Added: pty_test (187056 bytes, sectors 41910-42275)
+  Added: rectangles (197040 bytes, sectors 42276-42660)
+  Added: register_init_test (177048 bytes, sectors 42661-43006)
+  Added: resolution (190968 bytes, sectors 43007-43379)
+  Added: rm_argv_test (182440 bytes, sectors 43380-43736)
+  Added: select_test (188864 bytes, sectors 43737-44105)
+  Added: session_test (187928 bytes, sectors 44106-44473)
+  Added: shell_pipe_test (183088 bytes, sectors 44474-44831)
+  Added: sigaltstack_test (188960 bytes, sectors 44832-45201)
+  Added: sigchld_job_test (187480 bytes, sectors 45202-45568)
+  Added: sigchld_test (186488 bytes, sectors 45569-45933)
+  Added: sigkill_teardown_test (206656 bytes, sectors 45934-46337)
+  Added: signal_exec_check (177832 bytes, sectors 46338-46685)
+  Added: signal_exec_test (188672 bytes, sectors 46686-47054)
+  Added: signal_fork_test (188120 bytes, sectors 47055-47422)
+  Added: signal_handler_test (187848 bytes, sectors 47423-47789)
+  Added: signal_regs_test (188160 bytes, sectors 47790-48157)
+  Added: signal_return_test (188272 bytes, sectors 48158-48525)
+  Added: signal_test (187816 bytes, sectors 48526-48892)
+  Added: sigsuspend_test (188824 bytes, sectors 48893-49261)
+  Added: simple_exit (170536 bytes, sectors 49262-49595)
+  Added: simple_exit0 (170536 bytes, sectors 49596-49929)
+  Added: sleep_debug_test (188544 bytes, sectors 49930-50298)
+  Added: spawn_smoke_target (170552 bytes, sectors 50299-50632)
+  Added: spinner (177592 bytes, sectors 50633-50979)
+  Added: stdin_test (182240 bytes, sectors 50980-51335)
+  Added: syscall_diagnostic_test (170816 bytes, sectors 51336-51669)
+  Added: syscall_enosys (177480 bytes, sectors 51670-52016)
+  Added: tail_test (183016 bytes, sectors 52017-52374)
+  Added: tcp_blocking_test (203392 bytes, sectors 52375-52772)
+  Added: tcp_client_test (187576 bytes, sectors 52773-53139)
+  Added: tcp_cloexec_exec_test (189400 bytes, sectors 53140-53509)
+  Added: tcp_dup_listener_test (188792 bytes, sectors 53510-53878)
+  Added: tcp_socket_test (202248 bytes, sectors 53879-54274)
+  Added: telnetd (184032 bytes, sectors 54275-54634)
+  Added: test_mmap (182176 bytes, sectors 54635-54990)
+  Added: timer_test (182104 bytes, sectors 54991-55346)
+  Added: tones (184168 bytes, sectors 55347-55706)
+  Added: true_test (182512 bytes, sectors 55707-56063)
+  Added: tty_oracle (218344 bytes, sectors 56064-56490)
+  Added: tty_test (188040 bytes, sectors 56491-56858)
+  Added: udp_socket_test (193352 bytes, sectors 56859-57236)
+  Added: unix_named_socket_test (195296 bytes, sectors 57237-57618)
+  Added: unix_socket_test (205272 bytes, sectors 57619-58019)
+  Added: wait_stress (195512 bytes, sectors 58020-58401)
+  Added: waitpid_test (188096 bytes, sectors 58402-58769)
+  Added: wc_test (183584 bytes, sectors 58770-59128)
+  Added: which_test (182912 bytes, sectors 59129-59486)
+  Added: wnohang_timing_test (182496 bytes, sectors 59487-59843)
+  Added: xhci_counters (187168 bytes, sectors 59844-60209)
+
+Test disk created: target/test_binaries.img
+  Binaries: 149
+  Data size: 30724424 bytes (29.30 MB)
+  Disk size: 60210 sectors (29.40 MB)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-697-prove-main/target/ext2.img
+  Size: 256MB
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 44 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 10508
+drwxr-xr-x  2 root root   4096 Sep  3 01:48 .
+drwxr-xr-x 12 root root   4096 Sep  3 01:48 ..
+-rwxr-xr-x  1 root root 299232 Sep  3 01:48 bcheck
+-rwxr-xr-x  1 root root 346208 Sep  3 01:48 bfontpicker
+-rwxr-xr-x  1 root root 248144 Sep  3 01:48 biconkit
+-rwxr-xr-x  1 root root 325344 Sep  3 01:48 blauncher
+-rwxr-xr-x  1 root root 185584 Sep  3 01:48 bless
+-rwxr-xr-x  1 root root 189952 Sep  3 01:48 block_eintr_oracle
+-rwxr-xr-x  1 root root 331072 Sep  3 01:48 blog
+-rwxr-xr-x  1 root root 275120 Sep  3 01:48 bounce
+-rwxr-xr-x  1 root root 579536 Sep  3 01:48 bsh
+-rwxr-xr-x  1 root root 322392 Sep  3 01:48 bssh
+-rwxr-xr-x  1 root root 314136 Sep  3 01:48 bsshd
+-rwxr-xr-x  1 root root 342680 Sep  3 01:48 bterm
+-rwxr-xr-x  1 root root 184152 Sep  3 01:48 btop
+-rwxr-xr-x  1 root root 198888 Sep  3 01:48 btrace
+-rwxr-xr-x  1 root root 483232 Sep  3 01:48 burl
+-rwxr-xr-x  1 root root 331496 Sep  3 01:48 bwm
+-rwxr-xr-x  1 root root 188896 Sep  3 01:48 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189192 Sep  3 01:48 confetti
+-rwxr-xr-x  1 root root 177592 Sep  3 01:48 counter
+-rwxr-xr-x  1 root root 189656 Sep  3 01:48 demo
+-rwxr-xr-x  1 root root 178016 Sep  3 01:48 exec_smoke
+-rwxr-xr-x  1 root root 185000 Sep  3 01:48 exec_smoke_target
+-rwxr-xr-x  1 root root 191648 Sep  3 01:48 fart
+-rwxr-xr-x  1 root root 187560 Sep  3 01:48 fork_smoke
+-rwxr-xr-x  1 root root 182872 Sep  3 01:48 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391536 Sep  3 01:48 guskit
+-rwxr-xr-x  1 root root 189056 Sep  3 01:48 heartbeat
+-rwxr-xr-x  1 root root 177584 Sep  3 01:48 hello_time
+-rwxr-xr-x  1 root root 227088 Sep  3 01:48 hello_world
+-rwxr-xr-x  1 root root 262584 Sep  3 01:48 init_shell
+-rwxr-xr-x  1 root root 193888 Sep  3 01:48 particles
+-rwxr-xr-x  1 root root 195680 Sep  3 01:48 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197040 Sep  3 01:48 rectangles
+-rwxr-xr-x  1 root root 190968 Sep  3 01:48 resolution
+-rwxr-xr-x  1 root root 177832 Sep  3 01:48 signal_exec_check
+-rwxr-xr-x  1 root root 170536 Sep  3 01:48 simple_exit
+-rwxr-xr-x  1 root root 170536 Sep  3 01:48 simple_exit0
+-rwxr-xr-x  1 root root 170552 Sep  3 01:48 spawn_smoke_target
+-rwxr-xr-x  1 root root 177592 Sep  3 01:48 spinner
+-rwxr-xr-x  1 root root 177480 Sep  3 01:48 syscall_enosys
+-rwxr-xr-x  1 root root 184168 Sep  3 01:48 tones
+-rwxr-xr-x  1 root root 218344 Sep  3 01:48 tty_oracle
+-rwxr-xr-x  1 root root 195512 Sep  3 01:48 wait_stress
+-rwxr-xr-x  1 root root 187168 Sep  3 01:48 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19600
+drwxr-xr-x 2 root root   4096 Sep  3 01:48 .
+drwxr-xr-x 3 root root   4096 Sep  3 01:48 ..
+-rwxr-xr-x 1 root root 177896 Sep  3 01:48 access_test
+-rwxr-xr-x 1 root root 186808 Sep  3 01:48 alarm_test
+-rwxr-xr-x 1 root root 184296 Sep  3 01:48 argv_test
+-rwxr-xr-x 1 root root 188064 Sep  3 01:48 blocking_recv_test
+-rwxr-xr-x 1 root root 186536 Sep  3 01:48 brk_test
+-rwxr-xr-x 1 root root 187288 Sep  3 01:48 cat_test
+-rwxr-xr-x 1 root root 188608 Sep  3 01:48 clock_gettime_test
+-rwxr-xr-x 1 root root 192536 Sep  3 01:48 cloexec_test
+-rwxr-xr-x 1 root root 184624 Sep  3 01:48 clonevm_exec_test
+-rwxr-xr-x 1 root root 182488 Sep  3 01:48 cow_cleanup_test
+-rwxr-xr-x 1 root root 186552 Sep  3 01:48 cow_oom_test
+-rwxr-xr-x 1 root root 187000 Sep  3 01:48 cow_readonly_test
+-rwxr-xr-x 1 root root 188264 Sep  3 01:48 cow_signal_test
+-rwxr-xr-x 1 root root 186960 Sep  3 01:48 cow_sole_owner_test
+-rwxr-xr-x 1 root root 187048 Sep  3 01:48 cow_stress_test
+-rwxr-xr-x 1 root root 182760 Sep  3 01:48 cp_mv_argv_test
+-rwxr-xr-x 1 root root 187936 Sep  3 01:48 ctrl_c_test
+-rwxr-xr-x 1 root root 182576 Sep  3 01:48 cwd_test
+-rwxr-xr-x 1 root root 182392 Sep  3 01:48 devfs_test
+-rwxr-xr-x 1 root root 195184 Sep  3 01:48 dns_test
+-rwxr-xr-x 1 root root 189112 Sep  3 01:48 dup_test
+-rwxr-xr-x 1 root root 182424 Sep  3 01:48 echo_argv_test
+-rwxr-xr-x 1 root root 182784 Sep  3 01:48 epoll_test
+-rwxr-xr-x 1 root root 178160 Sep  3 01:48 exec_argv_test
+-rwxr-xr-x 1 root root 188032 Sep  3 01:48 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183384 Sep  3 01:48 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182512 Sep  3 01:48 false_test
+-rwxr-xr-x 1 root root 187520 Sep  3 01:48 fbinfo_test
+-rwxr-xr-x 1 root root 188704 Sep  3 01:48 fcntl_test
+-rwxr-xr-x 1 root root 198400 Sep  3 01:48 fifo_test
+-rwxr-xr-x 1 root root 182360 Sep  3 01:48 file_read_test
+-rwxr-xr-x 1 root root 188616 Sep  3 01:48 fork_memory_test
+-rwxr-xr-x 1 root root 187696 Sep  3 01:48 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189136 Sep  3 01:48 fork_state_test
+-rwxr-xr-x 1 root root 188048 Sep  3 01:48 fork_test
+-rwxr-xr-x 1 root root 188568 Sep  3 01:48 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183112 Sep  3 01:48 fs_directory_test
+-rwxr-xr-x 1 root root 182568 Sep  3 01:48 fs_large_file_test
+-rwxr-xr-x 1 root root 182760 Sep  3 01:48 fs_link_test
+-rwxr-xr-x 1 root root 182664 Sep  3 01:48 fs_rename_test
+-rwxr-xr-x 1 root root 182848 Sep  3 01:48 fs_write_test
+-rwxr-xr-x 1 root root 183944 Sep  3 01:48 getdents_test
+-rwxr-xr-x 1 root root 183016 Sep  3 01:48 head_test
+-rwxr-xr-x 1 root root 464304 Sep  3 01:48 http_fetch_test
+-rwxr-xr-x 1 root root 468456 Sep  3 01:48 http_test
+-rwxr-xr-x 1 root root 187248 Sep  3 01:48 itimer_test
+-rwxr-xr-x 1 root root 187600 Sep  3 01:48 job_control_test
+-rwxr-xr-x 1 root root 192184 Sep  3 01:48 job_table_test
+-rwxr-xr-x 1 root root 188440 Sep  3 01:48 kill_process_group_test
+-rwxr-xr-x 1 root root 189728 Sep  3 01:48 loopback_wake_test
+-rwxr-xr-x 1 root root 183248 Sep  3 01:48 ls_test
+-rwxr-xr-x 1 root root 182464 Sep  3 01:48 lseek_test
+-rwxr-xr-x 1 root root 182624 Sep  3 01:48 mkdir_argv_test
+-rwxr-xr-x 1 root root 191536 Sep  3 01:48 net_test
+-rwxr-xr-x 1 root root 183664 Sep  3 01:48 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188696 Sep  3 01:48 nonblock_test
+-rwxr-xr-x 1 root root 188312 Sep  3 01:48 pause_test
+-rwxr-xr-x 1 root root 188872 Sep  3 01:48 pipe2_test
+-rwxr-xr-x 1 root root 188672 Sep  3 01:48 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188776 Sep  3 01:48 pipe_fork_test
+-rwxr-xr-x 1 root root 199904 Sep  3 01:48 pipe_refcount_test
+-rwxr-xr-x 1 root root 188200 Sep  3 01:48 pipe_test
+-rwxr-xr-x 1 root root 191536 Sep  3 01:48 pipeline_test
+-rwxr-xr-x 1 root root 188976 Sep  3 01:48 poll_test
+-rwxr-xr-x 1 root root 187056 Sep  3 01:48 pty_test
+-rwxr-xr-x 1 root root 177048 Sep  3 01:48 register_init_test
+-rwxr-xr-x 1 root root 182440 Sep  3 01:48 rm_argv_test
+-rwxr-xr-x 1 root root 188864 Sep  3 01:48 select_test
+-rwxr-xr-x 1 root root 187928 Sep  3 01:48 session_test
+-rwxr-xr-x 1 root root 183088 Sep  3 01:48 shell_pipe_test
+-rwxr-xr-x 1 root root 188960 Sep  3 01:48 sigaltstack_test
+-rwxr-xr-x 1 root root 187480 Sep  3 01:48 sigchld_job_test
+-rwxr-xr-x 1 root root 186488 Sep  3 01:48 sigchld_test
+-rwxr-xr-x 1 root root 206656 Sep  3 01:48 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188672 Sep  3 01:48 signal_exec_test
+-rwxr-xr-x 1 root root 188120 Sep  3 01:48 signal_fork_test
+-rwxr-xr-x 1 root root 187848 Sep  3 01:48 signal_handler_test
+-rwxr-xr-x 1 root root 188160 Sep  3 01:48 signal_regs_test
+-rwxr-xr-x 1 root root 188272 Sep  3 01:48 signal_return_test
+-rwxr-xr-x 1 root root 187816 Sep  3 01:48 signal_test
+-rwxr-xr-x 1 root root 188824 Sep  3 01:48 sigsuspend_test
+-rwxr-xr-x 1 root root 188544 Sep  3 01:48 sleep_debug_test
+-rwxr-xr-x 1 root root 182240 Sep  3 01:48 stdin_test
+-rwxr-xr-x 1 root root 170816 Sep  3 01:48 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183016 Sep  3 01:48 tail_test
+-rwxr-xr-x 1 root root 203392 Sep  3 01:48 tcp_blocking_test
+-rwxr-xr-x 1 root root 187576 Sep  3 01:48 tcp_client_test
+-rwxr-xr-x 1 root root 189400 Sep  3 01:48 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188792 Sep  3 01:48 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202248 Sep  3 01:48 tcp_socket_test
+-rwxr-xr-x 1 root root 182176 Sep  3 01:48 test_mmap
+-rwxr-xr-x 1 root root 182104 Sep  3 01:48 timer_test
+-rwxr-xr-x 1 root root 182512 Sep  3 01:48 true_test
+-rwxr-xr-x 1 root root 188040 Sep  3 01:48 tty_test
+-rwxr-xr-x 1 root root 193352 Sep  3 01:48 udp_socket_test
+-rwxr-xr-x 1 root root 195296 Sep  3 01:48 unix_named_socket_test
+-rwxr-xr-x 1 root root 205272 Sep  3 01:48 unix_socket_test
+-rwxr-xr-x 1 root root 188096 Sep  3 01:48 waitpid_test
+-rwxr-xr-x 1 root root 183584 Sep  3 01:48 wc_test
+-rwxr-xr-x 1 root root 182912 Sep  3 01:48 which_test
+-rwxr-xr-x 1 root root 182496 Sep  3 01:48 wnohang_timing_test
+-rw-r--r-- 1 root root 0 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/empty.txt
+-rw-r--r-- 1 root root 20 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 445 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/etc/fonts.conf
+-rw-r--r-- 1 root root 679 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/etc/init.js
+-rw-r--r-- 1 root root 349 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/etc/hotkeys.conf
+-rw-r--r-- 1 root root 26 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/etc/group
+-rw-r--r-- 1 root root 83 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/etc/passwd
+-rw-r--r-- 1 root root 367 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/etc/bshrc
+-rw-r--r-- 1 root root 20 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/test/nested.txt
+-rwxr-xr-x 1 root root 181912 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/sbin/blogd
+-rwxr-xr-x 1 root root 187440 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/sbin/init
+-rwxr-xr-x 1 root root 184032 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/sbin/telnetd
+-rw-r--r-- 1 root root 17 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/hello.txt
+-rw-r--r-- 1 root root 19 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/trunctest.txt
+-rw-r--r-- 1 root root 160316 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 205748 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 212340 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 111 Sep  3 01:48 /tmp/tmp.UA3USMOIK7/lines.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-697-prove-main/target/ext2.img
+  /root/breenix-697-prove-main/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:548, exit 1)
+  failing command: test "$(( CENSUS_RESIDENT + CENSUS_REMOVED - TOMBSTONE_FIXTURE_REMOVALS ))" -eq "$PRODUCTION_REAPED_ROWS"
+--- serial tail (last 200 lines per file, /tmp/breenix_x86_boot_tests_1) ---
+==> /tmp/breenix_x86_boot_tests_1/serial_kernel.txt <==
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 1215 -> process 116 'http_test', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed UDP socket fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::socket::udp: UDP: Socket SocketHandle(16) unbound from port 49161
+[DEBUG] kernel::syscall::socket: sys_socket: called with domain=2, type=2050
+[ INFO] kernel::syscall::socket: UDP: Socket created fd=3
+[DEBUG] kernel::syscall::socket: UDP socket: returning to userspace fd=3
+[DEBUG] kernel::socket::udp: UDP: Socket SocketHandle(17) bound to 0.0.0.0:49162 (requested: 0)
+[ INFO] kernel::syscall::socket: UDP: Socket bound to port 49162 (requested: 0)
+[DEBUG] kernel::syscall::socket: UDP bind: returning to userspace
+[ INFO] kernel::syscall::socket: UDP: Packet sent successfully, bytes=52
+[DEBUG] kernel::syscall::socket: UDP sendto: returning to userspace
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[DEBUG] kernel::net::udp: UDP: Received packet from 10.0.2.3:53 -> port 49162 (52 bytes)
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cdc48, len=512
+[DEBUG] kernel::syscall::socket: UDP: Received 52 bytes from 10.0.2.3:53
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 1215 -> process 116 'http_test', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed UDP socket fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::socket::udp: UDP: Socket SocketHandle(17) unbound from port 49162
+[DEBUG] kernel::syscall::socket: sys_socket: called with domain=2, type=2050
+[ INFO] kernel::syscall::socket: UDP: Socket created fd=3
+[DEBUG] kernel::syscall::socket: UDP socket: returning to userspace fd=3
+[DEBUG] kernel::socket::udp: UDP: Socket SocketHandle(18) bound to 0.0.0.0:49163 (requested: 0)
+[ INFO] kernel::syscall::socket: UDP: Socket bound to port 49163 (requested: 0)
+[DEBUG] kernel::syscall::socket: UDP bind: returning to userspace
+[ INFO] kernel::syscall::socket: UDP: Packet sent successfully, bytes=29
+[DEBUG] kernel::syscall::socket: UDP sendto: returning to userspace
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cfc98, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cfc98, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cfc98, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cfc98, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cfc98, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cfc98, len=512
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cfc98, len=512
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::net::udp: UDP: Received packet from 8.8.8.8:53 -> port 49163 (61 bytes)
+[DEBUG] kernel::syscall::socket: sys_recvfrom: fd=3, buf_ptr=0x7fffff0cfc98, len=512
+[DEBUG] kernel::syscall::socket: UDP: Received 61 bytes from 8.8.8.8:53
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 1215 -> process 116 'http_test', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed UDP socket fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::socket::udp: UDP: Socket SocketHandle(18) unbound from port 49163
+[DEBUG] kernel::syscall::socket: sys_socket: called with domain=2, type=1
+[ INFO] kernel::syscall::socket: TCP: Socket created fd=3
+[DEBUG] kernel::syscall::socket: TCP socket: returning to userspace fd=3
+[DEBUG] kernel::syscall::socket: sys_connect: fd=3
+[DEBUG] kernel::net::tcp: TCP: Connecting to 172.66.147.243:80
+[ INFO] kernel::syscall::socket: TCP: Connect initiated to 172.66.147.243:80
+[ INFO] kernel::syscall::socket: TCP connect: blocking for conn_id={local=15:49172, remote=243:80}
+[DEBUG] kernel::net::tcp: TCP_IS_ESTABLISHED: conn_id={local=15:49172, remote=243:80} found but state=SynSent
+[ INFO] kernel::syscall::socket: TCP connect: thread=1215 entering blocking path
+[ INFO] kernel::syscall::socket: TCP connect: thread=1215 blocked, checking for race
+[DEBUG] kernel::net::tcp: TCP_IS_ESTABLISHED: conn_id={local=15:49172, remote=243:80} found but state=SynSent
+[ INFO] kernel::syscall::socket: TCP connect: thread=1215 double-check: established=false, failed=false
+[ INFO] kernel::syscall::socket: TCP_BLOCK: Thread 1215 entering blocked state for connect
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1215: RIP=0x10000285132 CS=0x8 RSP=0xffffc90000c16f28
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[DEBUG] kernel::net::tcp: TCP: Connection established (client) conn_id={local=15:49172, remote=243:80}
+[DEBUG] kernel::net::tcp: TCP: Woke 1 connection waiters
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1215: RIP=0x10000285132 RSP=0xffffc90000c16f28
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x555d000 for blocked-in-syscall kernel return (thread 1215)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1215: RIP=0x10000285132 CS=0x8 RSP=0xffffc90000c16f28
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1215: RIP=0x10000285132 RSP=0xffffc90000c16f28
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x555d000 for blocked-in-syscall kernel return (thread 1215)
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[ INFO] kernel::syscall::socket: TCP_BLOCK: Thread 1215 woken from connect blocking
+[ INFO] kernel::syscall::socket: TCP connect: thread=1215 looping back to check connection
+[ INFO] kernel::syscall::socket: TCP connect: thread=1215 - Connection established, returning success
+[DEBUG] kernel::syscall::handlers: sys_write: Wrote 115 bytes to TCP connection
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[DEBUG] kernel::syscall::handlers: sys_fcntl: fd=3, cmd=3, arg=0
+[DEBUG] kernel::syscall::handlers: sys_fcntl F_GETFL: fd=3 flags=0x0
+[DEBUG] kernel::syscall::handlers: sys_fcntl: fd=3, cmd=4, arg=2048
+[DEBUG] kernel::syscall::handlers: sys_fcntl F_SETFL: fd=3 flags=0x800
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0d0f08, count=65536
+[DEBUG] kernel::syscall::handlers: sys_read: TCP no data, O_NONBLOCK set - returning EAGAIN
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1215: RIP=0x10000285132 CS=0x8 RSP=0xffffc90000c17bf8
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::net::tcp: TCP: Received 869 bytes of data
+[ WARN] kernel::net::tcp: TCP: Received FIN in Established, moving to CLOSE_WAIT (local=15:49172, remote=243:80, rx_buf=869)
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1215: RIP=0x10000285132 RSP=0xffffc90000c17bf8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x555d000 for blocked-in-syscall kernel return (thread 1215)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0d0f08, count=65536
+[DEBUG] kernel::syscall::handlers: sys_read: Received 869 bytes from TCP connection
+[DEBUG] kernel::syscall::handlers: sys_fcntl: fd=3, cmd=4, arg=0
+[DEBUG] kernel::syscall::handlers: sys_fcntl F_SETFL: fd=3 flags=0x0
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 1215 -> process 116 'http_test', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed TCP connection fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[DEBUG] kernel::net::tcp: TCP: Connection closed
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 1215
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[DEBUG] kernel::task::process_task: Process 116 'http_test' (thread 1215) exited with code 0
+[ INFO] kernel::syscall::handlers: No more userspace threads remaining
+[ INFO] kernel::syscall::handlers: Woke keyboard task to ensure input processing continues
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=109 nonzero=0 failed=[]
+[ INFO] kernel::syscall::handlers: =====================================
+[ INFO] kernel::syscall::handlers: ✅ USERSPACE EXECUTION SUCCESSFUL ✅
+[ INFO] kernel::syscall::handlers: ✅ Ring 3 execution confirmed       ✅
+[ INFO] kernel::syscall::handlers: ✅ System calls working correctly   ✅
+[ INFO] kernel::syscall::handlers: ✅ Process lifecycle complete       ✅
+[ INFO] kernel::syscall::handlers: =====================================
+[ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁
+
+==> /tmp/breenix_x86_boot_tests_1/serial_user.txt <==
+TCP_DATA_TEST: client connected
+TCP_DATA_TEST: send OK
+TCP_DATA_TEST: accept OK
+TCP_DATA_TEST: recv OK
+TCP_DATA_TEST: data verified
+TCP_SHUTDOWN_WRITE_TEST: starting
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff0bee78 cr3=0x53f6000
+[COW FAULT #2] addr=0x40018058 cr3=0x53f6000
+[COW FAULT #3] addr=0x7ffffdffe010 cr3=0x53f6000
+
+[COW FAULT #4] addr=0x7ffffdfff010 cr3=0x53f6000
+Step 4: parent waiting for child (pid=120)...
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0d0f08
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x400043c1
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x202
+[DIAG:PAGEFAULT] RSP: 0x7fffff0d0e40
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x555d000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0d0f08 Error: 0x6 (P=0, W=1, U=1, I=0)
+F<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child live
+CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)
+<S>[SW]<T><U><R>[SW]<K>[SW]<T><U><R>UDP: Sent packet 1, bytes=4
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 2, bytes=4
+UDP: Delivered packet to socket on port 54326
+<S>[SW]<T><U><R><S>[SW]<T><U><R>  PASS: accepted a connection through the dup'd fd after the original closed
+
+Step 5: close the last fd; the listener must now actually retire...
+  PASS: port 9110 was free after the last fd closed (listener genuinely retired)
+
+=== All TCP dup'd-listener tests passed! ===
+TCP_DUP_LISTENER_TEST_PASSED
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[TEST:userspace:loopback_recv_wake:START]
+<S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child exited
+[SW]<K>[SW]<T><U><R>UDP: Sent packet 3, bytes=4
+UDP: Received packet 1, bytes=4
+UDP: Received packet 2, bytes=4
+UDP: Received packet 3, bytes=4
+UDP_MULTIPACKET_TEST: 3 packets OK
+UDP Socket Test: All tests passed!
+<S>[SW]<T><U><R>TCP_SHUTDOWN_WRITE_TEST: EPIPE OK
+TCP_SHUT_RD_TEST: starting
+<S>[SW]<T><B>[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=380:rescues=0:queue_residual=0:balance=0]
+[FUTEX_HANDOFF_ORACLE_DRIVER:s1=-11:s2=0:s3=-110]
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>HTTP Test: Starting
+HTTP_TEST: testing port out of range...
+[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0cee28
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x400070b8
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x246
+[DIAG:PAGEFAULT] RSP: 0x7fffff0cedf0
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x555d000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0cee28 Error: 0x6 (P=0, W=1, U=1, I=0)
+F[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0cdfc8
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x40002f5f
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x202
+[DIAG:PAGEFAULT] RSP: 0x7fffff0cdfd0
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x555d000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0cdfc8 Error: 0x6 (P=0, W=1, U=1, I=0)
+FHTTP_TEST: port_out_of_range OK
+HTTP_TEST: testing non-numeric port...
+HTTP_TEST: port_non_numeric OK
+HTTP_TEST: testing empty host...
+HTTP_TEST: empty_host OK
+p00r0 HTTP_TEST: testing URL too long...
+HTTP_TEST: url_too_long OK
+HTTP_TEST: testing HTTPS URL parsing...
+<S>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49153
+[COW FAULT #5] addr=0x7fffff0f1e88 cr3=0x51d8000
+[SW]<K>[SW]<T><U><R>TCP_SHUT_RD_TEST: EOF OK
+TCP_SHUT_WR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8 -> 104.20.23.154 (2418ms, total 2418ms)
+[http] DNS resolved 104.20.23.154 (2427ms)
+[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SHUT_WR_TEST: SHUT_WR write rejected OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[http] TCP connected (329ms)
+[SW]<T><U><R>[COW FAULT #6] addr=0x7fffff0f1e88 cr3=0x564a000
+<S>[SW]<T><U><R>[COW FAULT #7] addr=0x7fffff0f1e88 cr3=0x5904000
+<S>[SW]<K>[SW]<T><U><R>TCP_SHUT_WR_TEST: server saw FIN OK
+TCP_BIDIR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R>[COW FAULT #8] addr=0x7fffff0f1e88 cr3=0x564a000
+<S>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff0f1e88 cr3=0x5847000
+[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #10] addr=0x7fffff0f1e88 cr3=0x564a000
+<S>[SW]<T><U><R>[COW FAULT #11] addr=0x7fffff0f1e88 cr3=0x53d1000
+[SW]<T><B>[COW FAULT #12] addr=0x40017058 cr3=0x51d8000
+[COW FAULT #13] addr=0x7ffffdffe010 cr3=0x51d8000
+[COW FAULT #14] addr=0x7ffffdfff010 cr3=0x51d8000
+LOOPBACK_WAKE_TEST: data latency_ms=897 bytes=16
+[SW]<T><U><R>[SW]<K>[SW]<T><U><R>TCP_BIDIR_TEST: server->client OK
+TCP_LARGE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #15] addr=0x7fffff0f1e88 cr3=0x564a000
+[SW]<T><B><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_LARGE_TEST: 256 bytes verified OK
+TCP_BACKLOG_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[COW FAULT #16] addr=0x40017020 cr3=0x5904000
+[COW FAULT #17] addr=0x7ffffdffe010 cr3=0x5904000
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>LOOPBACK_WAKE_TEST: eof wait_ms=1384 bytes=0
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0ccf28
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x4000acef
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x202
+[DIAG:PAGEFAULT] RSP: 0x7fffff0ccf30
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x555d000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0ccf28 Error: 0x6 (P=0, W=1, U=1, I=0)
+F<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BACKLOG_TEST: overflow rejected OK
+TCP_CONNREFUSED_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_CONNREFUSED_TEST: ECONNREFUSED OK
+TCP_MSS_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MSS_TEST: 2000 bytes (>MSS) verified OK
+TCP_MULTI_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MULTI_TEST: 3 messages verified OK
+TCP_ADDR_TEST: starting
+<S>[SW]<T><B>p00r0 [SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_ADDR_TEST: 10.x.x.x OK
+TCP_SIMUL_CLOSE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SIMUL_CLOSE_TEST: simultaneous close OK
+TCP_HALFCLOSE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r1 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_HALFCLOSE_TEST: read after SHUT_WR OK
+TCP_FIRST_ACCEPT_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_FIRST_ACCEPT_TEST: accept OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP Socket Test: PASSED
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<T><U><R>DNS Test: Starting
+DNS_TEST: resolving www.google.com...
+UDP: Delivered packet to socket on port 49154
+DNS_TEST: google_resolve SKIP (network unavailable)
+DNS_TEST: resolving example.com...
+<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49155
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: resolved ip=104.20.23.154
+DNS_TEST: example_resolve OK
+DNS_TEST: testing NXDOMAIN...
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49156
+<S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: nxdomain OK (error=ServerError(3))
+DNS_TEST: testing empty hostname...
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: empty_hostname OK
+DNS_TEST: testing long hostname...
+DNS_TEST: long_hostname OK
+DNS_TEST: testing txid variation...
+UDP: Delivered packet to socket on port 49157
+UDP: Delivered packet to socket on port 49158
+DNS_TEST: txid_varies OK
+DNS Test: All tests passed!
+<S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #18] addr=0x40017020 cr3=0x5847000
+[COW FAULT #19] addr=0x7ffffdffe010 cr3=0x5847000
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>  PASS: child exec'd simple_exit0 and exited with code 0
+
+Step 5: close the parent's own listener fd...
+  Parent's listener fd closed
+
+Step 6: rebind port 9112 -- must succeed if the listener was genuinely retired...
+  PASS: port 9112 was free after the parent's close -- the child's cloexec'd copy was genuinely released across exec()
+
+=== All TCP FD_CLOEXEC exec() tests passed! ===
+TCP_CLOEXEC_EXEC_TEST_PASSED
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: second stage
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><B>p00r1 <S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+<S>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><B>[TEST:userspace:loopback_recv_wake:PASS]
+<S>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)
+<S>[SW]<I>[SW]<T><U><R>HTTP_TEST: testing error handling (invalid domain)...
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>UDP: Delivered packet to socket on port 49159
+[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid<S>[SW]<I>[SW]<T><U><R>' via 8.8.8.8: ServerError(3) (27ms)
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r1 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 10.211.55.1: Timeout (511ms)
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 172.16.45.2: Timeout (514ms)
+UDP: Delivered packet to socket on port 49162
+[dns] 'this.domain.does.not.exist.invalid' via 10.0.2.3: ServerError(3) (13ms)
+[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1093ms)
+HTTP_TEST: invalid_domain OK
+HTTP_TEST: testing HTTP fetch (example.com)...
+<S>[SW]<I>[SW]<T><U><R>UDP: Delivered packet to socket on port 49163
+<S>[SW]<I>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8 -> 172.66.147.243 (33ms, total 34ms)
+[http] DNS resolved 172.66.147.243 (40ms)
+[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[http] TCP connected (178ms)
+[SW]<I>[SW]<T><B>[http] response received: 869 bytes (recv 140ms, total 367ms)
+HTTP_TEST: received 869 bytes, status=200
+HTTP_TEST: example_fetch OK (status 200, body contains HTML)
+HTTP Test: All tests passed!
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1]
+<S>[SW]<I>[KSTACK_QUIESCE_LEAK:baseline_outstanding=4:outstanding=16:leaked=0]
+[TOMBSTONE_QUIESCE:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1:pending=1:parked=0]
+[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=4:injected=1:pend_epoch=0:pend_hw=1:pend_shadow=0:pend_selectable=0]
