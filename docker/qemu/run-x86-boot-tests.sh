@@ -158,22 +158,35 @@ readonly TOMBSTONE_FIXTURE_REMOVALS=2
 # boot::test_list::TEST_BINARIES" comment and the without_interrupts() call
 # that creates them -- the get_test_binary("...") argument on each line in
 # between is the roster. Each name is a userspace/programs/src/<name>.rs
-# source file, and every `match fork() { ... }` (or `match process::fork() {
-# ... }`) call site in that file is one child the program later reaps
-# through a blocking waitpid(): loopback_wake_test forks its
-# reader/peer/load/watchdog children (4 call sites) and
-# tcp_cloexec_exec_test forks its one exec peer (1 call site), which is
-# exactly how this pin was 4 before #765 added the second forking program to
-# the roster and is 5 with it in. A roster addition that does not fork
-# contributes 0 and changes nothing here; one that forks+waitpids moves this
-# count with it. The assertion stays live either way: a kernel defect that
-# phantom-reaps an extra row, or fails to reap one the roster expects, still
-# mismatches this derived total and fails it.
+# source file, and every `fork()` call site introduced by `match` or by an
+# assignment (`=`), through zero or more `mod::` path segments, is one child
+# the program later reaps through a blocking waitpid() -- this recognises
+# every fork idiom in the tree today (R98): `match fork() { ... }`
+# (loopback_wake_test, bare), `let x = match fork() { ... }`
+# (tcp_cloexec_exec_test, assign+match), `let x = process::fork();`
+# (tcp_blocking_test, assign only, no roster program uses this shape yet),
+# `match libbreenix::process::fork() { ... }` (bsh, fully-qualified path,
+# no roster program uses this shape yet), and
+# `match fork().unwrap_or_else(..) { ... }` (sigkill_teardown_test, chained
+# call on the match scrutinee, no roster program uses this shape yet).
+# loopback_wake_test forks its reader/peer/load/watchdog children (4 call
+# sites) and tcp_cloexec_exec_test forks its one exec peer (1 call site),
+# which is exactly how this pin was 4 before #765 added the second forking
+# program to the roster and is 5 with it in. A roster addition that does not
+# fork contributes 0 and changes nothing here; one that forks+waitpids, in
+# any of the five idioms above, moves this count with it. The assertion
+# stays live either way: a kernel defect that phantom-reaps an extra row, or
+# fails to reap one the roster expects, still mismatches this derived total
+# and fails it.
 # claim-lint:ok: #697 -- "every ... call site ... is one child" is this
 # derivation's own definition (it is what the grep loop immediately below
 # counts, not an empirical claim about the kernel), and measured directly:
 # 2 of 15 current roster files match (loopback_wake_test.rs: 4 sites,
-# tcp_cloexec_exec_test.rs: 1 site), summing to the 5 this pin now derives.
+# tcp_cloexec_exec_test.rs: 1 site), summing to the 5 this pin now derives;
+# widening the pattern to the five idioms above leaves that sum unchanged
+# (verified against every one of the 15 roster files plus, for the three
+# newly-recognised idioms, tcp_blocking_test.rs=2, bsh.rs=3,
+# sigkill_teardown_test.rs=4 -- none of which are on today's roster).
 RING3_SMOKE_ROSTER=$(awk \
     '/canonical list of test binaries is in boot::test_list::TEST_BINARIES/,/without_interrupts\(\|\| \{/' \
     "$BREENIX_ROOT/kernel/src/main.rs" \
@@ -190,7 +203,13 @@ for _ring3_smoke_name in $RING3_SMOKE_ROSTER; do
     # PCI_CENSUS_LINE comment below for why an unguarded pipefail would
     # otherwise abort the script at this assignment instead of at a legible
     # `test -n`/`-eq` assertion.
-    _ring3_smoke_forks=$(grep -cE 'match (process::)?fork\(\) \{' "$_ring3_smoke_src") || true
+    # Pattern: a `fork()` call reached via `match` or an assignment (`=`),
+    # through zero or more `mod::` path segments -- recognises `match
+    # fork() {`, `match process::fork() {`, `match libbreenix::process::
+    # fork() {`, `let x = process::fork();`, and `match
+    # fork().unwrap_or_else(..) {` alike (R98; see the comment above this
+    # loop for which roster/non-roster file uses which idiom).
+    _ring3_smoke_forks=$(grep -cE '(match|=) *([a-zA-Z_]+::)*fork\(\)' "$_ring3_smoke_src") || true
     PRODUCTION_REAPED_ROWS=$(( PRODUCTION_REAPED_ROWS + _ring3_smoke_forks ))
 done
 unset _ring3_smoke_name _ring3_smoke_src _ring3_smoke_forks
