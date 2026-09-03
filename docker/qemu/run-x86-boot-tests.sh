@@ -194,11 +194,19 @@ readonly TOMBSTONE_FIXTURE_REMOVALS=2
 # (verified against every one of the 15 roster files plus, for the three
 # newly-recognised idioms, tcp_blocking_test.rs=2, bsh.rs=3,
 # sigkill_teardown_test.rs=4 -- none of which are on today's roster).
+# `|| true`: under `set -o pipefail`, a roster-comment rename or removal in
+# kernel/src/main.rs makes the middle `grep -oE` exit 1 with no match, which
+# would otherwise abort the script AT THIS ASSIGNMENT -- the ERR trap still
+# fires and still prints a FAIL, but it names the awk/grep/sed pipeline
+# rather than the `test -n "$RING3_SMOKE_ROSTER"` assertion below that is
+# actually making the claim (same shape as the PCI_CENSUS_LINE guard
+# further down). Let the assignment succeed with an empty value and let the
+# explicit `test -n` name the real failure.
 RING3_SMOKE_ROSTER=$(awk \
     '/canonical list of test binaries is in boot::test_list::TEST_BINARIES/,/without_interrupts\(\|\| \{/' \
     "$BREENIX_ROOT/kernel/src/main.rs" \
     | grep -oE 'get_test_binary\("[a-zA-Z0-9_]+"\)' \
-    | sed -E 's/.*"([a-zA-Z0-9_]+)".*/\1/')
+    | sed -E 's/.*"([a-zA-Z0-9_]+)".*/\1/') || true
 test -n "$RING3_SMOKE_ROSTER"
 PRODUCTION_REAPED_ROWS=0
 for _ring3_smoke_name in $RING3_SMOKE_ROSTER; do
