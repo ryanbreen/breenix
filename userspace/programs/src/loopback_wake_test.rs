@@ -41,7 +41,7 @@
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::io;
-use libbreenix::process::{fork, waitpid, wexitstatus, wifexited, ForkResult};
+use libbreenix::process::{fork, getpid, waitpid, wexitstatus, wifexited, ForkResult};
 use libbreenix::signal;
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
 use libbreenix::time::{now_monotonic, sleep_ms};
@@ -61,6 +61,9 @@ const EOF_WAKE_BOUND_MS: u64 = 4000;
 // (see the scope note in the module header).
 const LOAD_SPIN_MS: u64 = 10000;
 const WATCHDOG_AT_MS: u64 = 30000;
+// Only the failure path spins this long, and only after exit 13 is already
+// decided, so no passing boot pays for it.
+const DISPATCH_PROBE_MS: u64 = 2000;
 
 fn monotonic_ms() -> Option<u64> {
     let now = now_monotonic().ok()?;
@@ -75,6 +78,51 @@ fn role_now_or_exit(exit_code: i32) -> u64 {
     match monotonic_ms() {
         Some(now) => now,
         None => std_process::exit(exit_code),
+    }
+}
+
+/// Sample the monotonic clock in a tight loop for `window_ms` and report the
+/// largest gap between consecutive samples, plus the sample count.
+///
+/// A thread that is runnable but not on a CPU cannot sample, so the largest gap
+/// is a direct measurement of the longest dispatch delay this thread suffered
+/// during the window. It is the same quantity #766 measured for `sleep_until`
+/// on x86, taken here by the role that missed its bound, on the boot that
+/// missed it.
+///
+/// It runs only on the already-decided failure path, so a healthy boot carries
+/// none of its load.
+fn dispatch_gap_probe(window_ms: u64) -> (u64, u64) {
+    let start_ms = match monotonic_ms() {
+        Some(now) => now,
+        None => return (0, 0),
+    };
+    let end_ms = start_ms.saturating_add(window_ms);
+    let mut prev_ms = start_ms;
+    let mut max_gap_ms = 0u64;
+    let mut samples = 0u64;
+    loop {
+        let now_ms = match monotonic_ms() {
+            Some(now) => now,
+            None => break,
+        };
+        samples = samples.saturating_add(1);
+        let gap_ms = now_ms.saturating_sub(prev_ms);
+        if gap_ms > max_gap_ms {
+            max_gap_ms = gap_ms;
+        }
+        prev_ms = now_ms;
+        if now_ms >= end_ms {
+            break;
+        }
+    }
+    (max_gap_ms, samples)
+}
+
+fn role_pid() -> u64 {
+    match getpid() {
+        Ok(pid) => pid.raw(),
+        Err(_) => 0,
     }
 }
 
@@ -97,8 +145,13 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
         Ok(fd) => fd,
         Err(_) => std_process::exit(10),
     };
+    let t_accept = role_now_or_exit(16);
 
     let mut buffer = [0u8; PAYLOAD_LEN];
+    // Stamped into a local and printed only after the read returns: a print
+    // here would put a console write between the accept and the blocking read
+    // that the measurement is about.
+    let t_pre_read = role_now_or_exit(16);
     let data_bytes = match io::read(connection, &mut buffer) {
         Ok(bytes) => bytes,
         Err(_) => std_process::exit(11),
@@ -116,7 +169,35 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
         "LOOPBACK_WAKE_TEST: data latency_ms={} bytes={}",
         data_latency_ms, data_bytes
     );
+    // The stamps the latency decomposes into, all from CLOCK_MONOTONIC:
+    //   w0        the peer's stamp taken immediately before its write
+    //   acc       this reader's accept() return
+    //   pre       this reader's stamp immediately before the blocking read
+    //   data      this reader's stamp immediately after the read returned
+    // w0_to_pre saturates at 0 on purpose: when the reader was already blocked
+    // in the read before the peer wrote (the common case) it reads 0, and
+    // pre_to_data then carries the whole latency.
+    println!(
+        "LOOPBACK_WAKE_TEST: reader_stamps pid={} w0={} acc={} pre={} data={} w0_to_pre={} pre_to_data={} lat={}",
+        role_pid(),
+        peer_write_ms,
+        t_accept,
+        t_pre_read,
+        t_data,
+        t_pre_read.saturating_sub(peer_write_ms),
+        t_data.saturating_sub(t_pre_read),
+        data_latency_ms
+    );
     if data_latency_ms > DATA_WAKE_BOUND_MS {
+        // The verdict is already decided; measuring now cannot change it. What
+        // the probe adds is the one fact the stamps above cannot supply: how
+        // long a runnable thread waits for a dispatch on this boot, right after
+        // the bound was missed.
+        let (max_gap_ms, samples) = dispatch_gap_probe(DISPATCH_PROBE_MS);
+        println!(
+            "LOOPBACK_WAKE_TEST: reader_dispatch_probe max_gap_ms={} samples={} window_ms={}",
+            max_gap_ms, samples, DISPATCH_PROBE_MS
+        );
         std_process::exit(13);
     }
 
@@ -132,6 +213,10 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
     println!(
         "LOOPBACK_WAKE_TEST: eof wait_ms={} bytes={}",
         eof_wait_ms, eof_bytes
+    );
+    println!(
+        "LOOPBACK_WAKE_TEST: reader_eof_stamps ready={} eof={} eof_wait={}",
+        t_ready, t_eof, eof_wait_ms
     );
     if !matches!(eof_result, Ok(0)) {
         std_process::exit(14);
@@ -152,6 +237,7 @@ fn peer_child(spin_r: Fd) -> ! {
     if socket::connect_inet(connection, &server_addr).is_err() {
         std_process::exit(21);
     }
+    let t_connect = role_now_or_exit(23);
 
     let mut payload = [0u8; PAYLOAD_LEN];
     payload[8..].copy_from_slice(TAG);
@@ -161,6 +247,20 @@ fn peer_child(spin_r: Fd) -> ! {
         Ok(PAYLOAD_LEN) => {}
         _ => std_process::exit(22),
     }
+    let t_write_return = role_now_or_exit(23);
+    // Printed here rather than after the pipe read because on a failing boot
+    // this role is SIGKILLed while still blocked in that read and would never
+    // speak. The cost is one console write between the peer's write and its
+    // block; it is disclosed, not hidden, and it cannot shorten a latency that
+    // is measured to the reader's own read return.
+    println!(
+        "LOOPBACK_WAKE_TEST: peer_stamps pid={} conn={} w0={} w1={} write_ms={}",
+        role_pid(),
+        t_connect,
+        peer_write_ms,
+        t_write_return,
+        t_write_return.saturating_sub(peer_write_ms)
+    );
 
     let mut spin_signal = [0u8; 1];
     match io::read(spin_r, &mut spin_signal) {
@@ -191,15 +291,47 @@ fn load_child(ready_r: Fd, spin_w: Fd) -> ! {
     // Never block after releasing the peer: denying idle_thread_fn the CPU
     // across the FIN window makes kloopbackd, not the idle drain, deliver it.
     let end_ms = start_ms.saturating_add(LOAD_SPIN_MS);
-    while role_now_or_exit(30) < end_ms {
+    // The spin already samples the clock every iteration, so the largest gap
+    // between consecutive samples is a free dispatch-latency measurement over
+    // the EOF window: no extra syscall, no extra load.
+    let mut prev_ms = start_ms;
+    let mut max_gap_ms = 0u64;
+    let mut samples = 0u64;
+    loop {
+        let now_ms = role_now_or_exit(30);
+        samples = samples.saturating_add(1);
+        let gap_ms = now_ms.saturating_sub(prev_ms);
+        if gap_ms > max_gap_ms {
+            max_gap_ms = gap_ms;
+        }
+        prev_ms = now_ms;
+        if now_ms >= end_ms {
+            break;
+        }
         core::hint::spin_loop();
     }
+    println!(
+        "LOOPBACK_WAKE_TEST: load_stamps max_gap_ms={} samples={} spin_ms={}",
+        max_gap_ms,
+        samples,
+        prev_ms.saturating_sub(start_ms)
+    );
 
     std_process::exit(0);
 }
 
 fn watchdog_child(epoch_ms: u64, reader_pid: Pid, peer_pid: Pid, load_pid: Pid) -> ! {
     watchdog_sleep_until(epoch_ms);
+    // How far past its own deadline the timed sleep returned. #766 measured
+    // this quantity for sleep_until on x86; this is the same measurement taken
+    // inside the test that #764 is about, on every boot, at no added cost.
+    let t_wake = role_now_or_exit(40);
+    println!(
+        "LOOPBACK_WAKE_TEST: watchdog_stamps target={} wake={} overrun_ms={}",
+        epoch_ms.saturating_add(WATCHDOG_AT_MS),
+        t_wake,
+        t_wake.saturating_sub(epoch_ms.saturating_add(WATCHDOG_AT_MS))
+    );
     // This is the only bounded escape if a wake is lost so completely that a
     // role never returns from a blocking read. ESRCH is normal: all siblings
     // should be long gone before the watchdog fires.
