@@ -50,7 +50,9 @@ The issue's own first battery saw 1/25.
 Preserved here: both exit-13 boots, and two clean comparators taken from the
 same batches (`clean-boot-045` immediately precedes `repro-boot-046`,
 `clean-boot-058` immediately follows `repro-boot-057`). `battery.tsv` carries
-one row for each of the 76 boots.
+76 rows, but the four smoke boots reused batch-1's boot ids (`boot-001`
+through `boot-004` each appear twice), so only 72 rows are tied to a distinct
+boot id; neither duplicate is an exit-13 row, and the 2/76 rate is unaffected.
 
 ## Evidence 1 -- the wake is published inside the writer's `write()`
 
