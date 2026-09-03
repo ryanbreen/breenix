@@ -40,7 +40,6 @@
 
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
-use libbreenix::fs::{self, O_RDONLY};
 use libbreenix::io;
 use libbreenix::process::{fork, getpid, waitpid, wexitstatus, wifexited, ForkResult};
 use libbreenix::signal;
@@ -128,62 +127,6 @@ fn role_pid() -> u64 {
     }
 }
 
-/// Read the #772 experiment-lane recv-wait-loop counters from
-/// /proc/trace/counters (RECV_WAIT_STILL_BLOCKED_TRUE and
-/// RECV_WAIT_STILL_BLOCKED_FALSE; see kernel/src/tracing/providers/
-/// counters.rs). Measurement only: a cold procfs read of an existing
-/// lock-free TraceCounter registry. Round 1 (c4e1e88a) bracketed a
-/// single blocking call in-band; those three added syscalls turned out
-/// be an observer effect on the very thing under test (see
-/// docs/planning/green-program/sockets/772-EXPERIMENT-2026-09-03.md,
-/// Section 2). This round instead calls it exactly twice, out-of-band:
-/// once at reader-process START (before accept(), so it precedes, and
-/// cannot perturb, the accept()->blocking-read path) and once at
-/// reader-process EXIT (after the pass/fail verdict is decided and
-/// after the EOF-wait read). Returns (still_blocked_true_total,
-/// still_blocked_false_total) as of the moment of the read; these are
-/// per-CPU aggregates across the whole boot, so the measure slot takes
-/// the delta between the two printed lines to isolate what this
-/// process itself contributed. A read failure (open or parse) returns
-/// (0, 0), which is why callers use a saturating difference rather
-/// than trusting either side to be nonzero on its own.
-fn read_recv_wait_counters() -> (u64, u64) {
-    let fd = match fs::open("/proc/trace/counters", O_RDONLY) {
-        Ok(fd) => fd,
-        Err(_) => return (0, 0),
-    };
-    let mut buf = [0u8; 16 * 1024];
-    let n = match io::read(fd, &mut buf) {
-        Ok(n) => n,
-        Err(_) => {
-            let _ = io::close(fd);
-            return (0, 0);
-        }
-    };
-    let _ = io::close(fd);
-    let text = core::str::from_utf8(&buf[..n]).unwrap_or("");
-    let mut still_blocked_true = 0u64;
-    let mut still_blocked_false = 0u64;
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("RECV_WAIT_STILL_BLOCKED_TRUE:") {
-            still_blocked_true = rest
-                .trim()
-                .split_whitespace()
-                .next()
-                .and_then(|tok| tok.parse::<u64>().ok())
-                .unwrap_or(0);
-        } else if let Some(rest) = line.strip_prefix("RECV_WAIT_STILL_BLOCKED_FALSE:") {
-            still_blocked_false = rest
-                .trim()
-                .split_whitespace()
-                .next()
-                .and_then(|tok| tok.parse::<u64>().ok())
-                .unwrap_or(0);
-        }
-    }
-    (still_blocked_true, still_blocked_false)
-}
-
 fn watchdog_sleep_until(epoch_ms: u64) {
     let target_ms = epoch_ms.saturating_add(WATCHDOG_AT_MS);
     loop {
@@ -199,16 +142,6 @@ fn watchdog_sleep_until(epoch_ms: u64) {
 }
 
 fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
-    // #772 experiment lane: out-of-band counter bracket, part 1 of 2.
-    // This read runs before accept() is even called, so its own
-    // syscalls (open, read, close) sit strictly before the
-    // accept()->blocking-read path rather than inside it, matching the
-    // docstring on read_recv_wait_counters() above.
-    let (recv_wait_true_start, recv_wait_false_start) = read_recv_wait_counters();
-    println!(
-        "[LOOPBACK_WAKE:RECV_WAIT_COUNTERS_START:true={}:false={}]",
-        recv_wait_true_start, recv_wait_false_start
-    );
     let connection = match socket::accept(server_fd, None) {
         Ok(fd) => fd,
         Err(_) => std_process::exit(10),
@@ -292,20 +225,6 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
     if eof_wait_ms > EOF_WAKE_BOUND_MS {
         std_process::exit(15);
     }
-
-    // #772 experiment lane: out-of-band counter bracket, part 2 of 2.
-    // This read runs at reader-process exit, after both the data-read
-    // verdict above and the EOF-wait read and verdict immediately above
-    // are already decided, so it cannot perturb either blocking call.
-    // The measure slot takes the delta between this line and the START
-    // line above to get the share this process contributed to the
-    // per-CPU aggregate across both blocking calls (data read plus
-    // EOF-wait read).
-    let (recv_wait_true_exit, recv_wait_false_exit) = read_recv_wait_counters();
-    println!(
-        "[LOOPBACK_WAKE:RECV_WAIT_COUNTERS_EXIT:true={}:false={}]",
-        recv_wait_true_exit, recv_wait_false_exit
-    );
 
     std_process::exit(0);
 }
