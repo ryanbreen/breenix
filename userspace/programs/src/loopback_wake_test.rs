@@ -129,16 +129,24 @@ fn role_pid() -> u64 {
 }
 
 /// Read the #772 experiment-lane recv-wait-loop counters from
-/// `/proc/trace/counters` (`RECV_WAIT_STILL_BLOCKED_TRUE` /
-/// `RECV_WAIT_STILL_BLOCKED_FALSE`, `kernel/src/tracing/providers/
-/// counters.rs`). Measurement only: a cold procfs read of an existing
-/// lock-free `TraceCounter` registry, taken from userspace after the syscall
-/// it observes has already returned -- it cannot perturb the recv wait loop
-/// itself. Returns (still_blocked_true_total, still_blocked_false_total) as
-/// of the moment of the read; callers difference two reads bracketing one
-/// blocking call to get that call's own contribution. A read failure (open or
-/// parse) returns (0, 0), which is why callers use a saturating difference
-/// rather than trusting either side to be nonzero on its own.
+/// /proc/trace/counters (RECV_WAIT_STILL_BLOCKED_TRUE and
+/// RECV_WAIT_STILL_BLOCKED_FALSE; see kernel/src/tracing/providers/
+/// counters.rs). Measurement only: a cold procfs read of an existing
+/// lock-free TraceCounter registry. Round 1 (c4e1e88a) bracketed a
+/// single blocking call in-band; those three added syscalls turned out
+/// be an observer effect on the very thing under test (see
+/// docs/planning/green-program/sockets/772-EXPERIMENT-2026-09-03.md,
+/// Section 2). This round instead calls it exactly twice, out-of-band:
+/// once at reader-process START (before accept(), so it precedes, and
+/// cannot perturb, the accept()->blocking-read path) and once at
+/// reader-process EXIT (after the pass/fail verdict is decided and
+/// after the EOF-wait read). Returns (still_blocked_true_total,
+/// still_blocked_false_total) as of the moment of the read; these are
+/// per-CPU aggregates across the whole boot, so the measure slot takes
+/// the delta between the two printed lines to isolate what this
+/// process itself contributed. A read failure (open or parse) returns
+/// (0, 0), which is why callers use a saturating difference rather
+/// than trusting either side to be nonzero on its own.
 fn read_recv_wait_counters() -> (u64, u64) {
     let fd = match fs::open("/proc/trace/counters", O_RDONLY) {
         Ok(fd) => fd,
@@ -191,6 +199,16 @@ fn watchdog_sleep_until(epoch_ms: u64) {
 }
 
 fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
+    // #772 experiment lane: out-of-band counter bracket, part 1 of 2.
+    // This read runs before accept() is even called, so its own
+    // syscalls (open, read, close) sit strictly before the
+    // accept()->blocking-read path rather than inside it, matching the
+    // docstring on read_recv_wait_counters() above.
+    let (recv_wait_true_start, recv_wait_false_start) = read_recv_wait_counters();
+    println!(
+        "[LOOPBACK_WAKE:RECV_WAIT_COUNTERS_START:true={}:false={}]",
+        recv_wait_true_start, recv_wait_false_start
+    );
     let connection = match socket::accept(server_fd, None) {
         Ok(fd) => fd,
         Err(_) => std_process::exit(10),
@@ -198,11 +216,6 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
     let t_accept = role_now_or_exit(16);
 
     let mut buffer = [0u8; PAYLOAD_LEN];
-    // #772 experiment lane: baseline the recv-wait-loop counters immediately
-    // before the blocking read so the delta below is this call's own
-    // contribution, not the boot-wide total (other test binaries' TCP recv
-    // calls, if any, also touch this pair).
-    let (recv_wait_true_pre, recv_wait_false_pre) = read_recv_wait_counters();
     // Stamped into a local and printed only after the read returns: a print
     // here would put a console write between the accept and the blocking read
     // that the measurement is about.
@@ -212,7 +225,6 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
         Err(_) => std_process::exit(11),
     };
     let t_data = role_now_or_exit(16);
-    let (recv_wait_true_post, recv_wait_false_post) = read_recv_wait_counters();
     if data_bytes != PAYLOAD_LEN || &buffer[8..] != TAG {
         std_process::exit(12);
     }
@@ -243,16 +255,6 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
         t_pre_read.saturating_sub(peer_write_ms),
         t_data.saturating_sub(t_pre_read),
         data_latency_ms
-    );
-    // #772 experiment lane: how many times this recv() call's wait loop
-    // observed Blocked and looped back to sleep (RECV_WAIT_STILL_BLOCKED_TRUE)
-    // vs. observed not-Blocked and proceeded (RECV_WAIT_STILL_BLOCKED_FALSE).
-    // Delta of two /proc/trace/counters reads bracketing the read() above;
-    // see kernel/src/tracing/providers/counters.rs for the counter docs.
-    println!(
-        "LOOPBACK_WAKE_TEST: recv_wait_counters still_blocked_true={} still_blocked_false={}",
-        recv_wait_true_post.saturating_sub(recv_wait_true_pre),
-        recv_wait_false_post.saturating_sub(recv_wait_false_pre)
     );
     if data_latency_ms > DATA_WAKE_BOUND_MS {
         // The verdict is already decided; measuring now cannot change it. What
@@ -290,6 +292,20 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
     if eof_wait_ms > EOF_WAKE_BOUND_MS {
         std_process::exit(15);
     }
+
+    // #772 experiment lane: out-of-band counter bracket, part 2 of 2.
+    // This read runs at reader-process exit, after both the data-read
+    // verdict above and the EOF-wait read and verdict immediately above
+    // are already decided, so it cannot perturb either blocking call.
+    // The measure slot takes the delta between this line and the START
+    // line above to get the share this process contributed to the
+    // per-CPU aggregate across both blocking calls (data read plus
+    // EOF-wait read).
+    let (recv_wait_true_exit, recv_wait_false_exit) = read_recv_wait_counters();
+    println!(
+        "[LOOPBACK_WAKE:RECV_WAIT_COUNTERS_EXIT:true={}:false={}]",
+        recv_wait_true_exit, recv_wait_false_exit
+    );
 
     std_process::exit(0);
 }
