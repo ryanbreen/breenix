@@ -1,0 +1,8 @@
+=== gate stdout for Test 2 (from batch log) ===
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=6135
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+  Test 2: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+
+=== TEST_TALLY (from serial_kernel.txt) ===
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=0 failed=[]

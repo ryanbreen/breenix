@@ -1,0 +1,7 @@
+The target architecture is set to "auto" (currently "i386:x86-64").
+0x000001000014eff8 in ?? ()
+TRACE_ENABLED = 0x1
+TRACE_CPU0_WRITE_IDX = 372
+
+=== Trace Memory Dump Complete ===
+[Inferior 1 (process 1) detached]

@@ -1,0 +1,3 @@
+The target architecture is set to "auto" (currently "i386:x86-64").
+/root/prove-tracing-out/boot12/gdb_commands.txt:6: Error in sourced command file:
+Remote replied unexpectedly to 'vMustReplyEmpty': vCont;c;C;s;S

@@ -1,0 +1,24 @@
+Architecture:  x86_64
+Kernel binary: /root/breenix-prove-tracing-OLD/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663
+
+Derived layout (from kernel sources, not hardcoded):
+  MAX_CPUS:            16
+  TRACE_BUFFER_SIZE:   1024 events/CPU
+  Per-CPU buffer:      16448 bytes
+  TRACE_BUFFERS total: 263168 bytes
+
+Symbol addresses:
+  TRACE_BUFFERS:        0x100003f5980
+  TRACE_ENABLED:        0x100003f5968
+  TRACE_CPU0_WRITE_IDX: 0x10000435d80
+
+Starting qemu-system-x86_64 with gdbstub on port 1234...
+QEMU started (PID: 91992); letting the kernel run 15s to record events...
+scripts/test_tracing_via_gdb.LOCAL_ONLY.sh: line 226: 91992 Killed                  "$QEMU_BIN" -pflash "$OUTPUT_DIR/OVMF_CODE.fd" -pflash "$OUTPUT_DIR/OVMF_VARS.fd" -drive "if=none,id=hd,format=raw,readonly=on,file=$UEFI_IMG" -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off -drive "if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img" -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 -display none -no-reboot -no-shutdown -device isa-debug-exit,iobase=0xf4,iosize=0x04 -serial "file:$OUTPUT_DIR/serial.txt" -gdb "tcp::$GDB_PORT" > "$OUTPUT_DIR/qemu.log" 2>&1
+Error: QEMU exited during the settle window
+WARNING: Image format was not specified for '/root/prove-tracing-out-OLD/boot04/OVMF_CODE.fd' and probing guessed raw.
+         Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.
+         Specify the 'raw' format explicitly to remove the restrictions.
+WARNING: Image format was not specified for '/root/prove-tracing-out-OLD/boot04/OVMF_VARS.fd' and probing guessed raw.
+         Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.
+         Specify the 'raw' format explicitly to remove the restrictions.

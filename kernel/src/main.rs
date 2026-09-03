@@ -1257,6 +1257,8 @@ fn kernel_main_continue() -> ! {
         let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
         let tcp_dup_listener_test_buf =
             kernel::userspace_test::get_test_binary("tcp_dup_listener_test");
+        let tcp_cloexec_exec_test_buf =
+            kernel::userspace_test::get_test_binary("tcp_cloexec_exec_test");
         let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
         let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
         let loopback_wake_test_buf =
@@ -1420,6 +1422,29 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create tcp_dup_listener_test process: {}", e);
+                    }
+                }
+            }
+
+            // Launch TCP FD_CLOEXEC exec() survival test (regression for #707:
+            // close_cloexec() -- the path exec() uses to retire FD_CLOEXEC-marked
+            // fds -- had no arm for FdKind::TcpListener, so a listener fd marked
+            // FD_CLOEXEC leaked a reference across exec() instead of being
+            // retired via tcp_listener_ref_dec()).
+            {
+                serial_println!("RING3_SMOKE: creating tcp_cloexec_exec_test userspace process");
+                match process::creation::create_user_process(
+                    String::from("tcp_cloexec_exec_test"),
+                    &tcp_cloexec_exec_test_buf,
+                ) {
+                    Ok(pid) => {
+                        log::info!(
+                            "Created tcp_cloexec_exec_test process with PID {}",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create tcp_cloexec_exec_test process: {}", e);
                     }
                 }
             }

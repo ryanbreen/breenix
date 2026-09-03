@@ -1,0 +1,27 @@
+Layout: TRACE_BUFFER_SIZE=1024, MAX_CPUS=16, stride=16448 bytes, 105 event types known
+
+Parsed 16 CPU buffers:
+  CPU0: 0 events (write_idx=0, dropped=0)
+  CPU1: 0 events (write_idx=0, dropped=0)
+  CPU2: 0 events (write_idx=0, dropped=0)
+  CPU3: 0 events (write_idx=0, dropped=0)
+  CPU4: 0 events (write_idx=0, dropped=0)
+  CPU5: 0 events (write_idx=0, dropped=0)
+  CPU6: 0 events (write_idx=0, dropped=0)
+  CPU7: 0 events (write_idx=0, dropped=0)
+  CPU8: 0 events (write_idx=0, dropped=0)
+  CPU9: 0 events (write_idx=0, dropped=0)
+  CPU10: 0 events (write_idx=0, dropped=0)
+  CPU11: 0 events (write_idx=0, dropped=0)
+  CPU12: 0 events (write_idx=0, dropped=0)
+  CPU13: 0 events (write_idx=0, dropped=0)
+  CPU14: 0 events (write_idx=0, dropped=0)
+  CPU15: 0 events (write_idx=0, dropped=0)
+
+Validation results:
+  FAIL: no trace events recorded in any CPU buffer
+  FAIL: CPU0 (boot CPU) recorded no events
+  FAIL: no TIMER_TICK events recorded — the timer provider never fired
+  CENSUS: 0 timestamp inversion(s) total (not a failure; see comment)
+
+TRACE_VALIDATION:FAIL

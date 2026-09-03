@@ -105,6 +105,7 @@ pub const TEST_BINARIES: &[&str] = &[
     "udp_socket_test",
     "tcp_socket_test",
     "tcp_dup_listener_test",
+    "tcp_cloexec_exec_test",
     "dns_test",
     "http_test",
 ];

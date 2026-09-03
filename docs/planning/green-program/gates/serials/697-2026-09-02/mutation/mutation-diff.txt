@@ -1,0 +1,12 @@
+diff --git a/docker/qemu/run-x86-boot-tests.sh b/docker/qemu/run-x86-boot-tests.sh
+index 83a14ce7..8e4bbc1e 100755
+--- a/docker/qemu/run-x86-boot-tests.sh
++++ b/docker/qemu/run-x86-boot-tests.sh
+@@ -190,6 +190,7 @@ for _ring3_smoke_name in $RING3_SMOKE_ROSTER; do
+     PRODUCTION_REAPED_ROWS=$(( PRODUCTION_REAPED_ROWS + _ring3_smoke_forks ))
+ done
+ unset _ring3_smoke_name _ring3_smoke_src _ring3_smoke_forks
++PRODUCTION_REAPED_ROWS=$(( PRODUCTION_REAPED_ROWS + 1 ))  # MUTATION-697: redden the pin (prove slot)
+ readonly PRODUCTION_REAPED_ROWS
+ test "$PRODUCTION_REAPED_ROWS" -ge 1
+ #
