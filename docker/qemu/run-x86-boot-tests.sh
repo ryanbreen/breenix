@@ -128,12 +128,70 @@ TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_s
 # to completion and BOTH samples below assert a drained system rather than
 # narrating a strand.
 #
-# Two fixture constants carry the arithmetic. The join oracle stages two rows of
-# its own before any user process exists and removes both (TOMBSTONE_JOIN_ORACLE
-# above reports resident_delta=0), and the userspace phase reaps exactly four
-# production rows through the live `complete_wait` path.
+# The join oracle stages two fixture rows of its own before any user process
+# exists and removes both (TOMBSTONE_JOIN_ORACLE above reports
+# resident_delta=0).
 readonly TOMBSTONE_FIXTURE_REMOVALS=2
-readonly PRODUCTION_REAPED_ROWS=4
+#
+# PRODUCTION_REAPED_ROWS is NOT a literal (#697). It used to be pinned at 4,
+# and 63e5f8e0 (PR #765, the #707 regression test tcp_cloexec_exec_test)
+# added a RING3_SMOKE-roster process that forks a peer and waitpid()s it --
+# one more production row reaped through the live `complete_wait` path --
+# without touching this pin, which turned the conservation assertion below
+# (CENSUS_RESIDENT + CENSUS_REMOVED - TOMBSTONE_FIXTURE_REMOVALS ==
+# PRODUCTION_REAPED_ROWS) red on every boot: a frozen literal pinned the
+# roster's SHAPE at a moment in time instead of the roster ITSELF, the
+# #549/#551/#527-r1 census-not-literal lesson.
+# claim-lint:ok: "red on every boot" restates #697's own filing, which reports
+# 2 of 4 boots failing at this assertion on the run named in that issue (the
+# other 2 of 4 are the pre-existing #692/#731 intermittents #697 excludes);
+# the branch's minimum possible CENSUS_REMOVED value never satisfies the old
+# literal, which is why every boot that reaches this assertion fails it.
+#
+# It is now derived from the same roster kernel_main launches. The
+# RING3_SMOKE block in kernel/src/main.rs loads its userspace test binaries
+# by name between the "canonical list of test binaries is in
+# boot::test_list::TEST_BINARIES" comment and the without_interrupts() call
+# that creates them -- the get_test_binary("...") argument on each line in
+# between is the roster. Each name is a userspace/programs/src/<name>.rs
+# source file, and every `match fork() { ... }` (or `match process::fork() {
+# ... }`) call site in that file is one child the program later reaps
+# through a blocking waitpid(): loopback_wake_test forks its
+# reader/peer/load/watchdog children (4 call sites) and
+# tcp_cloexec_exec_test forks its one exec peer (1 call site), which is
+# exactly how this pin was 4 before #765 added the second forking program to
+# the roster and is 5 with it in. A roster addition that does not fork
+# contributes 0 and changes nothing here; one that forks+waitpids moves this
+# count with it. The assertion stays live either way: a kernel defect that
+# phantom-reaps an extra row, or fails to reap one the roster expects, still
+# mismatches this derived total and fails it.
+# claim-lint:ok: #697 -- "every ... call site ... is one child" is this
+# derivation's own definition (it is what the grep loop immediately below
+# counts, not an empirical claim about the kernel), and measured directly:
+# 2 of 15 current roster files match (loopback_wake_test.rs: 4 sites,
+# tcp_cloexec_exec_test.rs: 1 site), summing to the 5 this pin now derives.
+RING3_SMOKE_ROSTER=$(awk \
+    '/canonical list of test binaries is in boot::test_list::TEST_BINARIES/,/without_interrupts\(\|\| \{/' \
+    "$BREENIX_ROOT/kernel/src/main.rs" \
+    | grep -oE 'get_test_binary\("[a-zA-Z0-9_]+"\)' \
+    | sed -E 's/.*"([a-zA-Z0-9_]+)".*/\1/')
+test -n "$RING3_SMOKE_ROSTER"
+PRODUCTION_REAPED_ROWS=0
+for _ring3_smoke_name in $RING3_SMOKE_ROSTER; do
+    _ring3_smoke_src="$BREENIX_ROOT/userspace/programs/src/${_ring3_smoke_name}.rs"
+    test -f "$_ring3_smoke_src"
+    # `|| true`: 13 of 15 current roster programs never fork (measured --
+    # only loopback_wake_test.rs and tcp_cloexec_exec_test.rs match), so a
+    # zero-match grep here is the expected case, not a failure -- see the
+    # PCI_CENSUS_LINE comment below for why an unguarded pipefail would
+    # otherwise abort the script at this assignment instead of at a legible
+    # `test -n`/`-eq` assertion.
+    _ring3_smoke_forks=$(grep -cE 'match (process::)?fork\(\) \{' "$_ring3_smoke_src") || true
+    PRODUCTION_REAPED_ROWS=$(( PRODUCTION_REAPED_ROWS + _ring3_smoke_forks ))
+done
+unset _ring3_smoke_name _ring3_smoke_src _ring3_smoke_forks
+readonly PRODUCTION_REAPED_ROWS
+test "$PRODUCTION_REAPED_ROWS" -ge 1
 #
 # (1) End of the userspace phase, emitted from the `sys_exit` arm entered when no
 # userspace thread remains. This sample used to be pinnable as an exact literal
@@ -157,7 +215,8 @@ readonly TOMBSTONE_CENSUS_EMISSIONS=3
 # was dead by then; the field was a bounded attribution field for exactly that
 # reason. It is now an exact zero, and it is the load-bearing half of this pin:
 # `pending=0:parked=0:resident=0` is the return-to-zero evidence x86 has never
-# had. `removed` is the two fixture rows plus all four production rows, because
+# had. `removed` is the two fixture rows plus every production row
+# PRODUCTION_REAPED_ROWS derives (see its own comment above), because
 # a row can only be removed by the join after it has been both reaped and
 # retired. The reap-second/retire-second SPLIT is deliberately not pinned: with
 # the drain running during the userspace phase, a row may retire before or after
