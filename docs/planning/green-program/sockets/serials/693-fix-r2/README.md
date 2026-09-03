@@ -32,16 +32,24 @@ as required).
     arm of `loopback_wake_test`).
   * attempt 2 and attempt 4: the census assertion at `run-x86-boot-tests.sh:548`
     (`CENSUS_RESIDENT + CENSUS_REMOVED - TOMBSTONE_FIXTURE_REMOVALS ==
-    PRODUCTION_REAPED_ROWS`) fails because `removed=7`, not `6`. Root cause: commit
-    `63e5f8e0` (`test(net): add tcp_cloexec_exec_test`, merged to main via #765,
-    24 commits ahead of this branch's `3d601400` merge-base) added a new
-    fork+exec+reap test to the x86 roster without updating the census literal --
-    a pre-existing, main-only defect unrelated to #693.
+    PRODUCTION_REAPED_ROWS`) fails because the sum is 5, not 4 -- attempt 4's
+    last `[TOMBSTONE_CENSUS:` line is `resident=0:removed=7`, `removed` itself
+    one over; attempt 2's is `resident=1:removed=6`, where `removed` matches
+    but `resident` is the extra 1 (round-2 review F2). Root cause common to
+    both: commit `63e5f8e0` (`test(net): add tcp_cloexec_exec_test`, merged to
+    main via #765, 24 commits ahead of this branch's `3d601400` merge-base)
+    added a new fork+exec+reap test to the x86 roster without updating the
+    census literal -- a pre-existing, main-only defect unrelated to #693,
+    filed as **#768**.
   * attempt 3: `test "$passed" = true` fails -- this one boot did not reach the
     terminal marker within the script's 900x2s poll window (0 of the required
     markers present at the 1800s mark); the kernel serial was still emitting
-    `sys_recvfrom` retries when the tail was captured. Same profile, same host as
-    the other three; not attributed further here.
+    `sys_recvfrom` retries when the tail was captured. Same profile, same host
+    as the other three; **#731** (round-2 review F5) -- the serial carries 4 of
+    the 4 fingerprints that issue names: `TEST_TALLY: exited=109
+    nonzero=0 failed=[]`, the `🏁 TEST RUNNER` terminal marker,
+    `loopback_recv_wake:PASS` present, and 0 panic/crash literals over a
+    healthy idle tail.
 
   Net: the branch's own x86 boot-tests gate is strictly better than current
   `origin/main`'s (3/3 vs 0/4), and every main-side red is either a filed,
@@ -70,11 +78,19 @@ as required).
 
 * `aarch64-service-sequence-gate-branch-5983fc6f-50boot-20260902.txt` -- branch
   head, campaign default (`--boots 25 --profile both` = 25 `max` + 25
-  `cortex-a72`). **50 of 50 GREEN, UNATTRIBUTED 0, gate PASSED.** 100
-  `[POLL_TCP_TIMEOUT]` lines (2/boot x 50), 0 `[POLL_TCP_READY_LOST]`, 0
-  `[POLL_TCP_ORACLE:FAIL`, verified independently against the preserved raw serials
-  at `/tmp/breenix_aarch64_service_sequence_gate_20260902T211926Z-89829` (this
-  slot's own run).
+  `cortex-a72`). **50 of 50 GREEN, UNATTRIBUTED 0, gate PASSED.** 0
+  `[POLL_TCP_ORACLE:FAIL` in the tracked file (`grep -c` on it returns 0
+  `POLL_TCP` lines of any kind, gate summaries only, so `100 [POLL_TCP_TIMEOUT]
+  / 0 [POLL_TCP_READY_LOST]` is not independently re-derivable from THIS file
+  the way FIX §3.1's equivalent table is from its own committed directory --
+  round-2 review F10). The raw per-boot serials this summary was produced from
+  do not survive on this host (the preserved-serials path the tracked file
+  itself names is a DIFFERENT run,
+  `.../T211926Z-6418`, not `…-89829`, and neither is present); what supports
+  the claim is the tracked summary's own GREEN=50/UNATTRIBUTED=0, which by
+  construction (693-FIX-2026-09-02.md §2.7's `[POLL_TCP_TIMEOUT]`-required
+  wiring, on top of the `[POLL_TCP_READY_LOST]` failure pin every gate already
+  carries) already requires both markers to have fired on every boot.
 
 ## aarch64 mutations
 
