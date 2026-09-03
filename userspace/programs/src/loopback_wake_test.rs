@@ -90,8 +90,9 @@ fn role_now_or_exit(exit_code: i32) -> u64 {
 /// on x86, taken here by the role that missed its bound, on the boot that
 /// missed it.
 ///
-/// It runs only on the already-decided failure path, so a healthy boot carries
-/// none of its load.
+/// It is called from one site only, inside the `data_latency_ms >
+/// DATA_WAKE_BOUND_MS` arm, so a boot that stays inside the bound does not
+/// execute it at all.
 fn dispatch_gap_probe(window_ms: u64) -> (u64, u64) {
     let start_ms = match monotonic_ms() {
         Some(now) => now,
@@ -169,7 +170,7 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
         "LOOPBACK_WAKE_TEST: data latency_ms={} bytes={}",
         data_latency_ms, data_bytes
     );
-    // The stamps the latency decomposes into, all from CLOCK_MONOTONIC:
+    // The stamps the latency decomposes into, each read by monotonic_ms():
     //   w0        the peer's stamp taken immediately before its write
     //   acc       this reader's accept() return
     //   pre       this reader's stamp immediately before the blocking read
@@ -249,8 +250,9 @@ fn peer_child(spin_r: Fd) -> ! {
     }
     let t_write_return = role_now_or_exit(23);
     // Printed here rather than after the pipe read because on a failing boot
-    // this role is SIGKILLed while still blocked in that read and would never
-    // speak. The cost is one console write between the peer's write and its
+    // this role is SIGKILLed while still blocked in that read, so a print placed
+    // after it would not run on the boots this instrumentation exists to
+    // measure. The cost is one console write between the peer's write and its
     // block; it is disclosed, not hidden, and it cannot shorten a latency that
     // is measured to the reader's own read return.
     println!(
@@ -291,9 +293,9 @@ fn load_child(ready_r: Fd, spin_w: Fd) -> ! {
     // Never block after releasing the peer: denying idle_thread_fn the CPU
     // across the FIN window makes kloopbackd, not the idle drain, deliver it.
     let end_ms = start_ms.saturating_add(LOAD_SPIN_MS);
-    // The spin already samples the clock every iteration, so the largest gap
-    // between consecutive samples is a free dispatch-latency measurement over
-    // the EOF window: no extra syscall, no extra load.
+    // The spin already samples the clock once per iteration, so the largest gap
+    // between consecutive samples is a dispatch-latency measurement over the EOF
+    // window that adds no syscall and no load the loop did not already carry.
     let mut prev_ms = start_ms;
     let mut max_gap_ms = 0u64;
     let mut samples = 0u64;
@@ -324,7 +326,8 @@ fn watchdog_child(epoch_ms: u64, reader_pid: Pid, peer_pid: Pid, load_pid: Pid) 
     watchdog_sleep_until(epoch_ms);
     // How far past its own deadline the timed sleep returned. #766 measured
     // this quantity for sleep_until on x86; this is the same measurement taken
-    // inside the test that #764 is about, on every boot, at no added cost.
+    // inside the test that #764 is about, from a stamp the watchdog role reaches
+    // on any boot that gets this far.
     let t_wake = role_now_or_exit(40);
     println!(
         "LOOPBACK_WAKE_TEST: watchdog_stamps target={} wake={} overrun_ms={}",
