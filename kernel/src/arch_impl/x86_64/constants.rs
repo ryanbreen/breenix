@@ -176,6 +176,43 @@ pub const PERCPU_SAVED_PROCESS_CR3_OFFSET: usize = 80;
 pub const PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88;
 
 // ============================================================================
+// Dispatch mark (#772)
+// ============================================================================
+//
+// The resume frame the most recent completed dispatch installed on this CPU:
+// which thread was dispatched, and the RIP/RSP the CPU is about to IRETQ to.
+// The interrupt-return path compares the frame it was entered with against
+// this pair to recognize a preemption that would take back a dispatch on
+// which the thread has retired no instruction. These four words occupy the
+// padding that already followed `switch_violations`, so `PerCpuData` keeps
+// its 192-byte size and the 13 offsets defined above are unchanged. There is
+// one `offset_of!` compile-time assertion per offset in `kernel/src/per_cpu.rs`,
+// including the 4 added below.
+
+/// Offset of dispatch_mark_rip in PerCpuData.
+pub const PERCPU_DISPATCH_MARK_RIP_OFFSET: usize = 128;
+
+/// Offset of dispatch_mark_rsp in PerCpuData.
+pub const PERCPU_DISPATCH_MARK_RSP_OFFSET: usize = 136;
+
+/// Offset of dispatch_mark_tid in PerCpuData.
+pub const PERCPU_DISPATCH_MARK_TID_OFFSET: usize = 144;
+
+/// Offset of dispatch_mark_state in PerCpuData.
+pub const PERCPU_DISPATCH_MARK_STATE_OFFSET: usize = 152;
+
+/// `dispatch_mark_state`: no dispatch frame is recorded.
+pub const DISPATCH_MARK_INVALID: u64 = 0;
+
+/// `dispatch_mark_state`: a dispatch frame is recorded and this dispatch has
+/// not yet spent its one-shot no-progress refusal.
+pub const DISPATCH_MARK_ARMED: u64 = 1;
+
+/// `dispatch_mark_state`: a dispatch frame is recorded and this dispatch has
+/// already had its one refusal, so the next preemption proceeds.
+pub const DISPATCH_MARK_REFUSAL_SPENT: u64 = 2;
+
+// ============================================================================
 // Preempt Count Bit Layout (Linux-compatible)
 // ============================================================================
 

@@ -17,11 +17,13 @@ use crate::arch_impl::PerCpuOps;
 
 // Import HAL constants - single source of truth for per-CPU offsets
 use crate::arch_impl::current::constants::{
-    PERCPU_CPU_ID_OFFSET, PERCPU_CURRENT_THREAD_OFFSET, PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
-    PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET, PERCPU_KERNEL_STACK_TOP_OFFSET,
-    PERCPU_NEED_RESCHED_OFFSET, PERCPU_NEXT_CR3_OFFSET, PERCPU_PREEMPT_COUNT_OFFSET,
-    PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET, PERCPU_TSS_OFFSET,
-    PERCPU_USER_RSP_SCRATCH_OFFSET,
+    DISPATCH_MARK_ARMED, DISPATCH_MARK_INVALID, DISPATCH_MARK_REFUSAL_SPENT, PERCPU_CPU_ID_OFFSET,
+    PERCPU_CURRENT_THREAD_OFFSET, PERCPU_DISPATCH_MARK_RIP_OFFSET, PERCPU_DISPATCH_MARK_RSP_OFFSET,
+    PERCPU_DISPATCH_MARK_STATE_OFFSET, PERCPU_DISPATCH_MARK_TID_OFFSET,
+    PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET,
+    PERCPU_KERNEL_STACK_TOP_OFFSET, PERCPU_NEED_RESCHED_OFFSET, PERCPU_NEXT_CR3_OFFSET,
+    PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
+    PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET,
 };
 
 // Global tracking counters for irq_enter/irq_exit balance analysis
@@ -125,9 +127,29 @@ pub struct PerCpuData {
     /// Incremented atomically on canary mismatch
     pub switch_violations: u64,
 
+    // === Dispatch mark (#772) ===
+    // The resume frame the most recent completed dispatch installed on this
+    // CPU. `check_need_resched_and_switch` compares the frame it was entered
+    // with against this pair to recognize a preemption that would take back a
+    // dispatch on which the thread has retired no instruction. These four
+    // words come out of the padding that already followed `switch_violations`,
+    // so the struct keeps its 192-byte size and no offset above moves.
+    /// Resume RIP recorded by the last completed dispatch (offset 128)
+    pub dispatch_mark_rip: u64,
+
+    /// Resume RSP recorded by the last completed dispatch (offset 136)
+    pub dispatch_mark_rsp: u64,
+
+    /// Thread the last completed dispatch installed that frame for (offset 144)
+    pub dispatch_mark_tid: u64,
+
+    /// Dispatch-mark state (offset 152): `DISPATCH_MARK_INVALID`,
+    /// `DISPATCH_MARK_ARMED`, or `DISPATCH_MARK_REFUSAL_SPENT`
+    pub dispatch_mark_state: u64,
+
     /// Padding to reach 192 bytes (align(64) boundary)
-    /// (offset 128-191): 64 bytes of padding
-    _pad_final: [u8; 64],
+    /// (offset 160-191): 32 bytes of padding
+    _pad_final: [u8; 32],
 }
 
 // Linux-style preempt_count bit layout constants
@@ -229,6 +251,22 @@ const _: () = assert!(
     offset_of!(PerCpuData, exception_cleanup_context) == PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
     "PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET mismatch with struct layout"
 );
+const _: () = assert!(
+    offset_of!(PerCpuData, dispatch_mark_rip) == PERCPU_DISPATCH_MARK_RIP_OFFSET,
+    "PERCPU_DISPATCH_MARK_RIP_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, dispatch_mark_rsp) == PERCPU_DISPATCH_MARK_RSP_OFFSET,
+    "PERCPU_DISPATCH_MARK_RSP_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, dispatch_mark_tid) == PERCPU_DISPATCH_MARK_TID_OFFSET,
+    "PERCPU_DISPATCH_MARK_TID_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, dispatch_mark_state) == PERCPU_DISPATCH_MARK_STATE_OFFSET,
+    "PERCPU_DISPATCH_MARK_STATE_OFFSET mismatch with struct layout"
+);
 
 // Alignment assertions
 const _: () = assert!(
@@ -282,7 +320,11 @@ impl PerCpuData {
             switch_post_canary: 0,
             switch_tsc: 0,
             switch_violations: 0,
-            _pad_final: [0; 64],
+            dispatch_mark_rip: 0,
+            dispatch_mark_rsp: 0,
+            dispatch_mark_tid: 0,
+            dispatch_mark_state: DISPATCH_MARK_INVALID,
+            _pad_final: [0; 32],
         }
     }
 }
@@ -1046,6 +1088,106 @@ pub fn in_exception_cleanup_context() -> bool {
     // Use HAL for GS-relative access
     hal_percpu::X86PerCpu::exception_cleanup_context()
 }
+
+/// How the frame an interrupt was entered with relates to the resume frame the
+/// last completed dispatch installed on this CPU (#772).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DispatchProgress {
+    /// The mark does not describe this frame: either no dispatch is recorded,
+    /// the recorded dispatch was of a different thread, or the thread has
+    /// moved off the RIP/RSP it was dispatched to. The caller proceeds with
+    /// the preemption.
+    Advanced,
+    /// The frame is byte-identical to the one the last dispatch installed for
+    /// this same thread -- the thread has retired no instruction since it was
+    /// dispatched -- and this dispatch has not yet spent its one refusal.
+    NoProgressRefusable,
+    /// Byte-identical as above, but this dispatch has already had its one
+    /// refusal, so the caller must let the preemption through.
+    NoProgressRefusalSpent,
+}
+
+/// Record the resume frame a completed dispatch installed, and arm its
+/// one-shot no-progress refusal.
+///
+/// Called from the interrupt-return path once the frame is final, so this is
+/// four GS-relative stores: no lock, no allocation, no formatting.
+#[inline(always)]
+pub fn set_dispatch_mark(tid: u64, rip: u64, rsp: u64) {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+    unsafe {
+        hal_percpu::X86PerCpu::set_dispatch_mark(tid, rip, rsp);
+    }
+}
+
+/// Invalidate the dispatch mark.
+///
+/// A path that leaves the CPU running something other than the thread the
+/// mark names must reach this or `set_dispatch_mark`, or a stale mark could
+/// suppress a legitimate preemption of a different thread. Today there is 1
+/// such path -- the dispatch site in `check_need_resched_and_switch` -- and it
+/// reaches one of the two on a completed switch.
+#[inline(always)]
+pub fn clear_dispatch_mark() {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+    unsafe {
+        hal_percpu::X86PerCpu::set_dispatch_mark_state(DISPATCH_MARK_INVALID);
+    }
+}
+
+/// Classify the frame an interrupt was entered with against the dispatch mark.
+///
+/// `tid` must be the thread the CPU is actually running -- pass the same
+/// source the mark was written from (`current_thread_id_lock_free()`), so the
+/// two ends of the comparison agree on identity.
+#[inline(always)]
+pub fn classify_dispatch_progress(tid: u64, rip: u64, rsp: u64) -> DispatchProgress {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return DispatchProgress::Advanced;
+    }
+    let state = hal_percpu::X86PerCpu::dispatch_mark_state();
+    if state == DISPATCH_MARK_INVALID {
+        return DispatchProgress::Advanced;
+    }
+    if hal_percpu::X86PerCpu::dispatch_mark_tid() != tid
+        || hal_percpu::X86PerCpu::dispatch_mark_rip() != rip
+        || hal_percpu::X86PerCpu::dispatch_mark_rsp() != rsp
+    {
+        return DispatchProgress::Advanced;
+    }
+    if state == DISPATCH_MARK_REFUSAL_SPENT {
+        DispatchProgress::NoProgressRefusalSpent
+    } else {
+        DispatchProgress::NoProgressRefusable
+    }
+}
+
+/// Spend the current dispatch's one-shot no-progress refusal.
+///
+/// The mark itself is kept so a second no-progress preemption on the same
+/// dispatch is still *observable* by the census counter; only the refusal is
+/// consumed. Clearing the mark instead would make that residual invisible,
+/// which is the one reading the oracle most needs.
+#[inline(always)]
+pub fn spend_dispatch_refusal() {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+    unsafe {
+        hal_percpu::X86PerCpu::set_dispatch_mark_state(DISPATCH_MARK_REFUSAL_SPENT);
+    }
+}
+
+const _: () = assert!(
+    DISPATCH_MARK_INVALID != DISPATCH_MARK_ARMED
+        && DISPATCH_MARK_ARMED != DISPATCH_MARK_REFUSAL_SPENT
+        && DISPATCH_MARK_INVALID != DISPATCH_MARK_REFUSAL_SPENT,
+    "dispatch mark states must be distinct"
+);
 
 /// Check if we can schedule (preempt_count == 0 and returning to userspace)
 pub fn can_schedule(saved_cs: u64) -> bool {

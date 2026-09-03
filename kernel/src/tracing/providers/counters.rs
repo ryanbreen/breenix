@@ -201,6 +201,64 @@ pub static RECV_WAIT_STILL_BLOCKED_FALSE: TraceCounter = TraceCounter::new(
 );
 
 // =============================================================================
+// Dispatch no-progress counters (#772)
+// =============================================================================
+//
+// x86 only. The three counters below are written from
+// `kernel/src/interrupts/context_switch.rs`, which is
+// `#![cfg(target_arch = "x86_64")]`; on aarch64 they register and stay 0.
+// #772's spec (section 3) records why the aarch64 dispatch path does not carry
+// the defect today and asks for a separate report-only census there rather
+// than a silent extension.
+
+/// A preemption was observed that would take back a dispatch on which the
+/// thread had retired no instruction.
+///
+/// Incremented at the `need_resched` gate in `check_need_resched_and_switch`
+/// when the frame the interrupt was entered with is byte-identical (RIP *and*
+/// RSP) to the frame the last completed dispatch installed for the same
+/// thread. Incremented whether or not the preemption was then refused, so this
+/// is the census the #772 oracle reads: under the
+/// `no_progress_refusal_disabled` mutation it should return to main's
+/// measured 0.64-0.76 of `DISPATCH_KERNEL_RESTORE_TOTAL`.
+///
+/// GDB: `print DISPATCH_NO_PROGRESS`
+#[no_mangle]
+pub static DISPATCH_NO_PROGRESS: TraceCounter = TraceCounter::new(
+    "DISPATCH_NO_PROGRESS",
+    "preemption of a dispatch that retired no instruction (#772)",
+);
+
+/// A no-progress preemption was refused so the dispatched thread could run.
+///
+/// Incremented only when `DISPATCH_NO_PROGRESS` was also incremented, the
+/// current thread was neither blocked nor terminated, and this dispatch had
+/// not already spent its one-shot refusal. `need_resched` is re-armed at the
+/// same time, so the reschedule is deferred to the next delivered interrupt
+/// rather than swallowed. Stays 0 under `no_progress_refusal_disabled`.
+///
+/// GDB: `print DISPATCH_NO_PROGRESS_REFUSED`
+#[no_mangle]
+pub static DISPATCH_NO_PROGRESS_REFUSED: TraceCounter = TraceCounter::new(
+    "DISPATCH_NO_PROGRESS_REFUSED",
+    "no-progress preemption refused, need_resched re-armed (#772)",
+);
+
+/// Completed switches into a blocked-in-syscall kernel context.
+///
+/// Incremented once per kernel-context restore in `switch_to_thread`'s
+/// blocked-in-syscall arm -- the same event the serial record "Restored kernel
+/// context for thread N" names. This is the denominator `DISPATCH_NO_PROGRESS`
+/// is read against.
+///
+/// GDB: `print DISPATCH_KERNEL_RESTORE_TOTAL`
+#[no_mangle]
+pub static DISPATCH_KERNEL_RESTORE_TOTAL: TraceCounter = TraceCounter::new(
+    "DISPATCH_KERNEL_RESTORE_TOTAL",
+    "completed switches into a blocked-in-syscall kernel context (#772)",
+);
+
+// =============================================================================
 // Boot Test Counters (BTRT feature)
 // =============================================================================
 
@@ -260,6 +318,9 @@ pub fn init() {
     register_counter(&GIC_SPI55_ACK_TOTAL);
     register_counter(&RECV_WAIT_STILL_BLOCKED_TRUE);
     register_counter(&RECV_WAIT_STILL_BLOCKED_FALSE);
+    register_counter(&DISPATCH_NO_PROGRESS);
+    register_counter(&DISPATCH_NO_PROGRESS_REFUSED);
+    register_counter(&DISPATCH_KERNEL_RESTORE_TOTAL);
 
     #[cfg(feature = "btrt")]
     {

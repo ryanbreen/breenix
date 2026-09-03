@@ -12,6 +12,9 @@ use crate::task::process_context::{
 };
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
+use crate::tracing::providers::counters::{
+    DISPATCH_KERNEL_RESTORE_TOTAL, DISPATCH_NO_PROGRESS, DISPATCH_NO_PROGRESS_REFUSED,
+};
 use crate::tracing::providers::sched::trace_ctx_switch;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::idt::InterruptStackFrame;
@@ -260,6 +263,71 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
+    // #772: refuse a preemption that would take back a dispatch on which the
+    // thread has retired no instruction.
+    //
+    // The measured defect: this path writes three formatted serial records per
+    // blocked-in-syscall switch with interrupts masked and the timer EOI
+    // deferred (`:518`, `:961`, `:987` -- filed separately as the cause), so
+    // the dispatched thread is returned to with an interrupt already latched
+    // and is preempted before its first instruction. 64-76% of kernel-context
+    // restores on five specimen boots are of that kind
+    // (docs/planning/green-program/sockets/serials/772-exp-r2/). The thread
+    // then goes to the tail of the one ready queue and pays another full
+    // round.
+    //
+    // The refusal defers the reschedule by one delivered interrupt; it does
+    // not swallow it (`set_need_resched()` below re-arms what gate 4 just
+    // cleared). It is one-shot per dispatch, so a thread that keeps failing to
+    // advance cannot hold the CPU past the second attempt. And it is
+    // conjoined with `!current_thread_blocked_or_terminated` -- the SAME
+    // five-variant `is_blocked()` set computed at the gate above -- so a
+    // switch away from a blocked or terminated thread, which is mandatory, is
+    // not suppressed.
+    //
+    // Measured cost on the interrupt-return path (llvm-objdump of this build's
+    // own `check_need_resched_and_switch`): 0 added instructions for an
+    // interrupt that returns at gate 4 -- the common tick -- because this
+    // block sits after that return; 3 added instructions (load, test, taken
+    // branch) and 0 added calls when the current thread is blocked or
+    // terminated.
+    //
+    // Short-circuit deliberately: the blocked/terminated arm is the mandatory
+    // switch, and it must not pay for the predicate -- not even the lock-free
+    // tid read.
+    if !current_thread_blocked_or_terminated {
+        if let Some(current_tid) = crate::per_cpu::current_thread_id_lock_free() {
+            let progress = crate::per_cpu::classify_dispatch_progress(
+                current_tid,
+                interrupt_frame.instruction_pointer.as_u64(),
+                interrupt_frame.stack_pointer.as_u64(),
+            );
+            match progress {
+                crate::per_cpu::DispatchProgress::Advanced => {}
+                crate::per_cpu::DispatchProgress::NoProgressRefusalSpent => {
+                    // Census only: this dispatch has already had its refusal, so
+                    // the preemption goes through. Counted so the residual stays
+                    // visible rather than disappearing with the mark.
+                    crate::trace_count!(DISPATCH_NO_PROGRESS);
+                }
+                crate::per_cpu::DispatchProgress::NoProgressRefusable => {
+                    crate::trace_count!(DISPATCH_NO_PROGRESS);
+                    crate::per_cpu::spend_dispatch_refusal();
+                    crate::trace_count!(DISPATCH_NO_PROGRESS_REFUSED);
+                    // Re-arm: gate 4 cleared need_resched, and whoever raised
+                    // it is still owed a reschedule at the next interrupt.
+                    scheduler::set_need_resched();
+                    // Same signal handling the other early-return arms do, so
+                    // a refusal does not also defer signal delivery.
+                    if from_userspace {
+                        check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     // Count reschedule attempts (for diagnostics if needed)
     static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(0);
@@ -410,6 +478,30 @@ pub extern "C" fn check_need_resched_and_switch(
             interrupt_frame,
             Some(process_manager_guard),
         );
+
+        // #772: record the resume frame this dispatch installed.
+        //
+        // Taken HERE rather than beside `set_current_thread` inside
+        // `switch_to_thread`: at that point the frame still carries the
+        // OUTGOING thread's RIP/RSP, because the resume frame is not written
+        // until one of `switch_to_thread`'s arms rewrites it further down. By
+        // the time control returns here the frame is final on the arms that
+        // install a resume frame and on the arms that instead redirect to idle
+        // or roll the dispatch back,
+        // which is why the tid comes from the per-CPU current-thread pointer
+        // (whoever the CPU is actually about to run) and not from
+        // `new_thread_id`. Writing it unconditionally on a completed switch is
+        // also what invalidates the previous thread's mark.
+        match crate::per_cpu::current_thread_id_lock_free() {
+            Some(dispatched_tid) => crate::per_cpu::set_dispatch_mark(
+                dispatched_tid,
+                interrupt_frame.instruction_pointer.as_u64(),
+                interrupt_frame.stack_pointer.as_u64(),
+            ),
+            // No nameable current thread: invalidate rather than record a
+            // mark no later check could honestly match.
+            None => crate::per_cpu::clear_dispatch_mark(),
+        }
 
         // NOTE: Don't log here - this is on the hot path and can affect timing
 
@@ -957,6 +1049,11 @@ fn switch_to_thread(
                                     frame.stack_segment = crate::gdt::kernel_data_selector();
                                 });
                             }
+
+                            // #772 denominator: one increment per completed
+                            // switch into a blocked-in-syscall kernel context
+                            // -- the same event the record below names.
+                            crate::trace_count!(DISPATCH_KERNEL_RESTORE_TOTAL);
 
                             log::info!(
                                 "Restored kernel context for thread {}: RIP={:#x} RSP={:#x}",
