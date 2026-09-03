@@ -62,10 +62,11 @@ with the census lines at `main-unpatched/boot1/serial_user.txt:1006`
 (`[TOMBSTONE_CENSUS:resident=1:removed=6:...]`). Both boots' true reaped-row
 count is 5 (`resident + removed - TOMBSTONE_FIXTURE_REMOVALS`, invariant
 across the split per the script's own comment), against the old frozen
-literal `PRODUCTION_REAPED_ROWS=4` -- neither split can pass that pin,
-matching #697's own claim that this is deterministic, not a rate. No #692 or
-#731 signature appears in either boot's log; both reds are the census
-assertion alone.
+literal `PRODUCTION_REAPED_ROWS=4` -- neither split can pass that pin, so
+the red is deterministic here, not a rate (this is the round's own
+arithmetic, not a restatement of #697, which reports main as green at this
+assertion). No #692 or #731 signature appears in either boot's log; both
+reds are the census assertion alone.
 
 ## Branch `fix/697-census-pin`, `907f096a` -- `branch/`
 
@@ -137,11 +138,15 @@ x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-t
   failing command: test "$passed" = true
 [TEST:userspace:loopback_recv_wake:FAIL:reader_exit_15]
 ```
-This is `#697`'s own named `#692` signature (`reader_exit_15`), not the
-census assertion -- the poll loop broke on the userspace-test `:FAIL` marker
-before `passed` was ever set true, and the boot did not reach line 608 at
-all (see `mutation/revert-attempt1-692intermittent-gate.txt`, which has no
-line 608 in it), so the revert is not implicated in this red. Preserved rather than
+This is issue #692's own signature (its title is "child killed with signal
+15"; `#697` itself contains neither `reader_exit_15` nor
+`loopback_recv_wake`), not the census assertion -- the poll loop broke on
+the userspace-test `:FAIL` marker before `passed` was ever set true, and
+the boot did not reach the `:608` census assertion at all (see
+`mutation/revert-attempt1-692intermittent-gate.txt`, which is 811 lines
+long and so does have a literal line 608, but contains 0 `:608`
+references -- `grep -c ":608"` on that file returns 0), so the revert is
+not implicated in this red. Preserved rather than
 discarded per this round's own "a red is a result" instruction, then
 re-run once more: `mutation/revert-clean-gate.txt:427` is a plain
 `x86 frame-custody gate run 1: PASS`, and `git status --porcelain` /
