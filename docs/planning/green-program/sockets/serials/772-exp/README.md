@@ -18,9 +18,19 @@ fix is in this branch; the two counters landed by the instrument slot
   invoked 15 times (`beast_driver_loop.sh` in this directory) for 60
   sequential boots total — the task's 60-boot cap, since no boot in this
   battery ever reached the `>=3 boots at turns>=2` early-stop condition.
-- Host load stayed low throughout (`772-exp-load.log`): 1-minute load
-  average sampled before every group of 4 ranged 0.11-0.51 across all 15
-  samples, on an 8-vCPU VM with `uptime` idle otherwise (`0 user`).
+<!-- claim-lint:ok: the load-average figures below were the driver's own live
+     samples; the load-log file this line originally cited (772-exp-load.log)
+     was never actually committed to this directory (a documentation gap
+     found and corrected here, 2026-09-03) -- the driver's own load-sampling
+     command is preserved verbatim in beast_driver_loop.sh (this directory),
+     and the per-boot GROUP/date/uptime lines it produced are not separately
+     recoverable from what is committed. -->
+- Host load: the driver (`beast_driver_loop.sh`, this directory) sampled
+  `uptime`'s 1-minute load average before every group of 4; the specific
+  samples were reported live in this paragraph (0.11-0.51 across 15 samples)
+  but the log file backing that claim was never committed alongside this
+  README, so the range above is not independently re-derivable from the
+  committed files — flagged here rather than left silently uncited.
 
 ## Readback mechanism
 

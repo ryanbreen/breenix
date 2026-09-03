@@ -1,0 +1,1 @@
+  Test 1: FAIL (see /tmp/breenix_gate_1/serial_kernel.log)

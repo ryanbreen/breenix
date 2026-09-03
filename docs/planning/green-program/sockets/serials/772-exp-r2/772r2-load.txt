@@ -1,0 +1,241 @@
+=== GROUP 1 boot_count=0 multi_turn=0 ===
+Thu Sep  3 15:02:44 UTC 2026
+ 15:02:44 up 21 days, 21:18,  0 user,  load average: 0.00, 0.05, 0.31
+group 1 gate_exit=0
+boot=1 group=1 idx=1 data_turns=-1 eof_turns=1
+boot=2 group=1 idx=2 data_turns=-1 eof_turns=1
+boot=3 group=1 idx=3 data_turns=-1 eof_turns=1
+boot=4 group=1 idx=4 data_turns=1 eof_turns=1
+=== GROUP 2 boot_count=4 multi_turn=0 ===
+Thu Sep  3 15:13:08 UTC 2026
+ 15:13:08 up 21 days, 21:28,  0 user,  load average: 0.28, 0.46, 0.44
+group 2 gate_exit=1
+boot=5 group=2 idx=1 data_turns=1 eof_turns=1
+boot=6 group=2 idx=2 data_turns=-1 eof_turns=1
+boot=7 group=2 idx=3 data_turns=-1 eof_turns=1
+boot=8 group=2 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 3 boot_count=8 multi_turn=0 ===
+Thu Sep  3 15:23:32 UTC 2026
+ 15:23:32 up 21 days, 21:39,  0 user,  load average: 0.36, 0.55, 0.53
+group 3 gate_exit=1
+boot=9 group=3 idx=1 data_turns=-1 eof_turns=5
+boot=10 group=3 idx=2 data_turns=-1 eof_turns=2
+boot=11 group=3 idx=3 data_turns=3 eof_turns=1
+boot=12 group=3 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 4 boot_count=12 multi_turn=1 ===
+Thu Sep  3 15:34:01 UTC 2026
+ 15:34:01 up 21 days, 21:49,  0 user,  load average: 0.25, 0.53, 0.58
+group 4 gate_exit=0
+boot=13 group=4 idx=1 data_turns=-1 eof_turns=2
+boot=14 group=4 idx=2 data_turns=1 eof_turns=1
+boot=15 group=4 idx=3 data_turns=-1 eof_turns=1
+boot=16 group=4 idx=4 data_turns=-1 eof_turns=2
+=== GROUP 5 boot_count=16 multi_turn=1 ===
+Thu Sep  3 15:44:25 UTC 2026
+ 15:44:25 up 21 days, 21:59,  0 user,  load average: 0.38, 0.57, 0.61
+group 5 gate_exit=0
+boot=17 group=5 idx=1 data_turns=1 eof_turns=1
+boot=18 group=5 idx=2 data_turns=-1 eof_turns=-1
+boot=19 group=5 idx=3 data_turns=1 eof_turns=3
+boot=20 group=5 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 6 boot_count=20 multi_turn=1 ===
+Thu Sep  3 15:54:50 UTC 2026
+ 15:54:50 up 21 days, 22:10,  0 user,  load average: 0.38, 0.57, 0.61
+group 6 gate_exit=1
+boot=21 group=6 idx=1 data_turns=-1 eof_turns=1
+boot=22 group=6 idx=2 data_turns=-1 eof_turns=1
+boot=23 group=6 idx=3 data_turns=-1 eof_turns=1
+boot=24 group=6 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 7 boot_count=24 multi_turn=1 ===
+Thu Sep  3 16:05:15 UTC 2026
+ 16:05:15 up 21 days, 22:20,  0 user,  load average: 0.43, 0.54, 0.60
+group 7 gate_exit=1
+boot=25 group=7 idx=1 data_turns=-1 eof_turns=1
+boot=26 group=7 idx=2 data_turns=-1 eof_turns=1
+boot=27 group=7 idx=3 data_turns=-1 eof_turns=1
+boot=28 group=7 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 8 boot_count=28 multi_turn=1 ===
+Thu Sep  3 16:15:41 UTC 2026
+ 16:15:41 up 21 days, 22:31,  0 user,  load average: 0.66, 0.76, 0.69
+group 8 gate_exit=1
+boot=29 group=8 idx=1 data_turns=1 eof_turns=1
+boot=30 group=8 idx=2 data_turns=1 eof_turns=1
+boot=31 group=8 idx=3 data_turns=-1 eof_turns=1
+boot=32 group=8 idx=4 data_turns=-1 eof_turns=-1
+=== GROUP 9 boot_count=32 multi_turn=1 ===
+Thu Sep  3 16:26:06 UTC 2026
+ 16:26:06 up 21 days, 22:41,  0 user,  load average: 0.33, 0.58, 0.66
+group 9 gate_exit=1
+boot=33 group=9 idx=1 data_turns=-1 eof_turns=1
+boot=34 group=9 idx=2 data_turns=-1 eof_turns=2
+boot=35 group=9 idx=3 data_turns=-1 eof_turns=1
+boot=36 group=9 idx=4 data_turns=-1 eof_turns=2
+=== GROUP 10 boot_count=36 multi_turn=1 ===
+Thu Sep  3 16:36:32 UTC 2026
+ 16:36:32 up 21 days, 22:52,  0 user,  load average: 0.25, 0.48, 0.59
+group 10 gate_exit=1
+boot=37 group=10 idx=1 data_turns=-1 eof_turns=1
+boot=38 group=10 idx=2 data_turns=-1 eof_turns=1
+boot=39 group=10 idx=3 data_turns=-1 eof_turns=-1
+boot=40 group=10 idx=4 data_turns=-1 eof_turns=4
+=== GROUP 11 boot_count=40 multi_turn=1 ===
+Thu Sep  3 16:46:58 UTC 2026
+ 16:46:58 up 21 days, 23:02,  0 user,  load average: 0.22, 0.47, 0.57
+group 11 gate_exit=0
+boot=41 group=11 idx=1 data_turns=-1 eof_turns=1
+boot=42 group=11 idx=2 data_turns=-1 eof_turns=1
+boot=43 group=11 idx=3 data_turns=-1 eof_turns=1
+boot=44 group=11 idx=4 data_turns=1 eof_turns=1
+=== GROUP 12 boot_count=44 multi_turn=1 ===
+Thu Sep  3 16:57:22 UTC 2026
+ 16:57:22 up 21 days, 23:12,  0 user,  load average: 0.95, 0.70, 0.62
+group 12 gate_exit=1
+boot=45 group=12 idx=1 data_turns=-1 eof_turns=1
+boot=46 group=12 idx=2 data_turns=-1 eof_turns=1
+boot=47 group=12 idx=3 data_turns=-1 eof_turns=1
+boot=48 group=12 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 13 boot_count=48 multi_turn=1 ===
+Thu Sep  3 17:07:46 UTC 2026
+ 17:07:46 up 21 days, 23:23,  0 user,  load average: 0.58, 0.69, 0.65
+group 13 gate_exit=1
+boot=49 group=13 idx=1 data_turns=1 eof_turns=1
+boot=50 group=13 idx=2 data_turns=1 eof_turns=1
+boot=51 group=13 idx=3 data_turns=-1 eof_turns=-1
+boot=52 group=13 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 14 boot_count=52 multi_turn=1 ===
+Thu Sep  3 17:18:12 UTC 2026
+ 17:18:12 up 21 days, 23:33,  0 user,  load average: 0.28, 0.49, 0.58
+group 14 gate_exit=0
+boot=53 group=14 idx=1 data_turns=-1 eof_turns=2
+boot=54 group=14 idx=2 data_turns=-1 eof_turns=1
+boot=55 group=14 idx=3 data_turns=1 eof_turns=1
+boot=56 group=14 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 15 boot_count=56 multi_turn=1 ===
+Thu Sep  3 17:28:39 UTC 2026
+ 17:28:39 up 21 days, 23:44,  0 user,  load average: 0.30, 0.51, 0.58
+group 15 gate_exit=0
+boot=57 group=15 idx=1 data_turns=-1 eof_turns=1
+boot=58 group=15 idx=2 data_turns=-1 eof_turns=2
+boot=59 group=15 idx=3 data_turns=-1 eof_turns=1
+boot=60 group=15 idx=4 data_turns=1 eof_turns=1
+=== GROUP 16 boot_count=60 multi_turn=1 ===
+Thu Sep  3 17:39:07 UTC 2026
+ 17:39:07 up 21 days, 23:54,  0 user,  load average: 0.46, 0.59, 0.61
+group 16 gate_exit=0
+boot=61 group=16 idx=1 data_turns=-1 eof_turns=1
+boot=62 group=16 idx=2 data_turns=-1 eof_turns=1
+boot=63 group=16 idx=3 data_turns=-1 eof_turns=1
+boot=64 group=16 idx=4 data_turns=-1 eof_turns=2
+=== GROUP 17 boot_count=64 multi_turn=1 ===
+Thu Sep  3 17:49:39 UTC 2026
+ 17:49:39 up 22 days, 5 min,  0 user,  load average: 0.27, 0.53, 0.60
+group 17 gate_exit=1
+boot=65 group=17 idx=1 data_turns=-1 eof_turns=2
+boot=66 group=17 idx=2 data_turns=-1 eof_turns=1
+boot=67 group=17 idx=3 data_turns=-1 eof_turns=1
+boot=68 group=17 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 18 boot_count=68 multi_turn=1 ===
+Thu Sep  3 18:00:03 UTC 2026
+ 18:00:03 up 22 days, 15 min,  0 user,  load average: 0.25, 0.50, 0.59
+group 18 gate_exit=1
+boot=69 group=18 idx=1 data_turns=-1 eof_turns=1
+boot=70 group=18 idx=2 data_turns=-1 eof_turns=1
+boot=71 group=18 idx=3 data_turns=1 eof_turns=1
+boot=72 group=18 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 19 boot_count=72 multi_turn=1 ===
+Thu Sep  3 18:10:28 UTC 2026
+ 18:10:28 up 22 days, 25 min,  0 user,  load average: 0.24, 0.47, 0.56
+group 19 gate_exit=1
+boot=73 group=19 idx=1 data_turns=-1 eof_turns=1
+boot=74 group=19 idx=2 data_turns=-1 eof_turns=1
+boot=75 group=19 idx=3 data_turns=-1 eof_turns=1
+boot=76 group=19 idx=4 data_turns=1 eof_turns=1
+=== GROUP 20 boot_count=76 multi_turn=1 ===
+Thu Sep  3 18:20:55 UTC 2026
+ 18:20:55 up 22 days, 36 min,  0 user,  load average: 0.41, 0.57, 0.58
+group 20 gate_exit=0
+boot=77 group=20 idx=1 data_turns=1 eof_turns=1
+boot=78 group=20 idx=2 data_turns=-1 eof_turns=1
+boot=79 group=20 idx=3 data_turns=-1 eof_turns=1
+boot=80 group=20 idx=4 data_turns=1 eof_turns=1
+=== GROUP 21 boot_count=80 multi_turn=1 ===
+Thu Sep  3 18:31:20 UTC 2026
+ 18:31:20 up 22 days, 46 min,  0 user,  load average: 0.38, 0.55, 0.60
+group 21 gate_exit=1
+boot=81 group=21 idx=1 data_turns=-1 eof_turns=1
+boot=82 group=21 idx=2 data_turns=1 eof_turns=1
+boot=83 group=21 idx=3 data_turns=-1 eof_turns=1
+boot=84 group=21 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 22 boot_count=84 multi_turn=1 ===
+Thu Sep  3 18:41:45 UTC 2026
+ 18:41:45 up 22 days, 57 min,  0 user,  load average: 0.23, 0.49, 0.58
+group 22 gate_exit=1
+boot=85 group=22 idx=1 data_turns=-1 eof_turns=1
+boot=86 group=22 idx=2 data_turns=-1 eof_turns=1
+boot=87 group=22 idx=3 data_turns=-1 eof_turns=1
+boot=88 group=22 idx=4 data_turns=2 eof_turns=1
+=== GROUP 23 boot_count=88 multi_turn=2 ===
+Thu Sep  3 18:52:09 UTC 2026
+ 18:52:09 up 22 days,  1:07,  0 user,  load average: 0.34, 0.53, 0.59
+group 23 gate_exit=1
+boot=89 group=23 idx=1 data_turns=-1 eof_turns=1
+boot=90 group=23 idx=2 data_turns=-1 eof_turns=1
+boot=91 group=23 idx=3 data_turns=-1 eof_turns=1
+boot=92 group=23 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 24 boot_count=92 multi_turn=2 ===
+Thu Sep  3 19:02:43 UTC 2026
+ 19:02:43 up 22 days,  1:18,  0 user,  load average: 0.24, 0.54, 0.61
+group 24 gate_exit=1
+boot=93 group=24 idx=1 data_turns=1 eof_turns=2
+boot=94 group=24 idx=2 data_turns=-1 eof_turns=1
+boot=95 group=24 idx=3 data_turns=1 eof_turns=1
+boot=96 group=24 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 25 boot_count=96 multi_turn=2 ===
+Thu Sep  3 19:13:11 UTC 2026
+ 19:13:11 up 22 days,  1:28,  0 user,  load average: 0.27, 0.51, 0.59
+group 25 gate_exit=1
+boot=97 group=25 idx=1 data_turns=-1 eof_turns=-1
+boot=98 group=25 idx=2 data_turns=-1 eof_turns=1
+boot=99 group=25 idx=3 data_turns=-1 eof_turns=3
+boot=100 group=25 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 26 boot_count=100 multi_turn=2 ===
+Thu Sep  3 19:23:36 UTC 2026
+ 19:23:36 up 22 days,  1:39,  0 user,  load average: 0.36, 0.58, 0.62
+group 26 gate_exit=0
+boot=101 group=26 idx=1 data_turns=-1 eof_turns=1
+boot=102 group=26 idx=2 data_turns=-1 eof_turns=1
+boot=103 group=26 idx=3 data_turns=-1 eof_turns=1
+boot=104 group=26 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 27 boot_count=104 multi_turn=2 ===
+Thu Sep  3 19:34:02 UTC 2026
+ 19:34:02 up 22 days,  1:49,  0 user,  load average: 0.30, 0.51, 0.59
+group 27 gate_exit=0
+boot=105 group=27 idx=1 data_turns=-1 eof_turns=1
+boot=106 group=27 idx=2 data_turns=-1 eof_turns=1
+boot=107 group=27 idx=3 data_turns=-1 eof_turns=1
+boot=108 group=27 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 28 boot_count=108 multi_turn=2 ===
+Thu Sep  3 19:44:27 UTC 2026
+ 19:44:27 up 22 days,  1:59,  0 user,  load average: 0.29, 0.48, 0.57
+group 28 gate_exit=1
+boot=109 group=28 idx=1 data_turns=-1 eof_turns=1
+boot=110 group=28 idx=2 data_turns=-1 eof_turns=1
+boot=111 group=28 idx=3 data_turns=-1 eof_turns=1
+boot=112 group=28 idx=4 data_turns=1 eof_turns=5
+=== GROUP 29 boot_count=112 multi_turn=2 ===
+Thu Sep  3 19:54:58 UTC 2026
+ 19:54:58 up 22 days,  2:10,  0 user,  load average: 0.44, 0.74, 0.70
+group 29 gate_exit=1
+boot=113 group=29 idx=1 data_turns=-1 eof_turns=1
+boot=114 group=29 idx=2 data_turns=-1 eof_turns=2
+boot=115 group=29 idx=3 data_turns=-1 eof_turns=1
+boot=116 group=29 idx=4 data_turns=-1 eof_turns=1
+=== GROUP 30 boot_count=116 multi_turn=2 ===
+Thu Sep  3 20:05:24 UTC 2026
+ 20:05:24 up 22 days,  2:20,  0 user,  load average: 0.37, 0.56, 0.63
+group 30 gate_exit=1
+boot=117 group=30 idx=1 data_turns=-1 eof_turns=-1
+boot=118 group=30 idx=2 data_turns=-1 eof_turns=1
+boot=119 group=30 idx=3 data_turns=-1 eof_turns=1
+boot=120 group=30 idx=4 data_turns=1 eof_turns=2
+DONE boots=120 multi_turn=2

@@ -1,0 +1,939 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 8294400, width: 1920, height: 1080, pixel_format: Bgr, bytes_per_pixel: 4, stride: 1920 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001db6a000,
+    metadata: 5360200,
+}
+INFO : virtual_address_offset: 0x8000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: a86ec, mem_size: a86ec, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: a86f0, virtual_addr: a96f0, physical_addr: a96f0, file_size: 2cae90, mem_size: 2cae90, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 373580, virtual_addr: 375580, physical_addr: 375580, file_size: 45a18, mem_size: 45a80, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3b9000, virtual_addr: 3bc000, physical_addr: 3bc000, file_size: 2ac10, mem_size: 84098, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x80000bb560
+INFO : Creating GDT at PhysAddr(0x1ec000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x80000bb560)
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>create_user_process: ENTRY - Creating 'smoke_hello_time'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='smoke_hello_time', elf_size=177608
+manager.create_process: Generating PID
+manager.create_process: Generated PID 2
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e2ac
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40016000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff011000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 2
+manager.create_process: Adding PID 2 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 2
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 12
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 2
+RING3_SMOKE: creating register_init_test userspace process
+create_user_process: ENTRY - Creating 'register_init_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='register_init_test', elf_size=177072
+manager.create_process: Generating PID
+manager.create_process: Generated PID 3
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e33c
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40016000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff022000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 3
+manager.create_process: Adding PID 3 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 3
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 13
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 3
+RING3_SMOKE: creating clock_gettime_test userspace process
+create_user_process: ENTRY - Creating 'clock_gettime_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='clock_gettime_test', elf_size=184552
+manager.create_process: Generating PID
+manager.create_process: Generated PID 4
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000edb4
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40017000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff033000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 4
+manager.create_process: Adding PID 4 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 4
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 14
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 4
+RING3_SMOKE: creating brk_test userspace process
+create_user_process: ENTRY - Creating 'brk_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='brk_test', elf_size=182464
+manager.create_process: Generating PID
+manager.create_process: Generated PID 5
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000eb48
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40017000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff044000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 5
+manager.create_process: Adding PID 5 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 5
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 15
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 5
+RING3_SMOKE: creating test_mmap userspace process
+create_user_process: ENTRY - Creating 'test_mmap'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='test_mmap', elf_size=182200
+manager.create_process: Generating PID
+manager.create_process: Generated PID 6
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e6e4
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40017000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff055000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 6
+manager.create_process: Adding PID 6 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 6
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 16
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 6
+RING3_SMOKE: creating syscall_diagnostic_test userspace process
+create_user_process: ENTRY - Creating 'syscall_diagnostic_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='syscall_diagnostic_test', elf_size=170840
+manager.create_process: Generating PID
+manager.create_process: Generated PID 7
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000dfe4
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40016000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff066000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 7
+manager.create_process: Adding PID 7 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 7
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 17
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 7
+RING3_SMOKE: creating udp_socket_test userspace process
+create_user_process: ENTRY - Creating 'udp_socket_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='udp_socket_test', elf_size=193376
+manager.create_process: Generating PID
+manager.create_process: Generated PID 8
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000f974
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x4001a000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff077000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 8
+manager.create_process: Adding PID 8 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 8
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 18
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 8
+RING3_SMOKE: creating tcp_socket_test userspace process
+create_user_process: ENTRY - Creating 'tcp_socket_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='tcp_socket_test', elf_size=202264
+manager.create_process: Generating PID
+manager.create_process: Generated PID 9
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x40010c04
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x4001c000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff088000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 9
+manager.create_process: Adding PID 9 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 9
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 19
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 9
+RING3_SMOKE: creating tcp_dup_listener_test userspace process
+create_user_process: ENTRY - Creating 'tcp_dup_listener_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='tcp_dup_listener_test', elf_size=188816
+manager.create_process: Generating PID
+manager.create_process: Generated PID 10
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000ed84
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40019000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff099000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 10
+manager.create_process: Adding PID 10 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 10
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 20
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 10
+RING3_SMOKE: creating tcp_cloexec_exec_test userspace process
+create_user_process: ENTRY - Creating 'tcp_cloexec_exec_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='tcp_cloexec_exec_test', elf_size=189424
+manager.create_process: Generating PID
+manager.create_process: Generated PID 11
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000ef14
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40019000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0aa000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 11
+manager.create_process: Adding PID 11 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 11
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 21
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 11
+RING3_SMOKE: creating dns_test userspace process
+create_user_process: ENTRY - Creating 'dns_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='dns_test', elf_size=195208
+manager.create_process: Generating PID
+manager.create_process: Generated PID 12
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000fac4
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x4001a000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0bb000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 12
+manager.create_process: Adding PID 12 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 12
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 22
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 12
+RING3_SMOKE: creating http_test userspace process
+create_user_process: ENTRY - Creating 'http_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='http_test', elf_size=468408
+manager.create_process: Generating PID
+manager.create_process: Generated PID 13
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4001e5f0
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40053000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0cc000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 13
+manager.create_process: Adding PID 13 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 13
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 23
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 13
+RING3_SMOKE: creating loopback_wake_test userspace process
+create_user_process: ENTRY - Creating 'loopback_wake_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='loopback_wake_test', elf_size=195584
+manager.create_process: Generating PID
+manager.create_process: Generated PID 14
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000fedc
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40019000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0dd000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 14
+manager.create_process: Adding PID 14 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 14
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 24
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 14
+RING3_SMOKE: creating clonevm_exec_test userspace process
+create_user_process: ENTRY - Creating 'clonevm_exec_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='clonevm_exec_test', elf_size=184640
+manager.create_process: Generating PID
+manager.create_process: Generated PID 15
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000ebdc
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40018000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0ee000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 15
+manager.create_process: Adding PID 15 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 15
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 25
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 15
+RING3_SMOKE: creating futex_handoff_oracle userspace process
+create_user_process: ENTRY - Creating 'futex_handoff_oracle'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='futex_handoff_oracle', elf_size=178800
+manager.create_process: Generating PID
+manager.create_process: Generated PID 16
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e604
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40016000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0ff000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 16
+manager.create_process: Adding PID 16 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 16
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 26
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 16
+p01r1 p01r1 BPBP_HANDLER_ENTRY!
+About to call preempt_disable from BP handler
+Called preempt_disable from BP handler
+BP from_userspace=false, CS=0x8
+BP handler: About to call preempt_enable
+BP handler: Called preempt_enable, exiting handler
+[SW]<T><U>RING3_ENTER: CS=0x33
+[ OK ] RING3_SMOKE: userspace executed + syscall path verified
+<S>[SW]<T><U><S>[SW]<T><U>RING3_SYSCALL: First syscall from userspace
+[ OK ] syscall path verified
+=== clock_gettime Userspace Test ===
+
+Test 1: Basic syscall functionality
+  Return value: 0
+<S>[SW]<T><U><S>[SW]<T><U><S>[SW]<T><U>=== SYSCALL DIAGNOSTIC TEST SEQUENCE ===
+
+Test 41a: Multiple no-arg syscalls (getpid)
+  Call 1: pid = 7<S>[SW]<T><U>UDP Socket Test: Starting
+UDP Socket Test: Creating socket...
+UDP: Socket created fd=3
+<S>[SW]<T><U><S>[SW]<T><U><S>[SW]<T><U><S>[SW]<T><U><S>[SW]<T><U>[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0bbf08
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x400043cf
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x10202
+[DIAG:PAGEFAULT] RSP: 0x7fffff0bbe40
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x512b000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0bbf08 Error: 0x6 (P=0, W=1, U=1, I=0)
+F<S>[SW]<T><U><S>[SW]<T><U><S>[SW]<T><U>[SW]<T><U><R>Hello from userspace! Current time: 20381067159 ticks
+<S>[SW]<T><U><R><S>[SW]<T><U><R>  tv_sec:  19
+  tv_nsec: 697740977
+  PASS: Syscall returned valid time
+
+Test 2: Time advances between calls
+  First call:  20 s, 438902089 ns
+  Second call: 20 s, 438912800 ns
+  PASS: Time did not go backwards
+
+Test 3: Sub-millisecond precision
+  Elapsed: 10711 ns
+  PASS: Sub-millisecond precision (TSC active)
+<S>[SW]<T><U><R>=== brk Test Program ===
+Phase 1: Querying initial program break with sbrk(0)...
+  Initial break: 0x0000000040017000
+  Initial break is valid
+Phase 2: Expanding heap by 4KB...
+  Requesting break at: 0x0000000040018000
+<S>[SW]<T><U><R>=== mmap Test Suite ===
+Test 1: Anonymous mmap...
+  mmap succeeded
+  Write pattern succeeded
+  Read verification: PASS
+Test 2: munmap...
+<S>[SW]<T><U><R>
+  Call 2: pid = 7
+  Call 3: pid = 7
+  Result: <S>[SW]<T><U><R>UDP Socket Test: Binding to port 12345...
+UDP: Socket bound to port 12345
+UDP Socket Test: Sending packet to gateway...
+UDP: Packet sent successfully, bytes=23
+UDP Socket Test: Creating RX test socket...
+UDP: RX socket created fd=4
+<S>[SW]<T><U><R>TCP Socket Test: Starting
+TCP_TEST: socket created OK
+TCP_TEST: bind OK
+TCP_TEST: listen OK
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>HTTP Test: Starting
+HTTP_TEST: testing port out of range...
+[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0b9e28
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x400070c8
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x10246
+[DIAG:PAGEFAULT] RSP: 0x7fffff0b9df0
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x512b000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0b9e28 Error: 0x6 (P=0, W=1, U=1, I=0)
+F[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0b8fc8
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x40002f6d
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x10202
+[DIAG:PAGEFAULT] RSP: 0x7fffff0b8fd0
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x512b000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0b8fc8 Error: 0x6 (P=0, W=1, U=1, I=0)
+FHTTP_TEST: port_out_of_range OK
+HTTP_TEST: testing non-numeric port...
+HTTP_TEST: port_non_numeric OK
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+<S>[SW]<T><U><R>PASS: All x86_64 process-entry GPRs except RSP are zero
+<S>[SW]<T><U><R>
+Test 4: Nanosecond precision (not millisecond-aligned)
+  Millisecond-aligned samples: 0/10
+  PASS: Nanosecond precision confirmed
+<S>[SW]<T><U><R>  Returned break: 0x0000000040018000
+  Heap expanded successfully
+Phase 3: Writing 512 unique patterns (4KB) to allocated memory...
+  Written 512 unique patterns
+Phase 4: Verifying all 512 patterns...
+  All 512 patterns verified successfully
+Phase 5: Expanding by another 4KB and testing...
+  Second region verified successfully
+Phase 6: Contracting heap back to initial size...
+<S>[SW]<T><U><R>  munmap succeeded: PASS
+Test 3: mprotect...
+  mmap for mprotect test succeeded
+  Write pattern succeeded
+<S>[SW]<T><U><R>PASS
+
+Test 41b: Multiple sys_write calls
+.
+  Write 1: returned 1 bytes
+.
+  Write 2: returned 1 bytes
+.
+  Write 3: returned 1 bytes
+  Result: PASS
+
+Test 41c: Single clock_gettime + verify memory
+  Calling clock_gettime once...
+  Return value: 0
+  tv_sec: 21
+  tv_nsec: 127929778
+  Result: PASS
+
+Test 41d: Register preservation across syscall
+  Setting R12=0xDEADBEEFDEADBEEF, R13=0xCAFEBABECAFEBABE before syscall
+<S>[SW]<T><U><R>UDP Socket Test: Binding RX socket to port 54321...
+UDP: RX socket bound to port 54321
+UDP Socket Test: Sending packet to ourselves (loopback test)...
+UDP: Delivered packet to socket on port 54321
+<S>[SW]<T><U><R>TCP_TEST: client socket OK
+TCP_TEST: connect OK
+TCP_TEST: accept OK
+<S>[SW]<T><U><R>=== TCP Dup'd Listener Survival Test (#724 review M1) ===
+
+Step 1: bind + listen on port 9110...
+  PASS: bound and listening (fd=3)
+
+Step 2: dup() the listener fd...
+  PASS: dup'd listener fd=4 (original fd=3)
+<S>[SW]<T><U><R>=== TCP FD_CLOEXEC exec() Survival Test (#707) ===
+
+Step 1: bind + listen on port 9112...
+  PASS: bound and listening (fd=3)
+<S>[SW]<T><U><R>DNS Test: Starting
+DNS_TEST: resolving www.google.com...
+<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49152
+HTTP_TEST: testing empty host...
+HTTP_TEST: empty_host OK
+HTTP_TEST: testing URL too long...
+HTTP_TEST: url_too_long OK
+HTTP_TEST: testing HTTPS URL parsing...
+<S>[SW]<T><U><R>[TEST:userspace:loopback_recv_wake:START]
+<S>[SW]<T><U><R>[COW FAULT #0] addr=0x7fffff0dce88 cr3=0x4a34000
+[COW FAULT #1] addr=0x7fffff0d8ce8 cr3=0x4a34000
+[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[COW FAULT #2] addr=0x7fffff0d9000 cr3=0x4a34000
+[COW FAULT #3] addr=0x7fffff0da000 cr3=0x4a34000
+[COW FAULT #4] addr=0x7fffff0db000 cr3=0x4a34000
+<S>[SW]<T><U><R>CLONEVM_EXEC_TEST: start
+<S>[SW]<T><U><R><S>[SW]<T><U><R>
+Test 5: Monotonicity over multiple calls
+<S>[SW]<T><U><R>  Current break: 0x0000000040019000
+  Requesting: 0x0000000040017000
+  Returned break: 0x0000000040017000
+  Heap contracted successfully to initial size
+Phase 7: Re-expanding heap after contraction...
+  Re-expand brk returned: 0x0000000040018000
+<S>[SW]<T><U><R>  mprotect to PROT_READ succeeded
+  Read after mprotect: PASS
+  Cleanup munmap: PASS
+USERSPACE MMAP: ALL TESTS PASSED
+<S>[SW]<T><U><R>  After syscall: R12=0xdeadbeefdeadbeef, R13=0xcafebabecafebabe
+  Result: PASS (registers preserved)
+
+Test 41e: Second clock_gettime call
+  Calling clock_gettime again...
+  Return value: <S>[SW]<K>[SW]<T><U><R>UDP: Loopback packet sent, bytes=7
+UDP Socket Test: Attempting to receive packet...
+UDP: Received packet! bytes=7
+<S>[SW]<T><U><R>TCP_TEST: shutdown OK
+<S>[SW]<T><U><R>
+Step 3: close the ORIGINAL fd (dup'd fd must survive this)...
+  Original fd closed
+
+Step 4: connect+accept through the SURVIVING dup'd fd...
+<S>[SW]<T><U><R>
+Step 2: mark the listener fd FD_CLOEXEC...
+<S>[SW]<T><U><R>DNS_TEST: google_resolve SKIP (network unavailable)
+DNS_TEST: resolving example.com...
+UDP: Delivered packet to socket on port 49153
+<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49154
+<S>[SW]<T><U><R>[COW FAULT #5] addr=0x7fffff0dce88 cr3=0x5218000
+<S>[SW]<T><U><R>[COW FAULT #6] addr=0x7fffff0dce88 cr3=0x4ae3000
+[COW FAULT #7] addr=0x40018058 cr3=0x4ae3000
+[COW FAULT #8] addr=0x7ffffdffe010 cr3=0x4ae3000
+[COW FAULT #9] addr=0x7ffffdfff010 cr3=0x4ae3000
+<S>[SW]<T><U><R>[COW FAULT #10] addr=0x40018058 cr3=0x4a34000
+[COW FAULT #11] addr=0x7ffffdffe010 cr3=0x4a34000
+[COW FAULT #12] addr=0x7ffffdfff010 cr3=0x4a34000
+[LOOPBACK_WAKE:RECV_WAIT_COUNTERS_START:true=0:false=0]
+<S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child live
+<S>[SW]<T><U><R><S>[SW]<T><U><R>  Writing to addr: 0x0000000040017000
+  Pattern written
+  Read back: 0xcafebabedeadbeef
+  Expected: 0xcafebabedeadbeef
+  Re-expansion verified successfully
+USERSPACE BRK: ALL TESTS PASSED
+<S>[SW]<T><U><R>0
+  tv_sec: 22
+  tv_nsec: 777398748
+  Result: PASS
+<S>[SW]<T><U><R>UDP: RX data matches TX data - SUCCESS!
+UDP Ephemeral Port Test: Starting...
+UDP: Ephemeral socket created fd=5
+UDP_EPHEMERAL_TEST: port 0 bind OK
+UDP EADDRINUSE Test: Starting...
+<S>[SW]<T><U><R>TCP_TEST: shutdown_unconnected OK
+TCP_TEST: eaddrinuse OK
+TCP_TEST: listen_unbound OK
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>  PASS: FD_CLOEXEC is set on the listener fd
+
+Step 3: fork()...
+<S>[SW]<T><U><R>[COW FAULT #13] addr=0x7fffff0a9e78 cr3=0x542c000
+[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #14] addr=0x7fffff0dce88 cr3=0x5218000
+<S>[SW]<T><U><R>[COW FAULT #15] addr=0x7fffff0dce88 cr3=0x4c45000
+[SW]<T><U><R>LOOPBACK_WAKE_TEST: peer_stamps pid=19 conn=23944 w0=23944 w1=23983 write_ms=39
+[SW]<T><U><R>LOOPBACK_WAKE_TEST: data latency_ms=149 bytes=16
+LOOPBACK_WAKE_TEST: reader_stamps pid=17 w0=23944 acc=24077 pre=24077 data=24093 w0_to_pre=133 pre_to_data=16 lat=149
+[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)
+<S>[SW]<T><U><R>  PASS: 10 calls maintained monotonicity
+
+=== Test Summary ===
+Passed: 5/5
+Failed: 0/5
+
+USERSPACE CLOCK_GETTIME: OK
+TSC-based high-resolution timing validated from userspace
+<S>[SW]<T><U><R>
+=== SUMMARY: 5/5 tests passed ===
+DEBUG: passed=5, failed=0
+
+✓ All diagnostic tests passed
+<S>[SW]<T><U><R>UDP: First socket bound to port 54324
+UDP_EADDRINUSE_TEST: conflict detected OK
+UDP EAGAIN Test: Starting...
+UDP: EAGAIN test socket bound to port 54325
+<S>[SW]<T><U><R>TCP_TEST: accept_nonlisten OK
+TCP_DATA_TEST: starting
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #16] addr=0x7fffff0a9e78 cr3=0x4fc4000
+[COW FAULT #17] addr=0x40018058 cr3=0x4fc4000
+[COW FAULT #18] addr=0x7ffffdffe010 cr3=0x4fc4000
+
+[COW FAULT #19] addr=0x7ffffdfff010 cr3=0x4fc4000
+Step 4: parent waiting for child (pid=20)...
+[SW]<T><B>p01r1 [SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child exited
+[SW]<T><U><R><S>[SW]<T><U><R>UDP_EAGAIN_TEST: empty queue OK
+UDP Multiple Packets Test: Starting...
+UDP: Multi-packet RX socket bound to port 54326
+UDP: Multi-packet TX socket bound to port 54327
+<S>[SW]<T><U><R>TCP_DATA_TEST: server listening on 8082
+TCP_DATA_TEST: client connected
+TCP_DATA_TEST: send OK
+TCP_DATA_TEST: accept OK
+TCP_DATA_TEST: recv OK
+<S>[SW]<K>[SW]<T><U><R>  PASS: accepted a connection through the dup'd fd after the original closed
+
+Step 5: close the last fd; the listener must now actually retire...
+  PASS: port 9110 was free after the last fd closed (listener genuinely retired)
+
+=== All TCP dup'd-listener tests passed! ===
+TCP_DUP_LISTENER_TEST_PASSED
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] resolved '<S>[SW]<T><U><R>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 1, bytes=4
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 2, bytes=4
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 3, bytes=4
+UDP: Received packet 1, bytes=4
+UDP: Received packet 2, bytes=4
+<S>[SW]<T><U><R>TCP_DATA_TEST: data verified
+TCP_SHUTDOWN_WRITE_TEST: starting
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>example.com<S>[SW]<K>[SW]<T><B>[SW]<T><B>LOOPBACK_WAKE_TEST: eof wait_ms=2810 bytes=0
+LOOPBACK_WAKE_TEST: reader_eof_stamps ready=25773 eof=28583 eof_wait=2810
+[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=6]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+<S>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Received packet 3, bytes=4
+UDP_MULTIPACKET_TEST: 3 packets OK
+UDP Socket Test: All tests passed!
+<S>[SW]<T><U><R>TCP_SHUTDOWN_WRITE_TEST: EPIPE OK
+TCP_SHUT_RD_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>p01r1 [SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>[LOOPBACK_WAKE:RECV_WAIT_COUNTERS_EXIT:true=0:false=1]
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SHUT_RD_TEST: EOF OK
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SHUT_WR_TEST: starting
+<S>[SW]<T><U><R>DNS_TEST: resolved ip=172.66.147.243
+DNS_TEST: example_resolve OK
+DNS_TEST: testing NXDOMAIN...
+UDP: Delivered packet to socket on port 49156
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>DNS_TEST: nxdomain OK (error=ServerError(3))
+DNS_TEST: testing empty hostname...
+DNS_TEST: empty_hostname OK
+DNS_TEST: testing long hostname...
+DNS_TEST: long_hostname OK
+DNS_TEST: testing txid variation...
+<S>[SW]<T><B>UDP: Delivered packet to socket on port 49157
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SHUT_WR_TEST: SHUT_WR write rejected OK
+<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49158
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>TCP_SHUT_WR_TEST: server saw FIN OK
+TCP_BIDIR_TEST: starting
+<S>[SW]<T><U><R>DNS_TEST: txid_varies OK
+DNS Test: All tests passed!
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>' via <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BIDIR_TEST: server->client OK
+TCP_LARGE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>8.8.8.8 -> 172.66.147.243 (<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_LARGE_TEST: 256 bytes verified OK
+TCP_BACKLOG_TEST: starting
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>p01r1 [SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BACKLOG_TEST: overflow rejected OK
+TCP_CONNREFUSED_TEST: starting
+<S>[SW]<T><B>[SW]<T><U><R>4523ms, total 4523ms)
+[http] DNS resolved 172<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_CONNREFUSED_TEST: ECONNREFUSED OK
+TCP_MSS_TEST: starting
+<S>[SW]<T><U><R>.66.147.<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>243 (10837ms)
+[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MSS_TEST: 2000 bytes (>MSS) verified OK
+TCP_MULTI_TEST: starting
+<S>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>[http] TCP connected (848ms)
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MULTI_TEST: 3 messages verified OK
+TCP_ADDR_TEST: starting
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_ADDR_TEST: 10.x.x.x OK
+TCP_SIMUL_CLOSE_TEST: starting
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>TCP_SIMUL_CLOSE_TEST: simultaneous close OK
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>TCP_HALFCLOSE_TEST: starting
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 [DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0b7f28
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x4000acff
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x10206
+[DIAG:PAGEFAULT] RSP: 0x7fffff0b7f30
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x512b000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0b7f28 Error: 0x6 (P=0, W=1, U=1, I=0)
+F<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>p00r0 p00r0 p00r0 <S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R>p00r0 p00r0 p00r0 LOOPBACK_WAKE_TEST: load_stamps max_gap_ms=2369 samples=7137 spin_ms=10000
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>p00r0 [SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>TCP_HALFCLOSE_TEST: read after SHUT_WR OK
+<S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>TCP_FIRST_ACCEPT_TEST: starting
+<S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>TCP_FIRST_ACCEPT_TEST: accept OK
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP Socket Test: PASSED
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>p01r1 [SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>p01r1 [SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>p01r1 [SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 p00r0 p00r0 <S>[SW]<T><B>[SW]<T><B><S>[SW]<T><U><R>LOOPBACK_WAKE_TEST: watchdog_stamps target=51881 wake=55385 overrun_ms=3504
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[TEST:userspace:loopback_recv_wake:PASS]
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R>  PASS: child exec'd simple_exit0 and exited with code 0
+<S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R>
+Step 5: close the parent's own listener fd...
+<S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>  Parent's listener fd closed
+<S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R>
+<S>[SW]<T><U><R>p00r0 p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R>Step 6: rebind port 9112 -- must succeed if the listener was genuinely retired...
+<S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>  PASS: port 9112 was free after the parent's close -- the child's cloexec'd copy was genuinely released across exec()
+<S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>
+=== All TCP FD_CLOEXEC exec() tests passed! ===
+<S>[SW]<T><U><R>p00r0 p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>TCP_CLOEXEC_EXEC_TEST_PASSED
+<S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)
+HTTP_TEST: testing error handling (invalid domain)...
+UDP: Delivered packet to socket on port 49159
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 8.8.8.8: ServerError(3)<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R> (235ms)
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 10.211.55.1: Timeout (<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>979<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>ms)
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>p01r1 [SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 172.16.45.2: Timeout (1526<S>[SW]<T><B>[SW]<T><U><R>ms)
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>CLONEVM_EXEC_TEST: second stage
+<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49162
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid<S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R>' via 10.0.2.3: ServerError(3) (1223ms)
+[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 6073ms)
+HTTP_TEST: invalid_domain OK
+HTTP_TEST: testing HTTP fetch (example.com)...
+<S>[SW]<T><B>UDP: Delivered packet to socket on port 49163
+p00r1 <S>[SW]<T><U><R><S>[SW]<T><B>p00r1 <S>[SW]<T><U><R>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8 -> 104.20.23.154 (219ms, total 219ms)
+[http] DNS resolved 104.20.23.154 (228ms)
+[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[http] TCP connected (230<S>[SW]<T><U><R><S>[SW]<T><B>p00r1 <S>[SW]<T><U><R>ms)
+<S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+<S>[SW]<T><U><R>[http] response received: 868 bytes (recv 265ms, total 842ms)
+HTTP_TEST: received 868 bytes, status=200
+HTTP_TEST: example_fetch OK (status 200, body contains HTML)
+HTTP Test: All tests passed!
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>
