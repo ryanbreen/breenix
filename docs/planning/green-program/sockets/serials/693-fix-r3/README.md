@@ -102,8 +102,11 @@ mutation, not some other state, produced the 3 reds above.
 `grep -rn "late_woken_by_clock" .` (whole tree, excluding only `target/` and
 `.git/`; this section's own directory is excluded from the count below since
 this README is written after the grep and would otherwise report on itself) at
-branch head `23d9a10010357a457cdac230576409564fc2efc3` returns **21 hits across 8 files**, in three
+branch head `23d9a10010357a457cdac230576409564fc2efc3` returns **21 hits across 9 files**, in three
 groups:
+<!-- claim-lint:ok: re-run at round-4 fix time as
+     `grep -rn "late_woken_by_clock" --exclude-dir=target --exclude-dir=.git . | grep -v 693-fix-r3 | wc -l` = 21
+     and `| cut -d: -f1 | sort -u | wc -l` = 9; round-3 review finding F3 -->
 
 **Prose (11 of the 21 hits, 2 files) -- describes the arm's history, 0 of the
 11 is code.**
@@ -116,7 +119,7 @@ groups:
   describing what the arm *was* before the demotion this RCA itself
   recommended reversing (F8 of the round-2 review).
 
-**Preserved pre-fix specimen serials (9 of the 21 hits, 5 files) -- historical
+**Preserved pre-fix specimen serials (9 of the 21 hits, 6 files) -- historical
 captured output, not live code.**
 `docs/planning/green-program/sockets/serials/693-rca/` holds raw serial/driver
 captures from the pre-fix x86 boots that originally produced this arm's
