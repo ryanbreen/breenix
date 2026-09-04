@@ -1609,14 +1609,18 @@ impl Scheduler {
         self.per_cpu_queues[cpu].push_back(thread_id);
     }
 
-    fn add_thread_inner(&mut self, mut thread: Box<Thread>, front: bool) {
+    fn add_thread_inner(&mut self, thread: Box<Thread>, front: bool) {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         #[cfg(all(target_arch = "aarch64", feature = "testing"))]
-        if is_user && TEST_BINARY_STAGING.load(Ordering::Acquire) {
-            thread.cpu_affinity = Some(0);
-        }
+        let thread = {
+            let mut staged_thread = thread;
+            if is_user && TEST_BINARY_STAGING.load(Ordering::Acquire) {
+                staged_thread.cpu_affinity = Some(0);
+            }
+            staged_thread
+        };
         let cpu_affinity = thread.cpu_affinity;
         self.threads.push(thread);
         // CPU-local workers retain their requested queue. Migratable work uses
