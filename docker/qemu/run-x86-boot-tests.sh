@@ -588,16 +588,23 @@ for i in $(seq 1 "$COUNT"); do
     PCI_FN_E1000_ID='8086:100e class=02/00'
 
     # Expected e1000 count, derived from this file's bytes plus QEMU's
-    # implicit-default-NIC rule. This invocation passes no -net/-netdev/-nic
-    # option and no explicit -device e1000 flag; QEMU auto-attaches its own
-    # default NIC for -machine pc whenever none of those is present (`-nic
-    # none` is what suppresses it, and nothing here passes that), and on the
-    # beast host's QEMU 8.2 that default is an e1000 -- the same rule the
-    # CENSUS_NETWORK >= 1 leg above already relies on, here tightened from
-    # ">= 1 network device" to "exactly one 8086:100e". Still derived, not
-    # pinned: an added `-device e1000,netdev=...` flag raises the count with
-    # the flags, and any added -net/-netdev/-nic option retires the implicit
-    # rule so the count follows the explicit e1000 flags alone.
+    # implicit-default-NIC rule. QEMU auto-attaches its own default NIC for
+    # -machine pc whenever no -net/-netdev/-nic option is present on the
+    # command line -- `-nic none` is what suppresses it -- REGARDLESS of how
+    # many explicit `-device e1000,...` flags are also present; a -device
+    # flag alone never counts as a -net/-netdev/-nic option, so the implicit
+    # NIC and any explicit e1000 device coexist as separate functions. On
+    # the beast host's QEMU 8.2 that implicit default is an e1000 -- the
+    # same rule the CENSUS_NETWORK >= 1 leg above already relies on, here
+    # tightened from ">= 1 network device" to "exactly N 8086:100e". So the
+    # count is additive, not either/or: EXPECTED_E1000 = the explicit
+    # -device e1000 flag count, PLUS one whenever no -net/-netdev/-nic
+    # option is present. This invocation passes no -net/-netdev/-nic option
+    # and no explicit -device e1000 flag, so the additive formula reduces to
+    # 0 + 1 = 1 here; it is still derived, not pinned -- an added `-device
+    # e1000,netdev=...` flag raises the count with the flags on top of
+    # whatever the implicit-NIC term contributes, and adding a
+    # -net/-netdev/-nic option zeroes that term.
     # `|| true` on both: grep -c prints 0 and exits 1 when nothing
     # matches, and a zero count is the expected, healthy reading here -- an
     # unguarded $() would abort the script at the assignment under set -e.
@@ -608,8 +615,8 @@ for i in $(seq 1 "$COUNT"); do
     # docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
     EXPECTED_E1000_FLAGS=$(grep -cE -- '^[[:space:]]*-device e1000,' "${BASH_SOURCE[0]}") || true
     NIC_OPTION_FLAGS=$(grep -cE -- '^[[:space:]]*-(net|netdev|nic)[[:space:]]' "${BASH_SOURCE[0]}") || true
-    if [ "$EXPECTED_E1000_FLAGS" -eq 0 ] && [ "$NIC_OPTION_FLAGS" -eq 0 ]; then
-        EXPECTED_E1000=1
+    if [ "$NIC_OPTION_FLAGS" -eq 0 ]; then
+        EXPECTED_E1000=$((EXPECTED_E1000_FLAGS + 1))
     else
         EXPECTED_E1000="$EXPECTED_E1000_FLAGS"
     fi

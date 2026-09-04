@@ -266,18 +266,22 @@ EXPECTED_E1000_FLAGS=$(grep -cE -- '^[[:space:]]*-device e1000,' "${BASH_SOURCE[
 # QEMU's implicit-default-NIC rule, carried here so both x86 gates derive the
 # NIC expectation by the same rule even though only this one passes an explicit
 # flag: QEMU auto-attaches its own default NIC for -machine pc whenever no
-# -net/-netdev/-nic option is present (`-nic none` is what suppresses it). This
-# script does pass -netdev, so the implicit rule does not apply and the count
-# comes from the explicit -device e1000 flags alone. The branch is not dead
-# code for show: it is what keeps this derivation correct if a future edit
-# drops the explicit NIC flags, and it is the same rule
+# -net/-netdev/-nic option is present on the command line (`-nic none` is what
+# suppresses it) REGARDLESS of how many explicit `-device e1000,...` flags are
+# also present -- a -device flag alone never counts as a -net/-netdev/-nic
+# option. So the count is additive, not either/or: EXPECTED_E1000 = the
+# explicit -device e1000 flag count, PLUS one whenever no -net/-netdev/-nic
+# option is present. This script does pass -netdev, so the implicit-NIC term
+# is zero and the count comes from the explicit -device e1000 flags alone. The
+# branch is not dead code for show: it is what keeps this derivation correct
+# if a future edit drops the explicit NIC flags, and it is the same rule
 # docker/qemu/run-x86-boot-tests.sh reaches by the other arm.
 # claim-lint:ok: mechanical description of the branch on the next four
 # lines; the same rule is documented at the CENSUS_NETWORK leg of
 # docker/qemu/run-x86-boot-tests.sh.
 NIC_OPTION_FLAGS=$(grep -cE -- '^[[:space:]]*-(net|netdev|nic)[[:space:]]' "${BASH_SOURCE[0]}") || true
-if [ "$EXPECTED_E1000_FLAGS" -eq 0 ] && [ "$NIC_OPTION_FLAGS" -eq 0 ]; then
-    EXPECTED_E1000=1
+if [ "$NIC_OPTION_FLAGS" -eq 0 ]; then
+    EXPECTED_E1000=$((EXPECTED_E1000_FLAGS + 1))
 else
     EXPECTED_E1000="$EXPECTED_E1000_FLAGS"
 fi
