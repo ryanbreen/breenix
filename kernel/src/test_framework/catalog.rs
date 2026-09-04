@@ -179,6 +179,22 @@ pub const UTEST_PIPE_CONCURRENT: u16 = 374;
 pub const UTEST_JOB_CONTROL: u16 = 375;
 pub const UTEST_SIGKILL_TEARDOWN: u16 = 376;
 
+// Vendored-musl C programs (cross-compiled with musl libc for aarch64; see
+// `userspace/c-programs/`). aarch64-only: `utest_name_to_id()` below has 2 call
+// sites, both in `load_test_binaries_from_ext2()` in `main_aarch64.rs`, and that
+// function is `#[cfg(target_arch = "aarch64")]` (grep-verified against this
+// tree). `userspace/c-programs/Makefile` targets `aarch64-linux-musl` only
+// (0 x86_64 targets in that file today), and the x86 test-disk builder in
+// `xtask/src/test_disk.rs` globs `userspace/programs/*.elf` -- a directory
+// that as of this tree contains 0 musl-built binaries -- so these IDs go
+// unreached on x86_64. claim-lint:ok: grep -rn "utest_name_to_id"
+// kernel/src/ -> 2 call sites, both in main_aarch64.rs (2026-09-04).
+pub const UTEST_HELLO_MUSL: u16 = 377;
+pub const UTEST_ENV_MUSL: u16 = 378;
+pub const UTEST_UNAME_MUSL: u16 = 379;
+pub const UTEST_RLIMIT_MUSL: u16 = 380;
+pub const UTEST_IDENTITY_MUSL: u16 = 381;
+
 // =============================================================================
 // Full Catalog
 // =============================================================================
@@ -746,6 +762,32 @@ pub static CATALOG: &[BootTestDef] = &[
         name: "utest_sigkill_teardown",
         category: BootTestCategory::UserspaceResult,
     },
+    // Vendored-musl C programs (aarch64-only; see UTEST_HELLO_MUSL doc above).
+    BootTestDef {
+        id: UTEST_HELLO_MUSL,
+        name: "utest_hello_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_ENV_MUSL,
+        name: "utest_env_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_UNAME_MUSL,
+        name: "utest_uname_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_RLIMIT_MUSL,
+        name: "utest_rlimit_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_IDENTITY_MUSL,
+        name: "utest_identity_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
 ];
 
 /// Look up a test name by ID.
@@ -841,6 +883,11 @@ pub fn utest_name_to_id(name: &str) -> Option<u16> {
         "pipe_concurrent_test" => Some(UTEST_PIPE_CONCURRENT),
         "job_control_test" => Some(UTEST_JOB_CONTROL),
         "sigkill_teardown_test" => Some(UTEST_SIGKILL_TEARDOWN),
+        "hello_musl" => Some(UTEST_HELLO_MUSL),
+        "env_musl_test" => Some(UTEST_ENV_MUSL),
+        "uname_musl_test" => Some(UTEST_UNAME_MUSL),
+        "rlimit_musl_test" => Some(UTEST_RLIMIT_MUSL),
+        "identity_musl_test" => Some(UTEST_IDENTITY_MUSL),
         _ => None,
     }
 }
