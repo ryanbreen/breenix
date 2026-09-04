@@ -36,19 +36,62 @@ grep -ilE 'KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync excep
 ```
 
 0 of 15 files match. 10 of 10 strict boots carry `[EXEC_SMOKE:TARGET_OK]` once
-and `TESTS_COMPLETE` twice. The only `softirq` and `timer_delay` strings in the
-15 captures are that suite's own `[TEST:...:START]` and `[TEST:...:PASS]`
-markers -- 10 each of `softirq_aarch64` and `softirq_registration`, and the
-`timer:timer_delay` pair -- not the #555 or #536 signatures they would
-otherwise resemble.
-<!-- claim-lint:ok: the 0-of-15 and the 10-of-10 counts are that grep and
-     `grep -c` over the captures in this directory, run at the head that
-     commits them. -->
+and `TESTS_COMPLETE` twice.
+
+**The `softirq`/`timer_delay` sentence round 5 wrote here was false, and this
+is the count that replaces it (round-6 finding F3).** Round 5 said "the only
+`softirq` and `timer_delay` strings in the 15 captures are that suite's own
+`[TEST:...:START]` and `[TEST:...:PASS]` markers". A grep that excludes
+`[TEST:` lines returns **16 more**, in 2 distinct shapes:
+
+| line | occurrences | files |
+|---|---:|---:|
+| `NET: pre-primed NetRx softirq for bootstrap callback re-enable` | 15 | 15 of 15 |
+| `[timer_delay] attempt=1 verdict=in-band elapsed_ms=10 host_stall_ms=1 max_gap_us=388 open_window_us=677 irqs=8 slices=85 forfeited=0 samples=125015` | 1 | `strict/boot1/serial.txt` only |
+
+Neither is a #555 or #536 signature. The first is a boot-time NET
+initialisation record, not a softirq storm; the second is the `timer_delay`
+test's own measurement and its verdict is `in-band`, i.e. a pass -- the other 9
+strict boots carry the `[TEST:timer:timer_delay:START]`/`:PASS]` pair without
+the record line. So the attribution the sentence carried (0 of #555, #576,
+#626, #586, #609) survives unchanged; what was wrong was stating it as an
+exhaustive census of two strings when a one-line grep falsifies that.
+<!-- claim-lint:ok: the 0-of-15, the 10-of-10 and the 16/15/1 counts above are
+     that grep and `grep -c` over the 15 captures in this directory, re-run at
+     the round-6 head. -->
 
 Layout: `aarch64/strict/gate.txt` is the gate's own transcript with
 `boot{1..10}/serial.txt` beside it; `aarch64/prod-profile/boot{1..5}/` carries
 a `gate.txt` and a `serial.txt` each; `builds/aarch64-boot-tests.txt` is the
 build the strict gate consumed.
+
+### What these 15 boots do and do not observe (round-6 finding F7)
+
+The changed line is `thread.blocked_in_syscall = thread.owner_pid.is_some()`,
+which behaves differently from round 4's unconditional `true` only for a
+PROCESS-LESS thread. Two things about that on aarch64, said here because round
+5 asserted neither:
+
+* **The producer IS reached on this arch.** `block_current_for_timer` is called
+  by `test_framework::registry::sleep_current_thread_ms` (`registry.rs:2239`,
+  calls at `:2593` and `:2664`), which is what
+  `loopback_recv_wake_when_idle`, `loopback_recv_wake_under_load` and
+  `loopback_pump_does_not_busy_spin` sleep on -- and all three carry a
+  `[TEST:...:PASS]` in 10 of 10 strict boots.
+* **These captures do not observe the FLAG.** No line prints it, and the
+  census kthread whose lost wake motivated both producer fixes does not exist
+  on this arch: `grep -lE 'kstrandd|DISPATCH_STRAND_CENSUS'` matches **0 of the
+  15** captures, and `kernel/src/main_aarch64.rs` does not call
+  `start_dispatch_strand_census_kthread()` (`grep` returns 0 hits). On aarch64
+  the difference the line makes is observable only at the 4 non-diagnostic bare
+  consumers (`context_switch.rs` :3691, :4847, :4856 and
+  `timer_interrupt.rs:1122`).
+
+So 15/15 green is a NO-REGRESSION reading of a path these boots do exercise --
+not a measurement of the flag's new value.
+<!-- claim-lint:ok: the 0-of-15, the call sites and the 10-of-10 PASS counts
+     are greps over this directory and over kernel/src, run at the round-6
+     head. -->
 
 ## `x86/control-round3-head/` — R4-2, the control that motivated the bound
 

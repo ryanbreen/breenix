@@ -90,5 +90,8 @@ previous, while the two re-runs carry 108 and 106 at a 1 s cadence. Same head,
 same host, same accelerator. The disclosed cost is stated where the bound is: the largest
 census hole observed on any capture here is 19939 ms, which is LARGER than the
 bound, so a completion marker landing at the end of such a hole trips the arm.
-<!-- claim-lint:ok: the 4 ages are that loop's output, run at this head; the
-     19939 ms hole is boot1's own gate.txt line 8. -->
+<!-- claim-lint:ok: the 6 ages in the table above are that loop's output over
+     the 46 committed serial_kernel.txt captures, 6 of 46 carrying a
+     measurable age, re-run at the round-6 head; round-6 finding F6 corrected
+     this line, which read "the 4 ages" against a six-row table. The 19939 ms
+     hole is boot1's own gate.txt line 8. -->
