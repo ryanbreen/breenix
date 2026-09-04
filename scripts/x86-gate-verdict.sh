@@ -48,12 +48,15 @@ done
 # docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
 #
 # rc=4 is a STALE clean reading: stranded=0, but the snapshot it came from was
-# already more than 15000 ms old when the userspace phase ended. That is not a
-# pass, because the ledger stopped being published before the boot finished.
-# The bound is DERIVED from #766's measured x86 wake-to-dispatch overrun (max
-# 10318 ms over 324 trials) plus margin, not chosen; it tightens when #766
-# lands. scripts/x86-strand-census.sh's AGE header carries the derivation and
-# the disclosed cost.
+# already older than the census's bound when the userspace phase ended. That is
+# not a pass, because the ledger stopped being published before the boot
+# finished. The bound is DERIVED from #766's measured x86 wake-to-dispatch
+# overrun (max 10318 ms over 324 trials) plus margin, not chosen; it tightens
+# when #766 lands. scripts/x86-strand-census.sh's AGE header carries the
+# derivation and the disclosed cost, and its `stale_limit_ms` assignment is the
+# ONLY copy of the value: the sentence below reads the number back out of the
+# census's own STALE summary line rather than restating it, so this script and
+# the census can never disagree about which bound was applied -- finding F4.
 # claim-lint:ok: #775 ruling R137 defines the age bound and R140 derives it
 # from the distribution in
 # docs/planning/green-program/sockets/693-RCA-2026-09-02.md.
@@ -94,7 +97,14 @@ case "$strand_rc" in
     1) fail "a thread was saved blocked in a kernel wait and was still not restored at the latest census snapshot (see the strand census above)" ;;
     2) echo "x86 userspace gate: census unavailable; continuing with ordered first-cause checks" ;;
     3) echo "x86 userspace gate: STRAND CENSUS INCOMPLETE - the kernel ledger overflowed, so this boot has NO usable strand evidence in either direction; continuing with ordered first-cause checks" ;;
-    4) fail "the strand census read stranded=0 from a snapshot that was already more than 15000 ms stale at the completion marker, so the clean reading is stale rather than clean (see the age line above)" ;;
+    4)
+        stale_summary="$(printf '%s\n' "$strand_output" | grep -F 'STRAND_CENSUS: STALE ' | tail -n 1 || true)"
+        stale_bound="${stale_summary##*bound_ms=}"
+        stale_bound="${stale_bound%% *}"
+        [[ "$stale_bound" =~ ^[0-9]+$ ]] \
+            || fail "the strand census reported a stale reading (rc=4) but printed no parseable bound_ms, so the bound it applied cannot be named: ${stale_summary:-<no STRAND_CENSUS: STALE line>}"
+        fail "the strand census read stranded=0 from a snapshot that was already more than $stale_bound ms stale at the completion marker, so the clean reading is stale rather than clean (see the age line above)"
+        ;;
     *) fail "strand census returned unexpected status $strand_rc" ;;
 esac
 

@@ -74,24 +74,31 @@
 #   reference and the line says so instead of inventing one. A capture that
 #   DOES carry the marker but no valid snapshot after it is a truncated
 #   capture, not an unmeasurable one: it exits 2 rather than skipping the
-#   assertion.
+#   assertion -- but ONLY when the reading it carries is otherwise clean. A
+#   truncated capture whose newest valid snapshot is RED still exits 1 and
+#   names the threads; see PRECEDENCE under Exit below.
 #
-#   THE BOUND IS 15000 ms, AND IT IS DERIVED, not chosen. #766 measured the
-#   x86 wake-to-dispatch overrun this cadence rides on -- min 84 ms, p50
-#   426.5 ms, p90 2592 ms, max 10318 ms over 324 re-derivable trials, recorded
-#   in docs/planning/green-program/sockets/693-RCA-2026-09-02.md -- and the
-#   bound is that measured maximum plus margin. It tightens when #766 lands.
-#   The bound is NOT derived from the observed cadence holes, which are larger
-#   than it: a completion marker landing at the end of a 19939 ms hole trips
-#   this arm. That is the disclosed cost of asserting freshness at all.
-#   claim-lint:ok: the bound, its derivation and all 3 arms are covered by
-#   tests/x86_gate_verdict_test.rs.
+#   THE BOUND IS DERIVED, not chosen, and this file holds it in exactly ONE
+#   place: the `stale_limit_ms` assignment in the awk BEGIN block below. #766
+#   measured the x86 wake-to-dispatch overrun this cadence rides on -- min
+#   84 ms, p50 426.5 ms, p90 2592 ms, max 10318 ms over 324 re-derivable
+#   trials, recorded in
+#   docs/planning/green-program/sockets/693-RCA-2026-09-02.md -- and the bound
+#   is that measured maximum plus margin. It tightens when #766 lands, which is
+#   why no second copy of the VALUE exists anywhere: this script's own age line
+#   prints it, and scripts/x86-gate-verdict.sh's rc=4 sentence, the tests and
+#   the docs all read the number back out of what is printed here rather than
+#   restating it -- finding F4.
+#   claim-lint:ok: the bound, its derivation, its single-copy property and all
+#   3 age arms are covered by tests/x86_gate_verdict_test.rs and
+#   tests/dispatch_strand_census_structure.rs.
 #
 # Usage:  scripts/x86-strand-census.sh <serial-log> [<serial-log> ...]
 # Output: one line per listed stranded thread, a provenance/cadence line, an
 #         age line, overflow diagnostics if present, then a STRAND_CENSUS line.
-# Exit:   0 when the highest-seq valid snapshot says stranded=0 and the census
-#           was fresh at the completion marker (or no age is measurable);
+# Exit:   0 when the highest-seq valid snapshot says stranded=0, the ledger did
+#           not overflow, the census was fresh at the completion marker (or no
+#           age is measurable), and the capture is not truncated at the marker;
 #         1 when it says stranded>0;
 #         2 when no valid snapshot exists, or the inputs carry snapshots from
 #           more than one boot, or the capture carries the completion marker
@@ -99,12 +106,25 @@
 #           assertion is not silently skipped);
 #         3 when the kernel ledger overflowed, so the snapshot is incomplete and
 #           carries no verdict either way (R134 item 2: not a clean census);
-#         4 when stranded=0 but the newest cadence snapshot was more than
-#           15000 ms old at the completion marker, so the clean reading is
-#           stale rather than clean (R137, bound derived per AGE above).
-#         Precedence: 2 and 3 short-circuit; 1 outranks 4, so a red strand is
-#         never masked by a staleness report.
-# claim-lint:ok: the 5 exit classes are covered by tests/x86_gate_verdict_test.rs.
+#         4 when stranded=0 but the newest cadence snapshot was older at the
+#           completion marker than the bound printed with the age line, so the
+#           clean reading is stale rather than clean (R137, bound per AGE above).
+#
+#         PRECEDENCE IS 1 > 3 > 4 > 2, AND THE CODE BELOW TAKES THE EXITS IN
+#         THAT ORDER. A RED READING IS NEVER MASKED: stranded>0 exits 1 even
+#         when the ledger overflowed, even when the reading was stale at the
+#         completion marker, and even when the capture is truncated there.
+#         Each of those three says the reading is WORSE than it looks, never
+#         better, so none of them may downgrade a named strand to "census
+#         unavailable" -- finding F1, which is what the round-5 order did.
+#         The truncated-at-the-marker rc=2 is therefore the LAST arm, reached
+#         only when the newest valid snapshot is clean, unoverflowed and not
+#         stale.
+#         The two UNREADABLE rc=2 classes -- no valid snapshot at all, and
+#         snapshots from more than one boot -- still short-circuit ahead of all
+#         of them, because no verdict can be computed from those inputs at all.
+# claim-lint:ok: the 5 exit classes and the 1-outranks-2 precedence are covered
+# by tests/x86_gate_verdict_test.rs.
 
 set -euo pipefail
 
@@ -127,11 +147,14 @@ BEGIN {
     census_re = "\\[DISPATCH_STRAND_CENSUS:[^]]*\\]"
     # Derived from #766, not chosen: max measured wake-to-dispatch overrun
     # 10318 ms (324 trials, docs/planning/green-program/sockets/
-    # 693-RCA-2026-09-02.md) plus margin. Tightens when #766 lands.
+    # 693-RCA-2026-09-02.md) plus margin. Tightens when #766 lands. This
+    # assignment is the single copy of the value in the repository outside
+    # captured tool output; consumers read it back from what is printed.
     stale_limit_ms = 15000
     marker_present = 0
     file_complete = 0
     completion_seq = 0
+    truncated_at_marker = 0
     valid_re = "^\\[DISPATCH_STRAND_CENSUS:seq=[0-9]+:tick=[0-9]+:ms=[0-9]+:saved=[0-9]+:stranded=[0-9]+:tids=(-|[0-9]+(,[0-9]+)*):tid_overflow=[0-9]+:ledger_overflow=[0-9]+\\]$"
     best_seq = -1
     valid = 0
@@ -202,6 +225,8 @@ FNR == 1 { file_complete = 0 }
     }
 }
 END {
+    # The two UNREADABLE inputs: neither yields a verdict, so they precede the
+    # whole precedence chain rather than sitting inside it.
     if (duplicate_boot) {
         print "strand census: the inputs carry census snapshots from more than one boot (repeated seq); pass the capture set of a single boot" > "/dev/stderr"
         exit 2
@@ -211,15 +236,6 @@ END {
             printf "strand census: no valid DISPATCH_STRAND_CENSUS snapshot found (%d malformed marker(s), first: %s)\n", malformed, first_malformed > "/dev/stderr"
         else
             print "strand census: no DISPATCH_STRAND_CENSUS line found" > "/dev/stderr"
-        exit 2
-    }
-
-    # A capture that carries the completion marker but no valid snapshot after
-    # it is TRUNCATED, not unmeasurable: the age assertion has 0 snapshots to
-    # run on. Reporting "no marker" there would be false and would skip the
-    # bound silently -- finding R4-5. It exits 2 (census unavailable) instead.
-    if (marker_present && completion_seq == 0) {
-        printf "strand census: census incomplete at completion marker: the capture carries USERSPACE TEST COMPLETE but no valid snapshot follows it in that capture, so the age at the marker cannot be measured and the newest reading (seq=%d) carries no freshness evidence\n", best_seq > "/dev/stderr"
         exit 2
     }
 
@@ -277,32 +293,55 @@ END {
         } else {
             printf "strand census: age at the completion marker: not measurable -- the completion snapshot seq=%d is the first valid snapshot in the capture\n", completion_seq
         }
+    } else if (marker_present) {
+        # TRUNCATED: the marker is here, the snapshot that should follow it is
+        # not. Saying "no marker" here would be false (finding R4-5), and the
+        # capture is not unmeasurable by nature, it is cut short. The exit this
+        # sets up is taken LAST, so it can mask no red reading (finding F1).
+        truncated_at_marker = 1
+        printf "strand census: age at the completion marker: not measurable -- this capture carries the USERSPACE TEST COMPLETE marker but no valid snapshot follows it in that capture, so it is TRUNCATED and the newest reading (seq=%d at %s ms) carries no freshness evidence\n", best_seq, at_ms
     } else {
-        # Reached only when marker_present == 0; the marker-present-but-
-        # truncated shape exited 2 above.
         printf "strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=%d at %s ms\n", best_seq, at_ms
     }
 
-    if (ledger_overflow > 0) {
+    # An overflowed ledger is REPORTED whichever exit is taken below, because it
+    # qualifies the snapshot the verdict is read from either way.
+    if (ledger_overflow > 0)
         printf "strand census: kernel ledger overflowed (%d event(s)); the snapshot is incomplete and carries no verdict\n", ledger_overflow
-        printf "STRAND_CENSUS: INCOMPLETE ledger_overflow=%d threads_saved_blocked=%d stranded=%d lines=%d\n", ledger_overflow, saved, stranded, NR
-        exit 3
-    }
 
+    # PRECEDENCE 1 > 3 > 4 > 2, in this order, and this is the whole of it.
+    # A RED READING IS NEVER MASKED (finding F1): a named strand outranks an
+    # overflowed ledger, a stale age and a truncated capture alike, because
+    # each of those three makes the reading worse than it looks, never better.
+    # claim-lint:ok: the order and its anti-masking arms are covered by
+    # tests/x86_gate_verdict_test.rs.
     if (stranded > 0) {
         printf "STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n", saved, stranded, NR
         exit 1
     }
 
+    if (ledger_overflow > 0) {
+        printf "STRAND_CENSUS: INCOMPLETE ledger_overflow=%d threads_saved_blocked=%d stranded=%d lines=%d\n", ledger_overflow, saved, stranded, NR
+        exit 3
+    }
+
     # A stale reading is checked only on the clean arm, deliberately: its whole
     # purpose is to stop a PASS being issued off a snapshot that stopped being
-    # refreshed before the boot finished. A red strand is not masked by it:
-    # exit 1 is taken first, 2 tests cover the order.
-    # claim-lint:ok: tests/x86_gate_verdict_test.rs covers both orders.
+    # refreshed before the boot finished.
     if (age_measured && age_ms > stale_limit_ms) {
         printf "strand census: the newest cadence snapshot was %d ms old at the completion marker, over the %d ms bound; the census cadence stopped before the userspace phase ended, so stranded=0 here is not evidence of anything\n", age_ms, stale_limit_ms
         printf "STRAND_CENSUS: STALE age_ms=%d bound_ms=%d threads_saved_blocked=%d stranded=%d lines=%d\n", age_ms, stale_limit_ms, saved, stranded, NR
         exit 4
+    }
+
+    # LAST: a capture that carries the completion marker but no valid snapshot
+    # after it is TRUNCATED, not unmeasurable -- the age assertion has 0
+    # snapshots to run on, so the bound cannot be applied and a PASS here would
+    # have no evidence under it (finding R4-5). Reached on an otherwise clean,
+    # unoverflowed, unstale reading, so it cannot mask a red one.
+    if (truncated_at_marker) {
+        printf "strand census: census incomplete at completion marker: the capture carries USERSPACE TEST COMPLETE but no valid snapshot follows it in that capture, so the age at the marker cannot be measured and the newest (clean) reading seq=%d carries no freshness evidence\n", best_seq > "/dev/stderr"
+        exit 2
     }
 
     printf "STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n", saved, stranded, NR

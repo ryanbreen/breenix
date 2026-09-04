@@ -100,6 +100,32 @@ fn run_census(paths: &[&Path]) -> Output {
     command.output().expect("run scripts/x86-strand-census.sh")
 }
 
+/// The staleness bound, read out of the ONE place that holds it. #775 round 6,
+/// finding F4: round 5 moved the ratchet off the value and left four more
+/// hand-maintained copies of it, so a change to the bound could leave the tool
+/// and the sentence the operator reads disagreeing. No test may carry a second
+/// copy; the assertions below derive it from this.
+fn census_bound_ms() -> u32 {
+    let census = repo_root().join("scripts/x86-strand-census.sh");
+    let text = fs::read_to_string(&census)
+        .unwrap_or_else(|error| panic!("read {}: {error}", census.display()));
+    let assignments: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("stale_limit_ms = "))
+        .collect();
+    assert_eq!(
+        assignments.len(),
+        1,
+        "scripts/x86-strand-census.sh must assign stale_limit_ms exactly once: {assignments:?}"
+    );
+    assignments[0]
+        .trim_start_matches("stale_limit_ms = ")
+        .trim()
+        .parse()
+        .unwrap_or_else(|error| panic!("stale_limit_ms is not a decimal count of ms: {error}"))
+}
+
 /// One snapshot in the shape `report_snapshot()` emits.
 fn marker(seq: u32, tick: u32, ms: u32, saved: u32, stranded: u32, tids: &str) -> String {
     format!(
@@ -489,11 +515,13 @@ fn a_fresh_census_at_the_completion_marker_passes_and_prints_the_age() {
     );
     // The bound is derived, and the tool prints which bound it applied. #766
     // measured the wake-to-dispatch overrun this cadence rides on at max
-    // 10318 ms over 324 trials; 15000 ms is that maximum plus margin.
+    // 10318 ms over 324 trials, and the bound is that maximum plus margin. Its
+    // VALUE is not restated here: it is read out of the one place that holds
+    // it (finding F4).
     // claim-lint:ok: the distribution is
     // docs/planning/green-program/sockets/693-RCA-2026-09-02.md lines 109-110.
     assert!(
-        text.contains("bound 15000 ms"),
+        text.contains(&format!("bound {} ms", census_bound_ms())),
         "the derived bound was not printed with the age: {text}"
     );
 }
@@ -501,21 +529,35 @@ fn a_fresh_census_at_the_completion_marker_passes_and_prints_the_age() {
 #[test]
 fn a_stale_clean_census_at_the_completion_marker_is_not_a_pass() {
     // Same fixture shape and the same stranded=0; only the cadence gap changes.
-    // 19000 ms is over the derived 15000 ms bound, and over #766's measured
-    // maximum wake-to-dispatch overrun of 10318 ms as well, so it is not a
-    // reading the known latency explains.
-    let fixture = SerialFixture::new(&capture_with_completion_age(1500, 20500), "");
+    // The gap is the census's own bound plus 4000 ms, derived rather than
+    // written down (finding F4), so the fixture stays over the bound whatever
+    // the bound tightens to when #766 lands -- and at today's bound it is also
+    // over #766's measured maximum wake-to-dispatch overrun of 10318 ms, so it
+    // is not a reading the known latency explains.
+    let cadence_ms = 1500;
+    let age_ms = census_bound_ms() + 4000;
+    let fixture = SerialFixture::new(
+        &capture_with_completion_age(cadence_ms, cadence_ms + age_ms),
+        "",
+    );
     let output = fixture.run(Some("10"));
     let text = output_text(&output);
 
     assert!(!output.status.success(), "stale census passed: {text}");
     assert!(
-        text.contains("age at the completion marker: 19000 ms"),
+        text.contains(&format!("age at the completion marker: {age_ms} ms")),
         "the measured age was not printed: {text}"
     );
     assert!(
         text.contains("stale rather than clean"),
         "the staleness verdict did not reach the gate: {text}"
+    );
+    // The operator-facing sentence carries the bound the census ACTUALLY
+    // applied, because scripts/x86-gate-verdict.sh reads it back out of the
+    // census's own STALE summary instead of restating it -- finding F4.
+    assert!(
+        text.contains(&format!("more than {} ms stale", census_bound_ms())),
+        "the gate's stale sentence did not carry the census's own bound: {text}"
     );
 }
 
@@ -566,15 +608,11 @@ fn age_line(text: &str) -> String {
 const GATE_GREEN_BOOT1: &str =
     "docs/planning/green-program/sockets/serials/775/round4/gate-green/boot1";
 
-/// #775 round 5, finding R4-5. A capture that carries `USERSPACE TEST COMPLETE`
-/// but no valid snapshot after it is TRUNCATED, not markerless. Before this
-/// round the census printed "this capture carries no USERSPACE TEST COMPLETE"
-/// on exactly that shape and then skipped the staleness bound -- the one case
-/// the bound exists for. The fixture is the reviewer's repro: the committed
-/// gate capture with the snapshots from `seq=29` -- the completion snapshot --
-/// upwards deleted.
-#[test]
-fn a_marker_with_no_snapshot_after_it_is_incomplete_rather_than_markerless() {
+/// The committed round-4 gate capture with the snapshots from `seq=29` -- the
+/// completion snapshot -- upwards deleted: the reviewer's R4-5/F1 repro. The
+/// capture still carries `USERSPACE TEST COMPLETE` exactly once, and its newest
+/// remaining snapshot names two stranded threads.
+fn truncated_gate_capture() -> String {
     let source = committed(GATE_GREEN_BOOT1).join("serial_kernel.txt");
     let full = fs::read_to_string(&source)
         .unwrap_or_else(|error| panic!("read {}: {error}", source.display()));
@@ -591,15 +629,92 @@ fn a_marker_with_no_snapshot_after_it_is_incomplete_rather_than_markerless() {
         1,
         "the truncation removed the completion marker, so the fixture is not the R4-5 shape"
     );
+    truncated
+}
 
-    let fixture = SerialFixture::new(&truncated, "");
+/// The same capture with each snapshot's ledger reading rewritten to clean.
+/// Only `stranded` and `tids` change, so the two fixtures below differ in
+/// exactly the one fact the precedence turns on.
+fn with_a_clean_ledger(capture: &str) -> String {
+    let mut out = String::with_capacity(capture.len());
+    let mut rest = capture;
+    while let Some(start) = rest.find(":stranded=") {
+        let tail = &rest[start..];
+        let end = tail
+            .find(":tid_overflow=")
+            .expect("every valid census marker carries tid_overflow after tids");
+        out.push_str(&rest[..start]);
+        out.push_str(":stranded=0:tids=-");
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// #775 round 6, finding F1. Round 5 fixed R4-5 by exiting 2 on a capture that
+/// carries `USERSPACE TEST COMPLETE` with no valid snapshot after it -- but put
+/// that arm AHEAD of the strand verdict, so a truncated capture whose newest
+/// valid snapshot NAMES stranded threads was reported as "census unavailable"
+/// and the gate PASSED. Round 5 pinned that outcome in a test of its own,
+/// `a_marker_with_no_snapshot_after_it_is_incomplete_rather_than_markerless`,
+/// which asserted `Some(2)` on this exact fixture; this test is that one
+/// inverted. A RED READING IS NEVER MASKED: the precedence is 1 > 3 > 4 > 2.
+/// claim-lint:ok: 2 of 2 truncation arms are covered here, the red one by this
+/// test and the clean one by the next, and the code order by
+/// host_consumers_have_no_removed_record_dependency in
+/// tests/dispatch_strand_census_structure.rs.
+#[test]
+fn a_red_strand_in_a_truncated_capture_is_still_reported_red() {
+    let fixture = SerialFixture::new(&truncated_gate_capture(), "");
+    let output = run_census(&[&fixture.kernel_log]);
+    let text = output_text(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a truncated capture masked a named strand as census-unavailable: {text}"
+    );
+    assert!(
+        text.contains("thread 25 (loopback_wake_test) saved blocked and not restored"),
+        "the first stranded thread was not named: {text}"
+    );
+    assert!(
+        text.contains(
+            "thread 37 (loopback_wake_test_child_22_main) saved blocked and not restored"
+        ),
+        "the second stranded thread was not named: {text}"
+    );
+    assert!(
+        text.contains("STRAND_CENSUS: threads_saved_blocked=11 stranded=2"),
+        "the red summary line is missing: {text}"
+    );
+    // The truncation is still REPORTED; it just does not get to decide the
+    // verdict. R4-5's false "no marker" sentence stays gone.
+    assert!(
+        text.contains("it is TRUNCATED"),
+        "the truncation was not disclosed alongside the red reading: {text}"
+    );
+    assert!(
+        !text.contains("carries no USERSPACE TEST COMPLETE"),
+        "a capture that carries the marker was reported as carrying none: {text}"
+    );
+}
+
+/// #775 round 6, F1's other arm, and round 5's R4-5 fix kept: the SAME
+/// truncation on a CLEAN reading has no freshness evidence and no red reading
+/// to report, so it is census-unavailable (exit 2) rather than a pass. The two
+/// fixtures differ only in `stranded`/`tids`, so it is the PRECEDENCE this pair
+/// pins, not the existence of either arm.
+#[test]
+fn a_clean_truncated_capture_is_incomplete_at_the_completion_marker() {
+    let fixture = SerialFixture::new(&with_a_clean_ledger(&truncated_gate_capture()), "");
     let output = run_census(&[&fixture.kernel_log]);
     let text = output_text(&output);
 
     assert_eq!(
         output.status.code(),
         Some(2),
-        "a truncated capture was not reported as census-unavailable: {text}"
+        "a truncated capture with a clean reading was not census-unavailable: {text}"
     );
     assert!(
         text.contains("census incomplete at completion marker"),
@@ -608,6 +723,10 @@ fn a_marker_with_no_snapshot_after_it_is_incomplete_rather_than_markerless() {
     assert!(
         !text.contains("carries no USERSPACE TEST COMPLETE"),
         "a capture that carries the marker was reported as carrying none: {text}"
+    );
+    assert!(
+        !text.contains("STRAND_CENSUS: threads_saved_blocked"),
+        "a capture with no freshness evidence printed a clean census summary: {text}"
     );
 }
 
@@ -635,11 +754,13 @@ fn the_age_line_does_not_depend_on_argument_order() {
         "the census output moved with the argument order"
     );
     // Re-derived by running the tool on the committed capture at write time.
+    // The bound is the one the tool holds, not a copy of it (finding F4).
     assert!(
-        forward.contains(
+        forward.contains(&format!(
             "age at the completion marker: 1137 ms (newest cadence snapshot seq=28 at 49903 ms, \
-             completion snapshot seq=29 at 51040 ms, bound 15000 ms)"
-        ),
+             completion snapshot seq=29 at 51040 ms, bound {} ms)",
+            census_bound_ms()
+        )),
         "the committed capture's age line changed: {forward}"
     );
 
