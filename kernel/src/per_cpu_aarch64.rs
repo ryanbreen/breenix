@@ -486,6 +486,14 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
 /// this keeps the count and no reader consumes it yet.
 #[inline(always)]
 pub fn note_wait_loop_park() {
+    // The x86 twin needs this guard because its current-thread read is a bare
+    // `mov reg, gs:[8]`; here `percpu_read_u64` already returns 0 when
+    // TPIDR_EL1 reads 0, so the null check below would catch a pre-init park
+    // on its own. The guard is carried anyway so the two arches have one shape, and
+    // so a pre-init park is refused for the same stated reason on both.
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
     let thread_ptr =
         hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
 

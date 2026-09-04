@@ -497,6 +497,19 @@ pub fn current_thread_id_lock_free() -> Option<u64> {
 // this slot.
 #[inline(always)]
 pub fn note_wait_loop_park() {
+    // The same guard the 4 dispatch-mark accessors below carry, and for a
+    // sharper reason on this arch: `X86PerCpu::current_thread_ptr` is a bare
+    // `mov reg, gs:[8]`, without the aarch64 twin's null-base fallback.
+    // A park reached before `init` installs the GS base would read linear
+    // address 8 and, if that read produced a non-null value, would do a
+    // `lock xadd` at an unvalidated address. This function is now reached from
+    // all 3 park primitives, including ones that run long before the dispatch
+    // path does, so the guard is not hypothetical hygiene.
+    // claim-lint:ok: 4 of 4 dispatch-mark accessors below take this guard and
+    // 3 of 3 park primitives reach this function, counted by grep in this slot.
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
     let thread_ptr =
         hal_percpu::X86PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
 
