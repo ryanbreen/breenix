@@ -550,25 +550,123 @@ for i in $(seq 1 "$COUNT"); do
     test "$CENSUS_NETWORK" -ge 1
     echo "  Device census: $PCI_CENSUS_LINE"
 
-    # Direct structural evidence, layered on top of the count-only census
-    # above (green arc, docs/planning/green-program/bus/
-    # BUS-X86-ENUM-GATE-2026-09-04.md): kernel::drivers::pci::
-    # run_gate_device_catalog_check() reads the actual parsed device table
-    # (vendor:device ID, class code, a decoded BAR, an assigned interrupt
-    # line -- not just the summary counts CENSUS_VIRTIO_BLOCK/CENSUS_NETWORK
-    # above check) and prints one BUS_ENUM_CATALOG: PASS/FAIL line, called
-    # unconditionally from drivers::init(). `|| true` for the same reason
-    # as PCI_CENSUS_LINE above: let an absent line fail the explicit
-    # `test -n` below with a named assertion, not an aborted $() at a
-    # pipefail boundary.
-    BUS_CATALOG_LINE=$(grep -h -E 'BUS_ENUM_CATALOG: (PASS|FAIL)' \
+    # Per-function PCI facts, asserted against this script's own bytes
+    # (green arc, docs/planning/green-program/bus/
+    # BUS-X86-ENUM-GATE-2026-09-04.md).
+    #
+    # The kernel prints facts and nothing else:
+    # kernel/src/drivers/pci.rs::dump_enumerated_functions(), called from
+    # drivers::init() in every x86-64 profile, emits one
+    #   PCI_FN <bus>:<dev>.<fn> <vendor>:<device> class=<cc>/<sub>
+    #     bar0=<addr>/<size> irq=<line>
+    # line per enumerated function plus one PCI_FN_TOTAL line. It carries no
+    # expected-device set and no PASS/FAIL verdict. The expectations are
+    # here, derived the way EXPECTED_VIRTIO_BLOCK above is derived -- by
+    # counting this file's own QEMU flag lines -- so a future edit to the
+    # -device flags cannot silently desync the assertion from what actually
+    # boots (#549/#551/[[gate-target-fidelity-528]]: census, never a
+    # hand-pinned literal list).
+    # claim-lint:ok: mechanical description of
+    # kernel/src/drivers/pci.rs::dump_enumerated_functions() and of the
+    # derivation immediately below, both readable in this repo; the
+    # measured profile visibility is in
+    # docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+    #
+    # The one table in this script that maps a QEMU device model to the
+    # identity the kernel's PCI_FN line prints for it:
+    #
+    #   -device virtio-blk-pci,...,disable-modern=on,disable-legacy=off
+    #       -> 1af4:1001 class=01/00
+    #          disable-modern=on forces the legacy VirtIO transport, whose
+    #          block-device ID is 0x1001 (VIRTIO_BLOCK_DEVICE_ID_LEGACY in
+    #          kernel/src/drivers/pci.rs) rather than the modern 0x1042;
+    #          PCI class 0x01 MassStorage, subclass 0x00.
+    #   QEMU's implicit default NIC for -machine pc (no NIC flag; see below)
+    #       -> 8086:100e class=02/00
+    #          Intel e1000; PCI class 0x02 Network, subclass 0x00.
+    PCI_FN_VIRTIO_BLK_ID='1af4:1001 class=01/00'
+    PCI_FN_E1000_ID='8086:100e class=02/00'
+
+    # Expected e1000 count, derived from this file's bytes plus QEMU's
+    # implicit-default-NIC rule. This invocation passes no -net/-netdev/-nic
+    # option and no explicit -device e1000 flag; QEMU auto-attaches its own
+    # default NIC for -machine pc whenever none of those is present (`-nic
+    # none` is what suppresses it, and nothing here passes that), and on the
+    # beast host's QEMU 8.2 that default is an e1000 -- the same rule the
+    # CENSUS_NETWORK >= 1 leg above already relies on, here tightened from
+    # ">= 1 network device" to "exactly one 8086:100e". Still derived, not
+    # pinned: an added `-device e1000,netdev=...` flag raises the count with
+    # the flags, and any added -net/-netdev/-nic option retires the implicit
+    # rule so the count follows the explicit e1000 flags alone.
+    # `|| true` on both: grep -c prints 0 and exits 1 when nothing
+    # matches, and a zero count is the expected, healthy reading here -- an
+    # unguarded $() would abort the script at the assignment under set -e.
+    # claim-lint:ok: mechanical description of the two grep derivations on
+    # the next two lines; the implicit-default-NIC rule is the same one
+    # the CENSUS_NETWORK leg above already documents, and the measured
+    # 8086:100e reading is in
+    # docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+    EXPECTED_E1000_FLAGS=$(grep -cE -- '^[[:space:]]*-device e1000,' "${BASH_SOURCE[0]}") || true
+    NIC_OPTION_FLAGS=$(grep -cE -- '^[[:space:]]*-(net|netdev|nic)[[:space:]]' "${BASH_SOURCE[0]}") || true
+    if [ "$EXPECTED_E1000_FLAGS" -eq 0 ] && [ "$NIC_OPTION_FLAGS" -eq 0 ]; then
+        EXPECTED_E1000=1
+    else
+        EXPECTED_E1000="$EXPECTED_E1000_FLAGS"
+    fi
+
+    # `|| true` on each capture for the same reason as PCI_CENSUS_LINE
+    # above: let an absent line fail the explicit `test` below with a named
+    # assertion, not an aborted $() at a pipefail boundary.
+    PCI_FN_LINES=$(grep -h -E 'PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] ' \
+        "$OUTPUT_DIR"/serial_*.txt) || true
+    test -n "$PCI_FN_LINES"
+    PCI_FN_TOTAL_LINE=$(grep -h -E 'PCI_FN_TOTAL [0-9]+' \
         "$OUTPUT_DIR"/serial_*.txt | tail -1) || true
-    test -n "$BUS_CATALOG_LINE"
-    echo "  Bus device catalog: $BUS_CATALOG_LINE"
-    case "$BUS_CATALOG_LINE" in
-        *'BUS_ENUM_CATALOG: PASS'*) ;;
-        *) echo "FAIL: bus device catalog check did not pass" >&2; exit 1 ;;
-    esac
+    test -n "$PCI_FN_TOTAL_LINE"
+    echo "  PCI function facts ($PCI_FN_TOTAL_LINE):"
+    printf '%s\n' "$PCI_FN_LINES" | sed 's/^/    /'
+
+    # The dump is complete in the capture: as many PCI_FN lines as the
+    # kernel's own total says it printed.
+    PCI_FN_TOTAL_VALUE=$(printf '%s\n' "$PCI_FN_TOTAL_LINE" | awk '{ print $2 + 0 }')
+    PCI_FN_LINE_COUNT=$(printf '%s\n' "$PCI_FN_LINES" | grep -c . ) || true
+    test "$PCI_FN_LINE_COUNT" -eq "$PCI_FN_TOTAL_VALUE"
+
+    # Per vendor:device: as many enumerated functions as flags that attach
+    # one. Not a floor and not a bare "> 0" -- an equality against a count
+    # this script derived from its own bytes.
+    MATCHED_VIRTIO_BLK=$(printf '%s\n' "$PCI_FN_LINES" \
+        | grep -c -F -- "$PCI_FN_VIRTIO_BLK_ID") || true
+    MATCHED_E1000=$(printf '%s\n' "$PCI_FN_LINES" \
+        | grep -c -F -- "$PCI_FN_E1000_ID") || true
+    test "$EXPECTED_VIRTIO_BLOCK" -ge 1
+    test "$EXPECTED_E1000" -ge 1
+    test "$MATCHED_VIRTIO_BLK" -eq "$EXPECTED_VIRTIO_BLOCK"
+    test "$MATCHED_E1000" -eq "$EXPECTED_E1000"
+
+    # Per matched function, exactly what the failure message says: BAR 0
+    # decoded a non-zero size AND a non-zero address, and the interrupt line
+    # is not 0xff, the PCI "unknown / not connected" sentinel. Both BAR
+    # halves are checked because size>0 alone is satisfiable with
+    # address==0, which is the state an unassigned BAR is in.
+    # claim-lint:ok: mechanical description of the awk predicate on the
+    # next lines; the mutation that reddens it is recorded in
+    # docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+    PCI_FN_FACT_VIOLATIONS=$(printf '%s\n' "$PCI_FN_LINES" \
+        | grep -F -e "$PCI_FN_VIRTIO_BLK_ID" -e "$PCI_FN_E1000_ID" \
+        | awk '
+            {
+                addr = ""; size = ""; irq = ""
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^bar0=/) { split(substr($i, 6), a, "/"); addr = a[1]; size = a[2] }
+                    else if ($i ~ /^irq=/) { irq = substr($i, 5) }
+                }
+                if (addr == "" || size == "" || irq == "") { bad++; next }
+                if (addr == "0x0" || size == "0x0" || irq == "0xff") bad++
+            }
+            END { print bad + 0 }') || true
+    test -n "$PCI_FN_FACT_VIOLATIONS"
+    test "$PCI_FN_FACT_VIOLATIONS" -eq 0
 
     # Explicit assertion, not a bare boolean variable: a bare boolean value
     # executed as a command is the same silent-abort shape as the `test`

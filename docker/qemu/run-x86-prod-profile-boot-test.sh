@@ -213,22 +213,74 @@ EXECUTOR_LITERAL='Starting async executor...'
 STEADY_STATE_LITERAL='Serial command task started'
 CONSOLE_PROMPT_LITERAL='breenix> '
 
-# Direct structural evidence for the "Bus / device infrastructure" gate row
-# (green arc, docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md):
-# kernel::drivers::pci::run_gate_device_catalog_check() reads the actual
-# parsed PCI device table (vendor:device ID, class code, a decoded BAR, an
-# assigned interrupt line for each of the four devices this script's own -device/-netdev
-# flags attach -- see the flag-per-device table in
-# kernel/src/drivers/pci.rs::GATE_EXPECTED_DEVICES) and prints exactly one of
-# these two lines, called unconditionally from drivers::init(). This is the
-# only device-count-or-better assertion this gate carries; before this arc it
-# had none (docs/planning/green-program/nic-bus/CONFIRM-NIC-x86-2026-09-02.md
-# section 3 named this the missing leg).
-# claim-lint:ok: mechanical description of this call site and
-# kernel/src/drivers/pci.rs::GATE_EXPECTED_DEVICES (4 entries, both cited
-# directly above), not an unverified empirical claim.
-BUS_ENUM_CATALOG_PASS_LITERAL='BUS_ENUM_CATALOG: PASS'
-BUS_ENUM_CATALOG_FAIL_LITERAL='BUS_ENUM_CATALOG: FAIL'
+# ---------------------------------------------------------------------------
+# Per-function PCI facts, asserted against this script's own bytes (green arc,
+# docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md). Before this
+# arc this gate carried no device assertion of any kind
+# (docs/planning/green-program/nic-bus/CONFIRM-NIC-x86-2026-09-02.md section 3
+# named it the missing leg).
+#
+# The kernel prints facts and nothing else:
+# kernel/src/drivers/pci.rs::dump_enumerated_functions(), called from
+# drivers::init() in every x86-64 profile, emits one
+#   PCI_FN <bus>:<dev>.<fn> <vendor>:<device> class=<cc>/<sub>
+#     bar0=<addr>/<size> irq=<line>
+# line per enumerated function plus one PCI_FN_TOTAL line, via serial_println!
+# on COM1 -- a path with no feature gate and no log-level filter, so it is
+# present in this zero-feature profile. It carries no expected-device set and
+# no PASS/FAIL verdict. The expectations are here, derived by counting this
+# file's own QEMU flag lines, so a future edit to the -device/-netdev flags
+# cannot silently desync the assertion from what actually boots
+# (#549/#551/[[gate-target-fidelity-528]]: census, never a hand-pinned literal
+# list).
+# claim-lint:ok: mechanical description of
+# kernel/src/drivers/pci.rs::dump_enumerated_functions() and of the
+# derivations below, both readable in this repo; the measured
+# zero-feature-profile visibility is in
+# docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+#
+# The one table in this script that maps a QEMU device model to the identity
+# the kernel's PCI_FN line prints for it:
+#
+#   -device virtio-blk-pci,...,disable-modern=on,disable-legacy=off
+#       -> 1af4:1001 class=01/00
+#          disable-modern=on forces the legacy VirtIO transport, whose
+#          block-device ID is 0x1001 (VIRTIO_BLOCK_DEVICE_ID_LEGACY in
+#          kernel/src/drivers/pci.rs) rather than the modern 0x1042; PCI
+#          class 0x01 MassStorage, subclass 0x00.
+#   -device e1000,netdev=...
+#       -> 8086:100e class=02/00
+#          Intel e1000; PCI class 0x02 Network, subclass 0x00.
+#
+# `|| true` on each derivation: grep -c prints 0 and exits 1 when nothing
+# matches, which under set -e would abort at the assignment instead of letting
+# the explicit assertions below name the failure.
+# claim-lint:ok: mechanical description of the `|| true` guard on the
+# three grep derivations immediately below; the same guard and the same
+# reason are already documented at the EXPECTED_VIRTIO_BLOCK leg of
+# docker/qemu/run-x86-boot-tests.sh.
+PCI_FN_VIRTIO_BLK_ID='1af4:1001 class=01/00'
+PCI_FN_E1000_ID='8086:100e class=02/00'
+EXPECTED_VIRTIO_BLK=$(grep -cE -- '^[[:space:]]*-device virtio-blk-pci,drive=' "${BASH_SOURCE[0]}") || true
+EXPECTED_E1000_FLAGS=$(grep -cE -- '^[[:space:]]*-device e1000,' "${BASH_SOURCE[0]}") || true
+# QEMU's implicit-default-NIC rule, carried here so both x86 gates derive the
+# NIC expectation by the same rule even though only this one passes an explicit
+# flag: QEMU auto-attaches its own default NIC for -machine pc whenever no
+# -net/-netdev/-nic option is present (`-nic none` is what suppresses it). This
+# script does pass -netdev, so the implicit rule does not apply and the count
+# comes from the explicit -device e1000 flags alone. The branch is not dead
+# code for show: it is what keeps this derivation correct if a future edit
+# drops the explicit NIC flags, and it is the same rule
+# docker/qemu/run-x86-boot-tests.sh reaches by the other arm.
+# claim-lint:ok: mechanical description of the branch on the next four
+# lines; the same rule is documented at the CENSUS_NETWORK leg of
+# docker/qemu/run-x86-boot-tests.sh.
+NIC_OPTION_FLAGS=$(grep -cE -- '^[[:space:]]*-(net|netdev|nic)[[:space:]]' "${BASH_SOURCE[0]}") || true
+if [ "$EXPECTED_E1000_FLAGS" -eq 0 ] && [ "$NIC_OPTION_FLAGS" -eq 0 ]; then
+    EXPECTED_E1000=1
+else
+    EXPECTED_E1000="$EXPECTED_E1000_FLAGS"
+fi
 
 # ---------------------------------------------------------------------------
 # The teardown census, read in the shipped profile. Both lines are emitted once
@@ -750,7 +802,7 @@ serial_bytes() {
 
 print_observed_values() {
     echo "  ext2 root mounted:            $(marker_count "$EXT2_ROOT_LITERAL")"
-    echo "  bus device catalog pass/fail:  $(marker_count "$BUS_ENUM_CATALOG_PASS_LITERAL")/$(marker_count "$BUS_ENUM_CATALOG_FAIL_LITERAL")"
+    echo "  PCI_FN blk/e1000/total lines: $(marker_count "$PCI_FN_VIRTIO_BLK_ID")/$(marker_count "$PCI_FN_E1000_ID")/$(marker_count "PCI_FN ")"
     echo "  kernel init complete:         $(marker_count "$KERNEL_INIT_LITERAL")"
     echo "  async executor started:       $(marker_count "$EXECUTOR_LITERAL")"
     echo "  steady state reached:         $(marker_count "$STEADY_STATE_LITERAL")"
@@ -970,12 +1022,48 @@ test "$(marker_count "$STEADY_STATE_LITERAL")" -eq 1
 test "$PROMPT_BEFORE" -eq 1
 test "$PROMPT_AFTER" -eq 2
 
-# Bus device catalog (see the literal declarations above): the PASS count is 1
-# and the FAIL count is 0 (both asserted below). drivers::init() runs long before ext2 mount/kernel-init-complete
-# above, but this assertion sits with the other milestone checks rather than
-# trying to enforce serial line ordering.
-test "$(marker_count "$BUS_ENUM_CATALOG_PASS_LITERAL")" -eq 1
-test "$(marker_count "$BUS_ENUM_CATALOG_FAIL_LITERAL")" -eq 0
+# Per-function PCI facts (see the derivation and the flag->identity table
+# above). drivers::init() runs long before the ext2 mount / kernel-init-complete
+# markers above, but these assertions sit with the other milestone checks
+# rather than trying to enforce serial line ordering.
+PCI_FN_LINES=$( { grep -h -E -- 'PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] ' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } )
+test -n "$PCI_FN_LINES"
+test "$(marker_count 'PCI_FN_TOTAL ')" -eq 1
+# The dump is complete in the capture: as many PCI_FN lines as the kernel's own
+# total says it printed.
+PCI_FN_TOTAL_VALUE=$( { grep -h -E -- 'PCI_FN_TOTAL [0-9]+' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } | tail -1 | awk '{ print $2 + 0 }')
+PCI_FN_LINE_COUNT=$(printf '%s\n' "$PCI_FN_LINES" | grep -c .) || true
+test "$PCI_FN_LINE_COUNT" -eq "$PCI_FN_TOTAL_VALUE"
+# Per vendor:device: as many enumerated functions as flags that attach one. Not
+# a floor and not a bare "> 0" -- an equality against a count this script
+# derived from its own bytes.
+test "$EXPECTED_VIRTIO_BLK" -ge 1
+test "$EXPECTED_E1000" -ge 1
+test "$(marker_count "$PCI_FN_VIRTIO_BLK_ID")" -eq "$EXPECTED_VIRTIO_BLK"
+test "$(marker_count "$PCI_FN_E1000_ID")" -eq "$EXPECTED_E1000"
+# Per matched function, exactly what the failure message says: BAR 0 decoded a
+# non-zero size AND a non-zero address, and the interrupt line is not 0xff, the
+# PCI "unknown / not connected" sentinel. Both BAR halves are checked because
+# size>0 alone is satisfiable with address==0, which is the state an unassigned
+# BAR is in.
+# claim-lint:ok: mechanical description of the awk predicate on the next
+# lines; the mutation that reddens it is recorded in
+# docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+PCI_FN_FACT_VIOLATIONS=$(printf '%s\n' "$PCI_FN_LINES" \
+    | grep -F -e "$PCI_FN_VIRTIO_BLK_ID" -e "$PCI_FN_E1000_ID" \
+    | awk '
+        {
+            addr = ""; size = ""; irq = ""
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^bar0=/) { split(substr($i, 6), a, "/"); addr = a[1]; size = a[2] }
+                else if ($i ~ /^irq=/) { irq = substr($i, 5) }
+            }
+            if (addr == "" || size == "" || irq == "") { bad++; next }
+            if (addr == "0x0" || size == "0x0" || irq == "0xff") bad++
+        }
+        END { print bad + 0 }') || true
+test -n "$PCI_FN_FACT_VIOLATIONS"
+test "$PCI_FN_FACT_VIOLATIONS" -eq 0
 
 # Teardown census, at rest, in the shipped profile.
 test "$(marker_count "$TOMBSTONE_CENSUS_PREFIX")" -eq 1
