@@ -1,0 +1,458 @@
+Building the shipped x86_64 production kernel profile...
+   Compiling kernel v0.1.0 (/root/breenix-busgate/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-busgate)
+    Finished `release` profile [optimized] target(s) in 13.41s
+   Compiling kernel v0.1.0 (/root/breenix-busgate/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-busgate)
+    Finished `release` profile [optimized] target(s) in 12.69s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-busgate/target/release/build/breenix-46df1f31c7b7aa67/out/breenix-uefi.img (7405568 bytes)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-busgate/target/ext2.img
+  Size: 256MB
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 44 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 10512
+drwxr-xr-x  2 root root   4096 Sep  4 09:44 .
+drwxr-xr-x 12 root root   4096 Sep  4 09:44 ..
+-rwxr-xr-x  1 root root 299312 Sep  4 09:44 bcheck
+-rwxr-xr-x  1 root root 346296 Sep  4 09:44 bfontpicker
+-rwxr-xr-x  1 root root 248216 Sep  4 09:44 biconkit
+-rwxr-xr-x  1 root root 325424 Sep  4 09:44 blauncher
+-rwxr-xr-x  1 root root 185592 Sep  4 09:44 bless
+-rwxr-xr-x  1 root root 189968 Sep  4 09:44 block_eintr_oracle
+-rwxr-xr-x  1 root root 331152 Sep  4 09:44 blog
+-rwxr-xr-x  1 root root 275192 Sep  4 09:44 bounce
+-rwxr-xr-x  1 root root 579304 Sep  4 09:44 bsh
+-rwxr-xr-x  1 root root 322424 Sep  4 09:44 bssh
+-rwxr-xr-x  1 root root 314176 Sep  4 09:44 bsshd
+-rwxr-xr-x  1 root root 338664 Sep  4 09:44 bterm
+-rwxr-xr-x  1 root root 184144 Sep  4 09:44 btop
+-rwxr-xr-x  1 root root 198896 Sep  4 09:44 btrace
+-rwxr-xr-x  1 root root 483224 Sep  4 09:44 burl
+-rwxr-xr-x  1 root root 331464 Sep  4 09:44 bwm
+-rwxr-xr-x  1 root root 188904 Sep  4 09:44 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189200 Sep  4 09:44 confetti
+-rwxr-xr-x  1 root root 177600 Sep  4 09:44 counter
+-rwxr-xr-x  1 root root 189656 Sep  4 09:44 demo
+-rwxr-xr-x  1 root root 178024 Sep  4 09:44 exec_smoke
+-rwxr-xr-x  1 root root 185000 Sep  4 09:44 exec_smoke_target
+-rwxr-xr-x  1 root root 191656 Sep  4 09:44 fart
+-rwxr-xr-x  1 root root 187568 Sep  4 09:44 fork_smoke
+-rwxr-xr-x  1 root root 182880 Sep  4 09:44 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391584 Sep  4 09:44 guskit
+-rwxr-xr-x  1 root root 189064 Sep  4 09:44 heartbeat
+-rwxr-xr-x  1 root root 177592 Sep  4 09:44 hello_time
+-rwxr-xr-x  1 root root 227096 Sep  4 09:44 hello_world
+-rwxr-xr-x  1 root root 262608 Sep  4 09:44 init_shell
+-rwxr-xr-x  1 root root 193888 Sep  4 09:44 particles
+-rwxr-xr-x  1 root root 207120 Sep  4 09:44 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197048 Sep  4 09:44 rectangles
+-rwxr-xr-x  1 root root 190976 Sep  4 09:44 resolution
+-rwxr-xr-x  1 root root 177840 Sep  4 09:44 signal_exec_check
+-rwxr-xr-x  1 root root 170536 Sep  4 09:44 simple_exit
+-rwxr-xr-x  1 root root 170536 Sep  4 09:44 simple_exit0
+-rwxr-xr-x  1 root root 170544 Sep  4 09:44 spawn_smoke_target
+-rwxr-xr-x  1 root root 177600 Sep  4 09:44 spinner
+-rwxr-xr-x  1 root root 177488 Sep  4 09:44 syscall_enosys
+-rwxr-xr-x  1 root root 184176 Sep  4 09:44 tones
+-rwxr-xr-x  1 root root 218352 Sep  4 09:44 tty_oracle
+-rwxr-xr-x  1 root root 195520 Sep  4 09:44 wait_stress
+-rwxr-xr-x  1 root root 183072 Sep  4 09:44 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19576
+drwxr-xr-x 2 root root   4096 Sep  4 09:44 .
+drwxr-xr-x 3 root root   4096 Sep  4 09:44 ..
+-rwxr-xr-x 1 root root 177904 Sep  4 09:44 access_test
+-rwxr-xr-x 1 root root 182720 Sep  4 09:44 alarm_test
+-rwxr-xr-x 1 root root 184304 Sep  4 09:44 argv_test
+-rwxr-xr-x 1 root root 188072 Sep  4 09:44 blocking_recv_test
+-rwxr-xr-x 1 root root 182448 Sep  4 09:44 brk_test
+-rwxr-xr-x 1 root root 183200 Sep  4 09:44 cat_test
+-rwxr-xr-x 1 root root 184520 Sep  4 09:44 clock_gettime_test
+-rwxr-xr-x 1 root root 192544 Sep  4 09:44 cloexec_test
+-rwxr-xr-x 1 root root 184616 Sep  4 09:44 clonevm_exec_test
+-rwxr-xr-x 1 root root 182496 Sep  4 09:44 cow_cleanup_test
+-rwxr-xr-x 1 root root 186560 Sep  4 09:44 cow_oom_test
+-rwxr-xr-x 1 root root 187000 Sep  4 09:44 cow_readonly_test
+-rwxr-xr-x 1 root root 188272 Sep  4 09:44 cow_signal_test
+-rwxr-xr-x 1 root root 186968 Sep  4 09:44 cow_sole_owner_test
+-rwxr-xr-x 1 root root 187056 Sep  4 09:44 cow_stress_test
+-rwxr-xr-x 1 root root 182768 Sep  4 09:44 cp_mv_argv_test
+-rwxr-xr-x 1 root root 187944 Sep  4 09:44 ctrl_c_test
+-rwxr-xr-x 1 root root 182584 Sep  4 09:44 cwd_test
+-rwxr-xr-x 1 root root 182400 Sep  4 09:44 devfs_test
+-rwxr-xr-x 1 root root 195192 Sep  4 09:44 dns_test
+-rwxr-xr-x 1 root root 189112 Sep  4 09:44 dup_test
+-rwxr-xr-x 1 root root 182432 Sep  4 09:44 echo_argv_test
+-rwxr-xr-x 1 root root 182792 Sep  4 09:44 epoll_test
+-rwxr-xr-x 1 root root 178168 Sep  4 09:44 exec_argv_test
+-rwxr-xr-x 1 root root 188032 Sep  4 09:44 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183392 Sep  4 09:44 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182520 Sep  4 09:44 false_test
+-rwxr-xr-x 1 root root 187528 Sep  4 09:44 fbinfo_test
+-rwxr-xr-x 1 root root 188704 Sep  4 09:44 fcntl_test
+-rwxr-xr-x 1 root root 198408 Sep  4 09:44 fifo_test
+-rwxr-xr-x 1 root root 182360 Sep  4 09:44 file_read_test
+-rwxr-xr-x 1 root root 188624 Sep  4 09:44 fork_memory_test
+-rwxr-xr-x 1 root root 187704 Sep  4 09:44 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189136 Sep  4 09:44 fork_state_test
+-rwxr-xr-x 1 root root 188056 Sep  4 09:44 fork_test
+-rwxr-xr-x 1 root root 188568 Sep  4 09:44 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183112 Sep  4 09:44 fs_directory_test
+-rwxr-xr-x 1 root root 182568 Sep  4 09:44 fs_large_file_test
+-rwxr-xr-x 1 root root 182768 Sep  4 09:44 fs_link_test
+-rwxr-xr-x 1 root root 182672 Sep  4 09:44 fs_rename_test
+-rwxr-xr-x 1 root root 182856 Sep  4 09:44 fs_write_test
+-rwxr-xr-x 1 root root 183944 Sep  4 09:44 getdents_test
+-rwxr-xr-x 1 root root 183016 Sep  4 09:44 head_test
+-rwxr-xr-x 1 root root 464304 Sep  4 09:44 http_fetch_test
+-rwxr-xr-x 1 root root 468456 Sep  4 09:44 http_test
+-rwxr-xr-x 1 root root 187256 Sep  4 09:44 itimer_test
+-rwxr-xr-x 1 root root 187608 Sep  4 09:44 job_control_test
+-rwxr-xr-x 1 root root 192192 Sep  4 09:44 job_table_test
+-rwxr-xr-x 1 root root 188440 Sep  4 09:44 kill_process_group_test
+-rwxr-xr-x 1 root root 190400 Sep  4 09:44 loopback_wake_test
+-rwxr-xr-x 1 root root 183256 Sep  4 09:44 ls_test
+-rwxr-xr-x 1 root root 182472 Sep  4 09:44 lseek_test
+-rwxr-xr-x 1 root root 182632 Sep  4 09:44 mkdir_argv_test
+-rwxr-xr-x 1 root root 191536 Sep  4 09:44 net_test
+-rwxr-xr-x 1 root root 183664 Sep  4 09:44 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188704 Sep  4 09:44 nonblock_test
+-rwxr-xr-x 1 root root 188320 Sep  4 09:44 pause_test
+-rwxr-xr-x 1 root root 188880 Sep  4 09:44 pipe2_test
+-rwxr-xr-x 1 root root 188680 Sep  4 09:44 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188784 Sep  4 09:44 pipe_fork_test
+-rwxr-xr-x 1 root root 199912 Sep  4 09:44 pipe_refcount_test
+-rwxr-xr-x 1 root root 188208 Sep  4 09:44 pipe_test
+-rwxr-xr-x 1 root root 191544 Sep  4 09:44 pipeline_test
+-rwxr-xr-x 1 root root 188984 Sep  4 09:44 poll_test
+-rwxr-xr-x 1 root root 182968 Sep  4 09:44 pty_test
+-rwxr-xr-x 1 root root 177056 Sep  4 09:44 register_init_test
+-rwxr-xr-x 1 root root 182440 Sep  4 09:44 rm_argv_test
+-rwxr-xr-x 1 root root 188872 Sep  4 09:44 select_test
+-rwxr-xr-x 1 root root 187928 Sep  4 09:44 session_test
+-rwxr-xr-x 1 root root 183088 Sep  4 09:44 shell_pipe_test
+-rwxr-xr-x 1 root root 188968 Sep  4 09:44 sigaltstack_test
+-rwxr-xr-x 1 root root 187488 Sep  4 09:44 sigchld_job_test
+-rwxr-xr-x 1 root root 182400 Sep  4 09:44 sigchld_test
+-rwxr-xr-x 1 root root 206664 Sep  4 09:44 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188680 Sep  4 09:44 signal_exec_test
+-rwxr-xr-x 1 root root 188120 Sep  4 09:44 signal_fork_test
+-rwxr-xr-x 1 root root 187856 Sep  4 09:44 signal_handler_test
+-rwxr-xr-x 1 root root 188168 Sep  4 09:44 signal_regs_test
+-rwxr-xr-x 1 root root 188272 Sep  4 09:44 signal_return_test
+-rwxr-xr-x 1 root root 187824 Sep  4 09:44 signal_test
+-rwxr-xr-x 1 root root 188824 Sep  4 09:44 sigsuspend_test
+-rwxr-xr-x 1 root root 188552 Sep  4 09:44 sleep_debug_test
+-rwxr-xr-x 1 root root 182240 Sep  4 09:44 stdin_test
+-rwxr-xr-x 1 root root 170808 Sep  4 09:44 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183016 Sep  4 09:44 tail_test
+-rwxr-xr-x 1 root root 203392 Sep  4 09:44 tcp_blocking_test
+-rwxr-xr-x 1 root root 187576 Sep  4 09:44 tcp_client_test
+-rwxr-xr-x 1 root root 189408 Sep  4 09:44 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188792 Sep  4 09:44 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202248 Sep  4 09:44 tcp_socket_test
+-rwxr-xr-x 1 root root 182184 Sep  4 09:44 test_mmap
+-rwxr-xr-x 1 root root 182112 Sep  4 09:44 timer_test
+-rwxr-xr-x 1 root root 182520 Sep  4 09:44 true_test
+-rwxr-xr-x 1 root root 188048 Sep  4 09:44 tty_test
+-rwxr-xr-x 1 root root 193352 Sep  4 09:44 udp_socket_test
+-rwxr-xr-x 1 root root 195296 Sep  4 09:44 unix_named_socket_test
+-rwxr-xr-x 1 root root 205272 Sep  4 09:44 unix_socket_test
+-rwxr-xr-x 1 root root 188104 Sep  4 09:44 waitpid_test
+-rwxr-xr-x 1 root root 183592 Sep  4 09:44 wc_test
+-rwxr-xr-x 1 root root 182920 Sep  4 09:44 which_test
+-rwxr-xr-x 1 root root 182496 Sep  4 09:44 wnohang_timing_test
+-rw-r--r-- 1 root root 20 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 1209508 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 282844 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 260364 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 111 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/lines.txt
+-rwxr-xr-x 1 root root 184032 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/sbin/telnetd
+-rwxr-xr-x 1 root root 181920 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/sbin/blogd
+-rwxr-xr-x 1 root root 187448 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/sbin/init
+-rw-r--r-- 1 root root 26 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/etc/group
+-rw-r--r-- 1 root root 445 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/etc/fonts.conf
+-rw-r--r-- 1 root root 83 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/etc/passwd
+-rw-r--r-- 1 root root 679 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/etc/init.js
+-rw-r--r-- 1 root root 367 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/etc/bshrc
+-rw-r--r-- 1 root root 349 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/etc/hotkeys.conf
+-rw-r--r-- 1 root root 17 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/hello.txt
+-rw-r--r-- 1 root root 20 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/test/nested.txt
+-rw-r--r-- 1 root root 0 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/empty.txt
+-rw-r--r-- 1 root root 19 Sep  4 09:44 /tmp/tmp.fYehtrtnzW/trunctest.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-busgate/target/ext2.img
+  /root/breenix-busgate/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+Booting the x86_64 production profile...
+x86 production-profile gate: FAIL (set -e abort at ./docker/qemu/run-x86-prod-profile-boot-test.sh:1047, exit 1)
+  failing command: test "$(marker_count "$PCI_FN_E1000_ID")" -eq "$EXPECTED_E1000"
+  preserved failing serial: /tmp/breenix_x86_prod_profile_failures/20260904T094601Z_1513607
+--- observed values ---
+  ext2 root mounted:            1
+  PCI_FN blk/e1000/total lines: 3/0/9
+  kernel init complete:         1
+  async executor started:       1
+  steady state reached:         1
+  console prompt:               2
+  tombstone census lines:       1
+  tombstone census at rest:     1
+  root custody lines:           1
+  root custody at rest:         1
+  crash markers:                0
+  test-only marker 'TEST_TALLY:': 0
+  test-only marker '[TEST:': 0
+  test-only marker 'TEST RUNNER:': 0
+  test-only marker '[BOOT_TESTS:': 0
+  test-only marker 'RING3_SMOKE: creating': 0
+  test-only marker '[TOMBSTONE_QUIESCE:': 0
+  test-only marker '[RECLAIM_DRAIN:': 0
+  test-only marker '[TOMBSTONE_JOIN_ORACLE:': 0
+  test-only marker '[KSTACK_OWNER_ORACLE:': 0
+  test-only marker '[KSTACK_QUIESCE_LEAK:': 0
+  test-only marker '[PT_CUSTODY_COUNTERS:': 0
+  test-only marker '[FRAME_CUSTODY_COUNTERS:': 0
+  test-only marker '[PT_RETIRE_COHORT:': 0
+  test-only marker '[PT_EXEC_COHORT:': 0
+  test-only marker '[EXEC_DETACH_ORACLE:': 0
+  test-only marker '[CLONE_ADMISSION_ORACLE:': 0
+  test-only marker '[INIT_DESIGNATION_ORACLE:': 0
+  test-only marker '[SCHED_STRAND_ORACLE:': 0
+  test-only marker '[CENSUS_WIDEN_ORACLE:': 0
+  test-only marker 'Testing features enabled': 0
+  fault marker '[PMGUARD]': 0
+  fault marker '[CREATION_LOCK_ORDER:VIOLATION': 0
+  fault marker 'DISK LOADING FAILED': 0
+  fixed PRECONDITION 5 fail (#673): 0
+  fixed PRECONDITION 5 pass (#673): 1
+  fixed PRECONDITION 7 fail (#672): 0
+  fixed PRECONDITION 7 pass (#672): 1
+  preempt census lines:          1
+  preempt census at rest:        1
+  prod bracket release census:   1
+  prod bracket release at rest:  1
+  timer resolution window exceeded (#673 MA6/R3-m4): 0
+  init designation (#673):      1
+  ring3 syscall confirmed (#673): 1
+  init first line (#673 M6):    1
+  init bsshd-launch warning (must be absent, #713): 0
+  bsshd started (#713):          1
+  bsshd listening (#713):        1
+  spawn-smoke child reaped exit 0 (#713): 1
+  spawn-smoke reap failed (must be absent, #713 fix-round-2): 0
+  tty oracle exit record (TTY-x86 port): 1
+  tty oracle reap failed (must be absent, TTY-x86 port): 0
+  tty oracle failed (must be absent, TTY-x86 port): 0
+  exec smoke launch (#721):      1
+  exec smoke target enter argc=2 (#721): 1
+  exec smoke target ok (#721):   1
+  exec smoke launcher exit code=0 (#721): 1
+  exec smoke spawn failed (must be absent, #721): 0
+  exec smoke exec failed (must be absent, #721): 0
+  exec smoke target argv fail (must be absent, #721): 0
+  exec lock order first commit (#721 K7): 1
+  exec lock order PM-held violation (must be absent, #721 K7): 0
+  exec lock order unpinned violation (must be absent, #721 K7): 0
+  exec lock order no-sched-thread violation (must be absent, #721 K7): 0
+  fork smoke launch (#745):      1
+  fork smoke child (#745):       1
+  fork smoke CoW isolation OK (#745): 1
+  fork smoke CoW isolation corrupted (must be absent, #745): 0
+  fork smoke parent reaped (#745): 1
+  fork smoke launcher exit code=0 (#745): 1
+  fork smoke child exit code=37 (#745 review r2 B1): 1
+  first CoW fault taken (#745 precheck C3(2)): 1
+  fork smoke spawn failed (must be absent, #745): 0
+  fork smoke fork failed (must be absent, #745): 0
+  fork smoke child unexpected return (must be absent, #745): 0
+  fork smoke reap failed (must be absent, #745): 0
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[SW]<K>[SW]<K>[SW]<1>[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[ INFO] kernel: [PREEMPT_BRACKET_CENSUS:underflow=0]
+[ INFO] kernel: [PROD_BRACKET_RELEASE_CENSUS:underflow=0]
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+--- serial tail (last 60 lines per file) ---
+==> /tmp/breenix_x86_prod_profile/serial_kernel.txt <==
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384618
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384618
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 18: RIP=0x100000e3292 RSP=0xffffc90000587f38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4e1e000 for blocked-in-syscall kernel return (thread 18)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 18: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000587f38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384618
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 18: RIP=0x100000e3292 RSP=0xffffc90000587f38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4e1e000 for blocked-in-syscall kernel return (thread 18)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 18: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000587f38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 18: RIP=0x100000e3292 RSP=0xffffc90000587f38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4e1e000 for blocked-in-syscall kernel return (thread 18)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 18: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000587f38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 18: RIP=0x100000e3292 RSP=0xffffc90000587f38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4e1e000 for blocked-in-syscall kernel return (thread 18)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 18: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000587f38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 18: RIP=0x100000e3292 RSP=0xffffc90000587f38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4e1e000 for blocked-in-syscall kernel return (thread 18)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 18: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000587f38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 18: RIP=0x100000e3292 RSP=0xffffc90000587f38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4e1e000 for blocked-in-syscall kernel return (thread 18)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 18: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000587f38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 18: RIP=0x100000e3292 RSP=0xffffc90000587f38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4e1e000 for blocked-in-syscall kernel return (thread 18)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 18: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000587f38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 18: RIP=0x100000e3292 RSP=0xffffc90000587f38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4e1e000 for blocked-in-syscall kernel return (thread 18)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 18: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000587f38
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 15: RIP=0x100000e3292 RSP=0xffffc90000384d38
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4be3000 for blocked-in-syscall kernel return (thread 15)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 15: RIP=0x100000e3292 CS=0x8 RSP=0xffffc90000384d38
+
+==> /tmp/breenix_x86_prod_profile/serial_user.txt <==
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+<S>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=3:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=3:crossed_ends=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+<S>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+<S>[SW]<T><U><R>[COW FAULT #0] addr=0x7fffff032aa8 cr3=0x4b65000
+[SW]<K>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff032aa8 cr3=0x4ab6000
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[COW FAULT #2] addr=0x4001d058 cr3=0x4ab6000
+[COW FAULT #3] addr=0x7ffffdff7010 cr3=0x4ab6000
+[COW FAULT #4] addr=0x7ffffdff8010 cr3=0x4ab6000
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+<S>[SW]<K>[SW]<T><B>[init] tty_oracle exited pid=3 code=0
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U>[EXEC_SMOKE:LAUNCH]
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[EXEC_SMOKE:TARGET_ENTER argc=2]
+[SW]<K>[SW]<I>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[EXEC_SMOKE:TARGET_OK]
+<S>[SW]<K>[SW]<T><B>[EXEC_SMOKE:LAUNCHER_EXIT code=0]
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U>[FORK_SMOKE:LAUNCH]
+<S>[SW]<T><U><R>[COW FAULT #5] addr=0x7fffff058d78 cr3=0x4c86000
+[COW FAULT #6] addr=0x40017011 cr3=0x4c86000
+[COW FAULT #7] addr=0x7ffffdffe010 cr3=0x4c86000
+[COW FAULT #8] addr=0x7ffffdfff010 cr3=0x4c86000
+[FORK_SMOKE:CHILD pid=7]
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff058d78 cr3=0x4c0c000
+[COW FAULT #10] addr=0x40017008 cr3=0x4c0c000
+[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[COW FAULT #11] addr=0x7ffffdffe010 cr3=0x4c0c000
+[COW FAULT #12] addr=0x7ffffdfff010 cr3=0x4c0c000
+[FORK_SMOKE:COW_ISOLATION_OK probe=0xfeedfeed child_only=0x0]
+[FORK_SMOKE:PARENT_REAPED child=7 code=37]
+<S>[SW]<K>[SW]<T><B>[FORK_SMOKE:LAUNCHER_EXIT code=0]
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[init] bsshd started (PID 8)
+[SW]<K>[SW]<T><U><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>bsshd: starting on port 2222
+bsshd: listening on 0.0.0.0:2222
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>p00r0 [SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>Welcome to Breenix OS
+[bsh] init shell: loading /etc/init.js
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>p00r0 [SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U>TELNETD_STARTING
+TELNETD_LISTENING
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U>[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[bwm] ERROR: fbinfo failed: EINVAL
+<S>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>p02r1 [SW]<K>[SW]<T><U><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h

@@ -1,0 +1,748 @@
+  RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
+   Compiling kernel v0.1.0 (/root/breenix-busgate/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-busgate)
+    Finished `release` profile [optimized] target(s) in 16.82s
+   Compiling kernel v0.1.0 (/root/breenix-busgate/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-busgate)
+    Finished `release` profile [optimized] target(s) in 16.75s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-busgate/target/release/build/breenix-27744f238db676e7/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running `target/debug/xtask create-test-disk`
+Creating test disk image...
+  Including std test: hello_std_real (227096 bytes)
+  Found 149 test binaries
+  Added: access_test (177904 bytes, sectors 128-475)
+  Added: alarm_test (182720 bytes, sectors 476-832)
+  Added: argv_test (184304 bytes, sectors 833-1192)
+  Added: bcheck (299312 bytes, sectors 1193-1777)
+  Added: bfontpicker (346296 bytes, sectors 1778-2454)
+  Added: biconkit (248216 bytes, sectors 2455-2939)
+  Added: blauncher (325424 bytes, sectors 2940-3575)
+  Added: bless (185592 bytes, sectors 3576-3938)
+  Added: block_eintr_oracle (189968 bytes, sectors 3939-4310)
+  Added: blocking_recv_test (188072 bytes, sectors 4311-4678)
+  Added: blog (331152 bytes, sectors 4679-5325)
+  Added: blogd (181920 bytes, sectors 5326-5681)
+  Added: bounce (275192 bytes, sectors 5682-6219)
+  Added: brk_test (182448 bytes, sectors 6220-6576)
+  Added: bsh (579304 bytes, sectors 6577-7708)
+  Added: bssh (322424 bytes, sectors 7709-8338)
+  Added: bsshd (314176 bytes, sectors 8339-8952)
+  Added: bterm (338664 bytes, sectors 8953-9614)
+  Added: btop (184144 bytes, sectors 9615-9974)
+  Added: btrace (198896 bytes, sectors 9975-10363)
+  Added: burl (483224 bytes, sectors 10364-11307)
+  Added: bwm (331464 bytes, sectors 11308-11955)
+  Added: cat_test (183200 bytes, sectors 11956-12313)
+  Added: clock_gettime_test (184520 bytes, sectors 12314-12674)
+  Added: cloexec_test (192544 bytes, sectors 12675-13051)
+  Added: clonevm_exec_test (184616 bytes, sectors 13052-13412)
+  Added: concurrent_recv_stress (188904 bytes, sectors 13413-13781)
+  Added: confetti (189200 bytes, sectors 13782-14151)
+  Added: counter (177600 bytes, sectors 14152-14498)
+  Added: cow_cleanup_test (182496 bytes, sectors 14499-14855)
+  Added: cow_oom_test (186560 bytes, sectors 14856-15220)
+  Added: cow_readonly_test (187000 bytes, sectors 15221-15586)
+  Added: cow_signal_test (188272 bytes, sectors 15587-15954)
+  Added: cow_sole_owner_test (186968 bytes, sectors 15955-16320)
+  Added: cow_stress_test (187056 bytes, sectors 16321-16686)
+  Added: cp_mv_argv_test (182768 bytes, sectors 16687-17043)
+  Added: ctrl_c_test (187944 bytes, sectors 17044-17411)
+  Added: cwd_test (182584 bytes, sectors 17412-17768)
+  Added: demo (189656 bytes, sectors 17769-18139)
+  Added: devfs_test (182400 bytes, sectors 18140-18496)
+  Added: dns_test (195192 bytes, sectors 18497-18878)
+  Added: dup_test (189112 bytes, sectors 18879-19248)
+  Added: echo_argv_test (182432 bytes, sectors 19249-19605)
+  Added: epoll_test (182792 bytes, sectors 19606-19963)
+  Added: exec_argv_test (178168 bytes, sectors 19964-20311)
+  Added: exec_from_ext2_test (188032 bytes, sectors 20312-20679)
+  Added: exec_smoke (178024 bytes, sectors 20680-21027)
+  Added: exec_smoke_target (185000 bytes, sectors 21028-21389)
+  Added: exec_stack_argv_test (183392 bytes, sectors 21390-21748)
+  Added: false_test (182520 bytes, sectors 21749-22105)
+  Added: fart (191656 bytes, sectors 22106-22480)
+  Added: fbinfo_test (187528 bytes, sectors 22481-22847)
+  Added: fcntl_test (188704 bytes, sectors 22848-23216)
+  Added: fifo_test (198408 bytes, sectors 23217-23604)
+  Added: file_read_test (182360 bytes, sectors 23605-23961)
+  Added: fork_memory_test (188624 bytes, sectors 23962-24330)
+  Added: fork_pending_signal_test (187704 bytes, sectors 24331-24697)
+  Added: fork_smoke (187568 bytes, sectors 24698-25064)
+  Added: fork_state_test (189136 bytes, sectors 25065-25434)
+  Added: fork_test (188056 bytes, sectors 25435-25802)
+  Added: fs_block_alloc_test (188568 bytes, sectors 25803-26171)
+  Added: fs_directory_test (183112 bytes, sectors 26172-26529)
+  Added: fs_large_file_test (182568 bytes, sectors 26530-26886)
+  Added: fs_link_test (182768 bytes, sectors 26887-27243)
+  Added: fs_rename_test (182672 bytes, sectors 27244-27600)
+  Added: fs_write_test (182856 bytes, sectors 27601-27958)
+  Added: futex_handoff_oracle (182880 bytes, sectors 27959-28316)
+  Added: getdents_test (183944 bytes, sectors 28317-28676)
+  Added: guskit (391584 bytes, sectors 28677-29441)
+  Added: head_test (183016 bytes, sectors 29442-29799)
+  Added: heartbeat (189064 bytes, sectors 29800-30169)
+  Added: hello_std_real (227096 bytes, sectors 30170-30613)
+  Added: hello_time (177592 bytes, sectors 30614-30960)
+  Added: hello_world (227096 bytes, sectors 30961-31404)
+  Added: http_fetch_test (464304 bytes, sectors 31405-32311)
+  Added: http_test (468456 bytes, sectors 32312-33226)
+  Added: init (187448 bytes, sectors 33227-33593)
+  Added: init_shell (262608 bytes, sectors 33594-34106)
+  Added: itimer_test (187256 bytes, sectors 34107-34472)
+  Added: job_control_test (187608 bytes, sectors 34473-34839)
+  Added: job_table_test (192192 bytes, sectors 34840-35215)
+  Added: kill_process_group_test (188440 bytes, sectors 35216-35584)
+  Added: loopback_wake_test (190400 bytes, sectors 35585-35956)
+  Added: ls_test (183256 bytes, sectors 35957-36314)
+  Added: lseek_test (182472 bytes, sectors 36315-36671)
+  Added: mkdir_argv_test (182632 bytes, sectors 36672-37028)
+  Added: net_test (191536 bytes, sectors 37029-37403)
+  Added: nonblock_eagain_test (183664 bytes, sectors 37404-37762)
+  Added: nonblock_test (188704 bytes, sectors 37763-38131)
+  Added: particles (193888 bytes, sectors 38132-38510)
+  Added: pause_test (188320 bytes, sectors 38511-38878)
+  Added: pipe2_test (188880 bytes, sectors 38879-39247)
+  Added: pipe_concurrent_test (188680 bytes, sectors 39248-39616)
+  Added: pipe_fork_test (188784 bytes, sectors 39617-39985)
+  Added: pipe_refcount_test (199912 bytes, sectors 39986-40376)
+  Added: pipe_test (188208 bytes, sectors 40377-40744)
+  Added: pipeline_test (191544 bytes, sectors 40745-41119)
+  Added: poll_tcp_oracle (207120 bytes, sectors 41120-41524)
+  Added: poll_test (188984 bytes, sectors 41525-41894)
+  Added: pty_test (182968 bytes, sectors 41895-42252)
+  Added: rectangles (197048 bytes, sectors 42253-42637)
+  Added: register_init_test (177056 bytes, sectors 42638-42983)
+  Added: resolution (190976 bytes, sectors 42984-43356)
+  Added: rm_argv_test (182440 bytes, sectors 43357-43713)
+  Added: select_test (188872 bytes, sectors 43714-44082)
+  Added: session_test (187928 bytes, sectors 44083-44450)
+  Added: shell_pipe_test (183088 bytes, sectors 44451-44808)
+  Added: sigaltstack_test (188968 bytes, sectors 44809-45178)
+  Added: sigchld_job_test (187488 bytes, sectors 45179-45545)
+  Added: sigchld_test (182400 bytes, sectors 45546-45902)
+  Added: sigkill_teardown_test (206664 bytes, sectors 45903-46306)
+  Added: signal_exec_check (177840 bytes, sectors 46307-46654)
+  Added: signal_exec_test (188680 bytes, sectors 46655-47023)
+  Added: signal_fork_test (188120 bytes, sectors 47024-47391)
+  Added: signal_handler_test (187856 bytes, sectors 47392-47758)
+  Added: signal_regs_test (188168 bytes, sectors 47759-48126)
+  Added: signal_return_test (188272 bytes, sectors 48127-48494)
+  Added: signal_test (187824 bytes, sectors 48495-48861)
+  Added: sigsuspend_test (188824 bytes, sectors 48862-49230)
+  Added: simple_exit (170536 bytes, sectors 49231-49564)
+  Added: simple_exit0 (170536 bytes, sectors 49565-49898)
+  Added: sleep_debug_test (188552 bytes, sectors 49899-50267)
+  Added: spawn_smoke_target (170544 bytes, sectors 50268-50601)
+  Added: spinner (177600 bytes, sectors 50602-50948)
+  Added: stdin_test (182240 bytes, sectors 50949-51304)
+  Added: syscall_diagnostic_test (170808 bytes, sectors 51305-51638)
+  Added: syscall_enosys (177488 bytes, sectors 51639-51985)
+  Added: tail_test (183016 bytes, sectors 51986-52343)
+  Added: tcp_blocking_test (203392 bytes, sectors 52344-52741)
+  Added: tcp_client_test (187576 bytes, sectors 52742-53108)
+  Added: tcp_cloexec_exec_test (189408 bytes, sectors 53109-53478)
+  Added: tcp_dup_listener_test (188792 bytes, sectors 53479-53847)
+  Added: tcp_socket_test (202248 bytes, sectors 53848-54243)
+  Added: telnetd (184032 bytes, sectors 54244-54603)
+  Added: test_mmap (182184 bytes, sectors 54604-54959)
+  Added: timer_test (182112 bytes, sectors 54960-55315)
+  Added: tones (184176 bytes, sectors 55316-55675)
+  Added: true_test (182520 bytes, sectors 55676-56032)
+  Added: tty_oracle (218352 bytes, sectors 56033-56459)
+  Added: tty_test (188048 bytes, sectors 56460-56827)
+  Added: udp_socket_test (193352 bytes, sectors 56828-57205)
+  Added: unix_named_socket_test (195296 bytes, sectors 57206-57587)
+  Added: unix_socket_test (205272 bytes, sectors 57588-57988)
+  Added: wait_stress (195520 bytes, sectors 57989-58370)
+  Added: waitpid_test (188104 bytes, sectors 58371-58738)
+  Added: wc_test (183592 bytes, sectors 58739-59097)
+  Added: which_test (182920 bytes, sectors 59098-59455)
+  Added: wnohang_timing_test (182496 bytes, sectors 59456-59812)
+  Added: xhci_counters (183072 bytes, sectors 59813-60170)
+
+Test disk created: target/test_binaries.img
+  Binaries: 149
+  Data size: 30704888 bytes (29.28 MB)
+  Disk size: 60171 sectors (29.38 MB)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-busgate/target/ext2.img
+  Size: 256MB
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 44 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 10512
+drwxr-xr-x  2 root root   4096 Sep  4 10:15 .
+drwxr-xr-x 12 root root   4096 Sep  4 10:15 ..
+-rwxr-xr-x  1 root root 299312 Sep  4 10:15 bcheck
+-rwxr-xr-x  1 root root 346296 Sep  4 10:15 bfontpicker
+-rwxr-xr-x  1 root root 248216 Sep  4 10:15 biconkit
+-rwxr-xr-x  1 root root 325424 Sep  4 10:15 blauncher
+-rwxr-xr-x  1 root root 185592 Sep  4 10:15 bless
+-rwxr-xr-x  1 root root 189968 Sep  4 10:15 block_eintr_oracle
+-rwxr-xr-x  1 root root 331152 Sep  4 10:15 blog
+-rwxr-xr-x  1 root root 275192 Sep  4 10:15 bounce
+-rwxr-xr-x  1 root root 579304 Sep  4 10:15 bsh
+-rwxr-xr-x  1 root root 322424 Sep  4 10:15 bssh
+-rwxr-xr-x  1 root root 314176 Sep  4 10:15 bsshd
+-rwxr-xr-x  1 root root 338664 Sep  4 10:15 bterm
+-rwxr-xr-x  1 root root 184144 Sep  4 10:15 btop
+-rwxr-xr-x  1 root root 198896 Sep  4 10:15 btrace
+-rwxr-xr-x  1 root root 483224 Sep  4 10:15 burl
+-rwxr-xr-x  1 root root 331464 Sep  4 10:15 bwm
+-rwxr-xr-x  1 root root 188904 Sep  4 10:15 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189200 Sep  4 10:15 confetti
+-rwxr-xr-x  1 root root 177600 Sep  4 10:15 counter
+-rwxr-xr-x  1 root root 189656 Sep  4 10:15 demo
+-rwxr-xr-x  1 root root 178024 Sep  4 10:15 exec_smoke
+-rwxr-xr-x  1 root root 185000 Sep  4 10:15 exec_smoke_target
+-rwxr-xr-x  1 root root 191656 Sep  4 10:15 fart
+-rwxr-xr-x  1 root root 187568 Sep  4 10:15 fork_smoke
+-rwxr-xr-x  1 root root 182880 Sep  4 10:15 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391584 Sep  4 10:15 guskit
+-rwxr-xr-x  1 root root 189064 Sep  4 10:15 heartbeat
+-rwxr-xr-x  1 root root 177592 Sep  4 10:15 hello_time
+-rwxr-xr-x  1 root root 227096 Sep  4 10:15 hello_world
+-rwxr-xr-x  1 root root 262608 Sep  4 10:15 init_shell
+-rwxr-xr-x  1 root root 193888 Sep  4 10:15 particles
+-rwxr-xr-x  1 root root 207120 Sep  4 10:15 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197048 Sep  4 10:15 rectangles
+-rwxr-xr-x  1 root root 190976 Sep  4 10:15 resolution
+-rwxr-xr-x  1 root root 177840 Sep  4 10:15 signal_exec_check
+-rwxr-xr-x  1 root root 170536 Sep  4 10:15 simple_exit
+-rwxr-xr-x  1 root root 170536 Sep  4 10:15 simple_exit0
+-rwxr-xr-x  1 root root 170544 Sep  4 10:15 spawn_smoke_target
+-rwxr-xr-x  1 root root 177600 Sep  4 10:15 spinner
+-rwxr-xr-x  1 root root 177488 Sep  4 10:15 syscall_enosys
+-rwxr-xr-x  1 root root 184176 Sep  4 10:15 tones
+-rwxr-xr-x  1 root root 218352 Sep  4 10:15 tty_oracle
+-rwxr-xr-x  1 root root 195520 Sep  4 10:15 wait_stress
+-rwxr-xr-x  1 root root 183072 Sep  4 10:15 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19576
+drwxr-xr-x 2 root root   4096 Sep  4 10:15 .
+drwxr-xr-x 3 root root   4096 Sep  4 10:15 ..
+-rwxr-xr-x 1 root root 177904 Sep  4 10:15 access_test
+-rwxr-xr-x 1 root root 182720 Sep  4 10:15 alarm_test
+-rwxr-xr-x 1 root root 184304 Sep  4 10:15 argv_test
+-rwxr-xr-x 1 root root 188072 Sep  4 10:15 blocking_recv_test
+-rwxr-xr-x 1 root root 182448 Sep  4 10:15 brk_test
+-rwxr-xr-x 1 root root 183200 Sep  4 10:15 cat_test
+-rwxr-xr-x 1 root root 184520 Sep  4 10:15 clock_gettime_test
+-rwxr-xr-x 1 root root 192544 Sep  4 10:15 cloexec_test
+-rwxr-xr-x 1 root root 184616 Sep  4 10:15 clonevm_exec_test
+-rwxr-xr-x 1 root root 182496 Sep  4 10:15 cow_cleanup_test
+-rwxr-xr-x 1 root root 186560 Sep  4 10:15 cow_oom_test
+-rwxr-xr-x 1 root root 187000 Sep  4 10:15 cow_readonly_test
+-rwxr-xr-x 1 root root 188272 Sep  4 10:15 cow_signal_test
+-rwxr-xr-x 1 root root 186968 Sep  4 10:15 cow_sole_owner_test
+-rwxr-xr-x 1 root root 187056 Sep  4 10:15 cow_stress_test
+-rwxr-xr-x 1 root root 182768 Sep  4 10:15 cp_mv_argv_test
+-rwxr-xr-x 1 root root 187944 Sep  4 10:15 ctrl_c_test
+-rwxr-xr-x 1 root root 182584 Sep  4 10:15 cwd_test
+-rwxr-xr-x 1 root root 182400 Sep  4 10:15 devfs_test
+-rwxr-xr-x 1 root root 195192 Sep  4 10:15 dns_test
+-rwxr-xr-x 1 root root 189112 Sep  4 10:15 dup_test
+-rwxr-xr-x 1 root root 182432 Sep  4 10:15 echo_argv_test
+-rwxr-xr-x 1 root root 182792 Sep  4 10:15 epoll_test
+-rwxr-xr-x 1 root root 178168 Sep  4 10:15 exec_argv_test
+-rwxr-xr-x 1 root root 188032 Sep  4 10:15 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183392 Sep  4 10:15 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182520 Sep  4 10:15 false_test
+-rwxr-xr-x 1 root root 187528 Sep  4 10:15 fbinfo_test
+-rwxr-xr-x 1 root root 188704 Sep  4 10:15 fcntl_test
+-rwxr-xr-x 1 root root 198408 Sep  4 10:15 fifo_test
+-rwxr-xr-x 1 root root 182360 Sep  4 10:15 file_read_test
+-rwxr-xr-x 1 root root 188624 Sep  4 10:15 fork_memory_test
+-rwxr-xr-x 1 root root 187704 Sep  4 10:15 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189136 Sep  4 10:15 fork_state_test
+-rwxr-xr-x 1 root root 188056 Sep  4 10:15 fork_test
+-rwxr-xr-x 1 root root 188568 Sep  4 10:15 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183112 Sep  4 10:15 fs_directory_test
+-rwxr-xr-x 1 root root 182568 Sep  4 10:15 fs_large_file_test
+-rwxr-xr-x 1 root root 182768 Sep  4 10:15 fs_link_test
+-rwxr-xr-x 1 root root 182672 Sep  4 10:15 fs_rename_test
+-rwxr-xr-x 1 root root 182856 Sep  4 10:15 fs_write_test
+-rwxr-xr-x 1 root root 183944 Sep  4 10:15 getdents_test
+-rwxr-xr-x 1 root root 183016 Sep  4 10:15 head_test
+-rwxr-xr-x 1 root root 464304 Sep  4 10:15 http_fetch_test
+-rwxr-xr-x 1 root root 468456 Sep  4 10:15 http_test
+-rwxr-xr-x 1 root root 187256 Sep  4 10:15 itimer_test
+-rwxr-xr-x 1 root root 187608 Sep  4 10:15 job_control_test
+-rwxr-xr-x 1 root root 192192 Sep  4 10:15 job_table_test
+-rwxr-xr-x 1 root root 188440 Sep  4 10:15 kill_process_group_test
+-rwxr-xr-x 1 root root 190400 Sep  4 10:15 loopback_wake_test
+-rwxr-xr-x 1 root root 183256 Sep  4 10:15 ls_test
+-rwxr-xr-x 1 root root 182472 Sep  4 10:15 lseek_test
+-rwxr-xr-x 1 root root 182632 Sep  4 10:15 mkdir_argv_test
+-rwxr-xr-x 1 root root 191536 Sep  4 10:15 net_test
+-rwxr-xr-x 1 root root 183664 Sep  4 10:15 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188704 Sep  4 10:15 nonblock_test
+-rwxr-xr-x 1 root root 188320 Sep  4 10:15 pause_test
+-rwxr-xr-x 1 root root 188880 Sep  4 10:15 pipe2_test
+-rwxr-xr-x 1 root root 188680 Sep  4 10:15 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188784 Sep  4 10:15 pipe_fork_test
+-rwxr-xr-x 1 root root 199912 Sep  4 10:15 pipe_refcount_test
+-rwxr-xr-x 1 root root 188208 Sep  4 10:15 pipe_test
+-rwxr-xr-x 1 root root 191544 Sep  4 10:15 pipeline_test
+-rwxr-xr-x 1 root root 188984 Sep  4 10:15 poll_test
+-rwxr-xr-x 1 root root 182968 Sep  4 10:15 pty_test
+-rwxr-xr-x 1 root root 177056 Sep  4 10:15 register_init_test
+-rwxr-xr-x 1 root root 182440 Sep  4 10:15 rm_argv_test
+-rwxr-xr-x 1 root root 188872 Sep  4 10:15 select_test
+-rwxr-xr-x 1 root root 187928 Sep  4 10:15 session_test
+-rwxr-xr-x 1 root root 183088 Sep  4 10:15 shell_pipe_test
+-rwxr-xr-x 1 root root 188968 Sep  4 10:15 sigaltstack_test
+-rwxr-xr-x 1 root root 187488 Sep  4 10:15 sigchld_job_test
+-rwxr-xr-x 1 root root 182400 Sep  4 10:15 sigchld_test
+-rwxr-xr-x 1 root root 206664 Sep  4 10:15 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188680 Sep  4 10:15 signal_exec_test
+-rwxr-xr-x 1 root root 188120 Sep  4 10:15 signal_fork_test
+-rwxr-xr-x 1 root root 187856 Sep  4 10:15 signal_handler_test
+-rwxr-xr-x 1 root root 188168 Sep  4 10:15 signal_regs_test
+-rwxr-xr-x 1 root root 188272 Sep  4 10:15 signal_return_test
+-rwxr-xr-x 1 root root 187824 Sep  4 10:15 signal_test
+-rwxr-xr-x 1 root root 188824 Sep  4 10:15 sigsuspend_test
+-rwxr-xr-x 1 root root 188552 Sep  4 10:15 sleep_debug_test
+-rwxr-xr-x 1 root root 182240 Sep  4 10:15 stdin_test
+-rwxr-xr-x 1 root root 170808 Sep  4 10:15 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183016 Sep  4 10:15 tail_test
+-rwxr-xr-x 1 root root 203392 Sep  4 10:15 tcp_blocking_test
+-rwxr-xr-x 1 root root 187576 Sep  4 10:15 tcp_client_test
+-rwxr-xr-x 1 root root 189408 Sep  4 10:15 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188792 Sep  4 10:15 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202248 Sep  4 10:15 tcp_socket_test
+-rwxr-xr-x 1 root root 182184 Sep  4 10:15 test_mmap
+-rwxr-xr-x 1 root root 182112 Sep  4 10:15 timer_test
+-rwxr-xr-x 1 root root 182520 Sep  4 10:15 true_test
+-rwxr-xr-x 1 root root 188048 Sep  4 10:15 tty_test
+-rwxr-xr-x 1 root root 193352 Sep  4 10:15 udp_socket_test
+-rwxr-xr-x 1 root root 195296 Sep  4 10:15 unix_named_socket_test
+-rwxr-xr-x 1 root root 205272 Sep  4 10:15 unix_socket_test
+-rwxr-xr-x 1 root root 188104 Sep  4 10:15 waitpid_test
+-rwxr-xr-x 1 root root 183592 Sep  4 10:15 wc_test
+-rwxr-xr-x 1 root root 182920 Sep  4 10:15 which_test
+-rwxr-xr-x 1 root root 182496 Sep  4 10:15 wnohang_timing_test
+-rwxr-xr-x 1 root root 181920 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/sbin/blogd
+-rwxr-xr-x 1 root root 187448 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/sbin/init
+-rwxr-xr-x 1 root root 184032 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/sbin/telnetd
+-rw-r--r-- 1 root root 111 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/lines.txt
+-rw-r--r-- 1 root root 17 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/hello.txt
+-rw-r--r-- 1 root root 20 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/test/nested.txt
+-rw-r--r-- 1 root root 349 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/etc/hotkeys.conf
+-rw-r--r-- 1 root root 679 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/etc/init.js
+-rw-r--r-- 1 root root 26 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/etc/group
+-rw-r--r-- 1 root root 83 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/etc/passwd
+-rw-r--r-- 1 root root 367 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/etc/bshrc
+-rw-r--r-- 1 root root 445 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/etc/fonts.conf
+-rw-r--r-- 1 root root 282844 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 532636 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 744936 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 19 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/trunctest.txt
+-rw-r--r-- 1 root root 20 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 0 Sep  4 10:15 /tmp/tmp.yuBup2yWEQ/empty.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-busgate/target/ext2.img
+  /root/breenix-busgate/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 8 devices (2 VirtIO block, 1 network)
+  PCI function facts (PCI_FN_TOTAL 8):
+    PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+    PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+    PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+    PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0b
+    PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/r3-mutb1.sh:681, exit 1)
+  failing command: test "$passed" = true
+--- serial tail (last 200 lines per file, /tmp/breenix_x86_boot_tests_1) ---
+==> /tmp/breenix_x86_boot_tests_1/serial_kernel.txt <==
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 4
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 4 at 0xffffc90000205000-0xffffc90000285000 (guard at 0xffffc90000204000)
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[ INFO] kernel::process::manager: Forking process 100 'kernel_stack_ownership_parent' -> child PID 102
+[DEBUG] kernel::process::manager: fork_process: About to create child page table
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc900000f8de8
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4a82000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x4a82000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28004a82000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28004a82000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28004a82000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28004a82000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x614000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x28000614000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x1fb000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x28000614000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x615000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x616000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x28000614c98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x4a80000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x615000), copied=PhysFrame[4KiB](0x615000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x616000), copied=PhysFrame[4KiB](0x616000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x613000), copied=PhysFrame[4KiB](0x613000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x1fb000), copied=PhysFrame[4KiB](0x1fb000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x615000) != PML4[403]=PhysFrame[4KiB](0x616000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x4a82000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[DEBUG] kernel::process::manager: fork_process: ProcessPageTable::new() returned
+[DEBUG] kernel::process::manager: fork_process: Child page table created successfully
+[DEBUG] kernel::process::manager: Parent page table CR3: 0x4a86000
+[DEBUG] kernel::process::manager: Child page table CR3: 0x4a82000
+[ INFO] kernel::process::manager: fork_process_with_context: Set up 0 pages for CoW sharing
+[ INFO] kernel::process::manager: Created page table for child process 102
+[DEBUG] kernel::tls: Registered thread 1195 with TLS block 0x4bb000
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 4
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 4 at 0xffffc90000205000-0xffffc90000285000 (guard at 0xffffc90000204000)
+[ INFO] kernel::process::manager: fork: CoW stack - child_rsp=0x800000 (same VA as parent)
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[ INFO] kernel::process::manager: Fork complete: parent 100 -> child 102
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[ INFO] kernel: Driver post-init self-tests complete; interrupts disabled for remaining init
+[ INFO] kernel::task::kthread_tests: === KTHREAD TEST: Starting kernel thread lifecycle test ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 4
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 4 at 0xffffc90000205000-0xffffc90000285000 (guard at 0xffffc90000204000)
+Added thread 1196 'test_kthread' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::kthread_tests: KTHREAD_CREATE: kthread created
+[ INFO] kernel::task::kthread_tests: KTHREAD_RUN: kthread running
+unblock(1196): Added to per_cpu_queues[0]
+[ INFO] kernel::task::kthread_tests: KTHREAD_STOP_SENT: stop signal sent successfully
+[ INFO] kernel::task::kthread_tests: KTHREAD_VERIFY: kthread_should_stop() = true
+[ INFO] kernel::task::kthread_tests: KTHREAD_STOP: kthread received stop signal
+[ INFO] kernel::task::kthread_tests: KTHREAD_EXIT: kthread exited cleanly
+[ INFO] kernel::task::kthread_tests: === KTHREAD TEST: Completed ===
+[ INFO] kernel::task::kthread_tests: === KTHREAD JOIN TEST: Starting ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 5
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 5 at 0xffffc90000286000-0xffffc90000306000 (guard at 0xffffc90000285000)
+Added thread 1197 'join_test_kthread' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::kthread_tests: KTHREAD_JOIN_TEST: kthread about to exit
+[ INFO] kernel::task::kthread_tests: KTHREAD_JOIN_TEST: join returned exit_code=0
+[ INFO] kernel::task::kthread_tests: === KTHREAD JOIN TEST: Completed ===
+[ INFO] kernel::task::workqueue_tests: === WORKQUEUE TEST: Starting workqueue test ===
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing basic execution...
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 6
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 6 at 0xffffc90000307000-0xffffc90000387000 (guard at 0xffffc90000306000)
+Added thread 1198 'kworker/0' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::workqueue: KWORKER_SPAWN: kworker/0 started
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: work1 executed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: basic execution passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing multiple work items...
+unblock(1198): Added to per_cpu_queues[0]
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: work2 executed (order=1)
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: work3 executed (order=2)
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: work4 executed (order=3)
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: multiple work items passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing flush...
+unblock(1198): Added to per_cpu_queues[0]
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: flush_work executed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: flush completed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing re-queue rejection...
+unblock(1198): Added to per_cpu_queues[0]
+[ WARN] kernel::task::workqueue: workqueue(kworker/0): work 'requeue_work' already pending, rejecting
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: re-queue rejection passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing multi-item flush...
+unblock(1198): Added to per_cpu_queues[0]
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: multi-item flush passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing shutdown with new workqueue...
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Created new workqueue 'test_wq'
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Queuing work to new workqueue...
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 7
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 7 at 0xffffc90000388000-0xffffc90000408000 (guard at 0xffffc90000387000)
+Added thread 1199 'test_wq' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::workqueue: KWORKER_SPAWN: test_wq started
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: shutdown work executing!
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Waiting for work completion...
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Destroying workqueue...
+unblock(1199): Added to per_cpu_queues[0]
+unblock(1199): Added to per_cpu_queues[0]
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: idempotent destroy passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: flush after destroy passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: shutdown test passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing error path re-queue...
+unblock(1198): Added to per_cpu_queues[0]
+[ WARN] kernel::task::workqueue: workqueue(kworker/0): work 'error_path_work' already pending, rejecting
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: error path test passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: all tests passed
+[ INFO] kernel::task::workqueue_tests: === WORKQUEUE TEST: Completed ===
+[ INFO] kernel::task::softirq_tests: === SOFTIRQ TEST: Starting softirq test ===
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing handler registration...
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: Timer handler registered
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: NetRx handler registered
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: handler registration passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing Timer softirq...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Timer softirq passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing NetRx softirq...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: NetRx softirq passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing multiple softirqs...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: multiple softirqs passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing priority order...
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: Timer handler registered
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: NetRx handler registered
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: priority order passed (Timer=1, NetRx=2)
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing nested interrupt rejection...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: nested interrupt rejection passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: Tasklet handler registered
+unblock(2): Added to per_cpu_queues[0]
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: After do_softirq(): 10 iterations (limit=10)
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: iteration limit passed (25 total iterations, ksoftirqd verified)
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Verifying ksoftirqd is initialized...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: ksoftirqd verification passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: all tests passed
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: NetRx handler registered
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Restored network softirq handler
+[ INFO] kernel::task::softirq_tests: === SOFTIRQ TEST: Completed ===
+[ INFO] kernel::task::kthread_tests: === KTHREAD EXIT CODE TEST: Starting ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 8
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 8 at 0xffffc90000409000-0xffffc90000489000 (guard at 0xffffc90000408000)
+Added thread 1200 'exit_code_kthread' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::kthread_tests: KTHREAD_EXIT_CODE_TEST: exit_code=42
+[ INFO] kernel::task::kthread_tests: === KTHREAD EXIT CODE TEST: Completed ===
+[ INFO] kernel::task::kthread_tests: === KTHREAD PARK TEST: Starting kthread park/unpark test ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 9
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 9 at 0xffffc9000048a000-0xffffc9000050a000 (guard at 0xffffc90000489000)
+Added thread 1201 'test_kthread_park' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::kthread_tests: KTHREAD_PARK_TEST: started
+unblock(1201): Added to per_cpu_queues[0]
+[ INFO] kernel::task::kthread_tests: KTHREAD_PARK_TEST: unparked
+unblock(1201): Added to per_cpu_queues[0]
+[ INFO] kernel::task::kthread_tests: KTHREAD_PARK_TEST: stop signal sent
+[ INFO] kernel::task::kthread_tests: === KTHREAD PARK TEST: Completed ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 10
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 10 at 0xffffc9000050b000-0xffffc9000058b000 (guard at 0xffffc9000050a000)
+Added thread 1202 'test_kthread_double_stop' to scheduler (user: false, target_cpu: 0)
+unblock(1202): Added to per_cpu_queues[0]
+[ INFO] kernel::task::kthread_tests: KTHREAD_DOUBLE_STOP_TEST: AlreadyStopped returned correctly
+[ INFO] kernel::task::kthread_tests: KTHREAD_SHOULD_STOP_TEST: returns false for non-kthread
+[ INFO] kernel::task::kthread_tests: === KTHREAD STOP AFTER EXIT TEST: Starting ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 11
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 11 at 0xffffc9000058c000-0xffffc9000060c000 (guard at 0xffffc9000058b000)
+Added thread 1203 'stop_after_exit_kthread' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::kthread_tests: KTHREAD_STOP_AFTER_EXIT_TEST: kthread exiting immediately
+[ INFO] kernel::task::kthread_tests: KTHREAD_STOP_AFTER_EXIT_TEST: AlreadyStopped returned correctly
+[ INFO] kernel::task::kthread_tests: === KTHREAD STOP AFTER EXIT TEST: Completed ===
+[ERROR] kernel: KERNEL PANIC: panicked at kernel/src/userspace_test.rs:182:13:
+╔══════════════════════════════════════════════════════════════╗
+║  ❌ FATAL: DISK LOADING FAILED                               ║
+╠══════════════════════════════════════════════════════════════╣
+║  Binary: hello_time                                          ║
+║  Error: Invalid test disk magic number                       ║
+║                                                              ║
+║  Disk loading is MANDATORY. There is NO fallback.           ║
+║                                                              ║
+║  Ensure QEMU is configured with test disk as second         ║
+║  VirtIO device (index 1).                                   ║
+╚══════════════════════════════════════════════════════════════╝
+
+==> /tmp/breenix_x86_boot_tests_1/serial_user.txt <==
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001d7a3000,
+    metadata: 5897504,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: bc274, mem_size: bc274, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: bc280, virtual_addr: bd280, physical_addr: bd280, file_size: 311e20, mem_size: 311e20, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3ce0a0, virtual_addr: 3d00a0, physical_addr: 3d00a0, file_size: 4ab98, mem_size: 4af60, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 418c80, virtual_addr: 41bc80, physical_addr: 41bc80, file_size: 2f8d0, mem_size: 90cb8, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x100000cf150
+INFO : Creating GDT at PhysAddr(0x1fe000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x100000cf150)
+[TEST:process:frame_custody_refusal_gate:START]
+[TEST:process:frame_custody_refusal_gate:PASS]
+[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
+[TEST:process:page_table_custody_disposition_gate:START]
+[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=16502:used_after=16502:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0]
+[TEST:process:page_table_custody_disposition_gate:PASS]
+[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]
+PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0b
+PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+PCI_FN_TOTAL 8
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<1>[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[TEST:process:reclaim_progress_gate:PASS]
+[TEST:process:x86_retire_cohort:START]
+[TEST:process:x86_retire_cohort:PASS]
+[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
+[TEST:process:x86_exec_cohort:START]
+[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]
+[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
+[TEST:process:x86_exec_cohort:PASS]
+[TEST:process:exec_detach_oracle:START]
+manager.create_process: ENTRY - name='exec_detach_leader', elf_size=180
+manager.create_process: Generating PID
+manager.create_process: Generated PID 85
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x40000000
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40201000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff011000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 85
+manager.create_process: Adding PID 85 to ready queue
+[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:clone_admission_oracle:START]
+[PMGUARD] creating dispatch refused tid=172 pid=92
+[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:init_designation_oracle:START]
+manager.create_process: ENTRY - name='init_oracle_a1', elf_size=8
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ENTRY - name='init_oracle_a2', elf_size=120
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:START]
+[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:kernel_stack_ownership_oracle:START]
+[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=0:foreign_returned=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1081:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1074:pub_sched_owned=1074:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=2:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=0:reconciliation_skew_bound=0:balance=0]
+[TEST:process:tombstone_join_oracle:START]
+[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+[PT_ROOT_CUSTODY:no_proof=0:no_arch=1:terminated=1:undecided=3:mid_retire=1:retired=152]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:network:loopback_wake_loss_counters_are_zero:START]
+[TEST:network:loopback_wake_loss_counters_are_zero:PASS]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>KERNEL PANIC: panicked at kernel/src/userspace_test.rs:182:13:
+╔══════════════════════════════════════════════════════════════╗
+║  ❌ FATAL: DISK LOADING FAILED                               ║
+╠══════════════════════════════════════════════════════════════╣
+║  Binary: hello_time                                          ║
+║  Error: Invalid test disk magic number                       ║
+║                                                              ║
+║  Disk loading is MANDATORY. There is NO fallback.           ║
+║                                                              ║
+║  Ensure QEMU is configured with test disk as second         ║
+║  VirtIO device (index 1).                                   ║
+╚══════════════════════════════════════════════════════════════╝
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h
