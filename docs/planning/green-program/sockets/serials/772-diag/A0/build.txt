@@ -1,0 +1,3 @@
+   Compiling kernel v0.1.0 (/root/breenix-772diag/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-772diag)
+    Finished `release` profile [optimized] target(s) in 15.93s
