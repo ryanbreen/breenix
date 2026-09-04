@@ -576,9 +576,12 @@ pub extern "C" fn check_need_resched_and_switch(
 /// R113 (2026-09-03), which retired the proxy). This function no longer leaves
 /// the two cases indistinguishable, which is what that ruling asked for: the
 /// `NoProgress` arm mints a `DispatchNoProgressKind` from the witness
-/// `classify_dispatch_progress` hands it, splitting a thread that re-parked on
-/// the same halt (`Revisit`) from one that retired no instructions
-/// (`ZeroIter`), with `Unknown` for an observation neither answer fits.
+/// `classify_dispatch_progress` hands it, splitting a thread that reached a
+/// counted park point again (`Revisit`) from one that reached none in
+/// between (`ZeroIter`) -- "re-parked on the same halt" and "retired no
+/// instructions" hold only where the mark's RIP is that wait loop's own
+/// post-halt resume point, which these counters do not record -- with
+/// `Unknown` for an observation neither answer fits.
 // claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 ///
 /// Cost: four GS-relative loads and one `PER_CPU_INITIALIZED` Acquire load
