@@ -2136,6 +2136,11 @@ fn kernel_main_continue() -> ! {
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
     kernel::test_framework::btrt::finalize();
 
+    // #775/R125: place this after the boot-time kthread lifecycle tests and
+    // before the scheduling brake is released. Its first dispatch therefore
+    // enters through kthread_entry, which enables IF before calling it.
+    task::start_dispatch_strand_census();
+
     // Release the scheduling brake taken in the first RING3_SMOKE block
     // above (see its preempt_disable() comment) - this is the true,
     // intended start of preemption for userspace processes registered
@@ -2371,11 +2376,6 @@ fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
-
-        // #775/R125: this is existing non-interrupt housekeeping, and
-        // enable_and_hlt returns with IF=1. The callee rate-limits formatting
-        // and checks IF again at the COM1 serial-lock boundary.
-        task::report_dispatch_strand_census_heartbeat();
         crate::net::drain_loopback_from_idle();
 
         // Check if there are any ready threads
