@@ -1,0 +1,34 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_8dfea34d-31a-5/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_8dfea34d-31a-5/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_8dfea34d-31a-5/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_8dfea34d-31a-5/target/ext2-aarch64.img
+Iterations: 3
+Requirement: 100% success rate (all 3 must pass)
+
+Running tests...
+
+qemu-system-aarch64: terminating on signal 15 from pid 16344 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 16710 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 17160 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 3
+Successes: 3
+Failures: 0
+Success rate: 100%
+Duration: 37s
+
+=========================================
+PASS: 3/3 boots succeeded
+=========================================
