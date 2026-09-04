@@ -449,7 +449,7 @@ in 1 of the 1 full-catalog capture (`serials/r2/musl-btrt-full-catalog.txt`).
 
 ## Validation
 
-Commands and their results at round 5, re-run on the round-5 head. The 3
+Commands and their results, re-run on the round-6 head. The 3
 aarch64 builds use `aarch64-breenix-kernel.json`, `-Z build-std=core,alloc`,
 and `-Z build-std-features=compiler-builtins-mem`.
 
@@ -461,8 +461,10 @@ and `-Z build-std-features=compiler-builtins-mem`.
 | x86 `testing,external_test_bins` on beast | 0 | not applicable |
 
 0 of those lines is a project warning; the `core v0.0.0` notice is the
-toolchain's and appears on `main` too. 4 of the 4 rows were re-run at the
-round-5 head `6cb75784`. The x86 row ran in an isolated beast checkout
+toolchain's and appears on `main` too. The 3 aarch64 rows were re-run at the
+round-6 head `5da3d329`, each followed by
+`scripts/check-kernel-no-neon.sh` on the artifact it produced; the x86 row is
+round 5's, run at `6cb75784`, and the x86 build has not been re-run since. The x86 row ran in an isolated beast checkout
 (`/root/breenix-a64r2` on the `breenix-x86` container) with
 `BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork/library`, forced clean by
 touching `kernel/src/task/scheduler.rs` first, so the `kernel` crate did
@@ -503,19 +505,23 @@ program, and the tally counts a nonzero exit as a failed process while
 
 Mutation legs, run against the working tree rather than an in-memory copy, so
 the red text below is what a reviewer gets by making the same edit. claim-lint:ok:
-6 of the 6 results in this section were re-run at the round-5 head, per the
-round-5 notes in `tests/teardown_structure.rs`; the filtered-out counts are 98
-because that file's test count is now 99.
+9 of the 9 results below that come from a KERNEL edit were re-run at the
+round-6 head `5da3d329` through `cargo test`; each edit was reverted and
+`git diff --stat -- kernel/` printed 0 lines afterwards. Their filtered-out
+counts read 102 because `teardown_structure` now holds 103 tests. A result
+that comes from a MODIFIED RULE instead is labelled with the round whose rule
+produced it, and keeps that round's counts: this head does not compile that
+rule, so the number cannot be re-derived here.
 
 ```text
 $ # completion.rs: delete the call, keep the name in a comment
 $ cargo test --test teardown_structure sleep_predicates_consult_the_shared_idle_refusal -- --exact
 every *_can_sleep predicate routes through the shared idle refusal: ["kernel/src/task/completion.rs :: current_context_can_sleep  (sleep eligibility decided without the shared idle refusal)"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out
 $ # scheduler.rs: same edit against the in-lock spelling
 $ cargo test --test teardown_structure blocking_primitives_refuse_the_idle_identity -- --exact
 every blocking primitive refuses the idle identity: ["kernel/src/task/scheduler.rs :: block_current_inner  (publishes a blocked state without refusing the idle identity, and delegates to no family member that does)"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out
 ```
 
 Both were reverted and both baselines re-run green afterwards.
@@ -528,19 +534,19 @@ review found. The call-site sleep-guard census, with AHCI's
 ```text
 $ cargo test --test teardown_structure sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal -- --exact
 every boolean consulted before a call that sleeps routes through the shared idle refusal: ["kernel/src/drivers/ahci/mod.rs :: wait_cmd_slot0 guards wait_timeout_uninterruptible on scheduler_sleep_ready  (sleep eligibility decided without the shared idle refusal)"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out
 ```
 
 N21 (round-4 review): round 4 published `92 filtered out` for that run and the
-reviewer measured 94 at the round-4 head. Both are superseded by the 98 above,
-re-run at the round-5 head. The round-4 text also carried a second finding
+reviewer measured 94 at the round-4 head. Both are superseded by the 102 above,
+re-run at the round-6 head. The round-4 text also carried a second finding
 string, `"no discovered guard consults the shared refusal: the rule is passing
 vacuously"`. It is gone, and its absence is the round-5 repair: the census now
 reads `wait_timeout_inner` too, whose guard consults the refusal, so 1 guard
 still consults it while AHCI's does not.
 
 The same edit left the `_can_sleep` name census green (`test result: ok. 1
-passed; 0 failed; 0 ignored; 0 measured; 98 filtered out`), which is the
+passed; 0 failed; 0 ignored; 0 measured; 102 filtered out`), which is the
 N03/N15 gap. And the no-idle-join census, with a `#[cfg(feature = "testing")]`
 helper appended to `kernel/src/main_aarch64.rs` and called from `kernel_main`
 one line before the pin release:
@@ -548,19 +554,21 @@ one line before the pin release:
 ```text
 $ cargo test --features testing --test teardown_structure no_kthread_join_is_reachable_from_the_idle_identity -- --exact
 every kthread_join caller is a kthread body, a feature-gated context, or a stop-then-join teardown: ["kernel/src/main_aarch64.rs :: testing_only_join_helper  (joins a kernel thread, is reachable from kernel_main -- the idle identity -- and is neither a kthread body nor a stop-then-join teardown)"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out
 ```
 
 With the reachability arm forced off -- round 3's rule exactly -- that same
 mutation passed (`test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;
-98 filtered out`), which is the N16 gap. Both mutations were reverted.
+102 filtered out`), which is the N16 gap. Both mutations were reverted.
 
 Round 5 adds a fifth and a sixth leg, for the 2 gaps the round-4 review found.
 N16: the same helper called as
 `testing_only_join_helper/* call from kernel_main */(&boot_continuation_thread);`
 used to leave that census green at 1 passed, because a call was recognised only
 when `(` sat immediately after the identifier; it now reddens with the finding
-above, and with round 4's rule restored (`bytes.get(end)`) it passes 1 of 1.
+above. Against round 4's rule (`bytes.get(end)` in place of the comment-skipping
+probe) it passes 1 of 1 -- a round-5 number, produced by round 5's restoration
+of round 4's rule.
 
 N20: `alternate_sleep_eligibility()` ORed into `wait_timeout_inner`'s sleep-path
 guard, with `fn alternate_sleep_eligibility() -> bool { true }` added to
@@ -569,15 +577,53 @@ guard, with `fn alternate_sleep_eligibility() -> bool { true }` added to
 ```text
 $ cargo test --test teardown_structure sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal -- --exact
 every boolean consulted before a call that sleeps routes through the shared idle refusal: ["kernel/src/task/completion.rs :: wait_timeout_inner guards block_current_for_io_with_timeout on alternate_sleep_eligibility  (sleep eligibility decided without the shared idle refusal)"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out
 ```
 
 Against round 4's rule exactly -- the wrapper-body pass disabled and its 6
 classification rows removed -- that same mutation passed both sleep censuses
 (`test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 97 filtered out`),
 which is the N20 gap. With the pass disabled but the rows left in place the
-census reddens through its stale-row arm, naming 6 of 6. All 4 round-5 edits
-were reverted.
+census reddens through its stale-row arm, naming 6 of 6. Those 2 results are
+round-5 numbers against round 4's rule; this head does not compile that rule.
+All 4 round-5 edits were reverted.
+
+Round 6 adds a seventh and an eighth leg, for the 2 gaps the round-5 review
+found. Both are the same defect: round 5 taught one reader to step over a
+comment and left the others spelling their own probe. `argument_list_open` is
+now the one recogniser and 17 call-recognition sites route through it;
+`call_recognition_is_spelled_in_exactly_one_place` fails the suite if a body
+that reads identifiers spells its own open-parenthesis comparison again.
+
+N16 residue: the comment moved into the join itself, so subject discovery did
+not read the helper as a joiner and it was absent from the subject set. The
+helper appended to `kernel/src/main_aarch64.rs` calls
+`kernel::task::kthread::kthread_join/* direct call */(handle)`, and
+`kernel_main` calls the helper one line before the pin release:
+
+```text
+$ cargo test --features testing --test teardown_structure no_kthread_join_is_reachable_from_the_idle_identity -- --exact
+every kthread_join caller is a kthread body, a feature-gated context, or a stop-then-join teardown: ["kernel/src/main_aarch64.rs :: testing_only_join_helper  (joins a kernel thread, is reachable from kernel_main -- the idle identity -- and is neither a kthread body nor a stop-then-join teardown)"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out
+```
+
+N20 residue: the same comment inside the predicate call.
+`alternate_sleep_eligibility/* direct call */()` ORed into
+`wait_timeout_inner` sleep-path guard:
+
+```text
+$ cargo test --test teardown_structure sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal -- --exact
+every boolean consulted before a call that sleeps routes through the shared idle refusal: ["kernel/src/task/completion.rs :: wait_timeout_inner guards block_current_for_io_with_timeout on alternate_sleep_eligibility  (sleep eligibility decided without the shared idle refusal)"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out
+```
+
+Both mutations were reverted. Anti-vacuity for both: round 5 rule verbatim,
+compiled from `git show 75a2b5db:tests/teardown_structure.rs` into a scratch
+copy outside the worktree and run against the same 2 mutated kernels, passes
+each of them -- `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;
+98 filtered out` in both cases (98 because round 5 file holds 99 tests). So
+each leg reddens on the round-6 rule and stays green on the round-5 rule,
+which is what makes it a leg rather than a decoration.
 
 The call-site census discovers 15 guard positions on this tree, printed by the
 test itself under `--nocapture`:
@@ -609,8 +655,10 @@ that is in neither set is a finding, and so is a recorded name the census stops
 discovering.
 
 Structure tests, via `cargo test --test <name>` for each of the 26 files
-matching `tests/*_structure.rs`: 529 passed, 0 failed, and 26 of the 26 report
-`0 failed`.
+matching `tests/*_structure.rs`: 533 passed, 0 failed, and 26 of the 26 report
+`0 failed`. `teardown_structure` alone holds 103 of those, 99 at the round-5
+head plus the 2 residue legs, the cross-face recogniser unit test and
+`call_recognition_is_spelled_in_exactly_one_place`.
 
 ## Remaining scope
 
