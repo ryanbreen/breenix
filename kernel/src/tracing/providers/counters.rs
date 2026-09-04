@@ -566,7 +566,11 @@ pub static BOOT_TEST_SKIP_TOTAL: TraceCounter =
 //
 // Census only, on both arches. No control flow reads either value.
 //
-// GDB: `print WAIT_LOOP_PARK_TOTAL`, `print WAIT_LOOP_PARK_SKIPPED`
+// GDB: `print WAIT_LOOP_PARK_SKIPPED` for the whole-machine count.
+// `WAIT_LOOP_PARK_TOTAL` is a `TraceCounter` now, so `print
+// WAIT_LOOP_PARK_TOTAL` shows the struct, not a scalar; read one CPU's
+// slot with `print WAIT_LOOP_PARK_TOTAL.per_cpu[0].value` (repeat per
+// CPU, as `scripts/772-dispatch-boot.sh` does) or sum them by hand.
 #[no_mangle]
 pub static WAIT_LOOP_PARK_TOTAL: TraceCounter = TraceCounter::new(
     "WAIT_LOOP_PARK_TOTAL",
@@ -605,8 +609,12 @@ pub fn note_park_skipped() {
 // mark stamps it at dispatch and the save site reads it again, so an identical
 // RIP/RSP splits three ways:
 //
-// * `_REVISIT`  -- the count advanced: the thread went round its wait loop and
-//   re-parked on the same halt, so the dispatch retired instructions.
+// * `_REVISIT`  -- the count advanced: the thread reached a counted park
+//   point again before the save. That reads as "went round its wait loop and
+//   re-parked on the same halt" only where the mark's RIP is that wait
+//   loop's own post-halt resume point; these counters carry no RIP, so an
+//   advanced count shows only that the thread reached SOME counted park
+//   point, not that it re-parked on the same one.
 // * `_ZERO_ITER` -- the count is unchanged: the thread reached no counted
 //   park point between the dispatch and the save. That reads as "sitting on
 //   the very park it was dispatched to, having retired no instructions" only
