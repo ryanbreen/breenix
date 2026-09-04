@@ -132,21 +132,18 @@ fn restore_syscall_preempt_state() {
 #[inline]
 pub(crate) fn current_context_can_sleep() -> bool {
     #[cfg(target_arch = "aarch64")]
-    {
-        crate::arch_interrupts_enabled()
-            && !crate::per_cpu_aarch64::in_interrupt()
-            && !crate::per_cpu_aarch64::in_softirq()
-            && crate::per_cpu_aarch64::preempt_count() == 1
-            && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
-            && matches!(
-                crate::task::scheduler::is_current_idle_thread(),
-                Some(false)
-            )
-    }
+    let context_permits = crate::arch_interrupts_enabled()
+        && !crate::per_cpu_aarch64::in_interrupt()
+        && !crate::per_cpu_aarch64::in_softirq()
+        && crate::per_cpu_aarch64::preempt_count() == 1
+        && crate::arch_impl::aarch64::timer_interrupt::is_initialized();
     #[cfg(not(target_arch = "aarch64"))]
-    {
-        crate::per_cpu::preempt_count() > 0
-    }
+    let context_permits = crate::per_cpu::preempt_count() > 0;
+
+    // Last, deliberately: the shared idle refusal counts what it refuses, and
+    // it should count callers that WOULD have slept, not every caller that
+    // asked. A context that fails the tests above was never going to sleep.
+    context_permits && !crate::task::idle_sleep::idle_identity_must_not_sleep()
 }
 
 /// Completion primitive — pairs one waiter thread with one ISR.
@@ -412,14 +409,25 @@ impl Completion {
                 }
             } else {
                 // ============================================================
-                // BOOT-THREAD SPIN PATH
+                // NON-SLEEPING WAIT PATH
                 //
-                // Scheduler is running but we are NOT in syscall context
-                // (preempt_count = 0), meaning this is the raw boot thread
-                // between scheduler init and timer init.  WFI is unsafe here
-                // because the timer has not been started yet and may never
-                // fire to rescue a stuck WFI.  Instead, spin with yield:
-                // complete() emits SEV which wakes WFE race-free.
+                // The scheduler is running, but this caller is not eligible to
+                // hand it a continuation. Three shapes reach here, and the
+                // comment used to describe only the first:
+                //   * the raw boot thread between scheduler init and timer
+                //     init, where there is no timer to rescue a sleeper;
+                //   * a kernel thread outside a syscall bracket -- the aarch64
+                //     testing-profile binary loader is one, and the timer IS
+                //     running for it;
+                //   * the CPU idle identity, refused outright by the shared
+                //     idle refusal (`task::idle_sleep`) because dispatching it
+                //     resets it to the idle loop and abandons the call on its
+                //     stack (#761).
+                // WFI is avoided for all three: it is unsafe for the first (no
+                // timer yet), and for the others complete() emits SEV, so a
+                // yield-spin wakes race-free without depending on a timer tick.
+                // The wait is bounded by the same deadline as the sleeping
+                // path, so a lost completion still returns Ok(false).
                 // ============================================================
                 loop {
                     if self.done.load(Ordering::Acquire) == expected_token {

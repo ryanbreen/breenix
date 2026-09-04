@@ -112,6 +112,9 @@ impl Drop for BlockMmioRequestGuard<'_> {
 
 #[inline]
 fn block_mmio_request_gate_can_sleep() -> bool {
+    // One sleep policy with the completion wait, shared idle refusal included:
+    // the predicate this delegates to ends with the refusal, so repeating it
+    // here would be dead logic, not defence in depth.
     crate::task::completion::current_context_can_sleep()
 }
 

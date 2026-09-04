@@ -125,13 +125,13 @@ fn block_request_gate_can_sleep() -> bool {
     }
 
     #[cfg(target_arch = "x86_64")]
-    {
-        crate::per_cpu::preempt_count() > 0
-    }
+    let context_permits = crate::per_cpu::preempt_count() > 0;
     #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
+    let context_permits = false;
+
+    // Last, so the shared refusal counts callers that would otherwise have
+    // parked rather than every caller that asked.
+    context_permits && !crate::task::idle_sleep::idle_identity_must_not_sleep()
 }
 
 /// VirtIO block request types

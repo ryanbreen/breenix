@@ -10,6 +10,7 @@ use core::{
 pub mod completion;
 pub mod executor;
 pub mod exit_tally;
+pub mod idle_sleep;
 pub mod thread;
 pub mod waitqueue;
 

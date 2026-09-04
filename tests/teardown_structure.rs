@@ -2974,6 +2974,7 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn park_pinned_worker_without_home", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
 ];
@@ -2995,6 +2996,7 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn park_pinned_worker_without_home", 1),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -3235,7 +3237,13 @@ const ROW_REMOVAL_EPOCH_BUMPS: &[(&str, &str, usize)] = &[
 /// the nine that already exist, so `block_current_probe` would be invisible.
 /// The nine current definitions are still pinned individually by
 /// `BLOCKING_PRIMITIVES`.
-const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "prepare_to_wait"];
+/// `park_pinned` is the eleventh member, added deliberately rather than
+/// slipping a publication past the derived family rule: the scheduler parks a
+/// per-CPU worker whose home CPU stopped dispatching, which publishes `Blocked`
+/// for a thread that is not the current one. Every other member blocks the
+/// caller; this one blocks the thread it was handed, and it carries its own
+/// prefix so the two shapes stay distinguishable in the census.
+const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "prepare_to_wait", "park_pinned"];
 
 /// #663 M2: every call site of `remove_from_ready_queue` under `kernel/src`,
 /// by enclosing item, whatever the receiver — `Scheduler`'s tid-keyed queue
@@ -14797,4 +14805,196 @@ fn count_occurrences(source: &str, mask: &[bool], needle: &str) -> usize {
         .match_indices(needle)
         .filter(|(index, _)| mask.get(*index).copied().unwrap_or(false))
         .count()
+}
+
+/// The body of every definition in `source` whose name contains `needle`,
+/// paired with that name. Definitions are located by shape, so a predicate or a
+/// primitive added tomorrow is censused without being named anywhere here.
+fn definitions_containing(source: &str, needle: &str) -> Vec<(String, String)> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut found = Vec::new();
+    for offset in code_offsets(source, &mask, needle) {
+        let mut start = offset;
+        while start > 0 && mask[start - 1] && identifier_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let mut end = offset + needle.len();
+        while end < bytes.len() && mask[end] && identifier_byte(bytes[end]) {
+            end += 1;
+        }
+        let Some((_, open)) = definition_span(source, &mask, start, end) else {
+            continue;
+        };
+        if let Some(body) = braced_block(source, &mask, open) {
+            found.push((source[start..end].to_owned(), body.to_owned()));
+        }
+    }
+    found
+}
+
+/// The one shared refusal every sleep-eligibility predicate and every blocking
+/// primitive must consult. Named once here; the rules below locate their
+/// subjects by shape, never by a list of call sites.
+const IDLE_REFUSAL_PREDICATE: &str = "idle_identity_must_not_sleep";
+
+/// The scheduler-internal spelling of the same decision, for the family members
+/// that already hold the scheduler lock and so cannot take it again.
+const IDLE_REFUSAL_UNDER_LOCK: &str = "refuse_idle_block";
+
+/// Sleep-eligibility predicates, by shape: a function whose name contains
+/// `_can_sleep` decides whether its caller may hand a continuation to the
+/// scheduler, which is exactly the decision #761 got wrong in two independent
+/// places at once. Every one of them must route that decision through the
+/// shared refusal rather than re-deriving it from a preemption count.
+fn validate_sleep_predicates_consult_the_idle_refusal(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut findings = Vec::new();
+    let mut censused = 0usize;
+    for (path, source) in sources {
+        for (name, body) in definitions_containing(source, "_can_sleep") {
+            censused += 1;
+            if body.contains(IDLE_REFUSAL_PREDICATE) {
+                continue;
+            }
+            // Or it defers to another predicate that does. Repeating the
+            // refusal on top of a delegating predicate is dead logic, not
+            // defence in depth, so the rule accepts the delegation -- and the
+            // mutation leg below proves the accepting arm still reddens when
+            // the refusal leaves the predicate that owns it.
+            let body_mask = code_mask(&body);
+            if !code_offsets(&body, &body_mask, "_can_sleep").is_empty() {
+                continue;
+            }
+            findings.push(format!(
+                "{path} :: {name}  (sleep eligibility decided without the shared idle refusal)"
+            ));
+        }
+    }
+    if censused == 0 {
+        findings.push("the sleep-predicate census found nothing to check".to_owned());
+    }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings)
+    }
+}
+
+/// The blocking-primitive family (`BLOCKING_NAME_PREFIXES`, the #580 inventory
+/// of ten) must refuse the idle identity too, so a caller that reaches a
+/// primitive without going through a `*_can_sleep` predicate -- FUTEX_WAIT and
+/// every other direct `prepare_to_wait_checked` user -- is covered by
+/// construction rather than by whoever remembered to ask first.
+///
+/// A member satisfies the rule either by consulting the refusal itself or by
+/// delegating to another member that does; the delegation arm is what keeps
+/// this a rule about the family rather than a demand that every wrapper repeat
+/// the same guard. Both arms are proven by the mutation legs below.
+fn validate_blocking_primitives_refuse_the_idle_identity(
+    sources: &[(String, String)],
+) -> Result<(), Vec<String>> {
+    let mut findings = Vec::new();
+    let mut censused = 0usize;
+    for (path, source) in sources {
+        for prefix in BLOCKING_NAME_PREFIXES {
+            for (name, body) in definitions_containing(source, prefix) {
+                if !name.starts_with(prefix) {
+                    continue;
+                }
+                // Subject: the members that block the CALLER. Located by
+                // shape -- a body that names the current thread -- not by a
+                // list. `park_pinned_worker_without_home` blocks the thread it
+                // was handed instead, and an idle thread is never a per-CPU
+                // worker, so the caller-identity question does not arise there.
+                if !body.contains("current_thread") {
+                    continue;
+                }
+                censused += 1;
+                if body.contains(IDLE_REFUSAL_PREDICATE) || body.contains(IDLE_REFUSAL_UNDER_LOCK) {
+                    continue;
+                }
+                let body_mask = code_mask(&body);
+                let delegates = BLOCKING_NAME_PREFIXES
+                    .iter()
+                    .any(|family| !code_offsets(&body, &body_mask, family).is_empty());
+                if !delegates {
+                    findings.push(format!(
+                        "{path} :: {name}  (publishes a blocked state without refusing the idle identity, and delegates to no family member that does)"
+                    ));
+                }
+            }
+        }
+    }
+    if censused == 0 {
+        findings.push("the blocking-primitive census found nothing to check".to_owned());
+    }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings)
+    }
+}
+
+#[test]
+fn sleep_predicates_consult_the_shared_idle_refusal() {
+    validate_sleep_predicates_consult_the_idle_refusal(&rust_sources_below("kernel/src"))
+        .expect("every *_can_sleep predicate routes through the shared idle refusal");
+}
+
+#[test]
+fn sleep_predicate_rule_rejects_a_predicate_that_decides_for_itself() {
+    // The #761 shape: a predicate that re-derives sleep eligibility from a
+    // preemption count and never asks who is running.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/task/completion.rs");
+    let mutated = source.replacen(IDLE_REFUSAL_PREDICATE, "core::hint::black_box(false)", 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/task/completion.rs", mutated);
+    assert!(validate_sleep_predicates_consult_the_idle_refusal(&perturbed).is_err());
+}
+
+#[test]
+fn blocking_primitives_refuse_the_idle_identity() {
+    validate_blocking_primitives_refuse_the_idle_identity(&rust_sources_below("kernel/src"))
+        .expect("every blocking primitive refuses the idle identity");
+}
+
+#[test]
+fn blocking_primitive_rule_rejects_an_unguarded_publication() {
+    // Delete the refusal from the generic block. It publishes Blocked itself
+    // and delegates to no one, so nothing else can be covering it.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let mutated = source.replacen("if self.refuse_idle_block() {\n            return;\n        }\n", "", 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/task/scheduler.rs", mutated);
+    assert!(validate_blocking_primitives_refuse_the_idle_identity(&perturbed).is_err());
+}
+
+#[test]
+fn blocking_primitive_rule_rejects_an_unguarded_io_publication() {
+    // The I/O publication is the one every waitqueue user reaches -- FUTEX_WAIT
+    // and the ext2 lock go through prepare_to_wait_checked, which delegates
+    // here -- and it delegates to no one itself, so nothing else can be
+    // covering it.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let publish = source
+        .find("fn block_current_for_io_publish")
+        .expect("find the I/O publication");
+    let guard = source[publish..]
+        .find("if self.refuse_idle_block() {")
+        .map(|offset| publish + offset)
+        .expect("find its idle refusal");
+    let end = source[guard..]
+        .find("}\n")
+        .map(|offset| guard + offset + 2)
+        .expect("find the end of the refusal");
+    let mut mutated = String::from(&source[..guard]);
+    mutated.push_str(&source[end..]);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/task/scheduler.rs", mutated);
+    assert!(validate_blocking_primitives_refuse_the_idle_identity(&perturbed).is_err());
 }

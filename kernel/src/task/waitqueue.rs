@@ -65,6 +65,14 @@ impl WaitQueueHead {
             return None;
         }
 
+        // The idle identity may not be enqueued as a waiter: dispatching it
+        // resets it to the canonical idle loop, so the wait's continuation is
+        // lost even when the wake arrives (#761). One shared refusal, counted
+        // in `task::idle_sleep`.
+        if crate::task::idle_sleep::idle_identity_must_not_sleep() {
+            return None;
+        }
+
         let tid = crate::task::scheduler::current_thread_id()?;
 
         let published = self.with_waiters(|waiters| {
@@ -100,6 +108,12 @@ impl WaitQueueHead {
         cond: F,
     ) -> PrepareOutcome {
         if state != ThreadState::BlockedOnIO {
+            return PrepareOutcome::PublishFailed;
+        }
+
+        // Same refusal as `prepare_to_wait`, reported through this entry
+        // point's own failure value.
+        if crate::task::idle_sleep::idle_identity_must_not_sleep() {
             return PrepareOutcome::PublishFailed;
         }
 

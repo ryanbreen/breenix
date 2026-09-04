@@ -1847,7 +1847,7 @@ fn ext2_lock_can_sleep() -> bool {
     }
 
     #[cfg(target_arch = "aarch64")]
-    {
+    let context_permits = {
         if crate::per_cpu_aarch64::in_interrupt() {
             return false;
         }
@@ -1858,14 +1858,18 @@ fn ext2_lock_can_sleep() -> bool {
             return false;
         }
         crate::arch_impl::aarch64::timer_interrupt::is_initialized()
-    }
+    };
     #[cfg(not(target_arch = "aarch64"))]
-    {
+    let context_permits = {
         if crate::per_cpu::in_interrupt() {
             return false;
         }
         crate::per_cpu::preempt_count() == 1
-    }
+    };
+
+    // Last, so the shared refusal counts callers that would otherwise have
+    // parked rather than every caller that asked.
+    context_permits && !crate::task::idle_sleep::idle_identity_must_not_sleep()
 }
 
 fn ext2_schedule_current_wait() {

@@ -421,6 +421,10 @@ fn reclaim_disposition_for_pinned_thread(
 pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// Whether the one-shot `[PINNED_HOME_CPU_UNAVAILABLE:...]` serial marker has
+/// been emitted this boot.
+static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
+
 /// Read the running count of per-CPU-worker wakes refused for an unavailable
 /// home CPU. See `PINNED_HOME_CPU_UNAVAILABLE`.
 pub fn pinned_home_cpu_unavailable() -> u64 {
@@ -1559,6 +1563,21 @@ impl Scheduler {
         }
     }
 
+    /// The shared idle-identity refusal, read from inside the scheduler lock.
+    ///
+    /// Every member of the blocking-primitive family calls this before it
+    /// publishes a blocked state. `is_current_idle_thread()` cannot be used
+    /// here: it takes the scheduler lock the family's callers already hold, so
+    /// the identity is read directly from this CPU's state and handed to the
+    /// one shared decision in `task::idle_sleep`, which owns the counting and
+    /// the serial marker.
+    #[inline]
+    fn refuse_idle_block(&self) -> bool {
+        let cpu = Self::current_cpu_id();
+        let is_idle = self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
+        crate::task::idle_sleep::refuse_idle_identity(is_idle)
+    }
+
     /// Whether a CPU is online and able to dispatch newly runnable work.
     ///
     /// The current CPU is accepted immediately only when its architecture can
@@ -1612,7 +1631,7 @@ impl Scheduler {
                         continue;
                     }
                     PinnedReclaimDisposition::Park => {
-                        self.park_pinned_thread_without_home(thread_id);
+                        self.park_pinned_worker_without_home(thread_id);
                         continue;
                     }
                     PinnedReclaimDisposition::Migrate => {}
@@ -2912,6 +2931,13 @@ impl Scheduler {
     fn block_current_inner(&mut self, in_syscall: bool) {
         #[cfg(feature = "coreproof_component_a")]
         crate::proof_point!(BlockEntry);
+        // The idle identity has no continuation the scheduler can hand back:
+        // dispatching it resets it to the canonical idle loop, so blocking it
+        // abandons whatever call is on its stack (#761). Refuse; the caller's
+        // non-sleeping path is the correct one for this identity.
+        if self.refuse_idle_block() {
+            return;
+        }
         let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
             return;
         };
@@ -3102,7 +3128,7 @@ impl Scheduler {
                         #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
-                        self.park_pinned_thread_without_home(thread_id);
+                        self.park_pinned_worker_without_home(thread_id);
                         outcome = UnblockOutcome::NotFound;
                     }
                 } else if is_current_on_any_cpu || is_in_deferred {
@@ -3266,6 +3292,13 @@ impl Scheduler {
         &mut self,
         userspace_context: Option<super::thread::CpuContext>,
     ) {
+        // The idle identity has no continuation the scheduler can hand back:
+        // dispatching it resets it to the canonical idle loop, so blocking it
+        // abandons whatever call is on its stack (#761). Refuse; the caller's
+        // non-sleeping path is the correct one for this identity.
+        if self.refuse_idle_block() {
+            return;
+        }
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
@@ -3376,7 +3409,7 @@ impl Scheduler {
                         #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
-                        self.park_pinned_thread_without_home(thread_id);
+                        self.park_pinned_worker_without_home(thread_id);
                     }
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -3415,6 +3448,13 @@ impl Scheduler {
     /// is still physically running the syscall. The schedule() function
     /// will check the thread state and not put it back in ready queue.
     pub fn block_current_for_child_exit(&mut self) {
+        // The idle identity has no continuation the scheduler can hand back:
+        // dispatching it resets it to the canonical idle loop, so blocking it
+        // abandons whatever call is on its stack (#761). Refuse; the caller's
+        // non-sleeping path is the correct one for this identity.
+        if self.refuse_idle_block() {
+            return;
+        }
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
@@ -3489,7 +3529,7 @@ impl Scheduler {
                         #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
-                        self.park_pinned_thread_without_home(thread_id);
+                        self.park_pinned_worker_without_home(thread_id);
                     }
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -3506,6 +3546,13 @@ impl Scheduler {
 
     /// Block current thread until a timer expires (nanosleep syscall)
     pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
+        // The idle identity has no continuation the scheduler can hand back:
+        // dispatching it resets it to the canonical idle loop, so blocking it
+        // abandons whatever call is on its stack (#761). Refuse; the caller's
+        // non-sleeping path is the correct one for this identity.
+        if self.refuse_idle_block() {
+            return;
+        }
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
@@ -3528,6 +3575,13 @@ impl Scheduler {
     }
 
     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
+        // The idle identity has no continuation the scheduler can hand back:
+        // dispatching it resets it to the canonical idle loop, so blocking it
+        // abandons whatever call is on its stack (#761). Refuse; the caller's
+        // non-sleeping path is the correct one for this identity.
+        if self.refuse_idle_block() {
+            return None;
+        }
         let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
         let thread = self.get_thread_mut(current_id)?;
 
@@ -3720,7 +3774,7 @@ impl Scheduler {
                             ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                         }
                     } else {
-                        self.park_pinned_thread_without_home(tid);
+                        self.park_pinned_worker_without_home(tid);
                     }
                 } else if published_ready && (wake.current_cpu.is_some() || is_in_deferred) {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -3740,6 +3794,13 @@ impl Scheduler {
     /// This provides Wayland-style back-pressure: the client renders at
     /// exactly the compositor's display rate.
     pub fn block_current_for_compositor(&mut self, timeout_ns: u64) {
+        // The idle identity has no continuation the scheduler can hand back:
+        // dispatching it resets it to the canonical idle loop, so blocking it
+        // abandons whatever call is on its stack (#761). Refuse; the caller's
+        // non-sleeping path is the correct one for this identity.
+        if self.refuse_idle_block() {
+            return;
+        }
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks NOW, before blocking. Otherwise the
@@ -3888,7 +3949,7 @@ impl Scheduler {
                         self.per_cpu_queues[target].push_back(tid);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     } else {
-                        self.park_pinned_thread_without_home(tid);
+                        self.park_pinned_worker_without_home(tid);
                     }
                 } else if in_deferred_requeue {
                     trace_sched_diag(
@@ -4063,8 +4124,15 @@ impl Scheduler {
     /// ready queue. The next wake after its home CPU resumes dispatching finds
     /// an acceptable target and queues it there; nothing else is needed, and
     /// nothing has been placed on the wrong CPU in the meantime.
-    fn park_pinned_thread_without_home(&mut self, thread_id: u64) {
-        PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed);
+    fn park_pinned_worker_without_home(&mut self, thread_id: u64) {
+        let parks = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
+        if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
+            // Raw serial, one shot: this runs under the scheduler lock with
+            // interrupts masked, where the logger's lock would deadlock.
+            crate::tracing::output::raw_serial_str("[PINNED_HOME_CPU_UNAVAILABLE:first:count=");
+            crate::tracing::output::raw_serial_dec(parks);
+            crate::tracing::output::raw_serial_str("]\r\n");
+        }
         for queue in self.per_cpu_queues.iter_mut() {
             queue.retain(|&id| id != thread_id);
         }
