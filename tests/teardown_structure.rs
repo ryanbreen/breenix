@@ -404,6 +404,407 @@ fn module_function_bodies(source: &str) -> BTreeMap<String, Vec<&str>> {
     bodies
 }
 
+#[derive(Clone, Debug)]
+struct RustFunctionShape<'a> {
+    path: &'a str,
+    name: String,
+    body: &'a str,
+}
+
+fn kernel_function_shapes(sources: &[(String, String)]) -> Vec<RustFunctionShape<'_>> {
+    let mut functions = Vec::new();
+    for (path, contents) in sources {
+        for (name, bodies) in module_function_bodies(contents) {
+            for body in bodies {
+                functions.push(RustFunctionShape {
+                    path,
+                    name: name.clone(),
+                    body,
+                });
+            }
+        }
+    }
+    functions
+}
+
+fn direct_call_offsets(body: &str, callee: &str) -> Vec<usize> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    identifier_offsets(body, &mask, callee)
+        .into_iter()
+        .filter(|offset| {
+            let mut cursor = *offset + callee.len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            bytes.get(cursor) == Some(&b'(')
+        })
+        .collect()
+}
+
+fn module_stem(path: &str) -> &str {
+    path.rsplit('/')
+        .next()
+        .and_then(|file| file.strip_suffix(".rs"))
+        .unwrap_or(path)
+}
+
+fn call_names_module(body: &str, call: usize, module: &str) -> bool {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let mut cursor = call;
+    while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
+        cursor -= 1;
+    }
+    if cursor < 2 || &body[cursor - 2..cursor] != "::" {
+        return false;
+    }
+    cursor -= 2;
+    while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
+        cursor -= 1;
+    }
+    let end = cursor;
+    while cursor > 0 && mask[cursor - 1] && identifier_byte(bytes[cursor - 1]) {
+        cursor -= 1;
+    }
+    &body[cursor..end] == module
+}
+
+fn calls_to_function(
+    caller: &RustFunctionShape<'_>,
+    callee: &RustFunctionShape<'_>,
+) -> Vec<usize> {
+    direct_call_offsets(caller.body, &callee.name)
+        .into_iter()
+        .filter(|offset| {
+            let prefix = &caller.body[..*offset];
+            let qualified = prefix.trim_end().ends_with("::");
+            if qualified {
+                call_names_module(caller.body, *offset, module_stem(callee.path))
+            } else {
+                caller.path == callee.path
+            }
+        })
+        .collect()
+}
+
+fn closure_ranges(body: &str, wrapper: &str) -> Vec<(usize, usize)> {
+    let mask = code_mask(body);
+    identifier_offsets(body, &mask, wrapper)
+        .into_iter()
+        .filter_map(|offset| {
+            let block = braced_block(body, &mask, offset)?;
+            let start = block.as_ptr() as usize - body.as_ptr() as usize;
+            Some((start, start + block.len()))
+        })
+        .collect()
+}
+
+fn irq_disabled_else_ranges(body: &str) -> Vec<(usize, usize)> {
+    let mask = code_mask(body);
+    let mut ranges = Vec::new();
+    for enabled_call in code_offsets(body, &mask, "are_enabled()") {
+        let statement_start = body[..enabled_call]
+            .rmatch_indices([';', '{'])
+            .next()
+            .map(|(offset, _)| offset + 1)
+            .unwrap_or(0);
+        let assignment = &body[statement_start..enabled_call];
+        let Some(equals) = assignment.rfind('=') else {
+            continue;
+        };
+        let Some(binding) = assignment[..equals].split_whitespace().last() else {
+            continue;
+        };
+        if !assignment.split_whitespace().any(|token| token == "let")
+            || !binding.bytes().all(identifier_byte)
+        {
+            continue;
+        }
+
+        let if_needle = format!("if {binding}");
+        for if_offset in code_offsets(body, &mask, &if_needle)
+            .into_iter()
+            .filter(|offset| *offset > enabled_call)
+        {
+            let Some(then_block) = braced_block(body, &mask, if_offset) else {
+                continue;
+            };
+            let then_end = then_block.as_ptr() as usize - body.as_ptr() as usize + then_block.len();
+            let Some(else_relative) = identifier_offsets(&body[then_end..], &mask[then_end..], "else")
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            let else_offset = then_end + else_relative;
+            let Some(else_block) = braced_block(body, &mask, else_offset) else {
+                continue;
+            };
+            let start = else_block.as_ptr() as usize - body.as_ptr() as usize;
+            ranges.push((start, start + else_block.len()));
+            break;
+        }
+    }
+    ranges
+}
+
+fn last_code_offset_before(body: &str, site: usize, needles: &[&str]) -> Option<usize> {
+    let mask = code_mask(body);
+    needles
+        .iter()
+        .flat_map(|needle| code_offsets(body, &mask, needle))
+        .filter(|offset| *offset < site)
+        .max()
+}
+
+fn acquisition_is_locally_irq_safe(body: &str, site: usize) -> bool {
+    let in_range = |range: &(usize, usize)| range.0 <= site && site < range.1;
+    if ["without_interrupts", "arch_without_interrupts"]
+        .into_iter()
+        .flat_map(|wrapper| closure_ranges(body, wrapper))
+        .any(|range| in_range(&range))
+        || irq_disabled_else_ranges(body)
+            .into_iter()
+            .any(|range| in_range(&range))
+    {
+        return true;
+    }
+
+    let disable = last_code_offset_before(
+        body,
+        site,
+        &["disable_interrupts()", "interrupts::disable()"],
+    );
+    let enable = last_code_offset_before(
+        body,
+        site,
+        &["enable_interrupts()", "interrupts::enable()"],
+    );
+    disable.is_some_and(|disable| enable.is_none_or(|enable| disable > enable))
+}
+
+fn assembly_branch_targets(section: &str) -> BTreeSet<String> {
+    section
+        .lines()
+        .filter_map(|line| {
+            let code = line.split("//").next()?.trim();
+            let mut fields = code.split_whitespace();
+            let branch = fields.next()?;
+            let target = fields.next()?.trim_end_matches(',');
+            (branch == "b"
+                && target
+                    .bytes()
+                    .all(|byte| identifier_byte(byte) || byte == b'.'))
+            .then(|| target.to_owned())
+        })
+        .collect()
+}
+
+fn assembly_label_body<'a>(assembly: &'a str, label: &str) -> Option<&'a str> {
+    let marker = format!("\n{label}:");
+    let start = assembly.find(&marker)? + 1;
+    let remainder = &assembly[start + label.len() + 1..];
+    let end = remainder
+        .match_indices('\n')
+        .filter_map(|(offset, _)| {
+            let line = remainder[offset + 1..].lines().next()?;
+            let candidate = line.strip_suffix(':')?;
+            (!candidate.is_empty()
+                && !candidate.starts_with('.')
+                && candidate
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                && candidate
+                    .bytes()
+                    .all(|byte| identifier_byte(byte)))
+            .then_some(offset + 1)
+        })
+        .next()
+        .unwrap_or(remainder.len());
+    Some(&assembly[start..start + label.len() + 1 + end])
+}
+
+fn assembly_external_calls(body: &str) -> BTreeSet<String> {
+    body.lines()
+        .filter_map(|line| {
+            let code = line.split("//").next()?.split(';').next()?.trim();
+            let mut fields = code.split_whitespace();
+            let instruction = fields.next()?;
+            let target = fields.next()?.trim_end_matches(',');
+            matches!(instruction, "bl" | "call").then(|| target.to_owned())
+        })
+        .collect()
+}
+
+fn derived_interrupt_entry_names() -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+
+    let arm_vectors = repo_text("kernel/src/arch_impl/aarch64/boot.S");
+    let vector_start = arm_vectors
+        .find("exception_vectors:")
+        .expect("AArch64 vector table label");
+    let vector_end = arm_vectors[vector_start..]
+        .find("/*\n * Exception handlers")
+        .map(|offset| vector_start + offset)
+        .expect("AArch64 vector table end");
+    for handler in assembly_branch_targets(&arm_vectors[vector_start..vector_end]) {
+        if let Some(body) = assembly_label_body(&arm_vectors, &handler) {
+            names.extend(assembly_external_calls(body));
+        }
+    }
+
+    let x86_idt = repo_text("kernel/src/interrupts.rs");
+    let idt_mask = code_mask(&x86_idt);
+    for setter in code_offsets(&x86_idt, &idt_mask, ".set_handler_fn(") {
+        let start = setter + ".set_handler_fn(".len();
+        let end = x86_idt[start..]
+            .find(')')
+            .map(|offset| start + offset)
+            .expect("x86 IDT handler close parenthesis");
+        let handler = x86_idt[start..end].trim();
+        if handler.bytes().all(identifier_byte) {
+            names.insert(handler.to_owned());
+        }
+    }
+
+    for path in [
+        "kernel/src/interrupts/breakpoint_entry.asm",
+        "kernel/src/interrupts/timer_entry.asm",
+    ] {
+        let entry = repo_text(path);
+        let externs: BTreeSet<String> = entry
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("extern ").map(str::to_owned))
+            .collect();
+        names.extend(
+            assembly_external_calls(&entry)
+                .into_iter()
+                .filter(|target| externs.contains(target)),
+        );
+    }
+    names
+}
+
+fn function_is_entered_with_irqs_masked(
+    target: usize,
+    functions: &[RustFunctionShape<'_>],
+    entry_names: &BTreeSet<String>,
+    memo: &mut BTreeMap<usize, bool>,
+    visiting: &mut BTreeSet<usize>,
+) -> bool {
+    if let Some(result) = memo.get(&target) {
+        return *result;
+    }
+    if entry_names.contains(&functions[target].name) {
+        memo.insert(target, true);
+        return true;
+    }
+    if !visiting.insert(target) {
+        return false;
+    }
+
+    let mut saw_caller = false;
+    let mut safe = true;
+    for (caller_index, caller) in functions.iter().enumerate() {
+        let calls = calls_to_function(caller, &functions[target]);
+        if calls.is_empty() {
+            continue;
+        }
+        saw_caller = true;
+        for call in calls {
+            if !acquisition_is_locally_irq_safe(caller.body, call)
+                && !function_is_entered_with_irqs_masked(
+                    caller_index,
+                    functions,
+                    entry_names,
+                    memo,
+                    visiting,
+                )
+            {
+                safe = false;
+            }
+        }
+    }
+    visiting.remove(&target);
+    let result = saw_caller && safe;
+    memo.insert(target, result);
+    result
+}
+
+fn scheduler_lock_irq_shape_failures(sources: &[(String, String)]) -> Vec<String> {
+    let functions = kernel_function_shapes(sources);
+    let entry_names = derived_interrupt_entry_names();
+    let raw_needles = ["SCHEDULER.lock()", "SCHEDULER.try_lock()"];
+    let mut primitive_names = BTreeSet::new();
+    for function in &functions {
+        let mask = code_mask(function.body);
+        if raw_needles
+            .iter()
+            .any(|needle| !code_offsets(function.body, &mask, needle).is_empty())
+        {
+            primitive_names.insert(function.name.clone());
+        }
+    }
+    if primitive_names.is_empty() {
+        return vec!["scheduler lock primitive census is empty".to_owned()];
+    }
+
+    let mut failures = BTreeSet::new();
+    let mut memo = BTreeMap::new();
+    for (function_index, function) in functions.iter().enumerate() {
+        let mask = code_mask(function.body);
+        let sites = raw_needles
+            .iter()
+            .flat_map(|needle| code_offsets(function.body, &mask, needle))
+            .chain(
+                primitive_names
+                    .iter()
+                    .flat_map(|primitive| direct_call_offsets(function.body, primitive)),
+            );
+        for site in sites {
+            if !acquisition_is_locally_irq_safe(function.body, site)
+                && !function_is_entered_with_irqs_masked(
+                    function_index,
+                    &functions,
+                    &entry_names,
+                    &mut memo,
+                    &mut BTreeSet::new(),
+                )
+            {
+                failures.insert(format!("{}::{}", function.path, function.name));
+            }
+        }
+    }
+    failures.into_iter().collect()
+}
+
+/// Ratchets every scheduler-lock acquisition against same-CPU IRQ self-deadlock.
+///
+/// The admitted shape is lexical masking by `without_interrupts` or
+/// `arch_without_interrupts`, a preceding architectural disable with no later
+/// enable, or the false arm of a value read from `are_enabled`. An unwrapped
+/// callee is admitted only when every caller has one of those shapes or the
+/// reverse call graph bottoms out at an interrupt/exception entry symbol. Those
+/// roots are derived from the AArch64 vector table and x86 IDT/assembly stubs;
+/// there is no hand-maintained function-name allowlist. Functions containing
+/// raw `SCHEDULER.lock`/`try_lock` define the primitive set dynamically, so the
+/// same caller proof covers the raw mutex and both scheduler helper spellings.
+#[test]
+fn scheduler_lock_acquisitions_are_irq_safe_by_shape() {
+    let sources = rust_sources_below("kernel/src");
+    let failures = scheduler_lock_irq_shape_failures(&sources);
+    for failure in &failures {
+        eprintln!("scheduler lock acquired with interrupts enabled: {failure}");
+    }
+    assert!(
+        failures.is_empty(),
+        "{} scheduler-lock acquisition function(s) lack structural IRQ masking",
+        failures.len()
+    );
+}
+
 /// The transitive callee closure of `roots` within one module.
 ///
 /// R7's no-log/no-heap property must hold for everything `return_lease` reaches,
