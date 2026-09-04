@@ -452,8 +452,9 @@ pub fn arch_halt() {
 /// `main_aarch64.rs` (three feature-gated test mains' post-exit loops, two
 /// boot-thread idle loops, that file's `idle_thread_fn`, and the panic
 /// handler); the EL1-fatal and syscall-exit terminal loops in
-/// `arch_impl/aarch64/exception.rs`; the secondary-CPU bringup and idle loops
-/// in `arch_impl/aarch64/smp.rs`; `idle_loop_arm64` in
+/// `arch_impl/aarch64/exception.rs`; the secondary CPU's post-bringup idle
+/// loop and its `idle_thread_fn`, both in `arch_impl/aarch64/smp.rs`;
+/// `idle_loop_arm64` in
 /// `arch_impl/aarch64/context_switch.rs`; and 2 in `task/scheduler.rs`'s
 /// `ec0_fault_inject` thread. 0 of those 27 is a wait loop waiting on a
 /// condition another thread signals -- they are panic, fault, boot, idle,
