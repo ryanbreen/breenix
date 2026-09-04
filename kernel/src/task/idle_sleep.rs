@@ -78,6 +78,23 @@ pub static IDLE_SLEEP_REFUSED: AtomicU64 = AtomicU64::new(0);
 /// Whether the one-shot serial marker has already been emitted this boot.
 static IDLE_SLEEP_REFUSED_MARKED: AtomicBool = AtomicBool::new(false);
 
+/// Times the lock-free predicate could not read the running identity because
+/// `try_lock_scheduler` was contended.
+///
+/// NOT gate-failing, and deliberately separate from `IDLE_SLEEP_REFUSED`: this
+/// is a measurement of how often the cheap path declines to answer, not an
+/// observation of the idle task reaching for a blocking primitive. It exists so
+/// the one place this predicate is permissive stays visible -- if it ever
+/// climbs, the fix is to make the identity readable without the scheduler lock,
+/// not to refuse on the unknown.
+pub static IDLE_IDENTITY_UNREADABLE: AtomicU64 = AtomicU64::new(0);
+
+/// Read the running count of unreadable-identity outcomes. See
+/// `IDLE_IDENTITY_UNREADABLE`.
+pub fn idle_identity_unreadable() -> u64 {
+    IDLE_IDENTITY_UNREADABLE.load(Ordering::Relaxed)
+}
+
 /// Read the running count of idle-identity refusals. See `IDLE_SLEEP_REFUSED`.
 pub fn idle_sleep_refused() -> u64 {
     IDLE_SLEEP_REFUSED.load(Ordering::Relaxed)
@@ -113,12 +130,26 @@ pub(crate) fn refuse_idle_identity(is_idle: bool) -> bool {
 /// `true` means the current identity may not hand its continuation to the
 /// scheduler.
 ///
-/// An unknown identity (the scheduler lock was busy, so `is_current_idle_thread`
-/// declined to block on it) is refused too, and deliberately not counted: the
-/// counter means "the idle task was observed reaching for a blocking
-/// primitive", and an unreadable identity is not that observation. Refusing on
-/// unknown is the safe direction -- the spin fallback is recoverable, an
-/// abandoned continuation is not.
+/// This predicate is advisory, and an identity it cannot read is NOT refused.
+/// `is_current_idle_thread` returns `None` only when `try_lock_scheduler`
+/// fails, which on SMP is ordinary momentary contention with another CPU and
+/// says nothing about who is running here. Refusing on that reading converted a
+/// transient lock collision into a permanent verdict for the caller: the
+/// aarch64 `block_wedge_oracle` kthread took one and reported
+/// `BLOCK_WEDGE_ORACLE_BAD_CONTEXT` -- "parked/second lock was not
+/// sleep-permitted" -- on 19 of 26 boots, and a probe build read
+/// `trylock_fail=1 idle_refused=0 cur_id=39|53` in every legible line, so the
+/// identity a few instructions later was a kernel thread, not idle (#786).
+///
+/// Being permissive here does not let the idle identity block. The blocking
+/// primitives that publish the caller's blocked state each call
+/// `Scheduler::refuse_idle_block` while already holding the scheduler lock, so
+/// the identity is read exactly rather than guessed, and that refusal is the
+/// one that enforces the rule. The census in `tests/teardown_structure.rs`
+/// keeps that family whole. What this predicate buys is avoiding the
+/// non-sleeping fallback path when the answer is known and cheap.
+/// claim-lint:ok: the refusal counts and the probe reading are in
+/// docs/planning/green-program/aarch64-testing/786-RCA-2026-09-04.md
 #[inline]
 pub(crate) fn idle_identity_must_not_sleep() -> bool {
     if !IDLE_REFUSAL_APPLIES {
@@ -127,6 +158,12 @@ pub(crate) fn idle_identity_must_not_sleep() -> bool {
     match crate::task::scheduler::is_current_idle_thread() {
         Some(true) => refuse_idle_identity(true),
         Some(false) => false,
-        None => true,
+        // Unreadable identity: not an observation of the idle task, so not
+        // counted as a refusal and not treated as one. Counted separately so
+        // the blind spot stays measurable.
+        None => {
+            IDLE_IDENTITY_UNREADABLE.fetch_add(1, Ordering::Relaxed);
+            false
+        }
     }
 }
