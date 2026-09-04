@@ -15404,6 +15404,11 @@ fn called_names(body: &str) -> BTreeSet<String> {
 
 /// The census. Returns the number of subjects it classified, so an empty run
 /// cannot pass for a clean one.
+///
+/// This census walks call sites through the shared recogniser; a rewrite
+/// that adds a second, unshared way of recognising a call, or that exempts
+/// a join site from the walk, is outside what this ratchet can police --
+/// that is a code-review question about the test file, not the ratchet's.
 fn validate_kthread_joins_are_kthread_bodies_or_tests(
     sources: &[(String, String)],
 ) -> Result<usize, Vec<String>> {
@@ -16079,6 +16084,11 @@ const GUARDS_THAT_DO_NOT_DECIDE_SLEEP_ELIGIBILITY: &[(&str, &str)] = &[
 /// Each boolean the census discovers at a guard position routes its decision
 /// through the shared refusal, unless it is recorded above as deciding
 /// something else. Returns the census so a run cannot pass for an empty one.
+///
+/// This census also walks call sites through the shared recogniser; a
+/// rewrite that adds a second, unshared way of recognising a call, or that
+/// exempts a guard from the walk, is outside what this ratchet can police --
+/// that is a code-review question about the test file, not the ratchet's.
 fn validate_sleep_guards_consult_the_idle_refusal(
     sources: &[(String, String)],
 ) -> Result<Vec<SleepGuard>, Vec<String>> {
@@ -16603,6 +16613,11 @@ fn open_paren_probes(source: &str, mask: &[bool]) -> Vec<usize> {
 /// in this file may do both. The recogniser itself does not walk identifiers
 /// -- it is handed the offset one past one -- so it needs no exception, and
 /// this rule carries no list of excused names.
+///
+/// A rewrite of this file that adds a second call recogniser without
+/// spelling its own open-parenthesis comparison, or that quietly exempts a
+/// site by name, is outside what this rule can police -- that is a
+/// code-review question about this file, not something the rule catches.
 fn validate_one_call_recogniser(source: &str) -> Result<usize, Vec<String>> {
     let mut findings = Vec::new();
     let mut censused = 0usize;
