@@ -14,3 +14,9 @@ docs/planning/green-program/sockets/serials/693-rca/*.txt -text
 # #693 fix serials: same treatment, and for the same reason -- these are raw
 # aarch64 and x86 console captures whose CR bytes are part of the evidence.
 docs/planning/green-program/sockets/serials/693-fix/*.txt -text
+
+# #775 equivalence serials: raw x86 console captures from the beast VM, kept
+# byte-exact for the same reason as the 693 captures above -- the CR bytes the
+# guest console emits are part of the evidence, and a CRLF normalisation would
+# edit it.
+docs/planning/green-program/sockets/serials/775/**/*.txt -text

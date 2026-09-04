@@ -1,0 +1,7 @@
+strand census: thread 21 (tcp_cloexec_exec_test) saved blocked and never restored
+strand census: thread 24 (loopback_wake_test) saved blocked and never restored
+strand census: thread 25 (clonevm_exec_test) saved blocked and never restored
+strand census: thread 27 (tcp_cloexec_exec_test_child_17_main) saved blocked and never restored
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and never restored
+STRAND_CENSUS: threads_saved_blocked=10 stranded=5 lines=4829
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and never restored (see the strand census above)
