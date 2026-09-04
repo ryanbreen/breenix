@@ -4633,19 +4633,19 @@ pub fn try_schedule() -> Option<(u64, u64)> {
 /// Returns None if the scheduler lock can't be acquired (to avoid deadlock)
 #[allow(dead_code)]
 pub fn is_current_idle_thread() -> Option<bool> {
-    // Try to get the lock without blocking - if we can't, assume not idle
-    // to be safe. This prevents deadlock when timer fires during scheduler ops.
-    if let Some(scheduler_lock) = try_lock_scheduler() {
-        if let Some(scheduler) = scheduler_lock.as_ref() {
-            return Some(
-                scheduler
-                    .current_thread_id_inner()
-                    .map(|id| id == scheduler.idle_thread_id())
-                    .unwrap_or(false),
-            );
+    without_interrupts(|| {
+        if let Some(scheduler_lock) = try_lock_scheduler() {
+            if let Some(scheduler) = scheduler_lock.as_ref() {
+                return Some(
+                    scheduler
+                        .current_thread_id_inner()
+                        .map(|id| id == scheduler.idle_thread_id())
+                        .unwrap_or(false),
+                );
+            }
         }
-    }
-    None
+        None
+    })
 }
 
 /// Get access to the scheduler
