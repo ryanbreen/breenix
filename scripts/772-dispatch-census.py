@@ -43,18 +43,24 @@ def parse_counters(path):
 
 
 def derive(counters):
-    def get(name):
-        return counters.get(name, counters.get(name + "_CPU0"))
-
     def get_percpu_sum(name):
         # A per-CPU TraceCounter the driver dumps slot by slot as NAME_CPUn.
-        # Sum them; fall back to the whole-machine NAME for a dump taken
-        # before the counter was per-CPU.
+        # Sum them; fall back to NAME (whole-machine, e.g.
+        # WAIT_LOOP_PARK_SKIPPED) or NAME_CPU0 (an older, slot-0-only dump)
+        # when no NAME_CPUn keys are present.
         slots = [v for k, v in counters.items()
                  if re.fullmatch(re.escape(name) + r"_CPU\d+", k)]
         if slots:
             return sum(slots)
-        return counters.get(name)
+        return counters.get(name, counters.get(name + "_CPU0"))
+
+    # Round 4: 772-dispatch-boot.sh now dumps DISPATCH_* over PERCPU_SLOTS
+    # slots the same way WAIT_LOOP_PARK_TOTAL previously did, so `get` is
+    # just `get_percpu_sum` -- summed, not slot-0-only. On today's x86
+    # target, which brings up only CPU0, the sum equals the slot-0 value
+    # the six already-committed r2 census.json files carry; the two would
+    # diverge only on an SMP boot, which this driver has not run.
+    get = get_percpu_sum
 
     out = {}
     save_reasons = [
@@ -78,13 +84,18 @@ def derive(counters):
         # The park side of the REVISIT/ZERO_ITER split, so it is audited rather
         # than assumed. `total` counts the parks that passed the guard; a park
         # the guard refused is in `skipped` and NOT in `total`, while a park
-        # that passed and found no thread installed is in both. So
-        # `attributed` below is a lower bound on the parks that actually
-        # reached a thread's wait_loop_iters, and is exact whenever
-        # `skipped` is 0.
+        # that passed and found no thread installed is in both. N7 moved the
+        # `total` bump behind the same guard `skipped` already sat behind, so
+        # `total - skipped` is now a LOWER BOUND on the parks that actually
+        # reached a thread's wait_loop_iters (exact only when `skipped` is
+        # 0), and can go negative -- clamped at 0 below, with the clamp
+        # recorded. This key did not exist before N7; the six census.json
+        # files committed under serials/772-r113-r2/ predate this schema.
         out["wait_loop_parks_total"] = park_total
         out["wait_loop_parks_skipped"] = park_skipped
-        out["wait_loop_parks_attributed"] = park_total - park_skipped
+        attributed_raw = park_total - park_skipped
+        out["wait_loop_parks_attributed_min"] = max(0, attributed_raw)
+        out["wait_loop_parks_attributed_min_clamped"] = attributed_raw < 0
     kb_p = get("DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_PREEMPT")
     kb_m = get("DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_MANDATORY")
     if kb_p is not None and kb_m is not None:
@@ -178,6 +189,7 @@ def main(argv):
             pass
 
     out = {
+        "schema": 1,
         "episodes": results,
         "restores_total": n,
         "no_progress_proxy": k,
