@@ -1,0 +1,1013 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001d7a2000,
+    metadata: 5897520,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: bc284, mem_size: bc284, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: bc290, virtual_addr: bd290, physical_addr: bd290, file_size: 311e20, mem_size: 311e20, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3ce0b0, virtual_addr: 3d00b0, physical_addr: 3d00b0, file_size: 4ab98, mem_size: 4af50, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 418c80, virtual_addr: 41bc80, physical_addr: 41bc80, file_size: 2f8d0, mem_size: 90cb8, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x100000cf160
+INFO : Creating GDT at PhysAddr(0x1fe000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x100000cf160)
+[TEST:process:frame_custody_refusal_gate:START]
+[TEST:process:frame_custody_refusal_gate:PASS]
+[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
+[TEST:process:page_table_custody_disposition_gate:START]
+[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=16502:used_after=16502:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0]
+[TEST:process:page_table_custody_disposition_gate:PASS]
+[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]
+PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc100/0x80 irq=0x0b
+PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0a
+PCI_FN 00:06.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+PCI_FN_TOTAL 9
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<1>[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[TEST:process:reclaim_progress_gate:PASS]
+[TEST:process:x86_retire_cohort:START]
+[TEST:process:x86_retire_cohort:PASS]
+[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
+[TEST:process:x86_exec_cohort:START]
+[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]
+[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
+[TEST:process:x86_exec_cohort:PASS]
+[TEST:process:exec_detach_oracle:START]
+manager.create_process: ENTRY - name='exec_detach_leader', elf_size=180
+manager.create_process: Generating PID
+manager.create_process: Generated PID 85
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x40000000
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40201000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff011000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 85
+manager.create_process: Adding PID 85 to ready queue
+[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:clone_admission_oracle:START]
+[PMGUARD] creating dispatch refused tid=172 pid=92
+[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:init_designation_oracle:START]
+manager.create_process: ENTRY - name='init_oracle_a1', elf_size=8
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ENTRY - name='init_oracle_a2', elf_size=120
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:START]
+[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:kernel_stack_ownership_oracle:START]
+[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=0:foreign_returned=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1081:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1074:pub_sched_owned=1074:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=2:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=0:reconciliation_skew_bound=0:balance=0]
+[TEST:process:tombstone_join_oracle:START]
+[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+[PT_ROOT_CUSTODY:no_proof=0:no_arch=1:terminated=1:undecided=3:mid_retire=1:retired=152]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:network:loopback_wake_loss_counters_are_zero:START]
+[TEST:network:loopback_wake_loss_counters_are_zero:PASS]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>p01r1 create_user_process: ENTRY - Creating 'smoke_hello_time'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='smoke_hello_time', elf_size=177640
+manager.create_process: Generating PID
+manager.create_process: Generated PID 105
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e2ac
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40016000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff026000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 105
+manager.create_process: Adding PID 105 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 105
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1204
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 105
+RING3_SMOKE: creating register_init_test userspace process
+create_user_process: ENTRY - Creating 'register_init_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='register_init_test', elf_size=177112
+manager.create_process: Generating PID
+manager.create_process: Generated PID 106
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e33c
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40016000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff037000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 106
+manager.create_process: Adding PID 106 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 106
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1205
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 106
+RING3_SMOKE: creating clock_gettime_test userspace process
+create_user_process: ENTRY - Creating 'clock_gettime_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='clock_gettime_test', elf_size=188664
+manager.create_process: Generating PID
+manager.create_process: Generated PID 107
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000edb4
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40018000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff048000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 107
+manager.create_process: Adding PID 107 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 107
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1206
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 107
+RING3_SMOKE: creating brk_test userspace process
+create_user_process: ENTRY - Creating 'brk_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='brk_test', elf_size=186592
+manager.create_process: Generating PID
+manager.create_process: Generated PID 108
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000eb48
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40018000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff059000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 108
+manager.create_process: Adding PID 108 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 108
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1207
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 108
+RING3_SMOKE: creating test_mmap userspace process
+create_user_process: ENTRY - Creating 'test_mmap'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='test_mmap', elf_size=182240
+manager.create_process: Generating PID
+manager.create_process: Generated PID 109
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e6e4
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40017000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff06a000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 109
+manager.create_process: Adding PID 109 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 109
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1208
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 109
+RING3_SMOKE: creating syscall_diagnostic_test userspace process
+create_user_process: ENTRY - Creating 'syscall_diagnostic_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='syscall_diagnostic_test', elf_size=170872
+manager.create_process: Generating PID
+manager.create_process: Generated PID 110
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000dfe4
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40016000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff07b000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 110
+manager.create_process: Adding PID 110 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 110
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1209
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 110
+RING3_SMOKE: creating udp_socket_test userspace process
+create_user_process: ENTRY - Creating 'udp_socket_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='udp_socket_test', elf_size=193408
+manager.create_process: Generating PID
+manager.create_process: Generated PID 111
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000f974
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x4001a000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff08c000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 111
+manager.create_process: Adding PID 111 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 111
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1210
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 111
+RING3_SMOKE: creating tcp_socket_test userspace process
+create_user_process: ENTRY - Creating 'tcp_socket_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='tcp_socket_test', elf_size=202304
+manager.create_process: Generating PID
+manager.create_process: Generated PID 112
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x40010c04
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x4001c000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff09d000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 112
+manager.create_process: Adding PID 112 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 112
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1211
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 112
+RING3_SMOKE: creating tcp_dup_listener_test userspace process
+create_user_process: ENTRY - Creating 'tcp_dup_listener_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='tcp_dup_listener_test', elf_size=188848
+manager.create_process: Generating PID
+manager.create_process: Generated PID 113
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000ed84
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40019000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0ae000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 113
+manager.create_process: Adding PID 113 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 113
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1212
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 113
+RING3_SMOKE: creating tcp_cloexec_exec_test userspace process
+create_user_process: ENTRY - Creating 'tcp_cloexec_exec_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='tcp_cloexec_exec_test', elf_size=189464
+manager.create_process: Generating PID
+manager.create_process: Generated PID 114
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000ef14
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40019000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0bf000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 114
+manager.create_process: Adding PID 114 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 114
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1213
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 114
+RING3_SMOKE: creating dns_test userspace process
+create_user_process: ENTRY - Creating 'dns_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='dns_test', elf_size=195240
+manager.create_process: Generating PID
+manager.create_process: Generated PID 115
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000fac0
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x4001a000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0d0000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 115
+manager.create_process: Adding PID 115 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 115
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1214
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 115
+RING3_SMOKE: creating http_test userspace process
+create_user_process: ENTRY - Creating 'http_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='http_test', elf_size=468600
+manager.create_process: Generating PID
+manager.create_process: Generated PID 116
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4001e5e8
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40053000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0e1000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 116
+manager.create_process: Adding PID 116 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 116
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1215
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 116
+RING3_SMOKE: creating loopback_wake_test userspace process
+create_user_process: ENTRY - Creating 'loopback_wake_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='loopback_wake_test', elf_size=190448
+manager.create_process: Generating PID
+manager.create_process: Generated PID 117
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000f63c
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40018000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff0f2000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 117
+manager.create_process: Adding PID 117 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 117
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1216
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 117
+RING3_SMOKE: creating clonevm_exec_test userspace process
+create_user_process: ENTRY - Creating 'clonevm_exec_test'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='clonevm_exec_test', elf_size=184672
+manager.create_process: Generating PID
+manager.create_process: Generated PID 118
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000ebdc
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40018000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff103000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 118
+manager.create_process: Adding PID 118 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 118
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1217
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 118
+RING3_SMOKE: creating futex_handoff_oracle userspace process
+create_user_process: ENTRY - Creating 'futex_handoff_oracle'
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process
+manager.create_process: ENTRY - name='futex_handoff_oracle', elf_size=182936
+manager.create_process: Generating PID
+manager.create_process: Generated PID 119
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e604
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40017000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff114000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 119
+manager.create_process: Adding PID 119 to ready queue
+create_user_process: manager.create_process returned: true
+create_user_process: Process created with PID 119
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 1218
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 119
+BPBP_HANDLER_ENTRY!
+About to call preempt_disable from BP handler
+Called preempt_disable from BP handler
+BP from_userspace=false, CS=0x8
+BP handler: About to call preempt_enable
+BP handler: Called preempt_enable, exiting handler
+[SW]<T><U>RING3_ENTER: CS=0x33
+[ OK ] RING3_SMOKE: userspace executed + syscall path verified
+<S>[SW]<T><U><S>[SW]<T><U><S>[SW]<T><U>RING3_SYSCALL: First syscall from userspace
+[ OK ] syscall path verified
+[STAGE:user:ADVANCE]
+[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]
+[SCHED_STRAND_ORACLE:x86:samples=2:checked=30:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=1:worst_silence_cpu=0]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]
+[TESTS_COMPLETE:0/0]
+[BOOT_TESTS:PASS]
+=== brk Test Program ===
+Phase 1: Querying initial program break with sbrk(0)...
+  Initial break: 0x0000000040018000
+  Initial break is valid
+Phase 2: Expanding heap by 4KB...
+  Requesting break at: 0x0000000040019000
+  Returned break: 0x0000000040019000
+  Heap expanded successfully
+Phase 3: Writing 512 unique patterns (4KB) to allocated memory...
+  Written 512 unique patterns
+Phase 4: Verifying all 512 patterns...
+  All 512 patterns verified successfully
+Phase 5: Expanding by another 4KB and testing...
+  Second region verified successfully
+Phase 6: Contracting heap back to initial size...
+  Current break: 0x000000004001a000
+  Requesting: 0x0000000040018000
+  Returned break: 0x0000000040018000
+  Heap contracted successfully to initial size
+Phase 7: Re-expanding heap after contraction...
+  Re-expand brk returned: 0x0000000040019000
+  Writing to addr: 0x0000000040018000
+  Pattern written
+  Read back: 0xcafebabedeadbeef
+  Expected: 0xcafebabedeadbeef
+<S>[SW]<T><U>=== mmap Test Suite ===
+Test 1: Anonymous mmap...
+  mmap succeeded
+  Write pattern succeeded
+  Read verification: PASS
+Test 2: munmap...
+  munmap succeeded: PASS
+Test 3: mprotect...
+  mmap for mprotect test succeeded
+  Write pattern succeeded
+  mprotect to PROT_READ succeeded
+  Read after mprotect: PASS
+  Cleanup munmap: PASS
+USERSPACE MMAP: ALL TESTS PASSED
+<S>[SW]<T><U>=== SYSCALL DIAGNOSTIC TEST SEQUENCE ===
+
+Test 41a: Multiple no-arg syscalls (getpid)
+  Call 1: pid = 110
+  Call 2: pid = 110
+  Call 3: pid = 110
+  Result: <S>[SW]<T><U>UDP Socket Test: Starting
+UDP Socket Test: Creating socket...
+UDP: Socket created fd=3
+UDP Socket Test: Binding to port 12345...
+UDP: Socket bound to port 12345
+UDP Socket Test: Sending packet to gateway...
+UDP: Packet sent successfully, bytes=23
+UDP Socket Test: Creating RX test socket...
+UDP: RX socket created fd=4
+UDP Socket Test: Binding RX socket to port 54321...
+UDP: RX socket bound to port 54321
+UDP Socket Test: Sending packet to ourselves (loopback test)...
+UDP: Delivered packet to socket on port 54321
+<S>[SW]<T><U>TCP Socket Test: Starting
+TCP_TEST: socket created OK
+TCP_TEST: bind OK
+TCP_TEST: listen OK
+TCP_TEST: client socket OK
+TCP_TEST: connect OK
+TCP_TEST: accept OK
+<S>[SW]<T><U>=== TCP Dup'd Listener Survival Test (#724 review M1) ===
+
+Step 1: bind + listen on port 9110...
+  PASS: bound and listening (fd=3)
+
+Step 2: dup() the listener fd...
+  PASS: dup'd listener fd=4 (original fd=3)
+
+Step 3: close the ORIGINAL fd (dup'd fd must survive this)...
+  Original fd closed
+
+Step 4: connect+accept through the SURVIVING dup'd fd...
+<S>[SW]<T><U>=== TCP FD_CLOEXEC exec() Survival Test (#707) ===
+
+Step 1: bind + listen on port 9112...
+  PASS: bound and listening (fd=3)
+
+Step 2: mark the listener fd FD_CLOEXEC...
+  PASS: FD_CLOEXEC is set on the listener fd
+
+Step 3: fork()...
+<S>[SW]<T><U><R>[COW FAULT #0] addr=0x7fffff0bee78 cr3=0x507e000
+[SW]<T><U><S>[SW]<T><U>[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0d0f08
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x400043ca
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x202
+[DIAG:PAGEFAULT] RSP: 0x7fffff0d0e40
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x5563000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0d0f08 Error: 0x6 (P=0, W=1, U=1, I=0)
+F<S>[SW]<T><U><S>[SW]<T><U>CLONEVM_EXEC_TEST: start
+<S>[SW]<T><U><S>[SW]<T><U><R>Hello from userspace! Current time: 429298825142 ticks
+<S>[SW]<T><U><R>PASS: All x86_64 process-entry GPRs except RSP are zero
+<S>[SW]<T><U><R>=== clock_gettime Userspace Test ===
+
+Test 1: Basic syscall functionality
+  Return value: 0
+  tv_sec:  429
+  tv_nsec: 323440997
+  PASS: Syscall returned valid time
+
+Test 2: Time advances between calls
+  First call:  429 s, 327006982 ns
+  Second call: 429 s, 327345706 ns
+  PASS: Time did not go backwards
+
+Test 3: Sub-millisecond precision
+  Elapsed: 338724 ns
+  PASS: Sub-millisecond precision (TSC active)
+
+Test 4: Nanosecond precision (not millisecond-aligned)
+  Millisecond-aligned samples: 0/10
+  PASS: Nanosecond precision confirmed
+
+Test 5: Monotonicity over multiple calls
+  PASS: 10 calls maintained monotonicity
+
+=== Test Summary ===
+Passed: 5/5
+Failed: 0/5
+
+USERSPACE CLOCK_GETTIME: OK
+TSC-based high-resolution timing validated from userspace
+<S>[SW]<T><U><R>  Re-expansion verified successfully
+USERSPACE BRK: ALL TESTS PASSED
+<S>[SW]<T><U><R>PASS
+
+Test 41b: Multiple sys_write calls
+.
+  Write 1: returned 1 bytes
+.
+  Write 2: returned 1 bytes
+.
+  Write 3: returned 1 bytes
+  Result: PASS
+
+Test 41c: Single clock_gettime + verify memory
+  Calling clock_gettime once...
+  Return value: 0
+  tv_sec: 429
+  tv_nsec: 356833201
+  Result: PASS
+
+Test 41d: Register preservation across syscall
+  Setting R12=0xDEADBEEFDEADBEEF, R13=0xCAFEBABECAFEBABE before syscall
+  After syscall: R12=0xdeadbeefdeadbeef, R13=0xcafebabecafebabe
+  Result: PASS (registers preserved)
+
+Test 41e: Second clock_gettime call
+  Calling clock_gettime again...
+  Return value: 0
+  tv_sec: 429
+  tv_nsec: 366691567
+  Result: PASS
+
+=== SUMMARY: 5/5 tests passed ===
+DEBUG: passed=5, failed=0
+
+✓ All diagnostic tests passed
+<S>[SW]<K>[SW]<T><U><R>UDP: Loopback packet sent, bytes=7
+UDP Socket Test: Attempting to receive packet...
+UDP: Received packet! bytes=7
+UDP: RX data matches TX data - SUCCESS!
+UDP Ephemeral Port Test: Starting...
+UDP: Ephemeral socket created fd=5
+UDP_EPHEMERAL_TEST: port 0 bind OK
+UDP EADDRINUSE Test: Starting...
+UDP: First socket bound to port 54324
+UDP_EADDRINUSE_TEST: conflict detected OK
+UDP EAGAIN Test: Starting...
+UDP: EAGAIN test socket bound to port 54325
+UDP_EAGAIN_TEST: empty queue OK
+UDP Multiple Packets Test: Starting...
+UDP: Multi-packet RX socket bound to port 54326
+UDP: Multi-packet TX socket bound to port 54327
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 1, bytes=4
+UDP: Delivered packet to socket on port 54326
+<S>[SW]<T><U><R>TCP_TEST: shutdown OK
+TCP_TEST: shutdown_unconnected OK
+TCP_TEST: eaddrinuse OK
+TCP_TEST: listen_unbound OK
+TCP_TEST: accept_nonlisten OK
+TCP_DATA_TEST: starting
+TCP_DATA_TEST: server listening on 8082
+TCP_DATA_TEST: client connected
+TCP_DATA_TEST: send OK
+TCP_DATA_TEST: accept OK
+TCP_DATA_TEST: recv OK
+TCP_DATA_TEST: data verified
+TCP_SHUTDOWN_WRITE_TEST: starting
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff0bee78 cr3=0x53fc000
+[COW FAULT #2] addr=0x40018058 cr3=0x53fc000
+[COW FAULT #3] addr=0x7ffffdffe010 cr3=0x53fc000
+
+[COW FAULT #4] addr=0x7ffffdfff010 cr3=0x53fc000
+Step 4: parent waiting for child (pid=120)...
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[TEST:userspace:loopback_recv_wake:START]
+<S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child live
+CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)
+<S>[SW]<T><U><R>[SW]<K>[SW]<T><U><R>UDP: Sent packet 2, bytes=4
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 3, bytes=4
+<S>[SW]<T><U><R><S>[SW]<T><U><R>  PASS: accepted a connection through the dup'd fd after the original closed
+
+Step 5: close the last fd; the listener must now actually retire...
+  PASS: port 9110 was free after the last fd closed (listener genuinely retired)
+
+=== All TCP dup'd-listener tests passed! ===
+TCP_DUP_LISTENER_TEST_PASSED
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>HTTP Test: Starting
+HTTP_TEST: testing port out of range...
+[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0cee28
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x400070b8
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x246
+[DIAG:PAGEFAULT] RSP: 0x7fffff0cedf0
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x5563000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0cee28 Error: 0x6 (P=0, W=1, U=1, I=0)
+F<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child exited
+[SW]<K>[SW]<T><U><R>UDP: Received packet 1, bytes=4
+UDP: Received packet 2, bytes=4
+UDP: Received packet 3, bytes=4
+UDP_MULTIPACKET_TEST: 3 packets OK
+UDP Socket Test: All tests passed!
+<S>[SW]<T><U><R>TCP_SHUTDOWN_WRITE_TEST: EPIPE OK
+TCP_SHUT_RD_TEST: starting
+<S>[SW]<T><B>[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=411:rescues=0:queue_residual=0:balance=0]
+[FUTEX_HANDOFF_ORACLE_DRIVER:s1=-11:s2=0:s3=-110]
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[DIAG:PAGEFAULT] ==============================
+[DIAG:PAGEFAULT] Fault addr: 0x7fffff0cdfc8
+[DIAG:PAGEFAULT] Error code: 0x6
+[DIAG:PAGEFAULT] RIP: 0x40002e8e
+[DIAG:PAGEFAULT] CS: 0x33
+[DIAG:PAGEFAULT] RFLAGS: 0x202
+[DIAG:PAGEFAULT] RSP: 0x7fffff0cdfd0
+[DIAG:PAGEFAULT] SS: 0x2b
+[DIAG:PAGEFAULT] CR3: 0x5563000
+[DIAG:PAGEFAULT] ==============================
+PF0?PF_ENTRY!
+PF @ 0x7fffff0cdfc8 Error: 0x6 (P=0, W=1, U=1, I=0)
+F<S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #5] addr=0x7fffff0f1e88 cr3=0x512e000
+[SW]<K>[SW]<T><U><R>TCP_SHUT_RD_TEST: EOF OK
+TCP_SHUT_WR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>HTTP_TEST: port_out_of_range OK
+<S>[SW]<T><U><R>[COW FAULT #6] addr=0x7fffff0f1e88 cr3=0x5650000
+<S>[SW]<T><U><R>[COW FAULT #7] addr=0x7fffff0f1e88 cr3=0x596f000
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>HTTP_TEST: testing non-numeric port...
+<S>[SW]<T><U><R>[COW FAULT #8] addr=0x7fffff0f1e88 cr3=0x5650000
+<S>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff0f1e88 cr3=0x4e6a000
+[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SHUT_WR_TEST: SHUT_WR write rejected OK
+TCP_SHUT_WR_TEST: server saw FIN OK
+TCP_BIDIR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>HTTP_TEST: port_non_numeric OK
+HTTP_TEST: testing empty host...
+HTTP_TEST: empty_host OK
+HTTP_TEST: testing URL too long...
+HTTP_TEST: url_too_long OK
+HTTP_TEST: testing HTTPS URL parsing...
+<S>[SW]<T><U><R>[COW FAULT #10] addr=0x7fffff0f1e88 cr3=0x5650000
+<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49153
+[COW FAULT #11] addr=0x7fffff0f1e88 cr3=0x57f4000
+[SW]<T><B>[COW FAULT #12] addr=0x40017058 cr3=0x512e000
+[COW FAULT #13] addr=0x7ffffdffe010 cr3=0x512e000
+[COW FAULT #14] addr=0x7ffffdfff010 cr3=0x512e000
+LOOPBACK_WAKE_TEST: data latency_ms=952 bytes=16
+LOOPBACK_WAKE_TEST: reader_stamps pid=122 w0=437889 acc=437829 pre=437830 data=438841 w0_to_pre=0 pre_to_data=1011 lat=952
+[SW]<T><U><R>[COW FAULT #15] addr=0x40017058 cr3=0x596f000
+[COW FAULT #16] addr=0x7ffffdffe010 cr3=0x596f000
+[COW FAULT #17] addr=0x7ffffdfff010 cr3=0x596f000
+LOOPBACK_WAKE_TEST: peer_stamps pid=123 conn=437889 w0=437889 w1=438894 write_ms=1005
+[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #18] addr=0x7fffff0f1e88 cr3=0x5650000
+[SW]<T><B>p00r0 <S>[SW]<K>[SW]<T><U><R>TCP_BIDIR_TEST: server->client OK
+TCP_LARGE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] '<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>example.com' via 8.8.8.8: Timeout<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_LARGE_TEST: 256 bytes verified OK
+TCP_BACKLOG_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R> (1348ms)
+<S>[SW]<T><B>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BACKLOG_TEST: overflow rejected OK
+TCP_CONNREFUSED_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R>TCP_CONNREFUSED_TEST: ECONNREFUSED OK
+TCP_MSS_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 10.211.55.1: Timeout (2079ms)
+<S>[SW]<T><B>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R>TCP_MSS_TEST: 2000 bytes (>MSS) verified OK
+TCP_MULTI_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MULTI_TEST: 3 messages verified OK
+TCP_ADDR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 172.16.45.2: Timeout (1854p00r0 ms)
+[dns] 'example.com' via 10.0.2.3: SendError (13ms)
+[dns] 'example.com' FAILED all servers (total 5985ms)
+HTTP_TEST: https_url SKIP (network unavailable)
+HTTP_TEST: testing error handling (invalid domain)...
+<S>[SW]<T><B>UDP: Delivered packet to socket on port 49157
+[SW]<T><B>LOOPBACK_WAKE_TEST: eof wait_ms=5412 bytes=0
+LOOPBACK_WAKE_TEST: reader_eof_stamps ready=438850 eof=444262 eof_wait=5412
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_ADDR_TEST: 10.x.x.x OK
+TCP_SIMUL_CLOSE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SIMUL_CLOSE_TEST: simultaneous close OK
+TCP_HALFCLOSE_TEST: starting
+<S>[SW]<T><B>p00r0 [SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>' via 8.8.8.8: ServerError(3) (770ms)
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_HALFCLOSE_TEST: read after SHUT_WR OK
+TCP_FIRST_ACCEPT_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 10.211.55.1: Timeout (614ms)
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_FIRST_ACCEPT_TEST: accept OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP Socket Test: PASSED
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 172.16.45.2: Timeout<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R> (530ms)
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49160
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS Test: Starting
+<S>[SW]<T><U><R>[dns] '<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>this.domain.does.not.exist.invalid' via 10.0.2.3<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>: ServerError(3) (475ms)
+[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 4253ms)
+HTTP_TEST: invalid_domain OK
+HTTP_TEST: testing HTTP fetch (example.com)...
+<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49161
+p00r0 <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<T><U><R>DNS_TEST: resolving www.google.com...
+UDP: Delivered packet to socket on port 49162
+DNS_TEST: resolved ip=142.251.150.119
+DNS_TEST: google_resolve OK
+DNS_TEST: resolving example.com...
+UDP: Delivered packet to socket on port 49163
+DNS_TEST: resolved ip=172.66.147.243
+DNS_TEST: example_resolve OK
+DNS_TEST: testing NXDOMAIN...
+UDP: Delivered packet to socket on port 49164
+<S>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8 -> 172.66.147.243 (574ms, total 575ms)
+[http] DNS resolved 172.66.147.243 (583ms)
+[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>  PASS: child exec'd simple_exit0 and exited with code 0
+
+Step 5: close the parent's own listener fd...
+  Parent's listener fd closed
+
+Step 6: rebind port 9112 -- must succeed if the listener was genuinely retired...
+  PASS: port 9112 was free after the parent's close -- the child's cloexec'd copy was genuinely released across exec()
+
+=== All TCP FD_CLOEXEC exec() tests passed! ===
+TCP_CLOEXEC_EXEC_TEST_PASSED
+<S>[SW]<T><U><R>DNS_TEST: nxdomain OK (error=ServerError(3))
+DNS_TEST: testing empty hostname...
+DNS_TEST: empty_hostname OK
+DNS_TEST: testing long hostname...
+DNS_TEST: long_hostname OK
+DNS_TEST: testing txid variation...
+UDP: Delivered packet to socket on port 49165
+UDP: Delivered packet to socket on port 49166
+DNS_TEST: txid_varies OK
+DNS Test: All tests passed!
+<S>[SW]<T><B>[http] TCP connected (378ms)
+[SW]<T><U><R>[COW FAULT #19] addr=0x40017058 cr3=0x4e6a000
+LOOPBACK_WAKE_TEST: load_stamps max_gap_ms=732 samples=6234 spin_ms=10172
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[http] response received: 868 bytes (recv 466ms, total 1438ms)
+HTTP_TEST: received 868 bytes, status=200
+HTTP_TEST: example_fetch OK (status 200, body contains HTML)
+HTTP Test: All tests passed!
+<S>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B><S>[SW]<I>p01r1 [SW]<T><U><R>CLONEVM_EXEC_TEST: second stage
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R>[SW]<T><B><S>[SW]<T><B><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+<S>[SW]<I>[SW]<T><B>LOOPBACK_WAKE_TEST: watchdog_stamps target=460145 wake=460212 overrun_ms=67
+<S>[SW]<T><B>[TEST:userspace:loopback_recv_wake:FAIL:reader_exit_15]
+[TOMBSTONE_CENSUS:resident=1:removed=6:reap_second=1:retire_second=5:abandoned_unqueued=1]
+<S>[SW]<I>

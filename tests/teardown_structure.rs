@@ -14387,12 +14387,20 @@ fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
     }
 
     // Every marker assertion is an exact count. A relaxed comparison here is how
-    // a gate stops being able to fail.
+    // a gate stops being able to fail. Two shapes are exact: a literal 0 or 1,
+    // and an equality against an expectation this script derives from its own
+    // bytes (`VAR=$(grep -c... "${BASH_SOURCE[0]}")`, the census-not-a-list
+    // shape of #549/#551/[[gate-target-fidelity-528]]). Anything else -- any
+    // non-`-eq` comparison, and any `-eq "$VAR"` whose VAR is not traceable to
+    // such a self-census -- is still a relaxation and still reddens here.
     for line in script.lines() {
         let statement = line.trim();
         if statement.contains("marker_count") && statement.starts_with("test ") {
-            let exact = statement.ends_with("-eq 0") || statement.ends_with("-eq 1");
-            if !exact {
+            let exact_literal = statement.ends_with("-eq 0") || statement.ends_with("-eq 1");
+            let exact_self_derived = x86_prod_eq_rhs_variable(statement)
+                .map(|var| x86_prod_expectation_is_self_derived(script, var))
+                .unwrap_or(false);
+            if !(exact_literal || exact_self_derived) {
                 eprintln!("x86 production-profile gate relaxed a marker assertion: {statement}");
                 return Err(());
             }
@@ -14409,6 +14417,93 @@ fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
     }
 
     Ok(())
+}
+
+/// The variable name on the right of a `... -eq "$NAME"` comparison, if the
+/// statement ends in exactly that shape. `None` for a literal right-hand side,
+/// for any comparison that is not `-eq`, and for anything else.
+/// claim-lint:ok: mechanical description of the parser defined immediately
+/// below; its holes are closed by the two mutation legs named "marker
+/// assertion pinned to an underived variable" and "self-census derivation
+/// hand-pinned" in x86_production_profile_gate_ratchet_is_not_vacuous, in
+/// tests/teardown_structure.rs.
+fn x86_prod_eq_rhs_variable(statement: &str) -> Option<&str> {
+    let rhs = statement.rsplit_once(" -eq ")?.1.trim();
+    let name = rhs.strip_prefix("\"$")?.strip_suffix('"')?;
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    Some(name)
+}
+
+/// Whether `var` is an expectation the script derives from its own bytes: it is
+/// either assigned directly from a `grep -c` over `"${BASH_SOURCE[0]}"`, or
+/// every assignment to it is a bare integer, `$((VAR OP N))` arithmetic
+/// whose VAR is itself self-derived and whose N is a bare integer literal
+/// (round 3, N1 review fix: the additive implicit-default-NIC count), or
+/// another such variable. A name with no assignment at all, or with any
+/// assignment from anything else (a caller-supplied environment value, a
+/// serial-log read, a hand-pinned string, or arithmetic over a non-derived
+/// variable), is not self-derived and does not license an inexact-looking
+/// assertion.
+/// claim-lint:ok: mechanical description of the predicate defined
+/// immediately below; the mutation legs "self-census derivation
+/// hand-pinned" and "arithmetic derivation hand-pinned" in
+/// x86_production_profile_gate_ratchet_is_not_vacuous, in
+/// tests/teardown_structure.rs, redden when the derivation it looks for
+/// becomes a hand-pinned constant.
+fn x86_prod_expectation_is_self_derived(script: &str, var: &str) -> bool {
+    x86_prod_expectation_is_self_derived_depth(script, var, 0)
+}
+
+fn x86_prod_expectation_is_self_derived_depth(script: &str, var: &str, depth: usize) -> bool {
+    if depth > 4 {
+        return false;
+    }
+    let prefix = format!("{var}=");
+    let mut saw_assignment = false;
+    let mut all_ok = true;
+    for line in script.lines() {
+        let statement = line.trim();
+        let Some(rhs) = statement.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        saw_assignment = true;
+        let rhs = rhs.trim();
+        if rhs.starts_with("$(grep -c") && rhs.contains("\"${BASH_SOURCE[0]}\"") {
+            continue;
+        }
+        let bare = rhs
+            .split_once(" || ")
+            .map(|(head, _)| head)
+            .unwrap_or(rhs)
+            .trim()
+            .trim_matches('"');
+        if !bare.is_empty() && bare.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Some(inner) = bare.strip_prefix("$((").and_then(|s| s.strip_suffix("))")) {
+            let inner = inner.trim();
+            let mut parts = inner.splitn(2, |c| c == '+' || c == '-');
+            if let (Some(lhs), Some(offset)) = (parts.next(), parts.next()) {
+                let lhs = lhs.trim();
+                let offset = offset.trim();
+                let lhs_is_name = !lhs.is_empty() && lhs.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+                let offset_is_literal = !offset.is_empty() && offset.bytes().all(|b| b.is_ascii_digit());
+                if lhs_is_name && offset_is_literal && x86_prod_expectation_is_self_derived_depth(script, lhs, depth + 1) {
+                    continue;
+                }
+            }
+        }
+        if let Some(other) = bare.strip_prefix('$') {
+            let other = other.trim_matches(|c| c == '{' || c == '}');
+            if other != var && x86_prod_expectation_is_self_derived_depth(script, other, depth + 1) {
+                continue;
+            }
+        }
+        all_ok = false;
+    }
+    saw_assignment && all_ok
 }
 
 #[test]
@@ -14506,6 +14601,37 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
         gate.replacen(
             "test \"$(marker_count \"$TOMBSTONE_CENSUS_PROD_LITERAL\")\" -eq 1",
             "test \"$(marker_count \"$TOMBSTONE_CENSUS_PROD_LITERAL\")\" -ge 0",
+            1,
+        ),
+    );
+    // The self-derived arm is not a hole: an `-eq "$VAR"` whose VAR the script
+    // does not derive from its own bytes is still a relaxation.
+    report_vacuity(
+        "marker assertion pinned to an underived variable",
+        gate.replacen(
+            "test \"$(marker_count \"$TOMBSTONE_CENSUS_PROD_LITERAL\")\" -eq 1",
+            "test \"$(marker_count \"$TOMBSTONE_CENSUS_PROD_LITERAL\")\" -eq \"$UNDERIVED_EXPECTATION\"",
+            1,
+        ),
+    );
+    // And the self-census that licenses the derived arm cannot be quietly
+    // replaced by a hand-pinned constant.
+    report_vacuity(
+        "self-census derivation hand-pinned",
+        gate.replacen(
+            "EXPECTED_VIRTIO_BLK=$(grep -cE -- '^[[:space:]]*-device virtio-blk-pci,drive=' \"${BASH_SOURCE[0]}\") || true",
+            "EXPECTED_VIRTIO_BLK=\"$SOME_OTHER_VALUE\"",
+            1,
+        ),
+    );
+    // The additive-arithmetic arm (round 3, N1 review fix) cannot smuggle
+    // in an underived variable either: the left-hand operand of the
+    // `$((VAR + N))` shape must itself be self-derived, not merely present.
+    report_vacuity(
+        "arithmetic derivation hand-pinned",
+        gate.replacen(
+            "EXPECTED_E1000=$((EXPECTED_E1000_FLAGS + 1))",
+            "EXPECTED_E1000=$((SOME_OTHER_VALUE + 1))",
             1,
         ),
     );

@@ -186,6 +186,16 @@ pub struct Device {
     pub revision_id: u8,
     /// Device class
     pub class: DeviceClass,
+    /// Raw class-code byte as read from config dword 0x08, bits 31-24 --
+    /// unlike `class`, this field is never assigned through
+    /// `DeviceClass::from_u8`, so it stays byte-faithful for class codes
+    /// outside that enum's explicit arms (`DeviceClass::Unknown` collapses
+    /// every such code, including a genuine `0xFF`, to the same value).
+    /// claim-lint:ok: the only write site is `raw_class: class_code` in
+    /// `probe_device()` below, a plain assignment with no `from_u8` call on
+    /// the right-hand side -- grep -n raw_class kernel/src/drivers/pci.rs
+    /// shows every occurrence.
+    pub raw_class: u8,
     /// Device subclass
     pub subclass: u8,
     /// Programming interface
@@ -1055,6 +1065,7 @@ fn probe_device(bus: u8, device: u8, function: u8) -> Option<Device> {
         device_id,
         revision_id,
         class: DeviceClass::from_u8(class_code),
+        raw_class: class_code,
         subclass,
         prog_if,
         interrupt_line,
@@ -1279,7 +1290,6 @@ pub fn assign_bars() {
 }
 
 /// Get a copy of all discovered PCI devices
-#[allow(dead_code)] // Part of public API, will be used by VirtIO driver
 pub fn get_devices() -> Option<Vec<Device>> {
     PCI_DEVICES.lock().clone()
 }
@@ -1351,4 +1361,86 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
             .collect(),
         None => Vec::new(),
     }
+}
+
+// =============================================================================
+// Enumerated-PCI-function fact dump (x86-64 only)
+// =============================================================================
+
+/// Print one fact line per enumerated PCI function, plus one total line.
+///
+/// Facts only. This function holds no expected-device set, prints no
+/// PASS/FAIL verdict, logs nothing at ERROR level, and cannot redden a boot:
+/// every field it emits is a transcription of a value `enumerate()` already
+/// parsed out of live PCI config space (vendor/device from config dword
+/// 0x00, subclass from 0x08, `interrupt_line` from 0x3C, BAR address and
+/// size from `decode_bar()`). The `class=` field prints `Device::raw_class`,
+/// the untouched config-dword-0x08 byte -- not `Device::class`, which is
+/// `DeviceClass::from_u8(raw_class)` and therefore lossy: any class code
+/// outside that enum's 18 explicit arms collapses to `DeviceClass::Unknown`
+/// (discriminant `0xFF`), indistinguishable from a genuine `0xFF` byte.
+/// `raw_class` has no such catch-all, so it stays byte-faithful for every
+/// class code. The expectations live in the gate scripts --
+/// `docker/qemu/run-x86-boot-tests.sh` and
+/// `docker/qemu/run-x86-prod-profile-boot-test.sh` -- which derive the set of
+/// devices to expect from their own QEMU `-device`/`-netdev` flag bytes and
+/// assert against these lines.
+/// claim-lint:ok: mechanical description of the function defined
+/// immediately below in this file; the measured per-profile visibility is
+/// in docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+///
+/// Line shape, one per enumerated function, in enumeration order:
+///
+/// ```text
+/// PCI_FN 00:03.0 1af4:1001 class=01/00 bar0=0xc040/0x40 irq=0x0b
+/// ```
+///
+/// followed by exactly one
+///
+/// ```text
+/// PCI_FN_TOTAL 9
+/// ```
+///
+/// `bar0=` is BAR index 0's `address`/`size` verbatim (printed as `0x0/0x0`
+/// for a BAR 0 whose decoded size is 0); `irq=` is the raw `interrupt_line`
+/// config byte,
+/// whose `0xff` value is the PCI "unknown / not connected" sentinel.
+///
+/// Printed with `serial_println!` (COM1). That path -- `serial::_print` in
+/// `kernel/src/serial.rs`, a file whose only cfg is the crate-level
+/// `#![cfg(target_arch = "x86_64")]` -- carries no feature gate and no log
+/// level filter, so these lines appear in the zero-feature production
+/// profile exactly as they do under `boot_tests,testing,external_test_bins`.
+/// Both x86-64 gate scripts capture COM1 and COM2 to
+/// `$OUTPUT_DIR/serial_user.txt` and `$OUTPUT_DIR/serial_kernel.txt` and
+/// grep across `serial_*.txt`, so both read this stream.
+///
+/// Called from `drivers::init()` immediately after `pci::enumerate()`. There
+/// is no `assign_bars()` step to sequence after on this arch:
+/// `pci::assign_bars()` is `#[cfg(target_arch = "aarch64")]` and its only
+/// call site is the aarch64 arm of `drivers::init()`, so on x86-64 "after
+/// enumeration" is also "after the last BAR value the kernel writes before
+/// driver init".
+#[cfg(target_arch = "x86_64")]
+pub fn dump_enumerated_functions() {
+    let devices = get_devices().unwrap_or_default();
+
+    for dev in &devices {
+        let bar0 = &dev.bars[0];
+        crate::serial_println!(
+            "PCI_FN {:02x}:{:02x}.{} {:04x}:{:04x} class={:02x}/{:02x} bar0={:#x}/{:#x} irq={:#04x}",
+            dev.bus,
+            dev.device,
+            dev.function,
+            dev.vendor_id,
+            dev.device_id,
+            dev.raw_class,
+            dev.subclass,
+            bar0.address,
+            bar0.size,
+            dev.interrupt_line
+        );
+    }
+
+    crate::serial_println!("PCI_FN_TOTAL {}", devices.len());
 }

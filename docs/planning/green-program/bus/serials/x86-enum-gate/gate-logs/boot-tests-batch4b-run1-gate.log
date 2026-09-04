@@ -1,0 +1,823 @@
+  RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
+   Compiling kernel v0.1.0 (/root/breenix-busgate-prove/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-busgate-prove)
+    Finished `release` profile [optimized] target(s) in 14.48s
+   Compiling kernel v0.1.0 (/root/breenix-busgate-prove/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-busgate-prove)
+    Finished `release` profile [optimized] target(s) in 14.81s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-busgate-prove/target/release/build/breenix-27744f238db676e7/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running `target/debug/xtask create-test-disk`
+Creating test disk image...
+  Including std test: hello_std_real (227160 bytes)
+  Found 149 test binaries
+  Added: access_test (177960 bytes, sectors 128-475)
+  Added: alarm_test (186872 bytes, sectors 476-840)
+  Added: argv_test (184344 bytes, sectors 841-1201)
+  Added: bcheck (299256 bytes, sectors 1202-1786)
+  Added: bfontpicker (346240 bytes, sectors 1787-2463)
+  Added: biconkit (248160 bytes, sectors 2464-2948)
+  Added: blauncher (325368 bytes, sectors 2949-3584)
+  Added: bless (185648 bytes, sectors 3585-3947)
+  Added: block_eintr_oracle (190016 bytes, sectors 3948-4319)
+  Added: blocking_recv_test (188128 bytes, sectors 4320-4687)
+  Added: blog (331096 bytes, sectors 4688-5334)
+  Added: blogd (181976 bytes, sectors 5335-5690)
+  Added: bounce (275144 bytes, sectors 5691-6228)
+  Added: brk_test (186592 bytes, sectors 6229-6593)
+  Added: bsh (579240 bytes, sectors 6594-7725)
+  Added: bssh (322512 bytes, sectors 7726-8355)
+  Added: bsshd (314264 bytes, sectors 8356-8969)
+  Added: bterm (342704 bytes, sectors 8970-9639)
+  Added: btop (184208 bytes, sectors 9640-9999)
+  Added: btrace (198944 bytes, sectors 10000-10388)
+  Added: burl (483360 bytes, sectors 10389-11333)
+  Added: bwm (331408 bytes, sectors 11334-11981)
+  Added: cat_test (183256 bytes, sectors 11982-12339)
+  Added: clock_gettime_test (188664 bytes, sectors 12340-12708)
+  Added: cloexec_test (192584 bytes, sectors 12709-13085)
+  Added: clonevm_exec_test (184672 bytes, sectors 13086-13446)
+  Added: concurrent_recv_stress (188960 bytes, sectors 13447-13816)
+  Added: confetti (189256 bytes, sectors 13817-14186)
+  Added: counter (177648 bytes, sectors 14187-14533)
+  Added: cow_cleanup_test (182552 bytes, sectors 14534-14890)
+  Added: cow_oom_test (186616 bytes, sectors 14891-15255)
+  Added: cow_readonly_test (187056 bytes, sectors 15256-15621)
+  Added: cow_signal_test (188328 bytes, sectors 15622-15989)
+  Added: cow_sole_owner_test (187016 bytes, sectors 15990-16355)
+  Added: cow_stress_test (187112 bytes, sectors 16356-16721)
+  Added: cp_mv_argv_test (182816 bytes, sectors 16722-17079)
+  Added: ctrl_c_test (188000 bytes, sectors 17080-17447)
+  Added: cwd_test (182632 bytes, sectors 17448-17804)
+  Added: demo (189720 bytes, sectors 17805-18175)
+  Added: devfs_test (182456 bytes, sectors 18176-18532)
+  Added: dns_test (195240 bytes, sectors 18533-18914)
+  Added: dup_test (189168 bytes, sectors 18915-19284)
+  Added: echo_argv_test (182480 bytes, sectors 19285-19641)
+  Added: epoll_test (182848 bytes, sectors 19642-19999)
+  Added: exec_argv_test (178216 bytes, sectors 20000-20348)
+  Added: exec_from_ext2_test (188088 bytes, sectors 20349-20716)
+  Added: exec_smoke (178080 bytes, sectors 20717-21064)
+  Added: exec_smoke_target (185048 bytes, sectors 21065-21426)
+  Added: exec_stack_argv_test (183448 bytes, sectors 21427-21785)
+  Added: false_test (182576 bytes, sectors 21786-22142)
+  Added: fart (191704 bytes, sectors 22143-22517)
+  Added: fbinfo_test (187584 bytes, sectors 22518-22884)
+  Added: fcntl_test (188760 bytes, sectors 22885-23253)
+  Added: fifo_test (198464 bytes, sectors 23254-23641)
+  Added: file_read_test (182416 bytes, sectors 23642-23998)
+  Added: fork_memory_test (188680 bytes, sectors 23999-24367)
+  Added: fork_pending_signal_test (187752 bytes, sectors 24368-24734)
+  Added: fork_smoke (187624 bytes, sectors 24735-25101)
+  Added: fork_state_test (189192 bytes, sectors 25102-25471)
+  Added: fork_test (188104 bytes, sectors 25472-25839)
+  Added: fs_block_alloc_test (188624 bytes, sectors 25840-26208)
+  Added: fs_directory_test (183168 bytes, sectors 26209-26566)
+  Added: fs_large_file_test (182624 bytes, sectors 26567-26923)
+  Added: fs_link_test (182816 bytes, sectors 26924-27281)
+  Added: fs_rename_test (182720 bytes, sectors 27282-27638)
+  Added: fs_write_test (182904 bytes, sectors 27639-27996)
+  Added: futex_handoff_oracle (182936 bytes, sectors 27997-28354)
+  Added: getdents_test (184000 bytes, sectors 28355-28714)
+  Added: guskit (391480 bytes, sectors 28715-29479)
+  Added: head_test (183072 bytes, sectors 29480-29837)
+  Added: heartbeat (189120 bytes, sectors 29838-30207)
+  Added: hello_std_real (227160 bytes, sectors 30208-30651)
+  Added: hello_time (177640 bytes, sectors 30652-30998)
+  Added: hello_world (227160 bytes, sectors 30999-31442)
+  Added: http_fetch_test (464448 bytes, sectors 31443-32350)
+  Added: http_test (468600 bytes, sectors 32351-33266)
+  Added: init (187504 bytes, sectors 33267-33633)
+  Added: init_shell (262504 bytes, sectors 33634-34146)
+  Added: itimer_test (187312 bytes, sectors 34147-34512)
+  Added: job_control_test (187664 bytes, sectors 34513-34879)
+  Added: job_table_test (192248 bytes, sectors 34880-35255)
+  Added: kill_process_group_test (188496 bytes, sectors 35256-35624)
+  Added: loopback_wake_test (190448 bytes, sectors 35625-35996)
+  Added: ls_test (183304 bytes, sectors 35997-36355)
+  Added: lseek_test (182528 bytes, sectors 36356-36712)
+  Added: mkdir_argv_test (182688 bytes, sectors 36713-37069)
+  Added: net_test (191592 bytes, sectors 37070-37444)
+  Added: nonblock_eagain_test (183720 bytes, sectors 37445-37803)
+  Added: nonblock_test (188760 bytes, sectors 37804-38172)
+  Added: particles (193952 bytes, sectors 38173-38551)
+  Added: pause_test (188376 bytes, sectors 38552-38919)
+  Added: pipe2_test (188936 bytes, sectors 38920-39289)
+  Added: pipe_concurrent_test (188736 bytes, sectors 39290-39658)
+  Added: pipe_fork_test (188840 bytes, sectors 39659-40027)
+  Added: pipe_refcount_test (199960 bytes, sectors 40028-40418)
+  Added: pipe_test (188264 bytes, sectors 40419-40786)
+  Added: pipeline_test (191600 bytes, sectors 40787-41161)
+  Added: poll_tcp_oracle (207176 bytes, sectors 41162-41566)
+  Added: poll_test (189040 bytes, sectors 41567-41936)
+  Added: pty_test (187120 bytes, sectors 41937-42302)
+  Added: rectangles (197104 bytes, sectors 42303-42687)
+  Added: register_init_test (177112 bytes, sectors 42688-43033)
+  Added: resolution (191032 bytes, sectors 43034-43407)
+  Added: rm_argv_test (182496 bytes, sectors 43408-43764)
+  Added: select_test (188920 bytes, sectors 43765-44133)
+  Added: session_test (187984 bytes, sectors 44134-44501)
+  Added: shell_pipe_test (183144 bytes, sectors 44502-44859)
+  Added: sigaltstack_test (189016 bytes, sectors 44860-45229)
+  Added: sigchld_job_test (187536 bytes, sectors 45230-45596)
+  Added: sigchld_test (186544 bytes, sectors 45597-45961)
+  Added: sigkill_teardown_test (206712 bytes, sectors 45962-46365)
+  Added: signal_exec_check (177896 bytes, sectors 46366-46713)
+  Added: signal_exec_test (188736 bytes, sectors 46714-47082)
+  Added: signal_fork_test (188176 bytes, sectors 47083-47450)
+  Added: signal_handler_test (187912 bytes, sectors 47451-47818)
+  Added: signal_regs_test (188224 bytes, sectors 47819-48186)
+  Added: signal_return_test (188328 bytes, sectors 48187-48554)
+  Added: signal_test (187880 bytes, sectors 48555-48921)
+  Added: sigsuspend_test (188880 bytes, sectors 48922-49290)
+  Added: simple_exit (170592 bytes, sectors 49291-49624)
+  Added: simple_exit0 (170600 bytes, sectors 49625-49958)
+  Added: sleep_debug_test (188608 bytes, sectors 49959-50327)
+  Added: spawn_smoke_target (170608 bytes, sectors 50328-50661)
+  Added: spinner (177648 bytes, sectors 50662-51008)
+  Added: stdin_test (182296 bytes, sectors 51009-51365)
+  Added: syscall_diagnostic_test (170872 bytes, sectors 51366-51699)
+  Added: syscall_enosys (177544 bytes, sectors 51700-52046)
+  Added: tail_test (183072 bytes, sectors 52047-52404)
+  Added: tcp_blocking_test (203448 bytes, sectors 52405-52802)
+  Added: tcp_client_test (187632 bytes, sectors 52803-53169)
+  Added: tcp_cloexec_exec_test (189464 bytes, sectors 53170-53540)
+  Added: tcp_dup_listener_test (188848 bytes, sectors 53541-53909)
+  Added: tcp_socket_test (202304 bytes, sectors 53910-54305)
+  Added: telnetd (184088 bytes, sectors 54306-54665)
+  Added: test_mmap (182240 bytes, sectors 54666-55021)
+  Added: timer_test (182160 bytes, sectors 55022-55377)
+  Added: tones (184232 bytes, sectors 55378-55737)
+  Added: true_test (182568 bytes, sectors 55738-56094)
+  Added: tty_oracle (218408 bytes, sectors 56095-56521)
+  Added: tty_test (188104 bytes, sectors 56522-56889)
+  Added: udp_socket_test (193408 bytes, sectors 56890-57267)
+  Added: unix_named_socket_test (195344 bytes, sectors 57268-57649)
+  Added: unix_socket_test (205320 bytes, sectors 57650-58051)
+  Added: wait_stress (195568 bytes, sectors 58052-58433)
+  Added: waitpid_test (188160 bytes, sectors 58434-58801)
+  Added: wc_test (183640 bytes, sectors 58802-59160)
+  Added: which_test (182968 bytes, sectors 59161-59518)
+  Added: wnohang_timing_test (182552 bytes, sectors 59519-59875)
+  Added: xhci_counters (187224 bytes, sectors 59876-60241)
+
+Test disk created: target/test_binaries.img
+  Binaries: 149
+  Data size: 30740648 bytes (29.32 MB)
+  Disk size: 60242 sectors (29.42 MB)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-busgate-prove/target/ext2.img
+  Size: 256MB
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 44 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 10524
+drwxr-xr-x  2 root root   4096 Sep  4 15:25 .
+drwxr-xr-x 12 root root   4096 Sep  4 15:25 ..
+-rwxr-xr-x  1 root root 299256 Sep  4 15:25 bcheck
+-rwxr-xr-x  1 root root 346240 Sep  4 15:25 bfontpicker
+-rwxr-xr-x  1 root root 248160 Sep  4 15:25 biconkit
+-rwxr-xr-x  1 root root 325368 Sep  4 15:25 blauncher
+-rwxr-xr-x  1 root root 185648 Sep  4 15:25 bless
+-rwxr-xr-x  1 root root 190016 Sep  4 15:25 block_eintr_oracle
+-rwxr-xr-x  1 root root 331096 Sep  4 15:25 blog
+-rwxr-xr-x  1 root root 275144 Sep  4 15:25 bounce
+-rwxr-xr-x  1 root root 579240 Sep  4 15:25 bsh
+-rwxr-xr-x  1 root root 322512 Sep  4 15:25 bssh
+-rwxr-xr-x  1 root root 314264 Sep  4 15:25 bsshd
+-rwxr-xr-x  1 root root 342704 Sep  4 15:25 bterm
+-rwxr-xr-x  1 root root 184208 Sep  4 15:25 btop
+-rwxr-xr-x  1 root root 198944 Sep  4 15:25 btrace
+-rwxr-xr-x  1 root root 483360 Sep  4 15:25 burl
+-rwxr-xr-x  1 root root 331408 Sep  4 15:25 bwm
+-rwxr-xr-x  1 root root 188960 Sep  4 15:25 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189256 Sep  4 15:25 confetti
+-rwxr-xr-x  1 root root 177648 Sep  4 15:25 counter
+-rwxr-xr-x  1 root root 189720 Sep  4 15:25 demo
+-rwxr-xr-x  1 root root 178080 Sep  4 15:25 exec_smoke
+-rwxr-xr-x  1 root root 185048 Sep  4 15:25 exec_smoke_target
+-rwxr-xr-x  1 root root 191704 Sep  4 15:25 fart
+-rwxr-xr-x  1 root root 187624 Sep  4 15:25 fork_smoke
+-rwxr-xr-x  1 root root 182936 Sep  4 15:25 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391480 Sep  4 15:25 guskit
+-rwxr-xr-x  1 root root 189120 Sep  4 15:25 heartbeat
+-rwxr-xr-x  1 root root 177640 Sep  4 15:25 hello_time
+-rwxr-xr-x  1 root root 227160 Sep  4 15:25 hello_world
+-rwxr-xr-x  1 root root 262504 Sep  4 15:25 init_shell
+-rwxr-xr-x  1 root root 193952 Sep  4 15:25 particles
+-rwxr-xr-x  1 root root 207176 Sep  4 15:25 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197104 Sep  4 15:25 rectangles
+-rwxr-xr-x  1 root root 191032 Sep  4 15:25 resolution
+-rwxr-xr-x  1 root root 177896 Sep  4 15:25 signal_exec_check
+-rwxr-xr-x  1 root root 170592 Sep  4 15:25 simple_exit
+-rwxr-xr-x  1 root root 170600 Sep  4 15:25 simple_exit0
+-rwxr-xr-x  1 root root 170608 Sep  4 15:25 spawn_smoke_target
+-rwxr-xr-x  1 root root 177648 Sep  4 15:25 spinner
+-rwxr-xr-x  1 root root 177544 Sep  4 15:25 syscall_enosys
+-rwxr-xr-x  1 root root 184232 Sep  4 15:25 tones
+-rwxr-xr-x  1 root root 218408 Sep  4 15:25 tty_oracle
+-rwxr-xr-x  1 root root 195568 Sep  4 15:25 wait_stress
+-rwxr-xr-x  1 root root 187224 Sep  4 15:25 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19600
+drwxr-xr-x 2 root root   4096 Sep  4 15:25 .
+drwxr-xr-x 3 root root   4096 Sep  4 15:25 ..
+-rwxr-xr-x 1 root root 177960 Sep  4 15:25 access_test
+-rwxr-xr-x 1 root root 186872 Sep  4 15:25 alarm_test
+-rwxr-xr-x 1 root root 184344 Sep  4 15:25 argv_test
+-rwxr-xr-x 1 root root 188128 Sep  4 15:25 blocking_recv_test
+-rwxr-xr-x 1 root root 186592 Sep  4 15:25 brk_test
+-rwxr-xr-x 1 root root 183256 Sep  4 15:25 cat_test
+-rwxr-xr-x 1 root root 188664 Sep  4 15:25 clock_gettime_test
+-rwxr-xr-x 1 root root 192584 Sep  4 15:25 cloexec_test
+-rwxr-xr-x 1 root root 184672 Sep  4 15:25 clonevm_exec_test
+-rwxr-xr-x 1 root root 182552 Sep  4 15:25 cow_cleanup_test
+-rwxr-xr-x 1 root root 186616 Sep  4 15:25 cow_oom_test
+-rwxr-xr-x 1 root root 187056 Sep  4 15:25 cow_readonly_test
+-rwxr-xr-x 1 root root 188328 Sep  4 15:25 cow_signal_test
+-rwxr-xr-x 1 root root 187016 Sep  4 15:25 cow_sole_owner_test
+-rwxr-xr-x 1 root root 187112 Sep  4 15:25 cow_stress_test
+-rwxr-xr-x 1 root root 182816 Sep  4 15:25 cp_mv_argv_test
+-rwxr-xr-x 1 root root 188000 Sep  4 15:25 ctrl_c_test
+-rwxr-xr-x 1 root root 182632 Sep  4 15:25 cwd_test
+-rwxr-xr-x 1 root root 182456 Sep  4 15:25 devfs_test
+-rwxr-xr-x 1 root root 195240 Sep  4 15:25 dns_test
+-rwxr-xr-x 1 root root 189168 Sep  4 15:25 dup_test
+-rwxr-xr-x 1 root root 182480 Sep  4 15:25 echo_argv_test
+-rwxr-xr-x 1 root root 182848 Sep  4 15:25 epoll_test
+-rwxr-xr-x 1 root root 178216 Sep  4 15:25 exec_argv_test
+-rwxr-xr-x 1 root root 188088 Sep  4 15:25 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183448 Sep  4 15:25 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182576 Sep  4 15:25 false_test
+-rwxr-xr-x 1 root root 187584 Sep  4 15:25 fbinfo_test
+-rwxr-xr-x 1 root root 188760 Sep  4 15:25 fcntl_test
+-rwxr-xr-x 1 root root 198464 Sep  4 15:25 fifo_test
+-rwxr-xr-x 1 root root 182416 Sep  4 15:25 file_read_test
+-rwxr-xr-x 1 root root 188680 Sep  4 15:25 fork_memory_test
+-rwxr-xr-x 1 root root 187752 Sep  4 15:25 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189192 Sep  4 15:25 fork_state_test
+-rwxr-xr-x 1 root root 188104 Sep  4 15:25 fork_test
+-rwxr-xr-x 1 root root 188624 Sep  4 15:25 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183168 Sep  4 15:25 fs_directory_test
+-rwxr-xr-x 1 root root 182624 Sep  4 15:25 fs_large_file_test
+-rwxr-xr-x 1 root root 182816 Sep  4 15:25 fs_link_test
+-rwxr-xr-x 1 root root 182720 Sep  4 15:25 fs_rename_test
+-rwxr-xr-x 1 root root 182904 Sep  4 15:25 fs_write_test
+-rwxr-xr-x 1 root root 184000 Sep  4 15:25 getdents_test
+-rwxr-xr-x 1 root root 183072 Sep  4 15:25 head_test
+-rwxr-xr-x 1 root root 464448 Sep  4 15:25 http_fetch_test
+-rwxr-xr-x 1 root root 468600 Sep  4 15:25 http_test
+-rwxr-xr-x 1 root root 187312 Sep  4 15:25 itimer_test
+-rwxr-xr-x 1 root root 187664 Sep  4 15:25 job_control_test
+-rwxr-xr-x 1 root root 192248 Sep  4 15:25 job_table_test
+-rwxr-xr-x 1 root root 188496 Sep  4 15:25 kill_process_group_test
+-rwxr-xr-x 1 root root 190448 Sep  4 15:25 loopback_wake_test
+-rwxr-xr-x 1 root root 183304 Sep  4 15:25 ls_test
+-rwxr-xr-x 1 root root 182528 Sep  4 15:25 lseek_test
+-rwxr-xr-x 1 root root 182688 Sep  4 15:25 mkdir_argv_test
+-rwxr-xr-x 1 root root 191592 Sep  4 15:25 net_test
+-rwxr-xr-x 1 root root 183720 Sep  4 15:25 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188760 Sep  4 15:25 nonblock_test
+-rwxr-xr-x 1 root root 188376 Sep  4 15:25 pause_test
+-rwxr-xr-x 1 root root 188936 Sep  4 15:25 pipe2_test
+-rwxr-xr-x 1 root root 188736 Sep  4 15:25 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188840 Sep  4 15:25 pipe_fork_test
+-rwxr-xr-x 1 root root 199960 Sep  4 15:25 pipe_refcount_test
+-rwxr-xr-x 1 root root 188264 Sep  4 15:25 pipe_test
+-rwxr-xr-x 1 root root 191600 Sep  4 15:25 pipeline_test
+-rwxr-xr-x 1 root root 189040 Sep  4 15:25 poll_test
+-rwxr-xr-x 1 root root 187120 Sep  4 15:25 pty_test
+-rwxr-xr-x 1 root root 177112 Sep  4 15:25 register_init_test
+-rwxr-xr-x 1 root root 182496 Sep  4 15:25 rm_argv_test
+-rwxr-xr-x 1 root root 188920 Sep  4 15:25 select_test
+-rwxr-xr-x 1 root root 187984 Sep  4 15:25 session_test
+-rwxr-xr-x 1 root root 183144 Sep  4 15:25 shell_pipe_test
+-rwxr-xr-x 1 root root 189016 Sep  4 15:25 sigaltstack_test
+-rwxr-xr-x 1 root root 187536 Sep  4 15:25 sigchld_job_test
+-rwxr-xr-x 1 root root 186544 Sep  4 15:25 sigchld_test
+-rwxr-xr-x 1 root root 206712 Sep  4 15:25 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188736 Sep  4 15:25 signal_exec_test
+-rwxr-xr-x 1 root root 188176 Sep  4 15:25 signal_fork_test
+-rwxr-xr-x 1 root root 187912 Sep  4 15:25 signal_handler_test
+-rwxr-xr-x 1 root root 188224 Sep  4 15:25 signal_regs_test
+-rwxr-xr-x 1 root root 188328 Sep  4 15:25 signal_return_test
+-rwxr-xr-x 1 root root 187880 Sep  4 15:25 signal_test
+-rwxr-xr-x 1 root root 188880 Sep  4 15:25 sigsuspend_test
+-rwxr-xr-x 1 root root 188608 Sep  4 15:25 sleep_debug_test
+-rwxr-xr-x 1 root root 182296 Sep  4 15:25 stdin_test
+-rwxr-xr-x 1 root root 170872 Sep  4 15:25 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183072 Sep  4 15:25 tail_test
+-rwxr-xr-x 1 root root 203448 Sep  4 15:25 tcp_blocking_test
+-rwxr-xr-x 1 root root 187632 Sep  4 15:25 tcp_client_test
+-rwxr-xr-x 1 root root 189464 Sep  4 15:25 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188848 Sep  4 15:25 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202304 Sep  4 15:25 tcp_socket_test
+-rwxr-xr-x 1 root root 182240 Sep  4 15:25 test_mmap
+-rwxr-xr-x 1 root root 182160 Sep  4 15:25 timer_test
+-rwxr-xr-x 1 root root 182568 Sep  4 15:25 true_test
+-rwxr-xr-x 1 root root 188104 Sep  4 15:25 tty_test
+-rwxr-xr-x 1 root root 193408 Sep  4 15:25 udp_socket_test
+-rwxr-xr-x 1 root root 195344 Sep  4 15:25 unix_named_socket_test
+-rwxr-xr-x 1 root root 205320 Sep  4 15:25 unix_socket_test
+-rwxr-xr-x 1 root root 188160 Sep  4 15:25 waitpid_test
+-rwxr-xr-x 1 root root 183640 Sep  4 15:25 wc_test
+-rwxr-xr-x 1 root root 182968 Sep  4 15:25 which_test
+-rwxr-xr-x 1 root root 182552 Sep  4 15:25 wnohang_timing_test
+-rw-r--r-- 1 root root 757076 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 205748 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 876576 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 20 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 679 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/etc/init.js
+-rw-r--r-- 1 root root 367 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/etc/bshrc
+-rw-r--r-- 1 root root 445 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/etc/fonts.conf
+-rw-r--r-- 1 root root 26 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/etc/group
+-rw-r--r-- 1 root root 349 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/etc/hotkeys.conf
+-rw-r--r-- 1 root root 83 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/etc/passwd
+-rw-r--r-- 1 root root 19 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/trunctest.txt
+-rw-r--r-- 1 root root 0 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/empty.txt
+-rw-r--r-- 1 root root 111 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/lines.txt
+-rw-r--r-- 1 root root 20 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/test/nested.txt
+-rw-r--r-- 1 root root 17 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/hello.txt
+-rwxr-xr-x 1 root root 187504 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/sbin/init
+-rwxr-xr-x 1 root root 181976 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/sbin/blogd
+-rwxr-xr-x 1 root root 184088 Sep  4 15:25 /tmp/tmp.4kVQMQrH51/sbin/telnetd
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-busgate-prove/target/ext2.img
+  /root/breenix-busgate-prove/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+  PCI function facts (PCI_FN_TOTAL 9):
+    PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+    PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+    PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+    PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc100/0x80 irq=0x0b
+    PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0a
+    PCI_FN 00:06.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:682, exit 1)
+  failing command: test "$passed" = true
+--- serial tail (last 200 lines per file, /tmp/breenix_x86_boot_tests_1) ---
+==> /tmp/breenix_x86_boot_tests_1/serial_kernel.txt <==
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d17448
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d17448
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5702000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::syscall::handlers: sys_execv: Replacing process 118 (thread 1217) with new program
+[ INFO] kernel::process::manager: exec_process_with_argv: Replacing process 118 with new program, argc=2
+[ INFO] kernel::process::manager: exec_process_with_argv: Preserving thread ID 1217 for process 118
+[ INFO] kernel::process::manager: exec_process_with_argv: Creating new page table...
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000d14d20
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4d94000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x4d94000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28004d94000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28004d94000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28004d94000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28004d94000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x5702000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x28005702000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x613000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x1fb000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x28000614000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x615000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x616000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x28000614c98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x58be000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x615000), copied=PhysFrame[4KiB](0x615000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x616000), copied=PhysFrame[4KiB](0x616000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x613000), copied=PhysFrame[4KiB](0x613000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x1fb000), copied=PhysFrame[4KiB](0x1fb000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x615000) != PML4[403]=PhysFrame[4KiB](0x616000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x4d94000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[DEBUG] kernel::memory::process_memory: Unmapping user pages from 0x40000000 to 0x40100000
+[DEBUG] kernel::memory::process_memory: Unmapping user pages from 0x10001000 to 0x10010000
+[DEBUG] kernel::memory::process_memory: Unmapping user pages from 0x7fffff000000 to 0x7fffff010000
+[ INFO] kernel::process::manager: exec_process_with_argv: Loading ELF into new page table...
+[ INFO] kernel::elf: Loading ELF into process page table: entry=0x4000ebdc, 7 program headers
+[ INFO] kernel::elf: ELF loaded: segments end at 0x40017188, heap will start at 0x40018000
+[ INFO] kernel::process::manager: exec_process_with_argv: ELF loaded successfully, entry point: 0x4000ebdc
+[ INFO] kernel::process::manager: exec_process_with_argv: Mapping stack pages into new process page table
+[DEBUG] kernel::process::manager: setup_argv_on_stack: argc=2, RSP=0x7fffff00fec0, argv[0] at 0x7fffff00ff80, auxv with phdr=0x40 phnum=7 entry=0x4000ebdc
+[ INFO] kernel::process::manager: exec_process_with_argv: argc/argv set up on stack, RSP=0x7fffff00fec0
+[DEBUG] kernel::memory::stack: allocate_stack_with_privilege: size=0x1000, KERNEL_STACK_ALLOC_START=0xffffc90020000000
+[DEBUG] kernel::memory::stack: Allocating guarded stack at 0x7fffff116000, size 8 KiB
+[DEBUG] kernel::memory::stack: User stack: mapping in kernel page tables
+[DEBUG] kernel::memory::stack: Guard page at 0x7fffff116000 (unmapped)
+[DEBUG] kernel::memory::stack: Stack region: 0x7fffff117000 - 0x7fffff118000 (4 KiB)
+[ INFO] kernel::process::manager: exec_process_with_argv: Updated process name to '/usr/local/test/bin/clonevm_exec_test'
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[ INFO] kernel::process::manager: exec_process_with_argv: Updated thread 1217 context for new program
+[ INFO] kernel::process::manager: exec_process_with_argv: Process 118 is not scheduled - new page table ready for when it runs
+[ INFO] kernel::syscall::handlers: sys_execv: Successfully replaced process address space, entry=0x4000ebdc, rsp=0x7fffff00fec0
+[ INFO] kernel::syscall::handlers: sys_execv: Setting next_cr3 to 0x4d94000
+[ INFO] kernel::syscall::handlers: sys_execv: Frame updated - RIP=0x4000ebdc, RSP=0x7fffff00fec0
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 10
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 10 at 0xffffc9000050b000-0xffffc9000058b000 (guard at 0xffffc9000050a000)
+[DEBUG] kernel::tls: Registered thread 1230 with TLS block 0x4de000
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+Added thread 1230 'clone-child-1230' to scheduler (user: true, target_cpu: 0)
+[ INFO] kernel::syscall::clone: clone: created child thread 1230 (pid 126) for parent pid 118, fn_ptr=0x40000f95, stack=0x7ffffdffc000
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d19868
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1230: RIP=0x100000e6182 CS=0x8 RSP=0xffffc9000058a868
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d19868
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4d94000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1230: RIP=0x100000e6182 RSP=0xffffc9000058a868
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4d94000 for blocked-in-syscall kernel return (thread 1230)
+[ INFO] kernel::interrupts::context_switch: Saved kernel context for blocked thread 1217: RIP=0x100000e6182 CS=0x8 RSP=0xffffc90000d19868
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1217: RIP=0x100000e6182 RSP=0xffffc90000d19868
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4d94000 for blocked-in-syscall kernel return (thread 1217)
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1228: RIP=0x100000e6182 RSP=0xffffc90000509bf8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x53fb000 for blocked-in-syscall kernel return (thread 1228)
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 1228
+[DEBUG] kernel::net::tcp: TCP: Listener port 54530 ref_count 2 -> 1
+Thread 1216 unblocked by child exit, queued to cpu 0
+unblock_for_signal: Checking thread 1216 (current=Some(1228))
+unblock_for_signal: Thread 1216 state is Ready, blocked_in_syscall=true
+unblock_for_signal: Thread 1216 not BlockedOnSignal, state=Ready
+[DEBUG] kernel::task::process_task: Process 125 'loopback_wake_test_child_125' (thread 1228) exited with code 0
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 1230
+unblock_for_signal: Checking thread 1217 (current=Some(1230))
+unblock_for_signal: Thread 1217 state is Ready, blocked_in_syscall=false
+unblock_for_signal: Thread 1217 not BlockedOnSignal, state=Ready
+[DEBUG] kernel::task::process_task: Process 126 'thread-126' (thread 1230) exited with code 0
+[DEBUG] kernel::interrupts::context_switch: Signal delivery check: process 118 (thread 1217) has deliverable signals
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x4d94000 for signal delivery
+[DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 118, handler=0x0
+[DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 118
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 1217
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[DEBUG] kernel::task::process_task: Process 118 '/usr/local/test/bin/clonevm_exec_test' (thread 1217) exited with code 0
+[ INFO] kernel::interrupts::context_switch: Restored kernel context for thread 1216: RIP=0x100000e6182 RSP=0xffffc90000c982c8
+[DEBUG] kernel::interrupts::context_switch: Switched to process CR3 0x5650000 for blocked-in-syscall kernel return (thread 1216)
+[DEBUG] kernel::syscall::handlers: complete_wait: child 125 exited with code 0, wstatus=0x0 (normal exit)
+[DEBUG] kernel::syscall::handlers: complete_wait: reap arm for child 125 (claimed)
+[DEBUG] kernel::syscall::handlers: complete_wait: Cleared blocked_in_syscall flag for thread 1216
+[DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 117, handler=0x0
+[DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 117
+[ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 1
+[DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 1216
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[DEBUG] kernel::net::tcp: TCP: Listener port 54530 ref_count 1 -> 0
+[DEBUG] kernel::net::tcp: TCP: Removed listener on port 54530 (ref_count reached 0)
+[DEBUG] kernel::task::process_task: Process 117 'loopback_wake_test' (thread 1216) exited with code 1
+[ INFO] kernel::syscall::handlers: No more userspace threads remaining
+[ INFO] kernel::syscall::handlers: Woke keyboard task to ensure input processing continues
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=109 nonzero=2 failed=[loopback_wake_test_child:15,loopback_wake_test:1]
+[ERROR] kernel::syscall::handlers: 🚨 Failing userspace processes: loopback_wake_test_child:15,loopback_wake_test:1 🚨
+[ERROR] kernel::syscall::handlers: 🚨 TEST RUNNER: FAILED - 2 of 109 userspace processes exited nonzero 🚨
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+
+==> /tmp/breenix_x86_boot_tests_1/serial_user.txt <==
+
+Test 1: Basic syscall functionality
+  Return value: 0
+  tv_sec:  392
+  tv_nsec: 480645102
+  PASS: Syscall returned valid time
+
+Test 2: Time advances between calls
+  First call:  392 s, 484867939 ns
+  Second call: 392 s, 485031805 ns
+  PASS: Time did not go backwards
+
+Test 3: Sub-millisecond precision
+  Elapsed: 163866 ns
+  PASS: Sub-millisecond precision (TSC active)
+
+Test 4: Nanosecond precision (not millisecond-aligned)
+  Millisecond-aligned samples: 0/10
+  PASS: Nanosecond precision confirmed
+
+Test 5: Monotonicity over multiple calls
+  PASS: 10 calls maintained monotonicity
+
+=== Test Summary ===
+Passed: 5/5
+Failed: 0/5
+
+USERSPACE CLOCK_GETTIME: OK
+TSC-based high-resolution timing validated from userspace
+<S>[SW]<T><U><R>  Re-expansion verified successfully
+USERSPACE BRK: ALL TESTS PASSED
+<S>[SW]<K>[SW]<T><U><R>UDP: Loopback packet sent, bytes=7
+UDP Socket Test: Attempting to receive packet...
+UDP: Received packet! bytes=7
+UDP: RX data matches TX data - SUCCESS!
+UDP Ephemeral Port Test: Starting...
+UDP: Ephemeral socket created fd=5
+UDP_EPHEMERAL_TEST: port 0 bind OK
+UDP EADDRINUSE Test: Starting...
+UDP: First socket bound to port 54324
+UDP_EADDRINUSE_TEST: conflict detected OK
+UDP EAGAIN Test: Starting...
+UDP: EAGAIN test socket bound to port 54325
+UDP_EAGAIN_TEST: empty queue OK
+UDP Multiple Packets Test: Starting...
+UDP: Multi-packet RX socket bound to port 54326
+UDP: Multi-packet TX socket bound to port 54327
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 1, bytes=4
+UDP: Delivered packet to socket on port 54326
+<S>[SW]<T><U><R>TCP_TEST: shutdown_unconnected OK
+TCP_TEST: eaddrinuse OK
+TCP_TEST: listen_unbound OK
+TCP_TEST: accept_nonlisten OK
+TCP_DATA_TEST: starting
+TCP_DATA_TEST: server listening on 8082
+TCP_DATA_TEST: client connected
+TCP_DATA_TEST: send OK
+TCP_DATA_TEST: accept OK
+TCP_DATA_TEST: recv OK
+TCP_DATA_TEST: data verified
+TCP_SHUTDOWN_WRITE_TEST: starting
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #2] addr=0x7fffff0bee78 cr3=0x53fc000
+[COW FAULT #3] addr=0x40018058 cr3=0x53fc000
+[COW FAULT #4] addr=0x7ffffdffe010 cr3=0x53fc000
+
+[COW FAULT #5] addr=0x7ffffdfff010 cr3=0x53fc000
+Step 4: parent waiting for child (pid=120)...
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #6] addr=0x7fffff0f1e88 cr3=0x5650000
+<S>[SW]<T><U><R>[COW FAULT #7] addr=0x7fffff0f1e88 cr3=0x4e6a000
+<S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child live
+CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)
+<S>[SW]<T><U><R>[SW]<K>[SW]<T><U><R>UDP: Sent packet 2, bytes=4
+UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 3, bytes=4
+<S>[SW]<T><U><R>TCP_SHUTDOWN_WRITE_TEST: EPIPE OK
+TCP_SHUT_RD_TEST: starting
+TCP_SHUT_RD_TEST: EOF OK
+TCP_SHUT_WR_TEST: starting
+TCP_SHUT_WR_TEST: SHUT_WR write rejected OK
+<S>[SW]<T><U><R>  PASS: accepted a connection through the dup'd fd after the original closed
+
+Step 5: close the last fd; the listener must now actually retire...
+  PASS: port 9110 was free after the last fd closed (listener genuinely retired)
+
+=== All TCP dup'd-listener tests passed! ===
+TCP_DUP_LISTENER_TEST_PASSED
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 8.8.8.8: Timeout (4342ms)
+<S>[SW]<T><U><R>[COW FAULT #8] addr=0x7fffff0f1e88 cr3=0x5650000
+<S>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff0f1e88 cr3=0x507d000
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child exited
+[SW]<K>[SW]<T><U><R>UDP: Received packet 1, bytes=4
+UDP: Received packet 2, bytes=4
+UDP: Received packet 3, bytes=4
+UDP_MULTIPACKET_TEST: 3 packets OK
+UDP Socket Test: All tests passed!
+<S>[SW]<T><B>[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=1719:rescues=0:queue_residual=0:balance=0]
+[FUTEX_HANDOFF_ORACLE_DRIVER:s1=-11:s2=0:s3=-110]
+<S>[SW]<T><U><R>TCP_SHUT_WR_TEST: server saw FIN OK
+TCP_BIDIR_TEST: starting
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 10.211.55.1: <S>[SW]<T><U><R>[COW FAULT #10] addr=0x7fffff0f1e88 cr3=0x5650000
+<S>[SW]<T><U><R>[COW FAULT #11] addr=0x7fffff0f1e88 cr3=0x53fb000
+[SW]<T><B>[COW FAULT #12] addr=0x40017058 cr3=0x51de000
+[COW FAULT #13] addr=0x7ffffdffe010 cr3=0x51de000
+[COW FAULT #14] addr=0x7ffffdfff010 cr3=0x51de000
+LOOPBACK_WAKE_TEST: data latency_ms=2118 bytes=16
+LOOPBACK_WAKE_TEST: reader_stamps pid=121 w0=397080 acc=397035 pre=397035 data=399198 w0_to_pre=0 pre_to_data=2163 lat=2118
+[SW]<T><U><R>[COW FAULT #15] addr=0x40017058 cr3=0x4e6a000
+[COW FAULT #16] addr=0x7ffffdffe010 cr3=0x4e6a000
+[COW FAULT #17] addr=0x7ffffdfff010 cr3=0x4e6a000
+LOOPBACK_WAKE_TEST: peer_stamps pid=123 conn=397080 w0=397080 w1=399255 write_ms=2175
+[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>Timeout (1654ms)
+<S>[SW]<T><U><R>[COW FAULT #18] addr=0x7fffff0f1e88 cr3=0x5650000
+[SW]<T><B>p00r0 <S>[SW]<K>[SW]<T><U><R>TCP_BIDIR_TEST: server->client OK
+TCP_LARGE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_LARGE_TEST: 256 bytes verified OK
+TCP_BACKLOG_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 172.16.45.2: Timeout (<S>[SW]<T><B>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>3597ms)
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BACKLOG_TEST: overflow rejected OK
+TCP_CONNREFUSED_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49156
+<S>[SW]<K>[SW]<T><U><R>TCP_CONNREFUSED_TEST: ECONNREFUSED OK
+TCP_MSS_TEST: starting
+<S>[SW]<T><B>p00r0 [SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'example.com' via 10.0.2.3: SendError (721ms)
+[dns] 'example.com' FAILED all servers (total 17002ms)
+HTTP_TEST: https_url SKIP (network unavailable)
+HTTP_TEST: testing error handling (invalid domain)...
+<S>[SW]<T><B>UDP: Delivered packet to socket on port 49157
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 8.8.8.8: ServerError(3) (300ms)
+<S>[SW]<T><B>[SW]<T><B>LOOPBACK_WAKE_TEST: eof wait_ms=9654 bytes=0
+LOOPBACK_WAKE_TEST: reader_eof_stamps ready=399210 eof=408864 eof_wait=9654
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MSS_TEST: 2000 bytes (>MSS) verified OK
+TCP_MULTI_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] '<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>this.domain.does.not.exist.invalid' via 10.211.55.1: Timeout (1032ms)
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MULTI_TEST: 3 messages verified OK
+TCP_ADDR_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_ADDR_TEST: 10.x.x.x OK
+TCP_SIMUL_CLOSE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS Test: Starting
+DNS_TEST: resolving www.google.com...
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #19] addr=0x40017058 cr3=0x507d000
+LOOPBACK_WAKE_TEST: load_stamps max_gap_ms=1642 samples=2767 spin_ms=10028
+<S>[SW]<K>[SW]<T><U><R>TCP_SIMUL_CLOSE_TEST: simultaneous close OK
+TCP_HALFCLOSE_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 172.16.45.2: Timeout (1439ms)
+UDP: Delivered packet to socket on port 49160
+[dns] 'this.domain.does.not.exist.invalid' via 10.0.2.3: ServerError(3) (9ms)
+[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 3008ms)
+HTTP_TEST: invalid_domain OK
+HTTP_TEST: testing HTTP fetch (example.com)...
+<S>[SW]<T><B>UDP: Delivered packet to socket on port 49161
+[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_HALFCLOSE_TEST: read after SHUT_WR OK
+TCP_FIRST_ACCEPT_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_FIRST_ACCEPT_TEST: accept OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8 -> <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49162
+104.20.23.<S>[SW]<K>[SW]<T><U><R>TCP Socket Test: PASSED
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>154<S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R> (737ms, total 737ms)
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[http] DNS resolved <S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>104.20.<S>[SW]<T><B>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<T><U><R>DNS_TEST: resolved ip=142.251.157.119
+DNS_TEST: google_resolve OK
+DNS_TEST: resolving example.com...
+<S>[SW]<T><U><R>23.154 (1614ms)
+[SW]<T><B>UDP: Delivered packet to socket on port 49163
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[http] TCP connected (285ms)
+[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: resolved ip=172.66.147.243
+DNS_TEST: example_resolve OK
+DNS_TEST: testing NXDOMAIN...
+UDP: Delivered packet to socket on port 49164
+DNS_TEST: nxdomain OK (error=ServerError(3))
+DNS_TEST: testing empty hostname...
+DNS_TEST: empty_hostname OK
+DNS_TEST: testing long hostname...
+DNS_TEST: long_hostname OK
+DNS_TEST: testing txid variation...
+UDP: Delivered packet to socket on port 49165
+UDP: Delivered packet to socket on port 49166
+DNS_TEST: txid_varies OK
+DNS Test: All tests passed!
+<S>[SW]<T><B>[http] response received: 868 bytes (recv 586ms, total 2912ms)
+HTTP_TEST: received 868 bytes, status=200
+HTTP_TEST: example_fetch OK (status 200, body contains HTML)
+HTTP Test: All tests passed!
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>  PASS: child exec'd simple_exit0 and exited with code 0
+
+Step 5: close the parent's own listener fd...
+  Parent's listener fd closed
+
+Step 6: rebind port 9112 -- must succeed if the listener was genuinely retired...
+  PASS: port 9112 was free after the parent's close -- the child's cloexec'd copy was genuinely released across exec()
+
+=== All TCP FD_CLOEXEC exec() tests passed! ===
+TCP_CLOEXEC_EXEC_TEST_PASSED
+<S>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B>[SW]<I>[SW]<T><B><S>[SW]<I>p01r1 [SW]<T><U><R>CLONEVM_EXEC_TEST: second stage
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R>[SW]<T><B><S>[SW]<T><B><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<I>p01r1 [SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><B>LOOPBACK_WAKE_TEST: watchdog_stamps target=421501 wake=422855 overrun_ms=1354
+<S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+<S>[SW]<T><B>[TEST:userspace:loopback_recv_wake:FAIL:reader_exit_15]
+[TOMBSTONE_CENSUS:resident=1:removed=6:reap_second=1:retire_second=5:abandoned_unqueued=1]
+<S>[SW]<I>

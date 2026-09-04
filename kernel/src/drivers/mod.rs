@@ -27,6 +27,22 @@ pub fn init() -> usize {
     // Enumerate PCI bus and detect devices
     let device_count = pci::enumerate();
 
+    // Fact dump for the "Bus / device infrastructure" gate row
+    // (docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md): one
+    // PCI_FN line per enumerated function plus one PCI_FN_TOTAL line, on
+    // COM1, in every x86-64 build profile. The kernel states facts here and
+    // holds no expectation: no expected-device set, no PASS/FAIL verdict, no
+    // ERROR on any boot, and no way for this call to redden a boot that the
+    // gate scripts are not already reading. The expectations live in
+    // docker/qemu/run-x86-boot-tests.sh and
+    // docker/qemu/run-x86-prod-profile-boot-test.sh, each derived from that
+    // script's own QEMU flag bytes.
+    // claim-lint:ok: mechanical description of this call site and of
+    // kernel/src/drivers/pci.rs::dump_enumerated_functions(); the measured
+    // per-profile visibility is in
+    // docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+    pci::dump_enumerated_functions();
+
     // Initialize VirtIO block driver if device was found
     match virtio::block::init() {
         Ok(()) => {
