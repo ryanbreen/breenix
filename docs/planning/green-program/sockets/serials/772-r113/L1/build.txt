@@ -1,0 +1,3 @@
+   Compiling kernel v0.1.0 (/root/breenix-r113/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-r113)
+    Finished `release` profile [optimized] target(s) in 17.90s

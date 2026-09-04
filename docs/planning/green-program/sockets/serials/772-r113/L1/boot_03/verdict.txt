@@ -1,0 +1,2 @@
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5911
+x86 userspace gate: FAIL - failing process is not allowlisted: clock_gettime_test
