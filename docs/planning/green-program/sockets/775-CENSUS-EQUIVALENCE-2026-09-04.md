@@ -643,6 +643,35 @@ lock, no allocation, no formatting, on the paths the removed records occupied.
 
 ## Builds and tests at the head
 
+`serials/775/round4/builds/` holds the round-4 transcripts, re-run at the pushed
+content; `serials/775/round3/builds/` and `serials/775/builds/` hold the two
+earlier rounds'. Each of the 3 build commands was forced to recompile by
+touching `kernel/src/task/dispatch_strand_census.rs` first, so each transcript
+is a real compile rather than a cache hit.
+
+| command | round-4 result |
+|---|---|
+| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | `Finished ... in 13.53s`, exit 0, 0 lines matching `^(warning\|error)` |
+| `cargo build --release --bin qemu-uefi` | `Finished ... in 12.58s`, exit 0, 0 such lines |
+| `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | `Finished ... in 6.34s`, exit 0, 1 such line |
+
+The two x86 builds ran on the beast `breenix-x86` container; the aarch64 build
+ran on the ARM Mac. `tests/*_structure.rs` were run one target per invocation:
+26 targets, 26 exit 0, 505 passed, 0 failed, 0 lines matching
+`^(warning|error)` across the 26
+(`round4/builds/structure-tests-26-targets.txt`). `tests/x86_gate_verdict_test.rs`
+ran separately: 17 passed, 0 failed (`round4/builds/verdict-test.txt`), up from
+round 3's 14 because this round adds the three age-assertion tests.
+
+<!-- claim-lint:ok: the aarch64 warning line names only the toolchain's own
+     core package; the same established exception is recorded in
+     docs/planning/t3g-prb/PRB-STAGE3-GATE-RESULTS.md. -->
+The aarch64 warning is the pinned nightly's future-incompatibility notice for
+`core v0.0.0` in the toolchain's own source tree, printed verbatim in
+`round4/builds/aarch64-kernel.txt`. No warning names a Breenix crate.
+
+## Round-3's builds, for comparison
+
 `serials/775/round3/builds/` holds the round-3 transcripts; `serials/775/builds/`
 holds round 2's, at `365c20c2`. Each of the 3 build commands was forced to
 recompile by touching `kernel/src/task/dispatch_strand_census.rs` first, so
