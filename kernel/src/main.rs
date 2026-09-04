@@ -804,11 +804,6 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     ))]
     kernel::task::kthread_tests::test_kthread_stop_after_exit();
 
-    // #775/R125: the boot-time kthread lifecycle tests above have completed.
-    // Spawn the low-frequency reporter at this final boot-thread point before
-    // kernel_main_continue creates and dispatches userspace.
-    task::start_dispatch_strand_census();
-
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
     #[cfg(not(any(
@@ -2376,6 +2371,10 @@ fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
+
+        // #775/R125: existing non-interrupt housekeeping with IF=1. The
+        // callee shares a one-second rate limit with the loopback pump.
+        task::report_dispatch_strand_census_heartbeat();
         crate::net::drain_loopback_from_idle();
 
         // Check if there are any ready threads

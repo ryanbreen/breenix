@@ -4,9 +4,9 @@
 //! written in the context-switch path: whether a TID had ever had a blocked
 //! kernel context saved, whether its most recent save/restore event was a
 //! restore, and whether it later exited.  Keep exactly those facts in a fixed
-//! atomic ledger so the hot path adds no lock, allocation, or formatting.  A
-//! low-frequency kthread emits snapshots from ordinary thread context, where
-//! interrupts are enabled and the COM1 serial lock is legal.
+//! atomic ledger so the hot path adds no lock, allocation, or formatting.  The
+//! existing idle and loopback-pump housekeeping threads emit rate-limited
+//! snapshots with interrupts enabled, where the COM1 serial lock is legal.
 
 use core::{
     fmt,
@@ -22,6 +22,7 @@ const EXITED: u8 = 1 << 2;
 
 static LEDGER: [AtomicU8; LEDGER_CAPACITY] = [const { AtomicU8::new(0) }; LEDGER_CAPACITY];
 static OVERFLOW_EVENTS: AtomicU64 = AtomicU64::new(0);
+static LAST_HEARTBEAT_NS: AtomicU64 = AtomicU64::new(0);
 
 #[inline(always)]
 fn slot(tid: u64) -> Option<&'static AtomicU8> {
@@ -121,48 +122,25 @@ fn monotonic_now_ns() -> u64 {
     seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
 }
 
-fn sleep_heartbeat_interval() {
-    use super::thread::ThreadState;
-
-    let Some(tid) = super::scheduler::current_thread_id() else {
-        crate::arch_halt_with_interrupts();
+/// Emit at most one census snapshot per second from existing housekeeping.
+pub(crate) fn report_heartbeat_if_due() {
+    // idle_thread_fn calls after enable_and_hlt; loopback_pump_fn enters through
+    // kthread_entry and returns from arch_halt_with_interrupts. Keep this check
+    // at the emission boundary so serial locking cannot silently move into an
+    // interrupts-disabled context.
+    if !crate::arch_interrupts_enabled() {
         return;
-    };
-    let wake_time_ns = monotonic_now_ns().saturating_add(HEARTBEAT_INTERVAL_NS);
-    super::scheduler::with_scheduler(|scheduler| {
-        scheduler.block_current_for_timer(wake_time_ns);
-    });
-    super::scheduler::yield_current();
-
-    loop {
-        crate::arch_halt_with_interrupts();
-        let blocked = super::scheduler::with_scheduler(|scheduler| {
-            scheduler
-                .get_thread(tid)
-                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
-        })
-        .unwrap_or(false);
-        if !blocked {
-            break;
-        }
     }
-}
 
-fn heartbeat() {
-    loop {
-        sleep_heartbeat_interval();
-
-        // kthread_entry enables interrupts before invoking this function, and
-        // the sleep primitive returns through arch_halt_with_interrupts. Keep
-        // the check at the emission boundary so a future caller cannot silently
-        // move serial locking into an interrupts-disabled context.
-        if crate::arch_interrupts_enabled() {
-            report_snapshot();
-        }
+    let now = monotonic_now_ns();
+    let last = LAST_HEARTBEAT_NS.load(Ordering::Acquire);
+    if last != 0 && now.saturating_sub(last) < HEARTBEAT_INTERVAL_NS {
+        return;
     }
-}
-
-/// Start the once-per-second census heartbeat at the pre-userspace boundary.
-pub(crate) fn start_heartbeat() {
-    let _ = super::kthread::kthread_run(heartbeat, "dispatch-census");
+    if LAST_HEARTBEAT_NS
+        .compare_exchange(last, now.max(1), Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        report_snapshot();
+    }
 }

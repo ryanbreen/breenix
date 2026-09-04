@@ -4,10 +4,11 @@
 # #568 round 2 found a blocking poll thread that was saved and then stopped
 # running. #775 removed the formatted save/restore records from the dispatch
 # path and put the same state transitions in a fixed atomic ledger. Under R125,
-# a low-frequency kthread emits that ledger about once per second from ordinary
-# thread context with interrupts enabled; the completion path emits a final
-# snapshot. The last snapshot in the serial is the source of truth, so a wedged
-# userspace thread does not have to resume or exit to make its state observable.
+# existing idle and loopback-pump housekeeping emit that ledger at most once
+# per second from ordinary thread context with interrupts enabled; the
+# completion path emits a final snapshot. The last snapshot in the serial is
+# the source of truth, so a wedged userspace thread does not have to resume or
+# exit to make its state observable.
 # claim-lint:ok: #775 ruling R125 defines the replacement source and cadence.
 #
 # Each snapshot carries the distinct ever-saved count, the stranded count, and
