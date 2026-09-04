@@ -1,0 +1,5 @@
+$ cargo build --release --features testing,external_test_bins --bin qemu-uefi
+   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-775)
+    Finished `release` profile [optimized] target(s) in 13.86s
+exit=0
