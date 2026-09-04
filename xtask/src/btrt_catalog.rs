@@ -146,6 +146,14 @@ pub const UTEST_PIPE_CONCURRENT: u16 = 374;
 pub const UTEST_JOB_CONTROL: u16 = 375;
 pub const UTEST_SIGKILL_TEARDOWN: u16 = 376;
 
+// Vendored-musl C programs (aarch64-only; see kernel-side catalog.rs for the
+// full rationale -- there is no x86_64 musl build).
+pub const UTEST_HELLO_MUSL: u16 = 377;
+pub const UTEST_ENV_MUSL: u16 = 378;
+pub const UTEST_UNAME_MUSL: u16 = 379;
+pub const UTEST_RLIMIT_MUSL: u16 = 380;
+pub const UTEST_IDENTITY_MUSL: u16 = 381;
+
 /// Complete catalog (mirrors kernel-side).
 pub static CATALOG: &[BootTestDef] = &[
     BootTestDef {
@@ -697,6 +705,31 @@ pub static CATALOG: &[BootTestDef] = &[
     BootTestDef {
         id: UTEST_SIGKILL_TEARDOWN,
         name: "utest_sigkill_teardown",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_HELLO_MUSL,
+        name: "utest_hello_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_ENV_MUSL,
+        name: "utest_env_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_UNAME_MUSL,
+        name: "utest_uname_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_RLIMIT_MUSL,
+        name: "utest_rlimit_musl",
+        category: BootTestCategory::UserspaceResult,
+    },
+    BootTestDef {
+        id: UTEST_IDENTITY_MUSL,
+        name: "utest_identity_musl",
         category: BootTestCategory::UserspaceResult,
     },
 ];
