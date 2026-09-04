@@ -1199,8 +1199,26 @@ pub enum DispatchProgress {
     /// moved off the RIP/RSP it was dispatched to.
     Advanced,
     /// The frame is byte-identical -- RIP AND RSP -- to the one the last
-    /// dispatch installed for this same thread.
-    NoProgress,
+    /// dispatch installed for this same thread. Carries the evidence
+    /// `classify_no_progress_kind` needs, so that split cannot be reached
+    /// without it.
+    NoProgress(IdenticalFrame),
+}
+
+/// Evidence that `classify_dispatch_progress` just matched the dispatch mark
+/// on THIS CPU for the thread named inside (#772).
+///
+/// The field is private to this module and there is no public constructor, so
+/// the only way to hold one is to have just been handed it by
+/// `classify_dispatch_progress`. That is what carries
+/// `classify_no_progress_kind`'s precondition -- "the same CPU has just
+/// classified this same thread as `NoProgress`" -- in the type instead of in a
+/// doc comment: a caller cannot supply a tid the mark did not match, and
+/// cannot call the split at all on an `Advanced` frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct IdenticalFrame {
+    /// The thread the mark and the frame agreed on.
+    tid: u64,
 }
 
 /// Record the resume frame a completed dispatch installed.
@@ -1255,34 +1273,36 @@ pub fn classify_dispatch_progress(tid: u64, rip: u64, rsp: u64) -> DispatchProgr
     {
         return DispatchProgress::Advanced;
     }
-    DispatchProgress::NoProgress
+    DispatchProgress::NoProgress(IdenticalFrame { tid })
 }
 
 /// Split an identical-frame observation into a wait-loop revisit and a
-/// dispatch that retired no instructions (#772, R113).
+/// dispatch that retired no instructions (#772).
 ///
-/// Only meaningful once `classify_dispatch_progress` has already returned
-/// `NoProgress` for the same thread: this reads the park count the thread
-/// carries now against the one the dispatch mark stamped, so
-/// `Revisit` means the thread reached a park point again, `ZeroIter` means it
-/// is still sitting on the park it was dispatched to.
+/// Takes the `IdenticalFrame` that `classify_dispatch_progress` mints, so the
+/// precondition is carried by the type rather than by this comment: the frame
+/// names the thread the mark matched, and one cannot be constructed outside
+/// this module. It reads the park count that thread carries now against the
+/// one the dispatch mark stamped, so `Revisit` means the thread reached a park
+/// point again and `ZeroIter` means it is still sitting on the park it was
+/// dispatched to.
 ///
-/// `tid` must be the thread being saved. The identity is re-checked against
-/// the per-CPU current-thread pointer the count is read through, and a
-/// mismatch -- or a count below the stamp, which a re-published thread row
-/// could produce -- is reported as `Unknown` rather than guessed at.
+/// The identity is re-checked against the per-CPU current-thread pointer the
+/// count is read through, and a mismatch -- or a count below the stamp, which
+/// a re-published thread row could produce -- is reported as `Unknown` rather
+/// than guessed at.
 ///
 /// One lock-free deref plus two loads. No lock, no allocation, no formatting.
 #[inline(always)]
 pub fn classify_no_progress_kind(
-    tid: u64,
+    frame: IdenticalFrame,
 ) -> crate::tracing::providers::sched::DispatchNoProgressKind {
     use crate::tracing::providers::sched::DispatchNoProgressKind;
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return DispatchNoProgressKind::Unknown;
     }
     match current_wait_loop_iters() {
-        Some((current_tid, iters)) if current_tid == tid => {
+        Some((current_tid, iters)) if current_tid == frame.tid => {
             let stamped = hal_percpu::X86PerCpu::dispatch_mark_wait_iters();
             if iters > stamped {
                 DispatchNoProgressKind::Revisit

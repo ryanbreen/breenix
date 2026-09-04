@@ -310,12 +310,19 @@ pub extern "C" fn check_need_resched_and_switch(
     // that arm's identical frames at the save site.
     if !current_thread_blocked_or_terminated {
         if let Some(current_tid) = crate::per_cpu::current_thread_id_lock_free() {
-            if crate::per_cpu::classify_dispatch_progress(
-                current_tid,
-                interrupt_frame.instruction_pointer.as_u64(),
-                interrupt_frame.stack_pointer.as_u64(),
-            ) == crate::per_cpu::DispatchProgress::NoProgress
-            {
+            // `matches!` rather than `==`: `NoProgress` now carries the
+            // witness the save-site split consumes, and this census does not
+            // want the split -- reading the kind here would put a deref and
+            // two loads on the interrupt-return path for a value nothing here
+            // records.
+            if matches!(
+                crate::per_cpu::classify_dispatch_progress(
+                    current_tid,
+                    interrupt_frame.instruction_pointer.as_u64(),
+                    interrupt_frame.stack_pointer.as_u64(),
+                ),
+                crate::per_cpu::DispatchProgress::NoProgress(_)
+            ) {
                 crate::trace_count!(DISPATCH_NO_PROGRESS);
             }
         }
@@ -577,15 +584,18 @@ fn note_dispatch_save(
     interrupt_frame: &InterruptStackFrame,
 ) {
     let rip = interrupt_frame.instruction_pointer.as_u64();
-    let no_progress = if crate::per_cpu::classify_dispatch_progress(
+    let no_progress = match crate::per_cpu::classify_dispatch_progress(
         thread_id,
         rip,
         interrupt_frame.stack_pointer.as_u64(),
-    ) == crate::per_cpu::DispatchProgress::NoProgress
-    {
-        Some(crate::per_cpu::classify_no_progress_kind(thread_id))
-    } else {
-        None
+    ) {
+        // The witness the match binds is the only way to reach the split, so
+        // the kind cannot be minted from a frame the mark did not match, nor
+        // for a thread other than the one the mark named.
+        crate::per_cpu::DispatchProgress::NoProgress(frame) => {
+            Some(crate::per_cpu::classify_no_progress_kind(frame))
+        }
+        crate::per_cpu::DispatchProgress::Advanced => None,
     };
     trace_dispatch_save(reason, no_progress, rip);
 }
