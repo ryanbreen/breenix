@@ -15818,41 +15818,129 @@ fn condition_predicates(
     resolved
 }
 
+/// The guard rows one body yields for one set of callees: at each call site
+/// of a callee that reaches a sleep, the booleans consulted by the `if` the
+/// call sits inside and by any `if` before it that leaves the body. Returns
+/// the callees whose call sites were found, so the caller can follow them.
+fn guard_rows_in_body(
+    path: &str,
+    function: &str,
+    definition: &str,
+    bindings: &BTreeMap<String, Vec<String>>,
+    boolean: &BTreeSet<String>,
+    callees: &BTreeSet<String>,
+    found: &mut BTreeSet<SleepGuard>,
+) -> BTreeMap<String, bool> {
+    let mask = code_mask(definition);
+    let guards = if_statements(definition);
+    let mut entered: BTreeMap<String, bool> = BTreeMap::new();
+    for callee in callees {
+        if callee == function {
+            continue;
+        }
+        for site in call_sites_of(definition, &mask, callee) {
+            entered.entry(callee.clone()).or_insert(false);
+            for (condition, open, end) in &guards {
+                let inside = *open < site && site < *end;
+                let bailed = *end <= site && block_exits(definition, *open, *end);
+                if !inside && !bailed {
+                    continue;
+                }
+                // A call this census is already watching: a guard decides
+                // whether control reaches it. That, and only that, is the call
+                // pass 2 descends into from a body pass 1 was reading.
+                entered.insert(callee.clone(), true);
+                for predicate in condition_predicates(condition, bindings, boolean) {
+                    found.insert(SleepGuard {
+                        path: path.to_owned(),
+                        function: function.to_owned(),
+                        wrapper: callee.clone(),
+                        predicate,
+                    });
+                }
+            }
+        }
+    }
+    entered
+}
+
 /// The census: the booleans consulted at a guard position of a call that puts
 /// the caller to sleep. A guard position is an `if` the call sits inside, or
 /// an `if` before it that leaves the body -- both decide whether control
-/// reaches the sleep. 5 rows on this tree, listed by the test below.
+/// reaches the sleep. The rows on this tree are listed by the test below.
 fn discover_sleep_guards(sources: &[(String, String)]) -> Vec<SleepGuard> {
     let primitives = caller_blocking_primitives(sources);
     let wrappers = caller_blocking_wrappers(sources, &primitives);
     let boolean = boolean_returning_names(sources);
     let mut found: BTreeSet<SleepGuard> = BTreeSet::new();
+    let mut frontier: Vec<String> = Vec::new();
+    // Pass 1: the call sites, in bodies that are not themselves wrappers.
     for (path, source) in sources {
         let bindings = let_bindings(source);
         for (function, _, definition) in bodied_definitions(source) {
             if wrappers.contains(&function) {
                 continue;
             }
-            let mask = code_mask(&definition);
-            let guards = if_statements(&definition);
-            for wrapper in &wrappers {
-                for site in call_sites_of(&definition, &mask, wrapper) {
-                    for (condition, open, end) in &guards {
-                        let inside = *open < site && site < *end;
-                        let bailed = *end <= site && block_exits(&definition, *open, *end);
-                        if !inside && !bailed {
-                            continue;
-                        }
-                        for predicate in condition_predicates(condition, &bindings, &boolean) {
-                            found.insert(SleepGuard {
-                                path: path.clone(),
-                                function: function.clone(),
-                                wrapper: wrapper.clone(),
-                                predicate,
-                            });
-                        }
-                    }
+            let entered = guard_rows_in_body(
+                path,
+                &function,
+                &definition,
+                &bindings,
+                &boolean,
+                &wrappers,
+                &mut found,
+            );
+            // Descend only where a guard was already deciding whether the
+            // call happens. An ordinary body that names a wrapper with no `if`
+            // in the way is not a decision point, and following it would drag
+            // in syscall bodies that merely block.
+            let watched = entered
+                .into_iter()
+                .filter(|(_, guarded)| *guarded)
+                .map(|(name, _)| name);
+            frontier.extend(watched);
+        }
+    }
+    // Pass 2, N20: follow each wrapper pass 1 actually entered DOWN into the
+    // primitive it reaches, walking the `if`s inside the wrapper's own body
+    // the same way. A wrapper body used to be skipped outright, so a
+    // predicate named inside `wait_timeout_inner` chose the sleeping path with
+    // no census looking at it.
+    // Only the wrappers a censused call site reaches are walked: that is what
+    // "before the wrapper reaches its primitive" means. An ordinary syscall
+    // body that happens to name a primitive outright is deliberately not
+    // dragged in -- that primitive's own refusal is the sibling rule's
+    // subject, and the narrowing is disclosed on the test below.
+    let mut reaches_sleep: BTreeSet<String> = primitives.clone();
+    reaches_sleep.extend(wrappers.iter().cloned());
+    let mut walked: BTreeSet<String> = BTreeSet::new();
+    while let Some(name) = frontier.pop() {
+        if !walked.insert(name.clone()) {
+            continue;
+        }
+        for (path, source) in sources {
+            let bindings = let_bindings(source);
+            for (function, _, definition) in bodied_definitions(source) {
+                if function != name {
+                    continue;
                 }
+                let entered = guard_rows_in_body(
+                    path,
+                    &function,
+                    &definition,
+                    &bindings,
+                    &boolean,
+                    &reaches_sleep,
+                    &mut found,
+                );
+                // Inside a body the census is already reading, a hop toward a
+                // sleep stays on the same path, guarded or not: that is how
+                // `wait_timeout_uninterruptible` -- one bare forwarding
+                // expression -- carries the walk into `wait_timeout_inner`.
+                let deeper = entered
+                    .into_keys()
+                    .filter(|next| wrappers.contains(next));
+                frontier.extend(deeper);
             }
         }
     }
@@ -15896,9 +15984,11 @@ fn predicate_consults_the_refusal(
 /// census stops discovering is a finding too, so the classification cannot go
 /// stale silently. The discovery itself is by shape, so this table records
 /// verdicts rather than limiting what gets looked at.
-/// claim-lint:ok: 2 of the 5 discovered predicates are recorded here; the
-/// discovery side is `discover_sleep_guards`, which reads no name from this
-/// table
+/// claim-lint:ok: 13 of the census's 15 rows are answered by a name recorded
+/// here and the other 2 consult the refusal, as printed by
+/// `sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal` in
+/// tests/teardown_structure.rs; the discovery side is `discover_sleep_guards`,
+/// which reads no name from this table
 #[rustfmt::skip]
 const GUARDS_THAT_DO_NOT_DECIDE_SLEEP_ELIGIBILITY: &[(&str, &str)] = &[
     // Sets the caller's parked flag, then reports whether kthread_stop got
@@ -15909,6 +15999,17 @@ const GUARDS_THAT_DO_NOT_DECIDE_SLEEP_ELIGIBILITY: &[(&str, &str)] = &[
     // Reads the per-CPU pending-softirq mask (kernel/src/task/softirqd.rs):
     // whether there is deferred work left, not whether the caller may sleep.
     ("softirq_pending", "reads the per-CPU pending-softirq mask -- whether work is left, not who is running"),
+    // The 6 names below are the readiness questions pass 2 finds inside a
+    // wrapper before it reaches its primitive. claim-lint:ok: 6 of 6 read
+    // whether the thing being waited for has already happened, per the
+    // definitions cited on each row; the primitive each one guards carries its
+    // own refusal, which is the sibling rule's subject.
+    ("tcp_has_data", "kernel/src/net/tcp.rs -- whether the connection's receive buffer already holds bytes"),
+    ("is_home_path", "kernel/src/fs/ext2/mod.rs -- which filesystem serves the read, not who is running"),
+    ("tcp_is_established", "kernel/src/net/tcp.rs -- whether the handshake already completed"),
+    ("tcp_is_failed", "kernel/src/net/tcp.rs -- whether the connection already reached a closed state"),
+    ("has_deliverable_signals", "kernel/src/signal/delivery.rs -- whether a signal is already pending for the process"),
+    ("window_frame_pending", "kernel/src/syscall/graphics.rs -- whether this thread is already registered as the window's waiter"),
 ];
 
 /// Each boolean the census discovers at a guard position routes its decision
@@ -16193,4 +16294,59 @@ fn called_names_reads_across_comments_but_not_across_a_literal() {
         !called_names("// joiner(handle);\n").contains("joiner"),
         "a call that is itself commented out is not a call"
     );
+}
+
+#[test]
+fn the_sleep_guard_census_walks_inside_a_wrapper() {
+    // N20: pass 2 has to produce at least one row from INSIDE a wrapper, or
+    // the wrapper bodies are still unread and this coverage is untested.
+    let sources = rust_sources_below("kernel/src");
+    let primitives = caller_blocking_primitives(&sources);
+    let wrappers = caller_blocking_wrappers(&sources, &primitives);
+    let guards = discover_sleep_guards(&sources);
+    let inside: Vec<&SleepGuard> = guards
+        .iter()
+        .filter(|guard| wrappers.contains(&guard.function))
+        .collect();
+    assert!(
+        !inside.is_empty(),
+        "no census row comes from inside a wrapper body: pass 2 read nothing"
+    );
+}
+
+#[test]
+fn the_sleep_guard_census_reads_a_predicate_added_inside_the_wrapper() {
+    // N20, the reviewer's mutation verbatim: a second sleep-eligibility
+    // predicate named INSIDE wait_timeout_inner -- the wrapper the AHCI wait
+    // forwards into -- lets that wrapper pick its own sleeping path. The
+    // wrapper body was skipped outright, leaving it unread.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/task/completion.rs");
+    let anchor = concat!(
+        "            let in_syscall = current_context_can_sleep();\n",
+        "\n",
+        "            if in_syscall {",
+    );
+    assert_eq!(
+        source.matches(anchor).count(),
+        1,
+        "the fixture anchor must be wait_timeout_inner's own sleep-path guard"
+    );
+    let doctored = concat!(
+        "            let in_syscall = current_context_can_sleep() || alternate_sleep_eligibility();\n",
+        "\n",
+        "            if in_syscall {",
+    );
+    let helper = "\nfn alternate_sleep_eligibility() -> bool {\n    true\n}\n";
+    let mutated = format!("{}{helper}", source.replacen(anchor, doctored, 1));
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/task/completion.rs", mutated);
+    let discovered = discover_sleep_guards(&perturbed);
+    assert!(
+        discovered
+            .iter()
+            .any(|guard| guard.predicate == "alternate_sleep_eligibility"),
+        "the census never discovered the predicate added inside the wrapper"
+    );
+    assert!(validate_sleep_guards_consult_the_idle_refusal(&perturbed).is_err());
 }
