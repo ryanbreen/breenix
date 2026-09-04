@@ -347,22 +347,84 @@ fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> 
 }
 
 /// Keep a CPU-affine production thread on the queue for its owning CPU when a
-/// peer attempts to steal or reclaim it.
+/// peer attempts to steal it.
+///
+/// Steal-only. `reclaim_unschedulable_cpu_queues` must NOT route through this
+/// helper: its whole purpose is to rescue work from a CPU that has stopped
+/// dispatching, and pushing a thread back onto that CPU's queue there would
+/// defeat the rescue and strand the thread (a lost wakeup by queue retention).
+/// The reclaim path calls `reclaim_disposition_for_pinned_thread` instead,
+/// which parks a per-CPU worker and retains only a hold-pen pin.
 fn retain_cpu_affine_thread(
     threads: &[Box<Thread>],
     queue: &mut VecDeque<u64>,
     thread_id: u64,
     current_cpu: usize,
 ) -> bool {
-    let target_cpu = threads
+    let pin = threads
         .iter()
         .find(|thread| thread.id() == thread_id)
         .and_then(|thread| thread.cpu_affinity);
-    if target_cpu.is_none() || target_cpu == Some(current_cpu) {
+    let Some(pin) = pin else {
+        return false;
+    };
+    if pin.cpu == current_cpu {
         return false;
     }
     queue.push_back(thread_id);
     true
+}
+
+/// What `reclaim_unschedulable_cpu_queues` does with a pinned thread it popped
+/// off an offline or stalled CPU's queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinnedReclaimDisposition {
+    /// Not pinned here, or pinned to the reclaiming CPU: migrate as usual.
+    Migrate,
+    /// A hold pen on a deliberately non-dispatching CPU: put it back, whoever
+    /// set the pen releases it.
+    Retain,
+    /// A per-CPU worker whose home CPU cannot dispatch: leave it off every
+    /// queue and blocked. It must not run on a foreign CPU (its work is the
+    /// home CPU's per-CPU state) and must not sit on a queue nothing drains.
+    Park,
+}
+
+fn reclaim_disposition_for_pinned_thread(
+    threads: &[Box<Thread>],
+    thread_id: u64,
+    current_cpu: usize,
+) -> PinnedReclaimDisposition {
+    let pin = threads
+        .iter()
+        .find(|thread| thread.id() == thread_id)
+        .and_then(|thread| thread.cpu_affinity);
+    let Some(pin) = pin else {
+        return PinnedReclaimDisposition::Migrate;
+    };
+    if pin.cpu == current_cpu {
+        return PinnedReclaimDisposition::Migrate;
+    }
+    if pin.per_cpu_worker {
+        PinnedReclaimDisposition::Park
+    } else {
+        PinnedReclaimDisposition::Retain
+    }
+}
+
+/// Wakes refused because the woken thread is a per-CPU worker whose home CPU is
+/// not accepting wakeups, plus reclaim passes that parked one for the same
+/// reason. Gate-failing: on a healthy boot every per-CPU worker's home CPU is
+/// dispatching whenever there is local work for it, so this stays zero. A
+/// non-zero value means a per-CPU worker's backlog is going undrained, which is
+/// the thing to look at -- not a reason to migrate it onto the wrong bitmap.
+pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Read the running count of per-CPU-worker wakes refused for an unavailable
+/// home CPU. See `PINNED_HOME_CPU_UNAVAILABLE`.
+pub fn pinned_home_cpu_unavailable() -> u64 {
+    PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed)
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -1543,13 +1605,17 @@ impl Scheduler {
                 let Some(thread_id) = self.per_cpu_queues[cpu].pop_front() else {
                     break;
                 };
-                if retain_cpu_affine_thread(
-                    &self.threads,
-                    &mut self.per_cpu_queues[cpu],
-                    thread_id,
-                    current_cpu,
-                ) {
-                    continue;
+                match reclaim_disposition_for_pinned_thread(&self.threads, thread_id, current_cpu)
+                {
+                    PinnedReclaimDisposition::Retain => {
+                        self.per_cpu_queues[cpu].push_back(thread_id);
+                        continue;
+                    }
+                    PinnedReclaimDisposition::Park => {
+                        self.park_pinned_thread_without_home(thread_id);
+                        continue;
+                    }
+                    PinnedReclaimDisposition::Migrate => {}
                 }
                 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                 if retain_cpu_affine_test_thread(
@@ -1617,7 +1683,7 @@ impl Scheduler {
         let thread = {
             let mut staged_thread = thread;
             if is_user && TEST_BINARY_STAGING.load(Ordering::Acquire) {
-                staged_thread.cpu_affinity = Some(0);
+                staged_thread.cpu_affinity = Some(super::thread::CpuPin::hold_pen(0));
             }
             staged_thread
         };
@@ -1626,6 +1692,7 @@ impl Scheduler {
         // CPU-local workers retain their requested queue. Migratable work uses
         // the least-loaded online CPU (or current CPU if tied).
         let target = cpu_affinity
+            .map(|pin| pin.cpu)
             .filter(|cpu| *cpu < self.online_cpu_count())
             .unwrap_or_else(|| self.least_loaded_cpu());
         if front {
@@ -3016,24 +3083,28 @@ impl Scheduler {
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !already_queued
                 {
-                    let target = self.find_target_cpu_for_wakeup(thread_id);
-                    #[cfg(feature = "coreproof_component_a")]
-                    crate::proof_point!(UnblockBeforeEnqueue);
-                    self.per_cpu_queues[target].push_back(thread_id);
-                    #[cfg(feature = "coreproof_component_a")]
-                    crate::proof_point!(UnblockAfterEnqueue);
-                    ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
-                    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-                    #[cfg(target_arch = "x86_64")]
-                    log_serial_println!(
-                        "unblock({}): Added to per_cpu_queues[{}]",
-                        thread_id,
-                        target
-                    );
+                    if let Some(target) = self.find_target_cpu_for_wakeup(thread_id) {
+                        #[cfg(feature = "coreproof_component_a")]
+                        crate::proof_point!(UnblockBeforeEnqueue);
+                        self.per_cpu_queues[target].push_back(thread_id);
+                        #[cfg(feature = "coreproof_component_a")]
+                        crate::proof_point!(UnblockAfterEnqueue);
+                        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+                        #[cfg(target_arch = "x86_64")]
+                        log_serial_println!(
+                            "unblock({}): Added to per_cpu_queues[{}]",
+                            thread_id,
+                            target
+                        );
 
-                    // Send IPI to wake an idle CPU so it can pick up the unblocked thread
-                    #[cfg(target_arch = "aarch64")]
-                    self.send_resched_ipi();
+                        // Send IPI to wake an idle CPU so it can pick up the unblocked thread
+                        #[cfg(target_arch = "aarch64")]
+                        self.send_resched_ipi();
+                    } else {
+                        self.park_pinned_thread_without_home(thread_id);
+                        outcome = UnblockOutcome::NotFound;
+                    }
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                     #[cfg(target_arch = "aarch64")]
@@ -3291,19 +3362,22 @@ impl Scheduler {
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !already_queued
                 {
-                    let target = self.find_target_cpu_for_wakeup(thread_id);
-                    self.per_cpu_queues[target].push_back(thread_id);
-                    ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
-                    #[cfg(target_arch = "x86_64")]
-                    log_serial_println!(
-                        "unblock_for_signal: Thread {} unblocked, added to per_cpu_queues[{}]",
-                        thread_id,
-                        target
-                    );
+                    if let Some(target) = self.find_target_cpu_for_wakeup(thread_id) {
+                        self.per_cpu_queues[target].push_back(thread_id);
+                        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                        #[cfg(target_arch = "x86_64")]
+                        log_serial_println!(
+                            "unblock_for_signal: Thread {} unblocked, added to per_cpu_queues[{}]",
+                            thread_id,
+                            target
+                        );
 
-                    // Send IPI to wake an idle CPU
-                    #[cfg(target_arch = "aarch64")]
-                    self.send_resched_ipi();
+                        // Send IPI to wake an idle CPU
+                        #[cfg(target_arch = "aarch64")]
+                        self.send_resched_ipi();
+                    } else {
+                        self.park_pinned_thread_without_home(thread_id);
+                    }
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                 } else if already_queued {
@@ -3400,20 +3474,23 @@ impl Scheduler {
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !already_queued
                 {
-                    let target = self.find_target_cpu_for_wakeup(thread_id);
-                    self.per_cpu_queues[target].push_back(thread_id);
-                    ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
-                    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-                    #[cfg(target_arch = "x86_64")]
-                    log_serial_println!(
-                        "Thread {} unblocked by child exit, queued to cpu {}",
-                        thread_id,
-                        target
-                    );
+                    if let Some(target) = self.find_target_cpu_for_wakeup(thread_id) {
+                        self.per_cpu_queues[target].push_back(thread_id);
+                        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+                        #[cfg(target_arch = "x86_64")]
+                        log_serial_println!(
+                            "Thread {} unblocked by child exit, queued to cpu {}",
+                            thread_id,
+                            target
+                        );
 
-                    // Send IPI to wake an idle CPU
-                    #[cfg(target_arch = "aarch64")]
-                    self.send_resched_ipi();
+                        // Send IPI to wake an idle CPU
+                        #[cfg(target_arch = "aarch64")]
+                        self.send_resched_ipi();
+                    } else {
+                        self.park_pinned_thread_without_home(thread_id);
+                    }
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                 } else if already_queued {
@@ -3634,13 +3711,16 @@ impl Scheduler {
                     && tid != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !already_queued
                 {
-                    let target = self.find_target_cpu_for_wakeup(tid);
-                    self.per_cpu_queues[target].push_back(tid);
-                    wake.enqueued_target = Some(target);
-                    if from_isr_buffer {
-                        ENQUEUE_ISR_BUFFER_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
+                    if let Some(target) = self.find_target_cpu_for_wakeup(tid) {
+                        self.per_cpu_queues[target].push_back(tid);
+                        wake.enqueued_target = Some(target);
+                        if from_isr_buffer {
+                            ENQUEUE_ISR_BUFFER_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                        }
                     } else {
-                        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                        self.park_pinned_thread_without_home(tid);
                     }
                 } else if published_ready && (wake.current_cpu.is_some() || is_in_deferred) {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -3795,18 +3875,21 @@ impl Scheduler {
                 }
 
                 if !in_deferred_requeue && !is_idle && !already_queued {
-                    let target = self.find_target_cpu_for_wakeup(tid);
-                    trace_sched_diag(
-                        TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE,
-                        tid,
-                        tid,
-                        target as u64,
-                        ((was_blocked_on_io as u32) << 31)
-                            | ((target as u32 & 0xF) << 16)
-                            | self.ready_queue_length() as u32,
-                    );
-                    self.per_cpu_queues[target].push_back(tid);
-                    ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                    if let Some(target) = self.find_target_cpu_for_wakeup(tid) {
+                        trace_sched_diag(
+                            TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE,
+                            tid,
+                            tid,
+                            target as u64,
+                            ((was_blocked_on_io as u32) << 31)
+                                | ((target as u32 & 0xF) << 16)
+                                | self.ready_queue_length() as u32,
+                        );
+                        self.per_cpu_queues[target].push_back(tid);
+                        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        self.park_pinned_thread_without_home(tid);
+                    }
                 } else if in_deferred_requeue {
                     trace_sched_diag(
                         TRACE_SCHED_DIAG_WAKE_TIMER_DEFERRED,
@@ -3937,24 +4020,59 @@ impl Scheduler {
 
     /// Find which CPU this thread last ran on, or the least-loaded CPU if unknown.
     /// Used by wakeup paths for cache-affinity routing.
-    fn find_target_cpu_for_wakeup(&self, tid: u64) -> usize {
+    ///
+    /// `None` means there is no acceptable target: the thread is pinned to a
+    /// CPU that is offline or has stopped dispatching, and its pin is the kind
+    /// that must not be honoured by migration. The caller parks it.
+    fn find_target_cpu_for_wakeup(&self, tid: u64) -> Option<usize> {
         let current_cpu = Self::current_cpu_id();
-        if let Some(target) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
-            if target < self.online_cpu_count() {
-                return target;
+        if let Some(pin) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
+            // The pinned CPU is a placement decision like every other one in
+            // this function, so it is judged by the same liveness filter: a
+            // wake must never be routed onto a CPU the scheduler has already
+            // classified as not accepting wakeups.
+            if pin.cpu < self.online_cpu_count() && self.cpu_accepts_wakeups(pin.cpu) {
+                return Some(pin.cpu);
+            }
+            // The home CPU cannot take it. A per-CPU worker services that CPU's
+            // per-CPU state, so running it elsewhere would read the wrong
+            // state: refuse the placement and let the caller park it.
+            if pin.per_cpu_worker {
+                return None;
             }
         }
         // If the thread is still "current" on a CPU, use that CPU (affinity).
         for cpu in 0..MAX_CPUS {
             if self.cpu_state[cpu].current_thread == Some(tid) {
-                return cpu;
+                return Some(cpu);
             }
         }
         // Otherwise pick the least-loaded CPU.
-        (0..self.online_cpu_count())
-            .filter(|&cpu| self.cpu_accepts_wakeups(cpu))
-            .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
-            .unwrap_or(current_cpu)
+        Some(
+            (0..self.online_cpu_count())
+                .filter(|&cpu| self.cpu_accepts_wakeups(cpu))
+                .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
+                .unwrap_or(current_cpu),
+        )
+    }
+
+    /// Leave a per-CPU worker parked because its home CPU is not dispatching.
+    ///
+    /// Parked here means exactly what `kthread_park` means: the thread's state
+    /// is the plain `Blocked` that `block_current` publishes, and it names no
+    /// ready queue. The next wake after its home CPU resumes dispatching finds
+    /// an acceptable target and queues it there; nothing else is needed, and
+    /// nothing has been placed on the wrong CPU in the meantime.
+    fn park_pinned_thread_without_home(&mut self, thread_id: u64) {
+        PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed);
+        for queue in self.per_cpu_queues.iter_mut() {
+            queue.retain(|&id| id != thread_id);
+        }
+        if let Some(thread) = self.get_thread_mut(thread_id) {
+            if thread.state == ThreadState::Ready {
+                thread.state = ThreadState::Blocked;
+            }
+        }
     }
 
     /// Find the CPU with the fewest threads in its queue.
@@ -4356,7 +4474,7 @@ pub fn finish_test_binary_staging() {
             .expect("scheduler not initialized for test binary release");
         for thread in scheduler.threads.iter_mut() {
             if thread.privilege == super::thread::ThreadPrivilege::User
-                && thread.cpu_affinity == Some(0)
+                && thread.cpu_affinity == Some(super::thread::CpuPin::hold_pen(0))
             {
                 thread.cpu_affinity = None;
             }
@@ -4380,7 +4498,7 @@ pub(crate) fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
             "CPU-affine spawn target {} is offline",
             cpu
         );
-        thread.cpu_affinity = Some(cpu);
+        thread.cpu_affinity = Some(super::thread::CpuPin::per_cpu_worker(cpu));
         scheduler.add_thread(thread);
         NEED_RESCHED.store(true, Ordering::Relaxed);
         #[cfg(target_arch = "x86_64")]

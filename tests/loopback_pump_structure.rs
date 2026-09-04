@@ -1060,6 +1060,62 @@ fn validate_wakeup_placement_is_bounded_by_online_cpus(source: &str) -> Result<(
         if compact.contains("(0..MAX_CPUS).min_by_key(") {
             return Err(format!("{name} selects from all MAX_CPUS queues"));
         }
+        // The pairing rule, which is what makes this validator see arms that do
+        // not exist yet. Each placement arm in these functions bounds a CPU
+        // choice by the online range AND filters it through scheduling
+        // liveness, so the two references come in pairs. Counting the pair
+        // instead of naming the arms is deliberate: the affinity fast-return
+        // added for per-CPU workers was a second arm that consulted the online
+        // range and skipped the liveness filter, and every substring rule above
+        // stayed green through it because they only ever described the
+        // least-loaded arm. A new arm that brings only one half of the pair
+        // reddens this, whatever it is called; a new arm that brings both
+        // passes; and a legitimate third use of either name has to be
+        // re-anchored here on purpose rather than sliding through.
+        let mask = code_mask(body);
+        let bounds = identifier_offsets(body, &mask, "online_cpu_count").len();
+        let liveness = identifier_offsets(body, &mask, "cpu_accepts_wakeups").len();
+        if bounds != liveness {
+            return Err(format!(
+                "{name} has {bounds} online-range test(s) but {liveness} scheduling-liveness test(s): every placement arm must consult both"
+            ));
+        }
+
+        // And the rule the pairing count alone cannot enforce: a placement made
+        // from a thread's stored CPU pin is a placement like any other, so the
+        // block that reads cpu_affinity must consult the online range and
+        // scheduling liveness BEFORE it returns a CPU. Deleting both halves of
+        // that condition together keeps the counts balanced, so without this
+        // the pairing rule stays green on exactly the shape that caused the
+        // finding. Located by the cpu_affinity read, not by arm name.
+        for offset in identifier_offsets(body, &mask, "cpu_affinity") {
+            let block = braced_block(body, &mask, offset)
+                .ok_or_else(|| format!("{name} reads cpu_affinity outside any block"))?;
+            if !has_identifier(block, "online_cpu_count") {
+                return Err(format!(
+                    "{name} returns a pinned CPU without bounding it by the online range"
+                ));
+            }
+            if !has_identifier(block, "cpu_accepts_wakeups") {
+                return Err(format!(
+                    "{name} returns a pinned CPU without consulting scheduling liveness"
+                ));
+            }
+            let block_mask = code_mask(block);
+            let first_return = identifier_offsets(block, &block_mask, "return")
+                .into_iter()
+                .next();
+            let first_liveness = identifier_offsets(block, &block_mask, "cpu_accepts_wakeups")
+                .into_iter()
+                .next();
+            if let (Some(returned), Some(checked)) = (first_return, first_liveness) {
+                if returned < checked {
+                    return Err(format!(
+                        "{name} returns from the pin block before consulting scheduling liveness"
+                    ));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1664,6 +1720,41 @@ fn wakeup_placement_validator_rejects_max_cpu_selection() {
     assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
     let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
     assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
+}
+
+#[test]
+fn wakeup_placement_validator_rejects_unfiltered_affinity_arm() {
+    // The arm the round-1 branch added: a pinned CPU returned early, bounded by
+    // the online range but never checked against scheduling liveness.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
+        .expect("find wakeup placement fixture");
+    let mutated_wakeup = wakeup.replacen("&& self.cpu_accepts_wakeups(pin.cpu)", "", 1);
+    assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
+    let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
+    assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
+}
+
+#[test]
+fn wakeup_placement_validator_rejects_max_cpu_bound_on_the_affinity_arm() {
+    // The other half of the same arm: a pinned CPU judged against MAX_CPUS
+    // instead of the online range.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
+        .expect("find wakeup placement fixture");
+    let mutated_wakeup = wakeup.replacen("pin.cpu < self.online_cpu_count()", "pin.cpu < MAX_CPUS", 1);
+    assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
+    let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
+    assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
+}
+
+#[test]
+fn wakeup_placement_validator_accepts_the_live_source() {
+    // Anti-vacuity: the two mutation tests above only mean something if the
+    // unmutated source passes, so this asserts the baseline explicitly rather
+    // than leaving it implied by the fixture-mutation assertions.
+    validate_wakeup_placement_is_bounded_by_online_cpus(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("live scheduler source passes the placement validator");
 }
 
 #[test]

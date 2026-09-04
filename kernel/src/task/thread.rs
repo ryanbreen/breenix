@@ -561,11 +561,53 @@ pub struct Thread {
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
     pub cached_ttbr0: u64,
 
-    /// Optional CPU target: `Some(cpu)` pins the thread; the empty state permits migration.
+    /// Optional CPU target: `Some(pin)` pins the thread; the empty state permits
+    /// migration.
     ///
-    /// Per-CPU kernel workers use this to keep their execution context aligned
-    /// with the per-CPU state they service.
-    pub cpu_affinity: Option<usize>,
+    /// The pin carries *why* it exists, because the two reasons need opposite
+    /// treatment when the home CPU stops dispatching. See `CpuPin`.
+    pub cpu_affinity: Option<CpuPin>,
+}
+
+/// Why a thread is pinned to one CPU, alongside which CPU that is.
+///
+/// The kind is not decoration: it decides what happens when the home CPU stops
+/// accepting wakeups.
+///
+/// * `per_cpu_worker` — the thread services state that lives in that CPU's
+///   per-CPU block (`ksoftirqd/N` and its pending-softirq bitmap). Running it
+///   anywhere else reads the wrong bitmap, so it may never be migrated; if its
+///   home CPU is offline or stalled it stays parked until the home CPU comes
+///   back. Linux parks per-CPU kthreads on CPU-down for the same reason.
+/// * not a worker — a temporary hold pen. The aarch64 testing-profile loader
+///   pins its freshly created user threads to the non-dispatching boot CPU so a
+///   peer cannot run a partial catalog, and releases every one of them in
+///   `finish_test_binary_staging`. Parking those would strand the catalog, so a
+///   hold-pen pin is retained on its queue rather than parked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuPin {
+    /// The CPU this thread must run on.
+    pub cpu: usize,
+    /// Whether the pin exists because the work itself is CPU-local.
+    pub per_cpu_worker: bool,
+}
+
+impl CpuPin {
+    /// A pin whose work lives in `cpu`'s per-CPU state.
+    pub const fn per_cpu_worker(cpu: usize) -> Self {
+        Self {
+            cpu,
+            per_cpu_worker: true,
+        }
+    }
+
+    /// A hold-pen pin: placement only, released by whoever set it.
+    pub const fn hold_pen(cpu: usize) -> Self {
+        Self {
+            cpu,
+            per_cpu_worker: false,
+        }
+    }
 }
 
 impl Clone for Thread {
