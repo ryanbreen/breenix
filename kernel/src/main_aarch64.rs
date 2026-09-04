@@ -87,7 +87,6 @@ fn launch_init_from_elf(
     path: &str,
 ) -> Result<core::convert::Infallible, &'static str> {
     use alloc::string::String;
-    use core::arch::asm;
     use kernel::arch_impl::aarch64::context::return_to_userspace;
 
     // Disable interrupts for the entire process setup.
@@ -266,18 +265,17 @@ fn launch_init_from_elf(
     // above has evicted stale entries from the boot identity map. ASID=1
     // ensures any remaining stale boot entries (ASID=0) don't match.
     let ttbr0_value = ttbr0_phys | (1u64 << 48); // ASID=1
-    unsafe {
-        asm!(
-            "dsb ishst",
-            "msr ttbr0_el1, {0}",
-            "isb",
-            "tlbi vmalle1is",
-            "dsb ish",
-            "isb",
-            in(reg) ttbr0_value,
-            options(nostack, preserves_flags)
-        );
-    }
+    //
+    // claim-lint:ok: 9 of 25 round-6 boots aborted this way, #786.
+    // Install through the shared discipline rather than a raw `msr`: init is
+    // the one thread that reaches EL0 without passing through
+    // `dispatch_thread_locked`, so nothing else on this path reconciles the
+    // per-CPU TTBR0 shadows with the register. Every idle redirect this CPU
+    // took during boot published the KERNEL root into `next_cr3`, and the
+    // syscall return corridor reads that word: without this reconciliation
+    // init's first `svc` returns onto the kernel root and takes an instruction
+    // abort at its own return address (#786).
+    kernel::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0_value);
     // DO NOT call enable_interrupts() here. Interrupts are currently disabled
     // (since step 'd'). The ERET in return_to_userspace() loads SPSR_EL1=0
     // into PSTATE, which has DAIF clear (interrupts enabled). The pending
