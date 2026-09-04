@@ -186,6 +186,16 @@ pub struct Device {
     pub revision_id: u8,
     /// Device class
     pub class: DeviceClass,
+    /// Raw class-code byte as read from config dword 0x08, bits 31-24 --
+    /// unlike `class`, this field is never assigned through
+    /// `DeviceClass::from_u8`, so it stays byte-faithful for class codes
+    /// outside that enum's explicit arms (`DeviceClass::Unknown` collapses
+    /// every such code, including a genuine `0xFF`, to the same value).
+    /// claim-lint:ok: the only write site is `raw_class: class_code` in
+    /// `probe_device()` below, a plain assignment with no `from_u8` call on
+    /// the right-hand side -- grep -n raw_class kernel/src/drivers/pci.rs
+    /// shows every occurrence.
+    pub raw_class: u8,
     /// Device subclass
     pub subclass: u8,
     /// Programming interface
@@ -1055,6 +1065,7 @@ fn probe_device(bus: u8, device: u8, function: u8) -> Option<Device> {
         device_id,
         revision_id,
         class: DeviceClass::from_u8(class_code),
+        raw_class: class_code,
         subclass,
         prog_if,
         interrupt_line,
@@ -1362,9 +1373,15 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
 /// PASS/FAIL verdict, logs nothing at ERROR level, and cannot redden a boot:
 /// every field it emits is a transcription of a value `enumerate()` already
 /// parsed out of live PCI config space (vendor/device from config dword
-/// 0x00, class/subclass from 0x08, `interrupt_line` from 0x3C, BAR address
-/// and size from `decode_bar()`). The expectations live in the gate scripts
-/// -- `docker/qemu/run-x86-boot-tests.sh` and
+/// 0x00, subclass from 0x08, `interrupt_line` from 0x3C, BAR address and
+/// size from `decode_bar()`). The `class=` field prints `Device::raw_class`,
+/// the untouched config-dword-0x08 byte -- not `Device::class`, which is
+/// `DeviceClass::from_u8(raw_class)` and therefore lossy: any class code
+/// outside that enum's 18 explicit arms collapses to `DeviceClass::Unknown`
+/// (discriminant `0xFF`), indistinguishable from a genuine `0xFF` byte.
+/// `raw_class` has no such catch-all, so it stays byte-faithful for every
+/// class code. The expectations live in the gate scripts --
+/// `docker/qemu/run-x86-boot-tests.sh` and
 /// `docker/qemu/run-x86-prod-profile-boot-test.sh` -- which derive the set of
 /// devices to expect from their own QEMU `-device`/`-netdev` flag bytes and
 /// assert against these lines.
@@ -1417,7 +1434,7 @@ pub fn dump_enumerated_functions() {
             dev.function,
             dev.vendor_id,
             dev.device_id,
-            dev.class as u8,
+            dev.raw_class,
             dev.subclass,
             bar0.address,
             bar0.size,
