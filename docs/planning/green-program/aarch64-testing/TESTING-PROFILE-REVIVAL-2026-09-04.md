@@ -232,11 +232,10 @@ parker would
 publish `Blocked` anyway and be stranded.
 
 Both windows are counted, not asserted: `[WORKQUEUE_PARK_RACE:cancelled=N:intent_cleared=N]`
-and `[KSOFTIRQD_PARK_RACE:cancelled=N]` reach serial from the self-tests. In
-the 9-boot batch that first carried them, 2 of 9 boots showed a non-zero
-count -- 1 `cancelled=1` and 1 `intent_cleared=1` -- so the window is real and
-is being taken, and every one of those is a wakeup the old shape would have
-dropped.
+and `[KSOFTIRQD_PARK_RACE:cancelled=N]` reach serial from the self-tests. 3 of
+the 6 boots of the round's final build reported a count above 0 -- 2
+`cancelled=1` and 1 `intent_cleared=1` -- so the window is real and is being
+taken. Each of those is 1 wakeup the old shape would have dropped.
 
 ### The measurement
 

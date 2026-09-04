@@ -59,8 +59,8 @@ static KTHREAD_REGISTRY: Mutex<BTreeMap<u64, Arc<Kthread>>> = Mutex::new(BTreeMa
 /// Published park intents that an unpark cleared before the parker slept.
 ///
 /// An increment is a wakeup kept that the older check-then-park shape had no
-/// way to keep. Diagnostic, not a fault: 2 of 9 boots in the batch that first
-/// carried this counter reported a non-zero value.
+/// way to keep. Diagnostic, not a fault: 3 of 6 boots of the round-3 build
+/// reported a non-zero park-race count on serial.
 static PARK_INTENT_CLEARED_BEFORE_SLEEP: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
