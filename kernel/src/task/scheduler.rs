@@ -326,6 +326,12 @@ fn arch_can_dispatch_here() -> bool {
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
+/// While the aarch64 testing-profile loader publishes its process batch, keep
+/// new user threads on the non-preemptible boot CPU. This leaves IRQs available
+/// for VirtIO without allowing a secondary CPU to run a partial test catalog.
+#[cfg(all(target_arch = "aarch64", feature = "testing"))]
+static TEST_BINARY_STAGING: AtomicBool = AtomicBool::new(false);
+
 #[inline(always)]
 fn lock_scheduler() -> spin::MutexGuard<'static, Option<Scheduler>> {
     let guard = SCHEDULER.lock();
@@ -1603,10 +1609,14 @@ impl Scheduler {
         self.per_cpu_queues[cpu].push_back(thread_id);
     }
 
-    fn add_thread_inner(&mut self, thread: Box<Thread>, front: bool) {
+    fn add_thread_inner(&mut self, mut thread: Box<Thread>, front: bool) {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
+        #[cfg(all(target_arch = "aarch64", feature = "testing"))]
+        if is_user && TEST_BINARY_STAGING.load(Ordering::Acquire) {
+            thread.cpu_affinity = Some(0);
+        }
         let cpu_affinity = thread.cpu_affinity;
         self.threads.push(thread);
         // CPU-local workers retain their requested queue. Migratable work uses
@@ -4319,6 +4329,40 @@ pub fn spawn(thread: Box<Thread>) {
     });
 }
 
+/// Stage aarch64 testing-profile user threads on CPU 0 until the complete
+/// catalog has been published and its loader markers have reached serial.
+#[cfg(all(target_arch = "aarch64", feature = "testing"))]
+pub fn begin_test_binary_staging() {
+    assert!(
+        TEST_BINARY_STAGING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok(),
+        "test binary staging already active"
+    );
+}
+
+/// Release the complete testing-profile process batch for SMP dispatch.
+#[cfg(all(target_arch = "aarch64", feature = "testing"))]
+pub fn finish_test_binary_staging() {
+    TEST_BINARY_STAGING.store(false, Ordering::Release);
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        let scheduler = scheduler_lock
+            .as_mut()
+            .expect("scheduler not initialized for test binary release");
+        for thread in scheduler.threads.iter_mut() {
+            if thread.privilege == super::thread::ThreadPrivilege::User
+                && thread.cpu_affinity == Some(0)
+            {
+                thread.cpu_affinity = None;
+            }
+        }
+        NEED_RESCHED.store(true, Ordering::Release);
+        crate::per_cpu_aarch64::set_need_resched(true);
+        scheduler.send_resched_ipi();
+    });
+}
+
 /// Add a production thread that must remain on `cpu`.
 pub(crate) fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
     note_scheduler_publication();
@@ -4673,12 +4717,9 @@ pub fn is_current_idle_thread() -> Option<bool> {
     // to be safe. This prevents deadlock when timer fires during scheduler ops.
     if let Some(scheduler_lock) = try_lock_scheduler() {
         if let Some(scheduler) = scheduler_lock.as_ref() {
-            return Some(
-                scheduler
-                    .current_thread_id_inner()
-                    .map(|id| id == scheduler.idle_thread_id())
-                    .unwrap_or(false),
-            );
+            return scheduler
+                .current_thread_id_inner()
+                .map(|id| id == scheduler.idle_thread_id());
         }
     }
     None

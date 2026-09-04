@@ -127,12 +127,21 @@ fn restore_syscall_preempt_state() {
     crate::per_cpu::preempt_disable();
 }
 
+/// Whether the current context may block and hand its saved continuation to
+/// the scheduler while waiting for an interrupt-driven completion.
 #[inline]
-fn syscall_sleep_path_available() -> bool {
+pub(crate) fn current_context_can_sleep() -> bool {
     #[cfg(target_arch = "aarch64")]
     {
-        crate::per_cpu_aarch64::preempt_count() > 0
+        crate::arch_interrupts_enabled()
+            && !crate::per_cpu_aarch64::in_interrupt()
+            && !crate::per_cpu_aarch64::in_softirq()
+            && crate::per_cpu_aarch64::preempt_count() == 1
             && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
+            && matches!(
+                crate::task::scheduler::is_current_idle_thread(),
+                Some(false)
+            )
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -208,7 +217,7 @@ impl Completion {
     ) -> Result<bool, i32> {
         // Fast path: already done (e.g., very fast device, or spurious call).
         if self.done.load(Ordering::Acquire) == expected_token {
-            let in_syscall = syscall_sleep_path_available();
+            let in_syscall = current_context_can_sleep();
             if in_syscall {
                 clear_blocked_in_syscall_current();
             }
@@ -261,7 +270,7 @@ impl Completion {
             // On aarch64, the boot thread is also deliberately preempt-disabled
             // before timer init; it must remain on the yield path because there
             // is no timer to rescue a sleeping boot thread.
-            let in_syscall = syscall_sleep_path_available();
+            let in_syscall = current_context_can_sleep();
 
             if in_syscall {
                 // ============================================================

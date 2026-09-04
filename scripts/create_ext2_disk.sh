@@ -98,7 +98,9 @@ if [[ "$(uname)" == "Darwin" ]]; then
             dd if=/dev/zero of=/work/$OUTPUT_FILENAME bs=1M count='"$SIZE_MB"' status=none
 
             # Create ext2 filesystem
-            mke2fs -t ext2 -F /work/$OUTPUT_FILENAME >/dev/null 2>&1
+            # Breenix currently parses linear ext2 directory entries, not the
+            # htree nodes created when dir_index is enabled on large test dirs.
+            mke2fs -t ext2 -O ^dir_index -F /work/$OUTPUT_FILENAME >/dev/null 2>&1
 
             # Mount and populate
             mkdir -p /mnt/ext2
@@ -364,7 +366,9 @@ else
     dd if=/dev/zero of="$OUTPUT_FILE" bs=1M count=$SIZE_MB status=none
 
     # Create ext2 filesystem
-    mke2fs -t ext2 -F "$OUTPUT_FILE" >/dev/null 2>&1
+    # Keep large test-binary directories in the linear format understood by
+    # the kernel ext2 reader.
+    mke2fs -t ext2 -O ^dir_index -F "$OUTPUT_FILE" >/dev/null 2>&1
 
     # Mount and populate (requires root)
     if [[ $EUID -ne 0 ]]; then

@@ -104,3 +104,104 @@ fn boot_adds_softirq_daemons_after_secondary_cpus_are_online() {
         "secondary ksoftirqd instances must exist before the testing-profile self-test"
     );
 }
+
+#[test]
+fn completion_sleep_rejects_idle_masked_and_interrupt_contexts() {
+    let completion = repo_text("kernel/src/task/completion.rs");
+    let predicate = function_body(&completion, "current_context_can_sleep");
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let idle_probe = function_body(&scheduler, "is_current_idle_thread");
+
+    for required in [
+        "crate::arch_interrupts_enabled()",
+        "!crate::per_cpu_aarch64::in_interrupt()",
+        "!crate::per_cpu_aarch64::in_softirq()",
+        "crate::per_cpu_aarch64::preempt_count() == 1",
+        "timer_interrupt::is_initialized()",
+        "is_current_idle_thread()",
+        "Some(false)",
+    ] {
+        assert!(
+            predicate.contains(required),
+            "completion sleep eligibility lost {required}"
+        );
+    }
+    assert!(
+        idle_probe.contains("current_thread_id_inner()")
+            && !idle_probe.contains("unwrap_or(false)"),
+        "missing scheduler state must not be classified as a non-idle task"
+    );
+}
+
+#[test]
+fn block_mmio_rejects_masked_irq_before_request_publication() {
+    let block = repo_text("kernel/src/drivers/virtio/block_mmio.rs");
+    let available = function_body(&block, "irq_completion_available");
+    let gate_sleep = function_body(&block, "block_mmio_request_gate_can_sleep");
+    let read = function_body(&block, "read_sector");
+
+    assert!(
+        available.contains("Aarch64Cpu::interrupts_enabled()")
+            && !available.contains("current_thread_id"),
+        "a current idle identity must not make masked-IRQ completion available"
+    );
+    assert!(
+        gate_sleep.contains("completion::current_context_can_sleep()"),
+        "gate waits and completion waits must share one sleep policy"
+    );
+    let eligibility = read.find("irq_completion_available()").unwrap();
+    let gate = read.find("REQUEST_GATES[device_index].lock()").unwrap();
+    let prepare = read.find("completion.prepare_wait()").unwrap();
+    let publish = read.find("submit_read_sector(").unwrap();
+    assert!(
+        eligibility < gate && gate < prepare && prepare < publish,
+        "masked IRQs must be rejected before gate acquisition and queue publication"
+    );
+}
+
+#[test]
+fn testing_loader_keeps_irqs_enabled_for_virtio_completion() {
+    let main = repo_text("kernel/src/main_aarch64.rs");
+    let loader = function_body(&main, "load_test_binaries_from_ext2");
+
+    assert!(
+        !loader.contains("disable_interrupts()"),
+        "the IRQ-driven ext2 loader must not mask its completion interrupt"
+    );
+    assert!(
+        loader.contains("Aarch64Cpu::enable_interrupts()"),
+        "the loader must undo the test suite's deliberate IRQ mask before ext2 I/O"
+    );
+    assert!(
+        loader.contains("root_fs_read()") && loader.contains("read_file_content(&inode)"),
+        "the ratchet must cover the ext2-backed loader rather than a bypass"
+    );
+    let read = loader.find("read_file_content(&inode)").unwrap();
+    let batch = loader.find("loaded_images.push((name, elf_data))").unwrap();
+    let stage = loader.find("begin_test_binary_staging()").unwrap();
+    let create = loader.find("for (name, elf_data) in loaded_images").unwrap();
+    assert!(
+        read < batch && batch < stage && stage < create,
+        "all ext2 reads must finish before any test process becomes runnable"
+    );
+
+    let complete = main
+        .find("[test] Test processes loaded - will run via timer interrupts")
+        .unwrap();
+    let release = main.find("finish_test_binary_staging()").unwrap();
+    assert!(
+        complete < release,
+        "the complete process catalog must be reported before SMP dispatch starts"
+    );
+}
+
+#[test]
+fn ext2_fixture_keeps_test_catalog_directories_linear() {
+    let image_builder = repo_text("scripts/create_ext2_disk.sh");
+
+    assert_eq!(
+        image_builder.matches("mke2fs -t ext2 -O ^dir_index").count(),
+        2,
+        "both host paths must produce directories the kernel ext2 reader can traverse"
+    );
+}

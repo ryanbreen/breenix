@@ -1369,15 +1369,17 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         load_test_binaries_from_ext2();
         serial_println!("[test] Test processes loaded - will run via timer interrupts");
         serial_println!("[test] Entering scheduler idle loop");
-        // Print shell prompt to serial before enabling interrupts.
-        // Once interrupts are enabled, the scheduler takes over and the BSP
-        // (its idle thread) enters idle_loop_arm64 - it won't return here.
+        // The loader enabled interrupts for VirtIO completion. The boot CPU's
+        // preemption pin still keeps this continuation resident until the
+        // scheduler idle loop below.
         // The prompt signals to the test harness that boot is complete.
         serial_print!("breenix> ");
-        // Enable interrupts - scheduler dispatches test processes via timer.
+        // Keep interrupts enabled; the scheduler dispatches test processes via
+        // timer after the boot preemption pin is released by the idle path.
         unsafe {
             kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
         }
+        kernel::task::scheduler::finish_test_binary_staging();
         loop {
             unsafe {
                 core::arch::asm!("wfi", options(nomem, nostack));
@@ -1475,16 +1477,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 fn load_test_binaries_from_ext2() {
     use alloc::format;
     use alloc::string::String;
+    use alloc::vec::Vec;
 
-    // CRITICAL: Disable interrupts during the entire loading loop.
-    // With interrupts enabled, each create_user_process() adds a thread to the
-    // scheduler's ready queue. Timer interrupts (200Hz) then preempt this loading
-    // thread to run the newly created test processes. By binary #30, the loading
-    // thread competes with 30+ threads for CPU time and loading takes >90 seconds.
-    // With interrupts disabled, VirtIO block I/O still works (polling mode) and
-    // all binaries load in under a second.
+    // The preceding kthread/workqueue self-tests deliberately return with IRQs
+    // masked. VirtIO MMIO completion is IRQ-driven, so unmask them before the
+    // first ext2 read. CPU 0 retains the boot preemption pin established in
+    // kernel_main, which prevents the scheduler from abandoning this loader
+    // continuation while the non-sleep completion path polls the ISR token.
     unsafe {
-        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
+        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
     }
 
     // Use the canonical shared test binary list (see boot::test_list)
@@ -1492,11 +1493,17 @@ fn load_test_binaries_from_ext2() {
 
     let mut loaded = 0;
     let mut failed = 0;
+    let mut not_found = 0;
+    let mut loaded_images = Vec::with_capacity(test_binaries.len());
 
     // Search paths for test binaries - try each in order
     let search_dirs = ["/bin", "/usr/local/cbin", "/usr/local/test/bin", "/sbin"];
 
-    for name in test_binaries {
+    // Read the complete catalog before making any test runnable. IRQs must be
+    // enabled for VirtIO completion, which also lets secondary CPUs dispatch;
+    // batching the ext2 reads prevents those tests from mutating the filesystem
+    // underneath the loader.
+    for &name in test_binaries {
         // Load ELF from ext2 - acquire and release lock for each binary
         let elf_data = {
             let fs_guard = kernel::fs::ext2::root_fs_read();
@@ -1522,6 +1529,7 @@ fn load_test_binaries_from_ext2() {
                 Some(entry) => entry,
                 None => {
                     // Binary not present in any search path - skip silently
+                    not_found += 1;
                     continue;
                 }
             };
@@ -1553,8 +1561,17 @@ fn load_test_binaries_from_ext2() {
             continue;
         }
 
+        loaded_images.push((name, elf_data));
+    }
+
+    // The ext2 read phase is complete. Stage the runnable batch on CPU 0 so
+    // secondary CPUs cannot observe a partial catalog or interleave the loader's
+    // status markers. The caller releases the batch after printing its completion
+    // marker.
+    kernel::task::scheduler::begin_test_binary_staging();
+    for (name, elf_data) in loaded_images {
         // Create userspace process (adds to scheduler ready queue)
-        match kernel::process::creation::create_user_process(String::from(*name), &elf_data) {
+        match kernel::process::creation::create_user_process(String::from(name), &elf_data) {
             Ok(pid) => {
                 serial_println!("[test] Loaded {} (PID {})", name, pid.as_u64());
                 #[cfg(feature = "btrt")]
@@ -1578,18 +1595,12 @@ fn load_test_binaries_from_ext2() {
         }
     }
 
-    // NOTE: Interrupts remain DISABLED here. The caller is responsible for
-    // printing status messages and re-enabling interrupts before entering
-    // the idle loop. If we re-enable here, the scheduler immediately preempts
-    // the boot thread to run test processes, and subsequent serial_println!
-    // calls in the caller never execute.
-
     serial_println!(
         "[test] Loaded {}/{} test binaries ({} failed, {} not found)",
         loaded,
         test_binaries.len(),
         failed,
-        test_binaries.len() - loaded - failed
+        not_found
     );
 }
 

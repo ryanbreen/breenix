@@ -112,9 +112,7 @@ impl Drop for BlockMmioRequestGuard<'_> {
 
 #[inline]
 fn block_mmio_request_gate_can_sleep() -> bool {
-    crate::task::scheduler::current_thread_id().is_some()
-        && crate::per_cpu_aarch64::preempt_count() > 0
-        && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
+    crate::task::completion::current_context_can_sleep()
 }
 
 #[cfg(feature = "boot_tests")]
@@ -868,7 +866,7 @@ fn block_device_state(device_index: usize) -> Result<&'static BlockDeviceState, 
 
 #[inline]
 fn irq_completion_available() -> bool {
-    crate::task::scheduler::current_thread_id().is_some() || Aarch64Cpu::interrupts_enabled()
+    Aarch64Cpu::interrupts_enabled()
 }
 
 fn submit_read_sector(
