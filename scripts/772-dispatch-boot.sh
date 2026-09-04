@@ -92,9 +92,23 @@ if [ "$FOUND" = 1 ] && kill -0 "$QPID" 2>/dev/null; then
     fi
 fi
 
-# Cleanup: only the guest this script started, by PID (R84).
+# Cleanup: only the guest this script started, by PID (R84). `timeout` does
+# not put its child in a new process group in this non-interactive shell, and
+# SIGKILL is not forwarded by `timeout` in that case (it gets no chance to
+# run its own handler), so killing only $QPID leaves `qemu-uefi` and the
+# `qemu-system-x86_64` it execs as orphans holding the disk-image write lock
+# for the next boot. Walk the tree from $QPID -- the PID this script
+# started -- by PPID lineage only, not by matching a process NAME.
+kill_descendants() {
+    local pid="$1"
+    local child
+    for child in $(pgrep -P "$pid" 2>/dev/null); do
+        kill_descendants "$child"
+    done
+    kill -9 "$pid" 2>/dev/null
+}
 if kill -0 "$QPID" 2>/dev/null; then
-    kill -9 "$QPID" 2>/dev/null
+    kill_descendants "$QPID"
 fi
 wait "$QPID" 2>/dev/null
 
