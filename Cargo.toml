@@ -43,6 +43,7 @@ vmnet = ["kernel/vmnet"]
 interactive = ["kernel/interactive"]
 disable_x86_prod_init = ["kernel/disable_x86_prod_init"]  # #673 anti-vacuity knob, see kernel/Cargo.toml
 no_progress_refusal_disabled = ["kernel/no_progress_refusal_disabled"]  # #772 anti-vacuity switch, see kernel/Cargo.toml
+quiet_dispatch_log = ["kernel/quiet_dispatch_log"]  # #772 Q2 diagnostic switch, see kernel/Cargo.toml
 
 [[bin]]
 name = "qemu-uefi"

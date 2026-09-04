@@ -698,6 +698,9 @@ fn save_kernel_context_with_guard(
                 // not the record itself is compiled in.
                 note_dispatch_save(save_reason, thread_id, interrupt_frame);
 
+                // #775 / #772 Q2: one of the three dispatch-path serial
+                // records, compiled out by `quiet_dispatch_log`.
+                #[cfg(not(feature = "quiet_dispatch_log"))]
                 log::info!(
                     "Saved kernel context for blocked thread {}: RIP={:#x} CS={:#x} RSP={:#x}",
                     thread_id,
@@ -1157,6 +1160,8 @@ fn switch_to_thread(
                             // -- the same event the record below names.
                             crate::trace_count!(DISPATCH_KERNEL_RESTORE_TOTAL);
 
+                            // #775 / #772 Q2: second of the three records.
+                            #[cfg(not(feature = "quiet_dispatch_log"))]
                             log::info!(
                                 "Restored kernel context for thread {}: RIP={:#x} RSP={:#x}",
                                 thread_id,
@@ -1183,6 +1188,8 @@ fn switch_to_thread(
                                 Cr3Flags::empty(),
                             );
                         }
+                        // #775 / #772 Q2: third of the three records.
+                        #[cfg(not(feature = "quiet_dispatch_log"))]
                         log::debug!(
                             "Switched to process CR3 {:#x} for blocked-in-syscall kernel return (thread {})",
                             process_cr3,
