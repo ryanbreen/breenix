@@ -1478,6 +1478,11 @@ extern "x86-interrupt" fn page_fault_handler(
             // CRITICAL: Update scheduler to point to idle thread BEFORE modifying exception frame.
             // This ensures subsequent timer interrupts can properly schedule other threads.
             crate::task::scheduler::switch_to_idle();
+            // #772 diagnostics: this vector ends a dispatch without saving a
+            // context and without touching the dispatch mark.
+            crate::tracing::providers::sched::trace_dispatch_abandon(
+                crate::tracing::providers::sched::DispatchAbandonSite::ExceptionPageFault,
+            );
 
             // CR3 is already the kernel table. Rewrite the frame last, using the
             // scheduler-owned idle thread stack rather than the dying thread's stack.
@@ -1765,6 +1770,10 @@ extern "x86-interrupt" fn general_protection_fault_handler(
         // CRITICAL: Update scheduler to point to idle thread BEFORE modifying exception frame.
         // This ensures subsequent timer interrupts can properly schedule other threads.
         crate::task::scheduler::switch_to_idle();
+        // #772 diagnostics: same as the page-fault vector above.
+        crate::tracing::providers::sched::trace_dispatch_abandon(
+            crate::tracing::providers::sched::DispatchAbandonSite::ExceptionGeneralProtection,
+        );
 
         // CR3 is already the kernel table. Rewrite the frame last, using the
         // scheduler-owned idle thread stack rather than the exception IST stack.

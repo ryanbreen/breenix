@@ -18,7 +18,11 @@ use crate::tracing::providers::counters::{DISPATCH_KERNEL_RESTORE_TOTAL, DISPATC
 // stays registered in both builds, so the anti-vacuity arm can read it as 0.
 #[cfg(not(feature = "no_progress_refusal_disabled"))]
 use crate::tracing::providers::counters::DISPATCH_NO_PROGRESS_REFUSED;
-use crate::tracing::providers::sched::trace_ctx_switch;
+use crate::tracing::providers::counters::DISPATCH_GATE_PREEMPT_ACTIVE;
+use crate::tracing::providers::sched::{
+    trace_ctx_switch, trace_dispatch_abandon, trace_dispatch_save, DispatchAbandonSite,
+    DispatchSaveReason,
+};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::VirtAddr;
@@ -206,6 +210,15 @@ pub extern "C" fn check_need_resched_and_switch(
         // In that case, doing a context switch would corrupt partially-restored registers.
         //
         // NOTE: No logging here - we're in IRQ context and logging can deadlock.
+        //
+        // #772 diagnostics: this is also the gate the 1 syscall-return call
+        // site leaves by. `kernel/src/syscall/entry.asm` sets PREEMPT_ACTIVE at
+        // `:110`, two instructions before its call at `:124`, and clears it at
+        // `:223`, after that call has returned -- so a save attributed to that
+        // entry point would contradict those 3 line numbers. Counting the exits
+        // is what makes the claim measurable rather than only readable off the
+        // assembly.
+        crate::trace_count!(DISPATCH_GATE_PREEMPT_ACTIVE);
         return;
     }
 
@@ -440,6 +453,13 @@ pub extern "C" fn check_need_resched_and_switch(
             })
             .unwrap_or((false, false));
 
+        // #772 diagnostics: which gate admitted this switch. The blocked or
+        // terminated arm is the mandatory switch the refusal is conjoined out
+        // of; anything else got here on `need_resched`. This is the same
+        // boolean the refusal itself tests, so the split is exactly the
+        // refusal's visibility boundary.
+        let save_mandatory = current_thread_blocked_or_terminated;
+
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
             // Debug marker: saving userspace context (raw serial, no locks)
@@ -449,6 +469,11 @@ pub extern "C" fn check_need_resched_and_switch(
                 saved_regs,
                 interrupt_frame,
                 &mut process_manager_guard,
+                if save_mandatory {
+                    DispatchSaveReason::UserMandatory
+                } else {
+                    DispatchSaveReason::UserPreempt
+                },
             ) {
                 log::error!(
                     "Context switch aborted: failed to save thread {} context. \
@@ -457,6 +482,7 @@ pub extern "C" fn check_need_resched_and_switch(
                 );
                 // Roll back the committed switch and re-arm rescheduling.
                 scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
+                trace_dispatch_abandon(DispatchAbandonSite::RollbackSaveFailed);
                 scheduler::set_need_resched();
                 return;
             }
@@ -470,12 +496,26 @@ pub extern "C" fn check_need_resched_and_switch(
                 saved_regs,
                 interrupt_frame,
                 &mut process_manager_guard,
+                if save_mandatory {
+                    DispatchSaveReason::KernelBlockedMandatory
+                } else {
+                    DispatchSaveReason::KernelBlockedPreempt
+                },
             );
         } else if !from_userspace {
             // Pure kernel thread (like kthread) being preempted - save its context
             // This is NOT a userspace thread and NOT blocked in syscall - it's a
             // kernel thread running its own code (e.g., kthread_entry -> user function)
-            save_kthread_context(old_thread_id, saved_regs, interrupt_frame);
+            save_kthread_context(
+                old_thread_id,
+                saved_regs,
+                interrupt_frame,
+                if save_mandatory {
+                    DispatchSaveReason::KthreadMandatory
+                } else {
+                    DispatchSaveReason::KthreadPreempt
+                },
+            );
         }
 
         // Switch to the new thread
@@ -538,6 +578,37 @@ pub extern "C" fn check_need_resched_and_switch(
     }
 }
 
+/// #772 diagnostics: record one context save, classified against the dispatch
+/// mark this CPU carries.
+///
+/// `thread_id` is the thread whose context is being saved, which is also the
+/// thread the last completed dispatch installed the mark for, so the two ends
+/// of the comparison name the same identity. `Advanced` means the thread moved
+/// off the RIP/RSP it was dispatched to (or no mark applies); anything else
+/// means the frame is byte-identical -- the thread retired no instruction.
+///
+/// Cost: four GS-relative loads and one relaxed atomic load inside
+/// `classify_dispatch_progress`, then one or two per-CPU atomic adds. No lock,
+/// no allocation, no formatting. It is called from the 3 arms that save a
+/// context and is absent from the gate-4 early return the common tick takes.
+#[inline(always)]
+fn note_dispatch_save(
+    reason: DispatchSaveReason,
+    thread_id: u64,
+    interrupt_frame: &InterruptStackFrame,
+) {
+    let rip = interrupt_frame.instruction_pointer.as_u64();
+    let no_progress = !matches!(
+        crate::per_cpu::classify_dispatch_progress(
+            thread_id,
+            rip,
+            interrupt_frame.stack_pointer.as_u64(),
+        ),
+        crate::per_cpu::DispatchProgress::Advanced
+    );
+    trace_dispatch_save(reason, no_progress, rip);
+}
+
 /// Save the current thread's userspace context using an already-held guard
 /// Returns true if context was saved successfully, false otherwise
 ///
@@ -549,11 +620,15 @@ fn save_current_thread_context_with_guard(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
     manager_guard: &mut crate::process::TryProcessManagerGuard,
+    save_reason: DispatchSaveReason,
 ) -> bool {
     if let Some(ref mut manager) = **manager_guard {
         if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
             if let Some(ref mut thread) = process.main_thread {
                 save_userspace_context(thread, interrupt_frame, saved_regs);
+                // #772: recorded where the save actually happened, so the
+                // counter cannot outrun the saves.
+                note_dispatch_save(save_reason, thread_id, interrupt_frame);
                 log::trace!(
                     "Saved context for process {} (thread {})",
                     pid.as_u64(),
@@ -587,6 +662,7 @@ fn save_kernel_context_with_guard(
     saved_regs: &SavedRegisters,
     interrupt_frame: &InterruptStackFrame,
     manager_guard: &mut crate::process::TryProcessManagerGuard,
+    save_reason: DispatchSaveReason,
 ) {
     if let Some(ref mut manager) = **manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
@@ -616,6 +692,12 @@ fn save_kernel_context_with_guard(
                 thread.context.cs = interrupt_frame.code_segment.0 as u64;
                 thread.context.ss = interrupt_frame.stack_segment.0 as u64;
 
+                // #772: this increment sits with the record below, inside the
+                // same `if let`, so DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT
+                // + _MANDATORY equals the number of records emitted, whether or
+                // not the record itself is compiled in.
+                note_dispatch_save(save_reason, thread_id, interrupt_frame);
+
                 log::info!(
                     "Saved kernel context for blocked thread {}: RIP={:#x} CS={:#x} RSP={:#x}",
                     thread_id,
@@ -635,8 +717,9 @@ fn save_kthread_context(
     thread_id: u64,
     saved_regs: &SavedRegisters,
     interrupt_frame: &InterruptStackFrame,
+    save_reason: DispatchSaveReason,
 ) {
-    scheduler::with_thread_mut(thread_id, |thread| {
+    let saved = scheduler::with_thread_mut(thread_id, |thread| {
         // Save general purpose registers from the interrupt
         thread.context.rax = saved_regs.rax;
         thread.context.rbx = saved_regs.rbx;
@@ -667,7 +750,13 @@ fn save_kthread_context(
             thread.context.rip,
             thread.context.rsp
         );
-    });
+    })
+    .is_some();
+
+    // #772: only a save that found its thread is counted.
+    if saved {
+        note_dispatch_save(save_reason, thread_id, interrupt_frame);
+    }
 
     // Hardware memory fence to ensure all context saves are visible before
     // we switch to a different thread. This is critical for TCG mode.
@@ -746,6 +835,7 @@ fn switch_to_thread(
         if let Err(e) = crate::tls::switch_tls(thread_id) {
             log::error!("Failed to switch TLS for thread {}: {}", thread_id, e);
             scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+            trace_dispatch_abandon(DispatchAbandonSite::RollbackTls);
             scheduler::set_need_resched();
             return;
         }
@@ -834,6 +924,7 @@ fn switch_to_thread(
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return(interrupt_frame);
                         crate::task::scheduler::switch_to_idle();
+                        trace_dispatch_abandon(DispatchAbandonSite::IdleUnpublishedBlocked);
                         crate::task::scheduler::requeue_refused_dispatch(thread_id);
                         unsafe {
                             crate::memory::process_memory::switch_to_kernel_page_table();
@@ -860,6 +951,7 @@ fn switch_to_thread(
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return(interrupt_frame);
                             crate::task::scheduler::switch_to_idle();
+                            trace_dispatch_abandon(DispatchAbandonSite::IdleNoCr3Blocked);
                             unsafe {
                                 crate::memory::process_memory::switch_to_kernel_page_table();
                             }
@@ -1013,6 +1105,7 @@ fn switch_to_thread(
                                 scheduler::set_need_resched();
                                 setup_idle_return(interrupt_frame);
                                 scheduler::switch_to_idle();
+                                trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedBlocked);
                                 unsafe {
                                     crate::memory::process_memory::switch_to_kernel_page_table();
                                 }
@@ -1126,6 +1219,7 @@ fn switch_to_thread(
             );
             // Roll back the committed dispatch and re-arm rescheduling.
             scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+            trace_dispatch_abandon(DispatchAbandonSite::RollbackKernelContextLock);
             scheduler::set_need_resched();
             return;
         }
@@ -1290,6 +1384,7 @@ fn restore_userspace_thread_context(
                     raw_serial_str("\n");
                 }
                 scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+                trace_dispatch_abandon(DispatchAbandonSite::RollbackFirstEntry);
                 scheduler::set_need_resched();
             }
         }
@@ -1315,6 +1410,7 @@ fn restore_userspace_thread_context(
                     crate::task::scheduler::set_need_resched();
                     setup_idle_return(interrupt_frame);
                     crate::task::scheduler::switch_to_idle();
+                    trace_dispatch_abandon(DispatchAbandonSite::IdleUnpublishedUser);
                     crate::task::scheduler::requeue_refused_dispatch(thread_id);
                     return;
                 }
@@ -1349,6 +1445,7 @@ fn restore_userspace_thread_context(
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return(interrupt_frame);
                             crate::task::scheduler::switch_to_idle();
+                            trace_dispatch_abandon(DispatchAbandonSite::IdleRestoreError);
                         } else {
                             // CRITICAL: Defer CR3 switch to timer_entry.asm before IRETQ
                             // We do NOT switch CR3 here because:
@@ -1393,6 +1490,7 @@ fn restore_userspace_thread_context(
                                 crate::task::scheduler::set_need_resched();
                                 setup_idle_return(interrupt_frame);
                                 crate::task::scheduler::switch_to_idle();
+                                trace_dispatch_abandon(DispatchAbandonSite::IdleNoCr3User);
                                 return;
                             }
 
@@ -1459,6 +1557,7 @@ fn restore_userspace_thread_context(
                                         signal_termination_info = Some(notification);
                                         setup_idle_return(interrupt_frame);
                                         crate::task::scheduler::switch_to_idle();
+                                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedUser);
                                         // Don't return here - fall through to handle notification
                                     }
                                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
@@ -1468,6 +1567,7 @@ fn restore_userspace_thread_context(
                                             crate::task::scheduler::set_need_resched();
                                             setup_idle_return(interrupt_frame);
                                             crate::task::scheduler::switch_to_idle();
+                                            trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedUser);
                                         }
                                     }
                                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
@@ -1689,6 +1789,7 @@ fn check_and_deliver_signals_for_current_thread(
                         signal_termination_info = Some(notification);
                         setup_idle_return(interrupt_frame);
                         crate::task::scheduler::switch_to_idle();
+                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedOnReturn);
                         // Don't return here - fall through to handle notification
                     }
                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
@@ -1696,6 +1797,7 @@ fn check_and_deliver_signals_for_current_thread(
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return(interrupt_frame);
                             crate::task::scheduler::switch_to_idle();
+                            trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedOnReturn);
                         }
                     }
                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}

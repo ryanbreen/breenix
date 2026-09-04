@@ -259,6 +259,228 @@ pub static DISPATCH_KERNEL_RESTORE_TOTAL: TraceCounter = TraceCounter::new(
 );
 
 // =============================================================================
+// Dispatch save-path census (#772 diagnostics, R111/R112)
+// =============================================================================
+//
+// x86 only, like the three counters above: written from
+// `kernel/src/interrupts/context_switch.rs`, which is
+// `#![cfg(target_arch = "x86_64")]`. They register on both arches and stay 0
+// on aarch64.
+//
+// R111/R112 ruled the candidate-A mechanism model incomplete: the refusal
+// moved neither the identical-RIP/RSP proxy nor the latency, and the landed
+// counters bound 3599 of the 7194 identical-RIP/RSP endings summed over the 25
+// committed green boots as switch-aways the refusal's
+// `!current_thread_blocked_or_terminated` conjunct excludes (proxy sum 7194
+// minus `DISPATCH_NO_PROGRESS - DISPATCH_NO_PROGRESS_REFUSED` = 3595, from
+// docs/planning/green-program/sockets/serials/772-fix-a/green-results.txt and
+// green-results-cont.txt). These counters answer WHICH path produces each
+// save, by splitting the dispatch path's context saves on (save flavour x
+// which gate admitted the switch) and counting the no-progress subset of each
+// reason separately.
+//
+// Reading them:
+//
+// * The 6 `DISPATCH_SAVE_REASON_*` counters cover the 3 save arms the
+//   interrupt-return path has, crossed with the 2 admitting gates. The 2
+//   `DISPATCH_SAVE_REASON_KERNEL_BLOCKED_*` counters sum to the count of
+//   "Saved kernel context for blocked thread N" serial records, because the
+//   increment sits beside that record inside the same `if let`.
+// * `DISPATCH_NOPROGRESS_SAVE_<X> <= DISPATCH_SAVE_REASON_<X>` by
+//   construction: the no-progress counter is incremented only when the save
+//   counter is, and only when the frame being saved is byte-identical (RIP
+//   AND RSP) to the frame the last completed dispatch installed for the same
+//   thread.
+// * `_MANDATORY` names the gate that admits the switch because the current
+//   thread is blocked or terminated -- the arm the refusal is conjoined out
+//   of, so a no-progress save counted there is one the refusal's
+//   `if !current_thread_blocked_or_terminated` excludes. `_PREEMPT` names the
+//   `need_resched` arm the refusal does guard.
+
+/// Userspace-frame saves admitted by the `need_resched` arm.
+///
+/// GDB: `print DISPATCH_SAVE_REASON_USER_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_SAVE_REASON_USER_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_SAVE_REASON_USER_PREEMPT",
+    "userspace context save, need_resched arm (#772)",
+);
+
+/// Userspace-frame saves admitted by the blocked/terminated arm.
+///
+/// GDB: `print DISPATCH_SAVE_REASON_USER_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_SAVE_REASON_USER_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_SAVE_REASON_USER_MANDATORY",
+    "userspace context save, blocked/terminated arm (#772)",
+);
+
+/// Blocked-in-syscall kernel-frame saves admitted by the `need_resched` arm.
+///
+/// This is the save side of the identical-RIP/RSP proxy, on the arm the
+/// refusal guards.
+///
+/// GDB: `print DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT",
+    "blocked-in-syscall kernel context save, need_resched arm (#772)",
+);
+
+/// Blocked-in-syscall kernel-frame saves admitted by the blocked/terminated
+/// arm.
+///
+/// This is the save side of the identical-RIP/RSP proxy, on the arm the
+/// refusal is conjoined out of.
+///
+/// GDB: `print DISPATCH_SAVE_REASON_KERNEL_BLOCKED_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_SAVE_REASON_KERNEL_BLOCKED_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_SAVE_REASON_KERNEL_BLOCKED_MANDATORY",
+    "blocked-in-syscall kernel context save, blocked/terminated arm (#772)",
+);
+
+/// Pure-kthread saves admitted by the `need_resched` arm.
+///
+/// GDB: `print DISPATCH_SAVE_REASON_KTHREAD_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_SAVE_REASON_KTHREAD_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_SAVE_REASON_KTHREAD_PREEMPT",
+    "kthread context save, need_resched arm (#772)",
+);
+
+/// Pure-kthread saves admitted by the blocked/terminated arm.
+///
+/// GDB: `print DISPATCH_SAVE_REASON_KTHREAD_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_SAVE_REASON_KTHREAD_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_SAVE_REASON_KTHREAD_MANDATORY",
+    "kthread context save, blocked/terminated arm (#772)",
+);
+
+/// No-progress subset of `DISPATCH_SAVE_REASON_USER_PREEMPT`.
+///
+/// GDB: `print DISPATCH_NOPROGRESS_SAVE_USER_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_SAVE_USER_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_SAVE_USER_PREEMPT",
+    "no-progress userspace save, need_resched arm (#772)",
+);
+
+/// No-progress subset of `DISPATCH_SAVE_REASON_USER_MANDATORY`.
+///
+/// GDB: `print DISPATCH_NOPROGRESS_SAVE_USER_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_SAVE_USER_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_SAVE_USER_MANDATORY",
+    "no-progress userspace save, blocked/terminated arm (#772)",
+);
+
+/// No-progress subset of `DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT`.
+///
+/// GDB: `print DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_PREEMPT",
+    "no-progress blocked-in-syscall save, need_resched arm (#772)",
+);
+
+/// No-progress subset of `DISPATCH_SAVE_REASON_KERNEL_BLOCKED_MANDATORY`.
+///
+/// GDB: `print DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_MANDATORY",
+    "no-progress blocked-in-syscall save, blocked/terminated arm (#772)",
+);
+
+/// No-progress subset of `DISPATCH_SAVE_REASON_KTHREAD_PREEMPT`.
+///
+/// GDB: `print DISPATCH_NOPROGRESS_SAVE_KTHREAD_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_SAVE_KTHREAD_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_SAVE_KTHREAD_PREEMPT",
+    "no-progress kthread save, need_resched arm (#772)",
+);
+
+/// No-progress subset of `DISPATCH_SAVE_REASON_KTHREAD_MANDATORY`.
+///
+/// GDB: `print DISPATCH_NOPROGRESS_SAVE_KTHREAD_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_SAVE_KTHREAD_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_SAVE_KTHREAD_MANDATORY",
+    "no-progress kthread save, blocked/terminated arm (#772)",
+);
+
+/// Dispatches `switch_to_thread` rolled back after the save had already run.
+///
+/// Four arms reach this: the userspace-save failure in
+/// `check_need_resched_and_switch`, the TLS-switch failure, the
+/// first-userspace-entry abort, and the blocked-in-syscall arm that cannot
+/// take the process-manager guard. Each one calls
+/// `abort_dispatch_and_resume`, so the outgoing thread was saved and then
+/// resumed without ever leaving the CPU; the dispatch mark written when
+/// `switch_to_thread` returns then names that thread at the frame it is about
+/// to re-enter. The per-site breakdown is in the trace event's flags.
+///
+/// GDB: `print DISPATCH_SWITCH_ROLLED_BACK`
+#[no_mangle]
+pub static DISPATCH_SWITCH_ROLLED_BACK: TraceCounter = TraceCounter::new(
+    "DISPATCH_SWITCH_ROLLED_BACK",
+    "dispatch rolled back inside switch_to_thread (#772)",
+);
+
+/// Dispatches `switch_to_thread` redirected to the idle loop.
+///
+/// Ten arms reach this: the unpublished-dispatch refusal, the missing-CR3
+/// refusal and the signal-termination arm on both the blocked-in-syscall and
+/// the userspace restore paths, the userspace restore error, the
+/// already-terminated-after-delivery arm, and the two signal-termination arms
+/// in `check_and_deliver_signals_for_current_thread`, which the no-switch
+/// return arms (the #772 refusal among them) reach. The per-site breakdown is
+/// in the trace event's flags.
+///
+/// GDB: `print DISPATCH_SWITCH_IDLE_REDIRECT`
+#[no_mangle]
+pub static DISPATCH_SWITCH_IDLE_REDIRECT: TraceCounter = TraceCounter::new(
+    "DISPATCH_SWITCH_IDLE_REDIRECT",
+    "dispatch redirected to idle inside switch_to_thread (#772)",
+);
+
+/// Exception handlers that redirected the faulting thread to the idle loop.
+///
+/// The page-fault and general-protection-fault handlers
+/// (`kernel/src/interrupts.rs`) call `switch_to_idle()` and rewrite the
+/// exception frame themselves, outside `check_need_resched_and_switch`. They
+/// replace the per-CPU current thread without saving a context and without
+/// touching the dispatch mark, so they are the one x86 vector other than the
+/// timer that can end a dispatch.
+///
+/// GDB: `print DISPATCH_EXC_IDLE_REDIRECT`
+#[no_mangle]
+pub static DISPATCH_EXC_IDLE_REDIRECT: TraceCounter = TraceCounter::new(
+    "DISPATCH_EXC_IDLE_REDIRECT",
+    "exception handler redirected a thread to idle (#772)",
+);
+
+/// Interrupt-return calls that returned at the `PREEMPT_ACTIVE` gate.
+///
+/// `kernel/src/syscall/entry.asm` sets `PREEMPT_ACTIVE` (bit 28 of `gs:[32]`)
+/// at `:110`, two instructions before its
+/// `call check_need_resched_and_switch` at `:124`, and clears it again at
+/// `:223`, after that call has returned. The 1 syscall-return call site
+/// therefore finds the bit set and returns at this gate without reaching
+/// `schedule()`. This counter is what makes the claim measurable rather than
+/// merely read off the assembly.
+///
+/// GDB: `print DISPATCH_GATE_PREEMPT_ACTIVE`
+#[no_mangle]
+pub static DISPATCH_GATE_PREEMPT_ACTIVE: TraceCounter = TraceCounter::new(
+    "DISPATCH_GATE_PREEMPT_ACTIVE",
+    "interrupt-return call returned at the PREEMPT_ACTIVE gate (#772)",
+);
+
+// =============================================================================
 // Boot Test Counters (BTRT feature)
 // =============================================================================
 
@@ -294,6 +516,30 @@ pub static BOOT_TEST_FAIL_TOTAL: TraceCounter =
 pub static BOOT_TEST_SKIP_TOTAL: TraceCounter =
     TraceCounter::new("BOOT_TEST_SKIP_TOTAL", "Total boot tests skipped");
 
+/// The 16 counters the #772 dispatch save census defines, in one place.
+///
+/// Registration walks this array, so a counter added above without being
+/// listed here is not registered, and a counter listed here that is removed
+/// above does not compile.
+pub static DISPATCH_SAVE_CENSUS_COUNTERS: [&TraceCounter; 16] = [
+    &DISPATCH_SAVE_REASON_USER_PREEMPT,
+    &DISPATCH_SAVE_REASON_USER_MANDATORY,
+    &DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT,
+    &DISPATCH_SAVE_REASON_KERNEL_BLOCKED_MANDATORY,
+    &DISPATCH_SAVE_REASON_KTHREAD_PREEMPT,
+    &DISPATCH_SAVE_REASON_KTHREAD_MANDATORY,
+    &DISPATCH_NOPROGRESS_SAVE_USER_PREEMPT,
+    &DISPATCH_NOPROGRESS_SAVE_USER_MANDATORY,
+    &DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_PREEMPT,
+    &DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_MANDATORY,
+    &DISPATCH_NOPROGRESS_SAVE_KTHREAD_PREEMPT,
+    &DISPATCH_NOPROGRESS_SAVE_KTHREAD_MANDATORY,
+    &DISPATCH_SWITCH_ROLLED_BACK,
+    &DISPATCH_SWITCH_IDLE_REDIRECT,
+    &DISPATCH_EXC_IDLE_REDIRECT,
+    &DISPATCH_GATE_PREEMPT_ACTIVE,
+];
+
 // =============================================================================
 // Initialization
 // =============================================================================
@@ -321,6 +567,16 @@ pub fn init() {
     register_counter(&DISPATCH_NO_PROGRESS);
     register_counter(&DISPATCH_NO_PROGRESS_REFUSED);
     register_counter(&DISPATCH_KERNEL_RESTORE_TOTAL);
+    // #772 diagnostics (R111/R112). Registered with the same capacity
+    // assertion the teardown provider uses: before this block the registry
+    // held 159 of MAX_COUNTERS entries, and an unchecked registration failure
+    // here would drop a counter the census reads rather than fail loudly.
+    for counter in DISPATCH_SAVE_CENSUS_COUNTERS {
+        assert!(
+            register_counter(counter).is_some(),
+            "trace counter registry overflow while registering #772 dispatch counters"
+        );
+    }
 
     #[cfg(feature = "btrt")]
     {
