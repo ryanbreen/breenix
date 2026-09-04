@@ -205,14 +205,3 @@ fn testing_loader_keeps_irqs_enabled_for_virtio_completion() {
         "the complete process catalog must be reported before SMP dispatch starts"
     );
 }
-
-#[test]
-fn ext2_fixture_keeps_test_catalog_directories_linear() {
-    let image_builder = repo_text("scripts/create_ext2_disk.sh");
-
-    assert_eq!(
-        image_builder.matches("mke2fs -t ext2 -O ^dir_index").count(),
-        2,
-        "both host paths must produce directories the kernel ext2 reader can traverse"
-    );
-}

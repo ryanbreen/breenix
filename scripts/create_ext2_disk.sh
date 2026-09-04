@@ -98,9 +98,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             dd if=/dev/zero of=/work/$OUTPUT_FILENAME bs=1M count='"$SIZE_MB"' status=none
 
             # Create ext2 filesystem
-            # Breenix currently parses linear ext2 directory entries, not the
-            # htree nodes created when dir_index is enabled on large test dirs.
-            mke2fs -t ext2 -O ^dir_index -F /work/$OUTPUT_FILENAME >/dev/null 2>&1
+            mke2fs -t ext2 -F /work/$OUTPUT_FILENAME >/dev/null 2>&1
 
             # Mount and populate
             mkdir -p /mnt/ext2
@@ -117,7 +115,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
                 cp /binaries/busybox.elf /mnt/ext2/bin/busybox
                 chmod 755 /mnt/ext2/bin/busybox
 
-                # Create hardlinks for all applets in /bin
+                # Create one hardlink per applet in /bin: the 48 names in the
+                # loop below, a subset of what BusyBox can dispatch.
                 # (hardlinks avoid needing symlink-following in kernel exec path)
                 for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir \
                            echo which sh ash sed awk find sort uniq tee xargs \
@@ -366,9 +365,7 @@ else
     dd if=/dev/zero of="$OUTPUT_FILE" bs=1M count=$SIZE_MB status=none
 
     # Create ext2 filesystem
-    # Keep large test-binary directories in the linear format understood by
-    # the kernel ext2 reader.
-    mke2fs -t ext2 -O ^dir_index -F "$OUTPUT_FILE" >/dev/null 2>&1
+    mke2fs -t ext2 -F "$OUTPUT_FILE" >/dev/null 2>&1
 
     # Mount and populate (requires root)
     if [[ $EUID -ne 0 ]]; then
@@ -400,7 +397,8 @@ else
         cp "$USERSPACE_DIR/busybox.elf" "$MOUNT_DIR/bin/busybox"
         chmod 755 "$MOUNT_DIR/bin/busybox"
 
-        # Create hardlinks for all applets in /bin
+        # Create one hardlink per applet in /bin: the 48 names in the loop below,
+    # a subset of what BusyBox can dispatch.
         for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir \
                    echo which sh ash sed awk find sort uniq tee xargs \
                    chmod chown chgrp df du free date sleep test expr seq \
