@@ -43,5 +43,26 @@ each observed 11 distinct saved-blocked TIDs per boot.
 
 ## Post-removal anti-vacuity
 
-To be appended after the three dispatch records and `quiet_dispatch_log`
-feature are removed, using three fresh boots at the new head.
+After removing the three dispatch records and the `quiet_dispatch_log`
+feature at `e9350b53`, three fresh boots used the same release
+`testing,external_test_bins` profile through `run-x86-gate.sh 3 full`.  The
+gate reported a clean zero-warning build and a 3/3 pass.
+
+<!-- claim-lint:ok: beast artifact /root/775-post-removal-gate3.txt records head e9350b53, "Build clean (0 warnings) in 15s", and "GATE: PASS (3/3 boot tests passed; mode=full build=15s boot=600s total=626s)". -->
+
+| Boot | Census markers | threads_saved_blocked | stranded | overflow | Census rc | Removed records |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 11 | 0 | 0 | 0 | 0 |
+| 2 | 1 | 11 | 0 | 0 | 0 | 0 |
+| 3 | 1 | 11 | 0 | 0 | 0 | 0 |
+
+<!-- claim-lint:ok: raw artifacts /root/775-post-removal/boot_{1..3}/ on beast each contain one DISPATCH_STRAND_CENSUS marker with 11 saved-blocked, 0 stranded, and 0 overflow; the migrated script returned rc 0 for each. -->
+
+The removed-record column counts the three former `context_switch.rs`
+messages across each captured `serial_kernel.log`: saved kernel context,
+restored kernel context, and stranded thread with kernel context.  The count
+is zero in 3 of 3 boots, while each census remains non-vacuous at 11
+saved-blocked threads.
+No QEMU process associated with `/root/breenix-775`, these artifacts, or the
+three gate run directories remained after the gate completed.
+<!-- claim-lint:ok: direct grep of all three serial_kernel.log files found zero former record strings; scoped ps filtering found no matching #775 QEMU process. -->
