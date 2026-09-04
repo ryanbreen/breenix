@@ -209,8 +209,81 @@ fn code_offsets(source: &str, mask: &[bool], needle: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The match arrow, as text, so this file can tell a match arm from a probe.
+const MATCH_ARROW: &str = "=>";
+
+/// The alternative separator inside a match pattern.
+const PIPE_BYTE: u8 = b'|';
+
+/// The anti-vacuity message for the recogniser rule.
+const NOTHING_CENSUSED: &str = "no open-parenthesis comparison was censused at all";
+
+/// This file, which the recogniser rule reads as its own subject.
+const THIS_FILE: &str = "tests/teardown_structure.rs";
+
+/// The line in free_calls as this round writes it, and as round 5 wrote it.
+const REPAIRED_FREE_CALLS: &str =
+    "if !after_receiver && opens_argument_list(bytes, &mask, at) {";
+const ROUND_FIVE_FREE_CALLS: &str =
+    "if !after_receiver && bytes.get(at) == Some(&b'(') {";
+
 fn identifier_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric() || !byte.is_ascii()
+}
+
+/// The first offset at or after `from` that the compiler reads as code:
+/// whitespace and comment text are stepped over, because neither separates a
+/// callee from its argument list.
+///
+/// A comment is a `code_mask` run that opens with `/` -- both `//` and `/*`
+/// mask their opening `/`, and no other masked run begins with one. String
+/// and character literals are masked too and are deliberately NOT stepped
+/// over: they are text the compiler reads, and skipping one would invent a
+/// call out of `NAME "literal" (`.
+fn skip_comments_and_space(bytes: &[u8], mask: &[bool], from: usize) -> usize {
+    let mut at = from;
+    while at < bytes.len() {
+        if bytes[at].is_ascii_whitespace() {
+            at += 1;
+            continue;
+        }
+        if !mask[at] && bytes[at] == b'/' {
+            at += 1;
+            while at < bytes.len() && !mask[at] {
+                at += 1;
+            }
+            continue;
+        }
+        break;
+    }
+    at
+}
+
+/// THE call recogniser. A site in this file that asks "is this identifier
+/// being called here?" routes the question through this one function, so the
+/// shape it accepts is the shape the file accepts. The rule that keeps it so
+/// is `call_recognition_is_spelled_in_exactly_one_place` at the foot of this
+/// file: a body that reads identifiers may not also spell its own `(` probe.
+///
+/// `end` is the offset one past an identifier. The answer is the offset of the
+/// `(` that opens its argument list -- found across any run of comment text or
+/// whitespace, both of which the compiler discards -- and there is no such
+/// offset when what follows is not an argument list.
+///
+/// N16/N20: 3 probes used to spell this themselves, 2 of them skipping only
+/// literal spaces and 1 demanding an immediately adjacent `(`, so
+/// `kthread_join/* direct call */(handle)` and `predicate/* c */()` compiled,
+/// survived rustfmt, and read as 0 calls. Spelling it once is what keeps that
+/// hole closed everywhere at once.
+fn argument_list_open(bytes: &[u8], mask: &[bool], end: usize) -> Option<usize> {
+    let open = skip_comments_and_space(bytes, mask, end);
+    (bytes.get(open) == Some(&b'(')).then_some(open)
+}
+
+/// `argument_list_open(..).is_some()`: the identifier ending at `end` is called
+/// there. The boolean face of the one recogniser above.
+fn opens_argument_list(bytes: &[u8], mask: &[bool], end: usize) -> bool {
+    argument_list_open(bytes, mask, end).is_some()
 }
 
 fn identifier_offsets(source: &str, mask: &[bool], identifier: &str) -> Vec<usize> {
@@ -427,13 +500,7 @@ fn transitively_called_functions(source: &str, roots: &[&str]) -> BTreeSet<Strin
                 let called = identifier_offsets(body, &body_mask, callee)
                     .into_iter()
                     .any(|offset| {
-                        let mut cursor = offset + callee.len();
-                        while cursor < body_bytes.len()
-                            && (!body_mask[cursor] || body_bytes[cursor].is_ascii_whitespace())
-                        {
-                            cursor += 1;
-                        }
-                        body_bytes.get(cursor) == Some(&b'(')
+                        opens_argument_list(body_bytes, &body_mask, offset + callee.len())
                     });
                 if called {
                     pending.push(callee.clone());
@@ -452,13 +519,9 @@ fn call_sites_with_argument(source: &str, callee: &str, needle: &str) -> Vec<usi
     let bytes = source.as_bytes();
     let mut matches = Vec::new();
     for offset in identifier_offsets(source, &mask, callee) {
-        let mut open = offset + callee.len();
-        while open < bytes.len() && (!mask[open] || bytes[open].is_ascii_whitespace()) {
-            open += 1;
-        }
-        if bytes.get(open) != Some(&b'(') {
+        let Some(open) = argument_list_open(bytes, &mask, offset + callee.len()) else {
             continue;
-        }
+        };
         let mut depth = 0usize;
         for close in open..bytes.len() {
             if !mask[close] {
@@ -887,10 +950,10 @@ fn alias_method_calls(body: &str) -> Vec<String> {
                     break;
                 }
                 let name = body[name_start..cursor].to_owned();
-                skip_trivia(bytes, &mask, &mut cursor);
-                if bytes.get(cursor) != Some(&b'(') || !mask[cursor] {
+                let Some(open) = argument_list_open(bytes, &mask, cursor) else {
                     break;
-                }
+                };
+                cursor = open;
                 calls.push(name);
                 let mut depth = 0usize;
                 let mut close = None;
@@ -962,6 +1025,14 @@ fn alias_argument_exports(body: &str) -> Vec<String> {
         let end = cursor + 1;
         while cursor > 0 && identifier_byte(bytes[cursor - 1]) {
             cursor -= 1;
+        }
+        // The reverse read arrives from a known `(`, so this confirms the shape
+        // through the one recogniser: the name opens an argument list, or it is
+        // a macro whose `!` sits between the name and that list.
+        let called = opens_argument_list(bytes, mask, end)
+            || (bytes.get(end) == Some(&b'!') && opens_argument_list(bytes, mask, end + 1));
+        if !called {
+            return None;
         }
         let name = &body[cursor..end];
         (!matches!(name, "if" | "while" | "for" | "match" | "return")).then(|| name.to_owned())
@@ -1540,7 +1611,7 @@ fn call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
     identifier_offsets(source, mask, name)
         .into_iter()
         .filter(|offset| {
-            next_code(source, mask, offset + name.len()).is_some_and(|open| bytes[open] == b'(')
+            opens_argument_list(bytes, mask, offset + name.len())
                 && !preceded_by_keyword(source, mask, *offset, "fn")
         })
         .collect()
@@ -1559,7 +1630,11 @@ fn call_is_immediately_preceded_by(
     else {
         return false;
     };
-    let Some(open) = next_code(source, mask, predecessor_offset + predecessor.len()) else {
+    let Some(open) = argument_list_open(
+        source.as_bytes(),
+        mask,
+        predecessor_offset + predecessor.len(),
+    ) else {
         return false;
     };
     let Some(close) = matching_paren(source, mask, open) else {
@@ -1584,7 +1659,7 @@ fn method_call_offsets(source: &str, mask: &[bool], name: &str) -> Vec<usize> {
     identifier_offsets(source, mask, name)
         .into_iter()
         .filter(|offset| {
-            next_code(source, mask, offset + name.len()).is_some_and(|open| bytes[open] == b'(')
+            opens_argument_list(bytes, mask, offset + name.len())
                 && previous_code(source, mask, *offset).is_some_and(|dot| {
                     bytes[dot] == b'.'
                         && !previous_code(source, mask, dot)
@@ -2172,7 +2247,7 @@ fn process_row_map_mutation_offsets(source: &str, mask: &[bool]) -> Vec<(usize, 
             {
                 method_end += 1;
             }
-            if !next_code(source, mask, method_end).is_some_and(|open| bytes[open] == b'(') {
+            if !opens_argument_list(bytes, mask, method_end) {
                 return Some((offset, "raw-binding".to_owned()));
             }
             let method = &source[method_start..method_end];
@@ -2254,9 +2329,7 @@ fn raw_keyed_row_lookup_offsets(source: &str, mask: &[bool]) -> Vec<(usize, Stri
             if method != "get" && method != "get_mut" {
                 return None;
             }
-            next_code(source, mask, method_end)
-                .is_some_and(|open| bytes[open] == b'(')
-                .then(|| (offset, method.to_owned()))
+            opens_argument_list(bytes, mask, method_end).then(|| (offset, method.to_owned()))
         })
         .collect()
 }
@@ -3726,7 +3799,7 @@ fn method_call_prefix_offsets(source: &str, mask: &[bool], prefix: &str) -> Vec<
             while bytes.get(end).is_some_and(|byte| identifier_byte(*byte)) {
                 end += 1;
             }
-            next_code(source, mask, end).is_some_and(|open| bytes[open] == b'(')
+            opens_argument_list(bytes, mask, end)
         })
         .collect()
 }
@@ -4540,10 +4613,7 @@ fn expected_value_comparison_offsets(source: &str, mask: &[bool]) -> Vec<usize> 
 
 fn call_argument<'a>(source: &'a str, mask: &[bool], call: usize, name: &str) -> Option<&'a str> {
     let bytes = source.as_bytes();
-    let open = next_code(source, mask, call + name.len())?;
-    if bytes.get(open) != Some(&b'(') {
-        return None;
-    }
+    let open = argument_list_open(bytes, mask, call + name.len())?;
     let mut depth = 0usize;
     for close in open..bytes.len() {
         if !mask[close] {
@@ -4709,12 +4779,9 @@ fn futex_map_lock_users(sources: &[(String, String)]) -> Vec<(String, String, St
             let Some(lock) = next_code(futex, &body_mask, dot + 1) else {
                 return false;
             };
-            let Some(open) = next_code(futex, &body_mask, lock + "lock".len()) else {
-                return false;
-            };
             &futex[dot..=dot] == "."
                 && futex[lock..].starts_with("lock")
-                && futex.as_bytes()[open] == b'('
+                && opens_argument_list(futex.as_bytes(), &body_mask, lock + "lock".len())
         })
         .filter_map(|offset| {
             let spans = rendered_item_spans(&item_spans(futex, &body_mask));
@@ -12302,7 +12369,7 @@ fn aarch64_boot_path(arm_main: &str) -> String {
         1,
         "aarch64 kernel_main must hand the boot sequence to exactly one kernel thread"
     );
-    let name = spawned_name(entry, spawn[0]).expect("the spawned continuation is named");
+    let name = spawned_name(entry, &mask, spawn[0]).expect("the spawned continuation is named");
     format!("{entry}\n{}", function_body(arm_main, &name))
 }
 
@@ -15100,13 +15167,9 @@ fn blocking_primitive_rule_rejects_a_refusal_left_only_in_a_comment() {
 /// count test_kthread_join as a kthread_join call.
 fn calls_function(body: &str, mask: &[bool], name: &str) -> bool {
     let bytes = body.as_bytes();
-    identifier_offsets(body, mask, name).into_iter().any(|at| {
-        let mut end = at + name.len();
-        while bytes.get(end) == Some(&b' ') {
-            end += 1;
-        }
-        bytes.get(end) == Some(&b'(')
-    })
+    identifier_offsets(body, mask, name)
+        .into_iter()
+        .any(|at| opens_argument_list(bytes, mask, at + name.len()))
 }
 /// The fns in source whose executable body contains needle, as
 /// (name, offset of the fn keyword, body).
@@ -15243,7 +15306,7 @@ fn kthread_body_closure(sources: &[(String, String)]) -> BTreeSet<String> {
     for (_, source) in sources {
         let mask = code_mask(source);
         for spawn in code_offsets(source, &mask, "kthread_run") {
-            if let Some(name) = spawned_name(source, spawn) {
+            if let Some(name) = spawned_name(source, &mask, spawn) {
                 if bodies.contains_key(&name) && closure.insert(name.clone()) {
                     frontier.push(name);
                 }
@@ -15272,9 +15335,17 @@ fn all_definitions(source: &str) -> Vec<(String, usize, String)> {
 
 /// The function the spawn at this offset hands over, if it names one directly
 /// or through a closure that calls it.
-fn spawned_name(source: &str, spawn: usize) -> Option<String> {
+///
+/// `spawn` is the start of the spawning identifier, so its argument list is
+/// found through the shared recogniser rather than by scanning ahead for the
+/// first `(`: a comment carrying one used to move the anchor.
+fn spawned_name(source: &str, mask: &[bool], spawn: usize) -> Option<String> {
     let bytes = source.as_bytes();
-    let open = (spawn..bytes.len()).find(|at| bytes[*at] == b'(')?;
+    let mut name_end = spawn;
+    while name_end < bytes.len() && identifier_byte(bytes[name_end]) {
+        name_end += 1;
+    }
+    let open = argument_list_open(bytes, mask, name_end)?;
     let mut at = open + 1;
     loop {
         while at < bytes.len() && (bytes[at] as char).is_whitespace() {
@@ -15300,33 +15371,6 @@ fn spawned_name(source: &str, spawn: usize) -> Option<String> {
     Some(source[start..at].to_owned())
 }
 
-/// The first offset at or after `from` that the compiler reads as code:
-/// whitespace and comment text are stepped over, because neither separates a
-/// callee from its argument list.
-///
-/// A comment is a `code_mask` run that opens with `/` -- both `//` and `/*`
-/// mask their opening `/`, and no other masked run begins with one. String
-/// and character literals are masked too and are deliberately NOT stepped
-/// over: they are text the compiler reads, and skipping one would invent a
-/// call out of `NAME "literal" (`.
-fn skip_comments_and_space(bytes: &[u8], mask: &[bool], from: usize) -> usize {
-    let mut at = from;
-    while at < bytes.len() {
-        if bytes[at].is_ascii_whitespace() {
-            at += 1;
-            continue;
-        }
-        if !mask[at] && bytes[at] == b'/' {
-            at += 1;
-            while at < bytes.len() && !mask[at] {
-                at += 1;
-            }
-            continue;
-        }
-        break;
-    }
-    at
-}
 
 /// The identifiers a body calls, read from comment-stripped executable text:
 /// an identifier followed -- across any run of comment text or whitespace,
@@ -15351,7 +15395,7 @@ fn called_names(body: &str) -> BTreeSet<String> {
             at += 1;
         }
         let end = at;
-        if bytes.get(skip_comments_and_space(bytes, &mask, end)) == Some(&b'(') {
+        if opens_argument_list(bytes, &mask, end) {
             names.insert(body[start..end].to_owned());
         }
     }
@@ -15630,13 +15674,7 @@ fn call_sites_of(body: &str, mask: &[bool], name: &str) -> Vec<usize> {
     let bytes = body.as_bytes();
     identifier_offsets(body, mask, name)
         .into_iter()
-        .filter(|at| {
-            let mut end = at + name.len();
-            while bytes.get(end) == Some(&b' ') {
-                end += 1;
-            }
-            bytes.get(end) == Some(&b'(')
-        })
+        .filter(|at| opens_argument_list(bytes, mask, at + name.len()))
         .collect()
 }
 
@@ -15658,7 +15696,7 @@ fn free_calls(expression: &str) -> BTreeSet<String> {
             at += 1;
         }
         let after_receiver = start > 0 && bytes[start - 1] == b'.';
-        if !after_receiver && bytes.get(at) == Some(&b'(') {
+        if !after_receiver && opens_argument_list(bytes, &mask, at) {
             names.insert(expression[start..at].to_owned());
         }
     }
@@ -16327,6 +16365,92 @@ fn the_kthread_join_census_reads_a_call_written_across_a_comment() {
 }
 
 #[test]
+fn the_kthread_join_census_reads_the_join_itself_written_across_a_comment() {
+    // N16, the residue round 5 left. Round 5 taught the REACHABILITY walk to
+    // read a call across a comment, but SUBJECT DISCOVERY still went through
+    // a probe that stepped over literal spaces only.
+    // So a comment inside the join itself -- `kthread_join/* direct call
+    // */(handle)`, the mutation the reviewer wrote -- hid the helper from the
+    // census: no subject to classify, green at 1 passed.
+    // Both forms below compile and survive rustfmt.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/main_aarch64.rs");
+    let release = "kernel::per_cpu_aarch64::preempt_enable();";
+    assert_eq!(
+        source.matches(release).count(),
+        1,
+        "the fixture anchor must be the pin release kernel_main writes itself"
+    );
+    let join_forms = [
+        "kernel::task::kthread::kthread_join/* direct call */(handle)",
+        "kernel::task::kthread::kthread_join // direct call\n        (handle)",
+    ];
+    for join in join_forms {
+        let helper = format!(concat!(
+            "#[cfg(feature = \"testing\")]\n",
+            "fn testing_only_join_helper(handle: &kernel::task::kthread::KthreadHandle) {{\n",
+            "    let _ = {join};\n",
+            "}}\n\n",
+        ), join = join);
+        let mutated = format!(
+            "{helper}{}",
+            source.replacen(
+                release,
+                "testing_only_join_helper(&boot_continuation_thread);\n    kernel::per_cpu_aarch64::preempt_enable();",
+                1,
+            )
+        );
+        assert_ne!(mutated, source, "fixture mutation must apply: {join}");
+        let subjects = definitions_matching(&mutated, Some("kthread_join"));
+        assert!(
+            subjects
+                .iter()
+                .any(|(name, _, _)| name == "testing_only_join_helper"),
+            "subject discovery did not read the join written as: {join}"
+        );
+        let perturbed = with_replaced_source(&sources, "kernel/src/main_aarch64.rs", mutated);
+        let verdict = validate_kthread_joins_are_kthread_bodies_or_tests(&perturbed);
+        assert!(
+            verdict.is_err(),
+            "the census stayed green on a join written as: {join}"
+        );
+    }
+}
+
+#[test]
+fn the_shared_call_recogniser_answers_the_same_at_every_face() {
+    // One recogniser, read through each face. Each of `calls_function`,
+    // `call_sites_of`, `free_calls` and `called_names` used to
+    // spell the probe itself and disagree with the others; N16 and N20 were
+    // 2 of those disagreements.
+    for text in [
+        "joiner/* c */(handle);",
+        "joiner // c\n(handle);",
+        "joiner\n    (handle);",
+    ] {
+        let mask = code_mask(text);
+        assert!(
+            calls_function(text, &mask, "joiner"),
+            "calls_function: {text}"
+        );
+        assert!(
+            !call_sites_of(text, &mask, "joiner").is_empty(),
+            "call_sites_of: {text}"
+        );
+        assert!(free_calls(text).contains("joiner"), "free_calls: {text}");
+        assert!(called_names(text).contains("joiner"), "called_names: {text}");
+    }
+    // ...and the same refusal at each face: a literal is code the compiler
+    // reads, so stepping over one would invent a call.
+    let literal = "NAME \"literal\" (handle);";
+    let literal_mask = code_mask(literal);
+    assert!(!calls_function(literal, &literal_mask, "NAME"));
+    assert!(call_sites_of(literal, &literal_mask, "NAME").is_empty());
+    assert!(!free_calls(literal).contains("NAME"));
+    assert!(!called_names(literal).contains("NAME"));
+}
+
+#[test]
 fn called_names_reads_across_comments_but_not_across_a_literal() {
     // The narrow half of the N16 repair: comment text and whitespace are
     // stepped over, string and character literals are not.
@@ -16401,4 +16525,151 @@ fn the_sleep_guard_census_reads_a_predicate_added_inside_the_wrapper() {
         "the census never discovered the predicate added inside the wrapper"
     );
     assert!(validate_sleep_guards_consult_the_idle_refusal(&perturbed).is_err());
+}
+
+#[test]
+fn the_sleep_guard_census_reads_a_predicate_called_across_a_comment() {
+    // N20, the residue round 5 left. The guard reader recognised a call only
+    // when `(` sat immediately after the identifier, so the spelling the
+    // reviewer used -- `alternate_sleep_eligibility/* direct call */()` --
+    // left the census green with its original rows: a sleep-eligibility
+    // predicate answered by nobody.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/task/completion.rs");
+    let anchor = concat!(
+        "            let in_syscall = current_context_can_sleep();\n",
+        "\n",
+        "            if in_syscall {",
+    );
+    assert_eq!(
+        source.matches(anchor).count(),
+        1,
+        "the fixture anchor must be the sleep-path guard wait_timeout_inner owns"
+    );
+    let helper = "\nfn alternate_sleep_eligibility() -> bool {\n    true\n}\n";
+    let call_forms = [
+        "alternate_sleep_eligibility/* direct call */()",
+        "alternate_sleep_eligibility // direct call\n                ()",
+    ];
+    for call in call_forms {
+        let doctored = format!(concat!(
+            "            let in_syscall = current_context_can_sleep() || {call};\n",
+            "\n",
+            "            if in_syscall {{",
+        ), call = call);
+        let mutated = format!("{}{helper}", source.replacen(anchor, &doctored, 1));
+        assert_ne!(mutated, source, "fixture mutation must apply: {call}");
+        let perturbed = with_replaced_source(&sources, "kernel/src/task/completion.rs", mutated);
+        let discovered = discover_sleep_guards(&perturbed);
+        assert!(
+            discovered
+                .iter()
+                .any(|guard| guard.predicate == "alternate_sleep_eligibility"),
+            "the census never discovered the predicate called as: {call}"
+        );
+        assert!(
+            validate_sleep_guards_consult_the_idle_refusal(&perturbed).is_err(),
+            "the census stayed green on a predicate called as: {call}"
+        );
+    }
+}
+
+/// The open-parenthesis byte literal, spelled as this file spells it.
+const OPEN_PAREN_LITERAL: &str = "b'('";
+
+/// Offsets in source where that literal is COMPARED against rather than
+/// matched on. A match arm writes it with an arrow after it, or lists it as
+/// one alternative beside a pipe; those count parentheses, they do not
+/// recognise a call.
+fn open_paren_probes(source: &str, mask: &[bool]) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    code_offsets(source, mask, OPEN_PAREN_LITERAL)
+        .into_iter()
+        .filter(|at| {
+            let after = next_code(source, mask, at + OPEN_PAREN_LITERAL.len());
+            let arm = after.is_some_and(|index| {
+                source[index..].starts_with(MATCH_ARROW) || bytes[index] == PIPE_BYTE
+            });
+            let alternative =
+                previous_code(source, mask, *at).is_some_and(|index| bytes[index] == PIPE_BYTE);
+            !arm && !alternative
+        })
+        .collect()
+}
+
+/// N16 and N20 were the same defect twice: a function that walks identifiers
+/// AND spells its own open-parenthesis comparison is re-implementing call
+/// recognition, and its spelling drifts from the others. So: no function
+/// in this file may do both. The recogniser itself does not walk identifiers
+/// -- it is handed the offset one past one -- so it needs no exception, and
+/// this rule carries no list of excused names.
+fn validate_one_call_recogniser(source: &str) -> Result<usize, Vec<String>> {
+    let mut findings = Vec::new();
+    let mut censused = 0usize;
+    for (name, _, body) in all_definitions(source) {
+        let body_mask = code_mask(&body);
+        let probes = open_paren_probes(&body, &body_mask);
+        if probes.is_empty() {
+            continue;
+        }
+        censused += 1;
+        let identifier_readers: Vec<String> = called_names(&body)
+            .into_iter()
+            .filter(|called| called.contains("identifier"))
+            .collect();
+        if identifier_readers.is_empty() {
+            continue;
+        }
+        findings.push(format!(
+            "{name} reads identifiers via {} and spells {} open-parenthesis comparison(s) of its own: call recognition belongs to argument_list_open",
+            identifier_readers.join(", "),
+            probes.len()
+        ));
+    }
+    if censused == 0 {
+        findings.push(NOTHING_CENSUSED.to_owned());
+    }
+    if findings.is_empty() {
+        Ok(censused)
+    } else {
+        Err(findings)
+    }
+}
+
+#[test]
+fn call_recognition_is_spelled_in_exactly_one_place() {
+    let source = repo_text(THIS_FILE);
+    let censused = validate_one_call_recogniser(&source)
+        .unwrap_or_else(|findings| panic!("{findings:?}"));
+    assert!(censused > 0, "{}", NOTHING_CENSUSED);
+    // The recogniser is itself one of the censused bodies, and holds exactly
+    // the one probe the whole file is meant to share.
+    let recogniser = function_body(&source, "argument_list_open");
+    let recogniser_mask = code_mask(recogniser);
+    assert_eq!(
+        open_paren_probes(recogniser, &recogniser_mask).len(),
+        1,
+        "the recogniser must hold the single open-parenthesis probe"
+    );
+    // Anti-vacuity: put round 5 own probe back into free_calls -- which reads
+    // identifiers -- and the rule reddens. The line appears twice: once as the
+    // constant above, once at the site, so the site is the LAST occurrence.
+    assert_eq!(
+        source.matches(REPAIRED_FREE_CALLS).count(),
+        2,
+        "the repaired line must appear as the constant and at its one site"
+    );
+    let at = source
+        .rfind(REPAIRED_FREE_CALLS)
+        .expect("free_calls must still spell the repaired line");
+    let regressed = format!(
+        "{}{ROUND_FIVE_FREE_CALLS}{}",
+        &source[..at],
+        &source[at + REPAIRED_FREE_CALLS.len()..]
+    );
+    assert_ne!(regressed, source, "the anti-vacuity mutation must apply");
+    assert!(
+        validate_one_call_recogniser(&regressed).is_err(),
+        "the rule stayed green with a second call recogniser in the file"
+    );
 }
