@@ -1,0 +1,2 @@
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=4862
+x86 userspace gate: FAIL - failing process is not allowlisted: loopback_wake_test_child
