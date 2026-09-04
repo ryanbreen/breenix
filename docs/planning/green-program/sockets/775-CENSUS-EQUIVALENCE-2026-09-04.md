@@ -814,12 +814,13 @@ for the two producers was one 5-line COMPILE transcript and 0 serial captures.
      kernel/src --include='*.rs'` at this head, minus scheduler.rs and minus
      the 8 comment lines. -->
 
-Round 5 booted them. Both aarch64 gates were run on the ARM Mac at this
-branch's head, at most 2 QEMUs at a time:
+Round 5 booted them. Both aarch64 gates were run on the ARM Mac against the
+kernel source of commit `645bab38` -- a diff of `kernel/` between that commit
+and this head is empty -- at most 2 QEMUs at a time:
 
 | gate | command | boots | result |
 |---|---|---:|---|
-| strict | `docker/qemu/run-aarch64-boot-test-strict.sh 10`, after `cargo build --release --features boot_tests --target aarch64-breenix-kernel.json ...` | 10 | `Successes: 10  Failures: 0  Success rate: 100%  Duration: 120s`, `PASS: 10/10 boots succeeded`, exit 0 |
+| strict | `docker/qemu/run-aarch64-boot-test-strict.sh 10`, after `cargo build --release --features boot_tests --target aarch64-breenix-kernel.json ...` | 10 | `Successes: 10  Failures: 0  Success rate: 100%  Duration: 118s`, `PASS: 10/10 boots succeeded`, exit 0 |
 | production profile | `docker/qemu/run-aarch64-prod-profile-boot-test.sh`, run 5 times | 5 | exit 0 on 5 of 5, each `PASS: production profile reached bsshd with the futex oracle seam absent` |
 
 **0 reds, so 0 to attribute.** Over the 15 committed captures,
