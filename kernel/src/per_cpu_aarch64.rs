@@ -462,6 +462,50 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
     }
 }
 
+/// Record that the running thread just parked on the shared halt primitive
+/// (#772, R113).
+///
+/// Called from `crate::arch_halt_with_interrupts` immediately before the halt,
+/// so every blocking wait loop in the kernel is counted at its own park point
+/// with no per-site call to keep in sync. One relaxed atomic add through the
+/// per-CPU current-thread pointer. No lock, no allocation, no formatting, and
+/// no control flow depends on the value.
+// claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites under kernel/src
+// reach this function, counted by grep in this slot.
+///
+/// The dispatch mark that consumes this count is x86-only today, so on aarch64
+/// this keeps the count and no reader consumes it yet.
+#[inline(always)]
+pub fn note_wait_loop_park() {
+    let thread_ptr =
+        hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (*thread_ptr).wait_loop_iters.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Read the running thread of this CPU as an (id, park-count) pair (#772, R113).
+#[inline(always)]
+pub fn current_wait_loop_iters() -> Option<(u64, u64)> {
+    let thread_ptr =
+        hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        None
+    } else {
+        unsafe {
+            Some((
+                (*thread_ptr).id,
+                (*thread_ptr).wait_loop_iters.load(Ordering::Relaxed),
+            ))
+        }
+    }
+}
+
 /// Set the current thread in per-CPU data
 pub fn set_current_thread(thread: *mut crate::task::thread::Thread) {
     unsafe {

@@ -560,6 +560,23 @@ pub struct Thread {
     /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
     pub cached_ttbr0: u64,
+
+    /// How many times this thread has parked on the shared halt primitive
+    /// (`crate::arch_halt_with_interrupts`), the instruction every blocking
+    /// wait loop in the kernel halts on (#772, R113).
+    // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites under kernel/src
+    // reach that primitive, counted by grep in this slot.
+    ///
+    /// The dispatch mark stamps this value at dispatch; the save site reads it
+    /// again. A save whose frame is byte-identical to the mark therefore splits
+    /// two ways that used to be recorded as one: the thread went round its wait
+    /// loop and re-parked on the same halt (the count advanced), or it retired
+    /// no instructions (the count is unchanged).
+    ///
+    /// Bumped in thread context, read from the interrupt-return path on the same
+    /// CPU, so it is an atomic rather than a plain `u64`. Relaxed ordering is
+    /// enough: the value is only ever compared against a stamp of itself.
+    pub wait_loop_iters: AtomicU64,
 }
 
 impl Clone for Thread {
@@ -594,6 +611,12 @@ impl Clone for Thread {
             cpu_ticks_total: self.cpu_ticks_total,
             owner_pid: self.owner_pid,
             cached_ttbr0: self.cached_ttbr0,
+            // Carried, not reset: `publish_to_scheduler` clones a process-table
+            // row into the scheduler for the SAME thread, and the dispatch mark
+            // stamped before that publish is compared against the value after
+            // it. Resetting here would make the next identical-frame save read
+            // as a backwards jump.
+            wait_loop_iters: AtomicU64::new(self.wait_loop_iters.load(Ordering::Relaxed)),
         }
     }
 }
@@ -704,6 +727,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -768,6 +792,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -819,6 +844,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -869,6 +895,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -932,6 +959,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -990,6 +1018,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1067,6 +1096,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1113,6 +1143,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 }

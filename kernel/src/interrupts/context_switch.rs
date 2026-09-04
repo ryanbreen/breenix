@@ -512,11 +512,15 @@ pub extern "C" fn check_need_resched_and_switch(
         // (whoever the CPU is actually about to run) and not from
         // `new_thread_id`. Writing it unconditionally on a completed switch is
         // also what invalidates the previous thread's mark.
-        match crate::per_cpu::current_thread_id_lock_free() {
-            Some(dispatched_tid) => crate::per_cpu::set_dispatch_mark(
+        match crate::per_cpu::current_wait_loop_iters() {
+            // The tid and the park count come out of one deref of the per-CPU
+            // current-thread pointer, so the mark cannot pair one thread's id
+            // with another thread's count (R113).
+            Some((dispatched_tid, wait_iters)) => crate::per_cpu::set_dispatch_mark(
                 dispatched_tid,
                 interrupt_frame.instruction_pointer.as_u64(),
                 interrupt_frame.stack_pointer.as_u64(),
+                wait_iters,
             ),
             // No nameable current thread: invalidate rather than record a
             // mark no later check could honestly match.
@@ -573,11 +577,16 @@ fn note_dispatch_save(
     interrupt_frame: &InterruptStackFrame,
 ) {
     let rip = interrupt_frame.instruction_pointer.as_u64();
-    let no_progress = crate::per_cpu::classify_dispatch_progress(
+    let no_progress = if crate::per_cpu::classify_dispatch_progress(
         thread_id,
         rip,
         interrupt_frame.stack_pointer.as_u64(),
-    ) == crate::per_cpu::DispatchProgress::NoProgress;
+    ) == crate::per_cpu::DispatchProgress::NoProgress
+    {
+        Some(crate::per_cpu::classify_no_progress_kind(thread_id))
+    } else {
+        None
+    };
     trace_dispatch_save(reason, no_progress, rip);
 }
 

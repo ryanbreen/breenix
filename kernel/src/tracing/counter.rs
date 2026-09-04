@@ -244,10 +244,13 @@ fn current_cpu_id() -> usize {
 /// Maximum number of counters that can be registered.
 ///
 /// Counted from the `init()` functions the provider registry calls
-/// (`kernel/src/tracing/providers/mod.rs`): counters.rs 16 + net_rx.rs 12 +
-/// virtgpu.rs 38 + xhci.rs 3 + teardown.rs `COUNTER_COUNT` 87 = 156, plus the
-/// 18 #772 dispatch counters = 174 on both x86_64 and aarch64, and 178 when
-/// the optional `btrt` feature adds its four. The previous doc comment said
+/// (`kernel/src/tracing/providers/mod.rs`): counters.rs registers 18 named
+/// counters plus its 37-entry `DISPATCH_SAVE_CENSUS_COUNTERS` array = 55, and
+/// net_rx.rs 12 + virtgpu.rs 38 + xhci.rs 3 + teardown.rs `COUNTER_COUNT` 87
+/// brings the total to 195 on both x86_64 and aarch64, 199 when the optional
+/// `btrt` feature adds its four. The census array grew from 16 to 37 when R113
+/// split each identical-frame save three ways; before that the same arithmetic
+/// read 174 and 178. The previous doc comment said
 /// 106, which had gone stale as the teardown provider grew, and 178 does not
 /// fit under the previous cap of 160 -- which is what the bump is for.
 ///

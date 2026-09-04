@@ -392,8 +392,25 @@ pub fn arch_halt() {
 }
 
 /// Enable interrupts and halt (atomic on x86_64).
+///
+/// Every blocking wait loop in the kernel parks here, so this is also where the
+/// per-thread park count the #772 revisit oracle reads is bumped (R113).
+/// Counting inside the primitive rather than at each of the call sites the
+/// census in
+/// docs/planning/green-program/sockets/772-DIAG-2026-09-03.md lists is
+/// deliberate: a site added later is counted with no edit, and a site cannot
+/// drift out of the census by being missed. The bump is immediately before the
+/// halt, so the count a thread carries while parked already includes the park
+/// it is sitting in.
+// claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites under kernel/src
+// reach this function, counted by grep in this slot.
+///
+/// One relaxed atomic add on a path that is about to halt the CPU. No lock, no
+/// allocation, no formatting, and no control flow reads the value.
+// claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 #[inline(always)]
 pub fn arch_halt_with_interrupts() {
+    per_cpu::note_wait_loop_park();
     #[cfg(target_arch = "x86_64")]
     {
         arch_impl::x86_64::cpu::X86Cpu::halt_with_interrupts()
