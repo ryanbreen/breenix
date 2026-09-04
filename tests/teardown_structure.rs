@@ -15417,6 +15417,32 @@ fn validate_kthread_joins_are_kthread_bodies_or_tests(
 
 #[test]
 fn no_kthread_join_is_reachable_from_the_idle_identity() {
+    // WHAT THIS RATCHET IS, EXACTLY, AND WHAT IT IS NOT.
+    //
+    // It is a TEXT CENSUS over kernel/src as written -- not a compiler, not a
+    // call graph the compiler would agree with. It reads the source with
+    // comments and literals masked out (`code_mask`), recognises a call as an
+    // identifier followed by `(` across any comment or whitespace, follows
+    // those calls transitively through the definitions it can name, descends
+    // through blocking wrappers into the primitive they reach, and resolves a
+    // bare name or struct field in a guard against the `let` bindings in the
+    // same file.
+    //
+    // Anything written outside those shapes it does not see, and that is a
+    // DISCLOSED LIMITATION rather than a claim of completeness. Two shapes it
+    // provably does not follow:
+    //
+    //   1. an indirect call -- through a function pointer, a `dyn Trait`
+    //      object, or a value passed in as a closure -- where the call site
+    //      writes 0 occurrences of the callee's name;
+    //   2. a call the macro expander generates, because the census reads the
+    //      macro's source text, not its expansion.
+    //
+    // So this rule is evidence about the code as a reviewer reads it: it
+    // reddens under the mutations review rounds 2 to 5 named, each of which is
+    // a permanent leg beside it, while the 2 shapes above stay out of reach.
+    // The lesser narrowings each census makes are stated at the function that
+    // makes them.
     let sources = rust_sources_below("kernel/src");
     let censused = validate_kthread_joins_are_kthread_bodies_or_tests(&sources)
         .expect("every kthread_join caller is a kthread body, a feature-gated context, or a stop-then-join teardown");
@@ -16070,6 +16096,32 @@ fn validate_sleep_guards_consult_the_idle_refusal(
 
 #[test]
 fn sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal() {
+    // WHAT THIS RATCHET IS, EXACTLY, AND WHAT IT IS NOT.
+    //
+    // It is a TEXT CENSUS over kernel/src as written -- not a compiler, not a
+    // call graph the compiler would agree with. It reads the source with
+    // comments and literals masked out (`code_mask`), recognises a call as an
+    // identifier followed by `(` across any comment or whitespace, follows
+    // those calls transitively through the definitions it can name, descends
+    // through blocking wrappers into the primitive they reach, and resolves a
+    // bare name or struct field in a guard against the `let` bindings in the
+    // same file.
+    //
+    // Anything written outside those shapes it does not see, and that is a
+    // DISCLOSED LIMITATION rather than a claim of completeness. Two shapes it
+    // provably does not follow:
+    //
+    //   1. an indirect call -- through a function pointer, a `dyn Trait`
+    //      object, or a value passed in as a closure -- where the call site
+    //      writes 0 occurrences of the callee's name;
+    //   2. a call the macro expander generates, because the census reads the
+    //      macro's source text, not its expansion.
+    //
+    // So this rule is evidence about the code as a reviewer reads it: it
+    // reddens under the mutations review rounds 2 to 5 named, each of which is
+    // a permanent leg beside it, while the 2 shapes above stay out of reach.
+    // The lesser narrowings each census makes are stated at the function that
+    // makes them.
     let sources = rust_sources_below("kernel/src");
     let guards = validate_sleep_guards_consult_the_idle_refusal(&sources)
         .expect("every boolean consulted before a call that sleeps routes through the shared idle refusal");
