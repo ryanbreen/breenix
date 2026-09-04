@@ -34,6 +34,7 @@
 //! ```
 
 use crate::tracing::counter::{register_counter, TraceCounter};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // =============================================================================
 // Built-in Counter Definitions
@@ -528,6 +529,51 @@ pub static BOOT_TEST_FAIL_TOTAL: TraceCounter =
 #[no_mangle]
 pub static BOOT_TEST_SKIP_TOTAL: TraceCounter =
     TraceCounter::new("BOOT_TEST_SKIP_TOTAL", "Total boot tests skipped");
+
+// =============================================================================
+// Wait-loop park census (#772)
+// =============================================================================
+//
+// The park side of the split below, so it can be audited rather than assumed.
+// `WAIT_LOOP_PARK_TOTAL` is bumped once per call of
+// `per_cpu::note_wait_loop_park`;
+// `WAIT_LOOP_PARK_SKIPPED` counts the subset that did NOT reach a thread's
+// `wait_loop_iters` -- per-CPU data not yet initialised, or no thread
+// installed on this CPU. The difference is the population the
+// REVISIT/ZERO_ITER split is computed over. A SKIPPED that is not near 0 in a
+// steady-state boot is a finding about the park side, not about #772.
+//
+// Plain relaxed globals, deliberately NOT `TraceCounter`s:
+// `TraceCounter::increment` resolves its per-CPU slot through
+// `current_cpu_id()`, which on x86 is `mov reg, gs:[0]` -- the same
+// uninstalled-GS-base read the park path's `PER_CPU_INITIALIZED` guard exists
+// to avoid. A census that must count the parks that guard refuses therefore
+// cannot itself be a per-CPU counter. These are whole-machine totals, which is
+// why they carry no `_CPU0` suffix when the GDB driver reads them.
+//
+// Census only, on both arches. No control flow reads either value.
+//
+// GDB: `print WAIT_LOOP_PARK_TOTAL`, `print WAIT_LOOP_PARK_SKIPPED`
+#[no_mangle]
+pub static WAIT_LOOP_PARK_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Parks that did not reach a thread's `wait_loop_iters` (#772).
+///
+/// See `WAIT_LOOP_PARK_TOTAL` above.
+#[no_mangle]
+pub static WAIT_LOOP_PARK_SKIPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Record one park, before the per-CPU guard that may refuse it.
+#[inline(always)]
+pub fn note_park_total() {
+    WAIT_LOOP_PARK_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record one park that could not be attributed to a thread.
+#[inline(always)]
+pub fn note_park_skipped() {
+    WAIT_LOOP_PARK_SKIPPED.fetch_add(1, Ordering::Relaxed);
+}
 
 // The 21 counters below split each identical-frame save recorded above by
 // whether the saved thread parked again between the dispatch and the save

@@ -59,6 +59,15 @@ def derive(counters):
     if all(v is not None for v in present):
         out["save_reason_total"] = sum(present)
         out["kernel_blocked_saves"] = present[2] + present[3]
+    park_total = get("WAIT_LOOP_PARK_TOTAL")
+    park_skipped = get("WAIT_LOOP_PARK_SKIPPED")
+    if park_total is not None and park_skipped is not None:
+        # The park side of the REVISIT/ZERO_ITER split, so it is audited rather
+        # than assumed: attributed parks are the ones that actually reached a
+        # thread's wait_loop_iters.
+        out["wait_loop_parks_total"] = park_total
+        out["wait_loop_parks_skipped"] = park_skipped
+        out["wait_loop_parks_attributed"] = park_total - park_skipped
     kb_p = get("DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_PREEMPT")
     kb_m = get("DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_MANDATORY")
     if kb_p is not None and kb_m is not None:
@@ -162,7 +171,11 @@ def main(argv):
 
     if counters_path:
         counters = parse_counters(counters_path)
-        dispatch = {name: value for name, value in counters.items() if name.startswith("DISPATCH_")}
+        dispatch = {
+            name: value
+            for name, value in counters.items()
+            if name.startswith("DISPATCH_") or name.startswith("WAIT_LOOP_PARK_")
+        }
         out["counters"] = dispatch
         out.update(derive(counters))
         kb = out.get("kernel_blocked_saves")

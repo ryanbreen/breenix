@@ -487,14 +487,20 @@ pub fn current_thread_id_lock_free() -> Option<u64> {
 /// five idle and terminal halt loops that park on a raw `enable_and_hlt` --
 /// four in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
 /// NOT counted; `crate::arch_halt_with_interrupts` carries the full census and
-/// what the omission costs. One relaxed atomic add through the
-/// per-CPU current-thread pointer -- the same lock-free deref
-/// `current_thread_id_lock_free` above already performs on the interrupt-return
-/// path. No lock, no allocation, no formatting, and no control flow depends on
-/// the value.
+/// what the omission costs.
 // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
 // arch_halt call sites under kernel/src reach this function, counted by grep in
 // this slot.
+///
+/// Two relaxed atomic adds in the counted case: one whole-machine park total,
+/// and one through the per-CPU current-thread pointer -- the same lock-free
+/// deref `current_thread_id_lock_free` above already performs on the
+/// interrupt-return path. A park this function refuses (per-CPU data not yet
+/// initialised, or no thread installed) bumps `WAIT_LOOP_PARK_SKIPPED` instead
+/// of a thread, so the park side is auditable rather than assumed: what
+/// reached a thread is `WAIT_LOOP_PARK_TOTAL - WAIT_LOOP_PARK_SKIPPED`.
+/// No lock, no allocation, no formatting, and no control flow depends on any
+/// of the values.
 #[inline(always)]
 pub fn note_wait_loop_park() {
     // The same guard the 4 dispatch-mark accessors below carry, and for a
@@ -507,13 +513,16 @@ pub fn note_wait_loop_park() {
     // path does, so the guard is not hypothetical hygiene.
     // claim-lint:ok: 4 of 4 dispatch-mark accessors below take this guard and
     // 3 of 3 park primitives reach this function, counted by grep in this slot.
+    crate::tracing::providers::counters::note_park_total();
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        crate::tracing::providers::counters::note_park_skipped();
         return;
     }
     let thread_ptr =
         hal_percpu::X86PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
 
     if thread_ptr.is_null() {
+        crate::tracing::providers::counters::note_park_skipped();
         return;
     }
     unsafe {

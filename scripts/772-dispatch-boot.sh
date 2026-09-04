@@ -40,8 +40,15 @@ if [ -z "$KERNEL_BIN" ]; then
     exit 2
 fi
 
-# The DISPATCH_* counter symbols in this build, name and file-relative address.
-nm "$KERNEL_BIN" | awk '$3 ~ /^DISPATCH_/ { print $3, "0x"$1 }' | sort > "$OUTDIR/counter_symbols.txt"
+# The counter symbols in this build: name, file-relative address, and the byte
+# offset the readable u64 sits at. DISPATCH_* are `TraceCounter`s, whose
+# per_cpu[0].value is at +64; WAIT_LOOP_PARK_* are plain whole-machine
+# AtomicU64s, at +0 (they cannot be TraceCounters -- the park path runs before
+# the per-CPU base a TraceCounter's slot lookup needs; see
+# kernel/src/tracing/providers/counters.rs).
+nm "$KERNEL_BIN" | awk '$3 ~ /^DISPATCH_/ { print $3, "0x"$1, 64 }
+                        $3 ~ /^WAIT_LOOP_PARK_/ { print $3, "0x"$1, 0 }' |
+    sort > "$OUTDIR/counter_symbols.txt"
 
 if [ -w /dev/kvm ]; then ACCEL=kvm; else ACCEL=tcg; fi
 if [ "$ACCEL" = kvm ]; then CPU=host; else CPU=qemu64; fi
@@ -76,11 +83,18 @@ if [ "$FOUND" = 1 ] && kill -0 "$QPID" 2>/dev/null; then
             echo "set pagination off"
             echo "set confirm off"
             echo "target remote localhost:1234"
-            while read -r name addr; do
+            while read -r name addr off; do
                 # +64 is per_cpu[0].value: the TraceCounter header (name and
                 # description, 32 bytes) padded to the 64-byte per-CPU slot.
-                printf 'printf "%s_CPU0=%%lu\\n", *(unsigned long long*)(0x%x + 64)\n' \
-                    "$name" "$((KERNEL_BASE + addr))"
+                # +0 is a plain AtomicU64, which is whole-machine and so gets
+                # no _CPU0 suffix.
+                if [ "$off" = 0 ]; then
+                    printf 'printf "%s=%%lu\\n", *(unsigned long long*)(0x%x)\n' \
+                        "$name" "$((KERNEL_BASE + addr))"
+                else
+                    printf 'printf "%s_CPU0=%%lu\\n", *(unsigned long long*)(0x%x + %s)\n' \
+                        "$name" "$((KERNEL_BASE + addr))" "$off"
+                fi
             done < "$OUTDIR/counter_symbols.txt"
             echo "detach"
             echo "quit"

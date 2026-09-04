@@ -475,12 +475,18 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
 /// five idle and terminal halt loops that park on a raw `enable_and_hlt` --
 /// four in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
 /// NOT counted; `crate::arch_halt_with_interrupts` carries the full census and
-/// what the omission costs. One relaxed atomic add through the
-/// per-CPU current-thread pointer. No lock, no allocation, no formatting, and
-/// no control flow depends on the value.
+/// what the omission costs.
 // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
 // arch_halt call sites under kernel/src reach this function, counted by grep in
 // this slot.
+///
+/// Two relaxed atomic adds in the counted case: one whole-machine park total,
+/// and one through the per-CPU current-thread pointer. A park this function
+/// refuses (per-CPU data not yet initialised, or no thread installed) bumps
+/// `WAIT_LOOP_PARK_SKIPPED` instead of a thread, so the park side is auditable
+/// rather than assumed: what reached a thread is
+/// `WAIT_LOOP_PARK_TOTAL - WAIT_LOOP_PARK_SKIPPED`. No lock, no allocation, no
+/// formatting, and no control flow depends on any of the values.
 ///
 /// The dispatch mark that consumes this count is x86-only today, so on aarch64
 /// this keeps the count and no reader consumes it yet.
@@ -491,13 +497,16 @@ pub fn note_wait_loop_park() {
     // TPIDR_EL1 reads 0, so the null check below would catch a pre-init park
     // on its own. The guard is carried anyway so the two arches have one shape, and
     // so a pre-init park is refused for the same stated reason on both.
+    crate::tracing::providers::counters::note_park_total();
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        crate::tracing::providers::counters::note_park_skipped();
         return;
     }
     let thread_ptr =
         hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
 
     if thread_ptr.is_null() {
+        crate::tracing::providers::counters::note_park_skipped();
         return;
     }
     unsafe {
