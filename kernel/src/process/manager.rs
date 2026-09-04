@@ -3102,6 +3102,7 @@ impl ProcessManager {
                 run_start_ticks: 0,
                 cpu_ticks_total: 0,
                 owner_pid: Some(child_pid.as_u64()),
+                cpu_affinity: parent_thread.cpu_affinity,
                 cached_ttbr0: parent_thread.cached_ttbr0,
             };
 

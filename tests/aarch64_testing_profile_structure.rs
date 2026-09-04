@@ -106,6 +106,17 @@ fn boot_adds_softirq_daemons_after_secondary_cpus_are_online() {
 }
 
 #[test]
+fn testing_fork_inherits_cpu_affinity() {
+    let manager = repo_text("kernel/src/process/manager.rs");
+    let fork = function_body(&manager, "fork_process_with_context");
+
+    assert!(
+        fork.contains("cpu_affinity: parent_thread.cpu_affinity"),
+        "a fork child must preserve any scheduler affinity held by its parent"
+    );
+}
+
+#[test]
 fn completion_sleep_rejects_idle_masked_and_interrupt_contexts() {
     let completion = repo_text("kernel/src/task/completion.rs");
     let predicate = function_body(&completion, "current_context_can_sleep");
