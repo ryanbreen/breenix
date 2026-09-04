@@ -48,9 +48,15 @@ done
 # docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
 #
 # rc=4 is a STALE clean reading: stranded=0, but the snapshot it came from was
-# already more than 5000 ms old when the userspace phase ended. That is not a
+# already more than 15000 ms old when the userspace phase ended. That is not a
 # pass, because the ledger stopped being published before the boot finished.
-# claim-lint:ok: #775 ruling R137 defines the age bound.
+# The bound is DERIVED from #766's measured x86 wake-to-dispatch overrun (max
+# 10318 ms over 324 trials) plus margin, not chosen; it tightens when #766
+# lands. scripts/x86-strand-census.sh's AGE header carries the derivation and
+# the disclosed cost.
+# claim-lint:ok: #775 ruling R137 defines the age bound and R140 derives it
+# from the distribution in
+# docs/planning/green-program/sockets/693-RCA-2026-09-02.md.
 #
 # No snapshot means the kernel never reached the heartbeat, or failed before
 # its first emission. That is census unavailability, not evidence of a strand:
@@ -66,12 +72,29 @@ strand_output=""
 strand_rc=0
 strand_output="$("$SCRIPT_DIR/x86-strand-census.sh" "$@" 2>&1)" || strand_rc=$?
 printf '%s\n' "$strand_output"
+#
+# rc=0 with NO summary line is a census that did not RUN, and it used to read as
+# a clean one. `x86-strand-census.sh` prints a `STRAND_CENSUS:` line on each of
+# its exit-0 paths, so an exit 0 without one means the tool did not reach its
+# END block. Round 5 produced that state by accident -- an apostrophe inside a
+# comment in the single-quoted awk program terminates the program string, and
+# the resulting shell printed nothing and exited 0. The gate scored 6 of its 19
+# verdict tests green against that broken tool, this one among them, so the
+# check is not hypothetical.
+# claim-lint:ok: the arm is covered by
+# a_census_that_exits_zero_without_a_summary_line_is_not_a_pass in
+# tests/x86_gate_verdict_test.rs.
 case "$strand_rc" in
-    0) ;;
+    0)
+        case "$strand_output" in
+            *"STRAND_CENSUS:"*) ;;
+            *) fail "the strand census exited 0 without printing a STRAND_CENSUS summary line, so this boot carries no census reading at all: the tool did not run to completion" ;;
+        esac
+        ;;
     1) fail "a thread was saved blocked in a kernel wait and was still not restored at the latest census snapshot (see the strand census above)" ;;
     2) echo "x86 userspace gate: census unavailable; continuing with ordered first-cause checks" ;;
     3) echo "x86 userspace gate: STRAND CENSUS INCOMPLETE - the kernel ledger overflowed, so this boot has NO usable strand evidence in either direction; continuing with ordered first-cause checks" ;;
-    4) fail "the strand census read stranded=0 from a snapshot that was already more than 5000 ms stale at the completion marker, so the clean reading is stale rather than clean (see the age line above)" ;;
+    4) fail "the strand census read stranded=0 from a snapshot that was already more than 15000 ms stale at the completion marker, so the clean reading is stale rather than clean (see the age line above)" ;;
     *) fail "strand census returned unexpected status $strand_rc" ;;
 esac
 

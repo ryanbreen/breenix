@@ -28,9 +28,12 @@
 #     concatenation order. `seq` is 1-based and unique within a boot, so two
 #     boots concatenated repeat a seq and are rejected (exit 2) instead of being
 #     silently mixed. Byte-identical duplicate markers -- the same capture
-#     passed twice -- are collapsed before that check.
-#     claim-lint:ok: the ordering and two-boot arms are covered by
-#     tests/x86_gate_verdict_test.rs.
+#     passed twice -- are collapsed before that check. The AGE line below is
+#     order-independent for the same reason: the completion marker and the
+#     snapshot that follows it are located by position within ONE capture, not
+#     by position in a concatenation of all of them.
+#     claim-lint:ok: the ordering, two-boot and age-ordering arms are covered
+#     by tests/x86_gate_verdict_test.rs.
 #   * Every marker is validated. Malformed ones are counted and skipped, so one
 #     truncated trailing marker cannot discard an otherwise readable red
 #     reading; the highest-seq VALID snapshot still decides.
@@ -40,17 +43,26 @@
 # WHAT THE VERDICT DOES AND DOES NOT SAY
 #   A snapshot is the ledger's state at one instant. A listed thread was saved
 #   blocked and had not been restored AS OF THAT SNAPSHOT; it may have resumed
-#   afterwards. The emitted sentence says exactly that, and the snapshot's `seq`
+#   afterwards. The emitted sentence says exactly that, and the snapshot's
+#   `seq` and `tick` are printed with it.
 #   claim-lint:ok: the emission contract is the one #775 ruling R137 sets and
 #   the age arms are covered by tests/x86_gate_verdict_test.rs.
-#   and `tick` are printed with it. `kstrandd` sleeps on the scheduler timer
-#   and so keeps a cadence that does not depend on the CPU idling, but the
-#   emission is still rate-LIMITED, not guaranteed-periodic: anything that
-#   stops `kstrandd` running -- a wedge holding the scheduler lock, a lost
-#   timer wake -- leaves the newest snapshot stale. The capture carries no
-#   end-of-boot timestamp, so staleness at the END of the boot is still not
-#   derivable; what IS derivable is staleness at the completion marker, and
-#   that is asserted (see AGE below). The observed gaps are printed too.
+#
+#   The emission is rate-LIMITED, not periodic. `kstrandd` sleeps on the
+#   scheduler timer, so the cadence does not need the CPU to idle, but the
+#   snapshot is published only once that kthread is DISPATCHED after its timer
+#   wake -- the wake-to-dispatch latency #766 measures. Under load that latency
+#   is seconds: the two committed round-4 gate captures carry census holes of
+#   19939 ms and 17888 ms with `kstrandd` alive and having published at 1 Hz
+#   right up to each hole. Anything else that stops it running -- a wedge
+#   holding the scheduler lock, a lost timer wake -- leaves the newest snapshot
+#   stale in the same way. The capture carries no end-of-boot timestamp, so
+#   staleness at the END of the boot is still not derivable; what IS derivable
+#   is staleness at the completion marker, and that is asserted (see AGE
+#   below). The observed gaps are printed too.
+#   claim-lint:ok: both holes are re-derivable from the `ms=` fields of
+#   docs/planning/green-program/sockets/serials/775/round4/gate-green/
+#   boot{1,2}/serial_kernel.txt.
 #
 # AGE AT THE COMPLETION MARKER
 #   The completion site emits a snapshot immediately after the kernel prints
@@ -59,8 +71,20 @@
 #   timestamp minus the ms of the newest CADENCE snapshot before it, i.e. how
 #   stale the reading a consumer would have judged was when the userspace
 #   phase ended. On a capture with no completion marker there is no such
-#   reference and the line says so instead of inventing one.
-#   claim-lint:ok: the bound and both arms are covered by
+#   reference and the line says so instead of inventing one. A capture that
+#   DOES carry the marker but no valid snapshot after it is a truncated
+#   capture, not an unmeasurable one: it exits 2 rather than skipping the
+#   assertion.
+#
+#   THE BOUND IS 15000 ms, AND IT IS DERIVED, not chosen. #766 measured the
+#   x86 wake-to-dispatch overrun this cadence rides on -- min 84 ms, p50
+#   426.5 ms, p90 2592 ms, max 10318 ms over 324 re-derivable trials, recorded
+#   in docs/planning/green-program/sockets/693-RCA-2026-09-02.md -- and the
+#   bound is that measured maximum plus margin. It tightens when #766 lands.
+#   The bound is NOT derived from the observed cadence holes, which are larger
+#   than it: a completion marker landing at the end of a 19939 ms hole trips
+#   this arm. That is the disclosed cost of asserting freshness at all.
+#   claim-lint:ok: the bound, its derivation and all 3 arms are covered by
 #   tests/x86_gate_verdict_test.rs.
 #
 # Usage:  scripts/x86-strand-census.sh <serial-log> [<serial-log> ...]
@@ -70,12 +94,14 @@
 #           was fresh at the completion marker (or no age is measurable);
 #         1 when it says stranded>0;
 #         2 when no valid snapshot exists, or the inputs carry snapshots from
-#           more than one boot;
+#           more than one boot, or the capture carries the completion marker
+#           with no valid snapshot after it (a truncated capture: the age
+#           assertion is not silently skipped);
 #         3 when the kernel ledger overflowed, so the snapshot is incomplete and
 #           carries no verdict either way (R134 item 2: not a clean census);
 #         4 when stranded=0 but the newest cadence snapshot was more than
-#           5000 ms old at the completion marker, so the clean reading is
-#           stale rather than clean (R137).
+#           15000 ms old at the completion marker, so the clean reading is
+#           stale rather than clean (R137, bound derived per AGE above).
 #         Precedence: 2 and 3 short-circuit; 1 outranks 4, so a red strand is
 #         never masked by a staleness report.
 # claim-lint:ok: the 5 exit classes are covered by tests/x86_gate_verdict_test.rs.
@@ -91,11 +117,20 @@ for serial_log in "$@"; do
     [[ -r "$serial_log" ]] || { echo "strand census: serial log is not readable: $serial_log" >&2; exit 2; }
 done
 
-cat -- "$@" | awk '
+# The captures are handed to awk as OPERANDS, not concatenated through `cat`.
+# The completion marker and the snapshot that follows it are then located by
+# position WITHIN one capture (`FNR`), so which order the caller passes the
+# files in cannot change the age line -- the R4-6 defect in the streaming form.
+# It also makes `lines=` the true total line count either way.
+awk '
 BEGIN {
     census_re = "\\[DISPATCH_STRAND_CENSUS:[^]]*\\]"
-    stale_limit_ms = 5000
-    seen_complete = 0
+    # Derived from #766, not chosen: max measured wake-to-dispatch overrun
+    # 10318 ms (324 trials, docs/planning/green-program/sockets/
+    # 693-RCA-2026-09-02.md) plus margin. Tightens when #766 lands.
+    stale_limit_ms = 15000
+    marker_present = 0
+    file_complete = 0
     completion_seq = 0
     valid_re = "^\\[DISPATCH_STRAND_CENSUS:seq=[0-9]+:tick=[0-9]+:ms=[0-9]+:saved=[0-9]+:stranded=[0-9]+:tids=(-|[0-9]+(,[0-9]+)*):tid_overflow=[0-9]+:ledger_overflow=[0-9]+\\]$"
     best_seq = -1
@@ -122,7 +157,13 @@ function consistent(marker,   listed, tids, spare) {
     return (listed + (field(marker, "tid_overflow") + 0) == (field(marker, "stranded") + 0))
 }
 
-/USERSPACE TEST COMPLETE/ { seen_complete = 1 }
+# Per-capture state. `marker_present` is detected INDEPENDENTLY of the snapshot
+# parse, so the presence of the marker and the presence of a snapshot after it
+# are two separate facts and neither stands in for the other; `file_complete`
+# resets at each capture so the completion snapshot is the first valid snapshot
+# after the marker IN THAT capture.
+FNR == 1 { file_complete = 0 }
+/USERSPACE TEST COMPLETE/ { marker_present = 1; file_complete = 1 }
 
 /Added thread [0-9]+ / {
     line = $0
@@ -156,7 +197,7 @@ function consistent(marker,   listed, tids, spare) {
         seen[seq] = marker
         ms[seq] = field(marker, "ms") + 0
         valid++
-        if (seen_complete && completion_seq == 0) completion_seq = seq
+        if (file_complete && completion_seq == 0) completion_seq = seq
         if (seq > best_seq) { best_seq = seq; best = marker }
     }
 }
@@ -170,6 +211,15 @@ END {
             printf "strand census: no valid DISPATCH_STRAND_CENSUS snapshot found (%d malformed marker(s), first: %s)\n", malformed, first_malformed > "/dev/stderr"
         else
             print "strand census: no DISPATCH_STRAND_CENSUS line found" > "/dev/stderr"
+        exit 2
+    }
+
+    # A capture that carries the completion marker but no valid snapshot after
+    # it is TRUNCATED, not unmeasurable: the age assertion has 0 snapshots to
+    # run on. Reporting "no marker" there would be false and would skip the
+    # bound silently -- finding R4-5. It exits 2 (census unavailable) instead.
+    if (marker_present && completion_seq == 0) {
+        printf "strand census: census incomplete at completion marker: the capture carries USERSPACE TEST COMPLETE but no valid snapshot follows it in that capture, so the age at the marker cannot be measured and the newest reading (seq=%d) carries no freshness evidence\n", best_seq > "/dev/stderr"
         exit 2
     }
 
@@ -228,6 +278,8 @@ END {
             printf "strand census: age at the completion marker: not measurable -- the completion snapshot seq=%d is the first valid snapshot in the capture\n", completion_seq
         }
     } else {
+        # Reached only when marker_present == 0; the marker-present-but-
+        # truncated shape exited 2 above.
         printf "strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=%d at %s ms\n", best_seq, at_ms
     }
 
@@ -256,4 +308,4 @@ END {
     printf "STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n", saved, stranded, NR
     exit 0
 }
-'
+' "$@"
