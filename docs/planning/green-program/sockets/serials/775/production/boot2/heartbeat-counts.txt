@@ -1,0 +1,2 @@
+/root/775c/prod/boot2/serial_user.txt:1
+/root/775c/prod/boot2/serial_kernel.txt:0
