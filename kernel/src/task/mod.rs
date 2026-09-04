@@ -14,6 +14,10 @@ pub(crate) mod dispatch_strand_census;
 pub fn report_dispatch_strand_census_heartbeat() {
     dispatch_strand_census::report_heartbeat_if_due();
 }
+#[cfg(target_arch = "x86_64")]
+pub fn start_dispatch_strand_census_kthread() {
+    dispatch_strand_census::start_census_kthread();
+}
 pub mod executor;
 pub mod exit_tally;
 pub mod thread;

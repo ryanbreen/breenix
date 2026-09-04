@@ -27,23 +27,30 @@ done
 
 [[ -r "$ALLOWLIST_PATH" ]] || fail "allowlist is not readable: $ALLOWLIST_PATH"
 
-# Run the strand census first. The kernel emits a ledger snapshot from the
-# scheduler's idle loop and from the loopback pump, at most once per second, so
-# a saved-blocked thread can be NAMED even when that userspace thread never runs
+# Run the strand census first. The kernel emits a ledger snapshot from three
+# rate-limited contexts -- the scheduler's idle loop, the loopback pump and the
+# `kstrandd` census kthread -- at most once per second between them, so a
+# saved-blocked thread can be NAMED even when that userspace thread never runs
 # again. The consumer judges the highest-seq snapshot because it carries the
 # newest ledger state, and the completion path emits a final one.
-# claim-lint:ok: the 3 emission sites are pinned by
+# claim-lint:ok: the 4 emission sites are pinned by
 # tests/dispatch_strand_census_structure.rs.
 #
-# The emission is rate-LIMITED, not guaranteed-periodic: the idle loop runs
-# whenever no thread is runnable, so a wedge that idles publishes at cadence,
-# while a wedge that spins a CPU can stop the cadence and leave the newest
-# snapshot stale. The census prints the observed gaps for that reason, and
-# reports what the snapshot supports -- "not restored as of the latest snapshot"
-# -- not "never restored".
-# claim-lint:ok: #775 ruling R134 defines the idle-loop and pump sources; the
-# cadence and its failure mode are measured in
+# The emission is rate-LIMITED, not guaranteed-periodic. `kstrandd` sleeps on
+# the scheduler timer, so the cadence no longer needs the CPU to idle, but
+# anything that stops that kthread running still leaves the newest snapshot
+# stale. The census prints the observed gaps and the age of the newest cadence
+# snapshot at the completion marker for that reason, and reports what the
+# snapshot supports -- "not restored as of the latest snapshot" -- not
+# "never restored".
+# claim-lint:ok: #775 rulings R134 and R137 define the three cadence sources;
+# the cadence and its failure mode are measured in
 # docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
+#
+# rc=4 is a STALE clean reading: stranded=0, but the snapshot it came from was
+# already more than 5000 ms old when the userspace phase ended. That is not a
+# pass, because the ledger stopped being published before the boot finished.
+# claim-lint:ok: #775 ruling R137 defines the age bound.
 #
 # No snapshot means the kernel never reached the heartbeat, or failed before
 # its first emission. That is census unavailability, not evidence of a strand:
@@ -64,6 +71,7 @@ case "$strand_rc" in
     1) fail "a thread was saved blocked in a kernel wait and was still not restored at the latest census snapshot (see the strand census above)" ;;
     2) echo "x86 userspace gate: census unavailable; continuing with ordered first-cause checks" ;;
     3) echo "x86 userspace gate: STRAND CENSUS INCOMPLETE - the kernel ledger overflowed, so this boot has NO usable strand evidence in either direction; continuing with ordered first-cause checks" ;;
+    4) fail "the strand census read stranded=0 from a snapshot that was already more than 5000 ms stale at the completion marker, so the clean reading is stale rather than clean (see the age line above)" ;;
     *) fail "strand census returned unexpected status $strand_rc" ;;
 esac
 

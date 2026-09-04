@@ -5,8 +5,9 @@
 //! kernel context saved, whether its most recent save/restore event was a
 //! restore, and whether it later exited.  Keep exactly those facts in a fixed
 //! atomic ledger so the hot path adds no lock, allocation, or formatting.  The
-//! scheduler's idle loop and the loopback pump emit rate-limited snapshots with
-//! interrupts enabled, where the COM2 kernel-log lock is legal.
+//! scheduler's idle loop, the loopback pump and the `kstrandd` census kthread
+//! emit rate-limited snapshots with interrupts enabled, where the COM2
+//! kernel-log lock is legal.
 
 use core::{
     fmt,
@@ -85,17 +86,18 @@ impl fmt::Display for TidList<'_> {
 ///
 /// The callers are ordinary thread contexts with interrupts enabled, never
 /// interrupt or context-switch paths: `interrupts::context_switch::idle_loop`,
-/// `net::loopback_pump::loopback_pump_fn`, and the syscall-context completion
-/// site in `syscall::handlers`. Acquire loads pair with the release RMWs in the
-/// three recorders, so a snapshot observes published ledger events across CPUs.
-/// claim-lint:ok: the three call sites are pinned by
+/// `net::loopback_pump::loopback_pump_fn`, `census_thread_fn` in this module
+/// (the `kstrandd` kthread), and the syscall-context completion site in
+/// `syscall::handlers`. Acquire loads pair with the release RMWs in the three
+/// recorders, so a snapshot observes published ledger events across CPUs.
+/// claim-lint:ok: the four call sites are pinned by
 /// tests/dispatch_strand_census_structure.rs.
 ///
 /// The snapshot goes to COM2 because that is the channel the three removed
 /// `log::info!`/`log::debug!` dispatch records used, and because COM1 is the
 /// interactive user console (kernel/src/serial.rs). Every in-repo consumer is
 /// handed the kernel serial capture.
-/// claim-lint:ok: the 3 in-repo call sites are enumerated and pinned by
+/// claim-lint:ok: the 4 in-repo call sites are enumerated and pinned by
 /// tests/dispatch_strand_census_structure.rs.
 ///
 /// Fields, in emission order: `seq` (1-based, unique within a boot, strictly
@@ -145,9 +147,12 @@ fn monotonic_now_ns() -> u64 {
 
 /// Emit at most one census snapshot per second from existing housekeeping.
 pub(crate) fn report_heartbeat_if_due() {
-    // idle_loop and loopback_pump_fn both call after their halt returns. Keep
-    // this check at the emission boundary so serial locking cannot silently
-    // move into an interrupts-disabled context.
+    // idle_loop, loopback_pump_fn and census_thread_fn all call from ordinary
+    // thread context after a halt returns. Keep this check at the emission
+    // boundary so serial locking cannot silently move into an
+    // interrupts-disabled context.
+    // claim-lint:ok: the 3 call sites are pinned at 1 each by
+    // tests/dispatch_strand_census_structure.rs.
     if !crate::arch_interrupts_enabled() {
         return;
     }
@@ -162,5 +167,87 @@ pub(crate) fn report_heartbeat_if_due() {
         .is_ok()
     {
         report_snapshot();
+    }
+}
+
+/// The `kstrandd` census kthread: sleep, then offer a snapshot to the shared
+/// limiter.
+///
+/// This is the THIRD emission context, and the only one whose cadence does not
+/// depend on what the rest of the kernel happens to be doing. `idle_loop` runs
+/// only when the CPU has nothing else to dispatch, and `loopback_pump_fn` runs
+/// only when loopback traffic wakes it. Round 3's review measured the
+/// consequence on the zero-feature production profile: 2 of 6 boots published
+/// no post-init snapshot at all, because that profile's single idle dispatch
+/// landed inside the shared 1-second limiter's window (finding R3-5).
+///
+/// The emission goes through `report_heartbeat_if_due()`, the same rate-limited
+/// path the other two contexts call, so adding this thread cannot double the
+/// serial volume: the three contexts share one `AtomicU64` compare-exchange.
+fn census_thread_fn() {
+    loop {
+        sleep_one_interval();
+        report_heartbeat_if_due();
+    }
+}
+
+/// Block on the scheduler's timer heap for one heartbeat interval.
+///
+/// `kloopbackd` next door sleeps on `Scheduler::block_current()`, which has no
+/// timer wake at all: it stays blocked until loopback traffic unblocks it. The
+/// periodic form of that same block/yield/halt shape is
+/// `Scheduler::block_current_for_timer()`, the primitive `sys_nanosleep` and
+/// `test_framework::registry::sleep_current_thread_ms` use, and this is that
+/// sequence verbatim: publish the block, set `need_resched`, then halt until
+/// the timer wake has moved the thread out of `BlockedOnTimer`.
+/// claim-lint:ok: the shape is `sleep_current_thread_ms` in
+/// kernel/src/test_framework/registry.rs.
+///
+/// Round 2's dedicated-kthread attempt is why the shape is spelled out here: it
+/// drove the scheduler's timer-expiry sweep by hand from thread context inside
+/// `with_scheduler` and re-entered the scheduler before ever departing the CPU,
+/// and 4 of 4 boots page-faulted. This body does neither: the timer heap is
+/// swept by the timer interrupt, as it is for the other sleepers.
+/// claim-lint:ok: the 4 boots and the fault signature are recorded in the
+/// round-4 notes and in
+/// docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
+fn sleep_one_interval() {
+    use super::thread::ThreadState;
+
+    let Some(tid) = super::scheduler::current_thread_id() else {
+        // No scheduler identity: halt once rather than spin, and let the next
+        // iteration try again.
+        crate::arch_halt_with_interrupts();
+        return;
+    };
+    let wake_at = monotonic_now_ns().saturating_add(HEARTBEAT_INTERVAL_NS);
+    super::scheduler::with_scheduler(|scheduler| {
+        if scheduler.get_thread(tid).is_some() {
+            scheduler.block_current_for_timer(wake_at);
+        }
+    });
+    super::scheduler::yield_current();
+
+    loop {
+        crate::arch_halt_with_interrupts();
+        let still_blocked = super::scheduler::with_scheduler(|scheduler| {
+            scheduler
+                .get_thread(tid)
+                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
+        })
+        .unwrap_or(false);
+        if !still_blocked {
+            break;
+        }
+    }
+}
+
+/// Start `kstrandd`. Called from `main.rs` immediately after
+/// `net::init_loopback_pump()`, on the unconditional init path, so the thread
+/// exists in the zero-feature production profile and not only under `testing`.
+pub(crate) fn start_census_kthread() {
+    let outcome = super::kthread::kthread_run(census_thread_fn, "kstrandd");
+    if outcome.is_err() {
+        log::error!("kstrandd did not start: the strand census has no timer emitter");
     }
 }

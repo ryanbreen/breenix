@@ -3,13 +3,14 @@
 #
 # #568 round 2 found a blocking poll thread that was saved and then stopped
 # running. #775 removed the formatted save/restore records from the dispatch
-# path and put the same state transitions in a fixed atomic ledger. Under R125,
-# the scheduler's idle loop and the loopback pump emit that ledger at most once
-# per second from ordinary thread context with interrupts enabled; the
-# completion path emits a final snapshot. The newest snapshot in the capture is
-# the source of truth, so a wedged userspace thread does not have to resume or
-# exit to make its state observable.
-# claim-lint:ok: #775 ruling R125 defines the replacement source and cadence.
+# path and put the same state transitions in a fixed atomic ledger. Three
+# contexts emit that ledger at most once per second from ordinary thread
+# context with interrupts enabled -- the scheduler's idle loop, the loopback
+# pump, and the `kstrandd` census kthread -- and the syscall completion path
+# emits one final snapshot outside the limiter. The newest snapshot in the
+# capture is the source of truth, so a wedged userspace thread does not have
+# to resume or exit to make its state observable.
+# claim-lint:ok: #775 rulings R125 and R137 define the emission contexts.
 #
 # Each snapshot carries `seq`, `tick`, `ms`, the distinct ever-saved count, the
 # stranded count, and up to 16 stranded TIDs. This script recovers their names
@@ -40,22 +41,44 @@
 #   A snapshot is the ledger's state at one instant. A listed thread was saved
 #   blocked and had not been restored AS OF THAT SNAPSHOT; it may have resumed
 #   afterwards. The emitted sentence says exactly that, and the snapshot's `seq`
-#   and `tick` are printed with it. Cadence holds only while the idle loop
-#   runs: a wedge that spins a CPU instead of idling leaves the newest
-#   snapshot stale, and the capture carries no end-of-boot timestamp, so how old
-#   the reading was when the boot ended is not derivable from the log. The
-#   observed inter-snapshot gaps are printed for that reason.
+#   claim-lint:ok: the emission contract is the one #775 ruling R137 sets and
+#   the age arms are covered by tests/x86_gate_verdict_test.rs.
+#   and `tick` are printed with it. `kstrandd` sleeps on the scheduler timer
+#   and so keeps a cadence that does not depend on the CPU idling, but the
+#   emission is still rate-LIMITED, not guaranteed-periodic: anything that
+#   stops `kstrandd` running -- a wedge holding the scheduler lock, a lost
+#   timer wake -- leaves the newest snapshot stale. The capture carries no
+#   end-of-boot timestamp, so staleness at the END of the boot is still not
+#   derivable; what IS derivable is staleness at the completion marker, and
+#   that is asserted (see AGE below). The observed gaps are printed too.
+#
+# AGE AT THE COMPLETION MARKER
+#   The completion site emits a snapshot immediately after the kernel prints
+#   `USERSPACE TEST COMPLETE`, so a capture that reaches that point carries a
+#   kernel timestamp for a known late instant. The age reported is that
+#   timestamp minus the ms of the newest CADENCE snapshot before it, i.e. how
+#   stale the reading a consumer would have judged was when the userspace
+#   phase ended. On a capture with no completion marker there is no such
+#   reference and the line says so instead of inventing one.
+#   claim-lint:ok: the bound and both arms are covered by
+#   tests/x86_gate_verdict_test.rs.
 #
 # Usage:  scripts/x86-strand-census.sh <serial-log> [<serial-log> ...]
-# Output: one line per listed stranded thread, a provenance/cadence line,
-#         overflow diagnostics if present, then a STRAND_CENSUS summary line.
-# Exit:   0 when the highest-seq valid snapshot says stranded=0;
+# Output: one line per listed stranded thread, a provenance/cadence line, an
+#         age line, overflow diagnostics if present, then a STRAND_CENSUS line.
+# Exit:   0 when the highest-seq valid snapshot says stranded=0 and the census
+#           was fresh at the completion marker (or no age is measurable);
 #         1 when it says stranded>0;
 #         2 when no valid snapshot exists, or the inputs carry snapshots from
 #           more than one boot;
 #         3 when the kernel ledger overflowed, so the snapshot is incomplete and
-#           carries no verdict either way (R134 item 2: not a clean census).
-# claim-lint:ok: the 4 exit classes are covered by tests/x86_gate_verdict_test.rs.
+#           carries no verdict either way (R134 item 2: not a clean census);
+#         4 when stranded=0 but the newest cadence snapshot was more than
+#           5000 ms old at the completion marker, so the clean reading is
+#           stale rather than clean (R137).
+#         Precedence: 2 and 3 short-circuit; 1 outranks 4, so a red strand is
+#         never masked by a staleness report.
+# claim-lint:ok: the 5 exit classes are covered by tests/x86_gate_verdict_test.rs.
 
 set -euo pipefail
 
@@ -71,6 +94,9 @@ done
 cat -- "$@" | awk '
 BEGIN {
     census_re = "\\[DISPATCH_STRAND_CENSUS:[^]]*\\]"
+    stale_limit_ms = 5000
+    seen_complete = 0
+    completion_seq = 0
     valid_re = "^\\[DISPATCH_STRAND_CENSUS:seq=[0-9]+:tick=[0-9]+:ms=[0-9]+:saved=[0-9]+:stranded=[0-9]+:tids=(-|[0-9]+(,[0-9]+)*):tid_overflow=[0-9]+:ledger_overflow=[0-9]+\\]$"
     best_seq = -1
     valid = 0
@@ -95,6 +121,8 @@ function consistent(marker,   listed, tids, spare) {
     if (field(marker, "tids") != "-") listed = split(field(marker, "tids"), tids, ",")
     return (listed + (field(marker, "tid_overflow") + 0) == (field(marker, "stranded") + 0))
 }
+
+/USERSPACE TEST COMPLETE/ { seen_complete = 1 }
 
 /Added thread [0-9]+ / {
     line = $0
@@ -128,6 +156,7 @@ function consistent(marker,   listed, tids, spare) {
         seen[seq] = marker
         ms[seq] = field(marker, "ms") + 0
         valid++
+        if (seen_complete && completion_seq == 0) completion_seq = seq
         if (seq > best_seq) { best_seq = seq; best = marker }
     }
 }
@@ -180,13 +209,51 @@ END {
     if (malformed > 0) printf ", %d malformed marker(s) skipped", malformed
     printf "\n"
 
+    # AGE AT THE COMPLETION MARKER. The completion snapshot is the one the
+    # syscall completion site emits immediately after `USERSPACE TEST COMPLETE`,
+    # so it is a kernel timestamp for a known late point in the boot -- the only
+    # such reference a capture carries. Age is that timestamp minus the ms of
+    # the newest CADENCE snapshot that preceded it, i.e. how stale the ledger
+    # reading was at the end of the userspace phase.
+    age_measured = 0
+    age_ms = -1
+    if (completion_seq > 0) {
+        before = -1
+        for (seq = 0; seq < completion_seq; seq++) if (seq in seen) before = seq
+        if (before >= 0) {
+            age_measured = 1
+            age_ms = ms[completion_seq] - ms[before]
+            printf "strand census: age at the completion marker: %d ms (newest cadence snapshot seq=%d at %d ms, completion snapshot seq=%d at %d ms, bound %d ms)\n", age_ms, before, ms[before], completion_seq, ms[completion_seq], stale_limit_ms
+        } else {
+            printf "strand census: age at the completion marker: not measurable -- the completion snapshot seq=%d is the first valid snapshot in the capture\n", completion_seq
+        }
+    } else {
+        printf "strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=%d at %s ms\n", best_seq, at_ms
+    }
+
     if (ledger_overflow > 0) {
         printf "strand census: kernel ledger overflowed (%d event(s)); the snapshot is incomplete and carries no verdict\n", ledger_overflow
         printf "STRAND_CENSUS: INCOMPLETE ledger_overflow=%d threads_saved_blocked=%d stranded=%d lines=%d\n", ledger_overflow, saved, stranded, NR
         exit 3
     }
 
+    if (stranded > 0) {
+        printf "STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n", saved, stranded, NR
+        exit 1
+    }
+
+    # A stale reading is checked only on the clean arm, deliberately: its whole
+    # purpose is to stop a PASS being issued off a snapshot that stopped being
+    # refreshed before the boot finished. A red strand is not masked by it:
+    # exit 1 is taken first, 2 tests cover the order.
+    # claim-lint:ok: tests/x86_gate_verdict_test.rs covers both orders.
+    if (age_measured && age_ms > stale_limit_ms) {
+        printf "strand census: the newest cadence snapshot was %d ms old at the completion marker, over the %d ms bound; the census cadence stopped before the userspace phase ended, so stranded=0 here is not evidence of anything\n", age_ms, stale_limit_ms
+        printf "STRAND_CENSUS: STALE age_ms=%d bound_ms=%d threads_saved_blocked=%d stranded=%d lines=%d\n", age_ms, stale_limit_ms, saved, stranded, NR
+        exit 4
+    }
+
     printf "STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n", saved, stranded, NR
-    exit (stranded > 0) ? 1 : 0
+    exit 0
 }
 '

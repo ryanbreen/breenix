@@ -601,6 +601,11 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
     crate::net::init_loopback_pump();
+    // #775 round 4, R3-5/N14: the third census emission context, spawned
+    // beside kloopbackd on the unconditional init path so it exists in the
+    // zero-feature production profile. idle_loop and the pump both emit only
+    // when the rest of the kernel gives them a reason to run.
+    task::start_dispatch_strand_census_kthread();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 

@@ -409,3 +409,74 @@ fn the_census_reports_its_snapshot_provenance_and_observed_cadence() {
         "the observed cadence was not reported: {text}"
     );
 }
+
+/// #775 round 4, R3-5/N14. The completion site emits a snapshot right after
+/// `USERSPACE TEST COMPLETE`, so a capture that reaches that point carries a
+/// kernel timestamp for a known late instant. The gate asserts how stale the
+/// newest CADENCE snapshot was at that instant.
+fn capture_with_completion_age(cadence_ms: u32, completion_ms: u32) -> String {
+    format!(
+        "{}\n{}\nUSERSPACE TEST COMPLETE\n{}\nTEST_TALLY: exited=10 nonzero=0 failed=[]\n🏁 TEST RUNNER: All tests passed\n",
+        marker(1, 100, 500, 11, 0, "-"),
+        marker(2, 200, cadence_ms, 11, 0, "-"),
+        marker(3, 300, completion_ms, 11, 0, "-")
+    )
+}
+
+#[test]
+fn a_fresh_census_at_the_completion_marker_passes_and_prints_the_age() {
+    let fixture = SerialFixture::new(&capture_with_completion_age(2000, 2100), "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+
+    assert!(output.status.success(), "unexpected red verdict: {text}");
+    assert!(
+        text.contains("age at the completion marker: 100 ms"),
+        "the age was not printed: {text}"
+    );
+}
+
+#[test]
+fn a_stale_clean_census_at_the_completion_marker_is_not_a_pass() {
+    // Same fixture shape and the same stranded=0; only the cadence gap changes.
+    let fixture = SerialFixture::new(&capture_with_completion_age(1500, 20500), "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+
+    assert!(!output.status.success(), "stale census passed: {text}");
+    assert!(
+        text.contains("age at the completion marker: 19000 ms"),
+        "the measured age was not printed: {text}"
+    );
+    assert!(
+        text.contains("stale rather than clean"),
+        "the staleness verdict did not reach the gate: {text}"
+    );
+}
+
+#[test]
+fn a_capture_without_a_completion_marker_says_the_age_is_not_measurable() {
+    // The zero-feature production profile runs no test runner, so its captures
+    // carry no completion marker and no late kernel timestamp. The census must
+    // say so rather than invent a reference.
+    // claim-lint:ok: 6 of 6 round-4 production captures under
+    // docs/planning/green-program/sockets/serials/775/round4/production/
+    // carry 0 completion markers.
+    let kernel = format!("{}\n{}\n", marker(1, 100, 500, 4, 0, "-"), marker(2, 900, 40000, 6, 0, "-"));
+    let fixture = SerialFixture::new(&kernel, "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+
+    assert!(
+        text.contains("age at the completion marker: not measurable"),
+        "the age line is missing on a capture with no completion marker: {text}"
+    );
+    assert!(
+        !text.contains("stale rather than clean"),
+        "an unmeasurable age was reported as staleness: {text}"
+    );
+    assert!(
+        text.contains("USERSPACE TEST COMPLETE was absent"),
+        "the unmeasurable age masked the real first cause: {text}"
+    );
+}

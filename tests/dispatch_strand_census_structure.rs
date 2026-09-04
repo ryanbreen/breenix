@@ -63,8 +63,14 @@ fn the_surviving_record_census_in_the_dispatch_path_is_pinned() {
     //
     // What is pinned here is therefore a CENSUS, not a name list and not a rule
     // this branch cannot honour: the number of records in the file and their
-    // level histogram. Adding a record, or removing one, reddens this and forces
-    // the equivalence document's surviving-record table to be updated with it.
+    // level histogram. Adding a record, or removing one, reddens this. Round 4,
+    // finding R3-9: this comment used to promise that a redness here "forces the
+    // equivalence document's surviving-record table to be updated", and no such
+    // table existed. What the document carries is the same two numbers plus a
+    // per-function breakdown of where the survivors sit; nothing mechanically
+    // enforces that breakdown, and no per-record listing is claimed by this test.
+    // claim-lint:ok: the per-function breakdown is the table in
+    // docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
     let context_switch = read("kernel/src/interrupts/context_switch.rs");
     let records = log_records(&context_switch);
 
@@ -171,7 +177,41 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
     assert!(census.contains("const STRANDED_TID_CAPACITY: usize = 16;"));
     assert!(census.contains("if !crate::arch_interrupts_enabled()"));
     assert!(census.contains("pub(crate) fn report_heartbeat_if_due()"));
-    assert!(!census.contains("kthread_run"));
+
+    // #775 round 4, R3-5/N14: kstrandd, the third cadence context. It is
+    // spawned beside kloopbackd on main.rs's unconditional init path, so it
+    // exists in the zero-feature production profile, and it sleeps on the
+    // scheduler's timer-block primitive rather than on anything the rest of the
+    // kernel has to do for it.
+    // claim-lint:ok: 6 zero-feature production boots are recorded in
+    // docs/planning/green-program/sockets/serials/775/round4/production/.
+    assert!(census.contains("kthread_run(census_thread_fn, \"kstrandd\")"));
+    assert!(census.contains("scheduler.block_current_for_timer(wake_at)"));
+    assert_eq!(
+        census.matches("report_heartbeat_if_due();").count(),
+        1,
+        "kstrandd must emit through the shared rate limiter, not report_snapshot"
+    );
+    assert!(
+        !census.contains("wake_expired_timers"),
+        "the round-2 kthread called wake_expired_timers from thread context and \
+         page-faulted on every boot"
+    );
+    assert!(task_mod.contains("pub fn start_dispatch_strand_census_kthread()"));
+    assert_eq!(
+        main.matches("task::start_dispatch_strand_census_kthread()").count(),
+        1
+    );
+    let pump_start = main
+        .find("crate::net::init_loopback_pump();")
+        .expect("main.rs must still spawn kloopbackd");
+    let census_start = main
+        .find("task::start_dispatch_strand_census_kthread()")
+        .expect("main.rs must spawn kstrandd");
+    assert!(
+        census_start > pump_start && census_start - pump_start < 400,
+        "kstrandd is no longer spawned beside kloopbackd"
+    );
     assert!(census.contains("static LEDGER: [AtomicU8; LEDGER_CAPACITY]"));
 }
 
@@ -200,7 +240,9 @@ fn host_consumers_have_no_removed_record_dependency() {
     assert!(strand_gate.contains("DISPATCH_STRAND_CENSUS"));
     assert!(strand_gate.contains("if (seq > best_seq) { best_seq = seq; best = marker }"));
     assert!(strand_gate.contains("names[tid] = rest"));
-    assert!(strand_gate.contains("exit (stranded > 0) ? 1 : 0"));
+    assert!(strand_gate.contains("if (stranded > 0) {"));
+    assert!(strand_gate.contains("if (age_measured && age_ms > stale_limit_ms) {"));
+    assert!(strand_gate.contains("stale_limit_ms = 5000"));
     assert!(!strand_gate.contains("/Saved kernel context for blocked thread"));
     assert!(!strand_gate.contains("/Restored kernel context for thread"));
 
@@ -212,6 +254,7 @@ fn host_consumers_have_no_removed_record_dependency() {
     assert!(strand_gate.contains("exit 3"));
     assert!(verdict_gate.contains("2) echo \"x86 userspace gate: census unavailable;"));
     assert!(verdict_gate.contains("3) echo \"x86 userspace gate: STRAND CENSUS INCOMPLETE"));
+    assert!(verdict_gate.contains("4) fail \"the strand census read stranded=0"));
 
     assert!(dispatch_census.contains("#775 retired"));
     assert!(!dispatch_census.lines().any(|line| {
