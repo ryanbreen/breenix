@@ -191,31 +191,43 @@ because section 3 shows `main` cannot reproduce them.
 
 ## 5. Smoke at this head (R13)
 
-Every boot below was run on its own on this Mac, 9 boots in total, never two
-at once.
-claim-lint:ok: 9 of 9 boots serialised; the 9 serials are the three
-`serials/slice1/smoke-*` directories.
+Every boot below was run on its own on this Mac, 18 boots in total across two
+batteries, never two at once.
+claim-lint:ok: 18 of 18 boots serialised; the serials are the three
+`serials/slice1/smoke-*` directories and `serials/slice1/r13-final/`.
 
-| profile | command | boots | result | serials |
-|---|---|---|---|---|
-| strict | `docker/qemu/run-aarch64-boot-test-strict.sh 1`, three times | 3 | 3 PASS, 0 FAIL | `serials/slice1/smoke-strict/` |
-| production | `docker/qemu/run-aarch64-prod-profile-boot-test.sh`, three times | 3 | 3 PASS, 0 FAIL | `serials/slice1/smoke-prod/` |
-| testing | direct QEMU boot, same invocation the strict gate uses | 3 | 3 FAIL — see below | `serials/slice1/smoke-testing/` |
+The smoke was run twice: once at the code commit `9e9131d0`
+(`serials/slice1/smoke-*`), and again at the final head after the ratchets,
+serials and this document had landed (`serials/slice1/r13-final/`). The kernel
+sources are byte-identical between them — every commit after `9e9131d0` touches
+only `tests/`, `docs/` and this file — so the second battery is a re-run at the
+returned head rather than a different kernel.
+claim-lint:ok: 0 of the 4 commits after `9e9131d0` touch `kernel/`,
+reproducible with `git diff --stat 9e9131d0..HEAD -- kernel`.
+Serials: `serials/slice1/r13-final/strict-boot1-serial.txt` and its 8 siblings.
+
+| profile | command | boots per battery | result, both batteries |
+|---|---|---|---|
+| strict | `docker/qemu/run-aarch64-boot-test-strict.sh 1`, three times | 3 | 3 PASS, 0 FAIL each time |
+| production | `docker/qemu/run-aarch64-prod-profile-boot-test.sh`, three times | 3 | 3 PASS, 0 FAIL each time |
+| testing | direct QEMU boot, same invocation the strict gate uses | 3 | 3 FAIL each time — see below |
 
 The `testing` profile **does build** on `main` (`--features testing`, soft-float
-target, `scripts/check-kernel-no-neon.sh` PASS). It does not boot. Across the 3
-boots at this head: 2 panicked at
+target, `scripts/check-kernel-no-neon.sh` PASS). It does not boot. Two failure
+signatures appear across the two batteries, in different proportions: a panic at
 `kernel/src/task/softirq_tests.rs:228:5` — "ksoftirqd should have processed
-deferred softirqs (tid=Some(2))" — and 1 made no progress past `[smp] 4 CPUs
-online`, reaching neither a shell prompt nor a panic before the 20 s timeout.
+deferred softirqs (tid=Some(2))" — and a boot that makes no progress past
+`[smp] 4 CPUs online`, reaching neither a shell prompt nor a panic before the
+20 s timeout. The first battery scored 2 panics and 1 no-progress; the second
+scored 3 panics and 0 no-progress.
 
 That is #562, and it is not this slice's doing. The same kernel built at
 `origin/main` `d6b7a186` with the slice stashed out, booted 3 times with the
-same command, produced the same distribution: 2 panics at
+same command, produced the same two signatures: 2 panics at
 `softirq_tests.rs:228:5` and 1 no-progress boot. Control serials:
-`serials/slice1/main-control-testing/`. 3 of 3 red at this head, 3 of 3 red on
-the base commit, same two signatures — the profile's red is inherited, not
-introduced.
+`serials/slice1/main-control-testing/`. 3 of 3 red in each battery at this
+branch's head, 3 of 3 red on the base commit, the same two signatures — the
+profile's red is inherited, not introduced.
 
 ## 6. The Tier-1 site, disclosed
 
@@ -296,6 +308,7 @@ and putting a raw `msr` back into `sys_exec_aarch64` reddens it too.
 | aarch64 `--features testing` | builds; `check-kernel-no-neon.sh` PASS (it is the boot that fails, section 5) |
 | x86_64 `--features testing,external_test_bins --bin qemu-uefi`, on beast | builds, exit 0, 0 lines matching `^(warning\|error)` |
 | the 27 `tests/*_structure.rs` suites | 27 of 27 suites green, 0 failures |
+| the 9-boot R13 smoke, re-run at the final head | `serials/slice1/r13-final/` |
 
 0 of the 3 aarch64 builds emit a warning attributable to this tree. The one
 warning `cargo` prints on each `-Z build-std` invocation here — "the following
