@@ -1268,12 +1268,19 @@ fn setup_kernel_thread_return(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    // Get thread info - restore ALL saved registers, not just a few
-    let thread_info = scheduler::with_thread_mut(thread_id, |thread| {
-        (thread.name.clone(), thread.context.clone())
-    });
+    // Get thread info - restore the 15 saved general-purpose registers plus the
+    // frame, not just a few.
+    //
+    // The name is deliberately NOT read here. Cloning it allocated a `String`
+    // on each kernel-thread dispatch -- a heap-allocator lock taken from
+    // interrupt context, which ordinary thread context holds with interrupts
+    // enabled -- for a value this function then dropped unused. `Context` is
+    // plain registers, so cloning it performs no allocation.
+    // claim-lint:ok: the deadlock this hazard class produced is issue #791 and
+    // docs/planning/green-program/sockets/787-REGRESSION-RCA-2026-09-04.md.
+    let thread_info = scheduler::with_thread_mut(thread_id, |thread| thread.context.clone());
 
-    if let Some((_name, context)) = thread_info {
+    if let Some(context) = thread_info {
         unsafe {
             interrupt_frame.as_mut().update(|frame| {
                 frame.instruction_pointer = x86_64::VirtAddr::new(context.rip);
