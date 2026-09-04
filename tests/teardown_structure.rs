@@ -12287,6 +12287,25 @@ fn leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture() {
     assert!(validate_x86_leaf_timing_oracle_is_live(process, teardown, harness).is_err());
 }
 
+/// The aarch64 boot path, as text: kernel_main plus the body of the one kernel
+/// thread it hands the rest of the boot sequence to.
+///
+/// After round 3 kernel_main is CPU 0's idle identity and does two things --
+/// spawn the continuation and idle -- so a rule reading only its body would see
+/// an empty boot. This reads the boot path, which is both.
+fn aarch64_boot_path(arm_main: &str) -> String {
+    let entry = function_body(arm_main, "kernel_main");
+    let mask = code_mask(entry);
+    let spawn = code_offsets(entry, &mask, "kthread_run");
+    assert_eq!(
+        spawn.len(),
+        1,
+        "aarch64 kernel_main must hand the boot sequence to exactly one kernel thread"
+    );
+    let name = spawned_name(entry, spawn[0]).expect("the spawned continuation is named");
+    format!("{entry}\n{}", function_body(arm_main, &name))
+}
+
 fn validate_production_root_custody_summary(
     provider: &str,
     procfs_trace: &str,
@@ -12321,7 +12340,7 @@ fn validate_production_root_custody_summary(
             .contains("emit_root_custody_summary();")
         || !function_body(x86_main, "kernel_main_on_kernel_stack")
             .contains("emit_root_custody_summary();")
-        || !function_body(arm_main, "kernel_main").contains("emit_root_custody_summary();")
+        || !aarch64_boot_path(arm_main).contains("emit_root_custody_summary();")
     {
         return Err(());
     }
@@ -13657,7 +13676,7 @@ fn validate_production_tombstone_census(
         || !function_body(procfs_trace, "generate_counters").contains("emit_tombstone_census();")
         || !function_body(x86_main, "kernel_main_on_kernel_stack")
             .contains("emit_tombstone_census();")
-        || !function_body(arm_main, "kernel_main").contains("emit_tombstone_census();")
+        || !aarch64_boot_path(arm_main).contains("emit_tombstone_census();")
         || !function_body(strand_oracle, "report_strand").contains("emit_tombstone_census();")
     {
         return Err(());
@@ -14857,7 +14876,18 @@ fn validate_sleep_predicates_consult_the_idle_refusal(
     for (path, source) in sources {
         for (name, body) in definitions_containing(source, "_can_sleep") {
             censused += 1;
-            if body.contains(IDLE_REFUSAL_PREDICATE) {
+            // Match the EXECUTABLE body only. A raw `contains` accepts the
+            // refusal's name inside a comment, so deleting the call and
+            // leaving the name behind kept this rule green -- the mutation
+            // leg below is that exact edit.
+            let body_mask = code_mask(&body);
+            let calls_refusal = !code_offsets(
+                &body,
+                &body_mask,
+                &format!("{IDLE_REFUSAL_PREDICATE}()"),
+            )
+            .is_empty();
+            if calls_refusal {
                 continue;
             }
             // Or it defers to another predicate that does. Repeating the
@@ -14865,7 +14895,6 @@ fn validate_sleep_predicates_consult_the_idle_refusal(
             // defence in depth, so the rule accepts the delegation -- and the
             // mutation leg below proves the accepting arm still reddens when
             // the refusal leaves the predicate that owns it.
-            let body_mask = code_mask(&body);
             if !code_offsets(&body, &body_mask, "_can_sleep").is_empty() {
                 continue;
             }
@@ -14905,6 +14934,11 @@ fn validate_blocking_primitives_refuse_the_idle_identity(
                 if !name.starts_with(prefix) {
                     continue;
                 }
+                // Every match below reads the EXECUTABLE body. A raw
+                // `contains` accepts the refusal's name inside a comment, so
+                // deleting the guard and leaving the name behind kept this
+                // rule green -- the mutation leg below is that exact edit.
+                let body_mask = code_mask(&body);
                 // Subject: the members that block the CALLER. Located by
                 // shape -- a body that names the current thread -- not by a
                 // list. `park_pinned_worker_without_home` blocks the thread it
@@ -14912,14 +14946,25 @@ fn validate_blocking_primitives_refuse_the_idle_identity(
                 // worker, so the caller-identity question does not arise there.
                 // claim-lint:ok: the only setter of a per-CPU-worker pin is
                 // spawn_on_cpu, kernel/src/task/scheduler.rs
-                if !body.contains("current_thread") {
+                if code_offsets(&body, &body_mask, "current_thread").is_empty() {
                     continue;
                 }
                 censused += 1;
-                if body.contains(IDLE_REFUSAL_PREDICATE) || body.contains(IDLE_REFUSAL_UNDER_LOCK) {
+                let guards = !code_offsets(
+                    &body,
+                    &body_mask,
+                    &format!("{IDLE_REFUSAL_PREDICATE}()"),
+                )
+                .is_empty()
+                    || !code_offsets(
+                        &body,
+                        &body_mask,
+                        &format!("{IDLE_REFUSAL_UNDER_LOCK}()"),
+                    )
+                    .is_empty();
+                if guards {
                     continue;
                 }
-                let body_mask = code_mask(&body);
                 let delegates = BLOCKING_NAME_PREFIXES
                     .iter()
                     .any(|family| !code_offsets(&body, &body_mask, family).is_empty());
@@ -15002,4 +15047,344 @@ fn blocking_primitive_rule_rejects_an_unguarded_io_publication() {
     assert_ne!(mutated, source, "fixture mutation must apply");
     let perturbed = with_replaced_source(&sources, "kernel/src/task/scheduler.rs", mutated);
     assert!(validate_blocking_primitives_refuse_the_idle_identity(&perturbed).is_err());
+}
+
+#[test]
+fn sleep_predicate_rule_rejects_a_refusal_left_only_in_a_comment() {
+    // N04: the rule used to accept a raw text match, so deleting the call and
+    // leaving the name behind in a comment kept it green. This leg is that
+    // exact edit: delete the call, leave the name.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/task/completion.rs");
+    let call = format!("!crate::task::idle_sleep::{IDLE_REFUSAL_PREDICATE}()");
+    assert!(source.contains(&call), "fixture call site must exist");
+    let commented = format!("core::hint::black_box(true) /* {IDLE_REFUSAL_PREDICATE}() */");
+    let mutated = source.replacen(&call, &commented, 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/task/completion.rs", mutated);
+    assert!(validate_sleep_predicates_consult_the_idle_refusal(&perturbed).is_err());
+}
+
+#[test]
+fn blocking_primitive_rule_rejects_a_refusal_left_only_in_a_comment() {
+    // The same edit against the in-lock spelling: the generic block keeps the
+    // guard's name in a comment and loses the call.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let guard = "if self.refuse_idle_block() {\n            return;\n        }\n";
+    assert!(source.contains(guard), "fixture guard must exist");
+    let commented = "/* if self.refuse_idle_block() { return; } */\n";
+    let mutated = source.replacen(guard, commented, 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/task/scheduler.rs", mutated);
+    assert!(validate_blocking_primitives_refuse_the_idle_identity(&perturbed).is_err());
+}
+
+// R136(1): nothing the idle identity can reach joins a kernel thread.
+//
+// After init_scheduler the aarch64 boot context IS CPU 0's idle task, and the
+// dispatch path resets an idle thread to idle_loop_arm64 instead of resuming a
+// saved kernel continuation, so a wait taken there is abandoned -- that is
+// the #761 mechanism. The boot sequence hands its remainder to ONE kernel
+// thread and idles.
+//
+// The rule is a census, not a list. Every kthread_join caller in kernel/src
+// must be one of three shapes: a kthread body (its name is handed to a
+// kthread_run spawn, or it is named in the body of one that is), a context
+// compiled only under a feature, or a stop-then-join teardown (the same body
+// also calls kthread_stop). Nothing else may join.
+
+
+/// Whether the executable text calls a function by that name: the whole
+/// identifier, followed by an open parenthesis. A plain substring match would
+/// count test_kthread_join as a kthread_join call.
+fn calls_function(body: &str, mask: &[bool], name: &str) -> bool {
+    let bytes = body.as_bytes();
+    identifier_offsets(body, mask, name).into_iter().any(|at| {
+        let mut end = at + name.len();
+        while bytes.get(end) == Some(&b' ') {
+            end += 1;
+        }
+        bytes.get(end) == Some(&b'(')
+    })
+}
+/// Every fn in source whose executable body contains needle, as
+/// (name, offset of the fn keyword, body).
+fn definitions_matching(source: &str, needle: Option<&str>) -> Vec<(String, usize, String)> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut found = Vec::new();
+    for keyword in code_offsets(source, &mask, "fn ") {
+        if keyword > 0 && identifier_byte(bytes[keyword - 1]) {
+            continue;
+        }
+        let mut start = keyword + 3;
+        while start < bytes.len() && bytes[start] == b' ' {
+            start += 1;
+        }
+        let mut end = start;
+        while end < bytes.len() && identifier_byte(bytes[end]) {
+            end += 1;
+        }
+        if end == start {
+            continue;
+        }
+        let Some(body) = braced_block(source, &mask, end) else {
+            continue;
+        };
+        let matched = match needle {
+            Some(text) => {
+                let body_mask = code_mask(body);
+                calls_function(body, &body_mask, text)
+            }
+            None => true,
+        };
+        if matched {
+            found.push((source[start..end].to_owned(), keyword, body.to_owned()));
+        }
+    }
+    found
+}
+
+/// Whether a feature-gated item encloses the given offset.
+///
+/// The gate has to decorate a fn or a mod -- an item with a body -- so the
+/// span is exactly what that cfg switches off, not the next brace it finds.
+fn feature_gated_span_covers(source: &str, offset: usize) -> bool {
+    let mask = code_mask(source);
+    for attribute in code_offsets(source, &mask, "#[cfg(") {
+        if attribute >= offset {
+            continue;
+        }
+        let Some(close) = source[attribute..].find("]").map(|at| attribute + at) else {
+            continue;
+        };
+        if !source[attribute..close].contains("feature = ") {
+            continue;
+        }
+        let Some(open) = (close..source.len()).find(|at| mask[*at] && source.as_bytes()[*at] == b'{') else {
+            continue;
+        };
+        let header = &source[close..open];
+        if !header.contains("fn ") && !header.contains("mod ") {
+            continue;
+        }
+        let Some(block) = braced_block(source, &mask, open) else {
+            continue;
+        };
+        if offset > close && offset < open + block.len() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the module chain that brings a file into the crate is feature-gated.
+///
+/// A file is reached through a chain of mod declarations; if any link in that
+/// chain carries a feature cfg, nothing in the file is compiled into a kernel
+/// built without that feature.
+fn module_chain_is_feature_gated(sources: &[(String, String)], path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("kernel/src/") else {
+        return false;
+    };
+    let Some(stem) = rest.strip_suffix(".rs") else {
+        return false;
+    };
+    let mut prefix = String::from("kernel/src");
+    for name in stem.split('/') {
+        if name == "mod" {
+            continue;
+        }
+        let declaring = if prefix == "kernel/src" {
+            String::from("kernel/src/lib.rs")
+        } else {
+            format!("{prefix}/mod.rs")
+        };
+        if module_declaration_is_feature_gated(sources, &declaring, name) {
+            return true;
+        }
+        prefix = format!("{prefix}/{name}");
+    }
+    false
+}
+
+/// Whether one mod declaration carries a feature cfg.
+fn module_declaration_is_feature_gated(
+    sources: &[(String, String)],
+    declaring: &str,
+    name: &str,
+) -> bool {
+    let Some((_, source)) = sources.iter().find(|(path, _)| path == declaring) else {
+        return false;
+    };
+    let mask = code_mask(source);
+    let needle = format!("mod {name};");
+    for at in code_offsets(source, &mask, &needle) {
+        let attributes = source[..at].rfind("\n\n").map(|end| end + 2).unwrap_or(0);
+        if source[attributes..at].contains("feature = ") {
+            return true;
+        }
+    }
+    false
+}
+
+/// The kthread-body closure: names handed to a kthread_run spawn, plus every
+/// name reachable from one of those bodies.
+fn kthread_body_closure(sources: &[(String, String)]) -> BTreeSet<String> {
+    let mut bodies: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, source) in sources {
+        for (name, _, body) in all_definitions(source) {
+            bodies.entry(name).or_default().push(body);
+        }
+    }
+    let mut frontier: Vec<String> = Vec::new();
+    let mut closure: BTreeSet<String> = BTreeSet::new();
+    for (_, source) in sources {
+        let mask = code_mask(source);
+        for spawn in code_offsets(source, &mask, "kthread_run") {
+            if let Some(name) = spawned_name(source, spawn) {
+                if bodies.contains_key(&name) && closure.insert(name.clone()) {
+                    frontier.push(name);
+                }
+            }
+        }
+    }
+    while let Some(current) = frontier.pop() {
+        let Some(list) = bodies.get(&current) else {
+            continue;
+        };
+        for body in list {
+            for name in called_names(body) {
+                if bodies.contains_key(&name) && closure.insert(name.clone()) {
+                    frontier.push(name);
+                }
+            }
+        }
+    }
+    closure
+}
+
+/// Every fn in source, as (name, offset of the fn keyword, body).
+fn all_definitions(source: &str) -> Vec<(String, usize, String)> {
+    definitions_matching(source, None)
+}
+
+/// The function the spawn at this offset hands over, if it names one directly
+/// or through a closure that calls it.
+fn spawned_name(source: &str, spawn: usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    let open = (spawn..bytes.len()).find(|at| bytes[*at] == b'(')?;
+    let mut at = open + 1;
+    loop {
+        while at < bytes.len() && (bytes[at] as char).is_whitespace() {
+            at += 1;
+        }
+        if source[at..].starts_with("move ") {
+            at += 5;
+            continue;
+        }
+        if bytes.get(at) == Some(&b'|') {
+            at += 1;
+            continue;
+        }
+        break;
+    }
+    let start = at;
+    while at < bytes.len() && identifier_byte(bytes[at]) {
+        at += 1;
+    }
+    if at == start {
+        return None;
+    }
+    Some(source[start..at].to_owned())
+}
+
+/// Every identifier a body calls: an identifier immediately followed by an
+/// opening parenthesis, read from the executable text only.
+fn called_names(body: &str) -> BTreeSet<String> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let mut names = BTreeSet::new();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if !mask[at] || !identifier_byte(bytes[at]) {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < bytes.len() && identifier_byte(bytes[at]) {
+            at += 1;
+        }
+        if bytes.get(at) == Some(&b'(') {
+            names.insert(body[start..at].to_owned());
+        }
+    }
+    names
+}
+
+/// The census. Returns the number of subjects it classified, so an empty run
+/// cannot pass for a clean one.
+fn validate_kthread_joins_are_kthread_bodies_or_tests(
+    sources: &[(String, String)],
+) -> Result<usize, Vec<String>> {
+    let closure = kthread_body_closure(sources);
+    let mut findings = Vec::new();
+    let mut censused = 0usize;
+    for (path, source) in sources {
+        let joiners = definitions_matching(source, Some("kthread_join"));
+        for (name, offset, body) in joiners {
+            censused += 1;
+            if closure.contains(&name) {
+                continue;
+            }
+            if feature_gated_span_covers(source, offset) {
+                continue;
+            }
+            if module_chain_is_feature_gated(sources, path) {
+                continue;
+            }
+            let body_mask = code_mask(&body);
+            if calls_function(&body, &body_mask, "kthread_stop") {
+                continue;
+            }
+            findings.push(format!(
+                "{path} :: {name}  (joins a kernel thread, and is neither a kthread body, a feature-gated context, nor a stop-then-join teardown)"
+            ));
+        }
+    }
+    if censused == 0 {
+        findings.push("the kthread_join census found nothing to check".to_owned());
+    }
+    if findings.is_empty() {
+        Ok(censused)
+    } else {
+        Err(findings)
+    }
+}
+
+#[test]
+fn no_kthread_join_is_reachable_from_the_idle_identity() {
+    let sources = rust_sources_below("kernel/src");
+    let censused = validate_kthread_joins_are_kthread_bodies_or_tests(&sources)
+        .expect("every kthread_join caller is a kthread body, a feature-gated context, or a stop-then-join teardown");
+    assert!(
+        censused >= 10,
+        "the kthread_join census classified only {censused} callers"
+    );
+}
+
+#[test]
+fn the_kthread_join_census_rejects_a_join_on_the_idle_identity() {
+    // Round 2's shape, restored: kernel_main -- CPU 0's idle task after
+    // init_scheduler -- waits for the kernel thread it just spawned.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/main_aarch64.rs");
+    let release = "kernel::per_cpu_aarch64::preempt_enable();";
+    assert!(source.contains(release), "fixture pin release must exist");
+    let joined = "let _ = kernel::task::kthread::kthread_join(&boot_continuation_thread);";
+    let mutated = source.replacen(release, joined, 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/main_aarch64.rs", mutated);
+    assert!(validate_kthread_joins_are_kthread_bodies_or_tests(&perturbed).is_err());
 }
