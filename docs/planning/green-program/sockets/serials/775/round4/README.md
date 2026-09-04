@@ -9,7 +9,7 @@ The 15 captures here were produced on the beast `breenix-x86` container in
 | directory | head | what it is |
 |---|---|---|
 | `kstrandd-lost-wake/boot{1..6}` | `4358fd05` | `kstrandd` present, its timer wake lost. 6 of 6 `PASS`, but 1 or 2 census markers per boot and 3 of 6 carrying only the pump's pre-init snapshot. |
-| `production/boot{1..6}` | `b0b38894` | the same six boots with both `blocked_in_syscall` producers guarded. 6 of 6 `PASS`, 39 to 54 markers per boot, 6 of 6 carrying a post-init snapshot. |
+| `production/boot{1..6}` | `61447f9c` | six fresh boots with both `blocked_in_syscall` producers guarded. 6 of 6 `PASS`, 37 to 55 markers per boot, 6 of 6 carrying a post-init snapshot. |
 | `boot-replay/` | three heads | the x86 TEST-profile crash `kstrandd` surfaced, its control at the round-3 head, and the diagnosis. See that directory's README. |
 | `gate-green/boot{1,2}` | `b0b38894` | the TEST-profile gate after the diagnosis: `GATE: PASS` on 2 of 2. |
 
@@ -17,15 +17,18 @@ The 15 captures here were produced on the beast `breenix-x86` container in
 
 | boot | lost-wake markers | fixed markers | newest snapshot, fixed |
 |---:|---:|---:|---|
-| 1 | 2 | 54 | `seq=54:tick=11510:ms=61725:saved=12:stranded=7` |
-| 2 | 2 | 54 | `seq=54:tick=11553:ms=61575:saved=12:stranded=7` |
-| 3 | 1 | 39 | `seq=39:tick=8394:ms=45979:saved=12:stranded=7` |
-| 4 | 1 | 40 | `seq=40:tick=8728:ms=47574:saved=12:stranded=7` |
-| 5 | 2 | 42 | `seq=42:tick=9210:ms=49639:saved=12:stranded=7` |
-| 6 | 1 | 54 | `seq=54:tick=11615:ms=62094:saved=12:stranded=7` |
+| 1 | 2 | 54 | `seq=54:tick=11747:ms=62044:saved=13:stranded=7` |
+| 2 | 2 | 37 | `seq=37:tick=7812:ms=42459:saved=12:stranded=7` |
+| 3 | 1 | 54 | `seq=54:tick=11473:ms=60728:saved=12:stranded=7` |
+| 4 | 1 | 55 | `seq=55:tick=11680:ms=61616:saved=12:stranded=7` |
+| 5 | 2 | 53 | `seq=53:tick=10863:ms=62189:saved=12:stranded=7` |
+| 6 | 1 | 40 | `seq=40:tick=8739:ms=47100:saved=12:stranded=7` |
 
-On 6 of 6 fixed-arm boots `seq=1` is the loopback pump at ms 948-1298 with
-`saved=0`, and the snapshots after it are `kstrandd`'s. The `stranded=7` reading is the round-3
+On 6 of 6 fixed-arm boots `seq=1` is the loopback pump and `seq=2` is
+`kstrandd` at ms 1798-1978, about a second later; the rest of each boot is
+`kstrandd` at its 1 Hz cadence. The two arms are not the same six boots -- the
+fixed arm was re-run at the final head so the second producer's fix is in it
+too -- so the marker columns are two populations of 6, not a paired diff. The `stranded=7` reading is the round-3
 caveat unchanged: on this profile those seven threads are parked in syscalls,
 the production gate does not call `scripts/x86-gate-verdict.sh`, and no in-repo
 consumer reads a production capture as a verdict.

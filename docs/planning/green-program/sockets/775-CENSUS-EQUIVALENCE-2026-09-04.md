@@ -379,26 +379,28 @@ state with the teardown census at rest`.
 
 | boot | markers, lost-wake arm | markers, fixed arm | newest snapshot, fixed arm |
 |---:|---:|---:|---|
-| 1 | 2 | 54 | `seq=54:tick=11510:ms=61725:saved=12:stranded=7` |
-| 2 | 2 | 54 | `seq=54:tick=11553:ms=61575:saved=12:stranded=7` |
-| 3 | 1 | 39 | `seq=39:tick=8394:ms=45979:saved=12:stranded=7` |
-| 4 | 1 | 40 | `seq=40:tick=8728:ms=47574:saved=12:stranded=7` |
-| 5 | 2 | 42 | `seq=42:tick=9210:ms=49639:saved=12:stranded=7` |
-| 6 | 1 | 54 | `seq=54:tick=11615:ms=62094:saved=12:stranded=7` |
+| 1 | 2 | 54 | `seq=54:tick=11747:ms=62044:saved=13:stranded=7` |
+| 2 | 2 | 37 | `seq=37:tick=7812:ms=42459:saved=12:stranded=7` |
+| 3 | 1 | 54 | `seq=54:tick=11473:ms=60728:saved=12:stranded=7` |
+| 4 | 1 | 55 | `seq=55:tick=11680:ms=61616:saved=12:stranded=7` |
+| 5 | 2 | 53 | `seq=53:tick=10863:ms=62189:saved=12:stranded=7` |
+| 6 | 1 | 40 | `seq=40:tick=8739:ms=47100:saved=12:stranded=7` |
 
 6 of 6 boots on the fixed arm carry a post-init snapshot; on the lost-wake arm
-3 of 6 carry only the pump's pre-init `seq=1`, which is R3-5 reproduced. Every
-fixed-arm boot's `seq=1` is the pump at ms 948-1298 with `saved=0`; everything
-after it is `kstrandd`.
+3 of 6 carry only the pump's pre-init `seq=1`, which is R3-5 reproduced. On
+6 of 6 fixed-arm boots `seq=1` is the pump with `saved=0` and `seq=2` is
+`kstrandd` at ms 1798-1978. The two arms are two populations of 6, not a
+paired diff: the fixed arm was re-run at the final head so that the second
+producer's fix is in it as well.
 
 The two readings side by side are the point of the whole exercise:
 
 ```
 # serials/775/round4/production/boot1  (kstrandd running)
-strand census: thread 5 (init) saved blocked and not restored as of the latest snapshot (seq 54, tick 11510)
+strand census: thread 5 (init) saved blocked and not restored as of the latest snapshot (seq 54, tick 11747)
 ... 6 more named threads ...
-strand census: latest snapshot seq=54 tick=11510 at 61725 ms; 54 valid snapshot(s), previous 1022 ms earlier, largest gap 2662 ms
-STRAND_CENSUS: threads_saved_blocked=12 stranded=7 lines=2637     rc=1
+strand census: latest snapshot seq=54 tick=11747 at 62044 ms; 54 valid snapshot(s), previous 1056 ms earlier, largest gap 2719 ms
+STRAND_CENSUS: threads_saved_blocked=13 stranded=7 lines=2283     rc=1
 
 # serials/775/round4/kstrandd-lost-wake/boot3  (kstrandd never dispatched again)
 strand census: latest snapshot seq=1 tick=5 at 1001 ms; 1 valid snapshot(s), no earlier snapshot to measure cadence against
