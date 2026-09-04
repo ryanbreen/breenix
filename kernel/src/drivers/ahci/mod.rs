@@ -743,7 +743,17 @@ fn scheduler_sleep_ready(has_irq: bool) -> bool {
         }
     };
 
-    has_irq && crate::task::scheduler::current_thread_id().is_some() && timer_running
+
+    // The eighth can-sleep-style predicate, and it consults the same shared
+    // refusal as the other seven. A present scheduler identity is not by
+    // itself a sleepable one: on aarch64 the boot CPU's idle task has a
+    // thread id like any other, and blocking it abandons its continuation
+    // (#761). A lower-level predicate happens to mask that today; that is not
+    // a reason for this decision point to answer differently from the rest.
+    has_irq
+        && crate::task::scheduler::current_thread_id().is_some()
+        && timer_running
+        && !crate::task::idle_sleep::idle_identity_must_not_sleep()
 }
 
 /// Wait for a slot-0 command to complete, with NO locks held.
