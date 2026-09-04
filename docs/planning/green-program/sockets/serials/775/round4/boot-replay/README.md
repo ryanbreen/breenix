@@ -10,6 +10,12 @@ found the cause.
 | `without-scheduler-fix/` | `4358fd05`, `kstrandd` alone | `GATE: FAIL`, page fault at 14 s |
 | `with-scheduler-fix/` | `8da34163`, `kstrandd` plus the `block_current_for_timer` guard | `GATE: FAIL`, the same page fault at 14 s |
 
+`without-scheduler-fix/` was produced by checking out `4358fd05`'s
+`kernel/src/task/scheduler.rs` onto `8da34163` and building that.
+`git diff --stat 4358fd05 8da34163` shows that file as the only source
+difference between the two commits -- everything else in the range is
+committed serial captures -- so the kernel it built is `4358fd05`'s.
+
 The two failing arms are byte-similar: `Kernel page fault at 0x1e`, kernel CS,
 `RSP=0xffffc90000101378`. That RSP is inside kernel stack 1 --
 `0xffffc90000082000-0xffffc90000102000`, allocated in the same boot for the
