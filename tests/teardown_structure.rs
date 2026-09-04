@@ -15388,3 +15388,587 @@ fn the_kthread_join_census_rejects_a_join_on_the_idle_identity() {
     let perturbed = with_replaced_source(&sources, "kernel/src/main_aarch64.rs", mutated);
     assert!(validate_kthread_joins_are_kthread_bodies_or_tests(&perturbed).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// R138(1) -- N03/N15: the sleep predicates are discovered by CALL SITE.
+//
+// The `_can_sleep` census above finds its subjects by name, so
+// `ahci::scheduler_sleep_ready` -- the eighth decision point, whose name
+// matches 0 of the other seven -- went unchecked, and deleting its executable
+// refusal while leaving the name in a comment kept the rule green. This leg
+// asks the question from the other end: standing at a call that will put the
+// CALLER to sleep, which boolean did the code consult before it got here?
+// Whatever that boolean is called, it decides sleep eligibility, so it routes
+// that decision through the shared refusal.
+// claim-lint:ok: the coverage claim is the ratchet below, not a sentence --
+// `sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal`, with
+// its 2 mutation legs in this file
+// ---------------------------------------------------------------------------
+
+/// Definitions in `source`, as (name, offset of the `fn` keyword, signature
+/// plus body). Declarations without a body -- a trait method, an `extern`
+/// prototype -- are skipped rather than being handed the next unrelated block.
+fn bodied_definitions(source: &str) -> Vec<(String, usize, String)> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut found = Vec::new();
+    for keyword in identifier_offsets(source, &mask, "fn") {
+        let mut start = keyword + 2;
+        while start < bytes.len() && bytes[start] == b' ' {
+            start += 1;
+        }
+        let mut end = start;
+        while end < bytes.len() && identifier_byte(bytes[end]) {
+            end += 1;
+        }
+        if end == start {
+            continue;
+        }
+        let Some(open) = (end..bytes.len()).find(|at| mask[*at] && bytes[*at] == b'{') else {
+            continue;
+        };
+        if (end..open).any(|at| mask[at] && bytes[at] == b';') {
+            continue;
+        }
+        let Some(definition) = braced_block(source, &mask, end) else {
+            continue;
+        };
+        found.push((source[start..end].to_owned(), keyword, definition.to_owned()));
+    }
+    found
+}
+
+/// The signature half of a `bodied_definitions` entry: everything before its
+/// body's opening brace.
+fn signature_of(definition: &str) -> &str {
+    let mask = code_mask(definition);
+    match (0..definition.len()).find(|at| mask[*at] && definition.as_bytes()[*at] == b'{') {
+        Some(open) => &definition[..open],
+        None => definition,
+    }
+}
+
+/// The executable text of a definition's body, whitespace collapsed.
+fn body_code_of(definition: &str) -> String {
+    let mask = code_mask(definition);
+    let bytes = definition.as_bytes();
+    let Some(open) = (0..definition.len()).find(|at| mask[*at] && bytes[*at] == b'{') else {
+        return String::new();
+    };
+    let close = definition.len().saturating_sub(1);
+    if close <= open + 1 {
+        return String::new();
+    }
+    normalized_code(&definition[open + 1..close])
+}
+
+/// The `let` bindings in `source`, as name to initializer texts. The census
+/// uses them to resolve a guard written as a bound name or a struct field back
+/// to the call whose value it carries -- AHCI decides in `setup_cmd_slot0`,
+/// carries the answer in `CmdToken::scheduler_running`, and reads it one
+/// function later in `wait_cmd_slot0`.
+fn let_bindings(source: &str) -> BTreeMap<String, Vec<String>> {
+    let mask = code_mask(source);
+    let bytes = source.as_bytes();
+    let mut bound: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for keyword in identifier_offsets(source, &mask, "let") {
+        let mut at = keyword + 3;
+        while at < bytes.len() && bytes[at] == b' ' {
+            at += 1;
+        }
+        if source[at..].starts_with("mut ") {
+            at += 4;
+            while at < bytes.len() && bytes[at] == b' ' {
+                at += 1;
+            }
+        }
+        let start = at;
+        while at < bytes.len() && identifier_byte(bytes[at]) {
+            at += 1;
+        }
+        if at == start {
+            continue;
+        }
+        let name = source[start..at].to_owned();
+        let Some(equals) = (at..bytes.len()).find(|index| {
+            mask[*index] && (bytes[*index] == b'=' || bytes[*index] == b';' || bytes[*index] == b'{')
+        }) else {
+            continue;
+        };
+        if bytes[equals] != b'=' {
+            continue;
+        }
+        let end = (equals..bytes.len())
+            .find(|index| mask[*index] && bytes[*index] == b';')
+            .unwrap_or(bytes.len());
+        bound
+            .entry(name)
+            .or_default()
+            .push(source[equals + 1..end].to_owned());
+    }
+    bound
+}
+
+/// The `if` statements in a body, as (condition text, body open offset, body
+/// end offset). `if let` is not a boolean guard and is skipped.
+fn if_statements(body: &str) -> Vec<(String, usize, usize)> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let mut found = Vec::new();
+    for keyword in identifier_offsets(body, &mask, "if") {
+        let mut at = keyword + 2;
+        while at < bytes.len() && (bytes[at] as char).is_whitespace() {
+            at += 1;
+        }
+        if body[at..].starts_with("let ") {
+            continue;
+        }
+        let Some(open) = (at..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{')
+        else {
+            continue;
+        };
+        let Some(block) = braced_block(body, &mask, open) else {
+            continue;
+        };
+        found.push((body[at..open].to_owned(), open, open + block.len()));
+    }
+    found
+}
+
+/// Whether a block leaves the enclosing body or iteration: a guard that bails
+/// out is control-dependent on the code that follows it, just as an enclosing
+/// `if` is control-dependent on the code inside it.
+fn block_exits(body: &str, from: usize, to: usize) -> bool {
+    let fragment = &body[from..to];
+    let mask = code_mask(fragment);
+    ["return", "continue", "break"]
+        .iter()
+        .any(|keyword| !identifier_offsets(fragment, &mask, keyword).is_empty())
+}
+
+/// Offsets in `body` where `name` is called: the whole identifier, followed by
+/// an open parenthesis.
+fn call_sites_of(body: &str, mask: &[bool], name: &str) -> Vec<usize> {
+    let bytes = body.as_bytes();
+    identifier_offsets(body, mask, name)
+        .into_iter()
+        .filter(|at| {
+            let mut end = at + name.len();
+            while bytes.get(end) == Some(&b' ') {
+                end += 1;
+            }
+            bytes.get(end) == Some(&b'(')
+        })
+        .collect()
+}
+
+/// The functions an expression calls outright: an identifier followed by an
+/// open parenthesis, not reached through a receiver. A path-qualified call
+/// counts, a method call does not.
+fn free_calls(expression: &str) -> BTreeSet<String> {
+    let mask = code_mask(expression);
+    let bytes = expression.as_bytes();
+    let mut names = BTreeSet::new();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if !mask[at] || !identifier_byte(bytes[at]) {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < bytes.len() && identifier_byte(bytes[at]) {
+            at += 1;
+        }
+        let after_receiver = start > 0 && bytes[start - 1] == b'.';
+        if !after_receiver && bytes.get(at) == Some(&b'(') {
+            names.insert(expression[start..at].to_owned());
+        }
+    }
+    names
+}
+
+/// Names whose definition returns `bool`.
+fn boolean_returning_names(sources: &[(String, String)]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for (_, source) in sources {
+        for (name, _, definition) in bodied_definitions(source) {
+            if normalized_code(signature_of(&definition)).contains("-> bool") {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
+/// The blocking primitives that put their CALLER to sleep: the subjects of
+/// `validate_blocking_primitives_refuse_the_idle_identity` (a family member
+/// whose body names the current thread), closed under family-internal
+/// delegation so a forwarder like `block_current_for_io` counts too even
+/// though the publication happens one call deeper.
+/// `park_pinned_worker_without_home` blocks a thread it was handed and
+/// delegates to no member, so it is correctly not one of these.
+fn caller_blocking_primitives(sources: &[(String, String)]) -> BTreeSet<String> {
+    let mut family: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, source) in sources {
+        for (name, _, definition) in bodied_definitions(source) {
+            if BLOCKING_NAME_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+            {
+                family.entry(name).or_default().push(definition);
+            }
+        }
+    }
+    let mut primitives: BTreeSet<String> = family
+        .iter()
+        .filter(|(_, definitions)| {
+            definitions.iter().any(|definition| {
+                let mask = code_mask(definition);
+                !code_offsets(definition, &mask, "current_thread").is_empty()
+            })
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    loop {
+        let mut grew = false;
+        for (name, definitions) in &family {
+            if primitives.contains(name) {
+                continue;
+            }
+            let delegates = definitions.iter().any(|definition| {
+                let mask = code_mask(definition);
+                primitives
+                    .iter()
+                    .any(|member| calls_function(definition, &mask, member))
+            });
+            if delegates {
+                primitives.insert(name.clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    primitives
+}
+
+/// Functions that put their caller to sleep without carrying a family name.
+///
+/// Two shapes: a body that calls a caller-blocking primitive, and a body that
+/// is one call expression handing off to such a function -- `Completion`'s
+/// `wait_timeout_uninterruptible` is the second shape, and it is how the AHCI
+/// wait reaches `block_current_for_io` without naming anything in the family.
+/// A name defined more than once under `kernel/src` is left out of both: this
+/// census resolves a callee by name and cannot tell two `lock`s apart, and
+/// guessing would put guards on sites with no blocking call at all. The
+/// family itself is
+/// excluded because a call that names a primitive outright is already covered
+/// by the primitive's own refusal.
+fn caller_blocking_wrappers(
+    sources: &[(String, String)],
+    primitives: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut definitions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, source) in sources {
+        for (name, _, definition) in bodied_definitions(source) {
+            definitions.entry(name).or_default().push(definition);
+        }
+    }
+    let unique: Vec<(String, String)> = definitions
+        .into_iter()
+        .filter(|(name, list)| {
+            list.len() == 1
+                && !BLOCKING_NAME_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+        })
+        .map(|(name, mut list)| (name, list.remove(0)))
+        .collect();
+    let mut direct = BTreeSet::new();
+    for (name, definition) in &unique {
+        let mask = code_mask(definition);
+        if primitives
+            .iter()
+            .any(|member| calls_function(definition, &mask, member))
+        {
+            direct.insert(name.clone());
+        }
+    }
+    let mut wrappers = direct.clone();
+    for (name, definition) in &unique {
+        if wrappers.contains(name) {
+            continue;
+        }
+        let code = body_code_of(definition);
+        if code.contains(';') {
+            continue;
+        }
+        let mask = code_mask(&code);
+        if direct
+            .iter()
+            .any(|member| calls_function(&code, &mask, member))
+        {
+            wrappers.insert(name.clone());
+        }
+    }
+    wrappers
+}
+
+/// One discovered decision point: a call that will put the caller to sleep,
+/// the boolean the code consulted before reaching it, and where.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SleepGuard {
+    path: String,
+    function: String,
+    wrapper: String,
+    predicate: String,
+}
+
+/// The boolean(s) a condition consults.
+///
+/// Either the condition calls them outright, or it reads a name the code bound
+/// earlier to such a call -- `let in_syscall = current_context_can_sleep();`
+/// in `Completion`, `token.scheduler_running` carrying `scheduler_sleep_ready`
+/// across two AHCI functions. The bound-name arm resolves the last path
+/// segment against the `let` bindings in the same file, which is what lets a
+/// decision taken in one function and carried in a struct field be attributed
+/// to the predicate that made it.
+fn condition_predicates(
+    condition: &str,
+    bindings: &BTreeMap<String, Vec<String>>,
+    boolean: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let direct: BTreeSet<String> = free_calls(condition)
+        .into_iter()
+        .filter(|name| boolean.contains(name))
+        .collect();
+    if !direct.is_empty() {
+        return direct;
+    }
+    let bare = condition.trim().trim_start_matches('!').trim();
+    if bare.is_empty()
+        || !bare
+            .bytes()
+            .all(|byte| identifier_byte(byte) || byte == b'.')
+    {
+        return BTreeSet::new();
+    }
+    let segment = bare.rsplit('.').next().unwrap_or(bare);
+    let mut resolved = BTreeSet::new();
+    for initializer in bindings.get(segment).into_iter().flatten() {
+        for name in free_calls(initializer) {
+            if boolean.contains(&name) {
+                resolved.insert(name);
+            }
+        }
+    }
+    resolved
+}
+
+/// The census: the booleans consulted at a guard position of a call that puts
+/// the caller to sleep. A guard position is an `if` the call sits inside, or
+/// an `if` before it that leaves the body -- both decide whether control
+/// reaches the sleep. 5 rows on this tree, listed by the test below.
+fn discover_sleep_guards(sources: &[(String, String)]) -> Vec<SleepGuard> {
+    let primitives = caller_blocking_primitives(sources);
+    let wrappers = caller_blocking_wrappers(sources, &primitives);
+    let boolean = boolean_returning_names(sources);
+    let mut found: BTreeSet<SleepGuard> = BTreeSet::new();
+    for (path, source) in sources {
+        let bindings = let_bindings(source);
+        for (function, _, definition) in bodied_definitions(source) {
+            if wrappers.contains(&function) {
+                continue;
+            }
+            let mask = code_mask(&definition);
+            let guards = if_statements(&definition);
+            for wrapper in &wrappers {
+                for site in call_sites_of(&definition, &mask, wrapper) {
+                    for (condition, open, end) in &guards {
+                        let inside = *open < site && site < *end;
+                        let bailed = *end <= site && block_exits(&definition, *open, *end);
+                        if !inside && !bailed {
+                            continue;
+                        }
+                        for predicate in condition_predicates(condition, &bindings, &boolean) {
+                            found.insert(SleepGuard {
+                                path: path.clone(),
+                                function: function.clone(),
+                                wrapper: wrapper.clone(),
+                                predicate,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// Whether a name's definitions consult the shared refusal in executable text:
+/// directly, or through one call to a name that does. A raw `contains` would
+/// accept the refusal's name inside a comment, which is the mutation leg
+/// below.
+fn predicate_consults_the_refusal(
+    definitions: &BTreeMap<String, Vec<String>>,
+    name: &str,
+    depth: usize,
+) -> bool {
+    let Some(list) = definitions.get(name) else {
+        return false;
+    };
+    for definition in list {
+        let mask = code_mask(definition);
+        if !code_offsets(definition, &mask, &format!("{IDLE_REFUSAL_PREDICATE}()")).is_empty()
+            || !code_offsets(definition, &mask, &format!("{IDLE_REFUSAL_UNDER_LOCK}()")).is_empty()
+        {
+            return true;
+        }
+        if depth == 0 {
+            continue;
+        }
+        for called in free_calls(definition) {
+            if called != name && predicate_consults_the_refusal(definitions, &called, depth - 1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Guard predicates this census discovers that do NOT decide sleep
+/// eligibility. Exact match in both directions: a discovered predicate that is
+/// neither refusal-consulting nor recorded here is a finding, and a row the
+/// census stops discovering is a finding too, so the classification cannot go
+/// stale silently. The discovery itself is by shape, so this table records
+/// verdicts rather than limiting what gets looked at.
+/// claim-lint:ok: 2 of the 5 discovered predicates are recorded here; the
+/// discovery side is `discover_sleep_guards`, which reads no name from this
+/// table
+#[rustfmt::skip]
+const GUARDS_THAT_DO_NOT_DECIDE_SLEEP_ELIGIBILITY: &[(&str, &str)] = &[
+    // Sets the caller's parked flag, then reports whether kthread_stop got
+    // there first (kernel/src/task/kthread.rs). It answers whether to park at
+    // all, not whether the running identity may -- and the park it guards
+    // publishes through a family member, which the sibling rule covers.
+    ("kthread_prepare_to_park", "publishes the caller's park intent and reports whether kthread_stop beat it to the flag"),
+    // Reads the per-CPU pending-softirq mask (kernel/src/task/softirqd.rs):
+    // whether there is deferred work left, not whether the caller may sleep.
+    ("softirq_pending", "reads the per-CPU pending-softirq mask -- whether work is left, not who is running"),
+];
+
+/// Each boolean the census discovers at a guard position routes its decision
+/// through the shared refusal, unless it is recorded above as deciding
+/// something else. Returns the census so a run cannot pass for an empty one.
+fn validate_sleep_guards_consult_the_idle_refusal(
+    sources: &[(String, String)],
+) -> Result<Vec<SleepGuard>, Vec<String>> {
+    let guards = discover_sleep_guards(sources);
+    let mut definitions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, source) in sources {
+        for (name, _, definition) in bodied_definitions(source) {
+            definitions.entry(name).or_default().push(definition);
+        }
+    }
+    let mut findings = Vec::new();
+    let mut recorded_seen: BTreeSet<&str> = BTreeSet::new();
+    let mut consulting = 0usize;
+    for guard in &guards {
+        if predicate_consults_the_refusal(&definitions, &guard.predicate, 1) {
+            consulting += 1;
+            continue;
+        }
+        if let Some((name, _)) = GUARDS_THAT_DO_NOT_DECIDE_SLEEP_ELIGIBILITY
+            .iter()
+            .find(|(name, _)| *name == guard.predicate)
+        {
+            recorded_seen.insert(name);
+            continue;
+        }
+        findings.push(format!(
+            "{} :: {} guards {} on {}  (sleep eligibility decided without the shared idle refusal)",
+            guard.path, guard.function, guard.wrapper, guard.predicate
+        ));
+    }
+    for (name, _) in GUARDS_THAT_DO_NOT_DECIDE_SLEEP_ELIGIBILITY {
+        if !recorded_seen.contains(name) {
+            findings.push(format!(
+                "{name}  (recorded as deciding something other than sleep eligibility, but the census no longer discovers it at a guard position)"
+            ));
+        }
+    }
+    if guards.is_empty() {
+        findings.push("the call-site sleep-guard census found nothing to check".to_owned());
+    }
+    if consulting == 0 {
+        findings.push(
+            "no discovered guard consults the shared refusal: the rule is passing vacuously"
+                .to_owned(),
+        );
+    }
+    if findings.is_empty() {
+        Ok(guards)
+    } else {
+        Err(findings)
+    }
+}
+
+#[test]
+fn sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal() {
+    let sources = rust_sources_below("kernel/src");
+    let guards = validate_sleep_guards_consult_the_idle_refusal(&sources)
+        .expect("every boolean consulted before a call that sleeps routes through the shared idle refusal");
+    println!("call-site sleep-guard census ({} discovered):", guards.len());
+    for guard in &guards {
+        println!(
+            "  {} :: {} guards {} on {}",
+            guard.path, guard.function, guard.wrapper, guard.predicate
+        );
+    }
+}
+
+#[test]
+fn the_sleep_guard_census_reaches_past_the_can_sleep_name() {
+    // N03/N15: the point of this leg. It has to discover at least 1 decision
+    // point the `_can_sleep` name census cannot see, or it adds no coverage.
+    let sources = rust_sources_below("kernel/src");
+    let guards = discover_sleep_guards(&sources);
+    let unnamed: Vec<&SleepGuard> = guards
+        .iter()
+        .filter(|guard| !guard.predicate.contains("_can_sleep"))
+        .collect();
+    assert!(
+        !unnamed.is_empty(),
+        "the call-site census discovered no predicate the name census misses"
+    );
+    let mut definitions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, source) in &sources {
+        for (name, _, definition) in bodied_definitions(source) {
+            definitions.entry(name).or_default().push(definition);
+        }
+    }
+    assert!(
+        unnamed
+            .iter()
+            .any(|guard| predicate_consults_the_refusal(&definitions, &guard.predicate, 1)),
+        "no predicate outside the `_can_sleep` name shape consults the refusal, \
+         so this leg's coverage of them is untested"
+    );
+}
+
+#[test]
+fn the_sleep_guard_census_rejects_a_refusal_left_only_in_a_comment() {
+    // The exact mutation N03 and N15 asked for: delete the executable call in
+    // the predicate the name census cannot see, leave its name in a comment.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/drivers/ahci/mod.rs");
+    let call = format!("&& !crate::task::idle_sleep::{IDLE_REFUSAL_PREDICATE}()");
+    assert!(source.contains(&call), "fixture call site must exist");
+    let commented = format!("&& core::hint::black_box(true) /* {IDLE_REFUSAL_PREDICATE}() */");
+    let mutated = source.replacen(&call, &commented, 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/drivers/ahci/mod.rs", mutated);
+    assert!(validate_sleep_guards_consult_the_idle_refusal(&perturbed).is_err());
+}
