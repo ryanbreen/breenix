@@ -1353,238 +1353,77 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
 }
 
 // =============================================================================
-// Gate Device Catalog Check (x86-64 only)
+// Enumerated-PCI-function fact dump (x86-64 only)
 // =============================================================================
-//
-// Direct, structural evidence for the "Bus / device infrastructure" gate row
-// (docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md). Unlike
-// the pre-existing text-log census this repo's x86-64 boot gates already
-// grep ("PCI: Enumeration complete. Found N devices (B VirtIO block, W
-// network)", above), this reads the actual parsed `Device` records
-// `enumerate()` populated in `PCI_DEVICES` and checks per-device facts --
-// vendor:device ID, class code, a BAR decoded non-zero, and an assigned
-// interrupt line -- for the exact function set each gate's own QEMU command
-// line attaches. A boot that quietly enumerated the right *count* of devices
-// but the wrong *identity* (e.g. a virtio-net masquerading as the expected
-// virtio-blk slot) reads as healthy to the count-only census; this check
-// reads as unhealthy.
-// claim-lint:ok: mechanical description of what this module's own code
-// does; see kernel/src/drivers/pci.rs (this file) for the
-// GATE_EXPECTED_DEVICES table and run_gate_device_catalog_check() defined
-// immediately below.
 
-/// One PCI function a gate script attaches via an explicit QEMU
-/// `-device`/`-netdev` flag, and the facts `enumerate()`'s device table must
-/// show for the attachment to count as a genuine, driver-visible discovery
-/// rather than a bare QEMU-side attachment.
-#[cfg(target_arch = "x86_64")]
-pub struct GateExpectedDevice {
-    pub label: &'static str,
-    pub vendor_id: u16,
-    pub device_id: u16,
-    pub class: DeviceClass,
-}
-
-/// The function set both `docker/qemu/run-x86-boot-tests.sh` and
-/// `docker/qemu/run-x86-prod-profile-boot-test.sh` attach -- identical sets,
-/// so one expected list serves both gates. Each entry cites the exact flag
-/// line(s) it corresponds to (verified against the scripts' own bytes, not
-/// from memory).
-#[cfg(target_arch = "x86_64")]
-pub static GATE_EXPECTED_DEVICES: &[GateExpectedDevice] = &[
-    // run-x86-boot-tests.sh:364-365
-    //   -drive "if=none,id=hd,...
-    //   -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off
-    // run-x86-prod-profile-boot-test.sh:883-884 (drive=hd, identical flag).
-    // `disable-modern=on` forces the legacy transport, so the reported
-    // device ID is the legacy one (0x1001), not the modern one (0x1042).
-    // claim-lint:ok: exact flag text quoted from both scripts; see
-    // kernel/src/drivers/pci.rs (this file, the array below).
-    GateExpectedDevice {
-        label: "virtio-blk-pci (boot disk)",
-        vendor_id: VIRTIO_VENDOR_ID,
-        device_id: VIRTIO_BLOCK_DEVICE_ID_LEGACY,
-        class: DeviceClass::MassStorage,
-    },
-    // run-x86-boot-tests.sh:366-367 (drive=testdisk); run-x86-prod-profile-
-    // boot-test.sh:885-886 (drive=placeholder) -- same flag shape, second
-    // virtio-blk-pci function.
-    GateExpectedDevice {
-        label: "virtio-blk-pci (test/placeholder disk)",
-        vendor_id: VIRTIO_VENDOR_ID,
-        device_id: VIRTIO_BLOCK_DEVICE_ID_LEGACY,
-        class: DeviceClass::MassStorage,
-    },
-    // run-x86-boot-tests.sh:368-369 (drive=ext2disk); run-x86-prod-profile-
-    // boot-test.sh:887-888 (drive=ext2disk) -- same flag, third
-    // virtio-blk-pci function.
-    GateExpectedDevice {
-        label: "virtio-blk-pci (ext2 disk)",
-        vendor_id: VIRTIO_VENDOR_ID,
-        device_id: VIRTIO_BLOCK_DEVICE_ID_LEGACY,
-        class: DeviceClass::MassStorage,
-    },
-    // run-x86-prod-profile-boot-test.sh:889-890
-    //   -netdev user,id=net0 -device e1000,netdev=net0,mac=52:54:00:12:34:56
-    // run-x86-boot-tests.sh attaches no -netdev/-device NIC flag at all;
-    // QEMU auto-attaches its own default NIC whenever no -net/-netdev/-nic
-    // option is given, and that implicit default is the same e1000 model
-    // (confirmed 8086:100e in this repo's own measured boots -- see
-    // docs/planning/green-program/nic-bus/EVIDENCE-2026-08-31.md paragraph 3a), so
-    // the expected function is identical on both gates either way.
-    GateExpectedDevice {
-        label: "e1000 NIC",
-        vendor_id: INTEL_VENDOR_ID,
-        device_id: 0x100E,
-        class: DeviceClass::Network,
-    },
-];
-
-/// Verify the enumerated PCI device table against `GATE_EXPECTED_DEVICES`.
+/// Print one fact line per enumerated PCI function, plus one total line.
 ///
-/// Prints one `BUS_ENUM_CATALOG: PASS`/`FAIL` line via `log::info!`/
-/// `log::error!`, plus one `log::info!` detail line per matched device --
-/// both on the same kernel-serial stream `pci::enumerate()`'s own
-/// `"PCI: Enumeration complete"` census line already uses, so a single grep
-/// against one serial file sees the whole story. (An earlier version of
-/// this function split the summary line onto the *other* serial port via
-/// `serial_println!`, which this kernel routes to COM1/user output while
-/// `log::*!` routes to COM2/kernel output -- found on a real beast boot: the
-/// four per-device lines landed in `serial_kernel.txt` while the summary
-/// line landed in `serial_user.txt`. Unifying onto `log::*!` fixes that
-/// split. `log::info!`/`log::error!` are safe and unconditionally visible
-/// here: this call site is normal boot-init code, not an interrupt/syscall
-/// hot path, and x86-64's logger sets `LevelFilter::Trace` unconditionally
-/// in `logger.rs`, confirmed present in the zero-feature production
-/// profile's own serial too -- see
-/// docs/planning/green-program/nic-bus/EVIDENCE-2026-08-31.md §5 for the
-/// one platform where `log::info!` genuinely is invisible, aarch64, which
-/// has no logger backend at all; that gap does not apply to x86-64. The
-/// split-then-fixed serial excerpts are preserved in
-/// docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.)
+/// Facts only. This function holds no expected-device set, prints no
+/// PASS/FAIL verdict, logs nothing at ERROR level, and cannot redden a boot:
+/// every field it emits is a transcription of a value `enumerate()` already
+/// parsed out of live PCI config space (vendor/device from config dword
+/// 0x00, class/subclass from 0x08, `interrupt_line` from 0x3C, BAR address
+/// and size from `decode_bar()`). The expectations live in the gate scripts
+/// -- `docker/qemu/run-x86-boot-tests.sh` and
+/// `docker/qemu/run-x86-prod-profile-boot-test.sh` -- which derive the set of
+/// devices to expect from their own QEMU `-device`/`-netdev` flag bytes and
+/// assert against these lines.
+/// claim-lint:ok: mechanical description of the function defined
+/// immediately below in this file; the measured per-profile visibility is
+/// in docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
 ///
-/// Returns `true` iff every expected function (4/4 in
-/// `GATE_EXPECTED_DEVICES`) was found (each match claims
-/// a distinct enumerated function, so two expected virtio-blk entries
-/// cannot both match the same physical device), each has a BAR decoded
-/// non-zero, each has an assigned interrupt line (`interrupt_line !=
-/// 0xFF`, the PCI "unknown/not connected" sentinel), and the total
-/// enumerated function count is at least the expected set's size.
+/// Line shape, one per enumerated function, in enumeration order:
 ///
-/// Called unconditionally from `drivers::init()` -- every x86-64 build,
-/// including the zero-feature production profile, where the
-/// `boot_tests`-gated test-framework registry (`test_framework::registry`)
-/// does not compile at all, and where -- for x86-64 specifically -- even a
-/// `boot_tests` build's own `SUBSYSTEMS`/`TestDef` executor
-/// (`test_framework::registry::run_all_tests()`) never runs: its one call
-/// site in `main.rs` is gated behind `feature = "x86_staged_registry"`,
-/// which no x86 gate script in this repo enables (confirmed: 0 hits for
-/// `[SUBSYSTEM:`/`[STAGE:`/`TESTS_COMPLETE` across a full 16983-line
-/// `run-x86-boot-tests.sh` boot). This function -- called directly from
-/// `drivers::init()`, gated on nothing but `target_arch = "x86_64"` -- is
-/// the mechanism that actually executes on x86-64 today, in both profiles.
-/// claim-lint:ok: the 0-hits measurement and its full serial excerpt are
-/// preserved in
-/// docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+/// ```text
+/// PCI_FN 00:03.0 1af4:1001 class=01/00 bar0=0xc040/0x40 irq=0x0b
+/// ```
+///
+/// followed by exactly one
+///
+/// ```text
+/// PCI_FN_TOTAL 9
+/// ```
+///
+/// `bar0=` is BAR index 0's `address`/`size` verbatim (printed as `0x0/0x0`
+/// for a BAR 0 whose decoded size is 0); `irq=` is the raw `interrupt_line`
+/// config byte,
+/// whose `0xff` value is the PCI "unknown / not connected" sentinel.
+///
+/// Printed with `serial_println!` (COM1). That path -- `serial::_print` in
+/// `kernel/src/serial.rs`, a file whose only cfg is the crate-level
+/// `#![cfg(target_arch = "x86_64")]` -- carries no feature gate and no log
+/// level filter, so these lines appear in the zero-feature production
+/// profile exactly as they do under `boot_tests,testing,external_test_bins`.
+/// Both x86-64 gate scripts capture COM1 and COM2 to
+/// `$OUTPUT_DIR/serial_user.txt` and `$OUTPUT_DIR/serial_kernel.txt` and
+/// grep across `serial_*.txt`, so both read this stream.
+///
+/// Called from `drivers::init()` immediately after `pci::enumerate()`. There
+/// is no `assign_bars()` step to sequence after on this arch:
+/// `pci::assign_bars()` is `#[cfg(target_arch = "aarch64")]` and its only
+/// call site is the aarch64 arm of `drivers::init()`, so on x86-64 "after
+/// enumeration" is also "after the last BAR value the kernel writes before
+/// driver init".
 #[cfg(target_arch = "x86_64")]
-pub fn run_gate_device_catalog_check() -> bool {
-    let devices = match get_devices() {
-        Some(d) => d,
-        None => {
-            log::error!(
-                "BUS_ENUM_CATALOG: FAIL reason=\"pci::enumerate() has not populated the device table\""
-            );
-            return false;
-        }
-    };
+pub fn dump_enumerated_functions() {
+    let devices = get_devices().unwrap_or_default();
 
-    if devices.len() < GATE_EXPECTED_DEVICES.len() {
-        log::error!(
-            "BUS_ENUM_CATALOG: FAIL reason=\"enumerated {} function(s), expected at least {}\"",
-            devices.len(),
-            GATE_EXPECTED_DEVICES.len()
-        );
-        return false;
-    }
-
-    let mut claimed: Vec<bool> = Vec::new();
-    claimed.resize(devices.len(), false);
-
-    for expected in GATE_EXPECTED_DEVICES {
-        let mut matched_idx: Option<usize> = None;
-        for (i, dev) in devices.iter().enumerate() {
-            if !claimed[i]
-                && dev.vendor_id == expected.vendor_id
-                && dev.device_id == expected.device_id
-                && dev.class == expected.class
-            {
-                matched_idx = Some(i);
-                break;
-            }
-        }
-
-        let idx = match matched_idx {
-            Some(i) => i,
-            None => {
-                log::error!(
-                    "BUS_ENUM_CATALOG: FAIL reason=\"no enumerated function matches expected '{}' ({:04x}:{:04x} class {:?})\"",
-                    expected.label,
-                    expected.vendor_id,
-                    expected.device_id,
-                    expected.class
-                );
-                return false;
-            }
-        };
-        claimed[idx] = true;
-        let dev = &devices[idx];
-
-        if !dev.bars.iter().any(|b| b.is_valid()) {
-            log::error!(
-                "BUS_ENUM_CATALOG: FAIL reason=\"'{}' ({:02x}:{:02x}.{}) has no BAR decoded non-zero\"",
-                expected.label,
-                dev.bus,
-                dev.device,
-                dev.function
-            );
-            return false;
-        }
-
-        if dev.interrupt_line == 0xFF {
-            log::error!(
-                "BUS_ENUM_CATALOG: FAIL reason=\"'{}' ({:02x}:{:02x}.{}) has no interrupt line assigned (IRQ=0xff)\"",
-                expected.label,
-                dev.bus,
-                dev.device,
-                dev.function
-            );
-            return false;
-        }
-
-        let bar = dev
-            .bars
-            .iter()
-            .find(|b| b.is_valid())
-            .expect("checked is_valid() above");
-        log::info!(
-            "BUS_ENUM_CATALOG:   {} = [{:04x}:{:04x}] @ {:02x}:{:02x}.{} class={:?} IRQ={} BAR={:#x} (size={:#x})",
-            expected.label,
-            dev.vendor_id,
-            dev.device_id,
+    for dev in &devices {
+        let bar0 = &dev.bars[0];
+        crate::serial_println!(
+            "PCI_FN {:02x}:{:02x}.{} {:04x}:{:04x} class={:02x}/{:02x} bar0={:#x}/{:#x} irq={:#04x}",
             dev.bus,
             dev.device,
             dev.function,
-            dev.class,
-            dev.interrupt_line,
-            bar.address,
-            bar.size
+            dev.vendor_id,
+            dev.device_id,
+            dev.class as u8,
+            dev.subclass,
+            bar0.address,
+            bar0.size,
+            dev.interrupt_line
         );
     }
 
-    log::info!(
-        "BUS_ENUM_CATALOG: PASS functions={} expected={}",
-        devices.len(),
-        GATE_EXPECTED_DEVICES.len()
-    );
-    true
+    crate::serial_println!("PCI_FN_TOTAL {}", devices.len());
 }
