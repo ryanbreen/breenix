@@ -1,0 +1,30 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_233a63f3-b9f-1/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_233a63f3-b9f-1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.16s
+     Running tests/x86_gate_verdict_test.rs (target/debug/deps/x86_gate_verdict_test-b29635cb293c7cb9)
+
+running 20 tests
+test rejects_a_missing_expected_exits_variable ... ok
+test a_marker_with_no_snapshot_after_it_is_incomplete_rather_than_markerless ... ok
+test a_census_that_exits_zero_without_a_summary_line_is_not_a_pass ... ok
+test a_malformed_trailing_marker_does_not_discard_the_red_reading ... ok
+test a_tail_truncated_mid_marker_does_not_discard_the_red_reading ... ok
+test a_stale_clean_census_at_the_completion_marker_is_not_a_pass ... ok
+test rejects_a_strand_and_names_the_thread_from_the_scheduler_table ... ok
+test a_capture_without_a_completion_marker_says_the_age_is_not_measurable ... ok
+test rejects_empty_non_decimal_and_zero_expected_exits_values ... ok
+test rejects_a_tally_below_the_expected_exit_floor ... ok
+test rejects_a_fault_killed_test_and_names_the_process ... ok
+test highest_seq_snapshot_wins_even_when_two_share_a_physical_line ... ok
+test the_census_reports_its_snapshot_provenance_and_observed_cadence ... ok
+test accepts_a_complete_green_cohort_at_the_expected_floor ... ok
+test unavailable_census_falls_through_to_the_real_first_cause ... ok
+test an_overflowed_ledger_is_never_reported_as_a_clean_census ... ok
+test a_fresh_census_at_the_completion_marker_passes_and_prints_the_age ... ok
+test snapshots_from_two_boots_are_rejected_rather_than_mixed ... ok
+test the_verdict_does_not_depend_on_argument_order ... ok
+test the_age_line_does_not_depend_on_argument_order ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+exit=0

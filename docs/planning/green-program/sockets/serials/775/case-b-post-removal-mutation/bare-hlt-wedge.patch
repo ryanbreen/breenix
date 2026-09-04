@@ -1,0 +1,30 @@
+diff --git a/kernel/src/syscall/handlers.rs b/kernel/src/syscall/handlers.rs
+index 1b9ab2ca..f5ed90cb 100644
+--- a/kernel/src/syscall/handlers.rs
++++ b/kernel/src/syscall/handlers.rs
+@@ -4100,6 +4100,12 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
+         #[cfg(target_arch = "x86_64")]
+         crate::per_cpu::preempt_enable();
+ 
++        #[cfg(target_arch = "x86_64")]
++        {
++            x86_64::instructions::interrupts::disable();
++            x86_64::instructions::hlt();
++        }
++
+         // HLT loop — sleep until timer expires
+         loop {
+             if let Some(_e) = crate::syscall::check_signals_for_eintr() {
+@@ -4326,6 +4332,12 @@ fn poll_block_until(wake_ns: u64) {
+     #[cfg(target_arch = "x86_64")]
+     crate::per_cpu::preempt_enable();
+ 
++    #[cfg(target_arch = "x86_64")]
++    {
++        x86_64::instructions::interrupts::disable();
++        x86_64::instructions::hlt();
++    }
++
+     loop {
+         let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+             sched.wake_expired_timers();

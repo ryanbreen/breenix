@@ -1,0 +1,16 @@
+[gate] repo: /root/breenix-775-prove  head: 883baf7f
+[gate] accel=kvm cpu=host
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 17s
+[gate] === Running 1 boot test(s), mode=full ===
+strand census: thread 25 (loopback_wake_test) saved blocked and not restored as of the latest snapshot (seq 84, tick 27565)
+strand census: thread 27 (futex_handoff_oracle) saved blocked and not restored as of the latest snapshot (seq 84, tick 27565)
+strand census: thread 37 (loopback_wake_test_child_22_main) saved blocked and not restored as of the latest snapshot (seq 84, tick 27565)
+strand census: latest snapshot seq=84 tick=27565 at 98644 ms; 84 valid snapshot(s), previous 1001 ms earlier, largest gap 12812 ms
+strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=84 at 98644 ms
+STRAND_CENSUS: threads_saved_blocked=11 stranded=3 lines=4966
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and was still not restored at the latest census snapshot (see the strand census above)
+  Test 1: FAIL (see /tmp/breenix_gate_1/serial_kernel.log)
+GATE: FAIL (0/1 passed, 1/1 failed; mode=full build=17s boot=150s total=178s)

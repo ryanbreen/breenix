@@ -55,6 +55,12 @@ fn loopback_pump_fn() {
     let _ = LOOPBACK_PUMP_TID.compare_exchange(0, my_tid, Ordering::AcqRel, Ordering::Acquire);
 
     loop {
+        // #775/R125: kthread_entry and the wake-side halt return with IF=1.
+        // This existing housekeeping path covers active loopback workloads;
+        // the shared limiter keeps serial emission to at most once per second.
+        #[cfg(target_arch = "x86_64")]
+        crate::task::report_dispatch_strand_census_heartbeat();
+
         LOOPBACK_PUMP_PASSES.fetch_add(1, Ordering::Relaxed);
         let more = super::drain_loopback_rounds(
             PUMP_ROUNDS_PER_PASS,

@@ -1,0 +1,26 @@
+Building the shipped ARM64 production kernel profile...
+    Finished `release` profile [optimized] target(s) in 0.09s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_233a63f3-b9f-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_233a63f3-b9f-1/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Booting the ARM64 production profile...
+qemu-system-aarch64: terminating on signal 15 from pid 31402 (<unknown process>)
+PASS: production profile reached bsshd with the futex oracle seam absent
+Observed: [FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+Observed: [init] futex_handoff_oracle exited pid=6 code=0
+Observed: bsshd: listening on 0.0.0.0:2222
+Observed kernel oracle marker count: 0
+Observed block EINTR oracle marker count: 2
+Observed block EINTR oracle failure count: 0
+Observed poll TCP oracle marker count: 10
+Observed poll TCP oracle failure count: 0
+Observed kernel poll timeout report count: 2
+Observed kernel lost-readiness report count: 0
+Observed TTY oracle marker count: 2
+Observed TTY oracle failure count: 0
+Observed crash marker count: 0
+PROD_EXIT_4=0

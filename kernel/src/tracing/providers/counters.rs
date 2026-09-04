@@ -248,9 +248,8 @@ pub static DISPATCH_NO_PROGRESS: TraceCounter = TraceCounter::new(
 /// Completed switches into a blocked-in-syscall kernel context.
 ///
 /// Incremented once per kernel-context restore in `switch_to_thread`'s
-/// blocked-in-syscall arm -- the same event the serial record "Restored kernel
-/// context for thread N" names. This is the denominator `DISPATCH_NO_PROGRESS`
-/// is read against.
+/// blocked-in-syscall arm. This is the denominator `DISPATCH_NO_PROGRESS` is
+/// read against and the aggregate counterpart to #775's per-TID atomic ledger.
 ///
 /// GDB: `print DISPATCH_KERNEL_RESTORE_TOTAL`
 #[no_mangle]
@@ -285,9 +284,18 @@ pub static DISPATCH_KERNEL_RESTORE_TOTAL: TraceCounter = TraceCounter::new(
 //
 // * The 6 `DISPATCH_SAVE_REASON_*` counters cover the 3 save arms the
 //   interrupt-return path has, crossed with the 2 admitting gates. The 2
-//   `DISPATCH_SAVE_REASON_KERNEL_BLOCKED_*` counters sum to the count of
-//   "Saved kernel context for blocked thread N" serial records, because the
-//   increment sits beside that record inside the same `if let`.
+//   `DISPATCH_SAVE_REASON_KERNEL_BLOCKED_*` counters sum to the successful
+//   kernel-blocked save events. The increment and #775's atomic ledger update
+//   sit inside the same `if let`.
+//   Cross-check (#775 round 3, F12): #775 retired the host-side
+//   `kernel_blocked_saves_match_records` equality along with the records it
+//   counted. `scripts/772-dispatch-census.py` replaces it with
+//   `kernel_blocked_saves_ge_census_saved_tids`, comparing this sum against
+//   `saved=` in the newest `[DISPATCH_STRAND_CENSUS:...]` snapshot. It is an
+//   INEQUALITY, not an equality: this sum counts save EVENTS and the ledger
+//   field counts DISTINCT TIDs, so they are equal only when no thread was ever
+//   saved twice. `>=` is the strongest true statement about the pair, and a
+//   `false` means one of the two is broken.
 // * `DISPATCH_NOPROGRESS_SAVE_<X> <= DISPATCH_SAVE_REASON_<X>` by
 //   construction: the no-progress counter is incremented only when the save
 //   counter is, and only when the frame being saved is byte-identical (RIP

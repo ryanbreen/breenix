@@ -1,0 +1,29 @@
+file: docs/planning/green-program/tty/serials/x86-prod-profile-gate-with-tty-canary-run1-20260831.txt
+
+### main (bfbb7575) census
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=304
+rc=0
+
+### round-1 (66d68849) census
+strand census: expected exactly one DISPATCH_STRAND_CENSUS line, found 0
+rc=2
+
+### this head census
+strand census: no DISPATCH_STRAND_CENSUS line found
+rc=2
+
+### main (bfbb7575) verdict, EXPECTED_EXITS=10
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=304
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+rc=1
+
+### round-1 (66d68849 census + unchanged verdict) verdict, EXPECTED_EXITS=10
+strand census: expected exactly one DISPATCH_STRAND_CENSUS line, found 0
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and never restored (see the strand census above)
+rc=1
+
+### this head verdict, EXPECTED_EXITS=10
+strand census: no DISPATCH_STRAND_CENSUS line found
+x86 userspace gate: census unavailable; continuing with ordered first-cause checks
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+rc=1

@@ -1,0 +1,623 @@
+diff --git a/kernel/src/main.rs b/kernel/src/main.rs
+index 023bec2e..8556315b 100644
+--- a/kernel/src/main.rs
++++ b/kernel/src/main.rs
+@@ -2371,6 +2371,10 @@ fn idle_thread_fn() {
+     loop {
+         // Enable interrupts and halt until next interrupt
+         x86_64::instructions::interrupts::enable_and_hlt();
++
++        // #775/R125: existing non-interrupt housekeeping with IF=1. The
++        // callee shares a one-second rate limit with the loopback pump.
++        task::report_dispatch_strand_census_heartbeat();
+         crate::net::drain_loopback_from_idle();
+ 
+         // Check if there are any ready threads
+diff --git a/kernel/src/net/loopback_pump.rs b/kernel/src/net/loopback_pump.rs
+index 91af2ad0..eaaa78d0 100644
+--- a/kernel/src/net/loopback_pump.rs
++++ b/kernel/src/net/loopback_pump.rs
+@@ -55,6 +55,12 @@ fn loopback_pump_fn() {
+     let _ = LOOPBACK_PUMP_TID.compare_exchange(0, my_tid, Ordering::AcqRel, Ordering::Acquire);
+ 
+     loop {
++        // #775/R125: kthread_entry and the wake-side halt return with IF=1.
++        // This existing housekeeping path covers active loopback workloads;
++        // the shared limiter keeps serial emission to at most once per second.
++        #[cfg(target_arch = "x86_64")]
++        crate::task::report_dispatch_strand_census_heartbeat();
++
+         LOOPBACK_PUMP_PASSES.fetch_add(1, Ordering::Relaxed);
+         let more = super::drain_loopback_rounds(
+             PUMP_ROUNDS_PER_PASS,
+diff --git a/kernel/src/syscall/handlers.rs b/kernel/src/syscall/handlers.rs
+index dcc7e4ac..1b9ab2ca 100644
+--- a/kernel/src/syscall/handlers.rs
++++ b/kernel/src/syscall/handlers.rs
+@@ -269,12 +269,12 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
+             // Set flag for automated systems that want to detect completion
+             USERSPACE_TEST_COMPLETE.store(true, Ordering::SeqCst);
+ 
+-            // #775: emit the serial gate's save/restore census only after the
+-            // last userspace exit has been recorded.  The accounting itself is
+-            // lock-free and allocation-free; formatting happens only here,
+-            // outside interrupt and context-switch context.
+-            #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+-            crate::task::dispatch_strand_census::report_once();
++            // #775: follow the periodic heartbeat with a final snapshot after
++            // the last userspace exit has been recorded. The accounting itself
++            // is lock-free and allocation-free; no formatting occurs in the
++            // interrupt or context-switch path.
++            #[cfg(target_arch = "x86_64")]
++            crate::task::dispatch_strand_census::report_snapshot();
+ 
+             // P6a PR-2, review finding B2: sample the tombstone census AFTER a
+             // live reap. x86's other two census sites both fire before any user
+diff --git a/kernel/src/task/dispatch_strand_census.rs b/kernel/src/task/dispatch_strand_census.rs
+index b2049040..20063768 100644
+--- a/kernel/src/task/dispatch_strand_census.rs
++++ b/kernel/src/task/dispatch_strand_census.rs
+@@ -4,18 +4,25 @@
+ //! written in the context-switch path: whether a TID had ever had a blocked
+ //! kernel context saved, whether its most recent save/restore event was a
+ //! restore, and whether it later exited.  Keep exactly those facts in a fixed
+-//! atomic ledger so the hot path adds no lock, allocation, or formatting.
++//! atomic ledger so the hot path adds no lock, allocation, or formatting.  The
++//! existing idle and loopback-pump housekeeping threads emit rate-limited
++//! snapshots with interrupts enabled, where the COM1 serial lock is legal.
+ 
+-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
++use core::{
++    fmt,
++    sync::atomic::{AtomicU64, AtomicU8, Ordering},
++};
+ 
+ const LEDGER_CAPACITY: usize = 4096;
++const STRANDED_TID_CAPACITY: usize = 16;
++const HEARTBEAT_INTERVAL_NS: u64 = 1_000_000_000;
+ const EVER_SAVED: u8 = 1 << 0;
+ const LAST_EVENT_RESTORED: u8 = 1 << 1;
+ const EXITED: u8 = 1 << 2;
+ 
+ static LEDGER: [AtomicU8; LEDGER_CAPACITY] = [const { AtomicU8::new(0) }; LEDGER_CAPACITY];
+ static OVERFLOW_EVENTS: AtomicU64 = AtomicU64::new(0);
+-static REPORTED: AtomicBool = AtomicBool::new(false);
++static LAST_HEARTBEAT_NS: AtomicU64 = AtomicU64::new(0);
+ 
+ #[inline(always)]
+ fn slot(tid: u64) -> Option<&'static AtomicU8> {
+@@ -30,7 +37,7 @@ pub(crate) fn note_save(tid: u64) {
+         OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
+         return;
+     };
+-    let _ = state.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
++    let _ = state.fetch_update(Ordering::Release, Ordering::Relaxed, |old| {
+         Some((old | EVER_SAVED) & !LAST_EVENT_RESTORED)
+     });
+ }
+@@ -42,7 +49,7 @@ pub(crate) fn note_restore(tid: u64) {
+         OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
+         return;
+     };
+-    state.fetch_or(LAST_EVENT_RESTORED, Ordering::Relaxed);
++    state.fetch_or(LAST_EVENT_RESTORED, Ordering::Release);
+ }
+ 
+ /// Exclude a thread exactly as the former process-exit serial record did.
+@@ -52,39 +59,88 @@ pub(crate) fn note_exit(tid: u64) {
+         OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
+         return;
+     };
+-    state.fetch_or(EXITED, Ordering::Relaxed);
++    state.fetch_or(EXITED, Ordering::Release);
+ }
+ 
+-/// Emit the host gate's compact source after the userspace test battery ends.
+-///
+-/// This is deliberately the only formatted operation in this module.  Its
+-/// caller is the final-userspace-exit path, outside interrupt/context-switch
+-/// context and after `note_exit` has recorded that last process.
+-pub(crate) fn report_once() {
+-    if REPORTED
+-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+-        .is_err()
+-    {
+-        return;
++struct TidList<'a>(&'a [u64]);
++
++impl fmt::Display for TidList<'_> {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        if self.0.is_empty() {
++            return formatter.write_str("-");
++        }
++
++        for (index, tid) in self.0.iter().enumerate() {
++            if index != 0 {
++                formatter.write_str(",")?;
++            }
++            write!(formatter, "{tid}")?;
++        }
++        Ok(())
+     }
++}
+ 
++/// Emit one compact host-gate snapshot.
++///
++/// The callers are ordinary thread/syscall contexts, never interrupt or
++/// context-switch paths. Acquire loads pair with the release RMWs in the three
++/// recorders, so a snapshot observes published ledger events across CPUs.
++/// claim-lint:ok: #775 ruling R125 fixes the two permitted emission call sites.
++pub(crate) fn report_snapshot() {
+     let mut threads_saved_blocked = 0u64;
+     let mut stranded = 0u64;
+-    for state in &LEDGER {
+-        let state = state.load(Ordering::Relaxed);
++    let mut stranded_tids = [0u64; STRANDED_TID_CAPACITY];
++    let mut stranded_tid_count = 0usize;
++    for (tid, state) in LEDGER.iter().enumerate() {
++        let state = state.load(Ordering::Acquire);
+         if state & EVER_SAVED == 0 {
+             continue;
+         }
+         threads_saved_blocked += 1;
+         if state & (EXITED | LAST_EVENT_RESTORED) == 0 {
+             stranded += 1;
++            if stranded_tid_count < stranded_tids.len() {
++                stranded_tids[stranded_tid_count] = tid as u64;
++                stranded_tid_count += 1;
++            }
+         }
+     }
++    let tid_overflow = stranded.saturating_sub(stranded_tid_count as u64);
+ 
+     crate::serial_println!(
+-        "[DISPATCH_STRAND_CENSUS:threads_saved_blocked={}:stranded={}:overflow={}]",
++        "[DISPATCH_STRAND_CENSUS:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}]",
+         threads_saved_blocked,
+         stranded,
+-        OVERFLOW_EVENTS.load(Ordering::Relaxed),
++        TidList(&stranded_tids[..stranded_tid_count]),
++        tid_overflow,
++        OVERFLOW_EVENTS.load(Ordering::Acquire),
+     );
+ }
++
++fn monotonic_now_ns() -> u64 {
++    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
++    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
++}
++
++/// Emit at most one census snapshot per second from existing housekeeping.
++pub(crate) fn report_heartbeat_if_due() {
++    // idle_thread_fn calls after enable_and_hlt; loopback_pump_fn enters through
++    // kthread_entry and returns from arch_halt_with_interrupts. Keep this check
++    // at the emission boundary so serial locking cannot silently move into an
++    // interrupts-disabled context.
++    if !crate::arch_interrupts_enabled() {
++        return;
++    }
++
++    let now = monotonic_now_ns();
++    let last = LAST_HEARTBEAT_NS.load(Ordering::Acquire);
++    if last != 0 && now.saturating_sub(last) < HEARTBEAT_INTERVAL_NS {
++        return;
++    }
++    if LAST_HEARTBEAT_NS
++        .compare_exchange(last, now.max(1), Ordering::AcqRel, Ordering::Acquire)
++        .is_ok()
++    {
++        report_snapshot();
++    }
++}
+diff --git a/kernel/src/task/mod.rs b/kernel/src/task/mod.rs
+index 256c7197..c6f5d662 100644
+--- a/kernel/src/task/mod.rs
++++ b/kernel/src/task/mod.rs
+@@ -8,8 +8,12 @@ use core::{
+ 
+ // Core task/thread modules - shared across architectures
+ pub mod completion;
+-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
++#[cfg(target_arch = "x86_64")]
+ pub(crate) mod dispatch_strand_census;
++#[cfg(target_arch = "x86_64")]
++pub fn report_dispatch_strand_census_heartbeat() {
++    dispatch_strand_census::report_heartbeat_if_due();
++}
+ pub mod executor;
+ pub mod exit_tally;
+ pub mod thread;
+diff --git a/kernel/src/task/process_task.rs b/kernel/src/task/process_task.rs
+index 0a20b878..ea7a7c53 100644
+--- a/kernel/src/task/process_task.rs
++++ b/kernel/src/task/process_task.rs
+@@ -933,7 +933,7 @@ impl ProcessScheduler {
+                 });
+             }
+ 
+-            #[cfg(all(target_arch = "x86_64", feature = "testing"))]
++            #[cfg(target_arch = "x86_64")]
+             crate::task::dispatch_strand_census::note_exit(thread_id);
+             log::debug!(
+                 "Process {} '{}' (thread {}) exited with code {}",
+diff --git a/scripts/x86-gate-verdict.sh b/scripts/x86-gate-verdict.sh
+index 4689c2c4..b93e310a 100755
+--- a/scripts/x86-gate-verdict.sh
++++ b/scripts/x86-gate-verdict.sh
+@@ -27,23 +27,27 @@ done
+ 
+ [[ -r "$ALLOWLIST_PATH" ]] || fail "allowlist is not readable: $ALLOWLIST_PATH"
+ 
+-# Run the strand census FIRST, so that a boot which died because a thread was
+-# silenced is named by its first cause rather than by its terminal symptom.
++# Run the strand census first. A periodic kernel-thread snapshot can name a
++# saved-blocked thread even when that userspace thread never runs again. The
++# consumer judges the last snapshot because it contains the newest ledger
++# state and completion emits a final snapshot.
++# claim-lint:ok: #775 ruling R125 defines the periodic and final sources.
+ #
+-# #568 round 2: the poll oracle was saved blocked in its own `poll()` and never
+-# restored in about half of the beast KVM boots. Every check below is blind to
+-# that -- a silenced thread emits no verdict, no exit and no marker, so the gate
+-# saw only "USERSPACE TEST COMPLETE was absent" and could not tell a branch
+-# strand apart from main's. The census reads the kernel's own context-switch
+-# record, which is written whether or not the thread ever speaks again, so the
+-# stranded thread is named.
++# No snapshot means the kernel never reached the heartbeat, or failed before
++# its first emission. That is census unavailability, not evidence of a strand:
++# continue so the existing ordered checks name the first observed cause. This
++# preserves run-x86-gate.sh's #702-vs-strand distinction.
++# claim-lint:ok: #775 ruling R125 defines rc=2 as census unavailable.
+ strand_output=""
+ strand_rc=0
+ strand_output="$("$SCRIPT_DIR/x86-strand-census.sh" "$@" 2>&1)" || strand_rc=$?
+ printf '%s\n' "$strand_output"
+-if (( strand_rc != 0 )); then
+-    fail "a thread was saved blocked in a kernel wait and never restored (see the strand census above)"
+-fi
++case "$strand_rc" in
++    0) ;;
++    1) fail "a thread was saved blocked in a kernel wait and never restored (see the strand census above)" ;;
++    2) echo "x86 userspace gate: census unavailable; continuing with ordered first-cause checks" ;;
++    *) fail "strand census returned unexpected status $strand_rc" ;;
++esac
+ 
+ # #693: the kernel's own lost-readiness report, checked before the terminal
+ # markers for the same reason the strand census is: a boot that lost a readiness
+diff --git a/scripts/x86-strand-census.sh b/scripts/x86-strand-census.sh
+index 8a6d4250..a56b2806 100755
+--- a/scripts/x86-strand-census.sh
++++ b/scripts/x86-strand-census.sh
+@@ -1,27 +1,27 @@
+ #!/usr/bin/env bash
+-# x86 strand census: consume the kernel's end-of-test dispatch census.
++# x86 strand census: consume the kernel's latest dispatch-ledger snapshot.
+ #
+-# #568 round 2 review turned up a failure the gate could not see. When the
+-# blocking `poll()` lost its wake, the polling thread was saved blocked and
+-# never scheduled again.  The old host census recovered that fact from the
+-# formatted save/restore records emitted by the context-switch path.  #775
+-# removes those interrupt-path records; the kernel now maintains the same
+-# save/restore/exit state in a fixed atomic ledger and emits one compact line
+-# after the userspace test battery ends.
+-# claim-lint:ok: #568 field failure and #775 migration definition.
++# #568 round 2 found a blocking poll thread that was saved and then stopped
++# running. #775 removed the formatted save/restore records from the dispatch
++# path and put the same state transitions in a fixed atomic ledger. Under R125,
++# existing idle and loopback-pump housekeeping emit that ledger at most once
++# per second from ordinary thread context with interrupts enabled; the
++# completion path emits a final snapshot. The last snapshot in the serial is
++# the source of truth, so a wedged userspace thread does not have to resume or
++# exit to make its state observable.
++# claim-lint:ok: #775 ruling R125 defines the replacement source and cadence.
+ #
+-# The rule is exactly one fact, taken from the kernel's own bookkeeping:
+-#
+-#   a thread which has ever been saved blocked, whose LAST save/restore event is
+-#   save, and which never reported an exit, was never resumed.
+-# claim-lint:ok: #775 preserves scripts/x86-strand-census.sh's pre-migration predicate.
+-#
+-# Threads that exit are excluded.  An overflow is a data error, not a green:
+-# without a ledger slot the gate cannot apply the definition honestly.
++# Each snapshot carries the distinct ever-saved count, the stranded count, and
++# up to 16 stranded TIDs. This script recovers their names from the existing
++# `Added thread N <name>` records. A bounded-list overflow is reported beside
++# the named prefix; a ledger overflow is reported as an incomplete observation.
+ #
+ # Usage:  scripts/x86-strand-census.sh <serial-log> [<serial-log> ...]
+-# Output: one line per stranded thread, then a STRAND_CENSUS summary line.
+-# Exit:   0 when no thread was stranded, 1 when at least one was.
++# Output: one line per listed stranded thread, overflow diagnostics if present,
++#         then a STRAND_CENSUS summary line.
++# Exit:   0 when the last snapshot says stranded=0;
++#         1 when the last snapshot says stranded>0;
++#         2 when no usable census snapshot exists.
+ 
+ set -euo pipefail
+ 
+@@ -34,24 +34,70 @@ for serial_log in "$@"; do
+     [[ -r "$serial_log" ]] || { echo "strand census: serial log is not readable: $serial_log" >&2; exit 2; }
+ done
+ 
+-line_count=$(cat -- "$@" | wc -l | tr -d ' ')
+-census_lines=$(grep -hE '\[DISPATCH_STRAND_CENSUS:threads_saved_blocked=[0-9]+:stranded=[0-9]+:overflow=[0-9]+\]' -- "$@" || true)
+-census_count=$(printf '%s\n' "$census_lines" | awk 'NF { count++ } END { print count + 0 }')
++cat -- "$@" | awk '
++BEGIN {
++    census_re = "\\[DISPATCH_STRAND_CENSUS:[^]]*\\]"
++    valid_re = "^\\[DISPATCH_STRAND_CENSUS:saved=[0-9]+:stranded=[0-9]+:tids=(-|[0-9]+(,[0-9]+)*):tid_overflow=[0-9]+:ledger_overflow=[0-9]+\\]$"
++}
++/Added thread [0-9]+ / {
++    line = $0
++    sub(/.*Added thread /, "", line)
++    tid = line; sub(/ .*/, "", tid)
++    rest = line; sub(/^[0-9]+ /, "", rest)
++    if (substr(rest, 1, 1) == "\047") {
++        sub(/^\047/, "", rest); sub(/\047.*/, "", rest)
++        names[tid] = rest
++    }
++}
++{
++    rest = $0
++    while (match(rest, census_re)) {
++        latest = substr(rest, RSTART, RLENGTH)
++        snapshots++
++        rest = substr(rest, RSTART + RLENGTH)
++    }
++}
++END {
++    if (snapshots == 0) {
++        print "strand census: no DISPATCH_STRAND_CENSUS line found" > "/dev/stderr"
++        exit 2
++    }
++    if (latest !~ valid_re) {
++        print "strand census: last DISPATCH_STRAND_CENSUS line is malformed: " latest > "/dev/stderr"
++        exit 2
++    }
+ 
+-if [[ "$census_count" -ne 1 ]]; then
+-    echo "strand census: expected exactly one DISPATCH_STRAND_CENSUS line, found $census_count" >&2
+-    exit 2
+-fi
++    data = latest
++    sub(/^\[/, "", data); sub(/\]$/, "", data)
++    field_count = split(data, fields, ":")
++    for (field = 2; field <= field_count; field++) {
++        equals = index(fields[field], "=")
++        key = substr(fields[field], 1, equals - 1)
++        value[key] = substr(fields[field], equals + 1)
++    }
+ 
+-threads_saved_blocked=$(printf '%s\n' "$census_lines" | sed -E 's/.*threads_saved_blocked=([0-9]+).*/\1/')
+-stranded=$(printf '%s\n' "$census_lines" | sed -E 's/.*:stranded=([0-9]+).*/\1/')
+-overflow=$(printf '%s\n' "$census_lines" | sed -E 's/.*:overflow=([0-9]+).*/\1/')
++    listed = 0
++    if (value["tids"] != "-") {
++        listed = split(value["tids"], stranded_tids, ",")
++    }
++    if (listed + value["tid_overflow"] != value["stranded"]) {
++        print "strand census: last snapshot has an inconsistent stranded TID list" > "/dev/stderr"
++        exit 2
++    }
+ 
+-if [[ "$overflow" -ne 0 ]]; then
+-    echo "strand census: kernel ledger overflowed ($overflow event(s)); result is incomplete" >&2
+-    exit 2
+-fi
++    for (i = 1; i <= listed; i++) {
++        tid = stranded_tids[i]
++        name = (tid in names) ? names[tid] : "?"
++        printf "strand census: thread %s (%s) saved blocked and never restored\n", tid, name
++    }
++    if (value["tid_overflow"] > 0) {
++        printf "strand census: %d additional stranded thread(s) omitted by the kernel TID-list bound\n", value["tid_overflow"]
++    }
++    if (value["ledger_overflow"] > 0) {
++        printf "strand census: kernel ledger overflowed (%d event(s)); snapshot is incomplete\n", value["ledger_overflow"]
++    }
+ 
+-printf 'STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n' \
+-    "$threads_saved_blocked" "$stranded" "$line_count"
+-[[ "$stranded" -eq 0 ]]
++    printf "STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n", value["saved"], value["stranded"], NR
++    exit (value["stranded"] > 0) ? 1 : 0
++}
++'
+diff --git a/tests/dispatch_strand_census_structure.rs b/tests/dispatch_strand_census_structure.rs
+new file mode 100644
+index 00000000..636410ca
+--- /dev/null
++++ b/tests/dispatch_strand_census_structure.rs
+@@ -0,0 +1,106 @@
++use std::fs;
++use std::path::PathBuf;
++
++fn read(path: &str) -> String {
++    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
++    fs::read_to_string(&path)
++        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
++}
++
++#[test]
++fn dispatch_records_and_diagnostic_feature_are_gone() {
++    let workspace_manifest = read("Cargo.toml");
++    let kernel_manifest = read("kernel/Cargo.toml");
++    let context_switch = read("kernel/src/interrupts/context_switch.rs");
++
++    assert!(!workspace_manifest.contains("quiet_dispatch_log"));
++    assert!(!kernel_manifest.contains("quiet_dispatch_log"));
++    for removed in [
++        "Saved kernel context for blocked thread",
++        "Restored kernel context for thread",
++        "Switched to process CR3 {:#x} for blocked-in-syscall kernel return",
++    ] {
++        assert!(
++            !context_switch.contains(removed),
++            "interrupt-path dispatch record returned: {removed}"
++        );
++    }
++}
++
++#[test]
++fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
++    let context_switch = read("kernel/src/interrupts/context_switch.rs");
++    let process_task = read("kernel/src/task/process_task.rs");
++    let handlers = read("kernel/src/syscall/handlers.rs");
++    let main = read("kernel/src/main.rs");
++    let loopback_pump = read("kernel/src/net/loopback_pump.rs");
++    let task_mod = read("kernel/src/task/mod.rs");
++    let census = read("kernel/src/task/dispatch_strand_census.rs");
++
++    assert_eq!(
++        context_switch
++            .matches("dispatch_strand_census::note_save(thread_id)")
++            .count(),
++        1
++    );
++    assert_eq!(
++        context_switch
++            .matches("dispatch_strand_census::note_restore(thread_id)")
++            .count(),
++        1
++    );
++    assert_eq!(
++        process_task
++            .matches("dispatch_strand_census::note_exit(thread_id)")
++            .count(),
++        1
++    );
++    assert_eq!(
++        handlers
++            .matches("dispatch_strand_census::report_snapshot()")
++            .count(),
++        1
++    );
++    assert_eq!(
++        main.matches("task::report_dispatch_strand_census_heartbeat()")
++            .count(),
++        1
++    );
++    assert_eq!(
++        loopback_pump
++            .matches("crate::task::report_dispatch_strand_census_heartbeat()")
++            .count(),
++        1
++    );
++    assert!(task_mod
++        .contains("#[cfg(target_arch = \"x86_64\")]\npub(crate) mod dispatch_strand_census;"));
++    assert!(task_mod.contains("pub fn report_dispatch_strand_census_heartbeat()"));
++    assert!(census.contains("[DISPATCH_STRAND_CENSUS:saved="));
++    assert!(census.contains("const STRANDED_TID_CAPACITY: usize = 16;"));
++    assert!(census.contains("if !crate::arch_interrupts_enabled()"));
++    assert!(census.contains("pub(crate) fn report_heartbeat_if_due()"));
++    assert!(!census.contains("kthread_run"));
++    assert!(census.contains("static LEDGER: [AtomicU8; LEDGER_CAPACITY]"));
++}
++
++#[test]
++fn host_consumers_have_no_removed_record_dependency() {
++    let strand_gate = read("scripts/x86-strand-census.sh");
++    let verdict_gate = read("scripts/x86-gate-verdict.sh");
++    let dispatch_census = read("scripts/772-dispatch-census.py");
++
++    assert!(strand_gate.contains("DISPATCH_STRAND_CENSUS"));
++    assert!(strand_gate.contains("latest = substr(rest, RSTART, RLENGTH)"));
++    assert!(strand_gate.contains("names[tid] = rest"));
++    assert!(strand_gate.contains("exit (value[\"stranded\"] > 0) ? 1 : 0"));
++    assert!(!strand_gate.contains("/Saved kernel context for blocked thread"));
++    assert!(!strand_gate.contains("/Restored kernel context for thread"));
++    assert!(verdict_gate.contains("2) echo \"x86 userspace gate: census unavailable;"));
++
++    assert!(dispatch_census.contains("#775 retired"));
++    assert!(!dispatch_census.lines().any(|line| {
++        let line = line.trim_start();
++        line.starts_with("RESTORE_RE") || line.starts_with("SAVE_RE")
++    }));
++    assert!(!dispatch_census.contains("\"turns\":"));
++}
+diff --git a/tests/x86_gate_verdict_test.rs b/tests/x86_gate_verdict_test.rs
+index cb417082..264ba536 100644
+--- a/tests/x86_gate_verdict_test.rs
++++ b/tests/x86_gate_verdict_test.rs
+@@ -72,7 +72,8 @@ fn repo_root() -> &'static Path {
+ }
+ 
+ fn green_log() -> &'static str {
+-    "USERSPACE TEST COMPLETE\n\
++    "[DISPATCH_STRAND_CENSUS:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]\n\
++     USERSPACE TEST COMPLETE\n\
+      TEST_TALLY: exited=10 nonzero=0 failed=[]\n\
+      🏁 TEST RUNNER: All tests passed\n"
+ }
+@@ -145,7 +146,8 @@ fn rejects_empty_non_decimal_and_zero_expected_exits_values() {
+ #[test]
+ fn rejects_a_fault_killed_test_and_names_the_process() {
+     let fixture = SerialFixture::new(
+-        "USERSPACE TEST COMPLETE\n\
++        "[DISPATCH_STRAND_CENSUS:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]\n\
++         USERSPACE TEST COMPLETE\n\
+          TEST_TALLY: exited=10 nonzero=1 failed=[brk_test:-11]\n\
+          TEST RUNNER: FAILED\n",
+         "",
+@@ -159,3 +161,61 @@ fn rejects_a_fault_killed_test_and_names_the_process() {
+         "fault-killed process was not named by the failure: {text}"
+     );
+ }
++
++#[test]
++fn rejects_a_strand_and_names_the_thread_from_the_scheduler_table() {
++    let fixture = SerialFixture::new(
++        "Added thread 23 'poll_tcp_oracle' to scheduler (user: true, target_cpu: 0)\n\
++         [DISPATCH_STRAND_CENSUS:saved=13:stranded=1:tids=23:tid_overflow=0:ledger_overflow=0]\n",
++        "",
++    );
++    let output = fixture.run(Some("10"));
++    let text = output_text(&output);
++
++    assert!(!output.status.success(), "unexpected green verdict: {text}");
++    assert!(
++        text.contains("thread 23 (poll_tcp_oracle) saved blocked and never restored"),
++        "strand failure did not name its thread: {text}"
++    );
++    assert!(
++        text.contains("a thread was saved blocked in a kernel wait and never restored"),
++        "strand failure did not retain the gate reason: {text}"
++    );
++}
++
++#[test]
++fn unavailable_census_falls_through_to_the_real_first_cause() {
++    let fixture = SerialFixture::new("OVMF: early boot stopped\n", "");
++    let output = fixture.run(Some("10"));
++    let text = output_text(&output);
++
++    assert!(!output.status.success(), "unexpected green verdict: {text}");
++    assert!(
++        text.contains("census unavailable"),
++        "rc=2 was not identified: {text}"
++    );
++    assert!(
++        text.contains("USERSPACE TEST COMPLETE was absent; boot did not finish"),
++        "early failure did not reach the existing first-cause check: {text}"
++    );
++    assert!(
++        !text.contains("a thread was saved blocked in a kernel wait"),
++        "unavailable census was misclassified as a strand: {text}"
++    );
++}
++
++#[test]
++fn last_census_marker_wins_even_when_two_share_a_physical_line() {
++    let mut kernel = String::from(
++        "[DISPATCH_STRAND_CENSUS:saved=13:stranded=1:tids=23:tid_overflow=0:ledger_overflow=0] ",
++    );
++    kernel.push_str(green_log());
++    let fixture = SerialFixture::new(&kernel, "");
++    let output = fixture.run(Some("10"));
++
++    assert!(
++        output.status.success(),
++        "last green snapshot did not supersede an earlier red one: {}",
++        output_text(&output)
++    );
++}

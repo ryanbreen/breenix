@@ -1,0 +1,31 @@
+[gate] repo: /root/breenix-775-prove  head: 883baf7f
+[gate] accel=kvm cpu=host
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 15s
+[gate] === Running 4 boot test(s), mode=full ===
+strand census: latest snapshot seq=121 tick=27966 at 139536 ms; 121 valid snapshot(s), previous 1002 ms earlier, largest gap 14318 ms
+strand census: age at the completion marker: 582 ms (newest cadence snapshot seq=30 at 49326 ms, completion snapshot seq=31 at 49908 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4950
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+  Test 1: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+strand census: latest snapshot seq=115 tick=27926 at 139260 ms; 115 valid snapshot(s), previous 1002 ms earlier, largest gap 20816 ms
+strand census: age at the completion marker: 451 ms (newest cadence snapshot seq=24 at 49101 ms, completion snapshot seq=25 at 49552 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4963
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+  Test 2: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+strand census: latest snapshot seq=119 tick=28012 at 139646 ms; 119 valid snapshot(s), previous 1001 ms earlier, largest gap 16031 ms
+strand census: age at the completion marker: 924 ms (newest cadence snapshot seq=28 at 49515 ms, completion snapshot seq=29 at 50439 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4948
+x86 userspace gate: FAIL - failing process is not allowlisted: clock_gettime_test
+  Test 3: FAIL (see /tmp/breenix_gate_3/serial_kernel.log)
+strand census: latest snapshot seq=120 tick=27968 at 139418 ms; 120 valid snapshot(s), previous 1002 ms earlier, largest gap 18174 ms
+strand census: age at the completion marker: 723 ms (newest cadence snapshot seq=29 at 49292 ms, completion snapshot seq=30 at 50015 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4920
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+  Test 4: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+GATE: FAIL (3/4 passed, 1/4 failed; mode=full build=15s boot=600s total=626s)

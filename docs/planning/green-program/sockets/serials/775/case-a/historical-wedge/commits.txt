@@ -1,0 +1,20 @@
+pre-removal commit           : 29344251 fix(775): move strand census off dispatch logs
+heartbeat overlay commit     : 5b419714 test(775): overlay heartbeat on pre-removal census
+overlay + wedge commit booted: 07fa248b test(775): apply IF0 poll wedge pre-removal
+
+$ git diff --stat 29344251 5b419714
+ kernel/src/main.rs                        |   4 +
+ kernel/src/net/loopback_pump.rs           |   6 ++
+ kernel/src/syscall/handlers.rs            |  12 +--
+ kernel/src/task/dispatch_strand_census.rs |  98 +++++++++++++++++++------
+ kernel/src/task/mod.rs                    |   6 +-
+ kernel/src/task/process_task.rs           |   2 +-
+ scripts/x86-gate-verdict.sh               |  28 ++++---
+ scripts/x86-strand-census.sh              | 118 +++++++++++++++++++++---------
+ tests/dispatch_strand_census_structure.rs | 106 +++++++++++++++++++++++++++
+ tests/x86_gate_verdict_test.rs            |  64 +++++++++++++++-
+ 10 files changed, 365 insertions(+), 79 deletions(-)
+
+$ git diff --stat 5b419714 07fa248b
+ kernel/src/syscall/handlers.rs | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)

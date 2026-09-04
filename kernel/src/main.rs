@@ -601,6 +601,11 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
     crate::net::init_loopback_pump();
+    // #775 round 4, R3-5/N14: the third census emission context, spawned
+    // beside kloopbackd on the unconditional init path so it exists in the
+    // zero-feature production profile. idle_loop and the pump both emit only
+    // when the rest of the kernel gives them a reason to run.
+    task::start_dispatch_strand_census_kthread();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
@@ -2366,11 +2371,34 @@ fn kernel_main_continue() -> ! {
     executor.run()
 }
 
+/// The idle task's stored entry point. THIS BODY IS NEVER DISPATCHED on x86.
+/// claim-lint:ok: #775 round 3 finding N1 measured this; the boot-level
+/// evidence is in
+/// docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md
+///
+/// `kernel_main_continue` builds `init_task` with this as its entry point and
+/// then immediately marks it Running on the boot context (see the
+/// `Thread::new(... idle_thread_fn ...)` / `ThreadState::Running` pair above),
+/// so the scheduler never enters it. After any thread reaches Ring 3,
+/// `is_ring3_confirmed()` latches and `context_switch.rs` abandons idle's saved
+/// context and rewrites the frame to its own `idle_loop()`, which is where every
+/// idle dispatch resumes from then on (main.rs:1636 and :2221 state the same
+/// design).
+/// claim-lint:ok: the three in-tree statements of the same design are
+/// main.rs:1636, main.rs:2221 and context_switch.rs setup_idle_return.
+///
+/// #775 round 3 (finding N1): the census heartbeat used to be called from here
+/// and therefore never ran. It now lives in `context_switch.rs::idle_loop()`.
+/// `drain_loopback_from_idle()` below is dead for the same reason; #775 leaves
+/// it alone because moving it changes loopback behaviour and is unrelated to the
+/// census. The equivalence document records that.
+/// claim-lint:ok: #775 ruling R134 item 1 fixes the live idle site.
 #[cfg(target_arch = "x86_64")]
 fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
+
         crate::net::drain_loopback_from_idle();
 
         // Check if there are any ready threads

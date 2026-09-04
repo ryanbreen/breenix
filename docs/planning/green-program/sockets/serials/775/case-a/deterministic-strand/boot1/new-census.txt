@@ -1,0 +1,8 @@
+strand census: thread 21 (tcp_cloexec_exec_test) saved blocked and never restored
+strand census: thread 24 (loopback_wake_test) saved blocked and never restored
+strand census: thread 25 (clonevm_exec_test) saved blocked and never restored
+strand census: thread 26 (futex_handoff_oracle) saved blocked and never restored
+strand census: thread 28 (tcp_cloexec_exec_test_child_18_main) saved blocked and never restored
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and never restored
+STRAND_CENSUS: threads_saved_blocked=10 stranded=6 lines=5616
+new_rc=1

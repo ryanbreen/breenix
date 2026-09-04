@@ -1,0 +1,14 @@
+[gate] repo: /root/breenix-775  head: 8da34163
+[gate] accel=kvm cpu=host
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 14s
+[gate] === Running 1 boot test(s), mode=full ===
+strand census: latest snapshot seq=1 tick=50 at 555 ms; 1 valid snapshot(s), no earlier snapshot to measure cadence against
+strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=1 at 555 ms
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=757
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+  Test 1: FAIL (see /tmp/breenix_gate_1/serial_kernel.log)
+GATE: FAIL (0/1 passed, 1/1 failed; mode=full build=14s boot=13s total=36s)
+gate exit=1

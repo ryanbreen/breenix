@@ -1,0 +1,216 @@
+=== g4-batch1-boot1 ===
+verdict_rc=0
+strand census: latest snapshot seq=119 tick=27197 at 135594 ms; 119 valid snapshot(s), previous 1001 ms earlier, largest gap 15307 ms
+strand census: age at the completion marker: 492 ms (newest cadence snapshot seq=34 at 51436 ms, completion snapshot seq=35 at 51928 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4956
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch1-boot2 ===
+verdict_rc=0
+strand census: latest snapshot seq=118 tick=27486 at 136824 ms; 118 valid snapshot(s), previous 1005 ms earlier, largest gap 16327 ms
+strand census: age at the completion marker: 389 ms (newest cadence snapshot seq=31 at 50466 ms, completion snapshot seq=32 at 50855 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4949
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch1-boot3 ===
+verdict_rc=0
+strand census: latest snapshot seq=116 tick=27265 at 135906 ms; 116 valid snapshot(s), previous 1001 ms earlier, largest gap 16610 ms
+strand census: age at the completion marker: 609 ms (newest cadence snapshot seq=32 at 52751 ms, completion snapshot seq=33 at 53360 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4939
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch1-boot4 ===
+verdict_rc=0
+strand census: latest snapshot seq=118 tick=27730 at 138059 ms; 118 valid snapshot(s), previous 1000 ms earlier, largest gap 15621 ms
+strand census: age at the completion marker: 565 ms (newest cadence snapshot seq=30 at 51014 ms, completion snapshot seq=31 at 51579 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4965
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch2-boot1 ===
+verdict_rc=0
+strand census: latest snapshot seq=122 tick=28003 at 139628 ms; 122 valid snapshot(s), previous 1002 ms earlier, largest gap 15384 ms
+strand census: age at the completion marker: 670 ms (newest cadence snapshot seq=30 at 48477 ms, completion snapshot seq=31 at 49147 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4966
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch2-boot2 ===
+verdict_rc=0
+strand census: latest snapshot seq=110 tick=27869 at 139007 ms; 110 valid snapshot(s), previous 1001 ms earlier, largest gap 19402 ms
+strand census: age at the completion marker: 888 ms (newest cadence snapshot seq=23 at 50115 ms, completion snapshot seq=24 at 51003 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4888
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch2-boot3 ===
+verdict_rc=0
+strand census: latest snapshot seq=114 tick=27072 at 134988 ms; 114 valid snapshot(s), previous 1002 ms earlier, largest gap 17303 ms
+strand census: age at the completion marker: 990 ms (newest cadence snapshot seq=34 at 55859 ms, completion snapshot seq=35 at 56849 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4910
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch2-boot4 ===
+verdict_rc=0
+strand census: latest snapshot seq=121 tick=28042 at 139833 ms; 121 valid snapshot(s), previous 1002 ms earlier, largest gap 14354 ms
+strand census: age at the completion marker: 1035 ms (newest cadence snapshot seq=28 at 47628 ms, completion snapshot seq=29 at 48663 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5006
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch3-boot1 ===
+verdict_rc=0
+strand census: latest snapshot seq=121 tick=27934 at 139295 ms; 121 valid snapshot(s), previous 1002 ms earlier, largest gap 17004 ms
+strand census: age at the completion marker: 584 ms (newest cadence snapshot seq=31 at 50139 ms, completion snapshot seq=32 at 50723 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4942
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch3-boot2 ===
+verdict_rc=0
+strand census: latest snapshot seq=120 tick=27912 at 139157 ms; 120 valid snapshot(s), previous 1001 ms earlier, largest gap 16627 ms
+strand census: age at the completion marker: 1220 ms (newest cadence snapshot seq=31 at 49933 ms, completion snapshot seq=32 at 51153 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4942
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch3-boot3 ===
+verdict_rc=0
+strand census: latest snapshot seq=117 tick=27860 at 138800 ms; 117 valid snapshot(s), previous 1001 ms earlier, largest gap 17542 ms
+strand census: age at the completion marker: 1191 ms (newest cadence snapshot seq=28 at 50248 ms, completion snapshot seq=29 at 51439 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=10 stranded=0 lines=4982
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch3-boot4 ===
+verdict_rc=0
+strand census: latest snapshot seq=116 tick=27742 at 138352 ms; 116 valid snapshot(s), previous 1000 ms earlier, largest gap 17005 ms
+strand census: age at the completion marker: 435 ms (newest cadence snapshot seq=28 at 51168 ms, completion snapshot seq=29 at 51603 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4944
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch4-boot1 ===
+verdict_rc=1
+strand census: latest snapshot seq=116 tick=27405 at 136694 ms; 116 valid snapshot(s), previous 1002 ms earlier, largest gap 19079 ms
+strand census: age at the completion marker: 995 ms (newest cadence snapshot seq=30 at 51520 ms, completion snapshot seq=31 at 52515 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4893
+x86 userspace gate: FAIL - failing process is not allowlisted: loopback_wake_test_child
+
+=== g4-batch4-boot2 ===
+verdict_rc=0
+strand census: latest snapshot seq=118 tick=27974 at 139501 ms; 118 valid snapshot(s), previous 1001 ms earlier, largest gap 17356 ms
+strand census: age at the completion marker: 350 ms (newest cadence snapshot seq=29 at 51347 ms, completion snapshot seq=30 at 51697 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5049
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch4-boot3 ===
+verdict_rc=0
+strand census: latest snapshot seq=117 tick=27838 at 138867 ms; 117 valid snapshot(s), previous 1003 ms earlier, largest gap 17855 ms
+strand census: age at the completion marker: 555 ms (newest cadence snapshot seq=28 at 50684 ms, completion snapshot seq=29 at 51239 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4986
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch4-boot4 ===
+verdict_rc=0
+strand census: latest snapshot seq=113 tick=27647 at 137847 ms; 113 valid snapshot(s), previous 1001 ms earlier, largest gap 18040 ms
+strand census: age at the completion marker: 1080 ms (newest cadence snapshot seq=27 at 52609 ms, completion snapshot seq=28 at 53689 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4962
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch5-boot1 ===
+verdict_rc=0
+strand census: latest snapshot seq=121 tick=27966 at 139536 ms; 121 valid snapshot(s), previous 1002 ms earlier, largest gap 14318 ms
+strand census: age at the completion marker: 582 ms (newest cadence snapshot seq=30 at 49326 ms, completion snapshot seq=31 at 49908 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4950
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch5-boot2 ===
+verdict_rc=0
+strand census: latest snapshot seq=115 tick=27926 at 139260 ms; 115 valid snapshot(s), previous 1002 ms earlier, largest gap 20816 ms
+strand census: age at the completion marker: 451 ms (newest cadence snapshot seq=24 at 49101 ms, completion snapshot seq=25 at 49552 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4963
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== g4-batch5-boot3 ===
+verdict_rc=1
+strand census: latest snapshot seq=119 tick=28012 at 139646 ms; 119 valid snapshot(s), previous 1001 ms earlier, largest gap 16031 ms
+strand census: age at the completion marker: 924 ms (newest cadence snapshot seq=28 at 49515 ms, completion snapshot seq=29 at 50439 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4948
+x86 userspace gate: FAIL - failing process is not allowlisted: clock_gettime_test
+
+=== g4-batch5-boot4 ===
+verdict_rc=0
+strand census: latest snapshot seq=120 tick=27968 at 139418 ms; 120 valid snapshot(s), previous 1002 ms earlier, largest gap 18174 ms
+strand census: age at the completion marker: 723 ms (newest cadence snapshot seq=29 at 49292 ms, completion snapshot seq=30 at 50015 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4920
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot1 ===
+verdict_rc=0
+strand census: latest snapshot seq=33 tick=10990 at 54862 ms; 33 valid snapshot(s), previous 1002 ms earlier, largest gap 17637 ms
+strand census: age at the completion marker: 555 ms (newest cadence snapshot seq=30 at 52859 ms, completion snapshot seq=31 at 53414 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4844
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot2 ===
+verdict_rc=0
+strand census: latest snapshot seq=31 tick=10356 at 51674 ms; 31 valid snapshot(s), previous 815 ms earlier, largest gap 18830 ms
+strand census: age at the completion marker: 186 ms (newest cadence snapshot seq=29 at 50673 ms, completion snapshot seq=30 at 50859 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4892
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot3 ===
+verdict_rc=0
+strand census: latest snapshot seq=31 tick=10381 at 51791 ms; 31 valid snapshot(s), previous 1002 ms earlier, largest gap 14701 ms
+strand census: age at the completion marker: 747 ms (newest cadence snapshot seq=28 at 49788 ms, completion snapshot seq=29 at 50535 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4821
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot4 ===
+verdict_rc=0
+strand census: latest snapshot seq=30 tick=10282 at 51326 ms; 30 valid snapshot(s), previous 434 ms earlier, largest gap 16476 ms
+strand census: age at the completion marker: 568 ms (newest cadence snapshot seq=28 at 50324 ms, completion snapshot seq=29 at 50892 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4896
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot5 ===
+verdict_rc=0
+strand census: latest snapshot seq=28 tick=10041 at 50139 ms; 28 valid snapshot(s), previous 498 ms earlier, largest gap 16944 ms
+strand census: age at the completion marker: 504 ms (newest cadence snapshot seq=26 at 49137 ms, completion snapshot seq=27 at 49641 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4897
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot6 ===
+verdict_rc=0
+strand census: latest snapshot seq=32 tick=10251 at 51166 ms; 32 valid snapshot(s), previous 986 ms earlier, largest gap 17067 ms
+strand census: age at the completion marker: 1113 ms (newest cadence snapshot seq=29 at 49038 ms, completion snapshot seq=30 at 50151 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=10 stranded=0 lines=4832
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot7 ===
+verdict_rc=0
+strand census: latest snapshot seq=31 tick=10074 at 50303 ms; 31 valid snapshot(s), previous 480 ms earlier, largest gap 15364 ms
+strand census: age at the completion marker: 522 ms (newest cadence snapshot seq=29 at 49301 ms, completion snapshot seq=30 at 49823 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4905
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot8 ===
+verdict_rc=0
+strand census: latest snapshot seq=29 tick=10560 at 52704 ms; 29 valid snapshot(s), previous 997 ms earlier, largest gap 19823 ms
+strand census: age at the completion marker: 1262 ms (newest cadence snapshot seq=26 at 50427 ms, completion snapshot seq=27 at 51689 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4847
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot9 ===
+verdict_rc=0
+strand census: latest snapshot seq=30 tick=10329 at 51550 ms; 30 valid snapshot(s), previous 1004 ms earlier, largest gap 15856 ms
+strand census: age at the completion marker: 844 ms (newest cadence snapshot seq=27 at 49545 ms, completion snapshot seq=28 at 50389 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4843
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== latency-head-boot10 ===
+verdict_rc=0
+strand census: latest snapshot seq=31 tick=10255 at 51178 ms; 31 valid snapshot(s), previous 1002 ms earlier, largest gap 17056 ms
+strand census: age at the completion marker: 970 ms (newest cadence snapshot seq=28 at 49175 ms, completion snapshot seq=29 at 50145 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4850
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+
+=== SUMMARY ===
+total boots analyzed: 30
+verdict_rc=0 count: 28
+verdict_rc!=0 count: 2
+stranded!=0 count: 0
+missing last-line (no STRAND_CENSUS line) count: 31

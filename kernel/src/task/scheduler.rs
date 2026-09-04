@@ -3361,7 +3361,44 @@ impl Scheduler {
 
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
-                thread.blocked_in_syscall = true;
+                // #775 round 4: `blocked_in_syscall` means "parked inside a
+                // syscall of an owning process", and the x86 context-switch
+                // path acts on exactly that reading: with the flag set and
+                // `from_userspace` false it saves through
+                // `save_kernel_context_with_guard`, which writes into
+                // `process.main_thread` and saves no register at all when
+                // the thread has no process. A pure kernel thread that slept
+                // here therefore departed with no saved context and was not
+                // dispatched again. `kstrandd` measured it: 1 dispatch, then
+                // 0 further snapshots across a 2-minute boot carrying 3158
+                // context switches.
+                // claim-lint:ok: 6 of 6 pre-fix production boots under
+                // docs/planning/green-program/sockets/serials/775/round4/
+                // kstrandd-lost-wake/ carry 1 or 2 census markers, never a
+                // cadence; 3 of the 6 carry only the pre-init pump snapshot.
+                //
+                // The rest of the family already draws this distinction:
+                // `block_current()` leaves the flag clear and
+                // `block_current_in_syscall()` sets it. This was 1 of the 2
+                // producers asserting it unconditionally.
+                //
+                // The conjunct is a NORM on aarch64, not a rule anywhere.
+                // Census, run at write time --
+                // `grep -rn blocked_in_syscall kernel/src --include='*.rs'`
+                // returns 202 lines, of which 30 are expressions that BRANCH
+                // on the flag. 14 of the 30 also require an owning process in
+                // the same expression and 16 do not; the 14 are on aarch64,
+                // 14 of 14.
+                // The x86 consumer this producer's bug ran through
+                // (kernel/src/interrupts/context_switch.rs:460) is one of the
+                // 16. Guarding this producer closes the class where it was
+                // reachable; it does not make the flag's meaning universal at
+                // the consumers.
+                // claim-lint:ok: the bucketing rules, the 202-line
+                // breakdown and the 30 branch sites by file:line are in
+                // docs/planning/green-program/sockets/
+                // 775-CENSUS-EQUIVALENCE-2026-09-04.md.
+                thread.blocked_in_syscall = thread.owner_pid.is_some();
             }
             #[cfg(target_arch = "aarch64")]
             set_cpu_idle(Self::current_cpu_id(), true);
@@ -3390,7 +3427,21 @@ impl Scheduler {
         // Mark blocked_in_syscall so the context switch path resumes
         // inside the syscall (wait_timeout loop) rather than restoring
         // stale userspace context.
-        thread.blocked_in_syscall = true;
+        //
+        // #775 round 4: only when there IS a syscall context to resume into.
+        // The flag routes the x86 save through
+        // `save_kernel_context_with_guard`, which writes into
+        // `process.main_thread` and writes no register at all when the
+        // thread has no process -- so on a process-less thread the flag
+        // makes each later context save a silent no-op while the restore
+        // keeps replaying the last one that landed. The boot thread is exactly such a thread and
+        // it waits here: `Completion::wait_timeout_uninterruptible()` backs
+        // the ext2 root read during init. Same predicate, same reason as
+        // `block_current_for_timer` above.
+        // claim-lint:ok: the replay and the page fault it ends in are the
+        // 2 committed captures under
+        // docs/planning/green-program/sockets/serials/775/round4/boot-replay/.
+        thread.blocked_in_syscall = thread.owner_pid.is_some();
 
         // The departure belongs to the publication, not to the wrapper: this is
         // the only function in the family that published a blocked state
@@ -3409,7 +3460,14 @@ impl Scheduler {
 
     /// Block the current thread for device I/O.
     ///
-    /// Sets state to BlockedOnIO and blocked_in_syscall. The thread will be
+    /// Sets state to BlockedOnIO. It sets `blocked_in_syscall` only when the
+    /// thread has an owning process: since #775 round 4
+    /// `block_current_for_io_publish` writes
+    /// `thread.blocked_in_syscall = thread.owner_pid.is_some()`, so a
+    /// process-less kernel thread that sleeps here leaves the flag CLEAR. That
+    /// is deliberate -- the flag means "parked inside a syscall of an owning
+    /// process", and asserting it on a thread with no process made the x86
+    /// save path write into a process that does not exist. The thread will be
     /// woken by unblock_for_io() when the device ISR signals completion.
     ///
     /// CRITICAL: Must be called under the scheduler lock (via with_scheduler).

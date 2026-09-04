@@ -27,23 +27,86 @@ done
 
 [[ -r "$ALLOWLIST_PATH" ]] || fail "allowlist is not readable: $ALLOWLIST_PATH"
 
-# Run the strand census FIRST, so that a boot which died because a thread was
-# silenced is named by its first cause rather than by its terminal symptom.
+# Run the strand census first. The kernel emits a ledger snapshot from three
+# rate-limited contexts -- the scheduler's idle loop, the loopback pump and the
+# `kstrandd` census kthread -- at most once per second between them, so a
+# saved-blocked thread can be NAMED even when that userspace thread never runs
+# again. The consumer judges the highest-seq snapshot because it carries the
+# newest ledger state, and the completion path emits a final one.
+# claim-lint:ok: the 4 emission sites are pinned by
+# tests/dispatch_strand_census_structure.rs.
 #
-# #568 round 2: the poll oracle was saved blocked in its own `poll()` and never
-# restored in about half of the beast KVM boots. Every check below is blind to
-# that -- a silenced thread emits no verdict, no exit and no marker, so the gate
-# saw only "USERSPACE TEST COMPLETE was absent" and could not tell a branch
-# strand apart from main's. The census reads the kernel's own context-switch
-# record, which is written whether or not the thread ever speaks again, so the
-# stranded thread is named.
+# The emission is rate-LIMITED, not guaranteed-periodic. `kstrandd` sleeps on
+# the scheduler timer, so the cadence no longer needs the CPU to idle, but
+# anything that stops that kthread running still leaves the newest snapshot
+# stale. The census prints the observed gaps and the age of the newest cadence
+# snapshot at the completion marker for that reason, and reports what the
+# snapshot supports -- "not restored as of the latest snapshot" -- not
+# "never restored".
+# claim-lint:ok: #775 rulings R134 and R137 define the three cadence sources;
+# the cadence and its failure mode are measured in
+# docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
+#
+# rc=4 is a STALE clean reading: stranded=0, but the snapshot it came from was
+# already older than the census's bound when the userspace phase ended. That is
+# not a pass, because the ledger stopped being published before the boot
+# finished. The bound is DERIVED from #766's measured x86 wake-to-dispatch
+# overrun (max 10318 ms over 324 trials) plus margin, not chosen; it tightens
+# when #766 lands. scripts/x86-strand-census.sh's AGE header carries the
+# derivation and the disclosed cost, and its `stale_limit_ms` assignment is the
+# ONLY copy of the value: the sentence below reads the number back out of the
+# census's own STALE summary line rather than restating it, so this script and
+# the census can never disagree about which bound was applied -- finding F4.
+# claim-lint:ok: #775 ruling R137 defines the age bound and R140 derives it
+# from the distribution in
+# docs/planning/green-program/sockets/693-RCA-2026-09-02.md.
+#
+# No snapshot means the kernel never reached the heartbeat, or failed before
+# its first emission. That is census unavailability, not evidence of a strand:
+# continue so the existing ordered checks name the first observed cause. This
+# preserves run-x86-gate.sh's #702-vs-strand distinction.
+# claim-lint:ok: #775 ruling R125 defines rc=2 as census unavailable.
+#
+# rc=3 is an OVERFLOWED ledger: the snapshot is incomplete, so `stranded=0` in
+# it is not evidence of anything. It is reported loudly and treated as census
+# unavailability -- never as a clean census.
+# claim-lint:ok: #775 ruling R134 item 2 forbids passing on an overflowed ledger.
 strand_output=""
 strand_rc=0
 strand_output="$("$SCRIPT_DIR/x86-strand-census.sh" "$@" 2>&1)" || strand_rc=$?
 printf '%s\n' "$strand_output"
-if (( strand_rc != 0 )); then
-    fail "a thread was saved blocked in a kernel wait and never restored (see the strand census above)"
-fi
+#
+# rc=0 with NO summary line is a census that did not RUN, and it used to read as
+# a clean one. `x86-strand-census.sh` prints a `STRAND_CENSUS:` line on each of
+# its exit-0 paths, so an exit 0 without one means the tool did not reach its
+# END block. Round 5 produced that state by accident -- an apostrophe inside a
+# comment in the single-quoted awk program terminates the program string, and
+# the resulting shell printed nothing and exited 0. The gate scored 6 of its 19
+# verdict tests green against that broken tool, this one among them, so the
+# check is not hypothetical.
+# claim-lint:ok: the arm is covered by
+# a_census_that_exits_zero_without_a_summary_line_is_not_a_pass in
+# tests/x86_gate_verdict_test.rs.
+case "$strand_rc" in
+    0)
+        case "$strand_output" in
+            *"STRAND_CENSUS:"*) ;;
+            *) fail "the strand census exited 0 without printing a STRAND_CENSUS summary line, so this boot carries no census reading at all: the tool did not run to completion" ;;
+        esac
+        ;;
+    1) fail "a thread was saved blocked in a kernel wait and was still not restored at the latest census snapshot (see the strand census above)" ;;
+    2) echo "x86 userspace gate: census unavailable; continuing with ordered first-cause checks" ;;
+    3) echo "x86 userspace gate: STRAND CENSUS INCOMPLETE - the kernel ledger overflowed, so this boot has NO usable strand evidence in either direction; continuing with ordered first-cause checks" ;;
+    4)
+        stale_summary="$(printf '%s\n' "$strand_output" | grep -F 'STRAND_CENSUS: STALE ' | tail -n 1 || true)"
+        stale_bound="${stale_summary##*bound_ms=}"
+        stale_bound="${stale_bound%% *}"
+        [[ "$stale_bound" =~ ^[0-9]+$ ]] \
+            || fail "the strand census reported a stale reading (rc=4) but printed no parseable bound_ms, so the bound it applied cannot be named: ${stale_summary:-<no STRAND_CENSUS: STALE line>}"
+        fail "the strand census read stranded=0 from a snapshot that was already more than $stale_bound ms stale at the completion marker, so the clean reading is stale rather than clean (see the age line above)"
+        ;;
+    *) fail "strand census returned unexpected status $strand_rc" ;;
+esac
 
 # #693: the kernel's own lost-readiness report, checked before the terminal
 # markers for the same reason the strand census is: a boot that lost a readiness
