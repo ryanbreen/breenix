@@ -2366,15 +2366,34 @@ fn kernel_main_continue() -> ! {
     executor.run()
 }
 
+/// The idle task's stored entry point. THIS BODY IS NEVER DISPATCHED on x86.
+/// claim-lint:ok: #775 round 3 finding N1 measured this; the boot-level
+/// evidence is in
+/// docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md
+///
+/// `kernel_main_continue` builds `init_task` with this as its entry point and
+/// then immediately marks it Running on the boot context (see the
+/// `Thread::new(... idle_thread_fn ...)` / `ThreadState::Running` pair above),
+/// so the scheduler never enters it. After any thread reaches Ring 3,
+/// `is_ring3_confirmed()` latches and `context_switch.rs` abandons idle's saved
+/// context and rewrites the frame to its own `idle_loop()`, which is where every
+/// idle dispatch resumes from then on (main.rs:1636 and :2221 state the same
+/// design).
+/// claim-lint:ok: the three in-tree statements of the same design are
+/// main.rs:1636, main.rs:2221 and context_switch.rs setup_idle_return.
+///
+/// #775 round 3 (finding N1): the census heartbeat used to be called from here
+/// and therefore never ran. It now lives in `context_switch.rs::idle_loop()`.
+/// `drain_loopback_from_idle()` below is dead for the same reason; #775 leaves
+/// it alone because moving it changes loopback behaviour and is unrelated to the
+/// census. The equivalence document records that.
+/// claim-lint:ok: #775 ruling R134 item 1 fixes the live idle site.
 #[cfg(target_arch = "x86_64")]
 fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
 
-        // #775/R125: existing non-interrupt housekeeping with IF=1. The
-        // callee shares a one-second rate limit with the loopback pump.
-        task::report_dispatch_strand_census_heartbeat();
         crate::net::drain_loopback_from_idle();
 
         // Check if there are any ready threads
