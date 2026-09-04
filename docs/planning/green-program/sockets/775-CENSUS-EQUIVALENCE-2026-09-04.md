@@ -417,6 +417,22 @@ Round 2 ran the same suite at `365c20c2` and recorded 26 invocations, 26
 `exit=0`, 502 passed, 0 failed (`builds/structure-tests.txt`); the round-3
 count is 505 because this round adds 3 test functions.
 
+## The round-2 captures no longer replay under the round-3 script
+
+The marker shape changed this round (it gained `seq`, `tick` and `ms`), so the
+round-2 captures under `serials/775/case-a/`, `case-b-post-removal-mutation/`,
+`case-d/`, `head-green/` and `production/` carry markers the current
+`scripts/x86-strand-census.sh` rejects as malformed. Running it on
+`head-green/boot1` prints `no valid DISPATCH_STRAND_CENSUS snapshot found (10
+malformed marker(s), first: [DISPATCH_STRAND_CENSUS:saved=0:...])` and exits 2.
+
+That is the honest behaviour -- those bytes were produced by a kernel that
+emitted a different marker -- but it means the round-2 tables in this document
+replay only against the script as it was at `51d7468f`
+(`git show 51d7468f:scripts/x86-strand-census.sh`), and the round-3 tables
+replay against the current one. The committed `new-census.txt` files under the
+round-2 directories are the outputs of the script of their day.
+
 ## Narrowings still open, and what round 3 closed
 
 Closed this round: the multi-log reading is now order-independent and rejects
