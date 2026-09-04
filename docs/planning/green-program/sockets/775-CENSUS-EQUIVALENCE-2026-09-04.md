@@ -60,9 +60,47 @@ gate reported a clean zero-warning build and a 3/3 pass.
 
 The removed-record column counts the three former `context_switch.rs`
 messages across each captured `serial_kernel.log`: saved kernel context,
-restored kernel context, and stranded thread with kernel context.  The count
-is zero in 3 of 3 boots, while each census remains non-vacuous at 11
-saved-blocked threads.
+restored kernel context, and switching to the process CR3 for a blocked-syscall
+kernel return.  Each message's count is zero in 3 of 3 boots, while each
+census remains non-vacuous at 11 saved-blocked threads.
 No QEMU process associated with `/root/breenix-775`, these artifacts, or the
 three gate run directories remained after the gate completed.
-<!-- claim-lint:ok: direct grep of all three serial_kernel.log files found zero former record strings; scoped ps filtering found no matching #775 QEMU process. -->
+<!-- claim-lint:ok: direct fixed-string greps of all three serial_kernel.log files found saved_record_count=0 restored_record_count=0 cr3_record_count=0 for each boot; scoped ps filtering found no matching #775 QEMU process. -->
+
+## Final validation
+
+The final code head validated on beast was `9e64763a`.  Both of the 2 x86
+builds exited 0; each output had a warning-line count of 0 and an error-line
+count of 0:
+<!-- claim-lint:ok: /root/775-build-x86-testing-final.txt and /root/775-build-x86-production-final.txt on beast are the full outputs; both commands exited 0 and grep counted 0 warning and 0 error lines. -->
+
+```text
+   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-775)
+    Finished `release` profile [optimized] target(s) in 17.47s
+```
+
+```text
+   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-775)
+    Finished `release` profile [optimized] target(s) in 14.04s
+```
+
+The release ARM64 kernel build also exited 0.  Its output contained no warning
+attributed to Breenix and one warning attributed to the repository's
+pre-existing pinned-nightly
+future-incompatibility notice for the toolchain-built `core` package, so its
+raw output contains one `warning:` line:
+<!-- claim-lint:ok: /root/775-build-aarch64-production-final.txt is the full output; the command exited 0 with 1 warning line naming only toolchain core and 0 error lines. The same established exception is documented in docs/planning/t3g-prb/PRB-STAGE3-GATE-RESULTS.md. -->
+
+```text
+    Finished `release` profile [optimized] target(s) in 0.61s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+```
+
+The single Cargo invocation discovered and ran 26 of 26 files matching
+`tests/*_structure.rs`: it produced 26 successful target summaries totaling
+502 passed tests, with zero failed summaries, warnings, or errors.
+
+<!-- claim-lint:ok: /root/775-structure-tests-final.txt on beast is the complete aggregate output; derived counts are result_count=26, passed_tests=502, failed_result_count=0, warning_count=0, error_count=0. -->
