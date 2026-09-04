@@ -182,8 +182,23 @@ fn launch_init_from_elf(
     // idle identity -- so the count this would decrement is another CPU's,
     // and decrementing it here underflows it.
 
-    // Register the userspace thread with the scheduler as the current running thread.
-    kernel::task::scheduler::spawn_as_current(init_thread);
+    // Register the userspace thread with the scheduler as the current running
+    // thread, and END the identity it displaces in the same critical section.
+    //
+    // This function never returns: it ERETs into EL0 and init owns the CPU from
+    // there. The boot continuation kthread that got us here is therefore
+    // finished, not descheduled. Left `Running` it is a strand by the census own
+    // definition -- a running thread on no CPU, in no queue, in no handoff slot,
+    // observed as `[SCHED_STRAND_FIRST:tid=11:shape=running:priv=kernel]` -- and
+    // its kernel stack can never be reclaimed, because the reclaimer only takes
+    // back the stack of a `Terminated` thread.
+    // claim-lint:ok: 2 of 3 boots showed the strand before this fix, in
+    // docs/planning/green-program/aarch64-testing/786-RCA-2026-09-04.md
+    kernel::task::kthread::publish_current_kthread_exit(0);
+    let retired = kernel::task::scheduler::spawn_as_current_retiring_outgoing(init_thread);
+    if let Some(retired_tid) = retired {
+        serial_println!("[boot] Boot continuation tid={} retired at the init handoff", retired_tid);
+    }
     kernel::drivers::ahci::emit_polling_attribution_once_if_scheduler_ready();
 
     // CRITICAL: Reset ALL idle threads' saved contexts to point to idle_loop_arm64.

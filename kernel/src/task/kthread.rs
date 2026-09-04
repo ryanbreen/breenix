@@ -363,6 +363,32 @@ pub fn kthread_join(handle: &KthreadHandle) -> Result<i32, KthreadError> {
     Ok(handle.inner.exit_code.load(Ordering::Acquire))
 }
 
+/// Publish the current kthread as exited and drop its registry entry, without
+/// waiting to be scheduled away.
+///
+/// `kthread_exit` cannot serve every ending. The boot continuation hands its CPU
+/// straight to userspace with an ERET and never comes back through the
+/// scheduler, so it can neither halt waiting to be switched away nor return.
+/// This performs the same publication -- exit code, exited flag, registry
+/// removal -- and returns, leaving the scheduler-side termination to the
+/// caller handoff so the retirement and the incoming thread land in one
+/// critical section.
+/// claim-lint:ok: 1 of the 2 kthread endings in tree, #786
+///
+/// claim-lint:ok: 1 caller, `launch_init_from_elf`, #786.
+/// Called on a kthread whose identity really is over. Returns the thread id it
+/// retired, or `None` when the caller was not a kthread.
+pub fn publish_current_kthread_exit(code: i32) -> Option<u64> {
+    let handle = current_kthread()?;
+    handle.inner.exit_code.store(code, Ordering::Release);
+    handle.inner.parked.store(false, Ordering::Release);
+    without_interrupts(|| {
+        KTHREAD_REGISTRY.lock().remove(&handle.inner.tid);
+    });
+    handle.inner.exited.store(true, Ordering::SeqCst);
+    Some(handle.inner.tid)
+}
+
 /// Exit the current kthread with a specific exit code.
 pub fn kthread_exit(code: i32) -> ! {
     let handle = current_kthread().expect("kthread_exit called outside kthread");

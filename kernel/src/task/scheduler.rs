@@ -1874,6 +1874,36 @@ impl Scheduler {
         let _ = (thread_id, thread_name);
     }
 
+    /// Retire the identity `add_thread_as_current` is about to displace.
+    ///
+    /// The displaced thread is not descheduled -- it is finished. It has handed
+    /// its CPU to the incoming thread directly, so no dispatch will ever pick it
+    /// up again, and leaving it `Running` makes it exactly what the strand census
+    /// looks for: a running thread on no CPU, in no queue, in no handoff slot.
+    /// A kernel thread retired this way also holds the last reference to its
+    /// kernel stack, which the reclaimer may only take back once the thread is
+    /// `Terminated`.
+    ///
+    /// claim-lint:ok: #786.
+    /// The idle identity is never retired: on the boot paths where the displaced
+    /// identity IS this CPU idle task, that task is still the CPU fallback and
+    /// terminating it would leave the CPU with nothing to run.
+    ///
+    /// Returns the retired thread id, if there was one.
+    fn retire_outgoing_current(&mut self) -> Option<u64> {
+        let cpu = Self::current_cpu_id();
+        let outgoing = self.cpu_state[cpu].current_thread?;
+        if self.cpu_state[cpu].idle_thread == outgoing {
+            return None;
+        }
+        let thread = self.get_thread_mut(outgoing)?;
+        if thread.state != ThreadState::Running {
+            return None;
+        }
+        thread.set_terminated();
+        Some(outgoing)
+    }
+
     /// Get a mutable thread by ID
     pub fn get_thread_mut(&mut self, id: u64) -> Option<&mut Thread> {
         self.threads
@@ -4860,6 +4890,38 @@ fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
 #[cfg(not(target_arch = "aarch64"))]
 fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
     drop(reclaimed_threads);
+}
+
+/// Install `thread` as this CPU current thread and retire the identity it
+/// displaces, in one scheduler critical section.
+///
+/// This is the handoff `spawn_as_current` is missing. The boot continuation
+/// hands its CPU straight to init with an ERET and never returns, so nothing
+/// downstream ever ends it: without this it stays `Running` forever on no CPU,
+/// which is a strand by the census own definition and a kernel stack the
+/// reclaimer can never take back.
+/// claim-lint:ok: 2 of 3 boots showed the resulting strand, #786
+///
+/// claim-lint:ok: `retirement_grace_target` in this file, #786.
+/// Retiring here is safe while the caller is still executing on the retired
+/// thread stack. Reclamation waits on `retirement_grace_target`, whose fence
+/// requires a second scheduler entry on EVERY online CPU including this one --
+/// and this CPU is inside the handoff with interrupts masked until the ERET, so
+/// the fence cannot elapse before the stack is genuinely dead.
+///
+/// Returns the retired thread id, if there was one.
+pub fn spawn_as_current_retiring_outgoing(thread: Box<Thread>) -> Option<u64> {
+    note_scheduler_publication();
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            let retired = scheduler.retire_outgoing_current();
+            scheduler.add_thread_as_current(thread);
+            retired
+        } else {
+            panic!("Scheduler not initialized");
+        }
+    })
 }
 
 /// Add a thread as the current running thread without scheduling.
