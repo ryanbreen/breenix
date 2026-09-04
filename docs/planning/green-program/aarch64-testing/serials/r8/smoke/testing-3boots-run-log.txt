@@ -1,0 +1,20 @@
+Building the ARM64 testing profile...
+    Finished `release` profile [optimized] target(s) in 0.08s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_af0ecd9a-65b-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_af0ecd9a-65b-1/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+[OK] Testing boot 1: marker=1 loaded=1 lockup=728-signature stalls_before_lockup=4 ext2_stalls=4 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=1 userspace_abort=1 boot_tests_fail=0 init_oracle=0
+[OK] Testing boot 2: marker=1 loaded=1 lockup=728-signature stalls_before_lockup=4 ext2_stalls=4 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=1 userspace_abort=1 boot_tests_fail=0 init_oracle=0
+[OK] Testing boot 3: marker=1 loaded=1 lockup=728-signature stalls_before_lockup=4 ext2_stalls=4 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=1 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+
+Testing profile, 3 boots:
+  marker + loaded: 3/3
+  post-loader lockup, #728-signature: 3/3
+  post-loader lockup, UNATTRIBUTED: 0/3
+  userspace panics (counted, not scored): 3
+  reds: 0/3
+PASS-WITH-ATTRIBUTED-LOCKUP: 3/3 boots reached the loader marker; 3 locked up afterwards with the #728 signature

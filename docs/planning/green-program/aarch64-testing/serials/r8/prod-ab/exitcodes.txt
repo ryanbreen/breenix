@@ -1,0 +1,16 @@
+main_1 exit=0
+head_1 exit=0
+main_2 exit=0
+head_2 exit=1
+main_3 exit=0
+head_3 exit=0
+main_4 exit=0
+head_4 exit=1
+main_5 exit=0
+head_5 exit=1
+main_6 exit=0
+head_6 exit=1
+main_7 exit=0
+head_7 exit=1
+main_8 exit=0
+head_8 exit=0

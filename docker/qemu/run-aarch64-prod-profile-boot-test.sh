@@ -49,7 +49,12 @@ BSSHD_LITERAL='bsshd: listening'
 # Any one of these literals means the production boot crashed or locked up.
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected'
 
-OUTPUT_DIR="/tmp/breenix_aarch64_prod_profile"
+# Two arms of an A/B (this branch's kernel against another checkout's) must be
+# able to run at the same time without writing each other's serial, so both
+# directories are overridable. Unset, they are exactly the paths this gate has
+# always used.
+OUTPUT_DIR="${BREENIX_PROD_PROFILE_OUTPUT_DIR:-/tmp/breenix_aarch64_prod_profile}"
+FAILURE_ROOT="${BREENIX_PROD_PROFILE_FAILURE_DIR:-/tmp/breenix_prod_profile_failures}"
 SERIAL_FILE="$OUTPUT_DIR/serial.txt"
 QEMU_PID=""
 
@@ -108,11 +113,11 @@ cleanup() {
 
     if [ "$status" -ne 0 ]; then
         timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-        failure_dir="/tmp/breenix_prod_profile_failures/$timestamp"
+        failure_dir="$FAILURE_ROOT/$timestamp"
         while [ -e "$failure_dir" ]; do
             sleep 1
             timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-            failure_dir="/tmp/breenix_prod_profile_failures/$timestamp"
+            failure_dir="$FAILURE_ROOT/$timestamp"
         done
         mkdir -p "$failure_dir"
         if [ -f "$SERIAL_FILE" ]; then
