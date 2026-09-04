@@ -4615,20 +4615,6 @@ pub fn preempt_schedule_irq() {
     // No-op: Let the assembly IRETQ path handle context switching
 }
 
-/// Non-blocking scheduling attempt (for interrupt context). Returns None if lock is busy.
-/// Note: Currently unused - the assembly interrupt return path handles scheduling.
-/// Kept as part of public API for potential future use in SMP context.
-#[allow(dead_code)]
-pub fn try_schedule() -> Option<(u64, u64)> {
-    // Do not disable interrupts; we only attempt a non-blocking lock here
-    if let Some(mut scheduler_lock) = try_lock_scheduler() {
-        if let Some(scheduler) = scheduler_lock.as_mut() {
-            return scheduler.schedule().map(|(old, new)| (old.id(), new.id()));
-        }
-    }
-    None
-}
-
 /// Check if the current thread is the idle thread (safe to call from IRQ context)
 /// Returns None if the scheduler lock can't be acquired (to avoid deadlock)
 #[allow(dead_code)]
