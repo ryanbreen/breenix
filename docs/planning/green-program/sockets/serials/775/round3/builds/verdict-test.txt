@@ -1,23 +1,23 @@
    Compiling kernel v0.1.0 (/root/breenix-775/kernel)
    Compiling breenix v0.1.0 (/root/breenix-775)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.33s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.33s
      Running tests/x86_gate_verdict_test.rs (target/debug/deps/x86_gate_verdict_test-5f4dc2de8f8364ec)
 
 running 14 tests
 test rejects_a_missing_expected_exits_variable ... ok
-test a_tail_truncated_mid_marker_does_not_discard_the_red_reading ... ok
 test rejects_a_strand_and_names_the_thread_from_the_scheduler_table ... ok
 test a_malformed_trailing_marker_does_not_discard_the_red_reading ... ok
-test rejects_empty_non_decimal_and_zero_expected_exits_values ... ok
-test rejects_a_fault_killed_test_and_names_the_process ... ok
-test accepts_a_complete_green_cohort_at_the_expected_floor ... ok
+test a_tail_truncated_mid_marker_does_not_discard_the_red_reading ... ok
 test rejects_a_tally_below_the_expected_exit_floor ... ok
+test accepts_a_complete_green_cohort_at_the_expected_floor ... ok
+test rejects_a_fault_killed_test_and_names_the_process ... ok
 test highest_seq_snapshot_wins_even_when_two_share_a_physical_line ... ok
-test an_overflowed_ledger_is_never_reported_as_a_clean_census ... ok
-test unavailable_census_falls_through_to_the_real_first_cause ... ok
-test snapshots_from_two_boots_are_rejected_rather_than_mixed ... ok
-test the_verdict_does_not_depend_on_argument_order ... ok
+test rejects_empty_non_decimal_and_zero_expected_exits_values ... ok
 test the_census_reports_its_snapshot_provenance_and_observed_cadence ... ok
+test snapshots_from_two_boots_are_rejected_rather_than_mixed ... ok
+test an_overflowed_ledger_is_never_reported_as_a_clean_census ... ok
+test the_verdict_does_not_depend_on_argument_order ... ok
+test unavailable_census_falls_through_to_the_real_first_cause ... ok
 
-test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
 

@@ -1,0 +1,31 @@
+cargo test --test <target>, one target per invocation, in /root/breenix-775
+on the beast breenix-x86 VM, at the round-3 head of fix/775-dispatch-log-removal.
+
+26 tests/*_structure.rs targets, 505 passed, 0 failed.
+
+block_request_lifetime_structure                     ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+context_restore_structure                            ok. 97 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 144.15s
+coreproof_component_h_structure                      ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+coreproof_coverage_structure                         ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+coreproof_mutation_register_structure                ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+coreproof_sites_structure                            ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+degenerate_transfer_fd_validation_structure          ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+dispatch_strand_census_structure                     ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+dma_and_log_sink_structure                           ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+exec_lock_order_structure                            ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.83s
+exit_tally_structure                                 ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+ext2_lock_structure                                  ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+fork_lock_order_structure                            ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+green_program_envelope_structure                     ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+loopback_pump_structure                              ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s
+masked_binary_load_structure                         ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+mmap_floor_structure                                 ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+net_lock_structure                                   ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.94s
+poll_tcp_gate_wiring_structure                       ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+preempt_bracket_structure                            ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+serial_line_atomicity_structure                      ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+signal_eintr_predicate_structure                     ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+strand_handoff_structure                             ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s
+syscall_return_register_structure                    ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+teardown_structure                                   ok. 81 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 71.52s
+tty_oracle_structure                                 ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s

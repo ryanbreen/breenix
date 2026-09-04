@@ -394,9 +394,15 @@ each transcript is a real compile rather than a cache hit.
 
 | command | round-3 result |
 |---|---|
-| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | `Finished ... in 20.76s`, exit 0, 0 lines matching `^(warning\|error)` |
-| `cargo build --release --bin qemu-uefi` | `Finished ... in 15.95s`, exit 0, 0 such lines |
-| `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | exit 0, 1 such line |
+| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | `Finished ... in 15.04s`, exit 0, 0 lines matching `^(warning\|error)` |
+| `cargo build --release --bin qemu-uefi` | `Finished ... in 15.37s`, exit 0, 0 such lines |
+| `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | `Finished ... in 29.97s`, exit 0, 1 such line |
+
+`tests/*_structure.rs` were run one target per invocation under Cargo:
+26 targets, 26 exit 0, 505 passed, 0 failed, 0 lines matching
+`^(warning|error)` across the 26
+(`docs/planning/green-program/sockets/serials/775/round3/builds/structure-tests-26-targets.txt`). `tests/x86_gate_verdict_test.rs` ran
+separately: 14 passed, 0 failed (`round3/builds/verdict-test.txt`).
 
 <!-- claim-lint:ok: the aarch64 warning line names only the toolchain's own
      core package; the same established exception is recorded in
@@ -405,10 +411,9 @@ The aarch64 warning is the pinned nightly's future-incompatibility notice for
 `core v0.0.0` in the toolchain's own source tree, printed verbatim in
 `builds/aarch64-kernel.txt`. No warning names a Breenix crate.
 
-`tests/*_structure.rs` were run one target per invocation, under Cargo — it
-did not self-lock, so no `rustc --test` fallback was needed. 26 invocations,
-26 `exit=0`, 26 `test result: ok` lines, 502 passed, 0 failed, 0 lines
-matching `^(warning|error)`. Full output in `builds/structure-tests.txt`.
+Round 2 ran the same suite at `365c20c2` and recorded 26 invocations, 26
+`exit=0`, 502 passed, 0 failed (`builds/structure-tests.txt`); the round-3
+count is 505 because this round adds 3 test functions.
 
 ## Narrowings still open, and what round 3 closed
 

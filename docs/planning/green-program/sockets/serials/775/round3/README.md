@@ -127,11 +127,12 @@ previous 8323 ms earlier`.
 
 | transcript | result |
 |---|---|
-| `x86-testing.txt` | `cargo build --release --features testing,external_test_bins --bin qemu-uefi`, exit 0, 0 lines matching `^(warning\|error)` |
-| `x86-zero-feature.txt` | `cargo build --release --bin qemu-uefi`, exit 0, 0 such lines |
-| `aarch64-kernel.txt` | the soft-float kernel target, exit 0, 1 such line |
+| `x86-testing.txt` | `cargo build --release --features testing,external_test_bins --bin qemu-uefi`, `Finished ... in 15.04s`, exit 0, 0 lines matching `^(warning\|error)` |
+| `x86-zero-feature.txt` | `cargo build --release --bin qemu-uefi`, `Finished ... in 15.37s`, exit 0, 0 such lines |
+| `aarch64-kernel.txt` | the soft-float kernel target, `Finished ... in 29.97s`, exit 0, 1 such line |
 | `structure-test.txt` | `cargo test --test dispatch_strand_census_structure`, 6 passed 0 failed |
 | `verdict-test.txt` | `cargo test --test x86_gate_verdict_test`, 14 passed 0 failed |
+| `structure-tests-26-targets.txt` | the `tests/*_structure.rs` targets, one per invocation: 26 targets, 26 exit 0, 505 passed, 0 failed |
 
 <!-- claim-lint:ok: the aarch64 warning names only the toolchain's own core
      package; the same established exception is recorded in
