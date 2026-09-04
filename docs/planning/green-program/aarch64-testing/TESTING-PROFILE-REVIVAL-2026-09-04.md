@@ -116,13 +116,34 @@ kernel thread and joined it from the idle identity. That left a join reachable
 from the idle identity, which is the same shape one level up, so round 3 moves
 the whole remainder instead.
 
-After `init_scheduler()`, the timer and the secondary CPUs are live and
-`kernel_main` does exactly two things: it hands the rest of the boot sequence
-to one kernel thread, `boot_continuation`, and it releases the boot preemption
-pin and idles. Everything that follows -- the kthread and workqueue self-tests,
-Test 7's daemon phase and the CPU-1 kthread it joins, the boot-test batteries,
-the ext2 loader, the init launch, the completion marker -- runs on that thread,
-which is a schedulable identity the scheduler hands a continuation back to.
+`init_scheduler()` is at `kernel/src/main_aarch64.rs:838`, and it is where the
+boot context becomes CPU 0's idle task. The handoff is not the next statement.
+Between the two, still on that identity, `kernel_main` initializes the
+workqueue subsystem (`:844`), the softirq subsystem and the loopback pump
+(`:850`, `:851`), spawns the render thread when a display is present and VirGL
+does not own it (`:869`), initializes and enables tracing (through `:880`),
+pre-loads `/sbin/init` from ext2 while the timer is still off (`:891`,
+`read_init_from_ext2` at `:893`), activates xHCI MSI (`:910`), initializes the
+timer interrupt (`:924`), brings up the secondary CPUs and their GICR
+redistributor map (through `:1231`), and adds a pinned ksoftirqd per newly
+online CPU (`:1235`). Only then does it hand the rest of the boot sequence to
+one kernel thread, `boot_continuation`, spawned as `kboot` at `:1250`, release
+the boot preemption pin at `:1264`, enable interrupts at `:1266`, and enter its
+idle loop -- `wfi` plus `drain_loopback_from_idle()` at `:1273`.
+
+The `/sbin/init` pre-load reads ext2 while still on the idle identity, and its
+placement before `timer_interrupt::init()` at `:924` is what keeps that safe:
+with the timer not yet running, the sleep-eligibility predicates answer false
+there, so the read spins instead of publishing a blocked state. The round-3
+review reached the same reading of that window under F01. Everything that runs
+after the handoff -- the kthread and workqueue self-tests, Test 7's daemon
+phase and the CPU-1 kthread it joins, the boot-test batteries, the ext2
+test-binary loader, the init launch, the completion marker -- runs on
+`boot_continuation`, which is a schedulable identity the scheduler hands a
+continuation back to.
+claim-lint:ok: every line number in this paragraph was read out of
+kernel/src/main_aarch64.rs at write time with `grep -n`; the ordering claim is
+also pinned by tests/aarch64_testing_profile_structure.rs::the_boot_sequence_runs_in_a_kernel_thread_and_the_loader_with_it.
 
 The loader therefore needs no kthread of its own any more: it is a plain call
 on `boot_continuation`. The idle identity joins nothing, blocks on nothing, and
@@ -232,31 +253,40 @@ parker would
 publish `Blocked` anyway and be stranded.
 
 Both windows are counted, not asserted: `[WORKQUEUE_PARK_RACE:cancelled=N:intent_cleared=N]`
-and `[KSOFTIRQD_PARK_RACE:cancelled=N]` reach serial from the self-tests. 3 of
-the 6 boots of the round's final build reported a count above 0 -- 2
-`cancelled=1` and 1 `intent_cleared=1` -- so the window is real and is being
-taken. Each of those is 1 wakeup the old shape would have dropped.
+and `[KSOFTIRQD_PARK_RACE:cancelled=N]` reach serial from the self-tests. In the
+committed 12-boot batch (`serials/r3/batches/README.md`), 1 of the 12 boots
+reported `WORKQUEUE_PARK_RACE:cancelled=0:intent_cleared=1` and the other 11
+reported zeroes; `KSOFTIRQD_PARK_RACE:cancelled=0` in 12 of 12. So the window is
+real and it is taken, at 1 boot in 12 on this host, and that 1 is a wakeup the
+old shape would have dropped. Round 3 published a higher rate over a batch whose
+serials were not committed; that number is withdrawn.
 
 ### The measurement
 
-Four 12-boot batches on this Mac, 3 QEMUs at a time, 45s each, each boot on a
-fresh copy of the same fixture, counted by
-`grep -al "Test processes loaded" | wc -l`:
+One 12-boot batch on this Mac at the round-4 head `ad455130`, 3 QEMUs at a
+time, 45s each, each boot on a fresh copy of the same fixture. Every row of it
+is committed at `serials/r3/batches/README.md`, one summary line per boot:
 
-| Build | Reached the completion marker |
+| Profile | Result |
 |---|---|
-| round-2 head `d7679a7b` | 35 of 36 |
-| round 3, boot sequence on a kthread, park protocol only | 30 of 36 |
-| round 3, plus the interrupts-enabled halt | 36 of 36 |
+| `testing`, 12 boots | 12 of 12 reached `[test] Test processes loaded`, 12 of 12 loaded 78 of 78 |
+| `boot_tests`, 1 boot | 1 of 1 printed `[boot] All boot tests passed!` |
+| no features, 2 boots | 2 of 2 pre-loaded init and ran `/bin/heartbeat` |
 
-The middle row is the regression this round would have shipped: 5 of its 6
-failures wedge in Test 7's daemon phase with `[WORKQUEUE_PARK_RACE:...]`
-already on serial, 1 wedges in the workqueue test. The top row's single failure
-is the same defect reached the other way -- a workqueue worker placed on the
-preempt-pinned boot CPU while its flusher masked-spins -- which is why the
-bottom row is better than the baseline rather than merely equal to it. A hung
-serial from the middle row is committed as
-`serials/r3/test7-wedge-before-the-halt-fix.txt`.
+`IDLE_SLEEP_REFUSED` appears 0 times in 12 of 12 of those boots, which is the
+runtime half of the refusal's claim: the boot sequence no longer asks the idle
+identity to block.
+
+Round 3 also published a 3-way comparison -- a round-2-head batch, a
+park-protocol-only batch, and a final batch, 36 boots each -- and those batches
+were never committed, so the review could not check them. Those 3 numbers are
+withdrawn rather than restated. What survives is the qualitative finding they
+were reporting, which has its own committed artifact: relocating the boot
+sequence and adding the park protocol, without the interrupts-enabled halt,
+wedged inside Test 7's daemon phase, and one of those hung serials is committed
+as `serials/r3/test7-wedge-before-the-halt-fix.txt` -- the boot progresses to
+`[WORKQUEUE_PARK_RACE:cancelled=0:intent_cleared=0]` at line 174 and reports a
+soft lockup 3 lines later. The halt fix below is aimed at exactly that.
 
 
 ## The fixture, and the count line
@@ -344,14 +374,18 @@ supplies it: the 9 `EXT2_LOCK_SPIN_STALL` lines in that serial are 7 on
 `lock=ROOT_EXT2_read` and 2 on `lock=ROOT_EXT2_write`, interleaved, each about
 0.5s, immediately before `!!! SOFT LOCKUP DETECTED !!!`.
 
-Incidence, re-derived over the 12-boot round-3 batch `c2A`
-(`grep -l "SOFT LOCKUP DETECTED"` -> 11 of 12;
-`grep -l "Test processes loaded"` -> 12 of 12): every boot reaches the marker,
-and 11 of 12 go on to lock up. The per-boot stall counts in that batch are
-9, 10, 7, 5, 0, 7, 4, 7, 6, 4, 7, 4 -- the 0 is the boot that did not lock up.
-It is present at the round-1 tip too
+Incidence over the committed 12-boot batch (`serials/r3/batches/README.md`,
+every row of which is a committed summary line): 12 of 12 boots reach the
+marker, and there is a post-loader lockup with the #728 signature on 11 of the
+12. Signature means `EXT2_LOCK_SPIN_STALL` lines precede the lockup: in 11 of
+those 11 they do, 4 to 9 of them per boot, and the 1 boot that did not lock up
+logged 0 stalls. The 2 specimens committed in full are
+`serials/r3/batches/testing-lockup-boot6.txt` (9 stalls, all before the lockup
+at line 3464) and `serials/r3/batches/testing-lockup-boot1.txt` (4 stalls, all
+before the lockup at line 3327). The lockup is present at the round-1 tip too
 (`serials/r2/testing-profile-boot-at-06d149b6.txt`), so it is not something
-this branch introduced.
+this branch introduced. It is not fixed in this branch; #728 is the next
+lane.
 
 It is not fixed here. #562 and #761 are about reaching the loader's completion
 marker; #728 is a different defect with its own scope, its own filing, and a
@@ -380,23 +414,27 @@ checkout (`/root/breenix-a64r2`) with
 touching `kernel/src/task/scheduler.rs` first.
 
 Runtime, aarch64, on this Mac, 3 QEMUs at a time, 45s each, a fresh copy of the
-same fixture per boot:
+same fixture per boot. Every number here has a committed summary row in
+`serials/r3/batches/README.md`:
 
-- `testing`: 36 of 36 boots reached
-  `[test] Test processes loaded - will run via timer interrupts`
-  (`grep -al` over the 3 12-boot batches `c2A`, `c2B`, `c2C`).
-- no features: 2 of 2 boots launched init from the pre-loaded ELF and reached
-  `[heartbeat]`. This profile matters because the init launch moved onto the
-  boot continuation.
+- `testing`: 12 of 12 boots reached
+  `[test] Test processes loaded - will run via timer interrupts`, and 12 of 12
+  reported `Loaded 78/78`.
+- no features: 2 of 2 boots pre-loaded init (`[boot] Init binary pre-loaded:
+  298616 bytes`) and went on to run `/bin/heartbeat`, 46 and 45 `[heartbeat]`
+  lines. This profile matters because the init launch moved onto the boot
+  continuation.
 - `boot_tests`: 1 of 1 boot printed `[boot] All boot tests passed!`.
 
 x86 was booted as well, not only built: `./docker/qemu/run-boot-parallel.sh 1`
-under xvfb on beast, 2 runs of this round and 1 each of `d7679a7b` (round 2)
-and `bfbb7575` (the branch base, which is on `main`).
-4 of those 4 reported the same
-line -- `TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]` -- after
-`USERSPACE TEST COMPLETE`, and 4 of 4 were scored FAIL by
-`scripts/x86-gate-verdict.sh`.
+under xvfb on beast, 2 runs at `ad455130`, both serials committed as
+`serials/r3/batches/x86-boot-parallel-run1.txt` and `-run2.txt`. 2 of the 2
+were scored FAIL by `scripts/x86-gate-verdict.sh`. Run 2 reported
+`TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]`; run 1 reported
+`exited=22 nonzero=2 failed=[simple_exit:42,/usr/local/test/bin/clon:1]`, an
+extra intermittent failure at the same commit that is now filed as
+https://github.com/ryanbreen/breenix/issues/782. Round 3's "4 of 4 reported the
+same line" covered runs whose serials were not committed, and is withdrawn.
 
 That red is not this branch's. A fifth run at `52491c4b` (main, 2026-09-02)
 passed 1 of 1, so it arrives on `main` between that revision and `bfbb7575`.
