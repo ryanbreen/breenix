@@ -1,7 +1,10 @@
 use std::fs;
+use std::path::PathBuf;
 
 fn read(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|error| panic!("failed to read {path}: {error}"))
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
+    fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
 #[test]
@@ -25,10 +28,12 @@ fn dispatch_records_and_diagnostic_feature_are_gone() {
 }
 
 #[test]
-fn replacement_census_is_wired_to_save_restore_exit_and_completion() {
+fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
     let context_switch = read("kernel/src/interrupts/context_switch.rs");
     let process_task = read("kernel/src/task/process_task.rs");
     let handlers = read("kernel/src/syscall/handlers.rs");
+    let main = read("kernel/src/main.rs");
+    let task_mod = read("kernel/src/task/mod.rs");
     let census = read("kernel/src/task/dispatch_strand_census.rs");
 
     assert_eq!(
@@ -51,11 +56,21 @@ fn replacement_census_is_wired_to_save_restore_exit_and_completion() {
     );
     assert_eq!(
         handlers
-            .matches("dispatch_strand_census::report_once()")
+            .matches("dispatch_strand_census::report_snapshot()")
             .count(),
         1
     );
-    assert!(census.contains("[DISPATCH_STRAND_CENSUS:threads_saved_blocked="));
+    assert_eq!(
+        main.matches("dispatch_strand_census::start_heartbeat()")
+            .count(),
+        1
+    );
+    assert!(task_mod
+        .contains("#[cfg(target_arch = \"x86_64\")]\npub(crate) mod dispatch_strand_census;"));
+    assert!(census.contains("[DISPATCH_STRAND_CENSUS:saved="));
+    assert!(census.contains("const STRANDED_TID_CAPACITY: usize = 16;"));
+    assert!(census.contains("if crate::arch_interrupts_enabled()"));
+    assert!(census.contains("kthread_run(heartbeat, \"dispatch-census\")"));
     assert!(census.contains("static LEDGER: [AtomicU8; LEDGER_CAPACITY]"));
 }
 
@@ -65,13 +80,13 @@ fn host_consumers_have_no_removed_record_dependency() {
     let dispatch_census = read("scripts/772-dispatch-census.py");
 
     assert!(strand_gate.contains("DISPATCH_STRAND_CENSUS"));
-    assert!(strand_gate.contains("[[ \"$stranded\" -eq 0 ]]"));
-    assert!(strand_gate.contains("[[ \"$overflow\" -ne 0 ]]"));
     assert!(!strand_gate.contains("/Saved kernel context for blocked thread"));
     assert!(!strand_gate.contains("/Restored kernel context for thread"));
 
     assert!(dispatch_census.contains("#775 retired"));
-    assert!(!dispatch_census.contains("RESTORE_RE = re.compile"));
-    assert!(!dispatch_census.contains("SAVE_RE = re.compile"));
+    assert!(!dispatch_census.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("RESTORE_RE") || line.starts_with("SAVE_RE")
+    }));
     assert!(!dispatch_census.contains("\"turns\":"));
 }

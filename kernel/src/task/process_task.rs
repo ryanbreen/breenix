@@ -933,7 +933,7 @@ impl ProcessScheduler {
                 });
             }
 
-            #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+            #[cfg(target_arch = "x86_64")]
             crate::task::dispatch_strand_census::note_exit(thread_id);
             log::debug!(
                 "Process {} '{}' (thread {}) exited with code {}",

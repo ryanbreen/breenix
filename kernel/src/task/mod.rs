@@ -8,7 +8,7 @@ use core::{
 
 // Core task/thread modules - shared across architectures
 pub mod completion;
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatch_strand_census;
 pub mod executor;
 pub mod exit_tally;

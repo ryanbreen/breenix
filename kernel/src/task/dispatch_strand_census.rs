@@ -4,18 +4,24 @@
 //! written in the context-switch path: whether a TID had ever had a blocked
 //! kernel context saved, whether its most recent save/restore event was a
 //! restore, and whether it later exited.  Keep exactly those facts in a fixed
-//! atomic ledger so the hot path adds no lock, allocation, or formatting.
+//! atomic ledger so the hot path adds no lock, allocation, or formatting.  A
+//! timer-blocked kthread emits snapshots from ordinary thread context, where
+//! interrupts are enabled and the COM1 serial lock is legal.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use core::{
+    fmt,
+    sync::atomic::{AtomicU64, AtomicU8, Ordering},
+};
 
 const LEDGER_CAPACITY: usize = 4096;
+const STRANDED_TID_CAPACITY: usize = 16;
+const HEARTBEAT_INTERVAL_NS: u64 = 1_000_000_000;
 const EVER_SAVED: u8 = 1 << 0;
 const LAST_EVENT_RESTORED: u8 = 1 << 1;
 const EXITED: u8 = 1 << 2;
 
 static LEDGER: [AtomicU8; LEDGER_CAPACITY] = [const { AtomicU8::new(0) }; LEDGER_CAPACITY];
 static OVERFLOW_EVENTS: AtomicU64 = AtomicU64::new(0);
-static REPORTED: AtomicBool = AtomicBool::new(false);
 
 #[inline(always)]
 fn slot(tid: u64) -> Option<&'static AtomicU8> {
@@ -30,7 +36,7 @@ pub(crate) fn note_save(tid: u64) {
         OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    let _ = state.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+    let _ = state.fetch_update(Ordering::Release, Ordering::Relaxed, |old| {
         Some((old | EVER_SAVED) & !LAST_EVENT_RESTORED)
     });
 }
@@ -42,7 +48,7 @@ pub(crate) fn note_restore(tid: u64) {
         OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    state.fetch_or(LAST_EVENT_RESTORED, Ordering::Relaxed);
+    state.fetch_or(LAST_EVENT_RESTORED, Ordering::Release);
 }
 
 /// Exclude a thread exactly as the former process-exit serial record did.
@@ -52,39 +58,114 @@ pub(crate) fn note_exit(tid: u64) {
         OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    state.fetch_or(EXITED, Ordering::Relaxed);
+    state.fetch_or(EXITED, Ordering::Release);
 }
 
-/// Emit the host gate's compact source after the userspace test battery ends.
-///
-/// This is deliberately the only formatted operation in this module.  Its
-/// caller is the final-userspace-exit path, outside interrupt/context-switch
-/// context and after `note_exit` has recorded that last process.
-pub(crate) fn report_once() {
-    if REPORTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
+struct TidList<'a>(&'a [u64]);
 
+impl fmt::Display for TidList<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            return formatter.write_str("-");
+        }
+
+        for (index, tid) in self.0.iter().enumerate() {
+            if index != 0 {
+                formatter.write_str(",")?;
+            }
+            write!(formatter, "{tid}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Emit one compact host-gate snapshot.
+///
+/// The callers are ordinary thread/syscall contexts, never interrupt or
+/// context-switch paths. Acquire loads pair with the release RMWs in the three
+/// recorders, so a snapshot observes published ledger events across CPUs.
+/// claim-lint:ok: #775 ruling R125 fixes the two permitted emission call sites.
+pub(crate) fn report_snapshot() {
     let mut threads_saved_blocked = 0u64;
     let mut stranded = 0u64;
-    for state in &LEDGER {
-        let state = state.load(Ordering::Relaxed);
+    let mut stranded_tids = [0u64; STRANDED_TID_CAPACITY];
+    let mut stranded_tid_count = 0usize;
+    for (tid, state) in LEDGER.iter().enumerate() {
+        let state = state.load(Ordering::Acquire);
         if state & EVER_SAVED == 0 {
             continue;
         }
         threads_saved_blocked += 1;
         if state & (EXITED | LAST_EVENT_RESTORED) == 0 {
             stranded += 1;
+            if stranded_tid_count < stranded_tids.len() {
+                stranded_tids[stranded_tid_count] = tid as u64;
+                stranded_tid_count += 1;
+            }
         }
     }
+    let tid_overflow = stranded.saturating_sub(stranded_tid_count as u64);
 
     crate::serial_println!(
-        "[DISPATCH_STRAND_CENSUS:threads_saved_blocked={}:stranded={}:overflow={}]",
+        "[DISPATCH_STRAND_CENSUS:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}]",
         threads_saved_blocked,
         stranded,
-        OVERFLOW_EVENTS.load(Ordering::Relaxed),
+        TidList(&stranded_tids[..stranded_tid_count]),
+        tid_overflow,
+        OVERFLOW_EVENTS.load(Ordering::Acquire),
     );
+}
+
+fn monotonic_now_ns() -> u64 {
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+fn sleep_heartbeat_interval() {
+    use super::thread::ThreadState;
+
+    let Some(tid) = super::scheduler::current_thread_id() else {
+        crate::arch_halt_with_interrupts();
+        return;
+    };
+    let wake_time_ns = monotonic_now_ns().saturating_add(HEARTBEAT_INTERVAL_NS);
+    super::scheduler::with_scheduler(|scheduler| {
+        scheduler.block_current_for_timer(wake_time_ns);
+    });
+
+    loop {
+        let blocked = super::scheduler::with_scheduler(|scheduler| {
+            scheduler.wake_expired_timers();
+            scheduler
+                .get_thread(tid)
+                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
+        })
+        .unwrap_or(false);
+        if !blocked {
+            break;
+        }
+        super::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+    }
+}
+
+fn heartbeat() {
+    loop {
+        sleep_heartbeat_interval();
+
+        // kthread_entry enables interrupts before invoking this function, and
+        // the sleep primitive returns through enable_and_hlt. Keep the check at
+        // the emission boundary so a future caller cannot silently move serial
+        // locking into an interrupts-disabled context.
+        if crate::arch_interrupts_enabled() {
+            report_snapshot();
+        }
+    }
+}
+
+/// Start the once-per-second census heartbeat before userspace dispatch.
+pub(crate) fn start_heartbeat() {
+    if super::kthread::kthread_run(heartbeat, "dispatch-census").is_err() {
+        crate::serial_println!("[DISPATCH_STRAND_CENSUS_UNAVAILABLE:heartbeat_spawn_failed]");
+    }
 }

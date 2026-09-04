@@ -667,7 +667,6 @@ fn save_kernel_context_with_guard(
                 // #772/#775: the reason counter and the fixed atomic strand
                 // ledger cover this same successful kernel-context save.
                 note_dispatch_save(save_reason, thread_id, interrupt_frame);
-                #[cfg(feature = "testing")]
                 crate::task::dispatch_strand_census::note_save(thread_id);
             }
         }
@@ -1119,7 +1118,6 @@ fn switch_to_thread(
                             // #772/#775: the aggregate counter and fixed atomic
                             // strand ledger cover this completed restore.
                             crate::trace_count!(DISPATCH_KERNEL_RESTORE_TOTAL);
-                            #[cfg(feature = "testing")]
                             crate::task::dispatch_strand_census::note_restore(thread_id);
 
                             // Update TSS RSP0 for the thread's kernel stack
