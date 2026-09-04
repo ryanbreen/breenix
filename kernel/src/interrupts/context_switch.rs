@@ -664,24 +664,11 @@ fn save_kernel_context_with_guard(
                 thread.context.cs = interrupt_frame.code_segment.0 as u64;
                 thread.context.ss = interrupt_frame.stack_segment.0 as u64;
 
-                // #772: this increment sits with the record below, inside the
-                // same `if let`, so DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT
-                // + _MANDATORY equals the number of records emitted, whether or
-                // not the record itself is compiled in.
+                // #772/#775: the reason counter and the fixed atomic strand
+                // ledger cover this same successful kernel-context save.
                 note_dispatch_save(save_reason, thread_id, interrupt_frame);
                 #[cfg(feature = "testing")]
                 crate::task::dispatch_strand_census::note_save(thread_id);
-
-                // #775 / #772 Q2: one of the three dispatch-path serial
-                // records, compiled out by `quiet_dispatch_log`.
-                #[cfg(not(feature = "quiet_dispatch_log"))]
-                log::info!(
-                    "Saved kernel context for blocked thread {}: RIP={:#x} CS={:#x} RSP={:#x}",
-                    thread_id,
-                    thread.context.rip,
-                    thread.context.cs,
-                    thread.context.rsp
-                );
             }
         }
     }
@@ -1129,21 +1116,11 @@ fn switch_to_thread(
                                 });
                             }
 
-                            // #772 denominator: one increment per completed
-                            // switch into a blocked-in-syscall kernel context
-                            // -- the same event the record below names.
+                            // #772/#775: the aggregate counter and fixed atomic
+                            // strand ledger cover this completed restore.
                             crate::trace_count!(DISPATCH_KERNEL_RESTORE_TOTAL);
                             #[cfg(feature = "testing")]
                             crate::task::dispatch_strand_census::note_restore(thread_id);
-
-                            // #775 / #772 Q2: second of the three records.
-                            #[cfg(not(feature = "quiet_dispatch_log"))]
-                            log::info!(
-                                "Restored kernel context for thread {}: RIP={:#x} RSP={:#x}",
-                                thread_id,
-                                thread.context.rip,
-                                thread.context.rsp
-                            );
 
                             // Update TSS RSP0 for the thread's kernel stack
                             if let Some(kernel_stack_top) = thread.kernel_stack_top {
@@ -1164,13 +1141,6 @@ fn switch_to_thread(
                                 Cr3Flags::empty(),
                             );
                         }
-                        // #775 / #772 Q2: third of the three records.
-                        #[cfg(not(feature = "quiet_dispatch_log"))]
-                        log::debug!(
-                            "Switched to process CR3 {:#x} for blocked-in-syscall kernel return (thread {})",
-                            process_cr3,
-                            thread_id
-                        );
                     }
 
                     // Set up CR3 for the process's page table

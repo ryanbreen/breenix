@@ -16,10 +16,9 @@ dump and reports every `DISPATCH_*` counter beside the proxy, plus the
 derivations the mechanism question actually needs:
 
   * `kernel_blocked_saves`  -- the two `DISPATCH_SAVE_REASON_KERNEL_BLOCKED_*`
-    counters summed. This is the counter-side count of the same event the
-    "Saved kernel context for blocked thread N" record names, so
-    `kernel_blocked_saves == saved_records` is a cross-check on the wiring
-    whenever the records are compiled in.
+    counters summed. This is the counter-side count of successful
+    blocked-in-syscall kernel-context saves after #775 removed the serial
+    record that formerly named each event.
   * `noprogress_kernel_blocked_*` and `noprogress_mandatory_share` -- of the
     kernel-context saves that retired no instruction, the fraction admitted by
     the blocked/terminated arm, which the #772 refusal is conjoined out of and
