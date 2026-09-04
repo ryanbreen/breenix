@@ -1660,7 +1660,8 @@ fn wakeup_placement_validator_rejects_max_cpu_selection() {
     let source = repo_text("kernel/src/task/scheduler.rs");
     let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
         .expect("find wakeup placement fixture");
-    let mutated_wakeup = wakeup.replacen("self.online_cpu_count()", "MAX_CPUS", 1);
+    let mutated_wakeup =
+        wakeup.replacen("(0..self.online_cpu_count())", "(0..MAX_CPUS)", 1);
     assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
     let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
     assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
