@@ -40,14 +40,23 @@ if [ -z "$KERNEL_BIN" ]; then
     exit 2
 fi
 
-# The counter symbols in this build: name, file-relative address, and the byte
-# offset the readable u64 sits at. DISPATCH_* are `TraceCounter`s, whose
-# per_cpu[0].value is at +64; WAIT_LOOP_PARK_* are plain whole-machine
-# AtomicU64s, at +0 (they cannot be TraceCounters -- the park path runs before
-# the per-CPU base a TraceCounter's slot lookup needs; see
-# kernel/src/tracing/providers/counters.rs).
-nm "$KERNEL_BIN" | awk '$3 ~ /^DISPATCH_/ { print $3, "0x"$1, 64 }
-                        $3 ~ /^WAIT_LOOP_PARK_/ { print $3, "0x"$1, 0 }' |
+# Per-CPU slot count of a `TraceCounter`, i.e. kernel/src/tracing/core.rs's
+# MAX_CPUS. A slot past the CPUs a boot actually brings up reads 0, so summing
+# the 16 of them is safe; if MAX_CPUS ever exceeds this, the sum truncates.
+PERCPU_SLOTS=16
+
+# The counter symbols in this build: name, file-relative address, and how many
+# per-CPU slots to read. DISPATCH_* are `TraceCounter`s and are read at slot 0
+# only (1), the reading the committed census.json files carry.
+# WAIT_LOOP_PARK_TOTAL is also a `TraceCounter` -- it is bumped after the park
+# path's per-CPU guard, so its slot lookup is safe there -- and is read as a
+# sum over its $PERCPU_SLOTS slots. WAIT_LOOP_PARK_SKIPPED must survive a park
+# that guard refuses, so it stays a plain whole-machine AtomicU64 and is read
+# at +0 (0 slots). See kernel/src/tracing/providers/counters.rs.
+nm "$KERNEL_BIN" | awk -v slots="$PERCPU_SLOTS" '
+    $3 ~ /^DISPATCH_/            { print $3, "0x"$1, 1 }
+    $3 == "WAIT_LOOP_PARK_TOTAL" { print $3, "0x"$1, slots }
+    $3 ~ /^WAIT_LOOP_PARK_/ && $3 != "WAIT_LOOP_PARK_TOTAL" { print $3, "0x"$1, 0 }' |
     sort > "$OUTDIR/counter_symbols.txt"
 
 if [ -w /dev/kvm ]; then ACCEL=kvm; else ACCEL=tcg; fi
@@ -83,17 +92,22 @@ if [ "$FOUND" = 1 ] && kill -0 "$QPID" 2>/dev/null; then
             echo "set pagination off"
             echo "set confirm off"
             echo "target remote localhost:1234"
-            while read -r name addr off; do
-                # +64 is per_cpu[0].value: the TraceCounter header (name and
-                # description, 32 bytes) padded to the 64-byte per-CPU slot.
-                # +0 is a plain AtomicU64, which is whole-machine and so gets
-                # no _CPU0 suffix.
-                if [ "$off" = 0 ]; then
+            while read -r name addr slots; do
+                # A TraceCounter's per_cpu[i].value is at 64 + 64*i: the header
+                # (name and description, 32 bytes) padded up to the 64-byte
+                # per-CPU slot, then one cache line per CPU. slots=0 means a
+                # plain AtomicU64, which is whole-machine and so gets no _CPU0
+                # suffix; the census script sums the _CPUn values it does find.
+                if [ "$slots" = 0 ]; then
                     printf 'printf "%s=%%lu\\n", *(unsigned long long*)(0x%x)\n' \
                         "$name" "$((KERNEL_BASE + addr))"
                 else
-                    printf 'printf "%s_CPU0=%%lu\\n", *(unsigned long long*)(0x%x + %s)\n' \
-                        "$name" "$((KERNEL_BASE + addr))" "$off"
+                    cpu=0
+                    while [ "$cpu" -lt "$slots" ]; do
+                        printf 'printf "%s_CPU%d=%%lu\\n", *(unsigned long long*)(0x%x + %d)\n' \
+                            "$name" "$cpu" "$((KERNEL_BASE + addr))" "$((64 + 64 * cpu))"
+                        cpu=$((cpu + 1))
+                    done
                 fi
             done < "$OUTDIR/counter_symbols.txt"
             echo "detach"

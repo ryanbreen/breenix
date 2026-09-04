@@ -154,9 +154,11 @@ pub struct PerCpuData {
     ///
     /// `Thread::wait_loop_iters` read at the moment the mark was written. A
     /// save whose frame is byte-identical to the mark compares its own read of
-    /// that counter against this word: advanced means the thread went round its
-    /// wait loop and re-parked on the same halt, unchanged means it retired
-    /// no instructions.
+    /// that counter against this word: advanced means the thread went round
+    /// its wait loop and re-parked on a counted halt; unchanged means it
+    /// reached no counted park point in between, which is the same thing as
+    /// "retired no instructions" only where the mark's RIP is that wait
+    /// loop's own post-halt resume point.
     pub dispatch_mark_wait_iters: u64,
 
     /// Padding to reach 192 bytes (align(64) boundary)
@@ -490,21 +492,30 @@ pub fn current_thread_id_lock_free() -> Option<u64> {
 /// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`). Every blocking
 /// wait loop in the kernel therefore reaches a bump at its own park point with
 /// no per-site call to keep in sync. The
-/// six idle and terminal halt loops that park on a raw `enable_and_hlt` --
-/// five in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
-/// NOT counted; `crate::arch_halt_with_interrupts` carries the full census and
-/// what the omission costs.
+/// 6 idle and terminal halt loops that park on a raw `enable_and_hlt` --
+/// 5 in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
+/// NOT counted, and neither is the bare-halt-instruction family beyond them;
+/// `crate::arch_halt_with_interrupts` carries the full census, both families
+/// enumerated, and what the omission costs.
 // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
 // arch_halt call sites under kernel/src reach this function, counted by grep in
 // this slot.
 ///
-/// Two relaxed atomic adds in the counted case: one whole-machine park total,
-/// and one through the per-CPU current-thread pointer -- the same lock-free
-/// deref `current_thread_id_lock_free` above already performs on the
-/// interrupt-return path. A park this function refuses (per-CPU data not yet
-/// initialised, or no thread installed) bumps `WAIT_LOOP_PARK_SKIPPED` instead
-/// of a thread, so the park side is auditable rather than assumed: what
-/// reached a thread is `WAIT_LOOP_PARK_TOTAL - WAIT_LOOP_PARK_SKIPPED`.
+/// Counted case: one `PER_CPU_INITIALIZED` Acquire load, then two relaxed
+/// atomic adds -- one into this CPU's slot of `WAIT_LOOP_PARK_TOTAL` (whose
+/// slot lookup is one further per-CPU id read), and one through the per-CPU
+/// current-thread pointer, the same lock-free deref
+/// `current_thread_id_lock_free` above already performs on the
+/// interrupt-return path.
+///
+/// A park this function refuses bumps `WAIT_LOOP_PARK_SKIPPED` instead of a
+/// thread: the pre-init arm after the Acquire load alone, before the total is
+/// counted; the no-thread arm after it. So the park side is auditable rather
+/// than assumed, with the total's placement carried in the arithmetic --
+/// `WAIT_LOOP_PARK_TOTAL` counts the parks that passed the guard, and what
+/// reached a thread is that total minus the no-thread refusals, bounded by
+/// `WAIT_LOOP_PARK_TOTAL - WAIT_LOOP_PARK_SKIPPED <= attributed <=
+/// WAIT_LOOP_PARK_TOTAL` and equal to the total whenever SKIPPED reads 0.
 /// No lock, no allocation, no formatting, and no control flow depends on any
 /// of the values.
 #[inline(always)]
@@ -519,11 +530,17 @@ pub fn note_wait_loop_park() {
     // path does, so the guard is not hypothetical hygiene.
     // claim-lint:ok: 4 of 4 dispatch-mark accessors below take this guard and
     // 3 of 3 park primitives reach this function, counted by grep in this slot.
-    crate::tracing::providers::counters::note_park_total();
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         crate::tracing::providers::counters::note_park_skipped();
         return;
     }
+    // Past the guard the per-CPU slot lookup `TraceCounter::increment` does is
+    // safe by construction, so the park total is a per-CPU counter rather than
+    // a read-modify-write on one whole-machine line that each parking CPU
+    // would contend for. A park the guard refuses is therefore in SKIPPED and
+    // not in this total; `tracing::providers::counters` states the resulting
+    // arithmetic.
+    crate::tracing::providers::counters::note_park_total();
     let thread_ptr =
         hal_percpu::X86PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
 
@@ -1303,7 +1320,13 @@ pub fn classify_dispatch_progress(tid: u64, rip: u64, rsp: u64) -> DispatchProgr
 /// a re-published thread row could produce -- is reported as `Unknown` rather
 /// than guessed at.
 ///
-/// One lock-free deref plus two loads. No lock, no allocation, no formatting.
+/// Five reads on the path that answers `Revisit` or `ZeroIter`: (1) the
+/// `PER_CPU_INITIALIZED` Acquire load, (2) the GS-relative
+/// `current_thread_ptr` load inside `current_wait_loop_iters`, (3) that
+/// thread's `id`, (4) its `wait_loop_iters` Relaxed load, and (5)
+/// `X86PerCpu::dispatch_mark_wait_iters` -- the stamp side of the comparison,
+/// a second GS-relative load. A refused guard returns after (1) and an
+/// identity mismatch after (4). No lock, no allocation, no formatting.
 #[inline(always)]
 pub fn classify_no_progress_kind(
     frame: IdenticalFrame,

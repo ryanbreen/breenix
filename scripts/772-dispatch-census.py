@@ -46,6 +46,16 @@ def derive(counters):
     def get(name):
         return counters.get(name, counters.get(name + "_CPU0"))
 
+    def get_percpu_sum(name):
+        # A per-CPU TraceCounter the driver dumps slot by slot as NAME_CPUn.
+        # Sum them; fall back to the whole-machine NAME for a dump taken
+        # before the counter was per-CPU.
+        slots = [v for k, v in counters.items()
+                 if re.fullmatch(re.escape(name) + r"_CPU\d+", k)]
+        if slots:
+            return sum(slots)
+        return counters.get(name)
+
     out = {}
     save_reasons = [
         "DISPATCH_SAVE_REASON_USER_PREEMPT",
@@ -59,12 +69,19 @@ def derive(counters):
     if all(v is not None for v in present):
         out["save_reason_total"] = sum(present)
         out["kernel_blocked_saves"] = present[2] + present[3]
-    park_total = get("WAIT_LOOP_PARK_TOTAL")
+    # WAIT_LOOP_PARK_TOTAL is a per-CPU TraceCounter (bumped after the park
+    # path's per-CPU guard, so its slot lookup is safe there); SKIPPED must
+    # survive a park that guard refuses and is whole-machine.
+    park_total = get_percpu_sum("WAIT_LOOP_PARK_TOTAL")
     park_skipped = get("WAIT_LOOP_PARK_SKIPPED")
     if park_total is not None and park_skipped is not None:
         # The park side of the REVISIT/ZERO_ITER split, so it is audited rather
-        # than assumed: attributed parks are the ones that actually reached a
-        # thread's wait_loop_iters.
+        # than assumed. `total` counts the parks that passed the guard; a park
+        # the guard refused is in `skipped` and NOT in `total`, while a park
+        # that passed and found no thread installed is in both. So
+        # `attributed` below is a lower bound on the parks that actually
+        # reached a thread's wait_loop_iters, and is exact whenever
+        # `skipped` is 0.
         out["wait_loop_parks_total"] = park_total
         out["wait_loop_parks_skipped"] = park_skipped
         out["wait_loop_parks_attributed"] = park_total - park_skipped

@@ -537,41 +537,60 @@ pub static BOOT_TEST_SKIP_TOTAL: TraceCounter =
 // =============================================================================
 //
 // The park side of the split below, so it can be audited rather than assumed.
-// `WAIT_LOOP_PARK_TOTAL` is bumped once per call of
-// `per_cpu::note_wait_loop_park`;
-// `WAIT_LOOP_PARK_SKIPPED` counts the subset that did NOT reach a thread's
-// `wait_loop_iters` -- per-CPU data not yet initialised, or no thread
-// installed on this CPU. The difference is the population the
-// REVISIT/ZERO_ITER split is computed over. A SKIPPED that is not near 0 in a
-// steady-state boot is a finding about the park side, not about #772.
 //
-// Plain relaxed globals, deliberately NOT `TraceCounter`s:
-// `TraceCounter::increment` resolves its per-CPU slot through
-// `current_cpu_id()`, which on x86 is `mov reg, gs:[0]` -- the same
-// uninstalled-GS-base read the park path's `PER_CPU_INITIALIZED` guard exists
-// to avoid. A census that must count the parks that guard refuses therefore
-// cannot itself be a per-CPU counter. These are whole-machine totals, which is
-// why they carry no `_CPU0` suffix when the GDB driver reads them.
+// `WAIT_LOOP_PARK_TOTAL` is a per-CPU `TraceCounter`, incremented inside
+// `per_cpu::note_wait_loop_park` AFTER that function's `PER_CPU_INITIALIZED`
+// guard has passed. It counts parks in the parking CPU's own slot, so a park
+// no longer writes a whole-machine cache line the other CPUs contend for.
+// It cannot be bumped BEFORE that guard: `TraceCounter::increment` resolves
+// its slot through `current_cpu_id()`, which on x86 is `mov reg, gs:[0]` --
+// the same uninstalled-GS-base read the guard exists to refuse. Past the
+// guard that read is safe by construction, which is what makes the per-CPU
+// counter admissible here at all. The GDB driver reads it as a sum over the
+// per-CPU slots (`scripts/772-dispatch-boot.sh`), not as a single word.
+//
+// `WAIT_LOOP_PARK_SKIPPED` is the counter that must survive a park the guard
+// refuses, so it stays a plain whole-machine `AtomicU64` and carries no
+// `_CPU0` suffix when the driver reads it. It is bumped on both refusal arms:
+// per-CPU data not yet initialised, or no thread installed on this CPU.
+//
+// The two populations, given that the total now sits after the guard: a park
+// the guard refuses is in SKIPPED and NOT in TOTAL; a park that passes the
+// guard and finds no thread installed is in BOTH; a park that reaches a
+// thread's `wait_loop_iters` is in TOTAL alone. The attributed population --
+// the one the REVISIT/ZERO_ITER split is computed over -- is TOTAL minus the
+// no-thread subset of SKIPPED, which those two counters bound as
+// `TOTAL - SKIPPED <= attributed <= TOTAL`, and which is exactly TOTAL
+// whenever SKIPPED reads 0. A SKIPPED that is not near 0 in a steady-state
+// boot is a finding about the park side, not about #772.
 //
 // Census only, on both arches. No control flow reads either value.
 //
 // GDB: `print WAIT_LOOP_PARK_TOTAL`, `print WAIT_LOOP_PARK_SKIPPED`
 #[no_mangle]
-pub static WAIT_LOOP_PARK_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static WAIT_LOOP_PARK_TOTAL: TraceCounter = TraceCounter::new(
+    "WAIT_LOOP_PARK_TOTAL",
+    "Wait-loop parks that passed the per-CPU guard",
+);
 
-/// Parks that did not reach a thread's `wait_loop_iters` (#772).
+/// Parks refused before they reached a thread's `wait_loop_iters` (#772).
 ///
 /// See `WAIT_LOOP_PARK_TOTAL` above.
 #[no_mangle]
 pub static WAIT_LOOP_PARK_SKIPPED: AtomicU64 = AtomicU64::new(0);
 
-/// Record one park, before the per-CPU guard that may refuse it.
+/// Record one park that passed the per-CPU guard.
+///
+/// One relaxed atomic add into this CPU's slot, plus the CPU-id read
+/// `TraceCounter::increment` does to find that slot.
 #[inline(always)]
 pub fn note_park_total() {
-    WAIT_LOOP_PARK_TOTAL.fetch_add(1, Ordering::Relaxed);
+    WAIT_LOOP_PARK_TOTAL.increment();
 }
 
 /// Record one park that could not be attributed to a thread.
+///
+/// One relaxed atomic add on a whole-machine counter.
 #[inline(always)]
 pub fn note_park_skipped() {
     WAIT_LOOP_PARK_SKIPPED.fetch_add(1, Ordering::Relaxed);
@@ -588,8 +607,11 @@ pub fn note_park_skipped() {
 //
 // * `_REVISIT`  -- the count advanced: the thread went round its wait loop and
 //   re-parked on the same halt, so the dispatch retired instructions.
-// * `_ZERO_ITER` -- the count is unchanged: the thread is sitting on the very
-//   park it was dispatched to, having retired no instructions.
+// * `_ZERO_ITER` -- the count is unchanged: the thread reached no counted
+//   park point between the dispatch and the save. That reads as "sitting on
+//   the very park it was dispatched to, having retired no instructions" only
+//   where the mark's RIP is that wait loop's own post-halt resume point;
+//   these counters carry no RIP, so they do not discharge that condition.
 // * `_ITERS_UNKNOWN` -- the count could not be attributed: no thread is
 //   installed on this CPU, the installed thread is not the one being saved, or
 //   the count read below the stamp. Reported rather than folded into either
@@ -863,6 +885,7 @@ pub fn init() {
     register_counter(&RECV_WAIT_STILL_BLOCKED_FALSE);
     register_counter(&DISPATCH_NO_PROGRESS);
     register_counter(&DISPATCH_KERNEL_RESTORE_TOTAL);
+    register_counter(&WAIT_LOOP_PARK_TOTAL);
     // #772 diagnostics (R111/R112). Registered with the same capacity
     // assertion the teardown provider uses: `register_counter` already panics
     // on a full registry, so this assert is a second, named guard rather than

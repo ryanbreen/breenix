@@ -314,9 +314,9 @@ pub extern "C" fn check_need_resched_and_switch(
         if let Some(current_tid) = crate::per_cpu::current_thread_id_lock_free() {
             // `matches!` rather than `==`: `NoProgress` now carries the
             // witness the save-site split consumes, and this census does not
-            // want the split -- reading the kind here would put a deref and
-            // two loads on the interrupt-return path for a value this census
-            // does not record.
+            // want the split -- reading the kind here would put
+            // `classify_no_progress_kind`'s five reads on the
+            // interrupt-return path for a value this census does not record.
             if matches!(
                 crate::per_cpu::classify_dispatch_progress(
                     current_tid,
@@ -581,9 +581,11 @@ pub extern "C" fn check_need_resched_and_switch(
 /// (`ZeroIter`), with `Unknown` for an observation neither answer fits.
 // claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 ///
-/// Cost: four GS-relative loads and one relaxed atomic load inside
-/// `classify_dispatch_progress`; on a byte-identical frame, one more lock-free
-/// deref and two loads inside `classify_no_progress_kind`, then four per-CPU
+/// Cost: four GS-relative loads and one `PER_CPU_INITIALIZED` Acquire load
+/// inside `classify_dispatch_progress`; on a byte-identical frame, five more
+/// reads inside `classify_no_progress_kind` (that Acquire load again, the
+/// lock-free current-thread deref, the thread's id and its park count, and
+/// the GS-relative stamp the count is compared against), then four per-CPU
 /// atomic adds (the reason total, the identical-frame subset of that reason,
 /// the kind aggregate, and the reason x kind cell); on any other frame, one
 /// add. That is the accounting

@@ -135,9 +135,10 @@ fn idle_thread_fn() {
         // `crate::arch_halt_with_interrupts`, so the park count the revisit
         // oracle reads is bumped here by hand -- once, covering both arches.
         // This is the idle thread, so what it bumps is the idle thread's own
-        // count; the one reader compares a thread's count against a stamp
-        // taken from the same thread, so an idle park cannot perturb another
-        // thread's reading. `crate::arch_halt` says the same at more length.
+        // count; the split that consumes it compares a thread's count against
+        // a stamp taken from that same thread, so an idle park cannot perturb
+        // another thread's reading. `crate::arch_halt` says the same at more
+        // length.
         crate::per_cpu::note_wait_loop_park();
 
         // Enable interrupts and halt until next interrupt

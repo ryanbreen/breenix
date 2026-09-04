@@ -563,15 +563,17 @@ pub struct Thread {
 
     /// How many times this thread has parked on one of the kernel's halt
     /// primitives -- `crate::arch_halt_with_interrupts`, `crate::arch_halt`,
-    /// the private one in `graphics/render_task.rs` -- or on one of the three
+    /// the private one in `graphics/render_task.rs` -- or on one of the two
     /// loops that park on a raw `enable_and_hlt`/`wfi` and bump this by hand
-    /// (`task/executor.rs`'s `sleep_if_idle`, `task/spawn.rs`'s
-    /// `idle_thread_fn`). Between them those are the park
-    /// points of every blocking wait loop in the kernel (#772). Ruling R113
-    /// (2026-09-03) retired the proxy; the split this count feeds is its
-    /// replacement.
+    /// at 3 call sites (`task/executor.rs`'s `sleep_if_idle`, once per arch
+    /// arm, and `task/spawn.rs`'s `idle_thread_fn`). Between them those are
+    /// the park points of every blocking wait loop in the kernel (#772).
+    /// Ruling R113 (2026-09-03) retired the proxy; the split this count feeds
+    /// is its replacement.
     /// `crate::arch_halt_with_interrupts` carries the full park census,
-    /// including the six idle and terminal halt loops that are NOT counted.
+    /// including the two families of halt loop that are NOT counted -- the 6
+    /// raw `enable_and_hlt` idle and terminal loops, and the bare-halt
+    /// instruction sites beyond them.
     // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
     // arch_halt call sites under kernel/src reach a bump, counted by grep in
     // this slot.

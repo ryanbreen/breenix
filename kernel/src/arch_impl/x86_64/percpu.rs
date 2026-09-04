@@ -499,8 +499,8 @@ impl X86PerCpu {
 
     /// Read the dispatch mark's state word.
     ///
-    /// Callers read this first: on `DISPATCH_MARK_INVALID` the remaining three
-    /// words need not be read at all.
+    /// Callers read this first: on `DISPATCH_MARK_INVALID` the remaining four
+    /// words -- tid, RIP, RSP and the park count -- need not be read at all.
     #[inline(always)]
     pub fn dispatch_mark_state() -> u64 {
         let state: u64;

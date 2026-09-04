@@ -474,21 +474,30 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
 /// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`). Every blocking
 /// wait loop in the kernel therefore reaches a bump at its own park point with
 /// no per-site call to keep in sync. The
-/// six idle and terminal halt loops that park on a raw `enable_and_hlt` --
-/// five in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
-/// NOT counted; `crate::arch_halt_with_interrupts` carries the full census and
-/// what the omission costs.
+/// 6 idle and terminal halt loops that park on a raw `enable_and_hlt` --
+/// 5 in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
+/// NOT counted, and neither is the bare-halt-instruction family beyond them;
+/// `crate::arch_halt_with_interrupts` carries the full census, both families
+/// enumerated, and what the omission costs.
 // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
 // arch_halt call sites under kernel/src reach this function, counted by grep in
 // this slot.
 ///
-/// Two relaxed atomic adds in the counted case: one whole-machine park total,
-/// and one through the per-CPU current-thread pointer. A park this function
-/// refuses (per-CPU data not yet initialised, or no thread installed) bumps
-/// `WAIT_LOOP_PARK_SKIPPED` instead of a thread, so the park side is auditable
-/// rather than assumed: what reached a thread is
-/// `WAIT_LOOP_PARK_TOTAL - WAIT_LOOP_PARK_SKIPPED`. No lock, no allocation, no
-/// formatting, and no control flow depends on any of the values.
+/// Counted case: one `PER_CPU_INITIALIZED` Acquire load, then two relaxed
+/// atomic adds -- one into this CPU's slot of `WAIT_LOOP_PARK_TOTAL` (whose
+/// slot lookup is one further per-CPU id read), and one through the per-CPU
+/// current-thread pointer.
+///
+/// A park this function refuses bumps `WAIT_LOOP_PARK_SKIPPED` instead of a
+/// thread: the pre-init arm after the Acquire load alone, before the total is
+/// counted; the no-thread arm after it. So the park side is auditable rather
+/// than assumed, with the total's placement carried in the arithmetic --
+/// `WAIT_LOOP_PARK_TOTAL` counts the parks that passed the guard, and what
+/// reached a thread is that total minus the no-thread refusals, bounded by
+/// `WAIT_LOOP_PARK_TOTAL - WAIT_LOOP_PARK_SKIPPED <= attributed <=
+/// WAIT_LOOP_PARK_TOTAL` and equal to the total whenever SKIPPED reads 0.
+/// No lock, no allocation, no formatting, and no control flow depends on any
+/// of the values.
 ///
 /// The dispatch mark that consumes this count is x86-only today, so on aarch64
 /// this keeps the count and no reader consumes it yet. There is deliberately
@@ -503,11 +512,16 @@ pub fn note_wait_loop_park() {
     // TPIDR_EL1 reads 0, so the null check below would catch a pre-init park
     // on its own. The guard is carried anyway so the two arches have one shape, and
     // so a pre-init park is refused for the same stated reason on both.
-    crate::tracing::providers::counters::note_park_total();
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         crate::tracing::providers::counters::note_park_skipped();
         return;
     }
+    // Past the guard the per-CPU slot lookup `TraceCounter::increment` does is
+    // safe by construction, so the park total is a per-CPU counter rather than
+    // a read-modify-write on one whole-machine line that each parking CPU
+    // would contend for -- the same placement as the x86 twin, so the two
+    // arches keep one shape.
+    crate::tracing::providers::counters::note_park_total();
     let thread_ptr =
         hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
 

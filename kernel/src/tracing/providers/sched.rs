@@ -391,8 +391,11 @@ pub enum DispatchNoProgressKind {
     /// The park count advanced: the thread re-parked, so it retired
     /// instructions between the dispatch and the save.
     Revisit = 0,
-    /// The park count is unchanged: the thread is still on the park it was
-    /// dispatched to, having retired no instructions.
+    /// The park count is unchanged: the thread reached no counted park point
+    /// between the dispatch and the save. It is "still on the park it was
+    /// dispatched to, having retired no instructions" only where the mark's
+    /// RIP is that wait loop's own post-halt resume point, which this counter
+    /// does not record.
     ZeroIter = 1,
     /// The park count could not be attributed to the thread being saved: no
     /// thread is installed on this CPU, the installed thread is a different

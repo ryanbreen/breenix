@@ -83,9 +83,10 @@ impl Executor {
             //
             // #772: this loop parks on a raw `enable_and_hlt` rather than on
             // `crate::arch_halt_with_interrupts`, so the park count the
-            // revisit oracle reads is bumped here by hand. One relaxed atomic
-            // add immediately before the halt, the same shape and position the
-            // shared primitive uses.
+            // revisit oracle reads is bumped here by hand -- the same call,
+            // in the same position immediately before the halt, that the
+            // shared primitive makes. `per_cpu::note_wait_loop_park` states
+            // what that call costs.
             crate::per_cpu::note_wait_loop_park();
             interrupts::enable_and_hlt();
         } else {

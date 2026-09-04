@@ -387,10 +387,12 @@ pub fn arch_interrupts_enabled() -> bool {
 /// left out of it.
 ///
 /// Idle and terminal halt loops that reach this bump the idle thread's own
-/// count. That is harmless: on x86 the count has one reader, the
-/// identical-frame split at the save site, and it compares a thread's count
-/// only against a stamp taken from the same thread at its own dispatch. On
-/// aarch64 the count has no reader at all yet.
+/// count. That is harmless: on x86 the count is read at 2 sites -- the
+/// dispatch mark's stamp and the identical-frame split at the save site --
+/// and the split compares a thread's count only against a stamp taken from
+/// the same thread at its own dispatch, so a park by the idle thread cannot
+/// move any other thread's reading. On aarch64 the count has no reader at
+/// all yet.
 // claim-lint:ok: on x86, 1 of 1 load of `Thread::wait_loop_iters` outside
 // `Thread::clone` is `per_cpu::current_wait_loop_iters`, whose 2 of 2 callers
 // are the dispatch stamp and `classify_no_progress_kind`; on aarch64 there are
@@ -424,29 +426,60 @@ pub fn arch_halt() {
 /// `grep -rn "arch_halt()\|arch_halt_with_interrupts()\|enable_and_hlt\|wfi()"
 /// kernel/src --include=*.rs`, minus the primitive definitions themselves and
 /// the lines that only name a primitive in prose.
-/// Counted: all 25 call sites of this primitive, all 24 call sites of
-/// `arch_halt`, the two call sites of the private halt primitive in
+/// Counted: 25 of 25 call sites of this primitive, 24 of 24 call sites of
+/// `arch_halt`, the 2 call sites of the private halt primitive in
 /// `graphics/render_task.rs` (which bumps in the same shape), and the two
 /// loops that park on a raw `enable_and_hlt`/`wfi` of their own and call
 /// `per_cpu::note_wait_loop_park` directly -- `task/executor.rs`'s
 /// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`.
-/// NOT counted: the six idle and terminal halt loops that park on a raw
-/// `enable_and_hlt` -- five in `main.rs` (three feature-gated test mains, the
-/// boot thread's terminal loop, and its own `idle_thread_fn`) and `idle_loop`
-/// in `interrupts/context_switch.rs`. None of the five is a blocking wait loop
-/// waiting on a condition, but the omission is not free: a thread saved at a
-/// byte-identical frame while parked in one of them reads ZERO_ITER even
-/// though it re-parked. The idle thread is the only thread that reaches them.
-/// The census grep above also does not reach a raw `asm!("wfi")`, which is how
-/// `hlt_loop`, the aarch64 boot and panic paths in `main_aarch64.rs`, and the
-/// `ec0_fault_inject` thread park; none of those is a blocking wait loop
-/// either, and none is counted.
+/// NOT counted, in two families. First, the 6 idle and terminal halt loops
+/// that park on a raw `enable_and_hlt`: 5 in `main.rs` (three feature-gated
+/// test mains' idle loops, the boot thread's terminal loop, and that file's
+/// own `idle_thread_fn`) and `idle_loop` in `interrupts/context_switch.rs`.
+/// 0 of those 6 is a blocking wait loop waiting on a condition, but the
+/// omission is not free: a thread saved at a byte-identical frame while
+/// parked in one of them reads ZERO_ITER even though it re-parked. The idle
+/// thread is the only thread that reaches them.
+///
+/// Second, the bare halt instruction itself, which the census grep above also
+/// does not reach. On x86 that is `x86_64::instructions::hlt()` or a direct
+/// `X86Cpu::halt()`, at 12 sites: `hlt_loop` in this file; the invalid-opcode
+/// handler's terminal loop in `interrupts.rs`; 9 in `main.rs` (the fault-test
+/// thread's terminal loop, three feature-gated test mains' post-exit loops,
+/// two image-load-failure loops, the panic handler, and two test-thread
+/// bodies); and the fork-creator trampoline in `userspace_test.rs`. On
+/// aarch64 it is `asm!("wfi")`, at 15 sites: `hlt_loop`; 7 in
+/// `main_aarch64.rs` (three feature-gated test mains' post-exit loops, two
+/// boot-thread idle loops, that file's `idle_thread_fn`, and the panic
+/// handler); the EL1-fatal and syscall-exit terminal loops in
+/// `arch_impl/aarch64/exception.rs`; the secondary-CPU bringup and idle loops
+/// in `arch_impl/aarch64/smp.rs`; `idle_loop_arm64` in
+/// `arch_impl/aarch64/context_switch.rs`; and 2 in `task/scheduler.rs`'s
+/// `ec0_fault_inject` thread. 0 of those 27 is a wait loop waiting on a
+/// condition another thread signals -- they are panic, fault, boot, idle,
+/// secondary-CPU and thread-terminal halts; the nearest thing to an exception
+/// is `ec0_fault_inject`'s timed delay, which is feature-gated off in the
+/// profiles this oracle is measured in.
+// claim-lint:ok: 12 of 12 x86 and 15 of 15 aarch64 uncounted raw-halt sites
+// are enumerated above, from `grep -rn 'X86Cpu::halt()\|instructions::hlt()\|
+// asm!("wfi' kernel/src --include='*.rs'` minus the 3 park primitives and the
+// 3 hand-bump sites, read one by one in this slot.
 // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
 // arch_halt call sites under kernel/src reach a bump, counted by grep in this
 // slot.
 ///
-/// One relaxed atomic add on a path that is about to halt the CPU. No lock, no
-/// allocation, no formatting, and no control flow reads the value.
+/// Cost: one `PER_CPU_INITIALIZED` Acquire load, and then, on a park that
+/// guard admits, two relaxed atomic adds -- into this CPU's slot of the park
+/// total and into the running thread's `wait_loop_iters` -- addressed through
+/// two per-CPU reads (the CPU id `TraceCounter::increment` resolves its slot
+/// with, and the current-thread pointer). A park the guard refuses is that
+/// Acquire load plus one relaxed atomic add on the whole-machine
+/// `WAIT_LOOP_PARK_SKIPPED`; a park it admits with no thread installed is the
+/// load, both per-CPU reads and two adds, the second on `SKIPPED`.
+/// `per_cpu::note_wait_loop_park` carries that accounting and the population
+/// arithmetic that follows from it. All of it on a path that is about to halt
+/// the CPU: no lock, no allocation, no formatting, and no control flow
+/// depends on any of the values.
 // claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 #[inline(always)]
 pub fn arch_halt_with_interrupts() {
