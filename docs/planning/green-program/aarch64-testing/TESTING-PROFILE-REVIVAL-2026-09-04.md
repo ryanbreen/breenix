@@ -363,8 +363,8 @@ claim-lint:ok: the resolver reports 2 arms, not-found and resolver-error, in
 kernel/src/main_aarch64.rs. `scripts/create_ext2_disk.sh` no longer differs from `main` in any
 behaviour: the `-O ^dir_index` flag round 1 added is withdrawn, along with the
 claim that the kernel cannot traverse an indexed directory. It is not
-byte-identical to `main` -- `git diff --numstat origin/main -- 
-scripts/create_ext2_disk.sh` reports `4 2`, four inserted and two deleted
+byte-identical to `main` -- `git diff --numstat origin/main
+-- scripts/create_ext2_disk.sh` reports `4 2`, four inserted and two deleted
 comment lines that replace "Create hardlinks for all applets" with the
 counted form (48 names in each of the 2 loops, 48 unique) that claim-lint
 asks for. `git diff origin/main -- scripts/create_ext2_disk.sh` shows those

@@ -1,0 +1,45 @@
+diff --git a/kernel/src/drivers/virtio/block_mmio.rs b/kernel/src/drivers/virtio/block_mmio.rs
+index e2944692..c8488a44 100644
+--- a/kernel/src/drivers/virtio/block_mmio.rs
++++ b/kernel/src/drivers/virtio/block_mmio.rs
+@@ -157,6 +157,15 @@ impl BlockWedgeOracleSleepContext {
+         }
+         crate::per_cpu_aarch64::preempt_disable();
+         if !block_mmio_request_gate_can_sleep() {
++            use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
++            use core::sync::atomic::Ordering as RcaOrd;
++            raw_uart_str("[RCA786_W2] trylock_fail=");
++            raw_uart_dec(crate::task::scheduler::RCA786_NONE_R1.load(RcaOrd::Relaxed));
++            raw_uart_str(" idle_refused=");
++            raw_uart_dec(crate::task::idle_sleep::idle_sleep_refused());
++            raw_uart_str(" cur_id=");
++            raw_uart_dec(crate::task::scheduler::current_thread_id().unwrap_or(0));
++            raw_uart_str("\n");
+             crate::per_cpu_aarch64::preempt_enable();
+             return None;
+         }
+diff --git a/kernel/src/task/scheduler.rs b/kernel/src/task/scheduler.rs
+index fa37b4cb..eeca7665 100644
+--- a/kernel/src/task/scheduler.rs
++++ b/kernel/src/task/scheduler.rs
+@@ -4993,7 +4993,11 @@ pub fn try_schedule() -> Option<(u64, u64)> {
+ pub fn is_current_idle_thread() -> Option<bool> {
+     // Try to get the lock without blocking - if we can't, assume not idle
+     // to be safe. This prevents deadlock when timer fires during scheduler ops.
+-    if let Some(scheduler_lock) = try_lock_scheduler() {
++    let rca_tl = try_lock_scheduler();
++    if rca_tl.is_none() {
++        RCA786_NONE_R1.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++    }
++    if let Some(scheduler_lock) = rca_tl {
+         if let Some(scheduler) = scheduler_lock.as_ref() {
+             return scheduler
+                 .current_thread_id_inner()
+@@ -6013,3 +6017,7 @@ pub fn nudge_retirement_grace_for_test() {
+     }
+     set_need_resched();
+ }
++
++/// RCA786-TEMP: times is_current_idle_thread's try_lock failed.
++pub static RCA786_NONE_R1: core::sync::atomic::AtomicU64 =
++    core::sync::atomic::AtomicU64::new(0);

@@ -1,0 +1,65 @@
+battery	boot	instruction_abort	block_wedge_fail	pre_eret_probe
+baseline-26	20260904T183710Z-boot1.txt	1	1	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T183714Z-boot2.txt	1	1	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T183732Z-boot3.txt	0	1	(no pre-ERET probe in this build)
+baseline-26	20260904T183736Z-boot4.txt	1	1	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T183739Z-boot5.txt	1	1	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T183742Z-boot6.txt	1	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T183840Z-boot1.txt	1	0	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T183859Z-boot2.txt	0	1	next_cr3=0x40200000 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T183902Z-boot3.txt	1	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T183921Z-boot4.txt	0	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T183924Z-boot5.txt	1	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T183928Z-boot6.txt	1	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T183946Z-boot7.txt	0	1	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T184005Z-boot8.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x0
+baseline-26	20260904T184057Z-boot1.txt	1	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T184116Z-boot2.txt	0	0	next_cr3=0x40200000 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T184135Z-boot3.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x0
+baseline-26	20260904T184154Z-boot4.txt	0	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T184213Z-boot5.txt	0	1	next_cr3=0x40200000 saved_proc_cr3=0x100004406c000
+baseline-26	20260904T184216Z-boot6.txt	1	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T184303Z-boot1.txt	0	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T184307Z-boot2.txt	1	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T184325Z-boot3.txt	0	0	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T184329Z-boot4.txt	1	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+baseline-26	20260904T184348Z-boot5.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x0
+baseline-26	20260904T184406Z-boot6.txt	0	1	next_cr3=0x40200000 saved_proc_cr3=0x0
+mutation-a-6	20260904T185542Z-boot1.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-a-6	20260904T185601Z-boot2.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-a-6	20260904T185620Z-boot3.txt	0	1	next_cr3=0x0 saved_proc_cr3=0x1000044337000
+mutation-a-6	20260904T185639Z-boot4.txt	0	1	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-a-6	20260904T185658Z-boot5.txt	0	1	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-a-6	20260904T185716Z-boot6.txt	0	1	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T185822Z-boot1.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T185841Z-boot2.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T185900Z-boot3.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T185919Z-boot4.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T185938Z-boot5.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T185956Z-boot6.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190237Z-boot1.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190256Z-boot2.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x0
+mutation-ab-18	20260904T190315Z-boot3.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190334Z-boot4.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190353Z-boot5.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190412Z-boot6.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190431Z-boot7.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190449Z-boot8.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190508Z-boot9.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190527Z-boot10.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+mutation-ab-18	20260904T190546Z-boot11.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x0
+mutation-ab-18	20260904T190605Z-boot12.txt	0	0	next_cr3=0x0 saved_proc_cr3=0x100004406c000
+reverted-8	20260904T191606Z-boot1.txt	0	1	(no pre-ERET probe in this build)
+reverted-8	20260904T191610Z-boot2.txt	1	1	(no pre-ERET probe in this build)
+reverted-8	20260904T191613Z-boot3.txt	1	1	(no pre-ERET probe in this build)
+reverted-8	20260904T191632Z-boot4.txt	0	1	(no pre-ERET probe in this build)
+reverted-8	20260904T191651Z-boot5.txt	0	1	(no pre-ERET probe in this build)
+reverted-8	20260904T191710Z-boot6.txt	0	0	(no pre-ERET probe in this build)
+reverted-8	20260904T191713Z-boot7.txt	1	1	(no pre-ERET probe in this build)
+reverted-8	20260904T191716Z-boot8.txt	1	1	(no pre-ERET probe in this build)
+earlier-unprobed-6	20260904T182523Z-boot1.txt	1	1	(no pre-ERET probe in this build)
+earlier-unprobed-6	20260904T182527Z-boot2.txt	1	1	(no pre-ERET probe in this build)
+earlier-unprobed-6	20260904T182546Z-boot3.txt	0	1	(no pre-ERET probe in this build)
+earlier-unprobed-6	20260904T182604Z-boot4.txt	0	1	(no pre-ERET probe in this build)
+earlier-unprobed-6	20260904T182623Z-boot5.txt	0	1	(no pre-ERET probe in this build)
+earlier-unprobed-6	20260904T182627Z-boot6.txt	1	1	(no pre-ERET probe in this build)

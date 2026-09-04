@@ -1,0 +1,128 @@
+diff --git a/kernel/src/arch_impl/aarch64/exception.rs b/kernel/src/arch_impl/aarch64/exception.rs
+index 71940aaf..5f015470 100644
+--- a/kernel/src/arch_impl/aarch64/exception.rs
++++ b/kernel/src/arch_impl/aarch64/exception.rs
+@@ -1091,6 +1091,26 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr:
+                 raw_uart_hex(ttbr0);
+                 raw_uart_str(" from_el0=");
+                 raw_uart_char(if from_el0 { b'1' } else { b'0' });
++                raw_uart_str(" RCA786 cpu=");
++                raw_uart_dec(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id());
++                raw_uart_str(" next_cr3=");
++                raw_uart_hex(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::next_cr3());
++                raw_uart_str(" saved_proc_cr3=");
++                raw_uart_hex(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::saved_process_cr3());
++                raw_uart_str(" kernel_cr3=");
++                raw_uart_hex(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_cr3());
++                raw_uart_str(" cur_tid=");
++                raw_uart_dec(current_thread_lock_free().map(|t| t.id()).unwrap_or(0));
++                raw_uart_str("\n");
++                if from_el0 {
++                    let rca_cpu =
++                        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
++                    raw_uart_str("  RCA786 DISPATCH_TRACE cpu=");
++                    raw_uart_dec(rca_cpu as u64);
++                    raw_uart_str(":\n");
++                    crate::arch_impl::aarch64::context_switch::dump_dispatch_trace(rca_cpu);
++                    crate::arch_impl::aarch64::context_switch::dump_all_idle_redirect_histories();
++                }
+ 
+                 if !from_el0 {
+                     let cpu_id =
+diff --git a/kernel/src/drivers/virtio/block_mmio.rs b/kernel/src/drivers/virtio/block_mmio.rs
+index e2944692..5834d22f 100644
+--- a/kernel/src/drivers/virtio/block_mmio.rs
++++ b/kernel/src/drivers/virtio/block_mmio.rs
+@@ -152,11 +152,41 @@ struct BlockWedgeOracleSleepContext;
+ #[cfg(feature = "boot_tests")]
+ impl BlockWedgeOracleSleepContext {
+     fn enter() -> Option<Self> {
++        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+         if crate::per_cpu_aarch64::preempt_count() != 0 {
++            raw_uart_str("[RCA786_WEDGE] entry_preempt_nonzero=");
++            raw_uart_dec(crate::per_cpu_aarch64::preempt_count() as u64);
++            raw_uart_str("\n");
+             return None;
+         }
+         crate::per_cpu_aarch64::preempt_disable();
+         if !block_mmio_request_gate_can_sleep() {
++            raw_uart_str("[RCA786_WEDGE] refused irq_on=");
++            raw_uart_dec(crate::arch_interrupts_enabled() as u64);
++            raw_uart_str(" in_irq=");
++            raw_uart_dec(crate::per_cpu_aarch64::in_interrupt() as u64);
++            raw_uart_str(" in_sirq=");
++            raw_uart_dec(crate::per_cpu_aarch64::in_softirq() as u64);
++            raw_uart_str(" pc=");
++            raw_uart_dec(crate::per_cpu_aarch64::preempt_count() as u64);
++            raw_uart_str(" timer=");
++            raw_uart_dec(crate::arch_impl::aarch64::timer_interrupt::is_initialized() as u64);
++            raw_uart_str(" idle_ans=");
++            raw_uart_dec(match crate::task::scheduler::is_current_idle_thread() {
++                None => 2,
++                Some(true) => 1,
++                Some(false) => 0,
++            });
++            raw_uart_str(" cpu=");
++            raw_uart_dec(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id());
++            raw_uart_str(" unknown_identity_refusals=");
++            raw_uart_dec(
++                crate::task::idle_sleep::RCA786_UNKNOWN_IDENTITY_REFUSALS
++                    .load(core::sync::atomic::Ordering::Relaxed),
++            );
++            raw_uart_str(" idle_refused=");
++            raw_uart_dec(crate::task::idle_sleep::idle_sleep_refused());
++            raw_uart_str("\n");
+             crate::per_cpu_aarch64::preempt_enable();
+             return None;
+         }
+diff --git a/kernel/src/main_aarch64.rs b/kernel/src/main_aarch64.rs
+index 29e0a577..881e52ce 100644
+--- a/kernel/src/main_aarch64.rs
++++ b/kernel/src/main_aarch64.rs
+@@ -291,6 +291,25 @@ fn launch_init_from_elf(
+     // If we enabled interrupts HERE (before ERET), the pending timer would
+     // fire in EL1 context, the scheduler would context-switch the boot thread
+     // away (thinking it's the init process), and it would never reach ERET.
++    // RCA786-MUT-A (diagnostic, not for commit): reconcile the two per-CPU
++    // TTBR0 shadows with the architectural write above, exactly as
++    // restore_ttbr0_after_failed_exec and quiesce_ttbr0_for_exit already do.
++    unsafe {
++        kernel::arch_impl::aarch64::percpu::Aarch64PerCpu::set_next_cr3(0);
++        kernel::arch_impl::aarch64::percpu::Aarch64PerCpu::set_saved_process_cr3(ttbr0_value);
++    }
++    {
++        use kernel::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
++        raw_uart_str("[RCA786_PRE_ERET] cpu=");
++        raw_uart_dec(kernel::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id());
++        raw_uart_str(" next_cr3=");
++        raw_uart_hex(kernel::arch_impl::aarch64::percpu::Aarch64PerCpu::next_cr3());
++        raw_uart_str(" saved_proc_cr3=");
++        raw_uart_hex(kernel::arch_impl::aarch64::percpu::Aarch64PerCpu::saved_process_cr3());
++        raw_uart_str(" ttbr0=");
++        raw_uart_hex(ttbr0_value);
++        raw_uart_str("\n");
++    }
+     unsafe {
+         return_to_userspace(entry_point, user_sp);
+     }
+diff --git a/kernel/src/task/idle_sleep.rs b/kernel/src/task/idle_sleep.rs
+index 10faea0b..c90d0af5 100644
+--- a/kernel/src/task/idle_sleep.rs
++++ b/kernel/src/task/idle_sleep.rs
+@@ -127,6 +127,15 @@ pub(crate) fn idle_identity_must_not_sleep() -> bool {
+     match crate::task::scheduler::is_current_idle_thread() {
+         Some(true) => refuse_idle_identity(true),
+         Some(false) => false,
+-        None => true,
++        None => {
++            // RCA786-MUT-B (diagnostic, not for commit): do NOT refuse on an
++            // unreadable identity. Isolates whether the SCHEDULER-try_lock
++            // `None` arm is what fails block_wedge_oracle.
++            RCA786_UNKNOWN_IDENTITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
++            false
++        }
+     }
+ }
++
++/// RCA786-TEMP (not for commit): count the uncounted `None` arm.
++pub static RCA786_UNKNOWN_IDENTITY_REFUSALS: AtomicU64 = AtomicU64::new(0);

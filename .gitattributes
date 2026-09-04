@@ -14,3 +14,11 @@ docs/planning/green-program/sockets/serials/693-rca/*.txt -text
 # #693 fix serials: same treatment, and for the same reason -- these are raw
 # aarch64 and x86 console captures whose CR bytes are part of the evidence.
 docs/planning/green-program/sockets/serials/693-fix/*.txt -text
+
+# aarch64 testing-profile gate serials (round 2, 3, 6-prove, 7, 8): raw QEMU
+# console captures. Their CR bytes are part of the evidence, and `git diff
+# --check` counted 150844 whitespace diagnostics against them before this
+# entry. Same treatment as the p5b / t3g-prb / #693 serials above.
+docs/planning/green-program/aarch64-testing/serials/**/*.txt -text -whitespace
+docs/planning/green-program/aarch64-testing/serials/**/*.tsv -text -whitespace
+docs/planning/green-program/aarch64-testing/serials/**/*.log -text -whitespace
