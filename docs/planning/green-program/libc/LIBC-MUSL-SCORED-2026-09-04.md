@@ -40,10 +40,15 @@ Two catalogs exist and are unrelated:
 
   The `pid -> test_id` mapping for ARM64's ext2-loaded binaries comes from
   `catalog::utest_name_to_id(name: &str) -> Option<u16>`, called from
-  `kernel/src/main_aarch64.rs:1557` and `:1565`
-  (`grep -rn "utest_name_to_id" kernel/src/` → 2 of 2 hits, both inside
-  `load_test_binaries_from_ext2()`), which is itself
-  `#[cfg(target_arch = "aarch64")] #[cfg(feature = "testing")]`. Before this
+  `kernel/src/main_aarch64.rs:1644` and `:1652`
+  (`grep -rn "utest_name_to_id" kernel/src | wc -l` → 5 textual hits: those 2
+  call sites, the 1 definition at `test_framework/catalog.rs:807`, and 2
+  comment lines at `catalog.rs:183` and `:190`; the 2 call sites are both
+  inside `load_test_binaries_from_ext2()`), which is itself
+  `#[cfg(target_arch = "aarch64")] #[cfg(feature = "testing")]`.
+  claim-lint:ok: 5 of 5 name lookups for the musl programs returned
+  `Option::None` before this change; the count is the 5 catalog entries this
+  document adds. Before this
   change, `utest_name_to_id("hello_musl")` and the other four names returned
   `None`, so nothing called `register_pid`/`on_process_exit` for them —
   `create_user_process()` succeeding was the only thing anyone recorded
@@ -147,8 +152,14 @@ $ grep -rln "TEST_BINARIES|utest_name_to_id|BootTestDef|MAX_TESTS|MAX_PID_REGIST
 $ grep -rn "CATALOG.len()|catalog::CATALOG" kernel/src/ xtask/src/ tests/ --include="*.rs"
 ```
 
-No hits in `tests/` for any of `catalog`, `CATALOG`, `TEST_BINARIES`,
-`utest_name_to_id`, `BootTestDef`, `MAX_TESTS`, or `MAX_PID_REGISTRY`. The
+Re-derived at round 3:
+`grep -rn "CATALOG\|catalog\|TEST_BINARIES\|utest_name_to_id\|BootTestDef\|MAX_TESTS\|MAX_PID_REGISTRY" tests | wc -l`
+returns 1, and that 1 hit is
+`tests/aarch64_testing_profile_structure.rs:260`, the word "catalog" inside an
+assertion message ("the complete process catalog must be reported before SMP
+dispatch starts"). It is prose in a failure string, not a census over the
+catalog, so the conclusion below is unchanged -- but the earlier zero-hit
+statement was false and is withdrawn. The
 only two `CATALOG.len()` call sites are both inside `btrt.rs` itself
 (`total_tests` and the KTAP header count), which read the live array length
 and need no update. **No catalog census ratchet exists to move.**
@@ -180,7 +191,7 @@ Build: `cargo build --release --features testing,btrt --target
 aarch64-breenix-kernel.json -Z build-std=core,alloc
 -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
 (0 warnings beyond the pre-existing, unrelated toolchain future-incompat
-notice; see §6, where the same 1-line notice appears in 5 of 5 build
+notice; see §6, where the same 1-line notice appears in 3 of the 5 build
 invocations run for this task, features or not).
 
 Boot 1 of 3 (unmodified `main` @ `bfbb7575`, no catalog changes applied yet —
@@ -254,8 +265,12 @@ reproduced above, and left for their own dedicated work.
   needing a runtime run to establish what it does.
 - The scoring primitives the five new entries route through
   (`btrt::register_pid`, `btrt::on_process_exit`, `btrt::pass`/`fail`) carry
-  0 `#[cfg(target_arch)]` lines in `btrt.rs` (`grep -c target_arch
-  kernel/src/test_framework/btrt.rs` → 0) — the same arch-neutral functions
+  0 `#[cfg(target_arch)]` lines of their own. Re-derived at round 3:
+  `grep -c target_arch kernel/src/test_framework/btrt.rs` → 2, at `:437` and
+  `:443`, and both are inside `virt_to_phys`, not inside `register_pid`,
+  `on_process_exit`, `pass` or `fail`. The earlier published `→ 0` was false;
+  the narrower arch-neutrality claim about the scoring functions holds — the
+  same arch-neutral functions
   x86's `run-x86-boot-tests.sh` (`--features
   boot_tests,testing,external_test_bins`) exercises today for
   `UTEST_TRUE_COREUTIL`/`UTEST_FALSE_COREUTIL`/etc, per that gate's own
@@ -376,8 +391,11 @@ $ cargo build --release -p xtask 2>&1 | tail -3
     Finished `release` profile [optimized] target(s) in 2.69s
 ```
 
-5 of 5 build invocations above are clean except one identical
-`future-incompat` notice about the `core` v0.0.0 toolchain crate
+5 of 5 build invocations above are clean. The transcript shows the identical
+`future-incompat` notice on 3 of the 5 -- the three aarch64 kernel builds; the
+x86 grep returns no output at all, and the xtask line is a `Finished` line
+because that invocation is a `tail -3`, not a warning grep. The notice is about
+the `core` v0.0.0 toolchain crate
 (`nightly-2025-06-24`); that same 1-line notice was present before this
 branch's changes too (checked on the first build run in §5, before the
 catalog commit existed) — a pre-existing toolchain notice, not a kernel
