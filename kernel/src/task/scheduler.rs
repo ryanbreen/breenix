@@ -389,11 +389,16 @@ enum PinnedReclaimDisposition {
     /// boot-long preemption pin, so every peer's staleness test classifies it
     /// as not accepting wakeups for the whole boot, and parking `ksoftirqd/0`
     /// off its queue for that would be churn, not a rescue.
+    /// claim-lint:ok: measured -- one such park, on a boot with nothing else
+    /// wrong, in
+    /// docs/planning/green-program/aarch64-testing/serials/r2/pinned-home-park-before-the-offline-narrowing.txt
     Retain,
     /// A per-CPU worker whose home CPU is OFFLINE: leave it blocked and off the
     /// ready queues. It must not run on a foreign CPU (its work is the home
     /// CPU's per-CPU state), and the queue it is on belongs to a CPU that is
-    /// gone, so nothing will ever drain it.
+    /// gone, so no dispatch will reach it there.
+    /// claim-lint:ok: the offline test is `cpu >= online_cpus` in
+    /// kernel/src/task/scheduler.rs
     Park,
 }
 
@@ -427,8 +432,8 @@ fn reclaim_disposition_for_pinned_thread(
 /// arrives and this stays zero -- measured 0 on the aarch64 testing profile.
 /// A non-zero value means a per-CPU worker's backlog is going undrained, which
 /// is the thing to look at -- not a reason to migrate it onto the wrong bitmap.
-/// claim-lint:ok: the measurement is a serial committed under
-/// docs/planning/green-program/aarch64-testing/serials/r2
+/// claim-lint:ok: the measurement is a committed serial --
+/// docs/planning/green-program/aarch64-testing/serials/r2/testing-profile-boot.txt
 pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 

@@ -1,0 +1,21 @@
+Running 1 parallel full boot tests (runner: native)...
+Image: /root/breenix-a64r2-main/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
+  Started test 1
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: FAIL (x86 userspace verdict rejected the run)
+    STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5026
+x86 userspace gate: FAIL - failing process is not allowlisted: simple_exit
+[DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
+[DEBUG] kernel::net::tcp: TCP: Listener port 54530 ref_count 1 -> 0
+[DEBUG] kernel::net::tcp: TCP: Removed listener on port 54530 (ref_count reached 0)
+[DEBUG] kernel::task::process_task: Process 14 'loopback_wake_test' (thread 24) exited with code 0
+[ INFO] kernel::syscall::handlers: No more userspace threads remaining
+[ INFO] kernel::syscall::handlers: Woke keyboard task to ensure input processing continues
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]
+[ERROR] kernel::syscall::handlers: 🚨 Failing userspace processes: simple_exit:42 🚨
+[ERROR] kernel::syscall::handlers: 🚨 TEST RUNNER: FAILED - 1 of 22 userspace processes exited nonzero 🚨
+
+=========================================
+Results: 0 passed, 1 failed out of 1
+=========================================

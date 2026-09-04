@@ -1,8 +1,6 @@
 //! One refusal, in one place: the CPU idle identity must never enter a
-//! blocking primitive.
-//!
-//! claim-lint:ok: the rule is enforced, not asserted -- the two census
-//! ratchets over it are in tests/teardown_structure.rs
+//! blocking primitive. claim-lint:ok: the rule is enforced, not asserted --
+//! its two census ratchets are in tests/teardown_structure.rs
 //!
 //! # Why this exists
 //!
@@ -24,11 +22,9 @@
 //! predicate that grew its own approximation of "sleepable" got a different
 //! answer. So the rule lives here once and every predicate and every blocking
 //! primitive consults it, instead of each re-deriving it from `preempt_count`
-//! or "some thread ID exists".
-//!
-//! claim-lint:ok: the two coverage claims are the subject of the census
-//! ratchets in tests/teardown_structure.rs, which locate their subjects by
-//! shape rather than by a list
+//! or "some thread ID exists". claim-lint:ok: the two coverage claims are the
+//! subject of the census ratchets in tests/teardown_structure.rs, which locate
+//! their subjects by shape rather than by a list
 //!
 //! # What refusal means
 //!
@@ -38,6 +34,30 @@
 //! continuation.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Whether refusing the idle identity is the right call on this architecture.
+///
+/// aarch64: yes. Its dispatch of an idle identity deliberately resets the
+/// thread to the canonical `idle_loop_arm64` continuation instead of resuming
+/// the saved one, so a block taken on that identity is unrecoverable -- that is
+/// #761, and the refusal is the repair.
+///
+/// x86_64: no, and this is measured, not assumed. There the boot thread is the
+/// idle task by construction (`init_with_current`, "the boot thread becomes the
+/// idle task", swapper/0), dispatch restores its saved context normally, and
+/// the boot-time disk loader depends on the block: it reads test binaries with
+/// interrupts masked per block, so the VirtIO completion ISR can only run once
+/// the loader blocks and the scheduler switches away from it. Refusing there
+/// deadlocks the load. Measured on beast, `run-boot-parallel.sh 1`: `main`
+/// reaches "USERSPACE TEST COMPLETE"; with the refusal applied to x86 the boot
+/// stops after the first `Loaded 'hello_time' from test disk` line and never
+/// finishes. So the refusal is scoped to the architecture whose dispatch
+/// discards the continuation, and the x86 predicates keep their previous
+/// behavior.
+/// claim-lint:ok: both runs are in
+/// docs/planning/green-program/aarch64-testing/serials/r2/x86-boot-parallel-main.txt
+/// and .../x86-boot-parallel-refusal-applied-to-x86.txt
+const IDLE_REFUSAL_APPLIES: bool = cfg!(target_arch = "aarch64");
 
 /// Times a `*_can_sleep` predicate or a blocking primitive refused the CPU idle
 /// identity.
@@ -50,8 +70,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// the refusal has kept it alive rather than making it correct. The first
 /// refusal also prints `[IDLE_SLEEP_REFUSED:...]` on serial so a gate script
 /// (and a human tailing the log) sees it without reading memory.
-/// claim-lint:ok: both counts are serials committed under
-/// docs/planning/green-program/aarch64-testing/serials/r2
+/// claim-lint:ok: both counts are in committed serials --
+/// docs/planning/green-program/aarch64-testing/serials/r2/testing-profile-boot.txt
+/// (0) and .../idle-refusal-before-the-loader-moved.txt (1)
 pub static IDLE_SLEEP_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 /// Whether the one-shot serial marker has already been emitted this boot.
@@ -76,7 +97,7 @@ pub fn idle_sleep_refused() -> u64 {
 /// deadlock against the logger lock.
 #[inline]
 pub(crate) fn refuse_idle_identity(is_idle: bool) -> bool {
-    if !is_idle {
+    if !is_idle || !IDLE_REFUSAL_APPLIES {
         return false;
     }
     let refusals = IDLE_SLEEP_REFUSED.fetch_add(1, Ordering::Relaxed) + 1;
@@ -100,6 +121,9 @@ pub(crate) fn refuse_idle_identity(is_idle: bool) -> bool {
 /// abandoned continuation is not.
 #[inline]
 pub(crate) fn idle_identity_must_not_sleep() -> bool {
+    if !IDLE_REFUSAL_APPLIES {
+        return false;
+    }
     match crate::task::scheduler::is_current_idle_thread() {
         Some(true) => refuse_idle_identity(true),
         Some(false) => false,

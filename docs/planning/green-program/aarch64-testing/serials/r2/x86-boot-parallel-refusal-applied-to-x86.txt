@@ -1,0 +1,21 @@
+Running 1 parallel full boot tests (runner: native)...
+Image: /root/breenix-a64r2/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
+  Started test 1
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: FAIL (x86 userspace verdict rejected the run)
+    STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=669
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+[ INFO] kernel::task::kthread_tests: KTHREAD_DOUBLE_STOP_TEST: AlreadyStopped returned correctly
+[ INFO] kernel::task::kthread_tests: KTHREAD_SHOULD_STOP_TEST: returns false for non-kthread
+[ INFO] kernel::task::kthread_tests: === KTHREAD STOP AFTER EXIT TEST: Starting ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 11
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 11 at 0xffffc9000058c000-0xffffc9000060c000 (guard at 0xffffc9000058b000)
+Added thread 11 'stop_after_exit_kthread' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::kthread_tests: KTHREAD_STOP_AFTER_EXIT_TEST: kthread exiting immediately
+[ INFO] kernel::task::kthread_tests: KTHREAD_STOP_AFTER_EXIT_TEST: AlreadyStopped returned correctly
+[ INFO] kernel::task::kthread_tests: === KTHREAD STOP AFTER EXIT TEST: Completed ===
+[ INFO] kernel::userspace_test: ✓ Loaded 'hello_time' from test disk (177640 bytes)
+
+=========================================
+Results: 0 passed, 1 failed out of 1
+=========================================
