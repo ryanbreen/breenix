@@ -465,13 +465,22 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
 /// Record that the running thread just parked on the shared halt primitive
 /// (#772, R113).
 ///
-/// Called from `crate::arch_halt_with_interrupts` immediately before the halt,
-/// so every blocking wait loop in the kernel is counted at its own park point
-/// with no per-site call to keep in sync. One relaxed atomic add through the
+/// Called from the kernel's park primitives -- `crate::arch_halt_with_interrupts`,
+/// `crate::arch_halt` and the private one in `graphics/render_task.rs` --
+/// immediately before the halt, and by hand from the two loops that park on a
+/// raw `enable_and_hlt`/`wfi` of their own (`task/executor.rs`'s
+/// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`). Every blocking
+/// wait loop in the kernel therefore reaches a bump at its own park point with
+/// no per-site call to keep in sync. The
+/// five idle and terminal halt loops that park on a raw `enable_and_hlt` --
+/// four in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
+/// NOT counted; `crate::arch_halt_with_interrupts` carries the full census and
+/// what the omission costs. One relaxed atomic add through the
 /// per-CPU current-thread pointer. No lock, no allocation, no formatting, and
 /// no control flow depends on the value.
-// claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites under kernel/src
-// reach this function, counted by grep in this slot.
+// claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
+// arch_halt call sites under kernel/src reach this function, counted by grep in
+// this slot.
 ///
 /// The dispatch mark that consumes this count is x86-only today, so on aarch64
 /// this keeps the count and no reader consumes it yet.

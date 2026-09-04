@@ -131,6 +131,15 @@ pub fn create_idle_thread() -> Box<Thread> {
 #[allow(dead_code)]
 fn idle_thread_fn() {
     loop {
+        // #772: this loop parks on a raw `enable_and_hlt`/`wfi` rather than on
+        // `crate::arch_halt_with_interrupts`, so the park count the revisit
+        // oracle reads is bumped here by hand -- once, covering both arches.
+        // This is the idle thread, so what it bumps is the idle thread's own
+        // count; the one reader compares a thread's count against a stamp
+        // taken from the same thread, so an idle park cannot perturb another
+        // thread's reading. `crate::arch_halt` says the same at more length.
+        crate::per_cpu::note_wait_loop_park();
+
         // Enable interrupts and halt until next interrupt
         // Architecture-specific implementation
         #[cfg(target_arch = "x86_64")]

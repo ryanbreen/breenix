@@ -379,8 +379,24 @@ pub fn arch_interrupts_enabled() -> bool {
 }
 
 /// Halt the CPU until the next interrupt.
+///
+/// A park primitive, so the per-thread park count the #772 revisit oracle
+/// reads is bumped here as well as in `arch_halt_with_interrupts` below. The
+/// two together are why the oracle's sentence can be checked by grep: see that
+/// function's doc for the full park census, including what is deliberately
+/// left out of it.
+///
+/// Idle and terminal halt loops that reach this bump the idle thread's own
+/// count. That is harmless: the count has one reader, the identical-frame
+/// split at the save site, and it compares a thread's count only against a
+/// stamp taken from the same thread at its own dispatch.
+// claim-lint:ok: 1 of 1 load of `Thread::wait_loop_iters` outside
+// `Thread::clone` is `per_cpu::current_wait_loop_iters`, whose 2 of 2 callers
+// are the dispatch stamp and `classify_no_progress_kind`; counted by grep in
+// this slot.
 #[inline(always)]
 pub fn arch_halt() {
+    per_cpu::note_wait_loop_park();
     #[cfg(target_arch = "x86_64")]
     {
         arch_impl::x86_64::cpu::X86Cpu::halt()
@@ -393,17 +409,39 @@ pub fn arch_halt() {
 
 /// Enable interrupts and halt (atomic on x86_64).
 ///
-/// Every blocking wait loop in the kernel parks here, so this is also where the
-/// per-thread park count the #772 revisit oracle reads is bumped (R113).
-/// Counting inside the primitive rather than at each of the call sites the
-/// census in
-/// docs/planning/green-program/sockets/772-DIAG-2026-09-03.md lists is
-/// deliberate: a site added later is counted with no edit, and a site cannot
-/// drift out of the census by being missed. The bump is immediately before the
-/// halt, so the count a thread carries while parked already includes the park
-/// it is sitting in.
-// claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites under kernel/src
-// reach this function, counted by grep in this slot.
+/// The park primitive the blocking-in-syscall wait loops use, and where the
+/// per-thread park count the #772 revisit oracle reads is bumped. Ruling R113
+/// (2026-09-03) retired the proxy; this oracle is its replacement.
+///
+/// Counting inside the primitive rather than at each call site is deliberate:
+/// a site added later is counted with no edit, and a site cannot drift out of
+/// the census by being missed. The bump is immediately before the halt, so the
+/// count a thread carries while parked already includes the park it is sitting
+/// in.
+///
+/// What is counted, and what is not. The park census is
+/// `grep -rn "arch_halt()\|arch_halt_with_interrupts()\|enable_and_hlt\|wfi()"
+/// kernel/src --include=*.rs`, minus the primitive definitions themselves and
+/// the lines that only name a primitive in prose.
+/// Counted: all 25 call sites of this primitive, all 24 call sites of
+/// `arch_halt`, the two call sites of the private halt primitive in
+/// `graphics/render_task.rs` (which bumps in the same shape), and the two
+/// loops that park on a raw `enable_and_hlt`/`wfi` of their own and call
+/// `per_cpu::note_wait_loop_park` directly -- `task/executor.rs`'s
+/// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`.
+/// NOT counted: the five idle and terminal halt loops that park on a raw
+/// `enable_and_hlt` -- four in `main.rs` and `idle_loop` in
+/// `interrupts/context_switch.rs`. None of the five is a blocking wait loop
+/// waiting on a condition, but the omission is not free: a thread saved at a
+/// byte-identical frame while parked in one of them reads ZERO_ITER even
+/// though it re-parked. The idle thread is the only thread that reaches them.
+/// The census grep above also does not reach a raw `asm!("wfi")`, which is how
+/// `hlt_loop`, the aarch64 boot and panic paths in `main_aarch64.rs`, and the
+/// `ec0_fault_inject` thread park; none of those is a blocking wait loop
+/// either, and none is counted.
+// claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
+// arch_halt call sites under kernel/src reach a bump, counted by grep in this
+// slot.
 ///
 /// One relaxed atomic add on a path that is about to halt the CPU. No lock, no
 /// allocation, no formatting, and no control flow reads the value.

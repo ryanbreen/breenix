@@ -561,11 +561,18 @@ pub struct Thread {
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
     pub cached_ttbr0: u64,
 
-    /// How many times this thread has parked on the shared halt primitive
-    /// (`crate::arch_halt_with_interrupts`), the instruction every blocking
-    /// wait loop in the kernel halts on (#772, R113).
-    // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites under kernel/src
-    // reach that primitive, counted by grep in this slot.
+    /// How many times this thread has parked on one of the kernel's halt
+    /// primitives -- `crate::arch_halt_with_interrupts`, `crate::arch_halt`,
+    /// the private one in `graphics/render_task.rs` -- or on one of the three
+    /// loops that park on a raw `enable_and_hlt`/`wfi` and bump this by hand
+    /// (`task/executor.rs`'s `sleep_if_idle`, `task/spawn.rs`'s
+    /// `idle_thread_fn`). Between them those are the park
+    /// points of every blocking wait loop in the kernel (#772).
+    /// `crate::arch_halt_with_interrupts` carries the full park census,
+    /// including the five idle and terminal halt loops that are NOT counted.
+    // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
+    // arch_halt call sites under kernel/src reach a bump, counted by grep in
+    // this slot.
     ///
     /// The dispatch mark stamps this value at dispatch; the save site reads it
     /// again. A save whose frame is byte-identical to the mark therefore splits
