@@ -1,0 +1,1 @@
+{"episodes": [{"tid": "29", "start_line": 2265, "end_line": 2393, "anchor_line": 2274, "turns": 1}, {"tid": "29", "start_line": 2507, "end_line": 2687, "anchor_line": null, "turns": 1}], "restores_total": 421, "no_progress_proxy": 251, "no_progress_proxy_pct": 59.6, "data_latency_ms": 1982}
