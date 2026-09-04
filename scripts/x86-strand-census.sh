@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
-# x86 strand census: name every thread that was saved blocked in a kernel wait
-# and never restored.
+# x86 strand census: consume the kernel's end-of-test dispatch census.
 #
 # #568 round 2 review turned up a failure the gate could not see. When the
 # blocking `poll()` lost its wake, the polling thread was saved blocked and
-# never scheduled again -- so it emitted no verdict, no non-zero exit and no
-# marker. The boot went on for another 1600 lines and the only trace was an
-# ABSENT oracle line. A gate that only reads emitted markers cannot fail on a
-# thread that was silenced; this census reads the context-switch record itself,
-# which is written whether or not the thread ever speaks again.
+# never scheduled again.  The old host census recovered that fact from the
+# formatted save/restore records emitted by the context-switch path.  #775
+# removes those interrupt-path records; the kernel now maintains the same
+# save/restore/exit state in a fixed atomic ledger and emits one compact line
+# after the userspace test battery ends.
+# claim-lint:ok: #568 field failure and #775 migration definition.
 #
 # The rule is exactly one fact, taken from the kernel's own bookkeeping:
 #
-#   a thread whose LAST "Saved kernel context for blocked thread N" is not
-#   followed by any "Restored kernel context for thread N", and which never
-#   reported an exit, was never resumed.
+#   a thread which has ever been saved blocked, whose LAST save/restore event is
+#   save, and which never reported an exit, was never resumed.
+# claim-lint:ok: #775 preserves scripts/x86-strand-census.sh's pre-migration predicate.
 #
-# Threads that exit are excluded: exiting is a legitimate way never to be
-# restored. Nothing else is excluded -- there is no name list here, because a
-# name list is what goes stale.
+# Threads that exit are excluded.  An overflow is a data error, not a green:
+# without a ledger slot the gate cannot apply the definition honestly.
 #
 # Usage:  scripts/x86-strand-census.sh <serial-log> [<serial-log> ...]
 # Output: one line per stranded thread, then a STRAND_CENSUS summary line.
@@ -35,43 +34,24 @@ for serial_log in "$@"; do
     [[ -r "$serial_log" ]] || { echo "strand census: serial log is not readable: $serial_log" >&2; exit 2; }
 done
 
-cat -- "$@" | awk '
-/Added thread [0-9]+ / {
-    line = $0
-    sub(/.*Added thread /, "", line)
-    tid = line; sub(/ .*/, "", tid)
-    rest = line; sub(/^[0-9]+ /, "", rest)
-    if (substr(rest, 1, 1) == "\047") {
-        sub(/^\047/, "", rest); sub(/\047.*/, "", rest)
-        names[tid] = rest
-    }
-}
-/Saved kernel context for blocked thread [0-9]+/ {
-    tid = $0; sub(/.*Saved kernel context for blocked thread /, "", tid); sub(/[^0-9].*/, "", tid)
-    saved[tid] = NR
-}
-/Restored kernel context for thread [0-9]+/ {
-    tid = $0; sub(/.*Restored kernel context for thread /, "", tid); sub(/[^0-9].*/, "", tid)
-    restored[tid] = NR
-}
-/\(thread [0-9]+\) exited with code/ {
-    tid = $0; sub(/.*\(thread /, "", tid); sub(/\).*/, "", tid)
-    exited[tid] = 1
-}
-END {
-    count = 0
-    saved_n = 0
-    for (tid in saved) {
-        saved_n++
-        if (tid in exited) continue
-        r = (tid in restored) ? restored[tid] : -1
-        if (r < saved[tid]) {
-            nm = (tid in names) ? names[tid] : "?"
-            printf "strand census: thread %s (%s) saved blocked at line %d and never restored (%d further lines followed)\n", tid, nm, saved[tid], NR - saved[tid]
-            count++
-        }
-    }
-    printf "STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n", saved_n, count, NR
-    exit (count > 0) ? 1 : 0
-}
-'
+line_count=$(cat -- "$@" | wc -l | tr -d ' ')
+census_lines=$(grep -hE '\[DISPATCH_STRAND_CENSUS:threads_saved_blocked=[0-9]+:stranded=[0-9]+:overflow=[0-9]+\]' -- "$@" || true)
+census_count=$(printf '%s\n' "$census_lines" | awk 'NF { count++ } END { print count + 0 }')
+
+if [[ "$census_count" -ne 1 ]]; then
+    echo "strand census: expected exactly one DISPATCH_STRAND_CENSUS line, found $census_count" >&2
+    exit 2
+fi
+
+threads_saved_blocked=$(printf '%s\n' "$census_lines" | sed -E 's/.*threads_saved_blocked=([0-9]+).*/\1/')
+stranded=$(printf '%s\n' "$census_lines" | sed -E 's/.*:stranded=([0-9]+).*/\1/')
+overflow=$(printf '%s\n' "$census_lines" | sed -E 's/.*:overflow=([0-9]+).*/\1/')
+
+if [[ "$overflow" -ne 0 ]]; then
+    echo "strand census: kernel ledger overflowed ($overflow event(s)); result is incomplete" >&2
+    exit 2
+fi
+
+printf 'STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n' \
+    "$threads_saved_blocked" "$stranded" "$line_count"
+[[ "$stranded" -eq 0 ]]

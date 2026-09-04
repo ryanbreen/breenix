@@ -2,11 +2,14 @@
 """#772 dispatch census: turn one boot's serials (and, optionally, a GDB
 counter dump) into one JSON record.
 
-The serial half is the census the #772 fix round already ran -- episode turn
-counts, `restores_total`, `no_progress_proxy`, `no_progress_proxy_pct`,
-`data_latency_ms` -- reproduced here unchanged so numbers stay comparable with
-the committed `census.json` files under
-docs/planning/green-program/sockets/serials/772-fix-a/.
+The serial half retains episode boundaries and `data_latency_ms`.  #775 retired
+episode `turns` and the aggregate `restores_total`, `no_progress_proxy`, and
+`saved_records` fields: all four were derived from the formatted "Restored
+kernel context" / "Saved kernel context" records removed from the interrupt
+path.  Emitting 0 after their removal would be a silently vacuous census.
+Aggregate save/restore/no-progress evidence remains available from the optional
+DISPATCH_* counter dump; there is no per-episode counter, so `turns` has no
+honest replacement and is omitted.
 
 The counter half is new (R111/R112). It parses `NAME=VALUE` lines out of a GDB
 dump and reports every `DISPATCH_*` counter beside the proxy, plus the
@@ -74,10 +77,6 @@ def derive(counters):
 ENTER_RE = re.compile(r"TCP recv: entering blocking path, thread=(\d+)")
 WOKEN_RE = re.compile(r"TCP_BLOCK: Thread (\d+) woken from recv blocking")
 UNBLOCK_RE = re.compile(r"unblock\((\d+)\): Added to per_cpu_queues")
-RESTORE_RE = re.compile(r"Restored kernel context for thread (\d+): RIP=(\S+) RSP=(\S+)")
-SAVE_RE = re.compile(r"Saved kernel context for blocked thread (\d+): RIP=(\S+) CS=\S+ RSP=(\S+)")
-
-
 def main(argv):
     args = [a for a in argv[1:] if a != "--counters"]
     counters_path = None
@@ -111,35 +110,12 @@ def main(argv):
             m = UNBLOCK_RE.search(lines[i])
             if m and m.group(1) == tid:
                 anchor = i
-        turn_start = anchor if anchor is not None else start
-        turns = 0
-        for i in range(turn_start, end):
-            m = RESTORE_RE.search(lines[i])
-            if m and m.group(1) == tid:
-                turns += 1
         results.append({
             "tid": tid,
             "start_line": start + 1,
             "end_line": end + 1,
             "anchor_line": (anchor + 1) if anchor is not None else None,
-            "turns": turns,
         })
-
-    n = k = 0
-    saved_records = 0
-    for i, line in enumerate(lines):
-        if SAVE_RE.search(line):
-            saved_records += 1
-        m = RESTORE_RE.search(line)
-        if not m:
-            continue
-        n += 1
-        for j in range(i + 1, min(i + 4, len(lines))):
-            s = SAVE_RE.search(lines[j])
-            if s and s.group(1) == m.group(1):
-                if (s.group(2), s.group(3)) == (m.group(2), m.group(3)):
-                    k += 1
-                break
 
     data_latency = None
     if ulog:
@@ -153,11 +129,7 @@ def main(argv):
 
     out = {
         "episodes": results,
-        "restores_total": n,
-        "no_progress_proxy": k,
-        "no_progress_proxy_pct": round(k / n * 100, 1) if n else None,
         "data_latency_ms": data_latency,
-        "saved_records": saved_records,
     }
 
     if counters_path:
@@ -165,9 +137,6 @@ def main(argv):
         dispatch = {name: value for name, value in counters.items() if name.startswith("DISPATCH_")}
         out["counters"] = dispatch
         out.update(derive(counters))
-        kb = out.get("kernel_blocked_saves")
-        if kb is not None and saved_records:
-            out["kernel_blocked_saves_match_records"] = kb == saved_records
 
     print(json.dumps(out))
     return 0

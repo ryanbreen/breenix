@@ -269,6 +269,13 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
             // Set flag for automated systems that want to detect completion
             USERSPACE_TEST_COMPLETE.store(true, Ordering::SeqCst);
 
+            // #775: emit the serial gate's save/restore census only after the
+            // last userspace exit has been recorded.  The accounting itself is
+            // lock-free and allocation-free; formatting happens only here,
+            // outside interrupt and context-switch context.
+            #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+            crate::task::dispatch_strand_census::report_once();
+
             // P6a PR-2, review finding B2: sample the tombstone census AFTER a
             // live reap. x86's other two census sites both fire before any user
             // process exists, so `removed` never left the join oracle's own two

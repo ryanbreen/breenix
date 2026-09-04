@@ -669,6 +669,8 @@ fn save_kernel_context_with_guard(
                 // + _MANDATORY equals the number of records emitted, whether or
                 // not the record itself is compiled in.
                 note_dispatch_save(save_reason, thread_id, interrupt_frame);
+                #[cfg(feature = "testing")]
+                crate::task::dispatch_strand_census::note_save(thread_id);
 
                 // #775 / #772 Q2: one of the three dispatch-path serial
                 // records, compiled out by `quiet_dispatch_log`.
@@ -1131,6 +1133,8 @@ fn switch_to_thread(
                             // switch into a blocked-in-syscall kernel context
                             // -- the same event the record below names.
                             crate::trace_count!(DISPATCH_KERNEL_RESTORE_TOTAL);
+                            #[cfg(feature = "testing")]
+                            crate::task::dispatch_strand_census::note_restore(thread_id);
 
                             // #775 / #772 Q2: second of the three records.
                             #[cfg(not(feature = "quiet_dispatch_log"))]
