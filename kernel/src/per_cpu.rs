@@ -134,7 +134,7 @@ pub struct PerCpuData {
     // the frame they see against this pair to count an identical-frame
     // observation -- a wait-loop revisit census since ruling R113
     // (2026-09-03) retired the proxy, not a defect
-    // census. These four words come out of the padding that already followed
+    // census. These five words come out of the padding that already followed
     // `switch_violations`, so the struct keeps its 192-byte size and no offset
     // above moves.
     /// Resume RIP recorded by the last completed dispatch (offset 128)
@@ -1312,8 +1312,11 @@ pub fn classify_dispatch_progress(tid: u64, rip: u64, rsp: u64) -> DispatchProgr
 /// names the thread the mark matched, and one cannot be constructed outside
 /// this module. It reads the park count that thread carries now against the
 /// one the dispatch mark stamped, so `Revisit` means the thread reached a park
-/// point again and `ZeroIter` means it is still sitting on the park it was
-/// dispatched to.
+/// point again and `ZeroIter` means it reached no counted park point in
+/// between -- which is the same thing as "still sitting on the park it was
+/// dispatched to" only where the mark's RIP is that wait loop's own
+/// post-halt resume point; this function's inputs carry no RIP, so it
+/// cannot check that.
 ///
 /// The identity is re-checked against the per-CPU current-thread pointer the
 /// count is read through, and a mismatch -- or a count below the stamp, which
@@ -1325,8 +1328,10 @@ pub fn classify_dispatch_progress(tid: u64, rip: u64, rsp: u64) -> DispatchProgr
 /// `current_thread_ptr` load inside `current_wait_loop_iters`, (3) that
 /// thread's `id`, (4) its `wait_loop_iters` Relaxed load, and (5)
 /// `X86PerCpu::dispatch_mark_wait_iters` -- the stamp side of the comparison,
-/// a second GS-relative load. A refused guard returns after (1) and an
-/// identity mismatch after (4). No lock, no allocation, no formatting.
+/// a second GS-relative load. A refused guard returns after (1); a null
+/// `current_thread_ptr` (no thread installed on this CPU) returns after (2),
+/// before (3) and (4) happen; an identity mismatch (compared using (3))
+/// returns after (4). No lock, no allocation, no formatting.
 #[inline(always)]
 pub fn classify_no_progress_kind(
     frame: IdenticalFrame,
