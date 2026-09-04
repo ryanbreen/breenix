@@ -549,6 +549,27 @@ for i in $(seq 1 "$COUNT"); do
     # floor is >=1.
     test "$CENSUS_NETWORK" -ge 1
     echo "  Device census: $PCI_CENSUS_LINE"
+
+    # Direct structural evidence, layered on top of the count-only census
+    # above (green arc, docs/planning/green-program/bus/
+    # BUS-X86-ENUM-GATE-2026-09-04.md): kernel::drivers::pci::
+    # run_gate_device_catalog_check() reads the actual parsed device table
+    # (vendor:device ID, class code, a decoded BAR, an assigned interrupt
+    # line -- not just the summary counts CENSUS_VIRTIO_BLOCK/CENSUS_NETWORK
+    # above check) and prints one BUS_ENUM_CATALOG: PASS/FAIL line, called
+    # unconditionally from drivers::init(). `|| true` for the same reason
+    # as PCI_CENSUS_LINE above: let an absent line fail the explicit
+    # `test -n` below with a named assertion, not an aborted $() at a
+    # pipefail boundary.
+    BUS_CATALOG_LINE=$(grep -h -E 'BUS_ENUM_CATALOG: (PASS|FAIL)' \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1) || true
+    test -n "$BUS_CATALOG_LINE"
+    echo "  Bus device catalog: $BUS_CATALOG_LINE"
+    case "$BUS_CATALOG_LINE" in
+        *'BUS_ENUM_CATALOG: PASS'*) ;;
+        *) echo "FAIL: bus device catalog check did not pass" >&2; exit 1 ;;
+    esac
+
     # Explicit assertion, not a bare boolean variable: a bare boolean value
     # executed as a command is the same silent-abort shape as the `test`
     # assertions below, and is exactly as opaque on failure without the

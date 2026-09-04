@@ -44,6 +44,10 @@ pub fn init() -> usize {
     // proof). A FAIL is logged to serial (BUS_ENUM_CATALOG: FAIL ...) but
     // does not abort boot; the gate scripts themselves treat that line as
     // fatal.
+    // claim-lint:ok: mechanical description of this call site; see
+    // docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md for
+    // the measured x86_staged_registry proof and kernel/src/drivers/pci.rs
+    // for run_gate_device_catalog_check().
     pci::run_gate_device_catalog_check();
 
     // Initialize VirtIO block driver if device was found

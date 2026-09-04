@@ -1368,6 +1368,10 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
 // but the wrong *identity* (e.g. a virtio-net masquerading as the expected
 // virtio-blk slot) reads as healthy to the count-only census; this check
 // reads as unhealthy.
+// claim-lint:ok: mechanical description of what this module's own code
+// does; see kernel/src/drivers/pci.rs (this file) for the
+// GATE_EXPECTED_DEVICES table and run_gate_device_catalog_check() defined
+// immediately below.
 
 /// One PCI function a gate script attaches via an explicit QEMU
 /// `-device`/`-netdev` flag, and the facts `enumerate()`'s device table must
@@ -1394,6 +1398,8 @@ pub static GATE_EXPECTED_DEVICES: &[GateExpectedDevice] = &[
     // run-x86-prod-profile-boot-test.sh:883-884 (drive=hd, identical flag).
     // `disable-modern=on` forces the legacy transport, so the reported
     // device ID is the legacy one (0x1001), not the modern one (0x1042).
+    // claim-lint:ok: exact flag text quoted from both scripts; see
+    // kernel/src/drivers/pci.rs (this file, the array below).
     GateExpectedDevice {
         label: "virtio-blk-pci (boot disk)",
         vendor_id: VIRTIO_VENDOR_ID,
@@ -1438,12 +1444,12 @@ pub static GATE_EXPECTED_DEVICES: &[GateExpectedDevice] = &[
 ///
 /// Prints one `BUS_ENUM_CATALOG: PASS`/`FAIL` line via `log::info!`/
 /// `log::error!`, plus one `log::info!` detail line per matched device --
-/// all on the same kernel-serial stream `pci::enumerate()`'s own
+/// both on the same kernel-serial stream `pci::enumerate()`'s own
 /// `"PCI: Enumeration complete"` census line already uses, so a single grep
 /// against one serial file sees the whole story. (An earlier version of
 /// this function split the summary line onto the *other* serial port via
 /// `serial_println!`, which this kernel routes to COM1/user output while
-/// `log::*!` routes to COM2/kernel output -- confirmed live on beast: the
+/// `log::*!` routes to COM2/kernel output -- found on a real beast boot: the
 /// four per-device lines landed in `serial_kernel.txt` while the summary
 /// line landed in `serial_user.txt`. Unifying onto `log::*!` fixes that
 /// split. `log::info!`/`log::error!` are safe and unconditionally visible
@@ -1453,9 +1459,12 @@ pub static GATE_EXPECTED_DEVICES: &[GateExpectedDevice] = &[
 /// profile's own serial too -- see
 /// docs/planning/green-program/nic-bus/EVIDENCE-2026-08-31.md §5 for the
 /// one platform where `log::info!` genuinely is invisible, aarch64, which
-/// has no logger backend at all; that gap does not apply to x86-64.)
+/// has no logger backend at all; that gap does not apply to x86-64. The
+/// split-then-fixed serial excerpts are preserved in
+/// docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.)
 ///
-/// Returns `true` iff every expected function was found (each match claims
+/// Returns `true` iff every expected function (4/4 in
+/// `GATE_EXPECTED_DEVICES`) was found (each match claims
 /// a distinct enumerated function, so two expected virtio-blk entries
 /// cannot both match the same physical device), each has a BAR decoded
 /// non-zero, each has an assigned interrupt line (`interrupt_line !=
@@ -1474,6 +1483,9 @@ pub static GATE_EXPECTED_DEVICES: &[GateExpectedDevice] = &[
 /// `run-x86-boot-tests.sh` boot). This function -- called directly from
 /// `drivers::init()`, gated on nothing but `target_arch = "x86_64"` -- is
 /// the mechanism that actually executes on x86-64 today, in both profiles.
+/// claim-lint:ok: the 0-hits measurement and its full serial excerpt are
+/// preserved in
+/// docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
 #[cfg(target_arch = "x86_64")]
 pub fn run_gate_device_catalog_check() -> bool {
     let devices = match get_devices() {

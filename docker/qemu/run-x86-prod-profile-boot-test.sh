@@ -213,6 +213,23 @@ EXECUTOR_LITERAL='Starting async executor...'
 STEADY_STATE_LITERAL='Serial command task started'
 CONSOLE_PROMPT_LITERAL='breenix> '
 
+# Direct structural evidence for the "Bus / device infrastructure" gate row
+# (green arc, docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md):
+# kernel::drivers::pci::run_gate_device_catalog_check() reads the actual
+# parsed PCI device table (vendor:device ID, class code, a decoded BAR, an
+# assigned interrupt line for each of the four devices this script's own -device/-netdev
+# flags attach -- see the flag-per-device table in
+# kernel/src/drivers/pci.rs::GATE_EXPECTED_DEVICES) and prints exactly one of
+# these two lines, called unconditionally from drivers::init(). This is the
+# only device-count-or-better assertion this gate carries; before this arc it
+# had none (docs/planning/green-program/nic-bus/CONFIRM-NIC-x86-2026-09-02.md
+# section 3 named this the missing leg).
+# claim-lint:ok: mechanical description of this call site and
+# kernel/src/drivers/pci.rs::GATE_EXPECTED_DEVICES (4 entries, both cited
+# directly above), not an unverified empirical claim.
+BUS_ENUM_CATALOG_PASS_LITERAL='BUS_ENUM_CATALOG: PASS'
+BUS_ENUM_CATALOG_FAIL_LITERAL='BUS_ENUM_CATALOG: FAIL'
+
 # ---------------------------------------------------------------------------
 # The teardown census, read in the shipped profile. Both lines are emitted once
 # from kernel/src/main.rs outside every test cfg. The *_PREFIX counts are what
@@ -733,6 +750,7 @@ serial_bytes() {
 
 print_observed_values() {
     echo "  ext2 root mounted:            $(marker_count "$EXT2_ROOT_LITERAL")"
+    echo "  bus device catalog pass/fail:  $(marker_count "$BUS_ENUM_CATALOG_PASS_LITERAL")/$(marker_count "$BUS_ENUM_CATALOG_FAIL_LITERAL")"
     echo "  kernel init complete:         $(marker_count "$KERNEL_INIT_LITERAL")"
     echo "  async executor started:       $(marker_count "$EXECUTOR_LITERAL")"
     echo "  steady state reached:         $(marker_count "$STEADY_STATE_LITERAL")"
@@ -951,6 +969,13 @@ test "$(marker_count "$STEADY_STATE_LITERAL")" -eq 1
 # PROMPT_AFTER is that plus exactly the one the liveness stimulus earned.
 test "$PROMPT_BEFORE" -eq 1
 test "$PROMPT_AFTER" -eq 2
+
+# Bus device catalog (see the literal declarations above): the PASS count is 1
+# and the FAIL count is 0 (both asserted below). drivers::init() runs long before ext2 mount/kernel-init-complete
+# above, but this assertion sits with the other milestone checks rather than
+# trying to enforce serial line ordering.
+test "$(marker_count "$BUS_ENUM_CATALOG_PASS_LITERAL")" -eq 1
+test "$(marker_count "$BUS_ENUM_CATALOG_FAIL_LITERAL")" -eq 0
 
 # Teardown census, at rest, in the shipped profile.
 test "$(marker_count "$TOMBSTONE_CENSUS_PREFIX")" -eq 1
