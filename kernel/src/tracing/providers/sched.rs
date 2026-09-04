@@ -223,9 +223,9 @@ pub const PROBE_DISPATCH_ABANDON: u8 = 0x21;
 /// Flags: the `DispatchSaveReason` discriminant in bits 0-4, with bit 7 set
 /// when the frame being saved is byte-identical to the frame the last
 /// completed dispatch installed for the same thread, and, when bit 7 is set,
-/// the `DispatchNoProgressKind` discriminant in bits 5-6 (R113). Bit 7 keeps
-/// the meaning it had before the kind existed, so a reader that only knows
-/// about bit 7 reads the population it read before R113.
+/// the `DispatchNoProgressKind` discriminant in bits 5-6. Bit 7 keeps the
+/// meaning it had before the kind existed, so a reader that only knows about
+/// bit 7 reads the population it read before the kind was added.
 /// Payload: the low 32 bits of the saved RIP.
 pub const DISPATCH_SAVE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_DISPATCH_SAVE as u16);
 
@@ -371,7 +371,10 @@ impl DispatchSaveReason {
     }
 }
 
-/// What an identical-frame save at a park point actually records (#772, R113).
+/// What an identical-frame save at a park point actually records (#772).
+///
+/// Ruling R113 (2026-09-03) retired the proxy; this three-way split is its
+/// replacement.
 ///
 /// `classify_dispatch_progress` says the saved RIP and RSP are byte-identical
 /// to the frame the last completed dispatch installed for this same thread. That

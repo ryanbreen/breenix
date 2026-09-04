@@ -214,7 +214,7 @@ pub static RECV_WAIT_STILL_BLOCKED_FALSE: TraceCounter = TraceCounter::new(
 // than a silent extension.
 
 /// An identical-frame preemption was observed at the `need_resched` gate:
-/// a REVISIT census, not a defect census (R113).
+/// a REVISIT census, not a defect census.
 ///
 /// Incremented in `check_need_resched_and_switch` when the frame the interrupt
 /// was entered with is byte-identical (RIP *and* RSP) to the frame the last
@@ -231,10 +231,12 @@ pub static RECV_WAIT_STILL_BLOCKED_FALSE: TraceCounter = TraceCounter::new(
 /// loops. A thread that goes once around its wait loop, finds its condition
 /// still unmet and re-parks is saved at a byte-identical frame, and this
 /// counter cannot tell it apart from one that never ran
-/// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md). R113 therefore
-/// retired the predicate as #772's oracle and R115 removed the refusal that
+/// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md). Ruling R113
+/// (2026-09-03) therefore retired the proxy and R115 removed the refusal that
 /// used to act on it; the counter itself stays, as the cheapest available
-/// measure of how often the wait loops re-park.
+/// measure of how often the wait loops re-park. The
+/// `DISPATCH_NOPROGRESS_{REVISIT,ZERO_ITER,ITERS_UNKNOWN}` counters further
+/// down are the replacement oracle.
 ///
 /// GDB: `print DISPATCH_NO_PROGRESS`
 #[no_mangle]
@@ -577,9 +579,12 @@ pub fn note_park_skipped() {
 
 // The 21 counters below split each identical-frame save recorded above by
 // whether the saved thread parked again between the dispatch and the save
-// (#772, R113). `Thread::wait_loop_iters` counts parks on the shared halt
-// primitive; the dispatch mark stamps it at dispatch and the save site reads it
-// again, so an identical RIP/RSP splits three ways:
+// (#772). Ruling R113 (2026-09-03) retired the proxy; this oracle is its
+// replacement, and the "R113" that tags each counter below names that ruling
+// -- the one this answers -- not a second round of the same number.
+// `Thread::wait_loop_iters` counts parks on the halt primitives; the dispatch
+// mark stamps it at dispatch and the save site reads it again, so an identical
+// RIP/RSP splits three ways:
 //
 // * `_REVISIT`  -- the count advanced: the thread went round its wait loop and
 //   re-parked on the same halt, so the dispatch retired instructions.

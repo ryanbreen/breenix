@@ -184,7 +184,7 @@ pub const PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88;
 // the park count that thread carried at that moment.
 // The interrupt-return path and the three save sites compare the frame they
 // see against this pair, so an identical-frame observation can be counted
-// (#772's revisit census, R113), and the save sites compare the park count so
+// (#772's revisit census), and the save sites compare the park count so
 // an identical frame can be split into a wait-loop revisit and a dispatch that
 // retired no instructions. These five words occupy the
 // padding that already followed `switch_violations`, so `PerCpuData` keeps
@@ -207,7 +207,9 @@ pub const PERCPU_DISPATCH_MARK_STATE_OFFSET: usize = 152;
 /// Offset of dispatch_mark_wait_iters in PerCpuData.
 ///
 /// The park count the dispatched thread carried when this dispatch installed
-/// its resume frame (R113). `classify_dispatch_progress` says whether the frame
+/// its resume frame. Ruling R113 (2026-09-03) retired the proxy; this word is
+/// what the replacement oracle reads.
+/// `classify_dispatch_progress` says whether the frame
 /// a save sees is byte-identical to the mark; this word says whether the thread
 /// parked again in between, which is what separates a wait-loop revisit from a
 /// dispatch that retired no instructions. Taken from the padding that still followed

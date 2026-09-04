@@ -132,7 +132,8 @@ pub struct PerCpuData {
     // The resume frame the most recent completed dispatch installed on this
     // CPU. `check_need_resched_and_switch` and the three save sites compare
     // the frame they see against this pair to count an identical-frame
-    // observation -- a wait-loop revisit census since R113, not a defect
+    // observation -- a wait-loop revisit census since ruling R113
+    // (2026-09-03) retired the proxy, not a defect
     // census. These four words come out of the padding that already followed
     // `switch_violations`, so the struct keeps its 192-byte size and no offset
     // above moves.
@@ -298,7 +299,10 @@ const _: () = assert!(
 );
 
 // Verify struct size is 192 bytes due to align(64) attribute
-// The actual data is 128 bytes (switch_violations ends at offset 128), but align(64) rounds up to 192
+// The live data now reaches offset 168 (dispatch_mark_wait_iters at 160, 8
+// bytes wide), leaving 24 bytes of tail padding; align(64) rounds the whole
+// struct up to 192. The number was 128 before the dispatch mark's five words
+// were taken out of that padding, which is what this comment used to say.
 const _: () = assert!(
     core::mem::size_of::<PerCpuData>() == 192,
     "PerCpuData must be 192 bytes (aligned to 64)"
@@ -474,8 +478,10 @@ pub fn current_thread_id_lock_free() -> Option<u64> {
     }
 }
 
-/// Record that the running thread just parked on the shared halt primitive
-/// (#772, R113).
+/// Record that the running thread just parked on a halt primitive (#772).
+///
+/// Ruling R113 (2026-09-03) retired the proxy; this oracle is its replacement,
+/// and this count is what it reads.
 ///
 /// Called from the kernel's park primitives -- `crate::arch_halt_with_interrupts`,
 /// `crate::arch_halt` and the private one in `graphics/render_task.rs` --
@@ -530,7 +536,7 @@ pub fn note_wait_loop_park() {
     }
 }
 
-/// Read the running thread of this CPU as an (id, park-count) pair (#772, R113).
+/// Read the running thread of this CPU as an (id, park-count) pair (#772).
 ///
 /// Both words come from one deref, so the caller can check that the count it
 /// reads belongs to the thread it means to attribute it to. The pair is absent
@@ -1186,11 +1192,14 @@ pub fn in_exception_cleanup_context() -> bool {
 /// How the frame observed at an interrupt return or a context save relates to
 /// the resume frame the last completed dispatch installed on this CPU (#772).
 ///
-/// Both callers are census-only. R113 retired the identical-frame predicate as
-/// #772's oracle -- it recognizes a thread that went around its wait loop and
+/// Both callers are census-only. Ruling R113 (2026-09-03) retired the proxy --
+/// this predicate recognizes a thread that went around its wait loop and
 /// re-parked on the same instruction just as readily as one that retired
 /// nothing -- and R115 removed the refusal that used to act on it, so no
-/// control flow depends on this value.
+/// control flow depends on this value. The park-count split
+/// (`classify_no_progress_kind` below) is the replacement oracle; where "R113"
+/// tags a counter or a comment on the split, it names the ruling this is the
+/// answer to, not a second round of the same number.
 // claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DispatchProgress {
@@ -1278,6 +1287,8 @@ pub fn classify_dispatch_progress(tid: u64, rip: u64, rsp: u64) -> DispatchProgr
 
 /// Split an identical-frame observation into a wait-loop revisit and a
 /// dispatch that retired no instructions (#772).
+///
+/// Ruling R113 (2026-09-03) retired the proxy; this oracle is its replacement.
 ///
 /// Takes the `IdenticalFrame` that `classify_dispatch_progress` mints, so the
 /// precondition is carried by the type rather than by this comment: the frame

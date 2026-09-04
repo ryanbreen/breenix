@@ -462,8 +462,10 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
     }
 }
 
-/// Record that the running thread just parked on the shared halt primitive
-/// (#772, R113).
+/// Record that the running thread just parked on a halt primitive (#772).
+///
+/// Ruling R113 (2026-09-03) retired the proxy; the x86 park-count split is its
+/// replacement, and this count is what that split reads.
 ///
 /// Called from the kernel's park primitives -- `crate::arch_halt_with_interrupts`,
 /// `crate::arch_halt` and the private one in `graphics/render_task.rs` --

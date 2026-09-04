@@ -567,7 +567,9 @@ pub struct Thread {
     /// loops that park on a raw `enable_and_hlt`/`wfi` and bump this by hand
     /// (`task/executor.rs`'s `sleep_if_idle`, `task/spawn.rs`'s
     /// `idle_thread_fn`). Between them those are the park
-    /// points of every blocking wait loop in the kernel (#772).
+    /// points of every blocking wait loop in the kernel (#772). Ruling R113
+    /// (2026-09-03) retired the proxy; the split this count feeds is its
+    /// replacement.
     /// `crate::arch_halt_with_interrupts` carries the full park census,
     /// including the five idle and terminal halt loops that are NOT counted.
     // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
