@@ -34,6 +34,7 @@
 //! ```
 
 use crate::tracing::counter::{register_counter, TraceCounter};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // =============================================================================
 // Built-in Counter Definitions
@@ -213,7 +214,7 @@ pub static RECV_WAIT_STILL_BLOCKED_FALSE: TraceCounter = TraceCounter::new(
 // than a silent extension.
 
 /// An identical-frame preemption was observed at the `need_resched` gate:
-/// a REVISIT census, not a defect census (R113).
+/// a REVISIT census, not a defect census.
 ///
 /// Incremented in `check_need_resched_and_switch` when the frame the interrupt
 /// was entered with is byte-identical (RIP *and* RSP) to the frame the last
@@ -230,10 +231,12 @@ pub static RECV_WAIT_STILL_BLOCKED_FALSE: TraceCounter = TraceCounter::new(
 /// loops. A thread that goes once around its wait loop, finds its condition
 /// still unmet and re-parks is saved at a byte-identical frame, and this
 /// counter cannot tell it apart from one that never ran
-/// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md). R113 therefore
-/// retired the predicate as #772's oracle and R115 removed the refusal that
+/// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md). Ruling R113
+/// (2026-09-03) therefore retired the proxy and R115 removed the refusal that
 /// used to act on it; the counter itself stays, as the cheapest available
-/// measure of how often the wait loops re-park.
+/// measure of how often the wait loops re-park. The
+/// `DISPATCH_NOPROGRESS_{REVISIT,ZERO_ITER,ITERS_UNKNOWN}` counters further
+/// down are the replacement oracle.
 ///
 /// GDB: `print DISPATCH_NO_PROGRESS`
 #[no_mangle]
@@ -529,12 +532,302 @@ pub static BOOT_TEST_FAIL_TOTAL: TraceCounter =
 pub static BOOT_TEST_SKIP_TOTAL: TraceCounter =
     TraceCounter::new("BOOT_TEST_SKIP_TOTAL", "Total boot tests skipped");
 
-/// The 16 counters the #772 dispatch save census defines, in one place.
+// =============================================================================
+// Wait-loop park census (#772)
+// =============================================================================
+//
+// The park side of the split below, so it can be audited rather than assumed.
+//
+// `WAIT_LOOP_PARK_TOTAL` is a per-CPU `TraceCounter`, incremented inside
+// `per_cpu::note_wait_loop_park` AFTER that function's `PER_CPU_INITIALIZED`
+// guard has passed. It counts parks in the parking CPU's own slot, so a park
+// no longer writes a whole-machine cache line the other CPUs contend for.
+// It cannot be bumped BEFORE that guard: `TraceCounter::increment` resolves
+// its slot through `current_cpu_id()`, which on x86 is `mov reg, gs:[0]` --
+// the same uninstalled-GS-base read the guard exists to refuse. Past the
+// guard that read is safe by construction, which is what makes the per-CPU
+// counter admissible here at all. The GDB driver reads it as a sum over the
+// per-CPU slots (`scripts/772-dispatch-boot.sh`), not as a single word.
+//
+// `WAIT_LOOP_PARK_SKIPPED` is the counter that must survive a park the guard
+// refuses, so it stays a plain whole-machine `AtomicU64` and carries no
+// `_CPU0` suffix when the driver reads it. It is bumped on both refusal arms:
+// per-CPU data not yet initialised, or no thread installed on this CPU.
+//
+// The two populations, given that the total now sits after the guard: a park
+// the guard refuses is in SKIPPED and NOT in TOTAL; a park that passes the
+// guard and finds no thread installed is in BOTH; a park that reaches a
+// thread's `wait_loop_iters` is in TOTAL alone. The attributed population --
+// the one the REVISIT/ZERO_ITER split is computed over -- is TOTAL minus the
+// no-thread subset of SKIPPED, which those two counters bound as
+// `TOTAL - SKIPPED <= attributed <= TOTAL`, and which is exactly TOTAL
+// whenever SKIPPED reads 0. A SKIPPED that is not near 0 in a steady-state
+// boot is a finding about the park side, not about #772.
+//
+// Census only, on both arches. No control flow reads either value.
+//
+// GDB: `print WAIT_LOOP_PARK_SKIPPED` for the whole-machine count.
+// `WAIT_LOOP_PARK_TOTAL` is a `TraceCounter` now, so `print
+// WAIT_LOOP_PARK_TOTAL` shows the struct, not a scalar; read one CPU's
+// slot with `print WAIT_LOOP_PARK_TOTAL.per_cpu[0].value` (repeat per
+// CPU, as `scripts/772-dispatch-boot.sh` does) or sum them by hand.
+#[no_mangle]
+pub static WAIT_LOOP_PARK_TOTAL: TraceCounter = TraceCounter::new(
+    "WAIT_LOOP_PARK_TOTAL",
+    "Wait-loop parks that passed the per-CPU guard",
+);
+
+/// Parks refused before they reached a thread's `wait_loop_iters` (#772).
+///
+/// See `WAIT_LOOP_PARK_TOTAL` above.
+#[no_mangle]
+pub static WAIT_LOOP_PARK_SKIPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Record one park that passed the per-CPU guard.
+///
+/// One relaxed atomic add into this CPU's slot, plus the CPU-id read
+/// `TraceCounter::increment` does to find that slot.
+#[inline(always)]
+pub fn note_park_total() {
+    WAIT_LOOP_PARK_TOTAL.increment();
+}
+
+/// Record one park that could not be attributed to a thread.
+///
+/// One relaxed atomic add on a whole-machine counter.
+#[inline(always)]
+pub fn note_park_skipped() {
+    WAIT_LOOP_PARK_SKIPPED.fetch_add(1, Ordering::Relaxed);
+}
+
+// The 21 counters below split each identical-frame save recorded above by
+// whether the saved thread parked again between the dispatch and the save
+// (#772). Ruling R113 (2026-09-03) retired the proxy; this oracle is its
+// replacement, and the "R113" that tags each counter below names that ruling
+// -- the one this answers -- not a second round of the same number.
+// `Thread::wait_loop_iters` counts parks on the halt primitives; the dispatch
+// mark stamps it at dispatch and the save site reads it again, so an identical
+// RIP/RSP splits three ways:
+//
+// * `_REVISIT`  -- the count advanced: the thread reached a counted park
+//   point again before the save. That reads as "went round its wait loop and
+//   re-parked on the same halt" only where the mark's RIP is that wait
+//   loop's own post-halt resume point; these counters carry no RIP, so an
+//   advanced count shows only that the thread reached SOME counted park
+//   point, not that it re-parked on the same one.
+// * `_ZERO_ITER` -- the count is unchanged: the thread reached no counted
+//   park point between the dispatch and the save. That reads as "sitting on
+//   the very park it was dispatched to, having retired no instructions" only
+//   where the mark's RIP is that wait loop's own post-halt resume point;
+//   these counters carry no RIP, so they do not discharge that condition.
+// * `_ITERS_UNKNOWN` -- the count could not be attributed: no thread is
+//   installed on this CPU, the installed thread is not the one being saved, or
+//   the count read below the stamp. Reported rather than folded into either
+//   answer, so the three sum to the `DISPATCH_NOPROGRESS_SAVE_*` total for
+//   the same reason.
+//
+// This is what the DIAG document asked for and could not supply: it recorded a
+// revisit and a zero-instruction dispatch identically
+// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md, "Report:
+// confidence"). Census only -- no control flow reads any of these.
+// claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
+/// Identical-frame saves, park count advanced (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_REVISIT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_REVISIT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_REVISIT",
+    "identical-frame saves, park count advanced (#772 R113)",
+);
+
+/// Identical-frame saves, park count unchanged (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ZERO_ITER`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ZERO_ITER: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ZERO_ITER",
+    "identical-frame saves, park count unchanged (#772 R113)",
+);
+
+/// Identical-frame saves, park count unattributable (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ITERS_UNKNOWN`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ITERS_UNKNOWN: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ITERS_UNKNOWN",
+    "identical-frame saves, park count unattributable (#772 R113)",
+);
+
+/// Revisit: userspace save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_REVISIT_USER_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_REVISIT_USER_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_REVISIT_USER_PREEMPT",
+    "revisit: userspace save, need_resched arm (#772 R113)",
+);
+
+/// Zero-iteration: userspace save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ZERO_ITER_USER_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ZERO_ITER_USER_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ZERO_ITER_USER_PREEMPT",
+    "zero-iteration: userspace save, need_resched arm (#772 R113)",
+);
+
+/// Unattributable: userspace save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_PREEMPT",
+    "unattributable: userspace save, need_resched arm (#772 R113)",
+);
+
+/// Revisit: userspace save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_REVISIT_USER_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_REVISIT_USER_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_REVISIT_USER_MANDATORY",
+    "revisit: userspace save, blocked/terminated arm (#772 R113)",
+);
+
+/// Zero-iteration: userspace save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ZERO_ITER_USER_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ZERO_ITER_USER_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ZERO_ITER_USER_MANDATORY",
+    "zero-iteration: userspace save, blocked/terminated arm (#772 R113)",
+);
+
+/// Unattributable: userspace save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_MANDATORY",
+    "unattributable: userspace save, blocked/terminated arm (#772 R113)",
+);
+
+/// Revisit: blocked-in-syscall save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_PREEMPT",
+    "revisit: blocked-in-syscall save, need_resched arm (#772 R113)",
+);
+
+/// Zero-iteration: blocked-in-syscall save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_PREEMPT",
+    "zero-iteration: blocked-in-syscall save, need_resched arm (#772 R113)",
+);
+
+/// Unattributable: blocked-in-syscall save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_PREEMPT: TraceCounter =
+    TraceCounter::new(
+        "DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_PREEMPT",
+        "unattributable: blocked-in-syscall save, need_resched arm (#772 R113)",
+    );
+
+/// Revisit: blocked-in-syscall save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_MANDATORY",
+    "revisit: blocked-in-syscall save, blocked/terminated arm (#772 R113)",
+);
+
+/// Zero-iteration: blocked-in-syscall save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_MANDATORY",
+    "zero-iteration: blocked-in-syscall save, blocked/terminated arm (#772 R113)",
+);
+
+/// Unattributable: blocked-in-syscall save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_MANDATORY: TraceCounter =
+    TraceCounter::new(
+        "DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_MANDATORY",
+        "unattributable: blocked-in-syscall save, blocked/terminated arm (#772 R113)",
+    );
+
+/// Revisit: kthread save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_REVISIT_KTHREAD_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_REVISIT_KTHREAD_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_REVISIT_KTHREAD_PREEMPT",
+    "revisit: kthread save, need_resched arm (#772 R113)",
+);
+
+/// Zero-iteration: kthread save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_PREEMPT",
+    "zero-iteration: kthread save, need_resched arm (#772 R113)",
+);
+
+/// Unattributable: kthread save, need_resched arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_PREEMPT`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_PREEMPT: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_PREEMPT",
+    "unattributable: kthread save, need_resched arm (#772 R113)",
+);
+
+/// Revisit: kthread save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_REVISIT_KTHREAD_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_REVISIT_KTHREAD_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_REVISIT_KTHREAD_MANDATORY",
+    "revisit: kthread save, blocked/terminated arm (#772 R113)",
+);
+
+/// Zero-iteration: kthread save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_MANDATORY",
+    "zero-iteration: kthread save, blocked/terminated arm (#772 R113)",
+);
+
+/// Unattributable: kthread save, blocked/terminated arm (#772 R113)
+///
+/// GDB: `print DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_MANDATORY`
+#[no_mangle]
+pub static DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_MANDATORY: TraceCounter = TraceCounter::new(
+    "DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_MANDATORY",
+    "unattributable: kthread save, blocked/terminated arm (#772 R113)",
+);
+
+/// The 37 counters the #772 dispatch save census defines, in one place.
 ///
 /// Registration walks this array, so a counter added above without being
 /// listed here is not registered, and a counter listed here that is removed
 /// above does not compile.
-pub static DISPATCH_SAVE_CENSUS_COUNTERS: [&TraceCounter; 16] = [
+pub static DISPATCH_SAVE_CENSUS_COUNTERS: [&TraceCounter; 37] = [
     &DISPATCH_SAVE_REASON_USER_PREEMPT,
     &DISPATCH_SAVE_REASON_USER_MANDATORY,
     &DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT,
@@ -551,6 +844,27 @@ pub static DISPATCH_SAVE_CENSUS_COUNTERS: [&TraceCounter; 16] = [
     &DISPATCH_SWITCH_IDLE_REDIRECT,
     &DISPATCH_EXC_IDLE_REDIRECT,
     &DISPATCH_GATE_PREEMPT_ACTIVE,
+    &DISPATCH_NOPROGRESS_REVISIT,
+    &DISPATCH_NOPROGRESS_ZERO_ITER,
+    &DISPATCH_NOPROGRESS_ITERS_UNKNOWN,
+    &DISPATCH_NOPROGRESS_REVISIT_USER_PREEMPT,
+    &DISPATCH_NOPROGRESS_ZERO_ITER_USER_PREEMPT,
+    &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_PREEMPT,
+    &DISPATCH_NOPROGRESS_REVISIT_USER_MANDATORY,
+    &DISPATCH_NOPROGRESS_ZERO_ITER_USER_MANDATORY,
+    &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_MANDATORY,
+    &DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_PREEMPT,
+    &DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_PREEMPT,
+    &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_PREEMPT,
+    &DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_MANDATORY,
+    &DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_MANDATORY,
+    &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_MANDATORY,
+    &DISPATCH_NOPROGRESS_REVISIT_KTHREAD_PREEMPT,
+    &DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_PREEMPT,
+    &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_PREEMPT,
+    &DISPATCH_NOPROGRESS_REVISIT_KTHREAD_MANDATORY,
+    &DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_MANDATORY,
+    &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_MANDATORY,
 ];
 
 // =============================================================================
@@ -579,6 +893,7 @@ pub fn init() {
     register_counter(&RECV_WAIT_STILL_BLOCKED_FALSE);
     register_counter(&DISPATCH_NO_PROGRESS);
     register_counter(&DISPATCH_KERNEL_RESTORE_TOTAL);
+    register_counter(&WAIT_LOOP_PARK_TOTAL);
     // #772 diagnostics (R111/R112). Registered with the same capacity
     // assertion the teardown provider uses: `register_counter` already panics
     // on a full registry, so this assert is a second, named guard rather than

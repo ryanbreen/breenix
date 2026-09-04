@@ -491,15 +491,16 @@ impl X86PerCpu {
     // Dispatch mark (#772)
     // ========================================================================
     //
-    // Four GS-relative words recording the resume frame the most recent
-    // completed dispatch installed on this CPU. Read and written from the
-    // interrupt-return path, so the 6 accessors below are plain loads and
+    // Five GS-relative words recording the resume frame the most recent
+    // completed dispatch installed on this CPU, plus the park count the
+    // dispatched thread carried at that moment. Read and written from the
+    // interrupt-return path, so the 7 accessors below are plain loads and
     // stores: no lock, no allocation, no formatting.
 
     /// Read the dispatch mark's state word.
     ///
-    /// Callers read this first: on `DISPATCH_MARK_INVALID` the remaining three
-    /// words need not be read at all.
+    /// Callers read this first: on `DISPATCH_MARK_INVALID` the remaining four
+    /// words -- tid, RIP, RSP and the park count -- need not be read at all.
     #[inline(always)]
     pub fn dispatch_mark_state() -> u64 {
         let state: u64;
@@ -559,6 +560,21 @@ impl X86PerCpu {
         rsp
     }
 
+    /// Read the park count recorded in the dispatch mark.
+    #[inline(always)]
+    pub fn dispatch_mark_wait_iters() -> u64 {
+        let iters: u64;
+        unsafe {
+            asm!(
+                "mov {}, gs:[{offset}]",
+                out(reg) iters,
+                offset = const PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET,
+                options(nostack, preserves_flags, readonly)
+            );
+        }
+        iters
+    }
+
     /// Record a dispatch mark.
     ///
     /// The state word is written LAST, in a separate `asm!` block, so a reader
@@ -567,23 +583,26 @@ impl X86PerCpu {
     /// one unnecessary here: an
     /// `asm!` block without `nomem`/`readonly` is treated as arbitrarily
     /// reading and writing memory, so the compiler cannot hoist the state
-    /// store above the three data stores, and x86-64's store ordering keeps
+    /// store above the four data stores, and x86-64's store ordering keeps
     /// them in program order for the only reader there is -- a later interrupt
     /// on this same CPU. (An SMP reader of another CPU's mark would need a
     /// real release store; 0 sites read a foreign CPU's mark today, and the
     /// data is GS-relative, which is per-CPU by construction.)
     #[inline(always)]
-    pub unsafe fn set_dispatch_mark(tid: u64, rip: u64, rsp: u64) {
+    pub unsafe fn set_dispatch_mark(tid: u64, rip: u64, rsp: u64, wait_iters: u64) {
         asm!(
             "mov gs:[{rip_off}], {rip}",
             "mov gs:[{rsp_off}], {rsp}",
             "mov gs:[{tid_off}], {tid}",
+            "mov gs:[{iters_off}], {iters}",
             rip = in(reg) rip,
             rsp = in(reg) rsp,
             tid = in(reg) tid,
+            iters = in(reg) wait_iters,
             rip_off = const PERCPU_DISPATCH_MARK_RIP_OFFSET,
             rsp_off = const PERCPU_DISPATCH_MARK_RSP_OFFSET,
             tid_off = const PERCPU_DISPATCH_MARK_TID_OFFSET,
+            iters_off = const PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET,
             options(nostack, preserves_flags)
         );
         Self::set_dispatch_mark_state(DISPATCH_MARK_VALID);

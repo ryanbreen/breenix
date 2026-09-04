@@ -240,6 +240,7 @@ pub fn sys_clone(
         cpu_ticks_total: 0,
         owner_pid: Some(child_pid.as_u64()),
         cached_ttbr0: 0,
+        wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
     };
 
     // Set has_started to true so we go through the restore path (not first_entry)

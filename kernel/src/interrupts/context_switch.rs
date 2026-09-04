@@ -275,20 +275,22 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
-    // #772 census (R113/R115): count a preemption entered on a frame
+    // #772 census: count a preemption entered on a frame
     // byte-identical -- RIP AND RSP -- to the one the last completed dispatch
     // installed for this same thread.
     //
     // This used to be a refusal: candidate A spent a one-shot per dispatch,
     // re-armed `need_resched` and returned to the thread. R115 removed that arm.
-    // R113 retired the predicate as #772's oracle, because
+    // Ruling R113 (2026-09-03) retired the proxy, because
     // docs/planning/green-program/sockets/772-DIAG-2026-09-03.md symbolised the
     // two addresses this population sits on as the wait loop's own park points
     // -- so an identical frame records a thread that went once around its wait
     // loop and re-parked, not a dispatch that retired no instruction. What is
     // left is a REVISIT census: the counter still measures something real and
     // reproducible, it just does not measure the defect #772 is filed for, and
-    // nothing here changes control flow.
+    // nothing here changes control flow. The replacement oracle is the
+    // park-count split at the save site (`note_dispatch_save` below), not
+    // anything in this block.
     // claim-lint:ok: 8 of 8 `return;` statements in this function match main
     // 5f81d92b, counted in this slot; the only additions are counter reads.
     //
@@ -310,12 +312,19 @@ pub extern "C" fn check_need_resched_and_switch(
     // that arm's identical frames at the save site.
     if !current_thread_blocked_or_terminated {
         if let Some(current_tid) = crate::per_cpu::current_thread_id_lock_free() {
-            if crate::per_cpu::classify_dispatch_progress(
-                current_tid,
-                interrupt_frame.instruction_pointer.as_u64(),
-                interrupt_frame.stack_pointer.as_u64(),
-            ) == crate::per_cpu::DispatchProgress::NoProgress
-            {
+            // `matches!` rather than `==`: `NoProgress` now carries the
+            // witness the save-site split consumes, and this census does not
+            // want the split -- reading the kind here would put
+            // `classify_no_progress_kind`'s five reads on the
+            // interrupt-return path for a value this census does not record.
+            if matches!(
+                crate::per_cpu::classify_dispatch_progress(
+                    current_tid,
+                    interrupt_frame.instruction_pointer.as_u64(),
+                    interrupt_frame.stack_pointer.as_u64(),
+                ),
+                crate::per_cpu::DispatchProgress::NoProgress(_)
+            ) {
                 crate::trace_count!(DISPATCH_NO_PROGRESS);
             }
         }
@@ -512,11 +521,15 @@ pub extern "C" fn check_need_resched_and_switch(
         // (whoever the CPU is actually about to run) and not from
         // `new_thread_id`. Writing it unconditionally on a completed switch is
         // also what invalidates the previous thread's mark.
-        match crate::per_cpu::current_thread_id_lock_free() {
-            Some(dispatched_tid) => crate::per_cpu::set_dispatch_mark(
+        match crate::per_cpu::current_wait_loop_iters() {
+            // The tid and the park count come out of one deref of the per-CPU
+            // current-thread pointer, so the mark cannot pair one thread's id
+            // with another thread's count.
+            Some((dispatched_tid, wait_iters)) => crate::per_cpu::set_dispatch_mark(
                 dispatched_tid,
                 interrupt_frame.instruction_pointer.as_u64(),
                 interrupt_frame.stack_pointer.as_u64(),
+                wait_iters,
             ),
             // No nameable current thread: invalidate rather than record a
             // mark no later check could honestly match.
@@ -556,16 +569,33 @@ pub extern "C" fn check_need_resched_and_switch(
 /// thread the last completed dispatch installed the mark for, so the two ends
 /// of the comparison name the same identity. `Advanced` means the thread moved
 /// off the RIP/RSP it was dispatched to (or no mark applies); `NoProgress`
-/// means the frame is byte-identical. Per R113 that is a wait-loop revisit
-/// census, not a defect census: a thread that re-parked on the same halt is
-/// indistinguishable here from one that retired nothing
-/// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md).
+/// means the frame is byte-identical.
+///
+/// A byte-identical frame is a wait-loop revisit census, not a defect census
+/// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md, and ruling
+/// R113 (2026-09-03), which retired the proxy). This function no longer leaves
+/// the two cases indistinguishable, which is what that ruling asked for: the
+/// `NoProgress` arm mints a `DispatchNoProgressKind` from the witness
+/// `classify_dispatch_progress` hands it, splitting a thread that reached a
+/// counted park point again (`Revisit`) from one that reached none in
+/// between (`ZeroIter`) -- "re-parked on the same halt" and "retired no
+/// instructions" hold only where the mark's RIP is that wait loop's own
+/// post-halt resume point, which these counters do not record -- with
+/// `Unknown` for an observation neither answer fits.
 // claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 ///
-/// Cost: four GS-relative loads and one relaxed atomic load inside
-/// `classify_dispatch_progress`, then one or two per-CPU atomic adds. No lock,
-/// no allocation, no formatting. It is called from the 3 arms that save a
-/// context and is absent from the gate-4 early return the common tick takes.
+/// Cost: four GS-relative loads and one `PER_CPU_INITIALIZED` Acquire load
+/// inside `classify_dispatch_progress`; on a byte-identical frame, five more
+/// reads inside `classify_no_progress_kind` (that Acquire load again, the
+/// lock-free current-thread deref, the thread's id and its park count, and
+/// the GS-relative stamp the count is compared against), then four per-CPU
+/// atomic adds (the reason total, the identical-frame subset of that reason,
+/// the kind aggregate, and the reason x kind cell); on any other frame, one
+/// add. That is the accounting
+/// `crate::tracing::providers::sched::trace_dispatch_save` states, and this
+/// comment is kept equal to it. No lock, no allocation, no formatting. It is
+/// called from the 3 arms that save a context and is absent from the gate-4
+/// early return the common tick takes.
 #[inline(always)]
 fn note_dispatch_save(
     reason: DispatchSaveReason,
@@ -573,11 +603,19 @@ fn note_dispatch_save(
     interrupt_frame: &InterruptStackFrame,
 ) {
     let rip = interrupt_frame.instruction_pointer.as_u64();
-    let no_progress = crate::per_cpu::classify_dispatch_progress(
+    let no_progress = match crate::per_cpu::classify_dispatch_progress(
         thread_id,
         rip,
         interrupt_frame.stack_pointer.as_u64(),
-    ) == crate::per_cpu::DispatchProgress::NoProgress;
+    ) {
+        // The witness the match binds is the only way to reach the split, so
+        // the kind cannot be minted from a frame the mark did not match, nor
+        // for a thread other than the one the mark named.
+        crate::per_cpu::DispatchProgress::NoProgress(frame) => {
+            Some(crate::per_cpu::classify_no_progress_kind(frame))
+        }
+        crate::per_cpu::DispatchProgress::Advanced => None,
+    };
     trace_dispatch_save(reason, no_progress, rip);
 }
 

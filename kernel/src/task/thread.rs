@@ -560,6 +560,34 @@ pub struct Thread {
     /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
     pub cached_ttbr0: u64,
+
+    /// How many times this thread has parked on one of the kernel's halt
+    /// primitives -- `crate::arch_halt_with_interrupts`, `crate::arch_halt`,
+    /// the private one in `graphics/render_task.rs` -- or on one of the two
+    /// loops that park on a raw `enable_and_hlt`/`wfi` and bump this by hand
+    /// at 3 call sites (`task/executor.rs`'s `sleep_if_idle`, once per arch
+    /// arm, and `task/spawn.rs`'s `idle_thread_fn`). Between them those are
+    /// the park points of every blocking wait loop in the kernel (#772).
+    /// Ruling R113 (2026-09-03) retired the proxy; the split this count feeds
+    /// is its replacement.
+    /// `crate::arch_halt_with_interrupts` carries the full park census,
+    /// including the two families of halt loop that are NOT counted -- the 6
+    /// raw `enable_and_hlt` idle and terminal loops, and the bare-halt
+    /// instruction sites beyond them.
+    // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
+    // arch_halt call sites under kernel/src reach a bump, counted by grep in
+    // this slot.
+    ///
+    /// The dispatch mark stamps this value at dispatch; the save site reads it
+    /// again. A save whose frame is byte-identical to the mark therefore splits
+    /// two ways that used to be recorded as one: the thread went round its wait
+    /// loop and re-parked on the same halt (the count advanced), or it retired
+    /// no instructions (the count is unchanged).
+    ///
+    /// Bumped in thread context, read from the interrupt-return path on the same
+    /// CPU, so it is an atomic rather than a plain `u64`. Relaxed ordering is
+    /// enough: the value is only ever compared against a stamp of itself.
+    pub wait_loop_iters: AtomicU64,
 }
 
 impl Clone for Thread {
@@ -594,6 +622,12 @@ impl Clone for Thread {
             cpu_ticks_total: self.cpu_ticks_total,
             owner_pid: self.owner_pid,
             cached_ttbr0: self.cached_ttbr0,
+            // Carried, not reset: `publish_to_scheduler` clones a process-table
+            // row into the scheduler for the SAME thread, and the dispatch mark
+            // stamped before that publish is compared against the value after
+            // it. Resetting here would make the next identical-frame save read
+            // as a backwards jump.
+            wait_loop_iters: AtomicU64::new(self.wait_loop_iters.load(Ordering::Relaxed)),
         }
     }
 }
@@ -704,6 +738,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -768,6 +803,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -819,6 +855,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -869,6 +906,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -932,6 +970,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -990,6 +1029,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1067,6 +1107,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1113,6 +1154,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         }
     }
 }

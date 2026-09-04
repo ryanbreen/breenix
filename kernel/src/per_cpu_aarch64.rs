@@ -462,6 +462,84 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
     }
 }
 
+/// Record that the running thread just parked on a halt primitive (#772).
+///
+/// Ruling R113 (2026-09-03) retired the proxy; the x86 park-count split is its
+/// replacement, and this count is what that split reads.
+///
+/// Called from the kernel's park primitives -- `crate::arch_halt_with_interrupts`,
+/// `crate::arch_halt` and the private one in `graphics/render_task.rs` --
+/// immediately before the halt, and by hand from the two loops that park on a
+/// raw `enable_and_hlt`/`wfi` of their own (`task/executor.rs`'s
+/// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`). Every blocking
+/// wait loop in the kernel therefore reaches a bump at its own park point with
+/// no per-site call to keep in sync. The
+/// 6 idle and terminal halt loops that park on a raw `enable_and_hlt` --
+/// 5 in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
+/// NOT counted, and neither is the bare-halt-instruction family beyond them;
+/// `crate::arch_halt_with_interrupts` carries the full census, both families
+/// enumerated, and what the omission costs.
+// claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
+// arch_halt call sites under kernel/src reach this function, counted by grep in
+// this slot.
+///
+/// Counted case: one `PER_CPU_INITIALIZED` Acquire load, then two relaxed
+/// atomic adds -- one into this CPU's slot of `WAIT_LOOP_PARK_TOTAL` (whose
+/// slot lookup is one further per-CPU id read), and one through the per-CPU
+/// current-thread pointer.
+///
+/// A park this function refuses bumps `WAIT_LOOP_PARK_SKIPPED` instead of a
+/// thread: the pre-init arm after the Acquire load alone, before the total is
+/// counted; the no-thread arm after it. So the park side is auditable rather
+/// than assumed, with the total's placement carried in the arithmetic --
+/// `WAIT_LOOP_PARK_TOTAL` counts the parks that passed the guard, and what
+/// reached a thread is that total minus the no-thread refusals, bounded by
+/// `WAIT_LOOP_PARK_TOTAL - WAIT_LOOP_PARK_SKIPPED <= attributed <=
+/// WAIT_LOOP_PARK_TOTAL` and equal to the total whenever SKIPPED reads 0.
+/// No lock, no allocation, no formatting, and no control flow depends on any
+/// of the values.
+///
+/// The dispatch mark that consumes this count is x86-only today, so on aarch64
+/// this keeps the count and no reader consumes it yet. There is deliberately
+/// no aarch64 `current_wait_loop_iters` accessor: the x86 one exists because
+/// the dispatch mark stamps the count, and an uncalled twin here would be dead
+/// code that the `pub`-in-`pub mod` shape hides from the lint rather than
+/// justifies. It comes back when aarch64 grows a dispatch mark.
+#[inline(always)]
+pub fn note_wait_loop_park() {
+    // The x86 twin needs this guard because its current-thread read is a bare
+    // `mov reg, gs:[8]`; here `percpu_read_u64` already returns 0 when
+    // TPIDR_EL1 reads 0, so the null check below would catch a pre-init park
+    // on its own. The guard is carried anyway so the two arches have one shape, and
+    // so a pre-init park is refused for the same stated reason on both.
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        crate::tracing::providers::counters::note_park_skipped();
+        return;
+    }
+    // Unlike the x86 twin, this guard being set does not by itself establish
+    // that this CPU's own per-CPU base is installed: `PER_CPU_INITIALIZED` is one
+    // whole-machine flag the boot CPU sets in `init()`, and a secondary CPU
+    // installs its own TPIDR_EL1 later, in `arch_impl::aarch64::smp`. The
+    // slot lookup `TraceCounter::increment` does is safe anyway, because
+    // `Aarch64PerCpu::cpu_id` (arch_impl/aarch64/percpu.rs) falls back to
+    // reading MPIDR_EL1 whenever TPIDR_EL1 reads 0, so a secondary CPU that
+    // parks before installing its own base still resolves its own slot
+    // rather than aliasing CPU0's. The park total is still a per-CPU counter
+    // rather than a read-modify-write on one whole-machine line, the same
+    // placement as the x86 twin, so the two arches keep one shape.
+    crate::tracing::providers::counters::note_park_total();
+    let thread_ptr =
+        hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        crate::tracing::providers::counters::note_park_skipped();
+        return;
+    }
+    unsafe {
+        (*thread_ptr).wait_loop_iters.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Set the current thread in per-CPU data
 pub fn set_current_thread(thread: *mut crate::task::thread::Thread) {
     unsafe {

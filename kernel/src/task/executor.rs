@@ -80,6 +80,14 @@ impl Executor {
             // (interrupts/context_switch.rs) already gets this right; this
             // loop is the shipped x86 production console's own servicing
             // loop as of #673 (B1), so it is worth the same care.
+            //
+            // #772: this loop parks on a raw `enable_and_hlt` rather than on
+            // `crate::arch_halt_with_interrupts`, so the park count the
+            // revisit oracle reads is bumped here by hand -- the same call,
+            // in the same position immediately before the halt, that the
+            // shared primitive makes. `per_cpu::note_wait_loop_park` states
+            // what that call costs.
+            crate::per_cpu::note_wait_loop_park();
             interrupts::enable_and_hlt();
         } else {
             interrupts::enable();
@@ -92,6 +100,10 @@ impl Executor {
         if self.task_queue.is_empty() {
             // WFI (Wait For Interrupt) - ARM64 equivalent of x86 HLT
             // This puts the CPU in low-power mode until an interrupt occurs
+            //
+            // #772: same hand-placed park bump as the x86 arm above, so the
+            // two arches do not drift.
+            crate::per_cpu::note_wait_loop_park();
             unsafe {
                 core::arch::asm!("wfi", options(nomem, nostack));
             }

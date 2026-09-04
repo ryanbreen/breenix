@@ -180,14 +180,17 @@ pub const PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88;
 // ============================================================================
 //
 // The resume frame the most recent completed dispatch installed on this CPU:
-// which thread was dispatched, and the RIP/RSP the CPU is about to IRETQ to.
+// which thread was dispatched, the RIP/RSP the CPU is about to IRETQ to, and
+// the park count that thread carried at that moment.
 // The interrupt-return path and the three save sites compare the frame they
 // see against this pair, so an identical-frame observation can be counted
-// (#772's revisit census, R113). These four words occupy the
+// (#772's revisit census), and the save sites compare the park count so
+// an identical frame can be split into a wait-loop revisit and a dispatch that
+// retired no instructions. These five words occupy the
 // padding that already followed `switch_violations`, so `PerCpuData` keeps
 // its 192-byte size and the 13 offsets defined above are unchanged. There is
 // one `offset_of!` compile-time assertion per offset in `kernel/src/per_cpu.rs`,
-// including the 4 added below.
+// including the 5 added below.
 
 /// Offset of dispatch_mark_rip in PerCpuData.
 pub const PERCPU_DISPATCH_MARK_RIP_OFFSET: usize = 128;
@@ -200,6 +203,19 @@ pub const PERCPU_DISPATCH_MARK_TID_OFFSET: usize = 144;
 
 /// Offset of dispatch_mark_state in PerCpuData.
 pub const PERCPU_DISPATCH_MARK_STATE_OFFSET: usize = 152;
+
+/// Offset of dispatch_mark_wait_iters in PerCpuData.
+///
+/// The park count the dispatched thread carried when this dispatch installed
+/// its resume frame. Ruling R113 (2026-09-03) retired the proxy; this word is
+/// what the replacement oracle reads.
+/// `classify_dispatch_progress` says whether the frame
+/// a save sees is byte-identical to the mark; this word says whether the thread
+/// parked again in between, which is what separates a wait-loop revisit from a
+/// dispatch that retired no instructions. Taken from the padding that still followed
+/// the four words above, so `PerCpuData` keeps its 192-byte size and no offset
+/// moves.
+pub const PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET: usize = 160;
 
 /// `dispatch_mark_state`: no dispatch frame is recorded.
 pub const DISPATCH_MARK_INVALID: u64 = 0;

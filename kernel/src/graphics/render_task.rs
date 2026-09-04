@@ -128,8 +128,15 @@ fn render_thread_main_kthread() {
 }
 
 /// Architecture-specific halt (wait for interrupt).
+///
+/// A private park primitive, kept separate from `crate::arch_halt` so the
+/// aarch64 arm keeps the exact `asm!` it emits today. It carries the
+/// same #772 park bump the shared primitives do, so the render thread's own
+/// wait loop above is counted at its 2 park points the way the loops that
+/// use the shared primitives are.
 #[inline(always)]
 fn arch_halt() {
+    crate::per_cpu::note_wait_loop_park();
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("wfi");

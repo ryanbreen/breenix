@@ -36,6 +36,27 @@ use crate::tracing::providers::counters::{
     DISPATCH_SAVE_REASON_KTHREAD_MANDATORY, DISPATCH_SAVE_REASON_KTHREAD_PREEMPT,
     DISPATCH_SAVE_REASON_USER_MANDATORY, DISPATCH_SAVE_REASON_USER_PREEMPT,
     DISPATCH_SWITCH_IDLE_REDIRECT, DISPATCH_SWITCH_ROLLED_BACK,
+    DISPATCH_NOPROGRESS_ITERS_UNKNOWN,
+    DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_MANDATORY,
+    DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_PREEMPT,
+    DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_MANDATORY,
+    DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_PREEMPT,
+    DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_MANDATORY,
+    DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_PREEMPT,
+    DISPATCH_NOPROGRESS_REVISIT,
+    DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_MANDATORY,
+    DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_PREEMPT,
+    DISPATCH_NOPROGRESS_REVISIT_KTHREAD_MANDATORY,
+    DISPATCH_NOPROGRESS_REVISIT_KTHREAD_PREEMPT,
+    DISPATCH_NOPROGRESS_REVISIT_USER_MANDATORY,
+    DISPATCH_NOPROGRESS_REVISIT_USER_PREEMPT,
+    DISPATCH_NOPROGRESS_ZERO_ITER,
+    DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_MANDATORY,
+    DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_PREEMPT,
+    DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_MANDATORY,
+    DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_PREEMPT,
+    DISPATCH_NOPROGRESS_ZERO_ITER_USER_MANDATORY,
+    DISPATCH_NOPROGRESS_ZERO_ITER_USER_PREEMPT,
 };
 use core::sync::atomic::AtomicU64;
 
@@ -199,9 +220,12 @@ pub const PROBE_DISPATCH_ABANDON: u8 = 0x21;
 
 /// Event type for a context save on the dispatch path.
 ///
-/// Flags: the `DispatchSaveReason` discriminant in bits 0-6, with bit 7 set
+/// Flags: the `DispatchSaveReason` discriminant in bits 0-4, with bit 7 set
 /// when the frame being saved is byte-identical to the frame the last
-/// completed dispatch installed for the same thread.
+/// completed dispatch installed for the same thread, and, when bit 7 is set,
+/// the `DispatchNoProgressKind` discriminant in bits 5-6. Bit 7 keeps the
+/// meaning it had before the kind existed, so a reader that only knows about
+/// bit 7 reads the population it read before the kind was added.
 /// Payload: the low 32 bits of the saved RIP.
 pub const DISPATCH_SAVE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_DISPATCH_SAVE as u16);
 
@@ -281,8 +305,115 @@ impl DispatchSaveReason {
             ),
         }
     }
+
+    /// The (reason x kind) counter an identical-frame save increments.
+    ///
+    /// One arm per pair, so the 3 kinds of a reason partition that reason's
+    /// `DISPATCH_NOPROGRESS_SAVE_*` total with no remainder and no overlap.
+    #[inline(always)]
+    fn no_progress_kind_counter(self, kind: DispatchNoProgressKind) -> &'static TraceCounter {
+        match (self, kind) {
+            (Self::UserPreempt, DispatchNoProgressKind::Revisit) => {
+                &DISPATCH_NOPROGRESS_REVISIT_USER_PREEMPT
+            }
+            (Self::UserPreempt, DispatchNoProgressKind::ZeroIter) => {
+                &DISPATCH_NOPROGRESS_ZERO_ITER_USER_PREEMPT
+            }
+            (Self::UserPreempt, DispatchNoProgressKind::Unknown) => {
+                &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_PREEMPT
+            }
+            (Self::UserMandatory, DispatchNoProgressKind::Revisit) => {
+                &DISPATCH_NOPROGRESS_REVISIT_USER_MANDATORY
+            }
+            (Self::UserMandatory, DispatchNoProgressKind::ZeroIter) => {
+                &DISPATCH_NOPROGRESS_ZERO_ITER_USER_MANDATORY
+            }
+            (Self::UserMandatory, DispatchNoProgressKind::Unknown) => {
+                &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_MANDATORY
+            }
+            (Self::KernelBlockedPreempt, DispatchNoProgressKind::Revisit) => {
+                &DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_PREEMPT
+            }
+            (Self::KernelBlockedPreempt, DispatchNoProgressKind::ZeroIter) => {
+                &DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_PREEMPT
+            }
+            (Self::KernelBlockedPreempt, DispatchNoProgressKind::Unknown) => {
+                &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_PREEMPT
+            }
+            (Self::KernelBlockedMandatory, DispatchNoProgressKind::Revisit) => {
+                &DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_MANDATORY
+            }
+            (Self::KernelBlockedMandatory, DispatchNoProgressKind::ZeroIter) => {
+                &DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_MANDATORY
+            }
+            (Self::KernelBlockedMandatory, DispatchNoProgressKind::Unknown) => {
+                &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_MANDATORY
+            }
+            (Self::KthreadPreempt, DispatchNoProgressKind::Revisit) => {
+                &DISPATCH_NOPROGRESS_REVISIT_KTHREAD_PREEMPT
+            }
+            (Self::KthreadPreempt, DispatchNoProgressKind::ZeroIter) => {
+                &DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_PREEMPT
+            }
+            (Self::KthreadPreempt, DispatchNoProgressKind::Unknown) => {
+                &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_PREEMPT
+            }
+            (Self::KthreadMandatory, DispatchNoProgressKind::Revisit) => {
+                &DISPATCH_NOPROGRESS_REVISIT_KTHREAD_MANDATORY
+            }
+            (Self::KthreadMandatory, DispatchNoProgressKind::ZeroIter) => {
+                &DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_MANDATORY
+            }
+            (Self::KthreadMandatory, DispatchNoProgressKind::Unknown) => {
+                &DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_MANDATORY
+            }
+        }
+    }
 }
 
+/// What an identical-frame save at a park point actually records (#772).
+///
+/// Ruling R113 (2026-09-03) retired the proxy; this three-way split is its
+/// replacement.
+///
+/// `classify_dispatch_progress` says the saved RIP and RSP are byte-identical
+/// to the frame the last completed dispatch installed for this same thread. That
+/// alone does not say whether the thread ran: a thread that went once around its
+/// wait loop and halted again re-parks on the same instruction with the same
+/// stack. The park count on `Thread::wait_loop_iters`, stamped into the dispatch
+/// mark at dispatch and read again at the save, separates the two.
+///
+/// The three variants are exhaustive and disjoint, so per reason they sum to
+/// that reason's `DISPATCH_NOPROGRESS_SAVE_*` total.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum DispatchNoProgressKind {
+    /// The park count advanced: the thread re-parked, so it retired
+    /// instructions between the dispatch and the save.
+    Revisit = 0,
+    /// The park count is unchanged: the thread reached no counted park point
+    /// between the dispatch and the save. It is "still on the park it was
+    /// dispatched to, having retired no instructions" only where the mark's
+    /// RIP is that wait loop's own post-halt resume point, which this counter
+    /// does not record.
+    ZeroIter = 1,
+    /// The park count could not be attributed to the thread being saved: no
+    /// thread is installed on this CPU, the installed thread is a different
+    /// one, or the count read below the stamp. Counted rather than guessed.
+    Unknown = 2,
+}
+
+impl DispatchNoProgressKind {
+    /// The reason-independent counter this kind increments.
+    #[inline(always)]
+    fn aggregate_counter(self) -> &'static TraceCounter {
+        match self {
+            Self::Revisit => &DISPATCH_NOPROGRESS_REVISIT,
+            Self::ZeroIter => &DISPATCH_NOPROGRESS_ZERO_ITER,
+            Self::Unknown => &DISPATCH_NOPROGRESS_ITERS_UNKNOWN,
+        }
+    }
+}
 /// Where a dispatch was abandoned after `schedule()` had already committed to
 /// it (#772).
 ///
@@ -366,17 +497,28 @@ impl DispatchAbandonSite {
 
 /// Record one context save on the dispatch path.
 ///
-/// Two per-CPU atomic adds and, when the provider is enabled, one trace event.
-/// No lock, no allocation, no formatting.
+/// One per-CPU atomic add on an ordinary save, four on an identical-frame one
+/// (the reason total, the identical-frame subset of that reason, and the two
+/// counters of the kind split), and, when the provider is enabled, one trace
+/// event. No lock, no allocation, no formatting.
 #[inline(always)]
-pub fn trace_dispatch_save(reason: DispatchSaveReason, no_progress: bool, rip: u64) {
+pub fn trace_dispatch_save(
+    reason: DispatchSaveReason,
+    no_progress: Option<DispatchNoProgressKind>,
+    rip: u64,
+) {
     let (total, no_progress_total) = reason.counters();
     total.increment();
-    if no_progress {
+    if let Some(kind) = no_progress {
         no_progress_total.increment();
+        kind.aggregate_counter().increment();
+        reason.no_progress_kind_counter(kind).increment();
     }
     if SCHED_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
-        let flags = (reason as u8) | if no_progress { 0x80 } else { 0x00 };
+        let flags = match no_progress {
+            Some(kind) => (reason as u8) | ((kind as u8) << 5) | 0x80,
+            None => reason as u8,
+        };
         crate::tracing::record_event(DISPATCH_SAVE, flags, rip as u32);
     }
 }

@@ -40,8 +40,42 @@ if [ -z "$KERNEL_BIN" ]; then
     exit 2
 fi
 
-# The DISPATCH_* counter symbols in this build, name and file-relative address.
-nm "$KERNEL_BIN" | awk '$3 ~ /^DISPATCH_/ { print $3, "0x"$1 }' | sort > "$OUTDIR/counter_symbols.txt"
+# Per-CPU slot count of a `TraceCounter`, i.e. kernel/src/tracing/core.rs's
+# MAX_CPUS, derived from this build's own ELF rather than hard-coded --
+# MAX_CPUS itself is a const with no linker symbol, but each `TraceCounter`
+# carries it in its own size: `#[repr(C)]  { name: &str, description: &str,
+# per_cpu: [CpuCounterSlot; MAX_CPUS] }` with `CpuCounterSlot` `#[repr(C,
+# align(64))]`, so the struct is padded to a 64-byte boundary before the
+# array starts and is exactly `64 * (1 + MAX_CPUS)` bytes
+# (kernel/src/tracing/counter.rs). A slot past the CPUs a boot actually
+# brings up reads 0, so summing them is safe regardless of how many CPUs
+# are live.
+WLPT_HEX_SIZE=$(nm -S "$KERNEL_BIN" 2>/dev/null | awk '$4 == "WAIT_LOOP_PARK_TOTAL" { print $2 }')
+if [ -z "$WLPT_HEX_SIZE" ]; then
+    echo "RESULT tag=$TAG outdir=$OUTDIR error=no_wait_loop_park_total_symbol_for_percpu_slots"
+    exit 2
+fi
+PERCPU_SLOTS=$(( 16#$WLPT_HEX_SIZE / 64 - 1 ))
+if [ "$PERCPU_SLOTS" -le 0 ]; then
+    echo "RESULT tag=$TAG outdir=$OUTDIR error=percpu_slots_derivation_bad size=0x$WLPT_HEX_SIZE"
+    exit 2
+fi
+
+# The counter symbols in this build: name, file-relative address, and how many
+# per-CPU slots to read. DISPATCH_* and WAIT_LOOP_PARK_TOTAL are both
+# `TraceCounter`s and are read the same way -- summed over $PERCPU_SLOTS
+# slots -- so the two families cannot silently diverge on an
+# SMP boot; the committed census.json files were produced when DISPATCH_*
+# was read at slot 0 only, and on today's x86 target, which brings up only
+# CPU0, the sum equals that slot-0 value exactly (verified below).
+# WAIT_LOOP_PARK_SKIPPED must survive a park that guard refuses, so it stays
+# a plain whole-machine AtomicU64 and is read at +0 (0 slots). See
+# kernel/src/tracing/providers/counters.rs.
+nm "$KERNEL_BIN" | awk -v slots="$PERCPU_SLOTS" '
+    $3 ~ /^DISPATCH_/            { print $3, "0x"$1, slots }
+    $3 == "WAIT_LOOP_PARK_TOTAL" { print $3, "0x"$1, slots }
+    $3 ~ /^WAIT_LOOP_PARK_/ && $3 != "WAIT_LOOP_PARK_TOTAL" { print $3, "0x"$1, 0 }' |
+    sort > "$OUTDIR/counter_symbols.txt"
 
 if [ -w /dev/kvm ]; then ACCEL=kvm; else ACCEL=tcg; fi
 if [ "$ACCEL" = kvm ]; then CPU=host; else CPU=qemu64; fi
@@ -76,11 +110,23 @@ if [ "$FOUND" = 1 ] && kill -0 "$QPID" 2>/dev/null; then
             echo "set pagination off"
             echo "set confirm off"
             echo "target remote localhost:1234"
-            while read -r name addr; do
-                # +64 is per_cpu[0].value: the TraceCounter header (name and
-                # description, 32 bytes) padded to the 64-byte per-CPU slot.
-                printf 'printf "%s_CPU0=%%lu\\n", *(unsigned long long*)(0x%x + 64)\n' \
-                    "$name" "$((KERNEL_BASE + addr))"
+            while read -r name addr slots; do
+                # A TraceCounter's per_cpu[i].value is at 64 + 64*i: the header
+                # (name and description, 32 bytes) padded up to the 64-byte
+                # per-CPU slot, then one cache line per CPU. slots=0 means a
+                # plain AtomicU64, which is whole-machine and so gets no _CPU0
+                # suffix; the census script sums the _CPUn values it does find.
+                if [ "$slots" = 0 ]; then
+                    printf 'printf "%s=%%lu\\n", *(unsigned long long*)(0x%x)\n' \
+                        "$name" "$((KERNEL_BASE + addr))"
+                else
+                    cpu=0
+                    while [ "$cpu" -lt "$slots" ]; do
+                        printf 'printf "%s_CPU%d=%%lu\\n", *(unsigned long long*)(0x%x + %d)\n' \
+                            "$name" "$cpu" "$((KERNEL_BASE + addr))" "$((64 + 64 * cpu))"
+                        cpu=$((cpu + 1))
+                    done
+                fi
             done < "$OUTDIR/counter_symbols.txt"
             echo "detach"
             echo "quit"

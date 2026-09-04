@@ -20,6 +20,7 @@ use crate::arch_impl::current::constants::{
     DISPATCH_MARK_INVALID, DISPATCH_MARK_VALID, PERCPU_CPU_ID_OFFSET,
     PERCPU_CURRENT_THREAD_OFFSET, PERCPU_DISPATCH_MARK_RIP_OFFSET, PERCPU_DISPATCH_MARK_RSP_OFFSET,
     PERCPU_DISPATCH_MARK_STATE_OFFSET, PERCPU_DISPATCH_MARK_TID_OFFSET,
+    PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET,
     PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET,
     PERCPU_KERNEL_STACK_TOP_OFFSET, PERCPU_NEED_RESCHED_OFFSET, PERCPU_NEXT_CR3_OFFSET,
     PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
@@ -131,8 +132,9 @@ pub struct PerCpuData {
     // The resume frame the most recent completed dispatch installed on this
     // CPU. `check_need_resched_and_switch` and the three save sites compare
     // the frame they see against this pair to count an identical-frame
-    // observation -- a wait-loop revisit census since R113, not a defect
-    // census. These four words come out of the padding that already followed
+    // observation -- a wait-loop revisit census since ruling R113
+    // (2026-09-03) retired the proxy, not a defect
+    // census. These five words come out of the padding that already followed
     // `switch_violations`, so the struct keeps its 192-byte size and no offset
     // above moves.
     /// Resume RIP recorded by the last completed dispatch (offset 128)
@@ -148,9 +150,20 @@ pub struct PerCpuData {
     /// `DISPATCH_MARK_VALID`
     pub dispatch_mark_state: u64,
 
+    /// Park count the dispatched thread carried at that dispatch (offset 160).
+    ///
+    /// `Thread::wait_loop_iters` read at the moment the mark was written. A
+    /// save whose frame is byte-identical to the mark compares its own read of
+    /// that counter against this word: advanced means the thread went round
+    /// its wait loop and re-parked on a counted halt; unchanged means it
+    /// reached no counted park point in between, which is the same thing as
+    /// "retired no instructions" only where the mark's RIP is that wait
+    /// loop's own post-halt resume point.
+    pub dispatch_mark_wait_iters: u64,
+
     /// Padding to reach 192 bytes (align(64) boundary)
-    /// (offset 160-191): 32 bytes of padding
-    _pad_final: [u8; 32],
+    /// (offset 168-191): 24 bytes of padding
+    _pad_final: [u8; 24],
 }
 
 // Linux-style preempt_count bit layout constants
@@ -268,6 +281,10 @@ const _: () = assert!(
     offset_of!(PerCpuData, dispatch_mark_state) == PERCPU_DISPATCH_MARK_STATE_OFFSET,
     "PERCPU_DISPATCH_MARK_STATE_OFFSET mismatch with struct layout"
 );
+const _: () = assert!(
+    offset_of!(PerCpuData, dispatch_mark_wait_iters) == PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET,
+    "PERCPU_DISPATCH_MARK_WAIT_ITERS_OFFSET mismatch with struct layout"
+);
 
 // Alignment assertions
 const _: () = assert!(
@@ -284,7 +301,10 @@ const _: () = assert!(
 );
 
 // Verify struct size is 192 bytes due to align(64) attribute
-// The actual data is 128 bytes (switch_violations ends at offset 128), but align(64) rounds up to 192
+// The live data now reaches offset 168 (dispatch_mark_wait_iters at 160, 8
+// bytes wide), leaving 24 bytes of tail padding; align(64) rounds the whole
+// struct up to 192. The number was 128 before the dispatch mark's five words
+// were taken out of that padding, which is what this comment used to say.
 const _: () = assert!(
     core::mem::size_of::<PerCpuData>() == 192,
     "PerCpuData must be 192 bytes (aligned to 64)"
@@ -325,7 +345,8 @@ impl PerCpuData {
             dispatch_mark_rsp: 0,
             dispatch_mark_tid: 0,
             dispatch_mark_state: DISPATCH_MARK_INVALID,
-            _pad_final: [0; 32],
+            dispatch_mark_wait_iters: 0,
+            _pad_final: [0; 24],
         }
     }
 }
@@ -456,6 +477,101 @@ pub fn current_thread_id_lock_free() -> Option<u64> {
         None
     } else {
         unsafe { Some((*thread_ptr).id) }
+    }
+}
+
+/// Record that the running thread just parked on a halt primitive (#772).
+///
+/// Ruling R113 (2026-09-03) retired the proxy; this oracle is its replacement,
+/// and this count is what it reads.
+///
+/// Called from the kernel's park primitives -- `crate::arch_halt_with_interrupts`,
+/// `crate::arch_halt` and the private one in `graphics/render_task.rs` --
+/// immediately before the halt, and by hand from the two loops that park on a
+/// raw `enable_and_hlt`/`wfi` of their own (`task/executor.rs`'s
+/// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`). Every blocking
+/// wait loop in the kernel therefore reaches a bump at its own park point with
+/// no per-site call to keep in sync. The
+/// 6 idle and terminal halt loops that park on a raw `enable_and_hlt` --
+/// 5 in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
+/// NOT counted, and neither is the bare-halt-instruction family beyond them;
+/// `crate::arch_halt_with_interrupts` carries the full census, both families
+/// enumerated, and what the omission costs.
+// claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
+// arch_halt call sites under kernel/src reach this function, counted by grep in
+// this slot.
+///
+/// Counted case: one `PER_CPU_INITIALIZED` Acquire load, then two relaxed
+/// atomic adds -- one into this CPU's slot of `WAIT_LOOP_PARK_TOTAL` (whose
+/// slot lookup is one further per-CPU id read), and one through the per-CPU
+/// current-thread pointer, the same lock-free deref
+/// `current_thread_id_lock_free` above already performs on the
+/// interrupt-return path.
+///
+/// A park this function refuses bumps `WAIT_LOOP_PARK_SKIPPED` instead of a
+/// thread: the pre-init arm after the Acquire load alone, before the total is
+/// counted; the no-thread arm after it. So the park side is auditable rather
+/// than assumed, with the total's placement carried in the arithmetic --
+/// `WAIT_LOOP_PARK_TOTAL` counts the parks that passed the guard, and what
+/// reached a thread is that total minus the no-thread refusals, bounded by
+/// `WAIT_LOOP_PARK_TOTAL - WAIT_LOOP_PARK_SKIPPED <= attributed <=
+/// WAIT_LOOP_PARK_TOTAL` and equal to the total whenever SKIPPED reads 0.
+/// No lock, no allocation, no formatting, and no control flow depends on any
+/// of the values.
+#[inline(always)]
+pub fn note_wait_loop_park() {
+    // The same guard the 4 dispatch-mark accessors below carry, and for a
+    // sharper reason on this arch: `X86PerCpu::current_thread_ptr` is a bare
+    // `mov reg, gs:[8]`, without the aarch64 twin's null-base fallback.
+    // A park reached before `init` installs the GS base would read linear
+    // address 8 and, if that read produced a non-null value, would do a
+    // `lock xadd` at an unvalidated address. This function is now reached from
+    // all 3 park primitives, including ones that run long before the dispatch
+    // path does, so the guard is not hypothetical hygiene.
+    // claim-lint:ok: 4 of 4 dispatch-mark accessors below take this guard and
+    // 3 of 3 park primitives reach this function, counted by grep in this slot.
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        crate::tracing::providers::counters::note_park_skipped();
+        return;
+    }
+    // Past the guard the per-CPU slot lookup `TraceCounter::increment` does is
+    // safe by construction, so the park total is a per-CPU counter rather than
+    // a read-modify-write on one whole-machine line that each parking CPU
+    // would contend for. A park the guard refuses is therefore in SKIPPED and
+    // not in this total; `tracing::providers::counters` states the resulting
+    // arithmetic.
+    crate::tracing::providers::counters::note_park_total();
+    let thread_ptr =
+        hal_percpu::X86PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        crate::tracing::providers::counters::note_park_skipped();
+        return;
+    }
+    unsafe {
+        (*thread_ptr).wait_loop_iters.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Read the running thread of this CPU as an (id, park-count) pair (#772).
+///
+/// Both words come from one deref, so the caller can check that the count it
+/// reads belongs to the thread it means to attribute it to. The pair is absent
+/// when this CPU has no thread installed.
+#[inline(always)]
+pub fn current_wait_loop_iters() -> Option<(u64, u64)> {
+    let thread_ptr =
+        hal_percpu::X86PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        None
+    } else {
+        unsafe {
+            Some((
+                (*thread_ptr).id,
+                (*thread_ptr).wait_loop_iters.load(Ordering::Relaxed),
+            ))
+        }
     }
 }
 
@@ -1093,11 +1209,14 @@ pub fn in_exception_cleanup_context() -> bool {
 /// How the frame observed at an interrupt return or a context save relates to
 /// the resume frame the last completed dispatch installed on this CPU (#772).
 ///
-/// Both callers are census-only. R113 retired the identical-frame predicate as
-/// #772's oracle -- it recognizes a thread that went around its wait loop and
+/// Both callers are census-only. Ruling R113 (2026-09-03) retired the proxy --
+/// this predicate recognizes a thread that went around its wait loop and
 /// re-parked on the same instruction just as readily as one that retired
 /// nothing -- and R115 removed the refusal that used to act on it, so no
-/// control flow depends on this value.
+/// control flow depends on this value. The park-count split
+/// (`classify_no_progress_kind` below) is the replacement oracle; where "R113"
+/// tags a counter or a comment on the split, it names the ruling this is the
+/// answer to, not a second round of the same number.
 // claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DispatchProgress {
@@ -1106,21 +1225,39 @@ pub enum DispatchProgress {
     /// moved off the RIP/RSP it was dispatched to.
     Advanced,
     /// The frame is byte-identical -- RIP AND RSP -- to the one the last
-    /// dispatch installed for this same thread.
-    NoProgress,
+    /// dispatch installed for this same thread. Carries the evidence
+    /// `classify_no_progress_kind` needs, so that split cannot be reached
+    /// without it.
+    NoProgress(IdenticalFrame),
+}
+
+/// Evidence that `classify_dispatch_progress` just matched the dispatch mark
+/// on THIS CPU for the thread named inside (#772).
+///
+/// The field is private to this module and there is no public constructor, so
+/// the only way to hold one is to have just been handed it by
+/// `classify_dispatch_progress`. That is what carries
+/// `classify_no_progress_kind`'s precondition -- "the same CPU has just
+/// classified this same thread as `NoProgress`" -- in the type instead of in a
+/// doc comment: a caller cannot supply a tid the mark did not match, and
+/// cannot call the split at all on an `Advanced` frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct IdenticalFrame {
+    /// The thread the mark and the frame agreed on.
+    tid: u64,
 }
 
 /// Record the resume frame a completed dispatch installed.
 ///
 /// Called from the interrupt-return path once the frame is final, so this is
-/// four GS-relative stores: no lock, no allocation, no formatting.
+/// five GS-relative stores: no lock, no allocation, no formatting.
 #[inline(always)]
-pub fn set_dispatch_mark(tid: u64, rip: u64, rsp: u64) {
+pub fn set_dispatch_mark(tid: u64, rip: u64, rsp: u64, wait_iters: u64) {
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return;
     }
     unsafe {
-        hal_percpu::X86PerCpu::set_dispatch_mark(tid, rip, rsp);
+        hal_percpu::X86PerCpu::set_dispatch_mark(tid, rip, rsp, wait_iters);
     }
 }
 
@@ -1162,7 +1299,60 @@ pub fn classify_dispatch_progress(tid: u64, rip: u64, rsp: u64) -> DispatchProgr
     {
         return DispatchProgress::Advanced;
     }
-    DispatchProgress::NoProgress
+    DispatchProgress::NoProgress(IdenticalFrame { tid })
+}
+
+/// Split an identical-frame observation into a wait-loop revisit and a
+/// dispatch that retired no instructions (#772).
+///
+/// Ruling R113 (2026-09-03) retired the proxy; this oracle is its replacement.
+///
+/// Takes the `IdenticalFrame` that `classify_dispatch_progress` mints, so the
+/// precondition is carried by the type rather than by this comment: the frame
+/// names the thread the mark matched, and one cannot be constructed outside
+/// this module. It reads the park count that thread carries now against the
+/// one the dispatch mark stamped, so `Revisit` means the thread reached a park
+/// point again and `ZeroIter` means it reached no counted park point in
+/// between -- which is the same thing as "still sitting on the park it was
+/// dispatched to" only where the mark's RIP is that wait loop's own
+/// post-halt resume point; this function's inputs carry no RIP, so it
+/// cannot check that.
+///
+/// The identity is re-checked against the per-CPU current-thread pointer the
+/// count is read through, and a mismatch -- or a count below the stamp, which
+/// a re-published thread row could produce -- is reported as `Unknown` rather
+/// than guessed at.
+///
+/// Five reads on the path that answers `Revisit` or `ZeroIter`: (1) the
+/// `PER_CPU_INITIALIZED` Acquire load, (2) the GS-relative
+/// `current_thread_ptr` load inside `current_wait_loop_iters`, (3) that
+/// thread's `id`, (4) its `wait_loop_iters` Relaxed load, and (5)
+/// `X86PerCpu::dispatch_mark_wait_iters` -- the stamp side of the comparison,
+/// a second GS-relative load. A refused guard returns after (1); a null
+/// `current_thread_ptr` (no thread installed on this CPU) returns after (2),
+/// before (3) and (4) happen; an identity mismatch (compared using (3))
+/// returns after (4). No lock, no allocation, no formatting.
+#[inline(always)]
+pub fn classify_no_progress_kind(
+    frame: IdenticalFrame,
+) -> crate::tracing::providers::sched::DispatchNoProgressKind {
+    use crate::tracing::providers::sched::DispatchNoProgressKind;
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return DispatchNoProgressKind::Unknown;
+    }
+    match current_wait_loop_iters() {
+        Some((current_tid, iters)) if current_tid == frame.tid => {
+            let stamped = hal_percpu::X86PerCpu::dispatch_mark_wait_iters();
+            if iters > stamped {
+                DispatchNoProgressKind::Revisit
+            } else if iters == stamped {
+                DispatchNoProgressKind::ZeroIter
+            } else {
+                DispatchNoProgressKind::Unknown
+            }
+        }
+        _ => DispatchNoProgressKind::Unknown,
+    }
 }
 
 const _: () = assert!(
