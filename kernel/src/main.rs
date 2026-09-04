@@ -1097,11 +1097,6 @@ fn launch_x86_production_init(elf_data: &[u8]) -> Result<(), &'static str> {
     ))
 ))]
 fn kernel_main_continue() -> ! {
-    // #775/R125: start the x86 dispatch-strand heartbeat before any userspace
-    // process can run. The kthread sleeps on the scheduler timer and formats a
-    // snapshot only after kthread_entry has enabled interrupts.
-    task::start_dispatch_strand_census();
-
     // INTERACTIVE MODE: Load init_shell as the only userspace process
     #[cfg(feature = "interactive")]
     {
@@ -2376,6 +2371,11 @@ fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
+
+        // #775/R125: this is existing non-interrupt housekeeping, and
+        // enable_and_hlt returns with IF=1. The callee rate-limits formatting
+        // and checks IF again at the COM1 serial-lock boundary.
+        task::report_dispatch_strand_census_heartbeat();
         crate::net::drain_loopback_from_idle();
 
         // Check if there are any ready threads

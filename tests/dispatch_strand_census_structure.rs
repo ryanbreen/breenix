@@ -61,16 +61,18 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
         1
     );
     assert_eq!(
-        main.matches("task::start_dispatch_strand_census()").count(),
+        main.matches("task::report_dispatch_strand_census_heartbeat()")
+            .count(),
         1
     );
     assert!(task_mod
         .contains("#[cfg(target_arch = \"x86_64\")]\npub(crate) mod dispatch_strand_census;"));
-    assert!(task_mod.contains("pub fn start_dispatch_strand_census()"));
+    assert!(task_mod.contains("pub fn report_dispatch_strand_census_heartbeat()"));
     assert!(census.contains("[DISPATCH_STRAND_CENSUS:saved="));
     assert!(census.contains("const STRANDED_TID_CAPACITY: usize = 16;"));
-    assert!(census.contains("if crate::arch_interrupts_enabled()"));
-    assert!(census.contains("kthread_run(heartbeat, \"dispatch-census\")"));
+    assert!(census.contains("if !crate::arch_interrupts_enabled()"));
+    assert!(census.contains("pub(crate) fn report_heartbeat_if_due()"));
+    assert!(!census.contains("kthread_run"));
     assert!(census.contains("static LEDGER: [AtomicU8; LEDGER_CAPACITY]"));
 }
 
