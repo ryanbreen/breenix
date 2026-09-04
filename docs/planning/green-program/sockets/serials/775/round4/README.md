@@ -55,7 +55,10 @@ committed, so the transcript is all that survives. Round 5 re-ran the same
 control at the same head on the same host and committed both boots in full;
 see `../round5/x86/control-round3-head/`.
 
-**The bound is now 15000 ms, and it is derived rather than chosen.** It is
+**The bound is now whatever `scripts/x86-strand-census.sh`'s `stale_limit_ms`
+assignment holds (15000 ms at this writing) -- that assignment is the bound's
+one authoritative copy per round-6 finding F4, so this sentence reads it back
+rather than restating it -- and it is derived rather than chosen.** It is
 #766's measured maximum wake-to-dispatch overrun -- 10318 ms over 324
 re-derivable trials, `docs/planning/green-program/sockets/693-RCA-2026-09-02.md`
 lines 109-110 -- plus margin, and it tightens when #766 lands. The derivation

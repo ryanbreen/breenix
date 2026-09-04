@@ -710,10 +710,18 @@ tool's behaviour:
   history, not as a restatement to keep in step: 2 pasted census age lines in
   the table below, 2 rows of the mutation table naming a mutation that was
   performed, the sentence quoting this grep, and — under
-  `docs/planning/green-program/sockets/serials/775/` — 325 committed capture
-  files, which are bytes a tool printed. The structure test therefore scans
-  `scripts/` and `tests/`, the hand-maintained surfaces, and that scope is
-  stated here rather than left implied. Under the same 300 ms mutation, the two
+  `docs/planning/green-program/sockets/serials/775/` — the committed captures
+  there: `find docs/planning/green-program/sockets/serials/775 -type f | wc -l`
+  returns 261, of which `find docs/planning/green-program/sockets/serials/775
+  -name "*.txt" | wc -l` returns 244 — `serial_kernel.txt` / `serial_user.txt`
+  bytes a tool printed. The other 17 are not tool output: 11 are hand-authored
+  `README.md` files, one per round/case directory (`case-a`,
+  `case-b-post-removal-mutation`, `case-c`, `case-d`, `head-green`,
+  `production`, `round3`, `round3/case-d-broad-removal`, `round4`,
+  `round4/boot-replay`, `round5`), and 6 are `.patch` files recording a
+  mutation's diff. The structure test therefore scans `scripts/` and
+  `tests/`, the hand-maintained surfaces, and that scope is stated here rather
+  than left implied. Under the same 300 ms mutation, the two
   lines now agree:
 
   ```
@@ -1077,11 +1085,21 @@ no other field touched.
 `7f319a1c`'s message records its claim-lint invocation as
 `--files <the 5 files>` — a placeholder where the command should be. The
 invocation was real and exited 0, and re-running the lint confirms it, but the
-message is pushed history and is not rewritten. The verbatim command is in this
-round's notes and in the PR body, and the round-6 commits carry real, named
-invocations.
+message is pushed history and is not rewritten. The verbatim command is
+recorded in the round-6 notes (scratchpad) and reproduced here:
+
+```
+python3 scripts/claim-lint.py --files \
+  docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md \
+  docs/planning/green-program/sockets/serials/775/round3/README.md \
+  docs/planning/green-program/sockets/serials/775/round3/case-d-broad-removal/README.md \
+  docs/planning/green-program/sockets/serials/775/round4/README.md \
+  docs/planning/green-program/sockets/serials/775/round4/boot-replay/README.md
+```
+
+and the round-6 commits carry real, named invocations.
 <!-- claim-lint:ok: the per-commit claim-lint lines are listed in the round-6
-     notes and reproduced in the PR body; `git log --format=%B` over the
+     notes (scratchpad) and reproduced above; `git log --format=%B` over the
      round-6 commits is what produced that list. -->
 
 ## Builds and tests at the head
