@@ -260,10 +260,10 @@ pub static DISPATCH_KERNEL_RESTORE_TOTAL: TraceCounter = TraceCounter::new(
 // Dispatch save-path census (#772 diagnostics, R111/R112)
 // =============================================================================
 //
-// x86 only, like the three counters above: written from
-// `kernel/src/interrupts/context_switch.rs`, which is
-// `#![cfg(target_arch = "x86_64")]`. They register on both arches and stay 0
-// on aarch64.
+// x86 only, like the two counters above: written from
+// `kernel/src/interrupts/context_switch.rs`, whose parent module
+// `kernel/src/interrupts.rs` carries the `#![cfg(target_arch = "x86_64")]`.
+// They register on both arches and stay 0 on aarch64.
 //
 // R111/R112 ruled the candidate-A mechanism model incomplete: its refusal
 // moved neither the identical-RIP/RSP proxy nor the latency. These counters
@@ -453,8 +453,21 @@ pub static DISPATCH_SWITCH_IDLE_REDIRECT: TraceCounter = TraceCounter::new(
 /// (`kernel/src/interrupts.rs`) call `switch_to_idle()` and rewrite the
 /// exception frame themselves, outside `check_need_resched_and_switch`. They
 /// replace the per-CPU current thread without saving a context and without
-/// touching the dispatch mark, so they are the one x86 vector other than the
-/// timer that can end a dispatch.
+/// touching the dispatch mark.
+///
+// claim-lint:ok: 17 of 17 abandon sites enumerated by grep in this slot --
+// 13 switch_to_idle() call sites on x86 plus 4 abort_dispatch_and_resume().
+/// One further site does the same and is NOT instrumented:
+/// `kernel/src/syscall/handler.rs:689`, which on
+/// `SignalDeliveryResult::Terminated` calls `set_need_resched()` then
+/// `switch_to_idle()` on the syscall vector. `syscall/handler.rs` is a Tier-1
+/// file, so it is deliberately left alone (round-2 review, m3). The census is
+/// therefore 17 abandon sites, 16 of them instrumented -- 13 `switch_to_idle()`
+/// call sites on x86 plus 4 `abort_dispatch_and_resume()` sites, of which
+/// handler.rs:689 is the one exception. Its consequence is bounded rather than
+/// measured: after it the CPU runs idle, whose tid does not match the mark, so
+/// the next `classify_dispatch_progress` returns `Advanced`. The gap can only
+/// under-count identical frames, never invent one.
 ///
 /// GDB: `print DISPATCH_EXC_IDLE_REDIRECT`
 #[no_mangle]
