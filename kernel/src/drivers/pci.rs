@@ -1436,30 +1436,50 @@ pub static GATE_EXPECTED_DEVICES: &[GateExpectedDevice] = &[
 
 /// Verify the enumerated PCI device table against `GATE_EXPECTED_DEVICES`.
 ///
-/// Prints one unconditional `BUS_ENUM_CATALOG:` line via `serial_println!`
-/// (visible regardless of log level or build profile) plus one `log::info!`
-/// detail line per matched device. Returns `true` iff every expected
-/// function was found (each match claims a distinct enumerated function, so
-/// two expected virtio-blk entries cannot both match the same physical
-/// device), each has a BAR decoded non-zero, each has an assigned interrupt
-/// line (`interrupt_line != 0xFF`, the PCI "unknown/not connected"
-/// sentinel), and the total enumerated function count is at least the
-/// expected set's size.
+/// Prints one `BUS_ENUM_CATALOG: PASS`/`FAIL` line via `log::info!`/
+/// `log::error!`, plus one `log::info!` detail line per matched device --
+/// all on the same kernel-serial stream `pci::enumerate()`'s own
+/// `"PCI: Enumeration complete"` census line already uses, so a single grep
+/// against one serial file sees the whole story. (An earlier version of
+/// this function split the summary line onto the *other* serial port via
+/// `serial_println!`, which this kernel routes to COM1/user output while
+/// `log::*!` routes to COM2/kernel output -- confirmed live on beast: the
+/// four per-device lines landed in `serial_kernel.txt` while the summary
+/// line landed in `serial_user.txt`. Unifying onto `log::*!` fixes that
+/// split. `log::info!`/`log::error!` are safe and unconditionally visible
+/// here: this call site is normal boot-init code, not an interrupt/syscall
+/// hot path, and x86-64's logger sets `LevelFilter::Trace` unconditionally
+/// in `logger.rs`, confirmed present in the zero-feature production
+/// profile's own serial too -- see
+/// docs/planning/green-program/nic-bus/EVIDENCE-2026-08-31.md §5 for the
+/// one platform where `log::info!` genuinely is invisible, aarch64, which
+/// has no logger backend at all; that gap does not apply to x86-64.)
 ///
-/// Called twice by design: once unconditionally from `drivers::init()`
-/// (every x86-64 build, including the zero-feature production profile,
-/// where the `boot_tests`-gated test-framework registry does not compile at
-/// all), and once more from the `pci_gate_device_catalog` boot test
-/// (`test_framework::registry`, `boot_tests` feature only) so that profile
-/// also gets a structured `[TEST:System:pci_gate_device_catalog:PASS]` tally
-/// entry. Both calls check the same already-populated device table; the
-/// second call is not a re-enumeration.
+/// Returns `true` iff every expected function was found (each match claims
+/// a distinct enumerated function, so two expected virtio-blk entries
+/// cannot both match the same physical device), each has a BAR decoded
+/// non-zero, each has an assigned interrupt line (`interrupt_line !=
+/// 0xFF`, the PCI "unknown/not connected" sentinel), and the total
+/// enumerated function count is at least the expected set's size.
+///
+/// Called unconditionally from `drivers::init()` -- every x86-64 build,
+/// including the zero-feature production profile, where the
+/// `boot_tests`-gated test-framework registry (`test_framework::registry`)
+/// does not compile at all, and where -- for x86-64 specifically -- even a
+/// `boot_tests` build's own `SUBSYSTEMS`/`TestDef` executor
+/// (`test_framework::registry::run_all_tests()`) never runs: its one call
+/// site in `main.rs` is gated behind `feature = "x86_staged_registry"`,
+/// which no x86 gate script in this repo enables (confirmed: 0 hits for
+/// `[SUBSYSTEM:`/`[STAGE:`/`TESTS_COMPLETE` across a full 16983-line
+/// `run-x86-boot-tests.sh` boot). This function -- called directly from
+/// `drivers::init()`, gated on nothing but `target_arch = "x86_64"` -- is
+/// the mechanism that actually executes on x86-64 today, in both profiles.
 #[cfg(target_arch = "x86_64")]
 pub fn run_gate_device_catalog_check() -> bool {
     let devices = match get_devices() {
         Some(d) => d,
         None => {
-            crate::serial_println!(
+            log::error!(
                 "BUS_ENUM_CATALOG: FAIL reason=\"pci::enumerate() has not populated the device table\""
             );
             return false;
@@ -1467,7 +1487,7 @@ pub fn run_gate_device_catalog_check() -> bool {
     };
 
     if devices.len() < GATE_EXPECTED_DEVICES.len() {
-        crate::serial_println!(
+        log::error!(
             "BUS_ENUM_CATALOG: FAIL reason=\"enumerated {} function(s), expected at least {}\"",
             devices.len(),
             GATE_EXPECTED_DEVICES.len()
@@ -1494,7 +1514,7 @@ pub fn run_gate_device_catalog_check() -> bool {
         let idx = match matched_idx {
             Some(i) => i,
             None => {
-                crate::serial_println!(
+                log::error!(
                     "BUS_ENUM_CATALOG: FAIL reason=\"no enumerated function matches expected '{}' ({:04x}:{:04x} class {:?})\"",
                     expected.label,
                     expected.vendor_id,
@@ -1508,7 +1528,7 @@ pub fn run_gate_device_catalog_check() -> bool {
         let dev = &devices[idx];
 
         if !dev.bars.iter().any(|b| b.is_valid()) {
-            crate::serial_println!(
+            log::error!(
                 "BUS_ENUM_CATALOG: FAIL reason=\"'{}' ({:02x}:{:02x}.{}) has no BAR decoded non-zero\"",
                 expected.label,
                 dev.bus,
@@ -1519,7 +1539,7 @@ pub fn run_gate_device_catalog_check() -> bool {
         }
 
         if dev.interrupt_line == 0xFF {
-            crate::serial_println!(
+            log::error!(
                 "BUS_ENUM_CATALOG: FAIL reason=\"'{}' ({:02x}:{:02x}.{}) has no interrupt line assigned (IRQ=0xff)\"",
                 expected.label,
                 dev.bus,
@@ -1549,7 +1569,7 @@ pub fn run_gate_device_catalog_check() -> bool {
         );
     }
 
-    crate::serial_println!(
+    log::info!(
         "BUS_ENUM_CATALOG: PASS functions={} expected={}",
         devices.len(),
         GATE_EXPECTED_DEVICES.len()

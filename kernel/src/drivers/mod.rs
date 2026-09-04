@@ -32,12 +32,18 @@ pub fn init() -> usize {
     // check the actual parsed device table against this arch's gate device
     // set, not just the summary count in the "PCI: Enumeration complete"
     // log line pci::enumerate() already printed. Runs unconditionally in
-    // every build profile, including the zero-feature production profile,
-    // where the `boot_tests`-gated test-framework registry
-    // (kernel::test_framework::registry) does not compile at all -- this is
-    // the only place that profile gets this check. A FAIL is logged to
-    // serial (BUS_ENUM_CATALOG: FAIL ...) but does not abort boot; the gate
-    // scripts themselves treat that line as fatal.
+    // every x86-64 build profile, gated on nothing but this function's own
+    // target_arch -- including the zero-feature production profile, where
+    // the `boot_tests`-gated test-framework registry
+    // (kernel::test_framework::registry) does not compile at all, and
+    // including the `boot_tests` profile itself, where that registry
+    // compiles but its `run_all_tests()` executor still never runs on
+    // x86-64 (gated behind `feature = "x86_staged_registry"`, which no x86
+    // gate script in this repo enables -- see
+    // pci::run_gate_device_catalog_check()'s doc comment for the measured
+    // proof). A FAIL is logged to serial (BUS_ENUM_CATALOG: FAIL ...) but
+    // does not abort boot; the gate scripts themselves treat that line as
+    // fatal.
     pci::run_gate_device_catalog_check();
 
     // Initialize VirtIO block driver if device was found
