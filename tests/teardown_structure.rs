@@ -15329,6 +15329,7 @@ fn validate_kthread_joins_are_kthread_bodies_or_tests(
     sources: &[(String, String)],
 ) -> Result<usize, Vec<String>> {
     let closure = kthread_body_closure(sources);
+    let on_the_idle_identity = names_reachable_from_kernel_main(sources);
     let mut findings = Vec::new();
     let mut censused = 0usize;
     for (path, source) in sources {
@@ -15338,19 +15339,35 @@ fn validate_kthread_joins_are_kthread_bodies_or_tests(
             if closure.contains(&name) {
                 continue;
             }
-            if feature_gated_span_covers(source, offset) {
-                continue;
-            }
-            if module_chain_is_feature_gated(sources, path) {
-                continue;
+            // N16: a feature gate excused a joiner unconditionally, so a
+            // testing-only helper called straight from `kernel_main` -- which
+            // IS CPU 0's idle task after init_scheduler -- could join there and
+            // leave this rule green. A gate switches a build on and off; it
+            // does not change who is running. So the 2 gate arms below apply
+            // only while the idle identity has no path to the joiner, and that
+            // reachability is computed over cfg-gated callees too.
+            let reachable = on_the_idle_identity.contains(&name);
+            if !reachable {
+                if feature_gated_span_covers(source, offset) {
+                    continue;
+                }
+                if module_chain_is_feature_gated(sources, path) {
+                    continue;
+                }
             }
             let body_mask = code_mask(&body);
             if calls_function(&body, &body_mask, "kthread_stop") {
                 continue;
             }
-            findings.push(format!(
-                "{path} :: {name}  (joins a kernel thread, and is neither a kthread body, a feature-gated context, nor a stop-then-join teardown)"
-            ));
+            if reachable {
+                findings.push(format!(
+                    "{path} :: {name}  (joins a kernel thread, is reachable from kernel_main -- the idle identity -- and is neither a kthread body nor a stop-then-join teardown)"
+                ));
+            } else {
+                findings.push(format!(
+                    "{path} :: {name}  (joins a kernel thread, and is neither a kthread body, a feature-gated context, nor a stop-then-join teardown)"
+                ));
+            }
         }
     }
     if censused == 0 {
@@ -15971,4 +15988,109 @@ fn the_sleep_guard_census_rejects_a_refusal_left_only_in_a_comment() {
     assert_ne!(mutated, source, "fixture mutation must apply");
     let perturbed = with_replaced_source(&sources, "kernel/src/drivers/ahci/mod.rs", mutated);
     assert!(validate_sleep_guards_consult_the_idle_refusal(&perturbed).is_err());
+}
+
+/// The names `kernel_main` reaches, cfg-gated callees included.
+///
+/// After `init_scheduler` the aarch64 boot context IS CPU 0's idle task, so a
+/// helper `kernel_main` calls runs on the idle identity whether or not a
+/// feature switched it on -- a testing-only build is still a build, and #761
+/// is about which identity runs the code, not about which profile compiled it.
+/// The closure is therefore computed over the definitions as written, with no
+/// cfg filtering: a `#[cfg(feature = "testing")]` callee is a callee.
+fn names_reachable_from_kernel_main(sources: &[(String, String)]) -> BTreeSet<String> {
+    let mut bodies: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, source) in sources {
+        for (name, _, body) in all_definitions(source) {
+            bodies.entry(name).or_default().push(body);
+        }
+    }
+    let mut closure: BTreeSet<String> = BTreeSet::new();
+    let mut frontier: Vec<String> = Vec::new();
+    for body in bodies.get("kernel_main").into_iter().flatten() {
+        for name in called_names(body) {
+            if bodies.contains_key(&name) && closure.insert(name.clone()) {
+                frontier.push(name);
+            }
+        }
+    }
+    while let Some(current) = frontier.pop() {
+        let Some(list) = bodies.get(&current) else {
+            continue;
+        };
+        for body in list {
+            for name in called_names(body) {
+                if bodies.contains_key(&name) && closure.insert(name.clone()) {
+                    frontier.push(name);
+                }
+            }
+        }
+    }
+    closure
+}
+
+#[test]
+fn the_kthread_join_census_rejects_a_feature_gated_join_called_from_kernel_main() {
+    // N16: the shape the gate arm used to wave through -- a testing-only
+    // helper that joins a kernel thread, called straight from `kernel_main`,
+    // which is CPU 0's idle task by then.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/main_aarch64.rs");
+    let release = "kernel::per_cpu_aarch64::preempt_enable();";
+    assert_eq!(
+        source.matches(release).count(),
+        1,
+        "the fixture anchor must be kernel_main's own pin release"
+    );
+    let helper = concat!(
+        "#[cfg(feature = \"testing\")]\n",
+        "fn testing_only_join_helper(handle: &kernel::task::kthread::KthreadHandle) {\n",
+        "    let _ = kernel::task::kthread::kthread_join(handle);\n",
+        "}\n\n",
+    );
+    let mutated = format!(
+        "{helper}{}",
+        source.replacen(
+            release,
+            "testing_only_join_helper(&boot_continuation_thread);\n    kernel::per_cpu_aarch64::preempt_enable();",
+            1,
+        )
+    );
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    let perturbed = with_replaced_source(&sources, "kernel/src/main_aarch64.rs", mutated);
+    assert!(validate_kthread_joins_are_kthread_bodies_or_tests(&perturbed).is_err());
+}
+
+#[test]
+fn the_kthread_join_reachability_closure_crosses_a_feature_gate() {
+    // The closure has to walk INTO cfg-gated callees, or the rule above only
+    // catches a join `kernel_main` writes itself. 2 hops, the first gated.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/main_aarch64.rs");
+    let release = "kernel::per_cpu_aarch64::preempt_enable();";
+    let helper = concat!(
+        "#[cfg(feature = \"testing\")]\n",
+        "fn testing_only_outer_helper() {\n",
+        "    testing_only_inner_join();\n",
+        "}\n\n",
+        "#[cfg(feature = \"testing\")]\n",
+        "fn testing_only_inner_join(handle: &kernel::task::kthread::KthreadHandle) {\n",
+        "    let _ = kernel::task::kthread::kthread_join(handle);\n",
+        "}\n\n",
+    );
+    let mutated = format!(
+        "{helper}{}",
+        source.replacen(
+            release,
+            "testing_only_outer_helper();\n    kernel::per_cpu_aarch64::preempt_enable();",
+            1,
+        )
+    );
+    let perturbed = with_replaced_source(&sources, "kernel/src/main_aarch64.rs", mutated);
+    let reachable = names_reachable_from_kernel_main(&perturbed);
+    assert!(
+        reachable.contains("testing_only_inner_join"),
+        "the closure stopped at the feature gate"
+    );
+    assert!(validate_kthread_joins_are_kthread_bodies_or_tests(&perturbed).is_err());
 }
