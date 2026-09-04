@@ -14438,14 +14438,19 @@ fn x86_prod_eq_rhs_variable(statement: &str) -> Option<&str> {
 
 /// Whether `var` is an expectation the script derives from its own bytes: it is
 /// either assigned directly from a `grep -c` over `"${BASH_SOURCE[0]}"`, or
-/// every assignment to it is a bare integer or another such variable. A name
-/// with no assignment at all, or with any assignment from anything else (a
-/// caller-supplied environment value, a serial-log read, a hand-pinned string),
-/// is not self-derived and does not license an inexact-looking assertion.
+/// every assignment to it is a bare integer, `$((VAR OP N))` arithmetic
+/// whose VAR is itself self-derived and whose N is a bare integer literal
+/// (round 3, N1 review fix: the additive implicit-default-NIC count), or
+/// another such variable. A name with no assignment at all, or with any
+/// assignment from anything else (a caller-supplied environment value, a
+/// serial-log read, a hand-pinned string, or arithmetic over a non-derived
+/// variable), is not self-derived and does not license an inexact-looking
+/// assertion.
 /// claim-lint:ok: mechanical description of the predicate defined
-/// immediately below; the mutation leg "self-census derivation hand-pinned"
-/// in x86_production_profile_gate_ratchet_is_not_vacuous, in
-/// tests/teardown_structure.rs, reddens when the derivation it looks for
+/// immediately below; the mutation legs "self-census derivation
+/// hand-pinned" and "arithmetic derivation hand-pinned" in
+/// x86_production_profile_gate_ratchet_is_not_vacuous, in
+/// tests/teardown_structure.rs, redden when the derivation it looks for
 /// becomes a hand-pinned constant.
 fn x86_prod_expectation_is_self_derived(script: &str, var: &str) -> bool {
     x86_prod_expectation_is_self_derived_depth(script, var, 0)
@@ -14476,6 +14481,19 @@ fn x86_prod_expectation_is_self_derived_depth(script: &str, var: &str, depth: us
             .trim_matches('"');
         if !bare.is_empty() && bare.bytes().all(|b| b.is_ascii_digit()) {
             continue;
+        }
+        if let Some(inner) = bare.strip_prefix("$((").and_then(|s| s.strip_suffix("))")) {
+            let inner = inner.trim();
+            let mut parts = inner.splitn(2, |c| c == '+' || c == '-');
+            if let (Some(lhs), Some(offset)) = (parts.next(), parts.next()) {
+                let lhs = lhs.trim();
+                let offset = offset.trim();
+                let lhs_is_name = !lhs.is_empty() && lhs.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+                let offset_is_literal = !offset.is_empty() && offset.bytes().all(|b| b.is_ascii_digit());
+                if lhs_is_name && offset_is_literal && x86_prod_expectation_is_self_derived_depth(script, lhs, depth + 1) {
+                    continue;
+                }
+            }
         }
         if let Some(other) = bare.strip_prefix('$') {
             let other = other.trim_matches(|c| c == '{' || c == '}');
@@ -14603,6 +14621,17 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
         gate.replacen(
             "EXPECTED_VIRTIO_BLK=$(grep -cE -- '^[[:space:]]*-device virtio-blk-pci,drive=' \"${BASH_SOURCE[0]}\") || true",
             "EXPECTED_VIRTIO_BLK=\"$SOME_OTHER_VALUE\"",
+            1,
+        ),
+    );
+    // The additive-arithmetic arm (round 3, N1 review fix) cannot smuggle
+    // in an underived variable either: the left-hand operand of the
+    // `$((VAR + N))` shape must itself be self-derived, not merely present.
+    report_vacuity(
+        "arithmetic derivation hand-pinned",
+        gate.replacen(
+            "EXPECTED_E1000=$((EXPECTED_E1000_FLAGS + 1))",
+            "EXPECTED_E1000=$((SOME_OTHER_VALUE + 1))",
             1,
         ),
     );
