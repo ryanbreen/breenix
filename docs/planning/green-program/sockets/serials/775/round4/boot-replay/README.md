@@ -70,3 +70,13 @@ thread's context, and the next `<1>` replays the last save that landed.
 Both producers now set the flag from `thread.owner_pid.is_some()`.
 <!-- claim-lint:ok: the 3 arms above are the 3 subdirectories here, each with
      its own gate transcript. -->
+
+## The result
+
+With both producers guarded, the same gate is `GATE: PASS` on 2 of 2 boots,
+150 s each: `../gate-green/boot{1,2}/`. The dispatch breadcrumbs move with it --
+`<K>`=197 `<I>`=137 `<1>`=32 on boot 1, against `<K>`=32 `<I>`=0 `<1>`=27 on the
+failing arm -- so the boot thread now reaches `idle_loop` instead of being
+restored, over and over, from a boot-time saved context.
+<!-- claim-lint:ok: the 2 green boots and the 2 failing ones are the four
+     transcripts under serials/775/round4/. -->

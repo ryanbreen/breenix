@@ -419,6 +419,35 @@ production gate does not call `scripts/x86-gate-verdict.sh`. What the fixed arm
 buys is that the reading is now CURRENT: on 6 of 6 boots the newest snapshot is
 about a second old at the end of the capture instead of tens of seconds.
 
+### The test-profile gate, and the defect `kstrandd` surfaced on the way
+
+Adding `kstrandd` reddened the x86 TEST-profile gate on 2 of 2 boots with a
+kernel page fault at `0x1e`, on the boot thread's own kernel stack, after the
+capture showed the boot thread re-executing a test it had already finished. The
+round-3 head is 2 of 2 `PASS` on the same host, so the regression was this
+branch's. The three arms and the diagnosis are at
+`serials/775/round4/boot-replay/`.
+
+The producer was the sibling of the one above:
+`Scheduler::block_current_for_io_publish` set `blocked_in_syscall = true`
+unconditionally, and the boot thread reaches it during init --
+`Completion::wait_timeout_uninterruptible()` backs the ext2 root read. On a
+thread with no process the flag makes each later context save a silent no-op,
+so the next boot-time idle restore replays the last save that landed.
+`kstrandd` is what surfaced it: it forces that boot-time restore branch tens of
+times inside the pre-userspace init phase, where the round-3 head took it
+rarely.
+
+With both producers guarded the gate is green again, and the round-4 gate boots
+are the first captures where the census cadence covers the whole boot:
+
+| capture | verdict | snapshots | age at the completion marker |
+|---|---|---:|---|
+| `round4/gate-green/boot1/` | `PASS - exited=22 expected>=10 nonzero=0 allowlist=0` | 118 | 1137 ms |
+| `round4/gate-green/boot2/` | `PASS - exited=22 expected>=10 nonzero=0 allowlist=0` | 115 | 842 ms |
+<!-- claim-lint:ok: the 2 rows are the 2 committed gate transcripts under
+     serials/775/round4/gate-green/. -->
+
 ### The age at the completion marker, asserted
 
 Round-3 finding N14 was that the staleness of the newest snapshot is stated but
@@ -737,6 +766,6 @@ Still open:
   `round3/r3-production/gate-{1..5}.txt`; round-3 finding R3-10 was that the
   other 22 had no committed evidence, and they are now at
   `round3/case-d-broad-removal/`, 22 summary rows plus the 4
-  prompt-signature boots in full. The regression is filed as its own issue
-  (see that directory's README for the signature and the recipe): the
-  logging was load-bearing for something, and #775 does not know what.
+  prompt-signature boots in full. The regression is filed as #783, with the
+  signature, the A/B recipe and the committed specimen paths: the logging was
+  load-bearing for something, and #775 does not know what.

@@ -1,5 +1,7 @@
 # case-d, the 22 boots behind the broad-removal decision
 
+The regression these boots measure is filed as #783.
+
 Round-3 review finding R3-10: the arm table in
 `775-CENSUS-EQUIVALENCE-2026-09-04.md` -- the table that decides this
 branch ships the narrow record removal and not the broad one -- rested on 27

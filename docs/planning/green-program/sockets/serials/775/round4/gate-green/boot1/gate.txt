@@ -1,0 +1,14 @@
+[gate] repo: /root/breenix-775  head: b0b38894
+[gate] accel=kvm cpu=host
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 15s
+[gate] === Running 1 boot test(s), mode=full ===
+strand census: latest snapshot seq=118 tick=27922 at 139151 ms; 118 valid snapshot(s), previous 1001 ms earlier, largest gap 19939 ms
+strand census: age at the completion marker: 1137 ms (newest cadence snapshot seq=28 at 49903 ms, completion snapshot seq=29 at 51040 ms, bound 5000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4902
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+  Test 1: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+GATE: PASS (1/1 boot tests passed; mode=full build=15s boot=150s total=173s)
