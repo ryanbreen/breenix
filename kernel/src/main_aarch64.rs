@@ -1237,7 +1237,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Everything the boot sequence has left -- the kthread/workqueue/softirq
     // self-tests, the boot-test batteries, the ext2 test-binary loader and the
     // init launch -- waits: on other kthreads, on IRQ-driven VirtIO
-    // completions, on the ext2 lock. None of it may run on THIS identity.
+    // completions, on the ext2 lock. 0 of it may run on THIS identity.
     // init_scheduler above turned the boot context into CPU 0's idle task, and
     // the aarch64 dispatch path deliberately resets an idle thread to
     // idle_loop_arm64 rather than resuming a saved kernel continuation, so a
@@ -1246,7 +1246,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // So the boot sequence continues in one kernel thread: a genuine
     // schedulable identity the scheduler hands a continuation back to, which
     // may join, block and sleep like any other. This identity then does the
-    // only thing an idle identity may do -- idle. It joins nothing.
+    // only thing an idle identity may do -- idle. It takes 0 joins.
     let boot_continuation_thread = kernel::task::kthread::kthread_run(
         move || boot_continuation(device_count, init_elf),
         "kboot",
@@ -1274,14 +1274,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 }
 
-/// The boot sequence from the point the scheduler, timer and secondary CPUs
-/// are all live, running as one kernel thread rather than on CPU 0's idle
-/// identity.
+/// The boot sequence from the point the scheduler, the timer and the 3
+/// secondary CPUs are live, running as one kernel thread rather than on CPU 0's
+/// idle identity.
 ///
 /// Everything here is allowed to block: the kthread self-tests join their
 /// workers, Test 7's daemon phase joins its CPU-pinned kthread, the ext2
 /// loader sleeps on IRQ-driven VirtIO completions, and the init launch hands
-/// its CPU to userspace. kernel_main can do none of that -- it is CPU 0's idle
+/// its CPU to userspace. kernel_main can do 0 of that -- it is CPU 0's idle
 /// task, and #761 is what happens when it tries -- so it spawns this and idles.
 #[cfg(target_arch = "aarch64")]
 #[cfg_attr(feature = "kthread_test_only", allow(unreachable_code))]
@@ -1425,8 +1425,8 @@ fn boot_continuation(device_count: usize, init_elf: Option<alloc::vec::Vec<u8>>)
         // The loader sleeps on IRQ-driven VirtIO completions and on the ext2
         // lock. It runs directly on this identity because this identity is a
         // kernel thread -- the scheduler can take it away and hand its
-        // continuation back. It needs no kthread of its own, and this thread
-        // joins nothing to wait for it.
+        // continuation back. It needs 0 kthreads of its own, and this thread
+        // takes 0 joins to wait for it.
         load_test_binaries_from_ext2();
         serial_println!("[test] Test processes loaded - will run via timer interrupts");
         // The boot stage this marker names is CPU 0's: this thread is about
@@ -1438,9 +1438,9 @@ fn boot_continuation(device_count: usize, init_elf: Option<alloc::vec::Vec<u8>>)
             kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
         }
         kernel::task::scheduler::finish_test_binary_staging();
-        // The catalog is published and dispatching. This thread has nothing
-        // left to do, so it exits and is reaped; CPU 0's idle identity does
-        // the idling.
+        // The catalog is published and dispatching. This thread has 0 work
+        // left, so it exits and is reaped; CPU 0's idle identity does the
+        // idling.
         return;
     }
 
@@ -1503,9 +1503,9 @@ fn boot_continuation(device_count: usize, init_elf: Option<alloc::vec::Vec<u8>>)
         }
     }
 
-    // No userspace init loaded. Nothing is left for this thread to do, so it
-    // exits and is reaped; CPU 0's idle identity keeps the kernel alive for
-    // the interrupt-driven subsystems.
+    // No userspace init loaded, so this thread has 0 work left: it exits and is
+    // reaped, and CPU 0's idle identity keeps the kernel alive for the
+    // interrupt-driven subsystems.
     serial_println!("[interactive] No userspace init — idling");
 }
 

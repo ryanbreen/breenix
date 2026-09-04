@@ -545,8 +545,8 @@ fn validate_general_idle_loops_drain_loopback(
 
     // A census, not two anchors. Round 3 replaced the aarch64 boot thread's two
     // wfi idle loops with one, so anchored lookups either miss or silently
-    // match a later loop. Every wfi loop in main_aarch64.rs that the kernel can
-    // reach while it is still running has to drain loopback; the ones that
+    // match a later loop. A wfi loop in main_aarch64.rs that the kernel can
+    // reach while it is still running has to drain loopback; the 2 kinds that
     // follow an exit_qemu, and the panic handler's, are termination spins.
     let mask = code_mask(aarch64_source);
     let mut censused = 0usize;

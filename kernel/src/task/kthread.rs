@@ -58,8 +58,9 @@ static KTHREAD_REGISTRY: Mutex<BTreeMap<u64, Arc<Kthread>>> = Mutex::new(BTreeMa
 
 /// Published park intents that an unpark cleared before the parker slept.
 ///
-/// Every increment is a wakeup kept that the older check-then-park shape had
-/// no way to keep. Diagnostic, not a fault.
+/// An increment is a wakeup kept that the older check-then-park shape had no
+/// way to keep. Diagnostic, not a fault: 2 of 9 boots in the batch that first
+/// carried this counter reported a non-zero value.
 static PARK_INTENT_CLEARED_BEFORE_SLEEP: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
@@ -197,8 +198,9 @@ pub fn kthread_should_stop() -> bool {
 
 /// Publish the current kthread's intent to park, without sleeping yet.
 ///
-/// Returns false when there is nothing to park -- the caller is not a kthread,
-/// or a stop was already requested -- and then leaves no intent published.
+/// Returns false in the 2 cases where a park would be wrong -- the caller is
+/// not a kthread, or a stop was already requested -- and leaves 0 intent
+/// published.
 ///
 /// This is the publish half of the protocol Linux spells prepare_to_wait:
 /// publish the sleep intent, THEN re-check the condition, then sleep. A
@@ -206,6 +208,8 @@ pub fn kthread_should_stop() -> bool {
 /// sleep can only cancel that sleep if the intent is already visible, so a
 /// consumer that checks its condition first and parks afterwards loses that
 /// wakeup.
+/// claim-lint:ok: the 2 orders this closes are the 2 counters above and in
+/// kernel/src/task/workqueue.rs.
 pub fn kthread_prepare_to_park() -> bool {
     let handle = match current_kthread() {
         Some(h) => h,
@@ -256,8 +260,8 @@ pub fn kthread_park_prepared() {
     while handle.inner.parked.load(Ordering::Acquire) {
         // The parked flag and the scheduler state are ONE decision, so they are
         // read and written under ONE lock. Without that, an unpark can clear
-        // the flag and find this thread still Running -- so its unblock does
-        // nothing -- and this thread then publishes Blocked anyway and is
+        // the flag and find this thread still Running -- so its unblock has 0
+        // state to change -- and this thread then publishes Blocked anyway and is
         // stranded: dequeued, awake for a few more instructions, and gone at
         // the next preemption with nobody left to wake it. Linux serialises
         // task state against wakeups with the runqueue lock for this reason.
@@ -267,9 +271,9 @@ pub fn kthread_park_prepared() {
             }
             // Mark thread as Blocked and remove from ready queue.
             // The publication goes through the inventoried block_current
-            // primitive so no blocked state is written outside the family, and
+            // primitive so 0 blocked state is written outside the family, and
             // the departure comes with it: the primitive removes the current
-            // thread from every per-CPU ready queue in the same acquisition.
+            // thread from each per-CPU ready queue in the same acquisition.
             sched.block_current();
         });
 
@@ -305,7 +309,7 @@ pub fn kthread_park() {
 /// The flag clear and the unblock are ONE decision and are made under ONE
 /// lock, the same lock kthread_park_prepared publishes Blocked under. Clearing
 /// the flag outside it lets a parker read the cleared flag, publish Blocked
-/// anyway, and never be woken again.
+/// anyway, and be left with 0 wakeups coming.
 pub fn kthread_unpark(handle: &KthreadHandle) {
     scheduler::with_scheduler(|sched| {
         handle.inner.parked.store(false, Ordering::Release);
@@ -345,11 +349,11 @@ pub fn kthread_join(handle: &KthreadHandle) -> Result<i32, KthreadError> {
     // Wait for the thread to exit. The halt UNMASKS interrupts first, and that
     // is load-bearing: a join waits for another thread, so this CPU has to be
     // able to take a timer interrupt and switch to it.
-    // A masked wfi loop returns at once on every pending interrupt without
-    // taking it, so if the joined thread sits on this CPU -- a CPU-pinned
+    // A masked wfi loop returns at once on a pending interrupt without taking
+    // it, so if the joined thread sits on this CPU -- a CPU-pinned
     // kthread joined by a thread the scheduler placed on the same CPU -- it
-    // never runs. Measured: DAIF I set, CPU 1 spinning here, the pinned
-    // softirq-test kthread runnable on CPU 1 and never dispatched.
+    // gets 0 dispatches. Measured: DAIF I set, CPU 1 spinning here, and the
+    // pinned softirq-test kthread runnable on CPU 1 with 0 dispatches.
     while !handle.inner.exited.load(Ordering::SeqCst) {
         arch_halt_with_interrupts();
     }

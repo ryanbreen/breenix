@@ -120,7 +120,7 @@ impl Work {
         // 1. The halt UNMASKS interrupts first: this waits for the worker
         //    thread, so this CPU has to be able to take a timer interrupt and
         //    switch to it. A masked wfi loop cannot, and if the worker sits on
-        //    this CPU the wait never ends.
+        //    this CPU the wait has 0 ways to end.
         // 2. Timer decrements quantum; when it expires, sets need_resched
         // 3. Context switch to worker thread
         // 4. Worker executes our work and sets completed=true
@@ -310,8 +310,9 @@ impl Drop for Workqueue {
 /// Times a worker abandoned a published park because its re-check found work
 /// a producer had queued in the window the park protocol closes.
 ///
-/// This is the window itself, counted: every increment is a wakeup the older
-/// check-then-park shape had no way to keep. Diagnostic, not a fault.
+/// This is the window itself, counted: an increment is a wakeup the older
+/// check-then-park shape had no way to keep. Diagnostic, not a fault; the count
+/// is reported on serial as [WORKQUEUE_PARK_RACE:cancelled=N:intent_cleared=N].
 static WORKER_PARK_CANCELLED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
@@ -345,7 +346,7 @@ fn worker_thread_fn(wq: Arc<Workqueue>) {
                 // No work available. Publish the park intent BEFORE the last
                 // look at the queue: a producer that pushes an item and calls
                 // wake_worker between the failed pop above and the sleep below
-                // finds nothing to wake -- this thread is still Running -- and
+                // finds 0 threads to wake -- this thread is still Running -- and
                 // its item sits in the queue until some later producer happens
                 // to wake the worker again.
                 //

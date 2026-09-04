@@ -14934,7 +14934,7 @@ fn validate_blocking_primitives_refuse_the_idle_identity(
                 if !name.starts_with(prefix) {
                     continue;
                 }
-                // Every match below reads the EXECUTABLE body. A raw
+                // Each match below reads the EXECUTABLE body. A raw
                 // `contains` accepts the refusal's name inside a comment, so
                 // deleting the guard and leaving the name behind kept this
                 // rule green -- the mutation leg below is that exact edit.
@@ -15080,7 +15080,7 @@ fn blocking_primitive_rule_rejects_a_refusal_left_only_in_a_comment() {
     assert!(validate_blocking_primitives_refuse_the_idle_identity(&perturbed).is_err());
 }
 
-// R136(1): nothing the idle identity can reach joins a kernel thread.
+// R136(1): the idle identity reaches 0 joins of a kernel thread.
 //
 // After init_scheduler the aarch64 boot context IS CPU 0's idle task, and the
 // dispatch path resets an idle thread to idle_loop_arm64 instead of resuming a
@@ -15088,11 +15088,11 @@ fn blocking_primitive_rule_rejects_a_refusal_left_only_in_a_comment() {
 // the #761 mechanism. The boot sequence hands its remainder to ONE kernel
 // thread and idles.
 //
-// The rule is a census, not a list. Every kthread_join caller in kernel/src
-// must be one of three shapes: a kthread body (its name is handed to a
+// The rule is a census, not a list. Each kthread_join caller in kernel/src
+// must be one of 3 shapes: a kthread body (its name is handed to a
 // kthread_run spawn, or it is named in the body of one that is), a context
 // compiled only under a feature, or a stop-then-join teardown (the same body
-// also calls kthread_stop). Nothing else may join.
+// also calls kthread_stop). A caller outside those 3 is a finding.
 
 
 /// Whether the executable text calls a function by that name: the whole
@@ -15108,7 +15108,7 @@ fn calls_function(body: &str, mask: &[bool], name: &str) -> bool {
         bytes.get(end) == Some(&b'(')
     })
 }
-/// Every fn in source whose executable body contains needle, as
+/// The fns in source whose executable body contains needle, as
 /// (name, offset of the fn keyword, body).
 fn definitions_matching(source: &str, needle: Option<&str>) -> Vec<(String, usize, String)> {
     let mask = code_mask(source);
@@ -15181,8 +15181,8 @@ fn feature_gated_span_covers(source: &str, offset: usize) -> bool {
 
 /// Whether the module chain that brings a file into the crate is feature-gated.
 ///
-/// A file is reached through a chain of mod declarations; if any link in that
-/// chain carries a feature cfg, nothing in the file is compiled into a kernel
+/// A file is reached through a chain of mod declarations; if 1 link in that
+/// chain carries a feature cfg, 0 items in the file are compiled into a kernel
 /// built without that feature.
 fn module_chain_is_feature_gated(sources: &[(String, String)], path: &str) -> bool {
     let Some(rest) = path.strip_prefix("kernel/src/") else {
@@ -15229,8 +15229,8 @@ fn module_declaration_is_feature_gated(
     false
 }
 
-/// The kthread-body closure: names handed to a kthread_run spawn, plus every
-/// name reachable from one of those bodies.
+/// The kthread-body closure: names handed to a kthread_run spawn, plus the
+/// names reachable from one of those bodies.
 fn kthread_body_closure(sources: &[(String, String)]) -> BTreeSet<String> {
     let mut bodies: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (_, source) in sources {
@@ -15265,7 +15265,7 @@ fn kthread_body_closure(sources: &[(String, String)]) -> BTreeSet<String> {
     closure
 }
 
-/// Every fn in source, as (name, offset of the fn keyword, body).
+/// The fns in source, as (name, offset of the fn keyword, body).
 fn all_definitions(source: &str) -> Vec<(String, usize, String)> {
     definitions_matching(source, None)
 }
@@ -15300,7 +15300,7 @@ fn spawned_name(source: &str, spawn: usize) -> Option<String> {
     Some(source[start..at].to_owned())
 }
 
-/// Every identifier a body calls: an identifier immediately followed by an
+/// The identifiers a body calls: an identifier immediately followed by an
 /// opening parenthesis, read from the executable text only.
 fn called_names(body: &str) -> BTreeSet<String> {
     let mask = code_mask(body);

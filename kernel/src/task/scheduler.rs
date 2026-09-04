@@ -4615,9 +4615,9 @@ pub fn finish_test_binary_staging() {
         .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        // Staging never opened -- the loader returned before it published a
-        // batch. There is no pin to release and nothing to unpin, and calling
-        // preempt_enable here would underflow this CPU's count.
+        // Staging did not open -- the loader returned before it published a
+        // batch. There are 0 pins to release and 0 threads to unpin, and
+        // calling preempt_enable here would underflow this CPU's count.
         return;
     }
     without_interrupts(|| {

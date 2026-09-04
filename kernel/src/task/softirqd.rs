@@ -115,9 +115,10 @@ static SOFTIRQ_HANDLERS: [AtomicPtr<()>; NR_SOFTIRQS] = [
 /// mutex previously shared by IRQ-exit and thread context.
 static KSOFTIRQD: [Once<KthreadHandle>; MAX_CPUS] = [const { Once::new() }; MAX_CPUS];
 
-/// Times a daemon abandoned a published park because its re-check found its
-/// CPU's pending bitmap non-zero -- a raise that landed in the window the park
-/// protocol closes. Diagnostic, not a fault.
+/// The number of times a daemon abandoned a published park because its
+/// re-check found a raised bit in its CPU's pending bitmap -- a raise landing
+/// in the window the park protocol closes. Diagnostic, not a fault; the count
+/// is reported on serial as [KSOFTIRQD_PARK_RACE:cancelled=N].
 static KSOFTIRQD_PARK_CANCELLED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
@@ -344,7 +345,7 @@ fn ksoftirqd_fn(cpu: usize) {
             // No work -- park until woken by wakeup_ksoftirqd(). Publish the
             // park intent BEFORE the last look at the pending bitmap: a raise
             // and its wakeup_ksoftirqd landing between the read above and the
-            // sleep would otherwise find this daemon Running, wake nothing,
+            // sleep would otherwise find this daemon Running, wake 0 threads,
             // and leave its own CPU's bitmap undrained until the next raise.
             if kthread_prepare_to_park() {
                 if per_cpu::softirq_pending() == 0 {
