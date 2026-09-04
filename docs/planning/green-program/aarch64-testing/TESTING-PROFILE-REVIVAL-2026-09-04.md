@@ -101,6 +101,25 @@ legs, plus one per rule that performs exactly the delete-the-call,
 keep-the-name edit (`sleep_predicate_rule_rejects_a_refusal_left_only_in_a_comment`
 and `blocking_primitive_rule_rejects_a_refusal_left_only_in_a_comment`).
 
+Round 4 fixed the discovery. Reading names still could not see
+`scheduler_sleep_ready`, so deleting ITS call and leaving the name in a comment
+kept the rule green -- the review's N03 and N15. A third census now discovers
+predicates by call site instead: it locates the primitives that block their
+CALLER, the functions that reach one without carrying a family name (a body
+that calls a primitive, and a single-expression forwarder to one of those --
+`Completion::wait_timeout_uninterruptible` is how the AHCI wait reaches
+`block_current_for_io`), and then, at each call site of those, the booleans
+the code consulted first: the condition of an `if` the call sits inside, or of
+an `if` before it that leaves the body. A guard written as a bound name or a
+struct field is resolved back to the call that produced it, which is what
+attributes AHCI's `if token.scheduler_running` to `scheduler_sleep_ready` two
+functions away. It finds 5 guard positions on this tree, 2 of which decide
+something other than sleep eligibility and are recorded as such in an
+exact-match table; a discovered predicate that neither consults the refusal nor
+appears there is a finding, and so is a table row the census stops finding.
+The `_can_sleep` census is kept unchanged as the first leg, and the sleep-guard
+census carries 2 legs of its own.
+
 The rule is scoped to aarch64, and that scoping is measured. On x86_64 the boot
 thread is the idle task by construction and the boot loader reads test binaries
 under a per-block `without_interrupts`, so the VirtIO ISR can only run once the
@@ -180,6 +199,15 @@ the same body. The subjects are located by those shapes, and no list of names ap
 the rule. Its
 mutation leg restores round 2's exact shape -- `kernel_main` joining the thread
 it spawned -- and reddens.
+
+Round 4 narrowed the feature-gate arm, which was the review's N16: it excused
+a gated joiner with no further question asked, so a `#[cfg(feature = "testing")]` helper
+called straight from `kernel_main` could join on the idle identity and stay
+green. A gate decides which build compiles the code, not which identity runs
+it, so the arm now applies only while `kernel_main` has no path to the joiner,
+over a closure computed across cfg-gated callees. 2 further legs cover it: the
+gated helper called directly, and a gated helper 2 hops out behind a gated
+first hop.
 
 The loader still unmasks interrupts before its first ext2 read: the preceding
 self-tests deliberately return with IRQs masked, and VirtIO MMIO completion is
@@ -396,9 +424,9 @@ in 1 of the 1 full-catalog capture (`serials/r2/musl-btrt-full-catalog.txt`).
 
 ## Validation
 
-Commands and their results at round 3, on the round-3 head. The 3 aarch64
-builds use `aarch64-breenix-kernel.json`, `-Z build-std=core,alloc`, and
-`-Z build-std-features=compiler-builtins-mem`.
+Commands and their results at round 4, on the round-4 head `ad455130`. The 3
+aarch64 builds use `aarch64-breenix-kernel.json`, `-Z build-std=core,alloc`,
+and `-Z build-std-features=compiler-builtins-mem`.
 
 | Profile | `^(warning|error)` lines | Soft-float guard |
 |---|---|---|
@@ -459,8 +487,45 @@ test result: FAILED. 0 passed; 1 failed
 
 Both were reverted and both baselines re-run green afterwards.
 
+Round 4 adds a third and a fourth leg, for the 2 ratchet gaps the round-3
+review found. The call-site sleep-guard census, with AHCI's
+`&& !idle_identity_must_not_sleep()` replaced by
+`&& core::hint::black_box(true) /* idle_identity_must_not_sleep() */`:
+
+```text
+$ cargo test --test teardown_structure sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal -- --exact
+every boolean consulted before a call that sleeps routes through the shared idle refusal: ["kernel/src/drivers/ahci/mod.rs :: wait_cmd_slot0 guards wait_timeout_uninterruptible on scheduler_sleep_ready  (sleep eligibility decided without the shared idle refusal)", "no discovered guard consults the shared refusal: the rule is passing vacuously"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 92 filtered out
+```
+
+The same edit left the `_can_sleep` name census green (1 passed; 0 failed),
+which is the N03/N15 gap. And the no-idle-join census, with a
+`#[cfg(feature = "testing")]` helper appended to `kernel/src/main_aarch64.rs`
+and called from `kernel_main` one line before the pin release:
+
+```text
+$ cargo test --test teardown_structure no_kthread_join_is_reachable_from_the_idle_identity -- --exact
+every kthread_join caller is a kthread body, a feature-gated context, or a stop-then-join teardown: ["kernel/src/main_aarch64.rs :: testing_only_join_helper  (joins a kernel thread, is reachable from kernel_main -- the idle identity -- and is neither a kthread body nor a stop-then-join teardown)"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 94 filtered out
+```
+
+With the reachability arm forced off -- round 3's rule exactly -- that same
+mutation passed 1 of 1, which is the N16 gap. Both mutations were reverted.
+
+The call-site census discovers 5 guard positions on this tree, printed by the
+test itself under `--nocapture`:
+
+```text
+call-site sleep-guard census (5 discovered):
+  kernel/src/drivers/ahci/mod.rs :: wait_cmd_slot0 guards wait_timeout_uninterruptible on scheduler_sleep_ready
+  kernel/src/task/kthread.rs :: kthread_park guards kthread_park_prepared on kthread_prepare_to_park
+  kernel/src/task/softirqd.rs :: ksoftirqd_fn guards kthread_park_prepared on kthread_prepare_to_park
+  kernel/src/task/softirqd.rs :: ksoftirqd_fn guards kthread_park_prepared on softirq_pending
+  kernel/src/task/workqueue.rs :: worker_thread_fn guards kthread_park_prepared on kthread_prepare_to_park
+```
+
 Structure tests, via `cargo test --test <name>` for each of the 26 files
-matching `tests/*_structure.rs`: 520 passed, 0 failed.
+matching `tests/*_structure.rs`: 525 passed, 0 failed.
 
 ## Remaining scope
 
