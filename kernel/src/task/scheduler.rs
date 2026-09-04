@@ -892,33 +892,35 @@ pub struct SchedulerLivenessSnapshot {
 /// Returns `None` when the scheduler lock is busy or uninitialized; both are
 /// diagnostic for watchdog output.
 pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot> {
-    let guard = try_lock_scheduler()?;
-    let sched = guard.as_ref()?;
-    let cpu = cpu_id.min(MAX_CPUS.saturating_sub(1));
+    without_interrupts(|| {
+        let guard = try_lock_scheduler()?;
+        let sched = guard.as_ref()?;
+        let cpu = cpu_id.min(MAX_CPUS.saturating_sub(1));
 
-    let mut per_cpu_ready_len = [0u64; 8];
-    let mut per_cpu_current = [0u64; 8];
-    for idx in 0..MAX_CPUS.min(8) {
-        per_cpu_ready_len[idx] = sched.per_cpu_queues[idx].len() as u64;
-        per_cpu_current[idx] = sched.cpu_state[idx].current_thread.unwrap_or(0);
-    }
+        let mut per_cpu_ready_len = [0u64; 8];
+        let mut per_cpu_current = [0u64; 8];
+        for idx in 0..MAX_CPUS.min(8) {
+            per_cpu_ready_len[idx] = sched.per_cpu_queues[idx].len() as u64;
+            per_cpu_current[idx] = sched.cpu_state[idx].current_thread.unwrap_or(0);
+        }
 
-    let ready_queue_len = sched.per_cpu_queues.iter().map(|q| q.len()).sum::<usize>() as u64;
-    let blocked_count = sched
-        .threads
-        .iter()
-        .filter(|t| {
-            t.state.is_blocked() // #673 review, m4
+        let ready_queue_len = sched.per_cpu_queues.iter().map(|q| q.len()).sum::<usize>() as u64;
+        let blocked_count = sched
+            .threads
+            .iter()
+            .filter(|t| {
+                t.state.is_blocked() // #673 review, m4
+            })
+            .count() as u64;
+
+        Some(SchedulerLivenessSnapshot {
+            current_thread_id: sched.cpu_state[cpu].current_thread.unwrap_or(0),
+            ready_queue_len,
+            total_threads: sched.threads.len() as u64,
+            blocked_count,
+            per_cpu_ready_len,
+            per_cpu_current,
         })
-        .count() as u64;
-
-    Some(SchedulerLivenessSnapshot {
-        current_thread_id: sched.cpu_state[cpu].current_thread.unwrap_or(0),
-        ready_queue_len,
-        total_threads: sched.threads.len() as u64,
-        blocked_count,
-        per_cpu_ready_len,
-        per_cpu_current,
     })
 }
 
@@ -4236,39 +4238,43 @@ impl Scheduler {
 /// Initialize the global scheduler
 #[allow(dead_code)]
 pub fn init(idle_thread: Box<Thread>) {
-    let mut scheduler_lock = lock_scheduler();
-    *scheduler_lock = Some(Scheduler::new(idle_thread));
-    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-    #[cfg(target_arch = "x86_64")]
-    log_serial_println!("Scheduler initialized");
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        *scheduler_lock = Some(Scheduler::new(idle_thread));
+        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+        #[cfg(target_arch = "x86_64")]
+        log_serial_println!("Scheduler initialized");
+    });
 }
 
 /// Initialize scheduler with the current thread as the idle task (Linux-style)
 /// This is used during boot where the boot thread becomes the idle task
 pub fn init_with_current(current_thread: Box<Thread>) {
-    let mut scheduler_lock = lock_scheduler();
-    let thread_id = current_thread.id();
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        let thread_id = current_thread.id();
 
-    // Create scheduler with current thread as both idle and current
-    let mut scheduler = Scheduler::new(current_thread);
-    #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
-    install_ec0_fault_inject_thread(&mut scheduler);
-    #[cfg(target_arch = "aarch64")]
-    {
-        let old_val = scheduler.cpu_state[0].current_thread.unwrap_or(0xDEAD);
-        record_cpu_state_change(0, 5, old_val, thread_id);
-    }
-    scheduler.cpu_state[0].current_thread = Some(thread_id);
+        // Create scheduler with current thread as both idle and current
+        let mut scheduler = Scheduler::new(current_thread);
+        #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+        install_ec0_fault_inject_thread(&mut scheduler);
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = scheduler.cpu_state[0].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(0, 5, old_val, thread_id);
+        }
+        scheduler.cpu_state[0].current_thread = Some(thread_id);
 
-    *scheduler_lock = Some(scheduler);
-    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-    #[cfg(target_arch = "x86_64")]
-    log_serial_println!(
-        "Scheduler initialized with current thread {} as idle task",
-        thread_id
-    );
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = thread_id;
+        *scheduler_lock = Some(scheduler);
+        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+        #[cfg(target_arch = "x86_64")]
+        log_serial_println!(
+            "Scheduler initialized with current thread {} as idle task",
+            thread_id
+        );
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = thread_id;
+    });
 }
 
 /// Register an idle thread for a secondary CPU.
