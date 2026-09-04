@@ -474,8 +474,8 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
 /// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`). Every blocking
 /// wait loop in the kernel therefore reaches a bump at its own park point with
 /// no per-site call to keep in sync. The
-/// five idle and terminal halt loops that park on a raw `enable_and_hlt` --
-/// four in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
+/// six idle and terminal halt loops that park on a raw `enable_and_hlt` --
+/// five in `main.rs`, and `idle_loop` in `interrupts/context_switch.rs` -- are
 /// NOT counted; `crate::arch_halt_with_interrupts` carries the full census and
 /// what the omission costs.
 // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24

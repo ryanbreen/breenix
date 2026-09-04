@@ -430,9 +430,10 @@ pub fn arch_halt() {
 /// loops that park on a raw `enable_and_hlt`/`wfi` of their own and call
 /// `per_cpu::note_wait_loop_park` directly -- `task/executor.rs`'s
 /// `sleep_if_idle` and `task/spawn.rs`'s `idle_thread_fn`.
-/// NOT counted: the five idle and terminal halt loops that park on a raw
-/// `enable_and_hlt` -- four in `main.rs` and `idle_loop` in
-/// `interrupts/context_switch.rs`. None of the five is a blocking wait loop
+/// NOT counted: the six idle and terminal halt loops that park on a raw
+/// `enable_and_hlt` -- five in `main.rs` (three feature-gated test mains, the
+/// boot thread's terminal loop, and its own `idle_thread_fn`) and `idle_loop`
+/// in `interrupts/context_switch.rs`. None of the five is a blocking wait loop
 /// waiting on a condition, but the omission is not free: a thread saved at a
 /// byte-identical frame while parked in one of them reads ZERO_ITER even
 /// though it re-parked. The idle thread is the only thread that reaches them.

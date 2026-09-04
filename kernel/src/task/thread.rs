@@ -571,7 +571,7 @@ pub struct Thread {
     /// (2026-09-03) retired the proxy; the split this count feeds is its
     /// replacement.
     /// `crate::arch_halt_with_interrupts` carries the full park census,
-    /// including the five idle and terminal halt loops that are NOT counted.
+    /// including the six idle and terminal halt loops that are NOT counted.
     // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
     // arch_halt call sites under kernel/src reach a bump, counted by grep in
     // this slot.
