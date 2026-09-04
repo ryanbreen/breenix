@@ -142,13 +142,17 @@ zero; this branch's is a fixed, different, nonzero address.
 worktree at `origin/main` @ `78179c56` (5 commits ahead of the round-6
 merge-base, all x86-only `bus-x86-enum-gate` work per
 `git log --oneline 78179c56 -5`), built from scratch the same way, passes
-**15/15 (100%)** across two runs (`serials/prove/S-main-baseline-run-log.txt`,
-the logged 12 of them; an earlier 3-boot check preceded the log and is not
-separately committed). 0 of the six failure classes above reproduce on
+**12/12 (100%)**: `serials/prove/S-main-baseline-run-log.txt` ends
+`PASS: 12/12 boots succeeded`, and that log is the whole of the committed
+evidence. Round 6 wrote 15/15 by adding an earlier 3-boot check whose output was
+never captured; round 8 restates the number to the 12 that are committed and
+drops the 3 that are not. 0 of the six failure classes above reproduce on
 main.
+claim-lint:ok: 12 `[OK] Boot` lines and one `PASS: 12/12 boots succeeded` in
+`serials/prove/S-main-baseline-run-log.txt`.
 
 **S criterion: FAILED / UNATTRIBUTED.** 25/25 reds, none matching the
-pre-adjudicated set, and a same-day same-host A/B against `main` (15/15
+pre-adjudicated set, and a same-day same-host A/B against `main` (12/12
 clean) rules out host contention as the explanation: the failures are
 content-specific (a named oracle failing with a fixed message; a fault at
 a byte-identical address 9/9 times), which is not what CPU-contention noise
@@ -167,32 +171,56 @@ oracles depend on. Not fixed here -- see the partial-scope statement above.
 
 | Failure class | Count |
 |---|---|
-| `FAIL: seam-absent timeout marker count must be exactly one` | 10/25 (9 of the 10 show 0 occurrences of the marker; 1, boot 8, shows it once but reading `probe=-3` instead of the expected `probe=-110`) |
-| `FAIL: TTY oracle marker missing` | 1/25 |
-| `FAIL: Poll TCP oracle marker missing` | 1/25 |
+| `FAIL: seam-absent timeout marker count must be exactly one` | 10/25 (7 of the 10 print no `seam_absent` line at all -- boots 1, 4, 7, 10, 11, 12, 17; the other 3 -- boots 8, 14, 24 -- print it once reading `probe=-3` instead of the expected `probe=-110`) |
+| `FAIL: TTY oracle marker missing` | 1/25 (boot 9: 0 `TTY_ORACLE:COMPLETE` lines, 10 `POLL_TCP_ORACLE:` lines) |
+| `FAIL: Poll TCP oracle marker missing` | 1/25 (boot 21: 0 of either) |
 
-Full run log: `serials/prove/P-battery-run-log.txt`. All 25 serials:
-`serials/prove/P-battery-all25/`. 0 crash markers in any of the 12
-failures -- each is a boot that progressed (198-909 lines) without reaching
-a marker the script's 120 s poll window expects.
+claim-lint:ok: 7, 3, 1 and 1 of the 12 failing boots, re-derived in round 8 by
+`grep -al probe=-3 *.txt`, `grep -aL seam_absent *.txt` and per-boot marker
+counts over the committed battery, one of whose 25 files is
+`docs/planning/green-program/aarch64-testing/serials/prove/P-battery-all25/boot11-serial.txt`.
+
+Full run log: `serials/prove/P-battery-run-log.txt` (12 `rc=1` rows: boots 1, 4,
+7, 8, 9, 10, 11, 12, 14, 17, 21, 24). All 25 serials:
+`serials/prove/P-battery-all25/`. **11 of the 12 failures carry no crash
+marker** -- each is a boot that progressed (198-909 lines) without reaching a
+marker the script's 120 s poll window expects. The twelfth, boot 11, is a crash:
+`[INSTRUCTION_ABORT] FAR=0x40004530 ELR=0x40004530 ESR=0x8200000e IFSC=0xe
+TTBR0=0x40200000 from_el0=1` at its line 198, the same address, ESR and IFSC as
+the strict battery's 9 aborts. Round 6 recorded this battery as crash-free; that
+was wrong, and the correction matters: it puts one production-profile failure in
+the same class as battery S's dominant one, which round 7 then repaired.
+
+claim-lint:ok: 1 of 25 P-battery serials matches
+`INSTRUCTION_ABORT|DATA_ABORT|KERNEL PANIC` (boot 11), 0 of the other 24.
 
 **Controlled comparison against `main`, same host, same day.** The same
 `main` @ `78179c56` worktree, 8 sequential invocations of the same script:
 **8/8 (100%)** passed (`serials/prove/P-main-baseline-run-log.txt`,
 `P-main-baseline/`).
 
-**P criterion: DEGRADED, UNATTRIBUTED.** 12/25 reds, none a crash marker,
-none matching the pre-adjudicated set (which is boot_tests/strict-gate
-scoped and does not name a prod-profile signature), and a same-day
-same-host A/B against `main` (8/8 clean) again rules out generic host
-contention as the sole explanation. This is a softer, timeout-shaped
-symptom than S's -- consistent with, but not independently proven to share,
-S's root cause: CPU 0's boot-sequence relocation is not gated behind
+**P criterion: DEGRADED, UNATTRIBUTED.** 12/25 reds, 11 of them timeout-shaped
+and 1 a crash (boot 11, above), none matching the pre-adjudicated set (which is
+boot_tests/strict-gate scoped and does not name a prod-profile signature), and a
+same-day same-host A/B against `main` (8/8 clean) again rules out generic host
+contention as the sole explanation. The 11 are a softer, timeout-shaped symptom
+than S's -- consistent with, but not independently proven to share, S's root
+cause: CPU 0's boot-sequence relocation is not gated behind
 `--features boot_tests`, so a timing change there would show up on the
 production profile too, just as a missed deadline rather than a named
 oracle failure. Filed as a follow-up comment on
 [#786](https://github.com/ryanbreen/breenix/issues/786#issuecomment-5544203787)
 rather than a new issue, pending whatever RCA #786 gets.
+
+**Round-8 follow-up.** Round 8 re-measured this battery's shape as a paired A/B
+at the round-7 head: 8 boots on `main` @ `d6b7a186` and 8 on the branch head,
+alternating, one arm of each pair running concurrently with the other so both
+see the same host load. `main` passed 8/8; the head passed 3/8. The five head
+failures are `seam-absent timeout marker count must be exactly one` (3) and
+`bsshd never reached its listening state` (2), all five with 0 crash markers.
+The degradation this section reports is therefore still live at the round-7
+head. Evidence and per-boot verdicts: `serials/r8/prod-ab/`.
+claim-lint:ok: 8/8 vs 3/8, `serials/r8/prod-ab/VERDICTS.md`
 
 ## Battery M: `main` @ `78179c56`, `--features testing`, 5 boots — confirms the pre-fix #562 defect
 
@@ -238,7 +266,7 @@ repairs (5/5 panics given uncontended time).
 **The S and P batteries are the news this round surfaces: this branch, as
 of the R143 head `88199ba4`, fails the strict boot-test gate 0/25 and the
 production-profile gate 13/25, against a same-day same-host `main` baseline
-of 15/15 and 8/8 respectively.** Both are UNATTRIBUTED against the given
+of 12/12 and 8/8 respectively.** Both are UNATTRIBUTED against the given
 pre-adjudicated set. This is a blocking finding for the branch, not a
 clean bill of health -- filed as
 [#786](https://github.com/ryanbreen/breenix/issues/786) with full evidence,
