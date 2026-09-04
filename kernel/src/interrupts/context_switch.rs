@@ -313,8 +313,8 @@ pub extern "C" fn check_need_resched_and_switch(
             // `matches!` rather than `==`: `NoProgress` now carries the
             // witness the save-site split consumes, and this census does not
             // want the split -- reading the kind here would put a deref and
-            // two loads on the interrupt-return path for a value nothing here
-            // records.
+            // two loads on the interrupt-return path for a value this census
+            // does not record.
             if matches!(
                 crate::per_cpu::classify_dispatch_progress(
                     current_tid,

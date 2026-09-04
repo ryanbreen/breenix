@@ -387,13 +387,14 @@ pub fn arch_interrupts_enabled() -> bool {
 /// left out of it.
 ///
 /// Idle and terminal halt loops that reach this bump the idle thread's own
-/// count. That is harmless: the count has one reader, the identical-frame
-/// split at the save site, and it compares a thread's count only against a
-/// stamp taken from the same thread at its own dispatch.
-// claim-lint:ok: 1 of 1 load of `Thread::wait_loop_iters` outside
+/// count. That is harmless: on x86 the count has one reader, the
+/// identical-frame split at the save site, and it compares a thread's count
+/// only against a stamp taken from the same thread at its own dispatch. On
+/// aarch64 the count has no reader at all yet.
+// claim-lint:ok: on x86, 1 of 1 load of `Thread::wait_loop_iters` outside
 // `Thread::clone` is `per_cpu::current_wait_loop_iters`, whose 2 of 2 callers
-// are the dispatch stamp and `classify_no_progress_kind`; counted by grep in
-// this slot.
+// are the dispatch stamp and `classify_no_progress_kind`; on aarch64 there are
+// 0 such loads. Counted by grep in this slot.
 #[inline(always)]
 pub fn arch_halt() {
     per_cpu::note_wait_loop_park();

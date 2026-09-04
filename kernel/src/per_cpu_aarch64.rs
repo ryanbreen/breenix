@@ -489,7 +489,11 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
 /// formatting, and no control flow depends on any of the values.
 ///
 /// The dispatch mark that consumes this count is x86-only today, so on aarch64
-/// this keeps the count and no reader consumes it yet.
+/// this keeps the count and no reader consumes it yet. There is deliberately
+/// no aarch64 `current_wait_loop_iters` accessor: the x86 one exists because
+/// the dispatch mark stamps the count, and an uncalled twin here would be dead
+/// code that the `pub`-in-`pub mod` shape hides from the lint rather than
+/// justifies. It comes back when aarch64 grows a dispatch mark.
 #[inline(always)]
 pub fn note_wait_loop_park() {
     // The x86 twin needs this guard because its current-thread read is a bare
@@ -511,24 +515,6 @@ pub fn note_wait_loop_park() {
     }
     unsafe {
         (*thread_ptr).wait_loop_iters.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// Read the running thread of this CPU as an (id, park-count) pair (#772, R113).
-#[inline(always)]
-pub fn current_wait_loop_iters() -> Option<(u64, u64)> {
-    let thread_ptr =
-        hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
-
-    if thread_ptr.is_null() {
-        None
-    } else {
-        unsafe {
-            Some((
-                (*thread_ptr).id,
-                (*thread_ptr).wait_loop_iters.load(Ordering::Relaxed),
-            ))
-        }
     }
 }
 
