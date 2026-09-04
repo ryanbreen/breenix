@@ -173,13 +173,31 @@ pub(crate) fn report_heartbeat_if_due() {
 /// The `kstrandd` census kthread: sleep, then offer a snapshot to the shared
 /// limiter.
 ///
-/// This is the THIRD emission context, and the only one whose cadence does not
-/// depend on what the rest of the kernel happens to be doing. `idle_loop` runs
-/// only when the CPU has nothing else to dispatch, and `loopback_pump_fn` runs
-/// only when loopback traffic wakes it. Round 3's review measured the
-/// consequence on the zero-feature production profile: 2 of 6 boots published
-/// no post-init snapshot at all, because that profile's single idle dispatch
-/// landed inside the shared 1-second limiter's window (finding R3-5).
+/// This is the THIRD emission context, and the only one that does not need
+/// some other subsystem to act first: `idle_loop` runs only when the CPU has
+/// nothing else to dispatch, and `loopback_pump_fn` runs only when loopback
+/// traffic wakes it. Round 3's review measured the consequence on the
+/// zero-feature production profile: 2 of 6 boots published no post-init
+/// snapshot at all, because that profile's single idle dispatch landed inside
+/// the shared 1-second limiter's window (finding R3-5).
+///
+/// The cadence is rate-LIMITED, not periodic, and this thread does not cover a
+/// busy boot. `sleep_one_interval()` blocks on the scheduler timer, and a
+/// snapshot is published only once this thread is DISPATCHED after that wake --
+/// the wake-to-dispatch latency #766 measures (x86 `sleep_until` overrun,
+/// p90 2592 ms, max 10318 ms over 324 trials; see
+/// docs/planning/green-program/sockets/693-RCA-2026-09-02.md). Under a
+/// saturated CPU the hole is longer than that. On the two committed round-4
+/// gate captures this thread was alive and publishing at 1 Hz and then
+/// emitted no snapshot for 19939 ms (boot1, seq=5 at 4789 ms to seq=6 at
+/// 24728 ms) and 17888 ms (boot2, seq=5 at 4840 ms to seq=6 at 22728 ms),
+/// across the userspace-process creation burst. The other two contexts did
+/// not fill either hole: the CPU had runnable work throughout, so `idle_loop`
+/// did not run, and no loopback traffic arrived to wake `loopback_pump_fn`.
+/// claim-lint:ok: both holes are re-derivable from the `ms=` fields of
+/// docs/planning/green-program/sockets/serials/775/round4/gate-green/
+/// boot{1,2}/serial_kernel.txt, and each boot's own gate.txt line 8 prints
+/// its largest gap.
 ///
 /// The emission goes through `report_heartbeat_if_due()`, the same rate-limited
 /// path the other two contexts call, so adding this thread cannot double the

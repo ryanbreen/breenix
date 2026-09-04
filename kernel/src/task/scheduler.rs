@@ -3377,16 +3377,30 @@ impl Scheduler {
                 // kstrandd-lost-wake/ carry 1 or 2 census markers, never a
                 // cadence; 3 of the 6 carry only the pre-init pump snapshot.
                 //
-                // The rest of the family already draws this distinction --
+                // The rest of the family already draws this distinction:
                 // `block_current()` leaves the flag clear and
-                // `block_current_in_syscall()` sets it -- and every aarch64
-                // consumer conjoins `thread.owner_pid.is_some()` before acting
-                // on it. This was the one producer asserting it unconditionally.
-                // claim-lint:ok: the 6 aarch64 consumers that conjoin
-                // owner_pid.is_some() are in
-                // kernel/src/arch_impl/aarch64/context_switch.rs; the x86
-                // consumer without the conjunct is
-                // kernel/src/interrupts/context_switch.rs:460.
+                // `block_current_in_syscall()` sets it. This was 1 of the 2
+                // producers asserting it unconditionally.
+                //
+                // On aarch64 the conjunct is the norm, at 14 of 16 branch
+                // sites, rather than a rule. Census, run at write time --
+                // `grep -n blocked_in_syscall
+                // kernel/src/arch_impl/aarch64/context_switch.rs` returns 23
+                // lines: 1 diagnostic string literal (:4163), 1 local binding
+                // of the field (:4720), 2 passes of that local as a field
+                // (:4729, :4741), 3 report-only reads that pack it into a
+                // diagnostic word or print it (:995, :1123, :4164), and 16
+                // expressions that BRANCH on it. 14 of the 16 also require
+                // `thread.owner_pid.is_some()` in the same expression; the 2
+                // that do not are both in `dispatch_thread_locked` (:4847,
+                // :4856), reading the local bound at :4720. The x86 consumer
+                // (kernel/src/interrupts/context_switch.rs:460) carries no
+                // such conjunct either. Guarding this producer closes the
+                // class at the producer; it does not make the flag's meaning
+                // universal at the consumers.
+                // claim-lint:ok: the census command and its 23 lines are in
+                // docs/planning/green-program/sockets/
+                // 775-CENSUS-EQUIVALENCE-2026-09-04.md.
                 thread.blocked_in_syscall = thread.owner_pid.is_some();
             }
             #[cfg(target_arch = "aarch64")]
@@ -3449,7 +3463,14 @@ impl Scheduler {
 
     /// Block the current thread for device I/O.
     ///
-    /// Sets state to BlockedOnIO and blocked_in_syscall. The thread will be
+    /// Sets state to BlockedOnIO. It sets `blocked_in_syscall` only when the
+    /// thread has an owning process: since #775 round 4
+    /// `block_current_for_io_publish` writes
+    /// `thread.blocked_in_syscall = thread.owner_pid.is_some()`, so a
+    /// process-less kernel thread that sleeps here leaves the flag CLEAR. That
+    /// is deliberate -- the flag means "parked inside a syscall of an owning
+    /// process", and asserting it on a thread with no process made the x86
+    /// save path write into a process that does not exist. The thread will be
     /// woken by unblock_for_io() when the device ISR signals completion.
     ///
     /// CRITICAL: Must be called under the scheduler lock (via with_scheduler).
