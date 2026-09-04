@@ -398,7 +398,7 @@ else
         chmod 755 "$MOUNT_DIR/bin/busybox"
 
         # Create one hardlink per applet in /bin: the 48 names in the loop below,
-    # a subset of what BusyBox can dispatch.
+        # a subset of what BusyBox can dispatch.
         for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir \
                    echo which sh ash sed awk find sort uniq tee xargs \
                    chmod chown chgrp df du free date sleep test expr seq \
