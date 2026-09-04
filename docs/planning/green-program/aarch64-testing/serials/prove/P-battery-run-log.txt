@@ -1,0 +1,26 @@
+boot1 rc=1
+boot2 rc=0
+boot3 rc=0
+boot4 rc=1
+boot5 rc=0
+boot6 rc=0
+boot7 rc=1
+boot8 rc=1
+boot9 rc=1
+boot10 rc=1
+boot11 rc=1
+boot12 rc=1
+boot13 rc=0
+boot14 rc=1
+boot15 rc=0
+boot16 rc=0
+boot17 rc=1
+boot18 rc=0
+boot19 rc=0
+boot20 rc=0
+boot21 rc=1
+boot22 rc=0
+boot23 rc=0
+boot24 rc=1
+boot25 rc=0
+P-ALL-DONE

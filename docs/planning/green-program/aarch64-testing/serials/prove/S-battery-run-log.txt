@@ -1,0 +1,83 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_53193710-2e6-6/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_53193710-2e6-6/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_53193710-2e6-6/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_53193710-2e6-6/target/ext2-aarch64.img
+Iterations: 25
+Requirement: 100% success rate (all 25 must pass)
+
+Running tests...
+
+qemu-system-aarch64: terminating on signal 15 from pid 33108 (<unknown process>)
+  [FAIL] Boot 1: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle second lock was not sleep-permitted] (898 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165444Z-boot1.txt
+qemu-system-aarch64: terminating on signal 15 from pid 33654 (<unknown process>)
+  [FAIL] Boot 2: CPU exception (607 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165449Z-boot2.txt
+qemu-system-aarch64: terminating on signal 15 from pid 33770 (<unknown process>)
+  [FAIL] Boot 3: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle second lock was not sleep-permitted] (811 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165508Z-boot3.txt
+qemu-system-aarch64: terminating on signal 15 from pid 35824 (<unknown process>)
+  [FAIL] Boot 4: CPU exception (609 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165513Z-boot4.txt
+qemu-system-aarch64: terminating on signal 15 from pid 37434 (<unknown process>)
+  [FAIL] Boot 5: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle parked lock was not sleep-permitted] (606 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165533Z-boot5.txt
+qemu-system-aarch64: terminating on signal 15 from pid 43518 (<unknown process>)
+  [FAIL] Boot 6: Userspace not detected (605 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165553Z-boot6.txt
+qemu-system-aarch64: terminating on signal 15 from pid 48482 (<unknown process>)
+  [FAIL] Boot 7: CPU exception (605 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165558Z-boot7.txt
+qemu-system-aarch64: terminating on signal 15 from pid 49603 (<unknown process>)
+  [FAIL] Boot 8: CPU exception (607 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165602Z-boot8.txt
+qemu-system-aarch64: terminating on signal 15
+  [FAIL] Boot 9: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle parked lock was not sleep-permitted] (743 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165622Z-boot9.txt
+qemu-system-aarch64: terminating on signal 15
+  [FAIL] Boot 10: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle requester never parked on the real wait queue] (641 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165642Z-boot10.txt
+qemu-system-aarch64: terminating on signal 15 from pid 50848 (<unknown process>)
+  [FAIL] Boot 11: CPU exception (605 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165647Z-boot11.txt
+qemu-system-aarch64: terminating on signal 15 from pid 51465 (<unknown process>)
+  [FAIL] Boot 12: Boot test failure: [TEST:process:census_widen_oracle:FAIL:census widening mutation oracle failed] (904 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165707Z-boot12.txt
+qemu-system-aarch64: terminating on signal 15 from pid 56060 (<unknown process>)
+  [FAIL] Boot 13: CPU exception (611 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165711Z-boot13.txt
+qemu-system-aarch64: terminating on signal 15 from pid 57208 (<unknown process>)
+  [FAIL] Boot 14: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle parked lock was not sleep-permitted] (907 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165731Z-boot14.txt
+qemu-system-aarch64: terminating on signal 15 from pid 61530 (<unknown process>)
+  [FAIL] Boot 15: CPU exception (608 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165736Z-boot15.txt
+qemu-system-aarch64: terminating on signal 15 from pid 62563 (<unknown process>)
+  [FAIL] Boot 16: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle parked lock was not sleep-permitted] (910 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165756Z-boot16.txt
+qemu-system-aarch64: terminating on signal 15 from pid 64707 (<unknown process>)
+  [FAIL] Boot 17: CPU exception (611 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165800Z-boot17.txt
+qemu-system-aarch64: terminating on signal 15
+  [FAIL] Boot 18: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle second lock was not sleep-permitted] (697 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165820Z-boot18.txt
+qemu-system-aarch64: terminating on signal 15 from pid 68173 (<unknown process>)
+  [FAIL] Boot 19: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle parked lock was not sleep-permitted] (909 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165840Z-boot19.txt
+qemu-system-aarch64: terminating on signal 15 from pid 68817 (<unknown process>)
+  [FAIL] Boot 20: CPU exception (610 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165844Z-boot20.txt
+qemu-system-aarch64: terminating on signal 15 from pid 68942 (<unknown process>)
+  [FAIL] Boot 21: Futex handoff oracle marker missing or failed (917 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165904Z-boot21.txt
+qemu-system-aarch64: terminating on signal 15 from pid 69518 (<unknown process>)
+  [FAIL] Boot 22: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle parked lock was not sleep-permitted] (782 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165924Z-boot22.txt
+qemu-system-aarch64: terminating on signal 15 from pid 70250 (<unknown process>)
+  [FAIL] Boot 23: Exec smoke did not complete (753 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T165951Z-boot23.txt
+qemu-system-aarch64: terminating on signal 15 from pid 71505 (<unknown process>)
+  [FAIL] Boot 24: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle parked lock was not sleep-permitted] (635 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T170011Z-boot24.txt
+qemu-system-aarch64: terminating on signal 15 from pid 72134 (<unknown process>)
+  [FAIL] Boot 25: Boot test failure: [TEST:filesystem:block_wedge_oracle:FAIL:block wedge oracle second lock was not sleep-permitted] (789 lines); serial: /tmp/breenix_aarch64_strict_failures/20260904T170031Z-boot25.txt
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 25
+Successes: 0
+Failures: 25
+Success rate: 0%
+Duration: 366s
+
+Failed iterations: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25
+
+=========================================
+FAIL: Only 0/25 boots succeeded
+=========================================
+
+This indicates a regression or timing bug that needs investigation.
+Serial output from failed boots can be found in /tmp/breenix_aarch64_strict_N/

@@ -1,0 +1,9 @@
+boot1 rc=0
+boot2 rc=0
+boot3 rc=0
+boot4 rc=0
+boot5 rc=0
+boot6 rc=0
+boot7 rc=0
+boot8 rc=0
+P-MAIN-ALL-DONE

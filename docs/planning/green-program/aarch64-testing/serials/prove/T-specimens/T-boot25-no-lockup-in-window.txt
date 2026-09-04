@@ -1,0 +1,2407 @@
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a9af4ae04f0
+========================================
+
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 1000000000 Hz (1000 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 7799000
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 524288 sectors (256 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x41213
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1
+[virtio-net] MAC address: 52:54:00:12:34:56
+[virtio-net] RX queue max size: 1024
+[virtio-net] TX queue max size: 1024
+[virtio-net] Network device initialized successfully
+[virtio-net] Network device IRQ 75 (will enable after net init)
+[drivers] VirtIO network driver initialized
+[virtio-net] Device test - MAC: 52:54:00:12:34:56
+[virtio-net] Test passed!
+[virtio-gpu] Searching for GPU device...
+[virtio-gpu] Found GPU device at 0xa003e00
+[virtio-gpu] Device version: 1
+[virtio-gpu] Control queue max size: 1024
+[virtio-gpu] Display: 1280x800
+[virtio-gpu] GPU device initialized successfully
+[drivers] VirtIO GPU driver initialized
+[virtio-gpu] Device test - Display: 1280x800
+[virtio-gpu] Test passed!
+[virtio-sound] Searching for sound device...
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...
+[virtio-blk] Sector 0 data: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+[virtio-blk] Read test passed!
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] MAC address: 52:54:00:12:34:56
+NET: IP address: 10.0.2.15
+NET: Gateway: 10.0.2.2
+Network stack initialized
+NET: Sending ARP request for gateway 10.0.2.2
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.0.2.2
+NET: ARP cache miss for 10.0.2.2, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net] Enabling IRQ 75 for network device
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+[boot] Initializing filesystem...
+[ext2] Using VirtIO block device (524288 sectors)
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: Unknown Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[virtio-gpu] GPU device already initialized
+[arm64-fb] Shell framebuffer initialized: 1280x800
+[graphics] Framebuffer: 1280x800
+[graphics] Particle system initialized
+[render_queue] Initialized (64KB buffer)
+[graphics] Split-screen terminal UI initialized
+[boot] Initializing VirtIO keyboard...
+[virtio-input] Searching for input devices (ID=18)...
+[virtio-input] Slot 27 at 0xa003600: device_id=1
+[virtio-input] Slot 28 at 0xa003800: device_id=2
+[virtio-input] Slot 29 at 0xa003a00: device_id=18
+[virtio-input] Found tablet at 0xa003a00 (slot 29, supports EV_ABS)
+[virtio-input] Tablet device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 77 for tablet
+[virtio-input] Tablet initialized (16 buffers)
+[virtio-input] Slot 30 at 0xa003c00: device_id=18
+[virtio-input] Found keyboard at 0xa003c00 (slot 30, no EV_ABS)
+[virtio-input] Keyboard device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 78 for keyboard
+[virtio-input] Keyboard initialized (64 buffers)
+[virtio-input] Slot 31 at 0xa003e00: device_id=16
+[boot] VirtIO keyboard initialized
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread spawned (tid=4)
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[net] ICMP echo reply received from 10.0.2.2 seq=1
+[boot] Init binary pre-loaded: 298704 bytes
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=false
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (1000000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] Probing secondary CPUs via PSCI...
+[smp] CPU 1: PSCI CPU1@_ON success (raw_s1tatusA=B0C)
+[smp] CPDU 2: PSECI CPeU_ON sFucc2@1GABCess (r1aw_status=0)
+D[smpEeF] CP3G2U 3: PS@1ACI CBCPU_OND sEeFGuccess (raw_status=0)
+3[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] TICC1_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
+[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+[smp] 4 CPUs online
+T2[boot] Boot continuation running as kthread tid=11
+T3T4T5T6T7T8T9T0[WORKQUEUE_PARK_RACE:cancelled=0:intent_cleared=0]
+SOFTIRQ_TEST: iteration limit passed (25 total iterations, ksoftirqd/1)
+[KSOFTIRQD_PARK_RACE:cancelled=0]
+[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[test] Loading test binaries from ext2...
+[test] Not found: hello_musl (Path component not found)
+[test] Not found: env_musl_test (Path component not found)
+[test] Not found: uname_musl_test (Path component not found)
+[test] Not found: rlimit_musl_test (Path component not found)
+[test] Not found: identity_musl_test (Path component not found)
+create_user_process: ENTRY - Creating 'hello_time' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='hello_time', elf_size=290360, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 2
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eb10
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 2
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 2
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 21
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 2
+[test] Loaded hello_time (PID 2)
+create_user_process: ENTRY - Creating 'clock_gettime_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='clock_gettime_test', elf_size=299208, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 3
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f428
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 3
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 3
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 22
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 3
+[test] Loaded clock_gettime_test (PID 3)
+create_user_process: ENTRY - Creating 'brk_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='brk_test', elf_size=297008, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 4
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f104
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 4
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 4
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 23
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 4
+[test] Loaded brk_test (PID 4)
+create_user_process: ENTRY - Creating 'test_mmap' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='test_mmap', elf_size=292000, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 5
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f004
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 5
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 5
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 24
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 5
+[test] Loaded test_mmap (PID 5)
+create_user_process: ENTRY - Creating 'syscall_diagnostic_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='syscall_diagnostic_test', elf_size=289128, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 6
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eacc
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 6
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 6
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 25
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 6
+[test] Loaded syscall_diagnostic_test (PID 6)
+create_user_process: ENTRY - Creating 'signal_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='signal_test', elf_size=298312, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 7
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f428
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 7
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 7
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 26
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 7
+[test] Loaded signal_test (PID 7)
+create_user_process: ENTRY - Creating 'signal_handler_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='signal_handler_test', elf_size=298064, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 8
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f284
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 8
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 8
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 27
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 8
+[test] Loaded signal_handler_test (PID 8)
+create_user_process: ENTRY - Creating 'signal_return_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='signal_return_test', elf_size=299344, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 9
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f438
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 9
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 9
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 28
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 9
+[test] Loaded signal_return_test (PID 9)
+create_user_process: ENTRY - Creating 'signal_regs_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='signal_regs_test', elf_size=298656, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 10
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f4ec
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 10
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 10
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 29
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 10
+[test] Loaded signal_regs_test (PID 10)
+create_user_process: ENTRY - Creating 'sigaltstack_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='sigaltstack_test', elf_size=309424, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 11
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f7f0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 11
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 11
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 30
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 11
+[test] Loaded sigaltstack_test (PID 11)
+create_user_process: ENTRY - Creating 'sigchld_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='sigchld_test', elf_size=292072, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 12
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f1b4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 12
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 12
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 31
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 12
+[test] Loaded sigchld_test (PID 12)
+create_user_process: ENTRY - Creating 'sigkill_teardown_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='sigkill_teardown_test', elf_size=331272, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 13
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40011b60
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 13
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 13
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 32
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 13
+[test] Loaded sigkill_teardown_test (PID 13)
+create_user_process: ENTRY - Creating 'pause_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='pause_test', elf_size=299440, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 14
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f574
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 14
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 14
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 33
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 14
+[test] Loaded pause_test (PID 14)
+create_user_process: ENTRY - Creating 'sigsuspend_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='sigsuspend_test', elf_size=304856, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 15
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f7a8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 15
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 15
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 34
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 15
+[test] Loaded sigsuspend_test (PID 15)
+create_user_process: ENTRY - Creating 'signal_exec_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='signal_exec_test', elf_size=299744, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 16
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f550
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 16
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 16
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 35
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 16
+[test] Loaded signal_exec_test (PID 16)
+create_user_process: ENTRY - Creating 'signal_fork_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='signal_fork_test', elf_size=298832, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 17
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f4c4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 17
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 17
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 36
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 17
+[test] Loaded signal_fork_test (PID 17)
+create_user_process: ENTRY - Creating 'ctrl_c_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='ctrl_c_test', elf_size=298712, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 18
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f52c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 18
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 18
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 37
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 18
+[test] Loaded ctrl_c_test (PID 18)
+create_user_process: ENTRY - Creating 'pipe_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='pipe_test', elf_size=299296, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 19
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f43c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 19
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 19
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 38
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 19
+[test] Loaded pipe_test (PID 19)
+create_user_process: ENTRY - Creating 'unix_socket_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='unix_socket_test', elf_size=327280, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 20
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40010be8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 20
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 20
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 39
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 20
+[test] Loaded unix_socket_test (PID 20)
+create_user_process: ENTRY - Creating 'dup_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='dup_test', elf_size=309832, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 21
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f920
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 21
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 21
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 40
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 21
+[test] Loaded dup_test (PID 21)
+create_user_process: ENTRY - Creating 'fcntl_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fcntl_test', elf_size=299680, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 22
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f578
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 22
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 22
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 41
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 22
+[test] Loaded fcntl_test (PID 22)
+create_user_process: ENTRY - Creating 'cloexec_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='cloexec_test', elf_size=307584, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 23
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000fe54
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 23
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 23
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 42
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 23
+[test] Loaded cloexec_test (PID 23)
+create_user_process: ENTRY - Creating 'pipe2_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='pipe2_test', elf_size=304328, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 24
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f7b4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 24
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 24
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 43
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 24
+[test] Loaded pipe2_test (PID 24)
+create_user_process: ENTRY - Creating 'shell_pipe_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='shell_pipe_test', elf_size=293224, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 25
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f48c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 25
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 25
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 44
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 25
+[test] Loaded shell_pipe_test (PID 25)
+create_user_process: ENTRY - Creating 'waitpid_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='waitpid_test', elf_size=298984, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 26
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f3ac
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 26
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 26
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 45
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 26
+[test] Loaded waitpid_test (PID 26)
+create_user_process: ENTRY - Creating 'wnohang_timing_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='wnohang_timing_test', elf_size=296632, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 27
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f1f4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 27
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 27
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 46
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 27
+[test] Loaded wnohang_timing_test (PID 27)
+create_user_process: ENTRY - Creating 'poll_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='poll_test', elf_size=304880, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 28
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f8b4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 28
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 28
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 47
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 28
+[test] Loaded poll_test (PID 28)
+create_user_process: ENTRY - Creating 'select_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='select_test', elf_size=304608, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 29
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f8d4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 29
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 29
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 48
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 29
+[test] Loaded select_test (PID 29)
+create_user_process: ENTRY - Creating 'nonblock_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='nonblock_test', elf_size=304032, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 30
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f744
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 30
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 30
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 49
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 30
+[test] Loaded nonblock_test (PID 30)
+create_user_process: ENTRY - Creating 'tty_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='tty_test', elf_size=300264, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 31
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f644
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 31
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 31
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 50
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 31
+[test] Loaded tty_test (PID 31)
+create_user_process: ENTRY - Creating 'session_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='session_test', elf_size=304856, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 32
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f89c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 32
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 32
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 51
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 32
+[test] Loaded session_test (PID 32)
+create_user_process: ENTRY - Creating 'file_read_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='file_read_test', elf_size=292360, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 33
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f260
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 33
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 33
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 52
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 33
+[test] Loaded file_read_test (PID 33)
+create_user_process: ENTRY - Creating 'getdents_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='getdents_test', elf_size=294264, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 34
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f618
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 34
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 34
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 53
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 34
+[test] Loaded getdents_test (PID 34)
+create_user_process: ENTRY - Creating 'lseek_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='lseek_test', elf_size=292584, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 35
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f374
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 35
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 35
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 54
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 35
+[test] Loaded lseek_test (PID 35)
+create_user_process: ENTRY - Creating 'fs_write_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fs_write_test', elf_size=293464, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 36
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f590
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 36
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 36
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 55
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 36
+[test] Loaded fs_write_test (PID 36)
+create_user_process: ENTRY - Creating 'fs_rename_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fs_rename_test', elf_size=297368, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 37
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f6e8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 37
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 37
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 56
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 37
+[test] Loaded fs_rename_test (PID 37)
+create_user_process: ENTRY - Creating 'fs_large_file_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fs_large_file_test', elf_size=292336, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 38
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f5c0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 38
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 38
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 57
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 38
+[test] Loaded fs_large_file_test (PID 38)
+create_user_process: ENTRY - Creating 'fs_directory_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fs_directory_test', elf_size=293584, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 39
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f588
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 39
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 39
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 58
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 39
+[test] Loaded fs_directory_test (PID 39)
+create_user_process: ENTRY - Creating 'fs_link_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fs_link_test', elf_size=293296, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 40
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f698
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 40
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 40
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 59
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 40
+[test] Loaded fs_link_test (PID 40)
+create_user_process: ENTRY - Creating 'access_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='access_test', elf_size=291560, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 41
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eddc
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 41
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 41
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 60
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 41
+[test] Loaded access_test (PID 41)
+create_user_process: ENTRY - Creating 'devfs_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='devfs_test', elf_size=292592, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 42
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f314
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 42
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 42
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 61
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 42
+[test] Loaded devfs_test (PID 42)
+create_user_process: ENTRY - Creating 'cwd_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='cwd_test', elf_size=292536, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 43
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f18c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 43
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 43
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 62
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 43
+[test] Loaded cwd_test (PID 43)
+create_user_process: ENTRY - Creating 'exec_from_ext2_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='exec_from_ext2_test', elf_size=298816, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 44
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f354
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 44
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 44
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 63
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 44
+[test] Loaded exec_from_ext2_test (PID 44)
+create_user_process: ENTRY - Creating 'fs_block_alloc_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fs_block_alloc_test', elf_size=304672, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 45
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000fb38
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 45
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 45
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 64
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 45
+[test] Loaded fs_block_alloc_test (PID 45)
+create_user_process: ENTRY - Creating 'true_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='true_test', elf_size=291936, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 46
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f0f8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 46
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 46
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 65
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 46
+[test] Loaded true_test (PID 46)
+create_user_process: ENTRY - Creating 'false_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='false_test', elf_size=291944, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 47
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f100
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 47
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 47
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 66
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 47
+[test] Loaded false_test (PID 47)
+create_user_process: ENTRY - Creating 'head_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='head_test', elf_size=297456, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 48
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f5d4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 48
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 48
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 67
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 48
+[test] Loaded head_test (PID 48)
+create_user_process: ENTRY - Creating 'tail_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='tail_test', elf_size=297408, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 49
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f5c8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 49
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 49
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 68
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 49
+[test] Loaded tail_test (PID 49)
+create_user_process: ENTRY - Creating 'wc_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='wc_test', elf_size=302008, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 50
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f858
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 50
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 50
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 69
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 50
+[test] Loaded wc_test (PID 50)
+create_user_process: ENTRY - Creating 'which_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='which_test', elf_size=293184, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 51
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f450
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 51
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 51
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 70
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 51
+[test] Loaded which_test (PID 51)
+create_user_process: ENTRY - Creating 'cat_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='cat_test', elf_size=297688, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 52
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f5a8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 52
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 52
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 71
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 52
+[test] Loaded cat_test (PID 52)
+create_user_process: ENTRY - Creating 'ls_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='ls_test', elf_size=302744, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 53
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f85c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 53
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 53
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 72
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 53
+[test] Loaded ls_test (PID 53)
+create_user_process: ENTRY - Creating 'hello_world' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='hello_world', elf_size=355336, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 54
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40012b0c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 54
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 54
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 73
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 54
+[test] Loaded hello_world (PID 54)
+create_user_process: ENTRY - Creating 'fork_memory_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fork_memory_test', elf_size=304376, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 55
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f6f4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 55
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 55
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 74
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 55
+[test] Loaded fork_memory_test (PID 55)
+create_user_process: ENTRY - Creating 'fork_state_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fork_state_test', elf_size=305032, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 56
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000fa74
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 56
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 56
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 75
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 56
+[test] Loaded fork_state_test (PID 56)
+create_user_process: ENTRY - Creating 'fork_pending_signal_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fork_pending_signal_test', elf_size=297704, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 57
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f2e4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 57
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 57
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 76
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 57
+[test] Loaded fork_pending_signal_test (PID 57)
+create_user_process: ENTRY - Creating 'cow_signal_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='cow_signal_test', elf_size=299208, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 58
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f55c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 58
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 58
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 77
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 58
+[test] Loaded cow_signal_test (PID 58)
+create_user_process: ENTRY - Creating 'cow_cleanup_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='cow_cleanup_test', elf_size=292408, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 59
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f274
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 59
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 59
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 78
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 59
+[test] Loaded cow_cleanup_test (PID 59)
+create_user_process: ENTRY - Creating 'cow_sole_owner_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='cow_sole_owner_test', elf_size=297728, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 60
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f3a0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 60
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 60
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 79
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 60
+[test] Loaded cow_sole_owner_test (PID 60)
+create_user_process: ENTRY - Creating 'cow_stress_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='cow_stress_test', elf_size=297800, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 61
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f654
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 61
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 61
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 80
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 61
+[test] Loaded cow_stress_test (PID 61)
+create_user_process: ENTRY - Creating 'cow_readonly_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='cow_readonly_test', elf_size=297616, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 62
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f2c4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 62
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 62
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 81
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 62
+[test] Loaded cow_readonly_test (PID 62)
+create_user_process: ENTRY - Creating 'argv_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='argv_test', elf_size=302336, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 63
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000fa48
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 63
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 63
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 82
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 63
+[test] Loaded argv_test (PID 63)
+create_user_process: ENTRY - Creating 'exec_argv_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='exec_argv_test', elf_size=291272, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 64
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000ee68
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 64
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 64
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 83
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 64
+[test] Loaded exec_argv_test (PID 64)
+create_user_process: ENTRY - Creating 'exec_stack_argv_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='exec_stack_argv_test', elf_size=292920, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 65
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f0b0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 65
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 65
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 84
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 65
+[test] Loaded exec_stack_argv_test (PID 65)
+create_user_process: ENTRY - Creating 'clonevm_exec_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='clonevm_exec_test', elf_size=293800, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 66
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f63c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 66
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 66
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 85
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 66
+[test] Loaded clonevm_exec_test (PID 66)
+create_user_process: ENTRY - Creating 'futex_handoff_oracle' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='futex_handoff_oracle', elf_size=296112, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 67
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000ef08
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 67
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 67
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 86
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 67
+[test] Loaded futex_handoff_oracle (PID 67)
+create_user_process: ENTRY - Creating 'fbinfo_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='fbinfo_test', elf_size=297528, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 68
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eea0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 68
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 68
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 87
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 68
+[test] Loaded fbinfo_test (PID 68)
+create_user_process: ENTRY - Creating 'udp_socket_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='udp_socket_test', elf_size=309888, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 69
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000facc
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 69
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 69
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 88
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 69
+[test] Loaded udp_socket_test (PID 69)
+create_user_process: ENTRY - Creating 'tcp_socket_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='tcp_socket_test', elf_size=318864, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 70
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x400109f4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 70
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 70
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 89
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 70
+[test] Loaded tcp_socket_test (PID 70)
+create_user_process: ENTRY - Creating 'tcp_dup_listener_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='tcp_dup_listener_test', elf_size=300096, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 71
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f5c8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 71
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 71
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 90
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 71
+[test] Loaded tcp_dup_listener_test (PID 71)
+create_user_process: ENTRY - Creating 'tcp_cloexec_exec_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='tcp_cloexec_exec_test', elf_size=305248, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 72
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f758
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 72
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 72
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 91
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 72
+[test] Loaded tcp_cloexec_exec_test (PID 72)
+create_user_process: ENTRY - Creating 'dns_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='dns_test', elf_size=307112, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 73
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40010204
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 73
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 73
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 92
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 73
+[test] Loaded dns_test (PID 73)
+create_user_process: ENTRY - Creating 'http_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='http_test', elf_size=624480, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 74
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001ee44
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 74
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 74
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 93
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 74
+[test] Loaded http_test (PID 74)
+[test] Loaded 73/78 test binaries (0 failed, 5 not found)
+[test] Test processes loaded - will run via timer interrupts
+[test] Entering scheduler idle loop
+breenix> EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+=== wc coreutil test ===
+=== Filesystem Write Test ===
+=== O_NONBLOCK pipe test ===
+=== Filesystem Directory Test ===
+WC_TEST_START
+
+Test 1: Write new file
+
+Test 1: wc /hello.txt (1 line, 3 words, 17 bytes)
+Test 1: Read from empty O_NONBLOCK pipe
+
+Test 1: Create directory
+F1Created O_NONBLOCK2 pipe: read_fd=3, write_fd=4
+3456789SCO_NONBLOCK confirmed set on pipe
+=== getdents64 Test ===
+
+Test 1: List root directory /
+PASS: Read from empty O_NONBLOCK pipe returned EAGAIN
+
+Test 2: Write to full O_NONBLOCK pipe
+EXT2_LOCK_PARK_FIRST lock=ROOT_EXT2_read parks=1
+Filling pipe buffer...
+=== TCP Dup'd Listener Survival Test (#724 review M1) ===
+
+Step 1: bind + listen on port 9110...
+  PASS: bound and listening (fd=3)
+
+Step 2: dup() the listener fd...
+  PASS: dup'd listener fd=4 (original fd=3)
+
+Step 3: close the ORIGINAL fd (dup'd fd must survive this)...
+  Original fd closed
+
+Step 4: connect+accept through the SURVIVING dup'd fd...
+=== CoW Stress Test ===
+Tests CoW with many pages (128 pages, 512KB)
+
+Step 1: Allocating 128 pages (512KB) via sbrk
+Got EAGAIN after writing 65536 bytes
+PASS: Pipe buffer filled with 65536 bytes in 64 writes, got EAGAIN on full buffer
+=== Exec Argv Test ===
+
+Test 3: Set O_NONBLOCK via fcntl(F_SETFL)
+F123456789SC  PASS: accepted a connection through the dup'd fd after the original closed
+
+Step 5: close the last fd; the listener must now actually retire...
+  PASS: port 9110 was free after the last fd closed (listener genuinely retired)
+
+=== All TCP dup'd-listener tests passed! ===
+TCP_DUP_LISTENER_TEST_PASSED
+FBINFO_TEST: starting framebuffer info syscall tests
+=== clock_gettime Userspace Test ===
+
+thread '<unnamed>' panicked at src/nonblock_test.rs:107:43:
+called `Result::unwrap()` on an `Err` value: Os(EAGAIN)
+
+Test 1: Basic syscall functionality
+[syscall] exit(134) pid=30 name=nonblock_test
+=== Dup Syscall Test ===
+[syscall] exit(0) pid=71 name=tcp_dup_listener_test
+
+Phase 0: Testing EBADF (dup on invalid fd)...
+  PASS: dup(999) correctly returned error (EBADF)
+
+Phase 1: Creating pipe...
+=== TTY Test Program ===
+=== false coreutil test ===
+
+Phase 1: Testing isatty()...
+FALSE_TEST_START
+Test 1: /bin/false exits with 1 and no output
+F123TTY_TEST: PASS - isatty(0) returns true for stdin
+TTY_TEST: PASS - isatty(1) returns true for stdout
+TTY_TEST: PASS - isatty(2) returns true for stderr
+TTY_TEST: PASS - isatty(999) returns false for invalid fd
+
+Phase 2: Testing tcgetattr()...
+TTY_TEST: PASS - tcgetattr(0) succeeded on stdin
+  c_lflag = 0x0000803b
+TTY_TEST: PASS - Default terminal has ICANON s45et (canonical6 mode)
+789SCTTY_TEST: PASS - Default terminal has ECHO set
+TTY_TEST: PASS - Default terminal has ISIG set (signals enabled)
+
+Phase 3: Testing tcsetattr() with raw mode...
+TTY_TEST: PASS - tcsetattr(0, TCSANOW, raw) succeeded
+TTY_TEST: PASS - tcgetattr after raw mode succeeded
+  After raw: c_lflag = 0x00000030
+TTY_TEST: PASS - Raw mode disabled ICANON
+TTY_TEST: PASS - Raw mode disabled ECHO
+TTY_TEST: PASS - Raw mode disabled ISIG
+TTY_TEST: PASS - Raw mode set VMIN = 1
+TTY_TEST: PASS - Raw mode set VTIME = 0
+
+Phase 4: Restoring cooked (default) mode...
+TTY_TEST: PASS - tcsetattr to restore original mode succeeded
+TTY_TEST: PASS - tcgetattr after restore succeeded
+  After restore: c_lflag = 0x0000803b
+TTY_TEST: PASS - Restored mode has ICANON enabled
+TTY_TEST: PASS - Restored mode has ECHO enabled
+
+Phase 5: Testing TCGETS/TCSETS round-trip...
+TTY_TEST: PASS - Round-trip preserved ECHO=0 modification
+TTY_TEST: PASS - TCGETS/TCSETS round-trip complete
+
+Phase 6: Testing tcgetpgrp()/tcsetpgrp()...
+  Our PID: 0x0000001f
+  Initial foreground pgrp: 0x0000004a
+TTY_TEST: PASS - tcgetpgrp(0) succeeded
+TTY_TEST: PASS - tcsetpgrp(0, our_pid) succeeded
+  After tcsetpgrp: foreground pgrp = 0x0000001f
+TTY_TEST: PASS - tcgetpgrp returns the value we set
+TTY_TEST: PASS - tcsetpgrp(0, 12345) succeeded
+=== Exec Stack Argv Test ===
+TTY_TEST: PASS - tcgetpgrp returns arbitrary pgrp value
+TTY_TEST: PASS - Restored our process as foreground pgrp
+Testing stack-allocated argument buffers through execv
+
+=== TTY Test Results ===
+F123456789SCTTY_TEST: ALL TESTS PASSED
+TTY_TEST_PASSED
+[syscall] exit(0) pid=31 name=tty_test
+=== which coreutil test ===
+WHICH_TEST_START
+Test 1: which ls returns /bin/ls
+F123456789SC=== Signal Exec Reset Test ===
+
+Step 1: Register SIGUSR1 handler
+  PASS: sigaction registered handler
+=== Pipe Test Program ===
+Phase 1: Creating pipe with pipe()...
+  Handler address: 1073776896
+
+Step 2: Forking child process...
+  Pipe created succeF1ssf2ully
+3  Read fd: 3
+  Write fd: 4
+  FD numbers are valid
+456789SCPhase 2: Writing data to pipe...
+  Wrote 12 bytes to pipe
+Phase 3: Reading data from pipe...
+  Read 12 bytes from pipe
+Phase 4: Verifying data...
+  Data verified: 'Hello, Pipe!'
+Phase 5: Closing pipe file descriptors...
+=== CoW Read-Only Page Sharing Test ===
+  Closed read fd
+  Closed write fd
+Verifies code sections are shared without COW flag
+USERSPACE PIPE: ALL TESTS PASSED
+
+PIPE_TEST_PASSED
+Step 1: Execute code functions in parent (before fork)
+[syscall] exit(0) pid=19 name=pipe_test
+  Fibonacci(10) = 55 (expected 55)
+[CHILD] Forked successfully, about to exec signal_exec_check
+  Factorial(5) = 120 (expected 120)
+  PASS: Code functions work correctly in parent
+[CHILD] Pre-exec handler: 1073776896
+
+Step 2: Forking process...
+[CHILD] Handler inherited from parent (as F1expecte2d)
+3456789SC[CHILD] Calling exec(signal_exec_check)...
+[CHILD] Process started
+[CHILD] Step 3: Execute code functions (shared code section)
+[CHILD]   Fibonacci(10) = 55
+[CHILD]   Factorial(5) = 120
+[CHILD]   Fibonacci(15) = 610 (expected 610)
+DNS Test: Starting
+[CHILD]   Factorial(10) = 3628800 (expected 3628800)
+[CHILD]   PASS: All code functions executed correctly!
+DNS_TEST: resolving www.google.com...
+[CHILD]   This proves read-only pages are properly shared
+[syscall] exit(0) pid=81 name=cow_readonly_test_child_81
+=== Signal Fork Inheritance Test ===
+=== DevFS Test ===
+
+Step 1: Register SIGUSR1 handler in parent
+  PASS: sigaction registered handler
+
+Test 1: Write to /dev/null
+
+Step 2: Forking process...
+F123  PASS: Write to /dev/null succeeded
+
+Test 2: Read from /dev/null (should be EOF)
+456789SC[CHILD] Process started
+[CHILD] PID: 82
+=== Signal Handler Test ===
+[CHILD] Step 3: Sending SIGUSR1 to self...
+My PID: 8
+  HANDLER: SIGUSR1 received!
+
+Test 1: Register SIGUSR1 handler
+  PASS: sigaction registered handler
+[CHILD]   kill() succeeded
+
+Test 2: Send SIGUSR1 to self using kill
+[CHILD] Step 4: Yielding for signal delivery...
+  HANDLER: SIGUSR1 received and executed!
+  PASS: kill() succeeded
+[PARENT] Forked child PID: 82
+
+Test 3: Yielding to allow signal delivery...
+[PARENT] Waiting for child...
+[CHILD]   Handler called after 1 yields
+=== SYSCALL DIAGNOSTIC TEST SEQUENCE ===
+[CHILD] Step 5: Verify handler execution
+[CHILD]   PASS: Inherited handler was called!
+SKIP: This test is x86_64-only (uses int 0x80 inline asm)
+[CHILD] Exiting with success
+
+✓ All diagnostic tests passed
+[syscall] exit(0) pid=82 name=signal_fork_test_child_82
+[syscall] exit(0) pid=6 name=syscall_diagnostic_test
+=== Select Test Program ===
+=== fcntl() syscall test ===
+Phase 1: Creating pipe...
+  Pipe created: read_fd=3, write_fd=4
+Created pipe: read_fd=3, write_fd=4
+Phase 2: Selecting on empty pipe for read...
+
+Test 1: F_GETFD (initial)
+PASS: Initial fd_flags = 0 (no FD_CLOEXEC)
+
+Test 2: F_SETFD (set FD_CLOEXEC)
+  select() returned: 0, readfds=0x0
+[PARENT] Child exited successfully (code 0)
+  OK: Empty pipe is not ready for read
+
+=== All signal fork inheritance tests passed! ===
+Phase 3: Writing data and selecting for read...
+SIGNAL_FORK_TEST_PASSED
+[syscall] exit(0) pid=17 name=signal_fork_test
+  select() returned: 1, readfds=0x8
+  OK: Pipe with data is ready for read
+Phase 4: Selecting on write end for write...
+PASS: F_SETFD returned 0
+
+Test 3: F_GETFD (after set)
+  select() returned: 1, writefds=0x10
+PASS: fd_flags = 1 (FD_CLOEXEC set)
+  OK: Write end is ready for write
+
+Test 4: F_GETFL (initial)
+Phase 5: Selecting with multiple fd_sets...
+PASS: Initial status_flags = 0x0
+  select() returned: 2
+
+Test 5: F_SETFL (set O_NONBLOCK)
+  readfds=0x8, writefds=0x10
+  OK: Multiple fd_sets work correctly
+PASS: F_SETFL returned 0
+Phase 6: Closing write end and checking for exception...
+
+Test 6: F_GETFL (after set)
+PASS: status_flags = 0x800 (O_NONBLOCK set)
+  select() returned: 1
+
+Test 7: F_DUPFD (dup to >= 10)
+  readfds=0x0, exceptfds=0x8
+  OK: select() returns after write end closed
+PASS: F_DUPFD returned 10 (>= 10)
+Phase 7: Testing stdout writability...
+
+Test 8: F_DUPFD clears FD_CLOEXEC
+  select() returned: 1, writefds=0x2
+PASS: F_DUPFD cleared FD_CLOEXEC (flags=0)
+  OK: stdout is writable
+
+Test 9: F_DUPFD_CLOEXEC
+Phase 8: Selecting on TCP listener...
+
+[DATA_ABORT] FAR=0xfffffefefc68 ELR=0x=== Session Syscall4 0Tests ===
+004518 ESR=0x92000047
+Test 1:  getpgid(0) returns current process's pgid
+DFSC=0x7 TTBR0=0x1000044714000 from_el0PASS: F=_DUPFD_1
+CLOEXEC returned 20 with FD_CLOEXEC set
+
+[PT
+_WALK] Test 10: fcntl on invalid fd
+VA=0xfffPASS: fcntl ofn invalid fd returned Osf(EBADF) (EBADF)
+efefc68 T
+=== All fcntl tests passed! ===
+TBRFCNTL_TEST_PASSED
+0_phys=0x44714000 L0[0x1f[fsyscall] exit(0]) pid==22 name0=fcntlx_test
+44740003 L1[0x1ff]=0x  getpgid(0) = 32
+44741003  te st_getpgLid_self: PASS2
+[0x1f7
+]=Test 2: 0xgetpgid(getpid()) returns same as getpgid(0)
+44742003 L3[0x1ef]  =pid = 32
+0x  getpgid(0) = 32
+0
+  getpgid(pid) = 32
+  test_getpgid_with_pid: PASS
+
+Test 3: setpgid(0, 0) sets pgid to own pid
+  pid = 32
+  setpgid(0, 0) returned: 0
+  getpgid(0) after setpgid = 32
+=== Signal Test ===
+My PID: 7
+
+Test 1: Check process exists with kill(pid, 0)
+  PASS: Process exists
+
+Test 2: Fork and send SIGTERM to child
+F123456789SC=== access() Test ===
+  CHILD: Started, waiting for signal...
+
+Test 1: /hello.txt exists (F_OK)
+  test_setpgid_self: PASS
+
+Test 4: getpgrp() returns same as getpgid(0)
+  getpgrp() = 32
+  getpgid(0) = 32
+  test_getpgrp: PASS
+
+Test 5: getsid(0) returns current session id
+  getsid(0) = 32
+  test_getsid_self: PASS
+
+Test 6: getsid(getpid()) returns same as getsid(0)
+  pid = 32
+  getsid(0) = 32
+  getsid(pid) = 32
+  test_getsid_with_pid: PASS
+
+Test 7: setsid() in child creates new session
+F123456789SC  PARENT: Forked child with PID 83
+  PARENT: Waiting for child to start...
+  PARENT: yield 0
+  CHILD: My PID is 83
+  PARENT: waiting for child 84
+  CHILD: pid = 84
+  CHILD: setpgid(0, 0) returned: 0
+  CHILD: setsid() returned: 84
+  CHILD: getsid(0) = 84
+  CHILD: getpgid(0) = 84
+  CHILD: setsid test PASS
+[syscall] exit(0) pid=84 name=session_test_child_84
+  PARENT: yield 1
+=== tail coreutil test ===
+  PARENT: waitpid returned: 84
+TAIL_TEST_START
+  PARENT: child exit code = 0
+Test 1: tail /lines.txt outputs last 10 lines
+  test_setsid_in_child: PASS
+
+Test 8: Error cases for invalid PIDs
+F123456789  getSpgiCd(-1) returned error (as expected)
+  getsid(-1) returned error (as expected)
+  test_error_cases: PASS
+
+=== All session tests passed! ===
+SESSION_TEST_PASSED
+[syscall] exit(0) pid=32 name=session_test
+  PARENT: yield 2
+  PARENT: yield 3
+  PARENT: yield 4
+  PARENT: Done waiting, about to send signal
+  PARENT: Sending SIGTERM to child
+  PARENT: kill() syscall succeeded
+  PARENT: Waiting for child to terminate...
+=== Fork Pending Signal Test ===
+[signal] Process 83 (signal_test_child_83) terminated by signal 15 (SIGTERM)
+  PARENT: Child terminated by SIGTERM!
+SIGNAL_KILL_TEST_PASSED
+  PARENT: Test complete, exiting
+[syscall] exit(0) pid=7 name=signal_test
+=== true coreutil test ===
+TRUE_TEST_START
+Test 1: /sbin/true exits with 0 and no output
+F123456789SC=== lseek Test ===
+=== Filesystem Rename Test ===
+=== CWD Test ===
+
+Test 1: Rename a file
+
+Test 1: Get initial working directory
+=== sigaltstack() Syscall Test ===
+
+=== CoW Sole Owner Optimization Test ===
+Tests that parent becomes sole owner when child exits without writing
+
+Step 0: Reading initial CoW statistics
+  Initial sole_owner_opt counter: 9
+
+Step 1: Allocating heap memory via sbrk
+  Heap allocated at: 0x0000000040019000
+  Initial value written: 0xDEADBEEF12345678
+
+Step 2: Forking child (will exit immediately without writing)
+F123456789SC=== pipe2() syscall test ===
+
+Test 1: pipe2 with no flags
+PASS: Created pipe with read_fd=3, write_fd=4
+[CHILD] Started - exiting immediately WITHOUT writing to heap
+[CHILD] Exiting with success
+PASS: No FD_CLOEXEC set (as expected)
+PASS: No O_NONBLOCK set (as expected)
+[syscall] exit(0) pid=87 name=cow_sole_owner_test_child_87
+
+Test 2: pipe2 with O_CLOEXEC
+Created pipe: read_fd=3, write_fd=4
+PASS: read_fd has FD_CLOEXEC=1
+[PARENT] Forked child PID: 87
+PASS: write_fd has FD_CLOEXEC=1
+
+Step 3: Waiting for child to exit
+  Child exited successfully
+
+Step 4: Verifying heap memory is intact
+
+[DATA_ABORT] FAR=0xfffffefefcf8 ELR=0x  Current40004e8c ESR val=0xue: 0x920DEADB000EEF1247 DFSC=0x7 TTBR0=0x3451000044e24000 from_el0=1678
+
+
+[PT_WALK] VA=0xfffffefefcf8 TTBR0_phys=0x44e24000 L0[0x1ff]=0x44e8d003 L1[0x1ff]=0x44e8e003 L2[0x1f7]=0x44e8f003   MemoL3[0x1ef]=0x0
+ry is intact
+[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+[syscall] exit(0) pid=67 name=futex_handoff_oracle
+
+Step 5: Parent writing to heap (sole owner optimization)
+  Wrote new value: 0xCAFEBABE87654321
+  Read back value: 0xCAFEBABE87654321
+  Write succeeded
+
+Step 6: Verifying SOLE_OWNER_OPT counter incremented
+  sole_owner_opt before: 9
+  sole_owner_opt after:  13
+  SOLE_OWNER_OPT incremented by: 4
+  SUCCESS: Sole owner optimization path was taken!
+
+Step 7: Writing to additional heap slots
+  All writes succeeded
+
+=== CoW Sole Owner Optimization Test PASSED ===
+Verified: SOLE_OWNER_OPT counter incremented, proving optimization worked
+COW_SOLE_OWNER_TEST_PASSED
+[syscall] exit(0) pid=60 name=cow_sole_owner_test
+=== Pause Syscall Test ===
+Parent PID: 14
+=== Signal Register Preservation Test ===
+
+Step 1: Register SIGUSR1 handler in parent
+  PASS: sigaction registered SIGUSR1 handler
+Step 1: Will set callee-saved registers (x20-x23) to known values
+
+Step 2: Forking child process...
+F123456789SC  X20 = 0xaaaabbbbccccdddd
+  X21 = 0x1111222233334444
+  X22 = 0x5555666677778888
+  X23 = 0x9999aaaabbbbcccc
+
+Step 2: Registering signal handler for SIGUSR1
+  Handler registered successfully
+[CHILD] Process started
+[CHILD] My PID: 88
+[CHILD] Yielding to let parent call pause()...
+=== ls coreutil test ===
+
+Step 3: Setting registers, sending signal, yielding (all in asm)
+LS_TEST_START
+Test 1: ls / (root directory)
+  HANDLER: Received signal, clobbering registers...
+  HANDLER: RegiFster1s 2clobbered, returning.3..
+456789SC[CHILD] Sending SIGUSR1 to parent (PID 14)...
+[CHILD] kill() succeeded
+[CHILD] Exiting with code 0
+[syscall] exit(0) pid=88 name=pause_test_child_88
+TCP Socket Test: Starting
+TCP_TEST: socket created OK
+TCP_TEST: bind OK
+TCP_TEST: listen OK
+TCP_TEST: client socket OK
+=== CoW Signal Delivery Test ===
+Tests signal delivery when user stack is CoW-shared
+
+Step 1: Touched stack page before fork
+Step 2: Forking process...
+F123456789SC=== SIGCHLD Delivery Test ===
+
+Step 1: Register SIGCHLD handler in parent
+[CHILD] Process started
+  PASS: sigaction registered SIGCHLD handler
+
+Step 2: Forking child process...
+F123[CHILD] PID: 90
+[CHILD] Step 3: Register SIGUSR1 handler
+[CHILD]   s456igaction registered handler
+789S[CHILD] Step C4: Sending SIGUSR1 to self (triggers CoW on stack)...
+  HANDLER: Signal received, wrote to stack!
+[CHILD] Process started, exiting immediately with code 42
+[PARENT] Forked child PID: 90
+[CHILD]   kill() succeeded
+[syscall] exit(42) pid=91 name=sigchld_test_child_91
+[PARENT] Waiting for child...
+[CHILD] Step 5: Yielding for signal delivery...
+  Heap allocated at: 0x0000000040019000
+
+Step 2: Filling all pages with parent pattern
+[CHILD]   Handler called after 1 yields
+[CHILD] Step 6: Verify handler execution
+[CHILD]   PASS: Handler executed and modified memory!
+[CHILD]   CoW fault during signal delivery was handled correctly
+[syscall] exit(0) pid=90 name=cow_signal_test_child_90
+[PARENT] Child exited successfully
+FBINFO_TEST: testing fbinfo syscall... OK (1280x800, 4bpp, BGR)
+
+=== CoW Signal Delivery Test PASSED ===
+COW_SIGNAL_TEST_PASSED
+FBINFO_TEST: testing null pointer rejection... OK (validated by kernel implementation)
+[syscall] exit(0) pid=58 name=cow_signal_test
+FBINFO_TEST: 2/2 tests passed
+[PARENT] Forked child PID: 80
+[PARENT] Waiting for child...
+[PARENT] Forked child PID: 81
+[PARENT] Step 4: Execute code functions after fork
+
+Test 3: pipe2 with O_NONBLOCK
+Created pipe: read_fd=3, write_fd=4
+[syscall] exit(127) pid=75 name=wc_test_child_75
+PASS: read_fd has O_NONBLOCK (status_flags=0x800)
+PASS: write_fd has O_NONBLOCK (status_flags=0x800)
+[PT_ROOT_CUSTODY:no_proof=20:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+PASS: No FD_CLOEXEC set (as expected)
+[TOMBSTONE_CENSUS:resident=1:removed=4:reap_second=4:retire_second=0:abandoned_unqueued=0]
+
+Test 4: pipe2 with O_CLOEXEC | O_NONBLOCK
+Created pipe: read_fd=3, write_fd=4
+PASS: read_fd has FD_CLOEXEC
+=== Fork Memory Isolation Test Suite ===
+WC_HELLO_FAILED (exit=127, l=999, w=999, b=999)
+Verifying copy-on-write (CoW) semantics for fork()
+Test 2: wc /lines.txt (15 lines, 30 words, 111 bytes)
+PASS: read_fd has O_NONBLOCK
+F123Parent PID: 55
+
+=== Test 1: Stack Memory Isolation ===
+FBINFO_TEST: all tests PASSED
+Parent: Initial stack value: 0x00000000DEADBEEF
+F123456457869SC789SC
+Test 5: pipe2 with invalid flags
+PASS: pipe2 with invalid flags returned EINVAL
+
+Test 6: Compare pipe2(0) with pipe()
+Parent: Modified stack value to: 0x00000000CAFEBABE
+=== brk Test Program ===
+Phase 1: Querying initial program break with sbrk(0)...
+  Initial break: 0x0000000040019000
+  Initial break is valid
+Phase 2: Expanding heap by 4KB...
+  Requesting break at: 0x000000004001a000
+  Returned break: 0x000000004001a000
+  Heap expanded successfully
+Phase 3: Writing 512 unique patterns (4KB) to allocated memory...
+  Written 512 unique patterns
+Phase 4: Verifying all 512 patterns...
+
+thread '<unnamed>' panicked at src/pipe2_test.rs:184:46:
+  All 512 patterns verified successfully
+called `Result::unwrap()` on an `Err` value: Os(EAGAIN)
+Phase 5: Expanding by another 4KB and testing...
+  Second region verified successfully
+[syscall] exit(134) pid=24 name=pipe2_test
+Phase 6: Contracting heap back to initial size...
+  Current break: 0x000000004001b000
+  Requesting: 0x0000000040019000
+  Returned break: 0x0000000040019000
+  Initial CWD: /
+  Heap contracted successfully to initial size
+=== ARGV Test ===
+Phase 7: Re-expanding heap after contraction...
+  PASS: Initial CWD is /
+  Re-expand brk returned: 0x000000004001a000
+Main stack RSP = 0x0000fffffefffc90
+  Writing to addr: 0x0000000040019000
+
+  Pattern written
+  Read back: 0xcafebabedeadbeef
+TCP_TEST: connect OK
+  Expected: 0xcafebabedeadbeef
+  FAIL: /hello.txt not found
+
+Test 2: /hello.txt is readable (R_OK)
+=== WNOHANG Timing Test ===
+  Filled 65536 slots across 128 pages
+  Re-expansion verified successfully
+  FAIL: /hello.txt not readable
+
+USERSPACE BRK: ALL TESTS PASSED
+
+Step 3: Forking process
+Test 3: Nonexistent filF1e (2F_OK)
+345
+S6tep 1: Forking child that loops before exiting...
+789S[syscall] exit(0) pid=4 name=brk_test
+C
+[INLINE_SAVE_OVERWRITE] tid=54 sp=0xffff0000544c97c0 old_sp=0xffff0000544c97c0 saved_sp=0xffff0000544c97c0 delta=0x0 saved_lr=0xffff00004048ea58 saved_slot20=0xffff00004048ea58 slot20=0xffff00004048ea58 elr=0xffff0000404e1b54 x30=0xffff0000404e1b54
+F12345678argc9S: 1
+=== Unix Socket Test ===
+C[CHILD] Started, doing work before exit...
+argv[0]: argv_test
+  PASS: mkdir succeeded
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=4185:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=4185:kstack=0:uva=0:smallint=0:other=0]
