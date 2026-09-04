@@ -48,8 +48,8 @@ fn softirq_overflow_uses_local_pinned_daemons() {
         "ksoftirqd handles must be per-CPU and lock-free to read at IRQ exit"
     );
     assert!(
-        wake.contains("current_cpu_id()") && wake.contains("KSOFTIRQD[cpu].get()"),
-        "softirq overflow must wake the executing CPU's daemon"
+        wake.contains("current_cpu_id()") && wake.contains("KSOFTIRQD.get(current_cpu_id())"),
+        "softirq overflow must wake the executing CPU's daemon, through a bounds-checked index"
     );
     assert!(
         init.contains("kthread_run_on_cpu") && init.contains("for cpu in 0..online_cpu_count()"),
@@ -64,25 +64,79 @@ fn softirq_overflow_uses_local_pinned_daemons() {
 #[test]
 fn softirq_daemon_test_runs_outside_the_boot_idle_context() {
     let tests = repo_text("kernel/src/task/softirq_tests.rs");
-    let wrapper = function_body(&tests, "test_softirq");
+    let dispatch = function_body(&tests, "run_ksoftirqd_deferral_phase");
+    let phase = function_body(&tests, "ksoftirqd_deferral_phase");
+    let report = function_body(&tests, "report_ksoftirqd_deferral_phase");
     let workload = function_body(&tests, "run_softirq_tests");
 
     assert!(
-        wrapper.contains("kthread_run_on_cpu") && wrapper.contains("kthread_join"),
-        "aarch64 must run the softirq test in a schedulable pinned kthread"
+        dispatch.contains("kthread_run_on_cpu") && dispatch.contains("kthread_join"),
+        "aarch64 must run the daemon-verification phase in a schedulable pinned kthread"
     );
     assert!(
-        workload.contains("ksoftirqd should have processed deferred softirqs")
-            && workload.contains("ksoftirqd should have processed deferred softirqs (tid={:?})"),
+        phase.contains("ksoftirqd should have processed deferred softirqs")
+            && phase.contains("ksoftirqd should have processed deferred softirqs (tid={:?})"),
         "both the completion and daemon-identity assertions must remain"
     );
     assert!(
-        workload.contains("crate::arch_without_interrupts(||"),
+        phase.contains("crate::arch_without_interrupts(||"),
         "the bounded-call count must be sampled before the local daemon can race it"
     );
     assert!(
-        wrapper.contains("SOFTIRQ_TEST: iteration limit passed"),
-        "the aarch64 serial proof must be emitted after the test kthread joins"
+        report.contains("SOFTIRQ_TEST: iteration limit passed")
+            && report.contains("KSOFTIRQD_OBSERVED_CPU"),
+        "the serial proof must name the daemon that was observed, not the pin"
+    );
+    assert!(
+        workload.contains("run_ksoftirqd_deferral_phase()")
+            && workload.contains("Test 1: Register handlers")
+            && workload.contains("Test 8: Verify ksoftirqd is initialized"),
+        "only the daemon-verification phase moves off the boot context"
+    );
+}
+
+#[test]
+fn softirq_handler_reads_its_identity_without_the_scheduler_lock() {
+    let tests = repo_text("kernel/src/task/softirq_tests.rs");
+    let phase = function_body(&tests, "ksoftirqd_deferral_phase");
+
+    assert!(
+        phase.contains("crate::per_cpu::current_thread_id_lock_free()"),
+        "the softirq handler must read its identity from per-CPU state"
+    );
+    // The scheduler-lock read must be gone from the executable text. The
+    // comment that explains WHY names the call it replaced, so the check reads
+    // the handler's code rather than the whole phase's prose.
+    let handler_start = phase
+        .find("register_softirq_handler(SoftirqType::Tasklet")
+        .expect("find the self-re-raising handler");
+    let handler = &phase[handler_start..];
+    let code: String = handler
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("scheduler::current_thread_id()"),
+        "the softirq handler runs on the IRQ-exit path and must take no scheduler lock"
+    );
+}
+
+#[test]
+fn the_testing_loader_runs_in_a_kernel_thread() {
+    let main = repo_text("kernel/src/main_aarch64.rs");
+    let launch = main
+        .find("load_test_binaries_from_ext2,")
+        .expect("the loader is handed to a kthread");
+    let spawn = main
+        .find("kernel::task::kthread::kthread_run(")
+        .expect("the loader kthread is spawned");
+    let join = main
+        .find("kernel::task::kthread::kthread_join(&loader)")
+        .expect("boot joins the loader kthread");
+    assert!(
+        spawn < launch && launch < join,
+        "the loader must be spawned as a kernel thread and joined, not called on the boot identity"
     );
 }
 
@@ -129,8 +183,9 @@ fn completion_sleep_rejects_idle_masked_and_interrupt_contexts() {
         "!crate::per_cpu_aarch64::in_softirq()",
         "crate::per_cpu_aarch64::preempt_count() == 1",
         "timer_interrupt::is_initialized()",
-        "is_current_idle_thread()",
-        "Some(false)",
+        // The idle test now lives in the one shared refusal, which owns the
+        // counter and the marker as well as the verdict.
+        "idle_sleep::idle_identity_must_not_sleep()",
     ] {
         assert!(
             predicate.contains(required),

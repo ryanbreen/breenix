@@ -116,7 +116,7 @@ fn sound_request_gate_can_sleep() -> bool {
     let context_permits = false;
 
     // Last, so the shared refusal counts callers that would otherwise have
-    // parked rather than every caller that asked.
+    // parked, not callers whose context already ruled sleeping out.
     context_permits && !crate::task::idle_sleep::idle_identity_must_not_sleep()
 }
 

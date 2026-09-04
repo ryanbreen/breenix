@@ -1066,12 +1066,12 @@ fn validate_wakeup_placement_is_bounded_by_online_cpus(source: &str) -> Result<(
         // liveness, so the two references come in pairs. Counting the pair
         // instead of naming the arms is deliberate: the affinity fast-return
         // added for per-CPU workers was a second arm that consulted the online
-        // range and skipped the liveness filter, and every substring rule above
-        // stayed green through it because they only ever described the
-        // least-loaded arm. A new arm that brings only one half of the pair
-        // reddens this, whatever it is called; a new arm that brings both
-        // passes; and a legitimate third use of either name has to be
-        // re-anchored here on purpose rather than sliding through.
+        // range and skipped the liveness filter, and the 4 substring rules
+        // above stayed green through it because they described the least-loaded
+        // arm only. A new arm that brings one half of the pair reddens this,
+        // whatever it is called; a new arm that brings both passes; and a third
+        // use of either name has to be re-anchored here on purpose rather than
+        // sliding through.
         let mask = code_mask(body);
         let bounds = identifier_offsets(body, &mask, "online_cpu_count").len();
         let liveness = identifier_offsets(body, &mask, "cpu_accepts_wakeups").len();
@@ -1725,11 +1725,15 @@ fn wakeup_placement_validator_rejects_max_cpu_selection() {
 #[test]
 fn wakeup_placement_validator_rejects_unfiltered_affinity_arm() {
     // The arm the round-1 branch added: a pinned CPU returned early, bounded by
-    // the online range but never checked against scheduling liveness.
+    // the online range with no scheduling-liveness check.
     let source = repo_text("kernel/src/task/scheduler.rs");
     let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
         .expect("find wakeup placement fixture");
-    let mutated_wakeup = wakeup.replacen("&& self.cpu_accepts_wakeups(pin.cpu)", "", 1);
+    let mutated_wakeup = wakeup.replacen(
+        "(home_is_this_cpu || self.cpu_accepts_wakeups(pin.cpu))",
+        "true",
+        1,
+    );
     assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
     let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
     assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());

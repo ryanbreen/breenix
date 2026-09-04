@@ -1366,7 +1366,34 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "testing")]
     if device_count > 0 {
         serial_println!("[test] Loading test binaries from ext2...");
-        load_test_binaries_from_ext2();
+        // Unmask the boot CPU before the loader runs anywhere else. The
+        // preceding kthread/workqueue self-tests return with IRQs masked on
+        // this CPU, and the VirtIO block interrupt is an SPI the GIC targets
+        // here: with the loader on the boot CPU that did not matter, because
+        // the loader unmasked the CPU it was already running on. Now that the
+        // loader runs in a kernel thread, a masked boot CPU leaves the block
+        // completion pending forever -- measured, before this line existed, as
+        // "Block MMIO read timeout" on the first inode read and then a wedged
+        // request gate for every read after it (0 of 78 binaries resolved).
+        unsafe {
+            kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
+        }
+        // The loader waits on IRQ-driven VirtIO completions and on the ext2
+        // lock, so it must not run as the boot CPU's idle identity: blocking
+        // that identity abandons its continuation, which is #761. It runs in a
+        // kernel thread instead -- a genuine schedulable identity the scheduler
+        // can hand a continuation back to -- spawned here, after the scheduler
+        // is live, and joined from boot the same way the softirq daemon phase
+        // is. The boot CPU keeps the preemption pin documented at the
+        // `preempt_disable()` in kernel_main; what remains on it is the join's
+        // bounded halt loop, which enters no blocking primitive.
+        let loader = kernel::task::kthread::kthread_run(
+            load_test_binaries_from_ext2,
+            "test-binary-loader",
+        )
+        .unwrap_or_else(|error| panic!("failed to spawn the test binary loader: {:?}", error));
+        kernel::task::kthread::kthread_join(&loader)
+            .unwrap_or_else(|error| panic!("failed to join the test binary loader: {:?}", error));
         serial_println!("[test] Test processes loaded - will run via timer interrupts");
         serial_println!("[test] Entering scheduler idle loop");
         // The loader enabled interrupts for VirtIO completion. The boot CPU's
@@ -1479,11 +1506,16 @@ fn load_test_binaries_from_ext2() {
     use alloc::string::String;
     use alloc::vec::Vec;
 
+    // This runs in a kernel thread (see the spawn in kernel_main), so the
+    // identity holding the ext2 and VirtIO request guards is one the scheduler
+    // can hand a continuation back to -- not the boot CPU's idle task, whose
+    // dispatch resets it to the canonical idle loop and abandons whatever call
+    // is on its stack (#761).
+    //
     // The preceding kthread/workqueue self-tests deliberately return with IRQs
-    // masked. VirtIO MMIO completion is IRQ-driven, so unmask them before the
-    // first ext2 read. CPU 0 retains the boot preemption pin established in
-    // kernel_main, which prevents the scheduler from abandoning this loader
-    // continuation while the non-sleep completion path polls the ISR token.
+    // masked on the boot CPU. VirtIO MMIO completion is IRQ-driven, so unmask
+    // them here too: a kthread inherits whatever DAIF its first dispatch gave
+    // it, and the completion path needs the ISR to run.
     unsafe {
         kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
     }
@@ -1515,20 +1547,31 @@ fn load_test_binaries_from_ext2() {
                 }
             };
 
-            // Try each search directory until we find the binary
+            // Try each search directory until we find the binary. Record the
+            // last resolver error too: "not found" and "the resolver failed"
+            // are different facts, and collapsing them is how a fixture that
+            // predates a catalog entry, a broken read and an unreadable
+            // directory collapse into one inflated count with no name to look
+            // at. The names are reported below.
+            // claim-lint:ok: the diagnostic and its two arms are in this
+            // function, kernel/src/main_aarch64.rs
             let mut found_entry = None;
+            let mut last_error = "no search directory contained it";
             for dir in &search_dirs {
                 let path = format!("{}/{}", dir, name);
-                if let Ok(num) = fs.resolve_path(&path) {
-                    found_entry = Some((num, path));
-                    break;
+                match fs.resolve_path(&path) {
+                    Ok(num) => {
+                        found_entry = Some((num, path));
+                        break;
+                    }
+                    Err(error) => last_error = error,
                 }
             }
 
             let (inode_num, resolved_path) = match found_entry {
                 Some(entry) => entry,
                 None => {
-                    // Binary not present in any search path - skip silently
+                    serial_println!("[test] Not found: {} ({})", name, last_error);
                     not_found += 1;
                     continue;
                 }

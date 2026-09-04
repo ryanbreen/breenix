@@ -108,7 +108,7 @@ impl Drop for SoundMmioRequestGuard<'_> {
 #[inline]
 fn sound_mmio_request_gate_can_sleep() -> bool {
     // The shared idle refusal is last, so it counts callers that would
-    // otherwise have parked rather than every caller that asked.
+    // otherwise have parked, not callers whose context already ruled it out.
     crate::task::scheduler::current_thread_id().is_some()
         && crate::per_cpu_aarch64::preempt_count() > 0
         && crate::arch_impl::aarch64::timer_interrupt::is_initialized()

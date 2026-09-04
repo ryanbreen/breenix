@@ -132,8 +132,13 @@ pub fn ksoftirqd_tid_for_cpu(cpu: usize) -> Option<u64> {
         .map(KthreadHandle::tid)
 }
 
+/// The executing CPU's index, as the per-CPU softirq state indexes itself.
+///
+/// `pub(crate)` because the softirq self-test's handler records which CPU's
+/// daemon it observed, and it must read that index the same way the wake path
+/// does.
 #[inline(always)]
-fn current_cpu_id() -> usize {
+pub(crate) fn current_cpu_id() -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
@@ -266,9 +271,16 @@ pub fn do_softirq() -> bool {
 }
 
 /// Wake up ksoftirqd to process remaining softirqs
+///
+/// The index is bounds-checked, like `ksoftirqd_tid_for_cpu`'s. `current_cpu_id`
+/// falls back to `mpidr_el1 & 0xFF` whenever `TPIDR_EL1` reads zero, and this
+/// runs on the IRQ-exit path, so a topology that puts that fallback outside
+/// `MAX_CPUS` would take a slice-index panic in interrupt context. Not observed
+/// in 3 of 3 QEMU `-smp 4` boots (Aff0 = 0..3 there), but Parallels and VMware
+/// are eight-CPU platforms, and a wake that finds no local daemon is a missed
+/// drain, not a reason to fault.
 fn wakeup_ksoftirqd() {
-    let cpu = current_cpu_id();
-    if let Some(handle) = KSOFTIRQD[cpu].get() {
+    if let Some(handle) = KSOFTIRQD.get(current_cpu_id()).and_then(Once::get) {
         kthread_unpark(handle);
     }
 }

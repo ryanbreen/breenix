@@ -11,35 +11,78 @@
 
 use crate::task::softirqd::{do_softirq, raise_softirq, register_softirq_handler, SoftirqType};
 use crate::{arch_enable_interrupts, arch_halt};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 static ITERATION_COUNT: AtomicU32 = AtomicU32::new(0);
 static KSOFTIRQD_PROCESSED: AtomicBool = AtomicBool::new(false);
+/// The CPU whose ksoftirqd was observed satisfying the daemon-identity
+/// assertion, recorded by the handler at the moment it observed it.
+///
+/// `usize::MAX` means "not observed". The serial marker reports this rather
+/// than the CPU the phase was pinned to: an evidence line that interpolates the
+/// pin prints the same daemon name whichever daemon actually did the work.
+static KSOFTIRQD_OBSERVED_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 const TARGET_ITERATIONS: u32 = 25;
 
-#[cfg(target_arch = "aarch64")]
 pub fn test_softirq() {
+    run_softirq_tests();
+}
+
+/// Run Test 7's ksoftirqd-verification phase in a context the scheduler can
+/// switch away from, and report which daemon satisfied it.
+///
+/// On aarch64 the boot CPU holds a boot-long preemption pin (main_aarch64.rs,
+/// the `preempt_disable()` whose own comment says it exists so the scheduler
+/// cannot switch the boot CPU to ksoftirqd), and the identity it runs under is
+/// CPU 0's idle task. The phase raises a softirq, lets `do_softirq` hit its
+/// iteration limit, and then waits for the LOCAL ksoftirqd to drain the rest --
+/// which needs a CPU that can be scheduled away from, and needs the raise and
+/// the drain to happen on the same CPU because the pending bitmap is per-CPU.
+/// So the phase runs in a kthread pinned to a secondary CPU, spawned after the
+/// scheduler is live and joined from boot. The 7 other tests do not move: 1-6
+/// and 8 keep running in the boot context on both arches, and both of Test 7's
+/// assertions are unchanged.
+/// claim-lint:ok: the split is pinned by
+/// tests/aarch64_testing_profile_structure.rs
+#[cfg(target_arch = "aarch64")]
+fn run_ksoftirqd_deferral_phase() {
     let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
     assert!(
         online > 1,
         "aarch64 softirq daemon test requires a schedulable secondary CPU"
     );
     let test_cpu = 1;
-    let handle =
-        crate::task::kthread::kthread_run_on_cpu(run_softirq_tests, "softirq-test/1", test_cpu)
-            .unwrap_or_else(|error| panic!("failed to spawn softirq test kthread: {:?}", error));
+    let handle = crate::task::kthread::kthread_run_on_cpu(
+        ksoftirqd_deferral_phase,
+        "softirq-test/1",
+        test_cpu,
+    )
+    .unwrap_or_else(|error| panic!("failed to spawn softirq test kthread: {:?}", error));
     crate::task::kthread::kthread_join(&handle)
         .unwrap_or_else(|error| panic!("failed to join softirq test kthread: {:?}", error));
-    crate::serial_println!(
-        "SOFTIRQ_TEST: iteration limit passed ({} total iterations, ksoftirqd/{})",
-        ITERATION_COUNT.load(Ordering::SeqCst),
-        test_cpu
-    );
+    report_ksoftirqd_deferral_phase();
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-pub fn test_softirq() {
-    run_softirq_tests();
+fn run_ksoftirqd_deferral_phase() {
+    ksoftirqd_deferral_phase();
+    report_ksoftirqd_deferral_phase();
+}
+
+/// The one serial line the #562 acceptance reads, naming the daemon that was
+/// actually observed rather than the one the phase was aimed at.
+fn report_ksoftirqd_deferral_phase() {
+    let observed = KSOFTIRQD_OBSERVED_CPU.load(Ordering::SeqCst);
+    assert_ne!(
+        observed,
+        usize::MAX,
+        "no ksoftirqd was observed draining the deferred softirq work"
+    );
+    crate::serial_println!(
+        "SOFTIRQ_TEST: iteration limit passed ({} total iterations, ksoftirqd/{})",
+        ITERATION_COUNT.load(Ordering::SeqCst),
+        observed
+    );
 }
 
 fn run_softirq_tests() {
@@ -169,6 +212,36 @@ fn run_softirq_tests() {
     );
     log::info!("SOFTIRQ_TEST: nested interrupt rejection passed");
 
+    // Test 7 runs in its own function: on aarch64 the scheduler must be
+    // able to switch away from whoever runs it, which the boot CPU cannot
+    // do. See `run_ksoftirqd_deferral_phase`.
+    run_ksoftirqd_deferral_phase();
+
+    // Test 8: Verify ksoftirqd is initialized (keep original test)
+    log::info!("SOFTIRQ_TEST: Verifying ksoftirqd is initialized...");
+    assert!(
+        crate::task::softirqd::is_initialized(),
+        "Softirq subsystem should be initialized"
+    );
+    log::info!("SOFTIRQ_TEST: ksoftirqd verification passed");
+
+    log::info!("SOFTIRQ_TEST: all tests passed");
+
+    // CRITICAL: Restore the real network softirq handler!
+    // The tests above registered test handlers that override the real ones.
+    // Without this, network packets won't be processed after the tests.
+    crate::net::register_net_softirq();
+    log::info!("SOFTIRQ_TEST: Restored network softirq handler");
+
+    log::info!("=== SOFTIRQ TEST: Completed ===");
+}
+
+/// Test 7: the iteration limit, and the deferral to the LOCAL ksoftirqd.
+///
+/// Both assertions are the originals: the bounded `do_softirq()` call must stop
+/// at `MAX_SOFTIRQ_RESTART`, and the daemon-identity flag must be set by the
+/// ksoftirqd that owns the CPU whose pending bitmap the workload raised.
+fn ksoftirqd_deferral_phase() {
     // Test 7: Iteration limit and ksoftirqd deferral
     // A handler that re-raises itself will exceed MAX_SOFTIRQ_RESTART=10
     // After the limit, remaining work is deferred to ksoftirqd
@@ -189,11 +262,22 @@ fn run_softirq_tests() {
     register_softirq_handler(SoftirqType::Tasklet, |_softirq| {
         let count = ITERATION_COUNT.fetch_add(1, Ordering::SeqCst);
 
-        // Check if we're running in ksoftirqd context
+        // Check if we're running in ksoftirqd context.
+        //
+        // The identity read is the LOCK-FREE per-CPU one. This handler is
+        // dispatched from `do_softirq` on the IRQ-exit path, and
+        // `scheduler::current_thread_id()` takes the global SCHEDULER spin lock
+        // -- a bare lock from interrupt context, the shape #609 was about, and
+        // the one the #562 RCA flagged as needing re-examination the moment
+        // this workload moved onto a preemptible CPU with peers contending that
+        // lock. The per-CPU pointer is written by the context-switch path on the
+        // CPU that owns it and read here on that same CPU.
         if let Some(ksoft_tid) = crate::task::softirqd::ksoftirqd_tid() {
-            if let Some(current_tid) = crate::task::scheduler::current_thread_id() {
+            if let Some(current_tid) = crate::per_cpu::current_thread_id_lock_free() {
                 if current_tid == ksoft_tid {
                     KSOFTIRQD_PROCESSED.store(true, Ordering::SeqCst);
+                    KSOFTIRQD_OBSERVED_CPU
+                        .store(crate::task::softirqd::current_cpu_id(), Ordering::SeqCst);
                 }
             }
         }
@@ -265,22 +349,4 @@ fn run_softirq_tests() {
         "SOFTIRQ_TEST: iteration limit passed ({} total iterations, ksoftirqd verified)",
         final_count
     );
-
-    // Test 8: Verify ksoftirqd is initialized (keep original test)
-    log::info!("SOFTIRQ_TEST: Verifying ksoftirqd is initialized...");
-    assert!(
-        crate::task::softirqd::is_initialized(),
-        "Softirq subsystem should be initialized"
-    );
-    log::info!("SOFTIRQ_TEST: ksoftirqd verification passed");
-
-    log::info!("SOFTIRQ_TEST: all tests passed");
-
-    // CRITICAL: Restore the real network softirq handler!
-    // The tests above registered test handlers that override the real ones.
-    // Without this, network packets won't be processed after the tests.
-    crate::net::register_net_softirq();
-    log::info!("SOFTIRQ_TEST: Restored network softirq handler");
-
-    log::info!("=== SOFTIRQ TEST: Completed ===");
 }

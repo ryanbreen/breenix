@@ -462,6 +462,24 @@ pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
     }
 }
 
+/// Read the current thread ID without taking the scheduler lock and without
+/// creating a mutable reference to the per-CPU thread object.
+///
+/// The aarch64 twin of `per_cpu::current_thread_id_lock_free`. It exists for
+/// code that runs on the IRQ-exit path -- softirq handlers -- where taking the
+/// global scheduler lock is the bare-lock-from-interrupt shape #609 was about.
+#[inline(always)]
+pub fn current_thread_id_lock_free() -> Option<u64> {
+    let thread_ptr =
+        hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        None
+    } else {
+        unsafe { Some((*thread_ptr).id) }
+    }
+}
+
 /// Set the current thread in per-CPU data
 pub fn set_current_thread(thread: *mut crate::task::thread::Thread) {
     unsafe {

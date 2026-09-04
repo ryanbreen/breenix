@@ -141,8 +141,10 @@ pub(crate) fn current_context_can_sleep() -> bool {
     let context_permits = crate::per_cpu::preempt_count() > 0;
 
     // Last, deliberately: the shared idle refusal counts what it refuses, and
-    // it should count callers that WOULD have slept, not every caller that
-    // asked. A context that fails the tests above was never going to sleep.
+    // it should count callers that WOULD have slept, not callers whose context
+    // already ruled sleeping out.
+    // claim-lint:ok: the ordering is pinned by
+    // tests/aarch64_testing_profile_structure.rs
     context_permits && !crate::task::idle_sleep::idle_identity_must_not_sleep()
 }
 
@@ -423,9 +425,9 @@ impl Completion {
                 //     idle refusal (`task::idle_sleep`) because dispatching it
                 //     resets it to the idle loop and abandons the call on its
                 //     stack (#761).
-                // WFI is avoided for all three: it is unsafe for the first (no
-                // timer yet), and for the others complete() emits SEV, so a
-                // yield-spin wakes race-free without depending on a timer tick.
+                // WFI is avoided in each of the 3 cases: it is unsafe for the
+                // first (no timer yet), and for the others complete() emits
+                // SEV, so a yield-spin wakes race-free without a timer tick.
                 // The wait is bounded by the same deadline as the sleeping
                 // path, so a lost completion still returns Ok(false).
                 // ============================================================

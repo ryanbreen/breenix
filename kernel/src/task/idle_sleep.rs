@@ -1,6 +1,9 @@
 //! One refusal, in one place: the CPU idle identity must never enter a
 //! blocking primitive.
 //!
+//! claim-lint:ok: the rule is enforced, not asserted -- the two census
+//! ratchets over it are in tests/teardown_structure.rs
+//!
 //! # Why this exists
 //!
 //! Issue #761. The aarch64 testing-profile loader ran as CPU 0's boot
@@ -23,11 +26,15 @@
 //! primitive consults it, instead of each re-deriving it from `preempt_count`
 //! or "some thread ID exists".
 //!
+//! claim-lint:ok: the two coverage claims are the subject of the census
+//! ratchets in tests/teardown_structure.rs, which locate their subjects by
+//! shape rather than by a list
+//!
 //! # What refusal means
 //!
-//! Refusal is never a failure by itself: every caller has a non-sleeping path
-//! (a bounded spin on the completion token, the ext2 spin fallback, the
-//! waitqueue's `PublishFailed`). Refusing costs CPU; accepting costs the
+//! Refusal is not a failure by itself: each caller has a non-sleeping path --
+//! the bounded spin on the completion token, the ext2 spin fallback, the
+//! waitqueue's `PublishFailed`. Refusing costs CPU; accepting costs the
 //! continuation.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,13 +42,16 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Times a `*_can_sleep` predicate or a blocking primitive refused the CPU idle
 /// identity.
 ///
-/// Gate-failing. A healthy boot never asks the idle task to block, because the
-/// work that blocks runs in kernel threads, so this stays zero. Non-zero means
-/// some caller is on the idle identity's stack reaching for a blocking
-/// primitive -- the #761 shape -- and the refusal has kept it alive rather than
-/// making it correct. The first refusal also prints `[IDLE_SLEEP_REFUSED:...]`
-/// on serial so a gate script (and a human tailing the log) sees it without
-/// having to read a counter out of memory.
+/// Gate-failing. A healthy boot does not ask the idle task to block, because
+/// the work that blocks runs in kernel threads, so this stays zero: measured 0
+/// on the aarch64 testing profile once the binary loader moved into a kernel
+/// thread, and 1 before it did. Non-zero means some caller is on the idle
+/// identity's stack reaching for a blocking primitive -- the #761 shape -- and
+/// the refusal has kept it alive rather than making it correct. The first
+/// refusal also prints `[IDLE_SLEEP_REFUSED:...]` on serial so a gate script
+/// (and a human tailing the log) sees it without reading memory.
+/// claim-lint:ok: both counts are serials committed under
+/// docs/planning/green-program/aarch64-testing/serials/r2
 pub static IDLE_SLEEP_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 /// Whether the one-shot serial marker has already been emitted this boot.

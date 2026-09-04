@@ -381,12 +381,19 @@ fn retain_cpu_affine_thread(
 enum PinnedReclaimDisposition {
     /// Not pinned here, or pinned to the reclaiming CPU: migrate as usual.
     Migrate,
-    /// A hold pen on a deliberately non-dispatching CPU: put it back, whoever
-    /// set the pen releases it.
+    /// Put it back on its home queue. Either the pin is a hold pen whose owner
+    /// releases it, or the home CPU is online and merely stalled -- a stall is
+    /// temporary, and the moment that CPU enters the scheduler again it
+    /// dispatches what is already on its queue, with no wake needed. The
+    /// aarch64 boot CPU is the standing example: it holds a deliberate
+    /// boot-long preemption pin, so every peer's staleness test classifies it
+    /// as not accepting wakeups for the whole boot, and parking `ksoftirqd/0`
+    /// off its queue for that would be churn, not a rescue.
     Retain,
-    /// A per-CPU worker whose home CPU cannot dispatch: leave it off every
-    /// queue and blocked. It must not run on a foreign CPU (its work is the
-    /// home CPU's per-CPU state) and must not sit on a queue nothing drains.
+    /// A per-CPU worker whose home CPU is OFFLINE: leave it blocked and off the
+    /// ready queues. It must not run on a foreign CPU (its work is the home
+    /// CPU's per-CPU state), and the queue it is on belongs to a CPU that is
+    /// gone, so nothing will ever drain it.
     Park,
 }
 
@@ -394,6 +401,7 @@ fn reclaim_disposition_for_pinned_thread(
     threads: &[Box<Thread>],
     thread_id: u64,
     current_cpu: usize,
+    home_is_offline: bool,
 ) -> PinnedReclaimDisposition {
     let pin = threads
         .iter()
@@ -405,7 +413,7 @@ fn reclaim_disposition_for_pinned_thread(
     if pin.cpu == current_cpu {
         return PinnedReclaimDisposition::Migrate;
     }
-    if pin.per_cpu_worker {
+    if pin.per_cpu_worker && home_is_offline {
         PinnedReclaimDisposition::Park
     } else {
         PinnedReclaimDisposition::Retain
@@ -414,10 +422,13 @@ fn reclaim_disposition_for_pinned_thread(
 
 /// Wakes refused because the woken thread is a per-CPU worker whose home CPU is
 /// not accepting wakeups, plus reclaim passes that parked one for the same
-/// reason. Gate-failing: on a healthy boot every per-CPU worker's home CPU is
-/// dispatching whenever there is local work for it, so this stays zero. A
-/// non-zero value means a per-CPU worker's backlog is going undrained, which is
-/// the thing to look at -- not a reason to migrate it onto the wrong bitmap.
+/// reason. Gate-failing: a per-CPU worker's local work is raised by the home
+/// CPU itself, so on a healthy boot that CPU is dispatching when the wake
+/// arrives and this stays zero -- measured 0 on the aarch64 testing profile.
+/// A non-zero value means a per-CPU worker's backlog is going undrained, which
+/// is the thing to look at -- not a reason to migrate it onto the wrong bitmap.
+/// claim-lint:ok: the measurement is a serial committed under
+/// docs/planning/green-program/aarch64-testing/serials/r2
 pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
@@ -1565,12 +1576,14 @@ impl Scheduler {
 
     /// The shared idle-identity refusal, read from inside the scheduler lock.
     ///
-    /// Every member of the blocking-primitive family calls this before it
-    /// publishes a blocked state. `is_current_idle_thread()` cannot be used
-    /// here: it takes the scheduler lock the family's callers already hold, so
-    /// the identity is read directly from this CPU's state and handed to the
-    /// one shared decision in `task::idle_sleep`, which owns the counting and
-    /// the serial marker.
+    /// Every member of the blocking-primitive family that publishes the
+    /// CALLER's blocked state calls this before it does.
+    /// `is_current_idle_thread()` cannot be used here: it takes the scheduler
+    /// lock the family's callers already hold, so the identity is read directly
+    /// from this CPU's state and handed to the one shared decision in
+    /// `task::idle_sleep`, which owns the counting and the serial marker.
+    /// claim-lint:ok: the coverage claim is the subject of the family census
+    /// ratchet in tests/teardown_structure.rs
     #[inline]
     fn refuse_idle_block(&self) -> bool {
         let cpu = Self::current_cpu_id();
@@ -1624,8 +1637,12 @@ impl Scheduler {
                 let Some(thread_id) = self.per_cpu_queues[cpu].pop_front() else {
                     break;
                 };
-                match reclaim_disposition_for_pinned_thread(&self.threads, thread_id, current_cpu)
-                {
+                match reclaim_disposition_for_pinned_thread(
+                    &self.threads,
+                    thread_id,
+                    current_cpu,
+                    offline,
+                ) {
                     PinnedReclaimDisposition::Retain => {
                         self.per_cpu_queues[cpu].push_back(thread_id);
                         continue;
@@ -4082,17 +4099,36 @@ impl Scheduler {
     /// Find which CPU this thread last ran on, or the least-loaded CPU if unknown.
     /// Used by wakeup paths for cache-affinity routing.
     ///
-    /// `None` means there is no acceptable target: the thread is pinned to a
-    /// CPU that is offline or has stopped dispatching, and its pin is the kind
-    /// that must not be honoured by migration. The caller parks it.
+    /// A `None` result reports an unacceptable target: the thread is pinned to
+    /// a CPU that is offline or has stopped dispatching, and its pin is the
+    /// kind that must not be honoured by migration. The caller parks it.
+    /// claim-lint:ok: the placement rule is pinned by
+    /// tests/loopback_pump_structure.rs
     fn find_target_cpu_for_wakeup(&self, tid: u64) -> Option<usize> {
         let current_cpu = Self::current_cpu_id();
         if let Some(pin) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
-            // The pinned CPU is a placement decision like every other one in
+            // The pinned CPU is a placement decision like the other arms in
             // this function, so it is judged by the same liveness filter: a
-            // wake must never be routed onto a CPU the scheduler has already
+            // wake is not routed onto a CPU the scheduler has already
             // classified as not accepting wakeups.
-            if pin.cpu < self.online_cpu_count() && self.cpu_accepts_wakeups(pin.cpu) {
+            //
+            // The one exception is the CPU running this code. A per-CPU
+            // worker's wake comes from its own CPU -- wakeup_ksoftirqd wakes the
+            // LOCAL daemon from the IRQ-exit path -- and there
+            // cpu_accepts_wakeups falls through to the staleness test, because
+            // arch_can_dispatch_here() is false inside a handler. That test
+            // answers "has this CPU entered the scheduler in the last
+            // CPU_STALL_TICKS", which is the wrong question for a CPU that is
+            // demonstrably executing: measured, it refused a live local wake on
+            // an otherwise healthy boot. A pinned thread has no alternative
+            // placement anyway, so the liveness filter is what it is for -- a
+            // FOREIGN home CPU that has stopped dispatching.
+            // claim-lint:ok: the arm and the filter are pinned, with three
+            // mutation legs, by tests/loopback_pump_structure.rs
+            let home_is_this_cpu = pin.cpu == current_cpu;
+            if pin.cpu < self.online_cpu_count()
+                && (home_is_this_cpu || self.cpu_accepts_wakeups(pin.cpu))
+            {
                 return Some(pin.cpu);
             }
             // The home CPU cannot take it. A per-CPU worker services that CPU's
@@ -4119,17 +4155,33 @@ impl Scheduler {
 
     /// Leave a per-CPU worker parked because its home CPU is not dispatching.
     ///
-    /// Parked here means exactly what `kthread_park` means: the thread's state
-    /// is the plain `Blocked` that `block_current` publishes, and it names no
-    /// ready queue. The next wake after its home CPU resumes dispatching finds
-    /// an acceptable target and queues it there; nothing else is needed, and
-    /// nothing has been placed on the wrong CPU in the meantime.
+    /// Parked here means what `kthread_park` means: the thread's state is the
+    /// plain `Blocked` that `block_current` publishes, and it is off the ready
+    /// queues. The next wake after its home CPU resumes dispatching finds an
+    /// acceptable target and queues it there, so the recovery needs no separate
+    /// mechanism and the worker has not run on a foreign CPU in the meantime.
+    /// claim-lint:ok: the queue departure is in this function's own body,
+    /// kernel/src/task/scheduler.rs
     fn park_pinned_worker_without_home(&mut self, thread_id: u64) {
         let parks = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
         if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
             // Raw serial, one shot: this runs under the scheduler lock with
-            // interrupts masked, where the logger's lock would deadlock.
-            crate::tracing::output::raw_serial_str("[PINNED_HOME_CPU_UNAVAILABLE:first:count=");
+            // interrupts masked, where the logger's lock would deadlock. The
+            // tid and its home CPU are on the line because "something got
+            // parked" is not actionable and "this worker's home stopped
+            // dispatching" is.
+            let home = self
+                .get_thread(thread_id)
+                .and_then(|thread| thread.cpu_affinity)
+                .map(|pin| pin.cpu)
+                .unwrap_or(usize::MAX);
+            crate::tracing::output::raw_serial_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
+            crate::tracing::output::raw_serial_dec(thread_id);
+            crate::tracing::output::raw_serial_str(":home=");
+            crate::tracing::output::raw_serial_dec(home as u64);
+            crate::tracing::output::raw_serial_str(":cpu=");
+            crate::tracing::output::raw_serial_dec(Self::current_cpu_id() as u64);
+            crate::tracing::output::raw_serial_str(":count=");
             crate::tracing::output::raw_serial_dec(parks);
             crate::tracing::output::raw_serial_str("]\r\n");
         }

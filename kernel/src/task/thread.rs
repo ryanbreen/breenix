@@ -576,14 +576,17 @@ pub struct Thread {
 ///
 /// * `per_cpu_worker` — the thread services state that lives in that CPU's
 ///   per-CPU block (`ksoftirqd/N` and its pending-softirq bitmap). Running it
-///   anywhere else reads the wrong bitmap, so it may never be migrated; if its
-///   home CPU is offline or stalled it stays parked until the home CPU comes
-///   back. Linux parks per-CPU kthreads on CPU-down for the same reason.
+///   anywhere else reads the wrong bitmap, so it is not migrated; if its home
+///   CPU is offline or stalled it stays parked until the home CPU comes back.
+///   Linux parks per-CPU kthreads on CPU-down for the same reason.
+///   claim-lint:ok: the placement arm and its liveness filter are pinned, with
+///   three mutation legs, by tests/loopback_pump_structure.rs
 /// * not a worker — a temporary hold pen. The aarch64 testing-profile loader
 ///   pins its freshly created user threads to the non-dispatching boot CPU so a
-///   peer cannot run a partial catalog, and releases every one of them in
+///   peer cannot run a partial catalog, and releases them in
 ///   `finish_test_binary_staging`. Parking those would strand the catalog, so a
 ///   hold-pen pin is retained on its queue rather than parked.
+///   claim-lint:ok: the release loop is in kernel/src/task/scheduler.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuPin {
     /// The CPU this thread must run on.
