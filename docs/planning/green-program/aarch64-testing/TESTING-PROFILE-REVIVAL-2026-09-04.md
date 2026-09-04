@@ -85,12 +85,14 @@ users by construction rather than by remembering to ask a predicate first.
 occurrence. Two census ratchets in `tests/teardown_structure.rs` locate their
 subjects by shape -- `_can_sleep` in a name, the family's own name prefixes --
 so a predicate or primitive added later is censused without being listed
-anywhere. At round 3 the census reached its eighth subject: AHCI's
+anywhere. At round 3 an eighth decision point was found and repaired: AHCI's
 `scheduler_sleep_ready` (`kernel/src/drivers/ahci/mod.rs`) decided
 scheduler-sleep eligibility from "a thread id exists and the timer runs", which
-the aarch64 idle identity satisfies. It now calls the same refusal, so the rule
-and its census agree about every decision point rather than about seven of
-eight.
+the aarch64 idle identity satisfies. It now calls the same refusal. The name
+census did NOT reach it, and could not -- it names 7 subjects, the 7
+definitions `grep -rEn "fn [a-z0-9_]*_can_sleep" kernel/src` reports -- which
+is what the round-3 review raised as N03 and N15 and what the call-site census
+below repairs.
 
 Round 3 also fixed the ratchets themselves. Both matched raw body text, so
 deleting an executable guard and leaving its name behind in a comment kept them
