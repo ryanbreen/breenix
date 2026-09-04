@@ -865,32 +865,41 @@ with the two serial captures beside it, and `boot2` is its sibling:
 
 ## Builds and tests at the head
 
-`serials/775/round4/builds/` holds the round-4 transcripts, re-run at the pushed
-content; `serials/775/round3/builds/` and `serials/775/builds/` hold the two
-earlier rounds'. Each of the 3 build commands was forced to recompile by
-touching `kernel/src/task/dispatch_strand_census.rs` first, so each transcript
-is a real compile rather than a cache hit.
+`serials/775/round5/builds/` holds this round's transcripts and
+`serials/775/round4/builds/` the previous round's; `serials/775/round3/builds/`
+and `serials/775/builds/` hold the two before that. Each build command was
+forced to recompile by touching `kernel/src/task/dispatch_strand_census.rs`
+first, so each transcript is a real compile rather than a cache hit.
 
-| command | round-4 result |
-|---|---|
-| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | `Finished ... in 13.53s`, exit 0, 0 lines matching `^(warning\|error)` |
-| `cargo build --release --bin qemu-uefi` | `Finished ... in 12.58s`, exit 0, 0 such lines |
-| `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | `Finished ... in 6.34s`, exit 0, 1 such line |
+| command | round-5 result | round-4 result |
+|---|---|---|
+| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | `Finished ... in 16.32s`, exit 0, 0 lines matching `^(warning\|error)` | `Finished ... in 13.53s`, exit 0, 0 such lines |
+| `cargo build --release --bin qemu-uefi` | `Finished ... in 16.07s`, exit 0, 0 such lines | `Finished ... in 12.58s`, exit 0, 0 such lines |
+| `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | `Finished ... in 6.78s`, exit 0, 1 such line | `Finished ... in 6.34s`, exit 0, 1 such line |
+| the same aarch64 command with `--features boot_tests` (the strict gate's input) | `Finished ... in 7.58s`, exit 0, 1 such line | not run |
 
-The two x86 builds ran on the beast `breenix-x86` container; the aarch64 build
-ran on the ARM Mac. `tests/*_structure.rs` were run one target per invocation:
-26 targets, 26 exit 0, 505 passed, 0 failed, 0 lines matching
-`^(warning|error)` across the 26
-(`round4/builds/structure-tests-26-targets.txt`). `tests/x86_gate_verdict_test.rs`
-ran separately: 17 passed, 0 failed (`round4/builds/verdict-test.txt`), up from
-round 3's 14 because this round adds the three age-assertion tests.
+Round-5 transcripts are in `serials/775/round5/builds/`, and that README
+records which commit each ran at and why the head's build inputs are the same
+bytes. Round-5 test totals: 26 structure targets, 505 passed, 0 failed, 0
+warning/error lines; `tests/x86_gate_verdict_test.rs` 20 passed, 0 failed.
+
+The two x86 builds ran on the beast `breenix-x86` container; the aarch64 builds
+ran on the ARM Mac. In both rounds `tests/*_structure.rs` were run one target
+per invocation, 26 targets each time. Round 5:
+`round5/builds/structure-tests-targets.txt`, 26 exit 0, 505 passed, 0 failed,
+0 lines matching `^(warning|error)`; `round5/builds/verdict-test.txt`, 20
+passed, 0 failed. Round 4: `round4/builds/structure-tests-26-targets.txt` with
+the same 26/505/0, and `round4/builds/verdict-test.txt` at 17 passed. The three
+new verdict tests are the truncated-capture arm (R4-5), the argument-order arm
+(R4-6) and the silent-census arm.
 
 <!-- claim-lint:ok: the aarch64 warning line names only the toolchain's own
      core package; the same established exception is recorded in
      docs/planning/t3g-prb/PRB-STAGE3-GATE-RESULTS.md. -->
 The aarch64 warning is the pinned nightly's future-incompatibility notice for
 `core v0.0.0` in the toolchain's own source tree, printed verbatim in
-`round4/builds/aarch64-kernel.txt`. No warning names a Breenix crate.
+`round5/builds/aarch64-kernel.txt` and in `round4/builds/aarch64-kernel.txt`.
+It names 0 Breenix crates.
 
 ## Round-3's builds, for comparison
 

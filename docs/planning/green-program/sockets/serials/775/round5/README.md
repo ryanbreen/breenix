@@ -96,8 +96,15 @@ also what made the age line argument-order independent (finding R4-6).
 
 ## `builds/`
 
-Transcripts at the pushed content. The three build commands were each forced to
+Transcripts at the pushed content. The build commands were each forced to
 recompile by touching `kernel/src/task/dispatch_strand_census.rs` first.
+
+The two x86 rows below ran at `7f319a1c` and the branch head is `3bde7cc7`.
+Between those two commits a diff of `kernel/`, `libs/`, `userspace/`,
+`Cargo.toml` and `Cargo.lock` is empty -- the 2 commits in between change
+`tests/` and `docs/` only -- so the transcripts are of the head's build
+inputs. The aarch64 rows ran against `645bab38`, whose `kernel/` is likewise
+identical to the head's.
 
 | command | where | result |
 |---|---|---|
