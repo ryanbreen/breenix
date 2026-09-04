@@ -1,0 +1,3 @@
+attempt=1 verdict=pass bytes=   22595 qpid=37179
+attempt=2 verdict=no-bsshd-75s bytes=   10844 qpid=37671
+WEDGED dir=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/runs/B/att2 port=1241 qpid=37671 verdict=no-bsshd-75s

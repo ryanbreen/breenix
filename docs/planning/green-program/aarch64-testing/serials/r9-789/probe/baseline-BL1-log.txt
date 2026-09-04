@@ -1,0 +1,6 @@
+attempt=1 verdict=no-bsshd-80s qemu_cpu=394.6 bytes=   10010
+attempt=2 verdict=no-bsshd-80s qemu_cpu=394.7 bytes=   10941
+attempt=3 verdict=pass qemu_cpu=185.9 bytes=   21613
+attempt=4 verdict=pass qemu_cpu=188.8 bytes=   23736
+attempt=5 verdict=no-bsshd-80s qemu_cpu=393.8 bytes=    9056
+done BL1

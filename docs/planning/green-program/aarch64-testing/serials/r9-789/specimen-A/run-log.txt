@@ -1,0 +1,2 @@
+attempt=1 verdict=stalled-output bytes=   13626 qpid=37054
+WEDGED dir=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/runs/A/att1 port=1240 qpid=37054 verdict=stalled-output

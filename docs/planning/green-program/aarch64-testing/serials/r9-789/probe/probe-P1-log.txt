@@ -1,0 +1,6 @@
+attempt=1 verdict=pass qemu_cpu=185.1 bytes=   21001
+attempt=2 verdict=pass qemu_cpu=185.7 bytes=   20870
+attempt=3 verdict=pass qemu_cpu=171.5 bytes=   21357
+attempt=4 verdict=pass qemu_cpu=170.0 bytes=   21603
+attempt=5 verdict=pass qemu_cpu=178.2 bytes=   23054
+done P1

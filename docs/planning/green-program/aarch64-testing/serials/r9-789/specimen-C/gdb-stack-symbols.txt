@@ -1,0 +1,64 @@
+0xffff0000404512b0 in check_need_resched_and_switch_arm64 ()
+
+########## SPECIMEN C: stack-word symbolization ##########
+
+===== CPU0 =====
+[Switching to thread 1 (Thread 1.1)]
+#0  0xffff0000404512b0 in check_need_resched_and_switch_arm64 ()
+pc             0xffff0000404512b0  0xffff0000404512b0 <check_need_resched_and_switch_arm64+1220>
+sp             0xffff000054285e30  0xffff000054285e30
+cpsr           0x800023c5          [ SP EL=1 F I A D BTYPE=0 N ]
+[sp+0x8] 0xffff000040606430  No symbol matches $w.
+[sp+0x50] 0xffff00004040f750  kernel::task::scheduler::Scheduler::wake_expired_timers + 112 in section .text
+[sp+0x70] 0xffff0000404ceb8c  handle_irq + 644 in section .text
+[sp+0x98] 0xffff00004055fa00  irq_handler + 148 in section .text
+[sp+0x118] 0xffff00004046228c  kernel::arch_impl::aarch64::context_switch::schedule_from_kernel + 4868 in section .text
+[sp+0x1e0] 0xffff000040519b08  kernel::task::completion::Completion::wait_timeout_inner + 624 in section .text
+[sp+0x1e8] 0xffff0000404126a8  kernel::task::scheduler::is_current_idle_thread + 248 in section .text
+
+===== CPU1 =====
+[Switching to thread 2 (Thread 1.2)]
+#0  0xffff000040451f0c in check_need_resched_and_switch_arm64 ()
+pc             0xffff000040451f0c  0xffff000040451f0c <check_need_resched_and_switch_arm64+4384>
+sp             0xffff0000433ffcb0  0xffff0000433ffcb0
+cpsr           0x600023c5          [ SP EL=1 F I A D BTYPE=0 C Z ]
+[sp+0] 0xffff00004058f2e8  <linked_list_allocator::LockedHeap as core::alloc::global::GlobalAlloc>::dealloc + 52 in section .text
+[sp+0x30] 0xffff000040409990  kernel::task::scheduler::Scheduler::reclaim_terminated_threads + 2104 in section .text
+[sp+0x38] 0xffff000040606400  No symbol matches $w.
+[sp+0x48] 0xffff000040606430  No symbol matches $w.
+[sp+0x60] 0xffff0000404cec58  handle_irq + 848 in section .text
+[sp+0x70] 0xffff0000404ceb8c  handle_irq + 644 in section .text
+[sp+0x98] 0xffff00004055fa00  irq_handler + 148 in section .text
+[sp+0xa8] 0xffff0000405904d4  core::fmt::num::imp::<impl core::fmt::Display for u32>::fmt in section .text
+[sp+0x1c8] 0xffff0000405904d4  core::fmt::num::imp::<impl core::fmt::Display for u32>::fmt in section .text
+[sp+0x1e0] 0xffff000040464dcc  idle_loop_arm64 + 1688 in section .text
+[sp+0x1e8] 0xffff000040464e38  idle_loop_arm64 + 1796 in section .text
+
+===== CPU2 =====
+[Switching to thread 3 (Thread 1.3)]
+#0  0xffff000040464ab0 in idle_loop_arm64 ()
+pc             0xffff000040464ab0  0xffff000040464ab0 <idle_loop_arm64+892>
+sp             0xffff0000435ffeb0  0xffff0000435ffeb0
+cpsr           0x600003c5          [ SP EL=1 F I A D BTYPE=0 C Z ]
+[sp+0x50] 0xffff000040607c90  No symbol matches $w.
+[sp+0xf8] 0xffff000040460f3c  kernel::arch_impl::aarch64::context_switch::inline_schedule_trampoline + 23512 in section .text
+[sp+0x108] 0xffff000040464734  idle_loop_arm64 in section .text
+
+===== CPU3 =====
+[Switching to thread 4 (Thread 1.4)]
+#0  0xffff000040451f0c in check_need_resched_and_switch_arm64 ()
+pc             0xffff000040451f0c  0xffff000040451f0c <check_need_resched_and_switch_arm64+4384>
+sp             0xffff000054232c50  0xffff000054232c50
+cpsr           0x600023c5          [ SP EL=1 F I A D BTYPE=0 C Z ]
+[sp+0x30] 0xffff000040519fd8  kernel::task::completion::Completion::wait_timeout_inner + 1856 in section .text
+[sp+0x60] 0xffff0000404cec58  handle_irq + 848 in section .text
+[sp+0x70] 0xffff0000404ceb8c  handle_irq + 644 in section .text
+[sp+0x98] 0xffff00004055fa00  irq_handler + 148 in section .text
+[sp+0x1e0] 0xffff00004053cdac  kernel::task::kthread::kthread_should_stop + 12 in section .text
+[sp+0x1e8] 0xffff00004041a5a4  kernel::task::scheduler::current_thread_id + 332 in section .text
+[Inferior 1 (process 1) detached]
+0xffff0000404512b0 in check_need_resched_and_switch_arm64 ()
+
+===== SCHEDULER lock byte =====
+0xffff000040800000 <_ZN6kernel4task9scheduler9SCHEDULER17hbd74fd1e03907651E>:	0x01
+[Inferior 1 (process 1) detached]

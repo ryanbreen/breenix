@@ -1,0 +1,108 @@
+Dump of assembler code from 0xffff0000404125b0 to 0xffff000040412758:
+   0xffff0000404125b0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+0>:	adrp	x8, 0xffff000040800000 <_ZN6kernel4task9scheduler9SCHEDULER17hbd74fd1e03907651E>
+   0xffff0000404125b4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+4>:	add	x8, x8, #0x0
+   0xffff0000404125b8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+8>:	mov	w9, #0x1                   	// #1
+   0xffff0000404125bc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+12>:	ldaxrb	w10, [x8]
+   0xffff0000404125c0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+16>:	cbnz	w10, 0xffff0000404125e4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+52>
+   0xffff0000404125c4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+20>:	stxrb	w10, w9, [x8]
+   0xffff0000404125c8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+24>:	cbnz	w10, 0xffff0000404125bc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+12>
+   0xffff0000404125cc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+28>:	mrs	x9, tpidr_el1
+   0xffff0000404125d0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+32>:	cbz	x9, 0xffff0000404125f0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+64>
+   0xffff0000404125d4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+36>:	mrs	x9, tpidr_el1
+   0xffff0000404125d8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+40>:	cbz	x9, 0xffff000040412604 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+84>
+   0xffff0000404125dc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+44>:	ldr	x9, [x9]
+   0xffff0000404125e0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+48>:	b	0xffff0000404125f8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+72>
+   0xffff0000404125e4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+52>:	mov	w0, #0x2                   	// #2
+   0xffff0000404125e8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+56>:	clrex
+   0xffff0000404125ec <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+60>:	ret
+   0xffff0000404125f0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+64>:	mrs	x9, mpidr_el1
+   0xffff0000404125f4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+68>:	and	x9, x9, #0xff
+   0xffff0000404125f8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+72>:	cmp	x9, #0xf
+   0xffff0000404125fc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+76>:	mov	w10, #0xf                   	// #15
+   0xffff000040412600 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+80>:	csel	x9, x9, x10, cc	// cc = lo, ul, last
+   0xffff000040412604 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+84>:	adrp	x10, 0xffff000040938000 <_ZN6kernel7tracing9providers8teardown31EXIT_KICK_BUCKET_PUBLISH_COUNTS17hc0d0cded0e0bbaf7E+504>
+   0xffff000040412608 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+88>:	add	x10, x10, #0x4d0
+   0xffff00004041260c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+92>:	ldr	x9, [x10, x9, lsl #3]
+   0xffff000040412610 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+96>:	cbz	x9, 0xffff000040412664 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+180>
+   0xffff000040412614 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+100>:	mrs	x9, tpidr_el1
+   0xffff000040412618 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+104>:	cbz	x9, 0xffff000040412634 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+132>
+   0xffff00004041261c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+108>:	mrs	x9, tpidr_el1
+   0xffff000040412620 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+112>:	cbz	x9, 0xffff000040412644 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+148>
+   0xffff000040412624 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+116>:	ldr	x9, [x9]
+   0xffff000040412628 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+120>:	cmp	x9, #0x10
+   0xffff00004041262c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+124>:	b.cc	0xffff000040412644 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+148>  // b.lo, b.ul, b.last
+   0xffff000040412630 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+128>:	b	0xffff000040412664 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+180>
+   0xffff000040412634 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+132>:	mrs	x9, mpidr_el1
+   0xffff000040412638 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+136>:	and	x9, x9, #0xff
+   0xffff00004041263c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+140>:	cmp	x9, #0x10
+   0xffff000040412640 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+144>:	b.cs	0xffff000040412664 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+180>  // b.hs, b.nlast
+   0xffff000040412644 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+148>:	adrp	x10, 0xffff000040823000 <FRAME_RETURN_REFUSED_LIVE_LEAF+64>
+   0xffff000040412648 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+152>:	add	x10, x10, #0x840
+   0xffff00004041264c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+156>:	add	x9, x10, x9, lsl #6
+   0xffff000040412650 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+160>:	add	x9, x9, #0x40
+   0xffff000040412654 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+164>:	ldxr	x10, [x9]
+   0xffff000040412658 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+168>:	add	x10, x10, #0x1
+   0xffff00004041265c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+172>:	stxr	w11, x10, [x9]
+   0xffff000040412660 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+176>:	cbnz	w11, 0xffff000040412654 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+164>
+   0xffff000040412664 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+180>:	adrp	x9, 0xffff000040800000 <_ZN6kernel4task9scheduler9SCHEDULER17hbd74fd1e03907651E>
+   0xffff000040412668 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+184>:	ldr	x9, [x9, #8]
+   0xffff00004041266c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+188>:	cmp	x9, #0x2
+   0xffff000040412670 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+192>:	b.ne	0xffff000040412680 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+208>  // b.any
+   0xffff000040412674 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+196>:	mov	w0, #0x2                   	// #2
+   0xffff000040412678 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+200>:	stlrb	wzr, [x8]
+   0xffff00004041267c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+204>:	ret
+   0xffff000040412680 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+208>:	mrs	x10, tpidr_el1
+   0xffff000040412684 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+212>:	cbz	x10, 0xffff000040412698 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+232>
+   0xffff000040412688 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+216>:	mrs	x10, tpidr_el1
+   0xffff00004041268c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+220>:	cbz	x10, 0xffff0000404126e0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+304>
+   0xffff000040412690 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+224>:	ldr	x0, [x10]
+   0xffff000040412694 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+228>:	b	0xffff0000404126a0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+240>
+   0xffff000040412698 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+232>:	mrs	x9, mpidr_el1
+   0xffff00004041269c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+236>:	and	x0, x9, #0xff
+   0xffff0000404126a0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+240>:	cmp	x0, #0x7
+   0xffff0000404126a4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+244>:	b.hi	0xffff000040412734 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+388>  // b.pmore
+   0xffff0000404126a8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+248>:	lsl	x9, x0, #6
+   0xffff0000404126ac <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+252>:	mov	w10, #0x8                   	// #8
+   0xffff0000404126b0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+256>:	bfi	x10, x0, #6, #57
+   0xffff0000404126b4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+260>:	add	x9, x8, x9
+   0xffff0000404126b8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+264>:	ldr	x9, [x9, #8]
+   0xffff0000404126bc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+268>:	tbz	w9, #0, 0xffff0000404126e8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+312>
+   0xffff0000404126c0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+272>:	add	x9, x8, x10
+   0xffff0000404126c4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+276>:	ldr	x9, [x9, #8]
+   0xffff0000404126c8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+280>:	mrs	x10, tpidr_el1
+   0xffff0000404126cc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+284>:	cbz	x10, 0xffff0000404126f4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+324>
+   0xffff0000404126d0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+288>:	mrs	x10, tpidr_el1
+   0xffff0000404126d4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+292>:	cbz	x10, 0xffff00004041271c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+364>
+   0xffff0000404126d8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+296>:	ldr	x0, [x10]
+   0xffff0000404126dc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+300>:	b	0xffff0000404126fc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+332>
+   0xffff0000404126e0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+304>:	mov	w10, #0x8                   	// #8
+   0xffff0000404126e4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+308>:	tbnz	w9, #0, 0xffff0000404126c0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+272>
+   0xffff0000404126e8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+312>:	mov	w0, #0x2                   	// #2
+   0xffff0000404126ec <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+316>:	stlrb	wzr, [x8]
+   0xffff0000404126f0 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+320>:	ret
+   0xffff0000404126f4 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+324>:	mrs	x10, mpidr_el1
+   0xffff0000404126f8 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+328>:	and	x0, x10, #0xff
+   0xffff0000404126fc <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+332>:	cmp	x0, #0x8
+   0xffff000040412700 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+336>:	b.cs	0xffff000040412744 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+404>  // b.hs, b.nlast
+   0xffff000040412704 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+340>:	add	x10, x8, x0, lsl #6
+   0xffff000040412708 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+344>:	ldr	x10, [x10, #56]
+   0xffff00004041270c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+348>:	stlrb	wzr, [x8]
+   0xffff000040412710 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+352>:	cmp	x9, x10
+   0xffff000040412714 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+356>:	cset	w0, eq	// eq = none
+   0xffff000040412718 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+360>:	ret
+   0xffff00004041271c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+364>:	add	x10, x8, xzr, lsl #6
+   0xffff000040412720 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+368>:	ldr	x10, [x10, #56]
+   0xffff000040412724 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+372>:	stlrb	wzr, [x8]
+   0xffff000040412728 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+376>:	cmp	x9, x10
+   0xffff00004041272c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+380>:	cset	w0, eq	// eq = none
+   0xffff000040412730 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+384>:	ret
+   0xffff000040412734 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+388>:	adrp	x2, 0xffff000040606000
+   0xffff000040412738 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+392>:	add	x2, x2, #0x4f0
+   0xffff00004041273c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+396>:	mov	w1, #0x8                   	// #8
+   0xffff000040412740 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+400>:	bl	0xffff000040596434 <_ZN4core9panicking18panic_bounds_check17hf095c71836d340bdE>
+   0xffff000040412744 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+404>:	adrp	x2, 0xffff000040606000
+   0xffff000040412748 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+408>:	add	x2, x2, #0x508
+   0xffff00004041274c <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+412>:	mov	w1, #0x8                   	// #8
+   0xffff000040412750 <_ZN6kernel4task9scheduler22is_current_idle_thread17h2fcffa1d8afc44a2E+416>:	bl	0xffff000040596434 <_ZN4core9panicking18panic_bounds_check17hf095c71836d340bdE>
+   0xffff000040412754 <_ZN6kernel4task9scheduler14with_scheduler17h9f55e04af3dbaf4aE+0>:	stp	x30, x23, [sp, #-48]!
+End of assembler dump.

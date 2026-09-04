@@ -1,0 +1,188 @@
+core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+14	        super::isb(super::arg::SY)
+
+########## SPECIMEN: aarch64 production-profile wedge, 4 vCPUs ##########
+
+===== info threads (QEMU vCPUs) =====
+  Id   Target Id                    Frame 
+* 1    Thread 1.1 (CPU#0 [running]) core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+  2    Thread 1.2 (CPU#1 [running]) core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+  3    Thread 1.3 (CPU#2 [running]) core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+  4    Thread 1.4 (CPU#3 [running]) core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+
+===== CPU0 =====
+[Switching to thread 1 (Thread 1.1)]
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+14	        super::isb(super::arg::SY)
+pc             0xffff000040555648  0xffff000040555648 <kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64+1220>
+sp             0xffff000054285e90  0xffff000054285e90
+cpsr           0x800023c5          [ SP EL=1 F I A D BTYPE=0 N ]
+$1 = 0xffff000040828b00
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+#1  core::core_arch::arm_shared::barrier::__isb<core::core_arch::arm_shared::barrier::common::SY> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/mod.rs:144
+#2  core::hint::spin_loop () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/hint.rs:295
+#3  core::sync::atomic::spin_loop_hint () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/sync/atomic.rs:4478
+#4  spin::relax::{impl#0}::relax () at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/relax.rs:29
+#5  spin::mutex::spin::SpinMutex<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin>::lock<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin> (self=0xffff000040800000 <kernel::task::scheduler::SCHEDULER>) at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/mutex/spin.rs:187
+#6  spin::mutex::Mutex<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin>::lock<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin> (self=0xffff000040800000 <kernel::task::scheduler::SCHEDULER>) at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/mutex.rs:186
+#7  kernel::task::scheduler::lock_scheduler () at kernel/src/task/scheduler.rs:345
+#8  kernel::task::scheduler::lock_for_context_switch () at kernel/src/task/scheduler.rs:587
+#9  kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64 (frame=0xffff000054285f80, from_el0=false) at kernel/src/arch_impl/aarch64/context_switch.rs:5247
+#10 0xffff0000404c6234 in irq_handler ()
+#11 0xffff0000404c6234 in irq_handler ()
+#12 0xffff0000404c6234 in irq_handler ()
+#13 0xffff0000404c6234 in irq_handler ()
+
+===== CPU1 =====
+[Switching to thread 2 (Thread 1.2)]
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+14	        super::isb(super::arg::SY)
+pc             0xffff0000405562a4  0xffff0000405562a4 <kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64+4384>
+sp             0xffff0000433ffc60  0xffff0000433ffc60
+cpsr           0x600023c5          [ SP EL=1 F I A D BTYPE=0 C Z ]
+$2 = 0xffff000040828bc0
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+#1  core::core_arch::arm_shared::barrier::__isb<core::core_arch::arm_shared::barrier::common::SY> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/mod.rs:144
+#2  core::hint::spin_loop () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/hint.rs:295
+#3  core::sync::atomic::spin_loop_hint () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/sync/atomic.rs:4478
+#4  spin::relax::{impl#0}::relax () at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/relax.rs:29
+#5  spin::mutex::spin::SpinMutex<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin>::lock<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin> (self=0xffff000040800000 <kernel::task::scheduler::SCHEDULER>) at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/mutex/spin.rs:187
+#6  spin::mutex::Mutex<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin>::lock<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin> (self=0xffff000040800000 <kernel::task::scheduler::SCHEDULER>) at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/mutex.rs:186
+#7  kernel::task::scheduler::lock_scheduler () at kernel/src/task/scheduler.rs:345
+#8  kernel::task::scheduler::lock_for_context_switch () at kernel/src/task/scheduler.rs:587
+#9  kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64 (frame=0xffff0000433ffd50, from_el0=false) at kernel/src/arch_impl/aarch64/context_switch.rs:5367
+#10 0xffff0000404c6234 in irq_handler ()
+#11 0xffff0000404c6234 in irq_handler ()
+#12 0xffff0000404c6234 in irq_handler ()
+#13 0xffff0000404c6234 in irq_handler ()
+
+===== CPU2 =====
+[Switching to thread 3 (Thread 1.3)]
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+14	        super::isb(super::arg::SY)
+pc             0xffff000040568c0c  0xffff000040568c0c <kernel::arch_impl::aarch64::context_switch::idle_loop_arm64+668>
+sp             0xffff0000435ffe60  0xffff0000435ffe60
+cpsr           0x600023c5          [ SP EL=1 F I A D BTYPE=0 C Z ]
+$3 = 0xffff000040828c80
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+#1  core::core_arch::arm_shared::barrier::__isb<core::core_arch::arm_shared::barrier::common::SY> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/mod.rs:144
+#2  core::hint::spin_loop () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/hint.rs:295
+#3  core::sync::atomic::spin_loop_hint () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/sync/atomic.rs:4478
+#4  spin::relax::{impl#0}::relax () at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/relax.rs:29
+#5  spin::mutex::spin::SpinMutex<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin>::lock<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin> (self=0xffff000040800000 <kernel::task::scheduler::SCHEDULER>) at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/mutex/spin.rs:187
+#6  spin::mutex::Mutex<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin>::lock<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin> (self=0xffff000040800000 <kernel::task::scheduler::SCHEDULER>) at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/mutex.rs:186
+#7  kernel::task::scheduler::lock_scheduler () at kernel/src/task/scheduler.rs:345
+#8  kernel::task::scheduler::reclaim_terminated_threads::{closure#0} () at kernel/src/task/scheduler.rs:4824
+#9  kernel::arch_impl::aarch64::cpu::{impl#1}::without_interrupts<kernel::task::scheduler::reclaim_terminated_threads::{closure_env#0}, alloc::vec::Vec<alloc::boxed::Box<kernel::task::thread::Thread, alloc::alloc::Global>, alloc::alloc::Global>> () at kernel/src/arch_impl/aarch64/cpu.rs:126
+#10 kernel::arch_without_interrupts<kernel::task::scheduler::reclaim_terminated_threads::{closure_env#0}, alloc::vec::Vec<alloc::boxed::Box<kernel::task::thread::Thread, alloc::alloc::Global>, alloc::alloc::Global>> () at kernel/src/lib.rs:332
+#11 kernel::task::scheduler::reclaim_terminated_threads () at kernel/src/task/scheduler.rs:4823
+#12 kernel::arch_impl::aarch64::context_switch::run_deferred_reclamation () at kernel/src/arch_impl/aarch64/context_switch.rs:6553
+#13 kernel::arch_impl::aarch64::context_switch::idle_loop_arm64 () at kernel/src/arch_impl/aarch64/context_switch.rs:7098
+#14 0xffff000040565228 in kernel::arch_impl::aarch64::context_switch::pivot_destination (cpu=..., dest_top=18446462599863205888, cur_sp=18446462599862157088, half=kernel::arch_impl::aarch64::percpu::PivotHalf::Exception, site=2) at kernel/src/arch_impl/aarch64/context_switch.rs:2227
+#15 kernel::arch_impl::aarch64::context_switch::inline_schedule_trampoline () at kernel/src/arch_impl/aarch64/context_switch.rs:6491
+#16 0x0000000000000000 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+===== CPU3 =====
+[Switching to thread 4 (Thread 1.4)]
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+14	        super::isb(super::arg::SY)
+pc             0xffff000040555648  0xffff000040555648 <kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64+1220>
+sp             0xffff0000437ffc60  0xffff0000437ffc60
+cpsr           0x800023c5          [ SP EL=1 F I A D BTYPE=0 N ]
+$4 = 0xffff000040828d40
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+#1  core::core_arch::arm_shared::barrier::__isb<core::core_arch::arm_shared::barrier::common::SY> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/mod.rs:144
+#2  core::hint::spin_loop () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/hint.rs:295
+#3  core::sync::atomic::spin_loop_hint () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/sync/atomic.rs:4478
+#4  spin::relax::{impl#0}::relax () at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/relax.rs:29
+#5  spin::mutex::spin::SpinMutex<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin>::lock<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin> (self=0xffff000040800000 <kernel::task::scheduler::SCHEDULER>) at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/mutex/spin.rs:187
+#6  spin::mutex::Mutex<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin>::lock<core::option::Option<kernel::task::scheduler::Scheduler>, spin::relax::Spin> (self=0xffff000040800000 <kernel::task::scheduler::SCHEDULER>) at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/mutex.rs:186
+#7  kernel::task::scheduler::lock_scheduler () at kernel/src/task/scheduler.rs:345
+#8  kernel::task::scheduler::lock_for_context_switch () at kernel/src/task/scheduler.rs:587
+#9  kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64 (frame=0xffff0000437ffd50, from_el0=false) at kernel/src/arch_impl/aarch64/context_switch.rs:5247
+#10 0xffff0000404c6234 in irq_handler ()
+#11 0xffff0000404c6234 in irq_handler ()
+#12 0xffff0000404c6234 in irq_handler ()
+#13 0xffff0000404c6234 in irq_handler ()
+
+===== SCHEDULER spin lock byte (1 = HELD) =====
+$5 = core::sync::atomic::AtomicBool {v: core::cell::UnsafeCell<u8> {value: 1}}
+
+===== interrupted contexts =====
+[Switching to thread 1 (Thread 1.1)]
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+14	        super::isb(super::arg::SY)
+#9  kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64 (frame=0xffff000054285f80, from_el0=false) at kernel/src/arch_impl/aarch64/context_switch.rs:5247
+5247	        let mut guard = crate::task::scheduler::lock_for_context_switch();
+
+--- CPU0 interrupted context (elr / spsr / x30) ---
+$6 = 0xffff0000404127b8
+$7 = 0x80002305
+$8 = 0xffff00004059bfa4
+kernel::task::scheduler::is_current_idle_thread + 340 in section .text
+kernel::task::completion::Completion::wait_timeout_inner + 624 in section .text
+[Switching to thread 2 (Thread 1.2)]
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+14	        super::isb(super::arg::SY)
+#9  kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64 (frame=0xffff0000433ffd50, from_el0=false) at kernel/src/arch_impl/aarch64/context_switch.rs:5367
+5367	    let mut guard = crate::task::scheduler::lock_for_context_switch();
+
+--- CPU1 interrupted context (elr / spsr / x30) ---
+$9 = 0xffff0000405691a0
+$10 = 0x60002005
+$11 = 0xffff000040568f3c
+idle_loop_arm64 + 2096 in section .text
+idle_loop_arm64 + 1484 in section .text
+[Switching to thread 4 (Thread 1.4)]
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+14	        super::isb(super::arg::SY)
+#9  kernel::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64 (frame=0xffff0000437ffd50, from_el0=false) at kernel/src/arch_impl/aarch64/context_switch.rs:5247
+5247	        let mut guard = crate::task::scheduler::lock_for_context_switch();
+
+--- CPU3 interrupted context (elr / spsr / x30) ---
+$12 = 0xffff0000405691a0
+$13 = 0x60000005
+$14 = 0xffff000040568f3c
+idle_loop_arm64 + 2096 in section .text
+idle_loop_arm64 + 1484 in section .text
+
+===== per-CPU scheduler state =====
+$15 = [kernel::task::scheduler::CpuSchedulerState {current_thread: core::option::Option<u64>::Some(12), idle_thread: 1, previous_thread: core::option::Option<u64>::None, pending_next: core::option::Option<u64>::None, last_schedule_ticks: 3111}, kernel::task::scheduler::CpuSchedulerState {current_thread: core::option::Option<u64>::Some(6), idle_thread: 6, previous_thread: core::option::Option<u64>::None, pending_next: core::option::Option<u64>::None, last_schedule_ticks: 3111}, kernel::task::scheduler::CpuSchedulerState {current_thread: core::option::Option<u64>::Some(5), idle_thread: 5, previous_thread: core::option::Option<u64>::None, pending_next: core::option::Option<u64>::None, last_schedule_ticks: 3111}, kernel::task::scheduler::CpuSchedulerState {current_thread: core::option::Option<u64>::Some(7), idle_thread: 7, previous_thread: core::option::Option<u64>::Some(4), pending_next: core::option::Option<u64>::None, last_schedule_ticks: 3111}, kernel::task::scheduler::CpuSchedulerState {current_thread: core::option::Option<u64>::None, idle_thread: 0, previous_thread: core::option::Option<u64>::None, pending_next: core::option::Option<u64>::None, last_schedule_ticks: 0}, kernel::task::scheduler::CpuSchedulerState {current_thread: core::option::Option<u64>::None, idle_thread: 0, previous_thread: core::option::Option<u64>::None, pending_next: core::option::Option<u64>::None, last_schedule_ticks: 0}, kernel::task::scheduler::CpuSchedulerState {current_thread: core::option::Option<u64>::None, idle_thread: 0, previous_thread: core::option::Option<u64>::None, pending_next: core::option::Option<u64>::None, last_schedule_ticks: 0}, kernel::task::scheduler::CpuSchedulerState {current_thread: core::option::Option<u64>::None, idle_thread: 0, previous_thread: core::option::Option<u64>::None, pending_next: core::option::Option<u64>::None, last_schedule_ticks: 0}]
+
+===== per-CPU ready queues =====
+$16 = alloc::collections::vec_deque::VecDeque<u64, alloc::alloc::Global> {head: 1, len: 0, buf: alloc::raw_vec::RawVec<u64, alloc::alloc::Global> {inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> {ptr: core::ptr::unique::Unique<u8> {pointer: core::ptr::non_null::NonNull<u8> {pointer: 0xffff0000502e0b48}, _marker: core::marker::PhantomData<u8>}, cap: core::num::niche_types::UsizeNoHighBit (4), alloc: alloc::alloc::Global}, _marker: core::marker::PhantomData<u64>}}
+$17 = alloc::collections::vec_deque::VecDeque<u64, alloc::alloc::Global> {head: 3, len: 0, buf: alloc::raw_vec::RawVec<u64, alloc::alloc::Global> {inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> {ptr: core::ptr::unique::Unique<u8> {pointer: core::ptr::non_null::NonNull<u8> {pointer: 0xffff0000502e0bc8}, _marker: core::marker::PhantomData<u8>}, cap: core::num::niche_types::UsizeNoHighBit (4), alloc: alloc::alloc::Global}, _marker: core::marker::PhantomData<u64>}}
+$18 = alloc::collections::vec_deque::VecDeque<u64, alloc::alloc::Global> {head: 1, len: 0, buf: alloc::raw_vec::RawVec<u64, alloc::alloc::Global> {inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> {ptr: core::ptr::unique::Unique<u8> {pointer: core::ptr::non_null::NonNull<u8> {pointer: 0xffff0000502e02d8}, _marker: core::marker::PhantomData<u8>}, cap: core::num::niche_types::UsizeNoHighBit (4), alloc: alloc::alloc::Global}, _marker: core::marker::PhantomData<u64>}}
+$19 = alloc::collections::vec_deque::VecDeque<u64, alloc::alloc::Global> {head: 2, len: 0, buf: alloc::raw_vec::RawVec<u64, alloc::alloc::Global> {inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> {ptr: core::ptr::unique::Unique<u8> {pointer: core::ptr::non_null::NonNull<u8> {pointer: 0xffff0000502e30d0}, _marker: core::marker::PhantomData<u8>}, cap: core::num::niche_types::UsizeNoHighBit (4), alloc: alloc::alloc::Global}, _marker: core::marker::PhantomData<u64>}}
+
+===== thread table =====
+thread count = 12
+tid=1    state=kernel::task::thread::ThreadState::Running priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::None has_started=true name=0xffff0000502e05c8:	115 's'	119 'w'	97 'a'	112 'p'	112 'p'	101 'e'	114 'r'	47 '/'
+0xffff0000502e05d0:	48 '0'
+tid=2    state=kernel::task::thread::ThreadState::Blocked priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::Some(kernel::task::thread::CpuPin {cpu: 0, per_cpu_worker: true}) has_started=true name=0xffff0000502e0648:	107 'k'	115 's'	111 'o'	102 'f'	116 't'	105 'i'	114 'r'	113 'q'
+0xffff0000502e0650:	100 'd'	47 '/'	48 '0'
+tid=3    state=kernel::task::thread::ThreadState::Blocked priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::None has_started=true name=0xffff0000502e05d8:	107 'k'	108 'l'	111 'o'	111 'o'	112 'p'	98 'b'	97 'a'	99 'c'
+0xffff0000502e05e0:	107 'k'	100 'd'
+tid=4    state=kernel::task::thread::ThreadState::Ready priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::None has_started=true name=0xffff0000502e0b88:	114 'r'	101 'e'	110 'n'	100 'd'	101 'e'	114 'r'
+tid=5    state=kernel::task::thread::ThreadState::Running priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::None has_started=true name=0xffff0000502e02b8:	115 's'	119 'w'	97 'a'	112 'p'	112 'p'	101 'e'	114 'r'	47 '/'
+0xffff0000502e02c0:	50 '2'
+tid=6    state=kernel::task::thread::ThreadState::Running priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::None has_started=true name=0xffff0000502e02c8:	115 's'	119 'w'	97 'a'	112 'p'	112 'p'	101 'e'	114 'r'	47 '/'
+0xffff0000502e02d0:	49 '1'
+tid=7    state=kernel::task::thread::ThreadState::Running priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::None has_started=true name=0xffff0000502e0318:	115 's'	119 'w'	97 'a'	112 'p'	112 'p'	101 'e'	114 'r'	47 '/'
+0xffff0000502e0320:	51 '3'
+tid=8    state=kernel::task::thread::ThreadState::Blocked priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::Some(kernel::task::thread::CpuPin {cpu: 1, per_cpu_worker: true}) has_started=true name=0xffff0000502e0340:	107 'k'	115 's'	111 'o'	102 'f'	116 't'	105 'i'	114 'r'	113 'q'
+0xffff0000502e0348:	100 'd'	47 '/'	49 '1'
+tid=9    state=kernel::task::thread::ThreadState::Blocked priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::Some(kernel::task::thread::CpuPin {cpu: 2, per_cpu_worker: true}) has_started=true name=0xffff0000502e0b38:	107 'k'	115 's'	111 'o'	102 'f'	116 't'	105 'i'	114 'r'	113 'q'
+0xffff0000502e0b40:	100 'd'	47 '/'	50 '2'
+tid=10   state=kernel::task::thread::ThreadState::Blocked priv=kernel::task::thread::ThreadPrivilege::Kernel owner_pid=core::option::Option<u64>::None blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::Some(kernel::task::thread::CpuPin {cpu: 3, per_cpu_worker: true}) has_started=true name=0xffff0000502e02f8:	107 'k'	115 's'	111 'o'	102 'f'	116 't'	105 'i'	114 'r'	113 'q'
+0xffff0000502e0300:	100 'd'	47 '/'	51 '3'
+tid=12   state=kernel::task::thread::ThreadState::Running priv=kernel::task::thread::ThreadPrivilege::User owner_pid=core::option::Option<u64>::Some(1) blocked_in_syscall=false affinity=core::option::Option<kernel::task::thread::CpuPin>::None has_started=true name=0xffff00005032cce0:	105 'i'	110 'n'	105 'i'	116 't'
+tid=13   state=kernel::task::thread::ThreadState::BlockedOnTimer priv=kernel::task::thread::ThreadPrivilege::User owner_pid=core::option::Option<u64>::Some(2) blocked_in_syscall=true affinity=core::option::Option<kernel::task::thread::CpuPin>::None has_started=true name=0xffff0000502e30c0:	104 'h'	101 'e'	97 'a'	114 'r'	116 't'	98 'b'	101 'e'	97 'a'
+0xffff0000502e30c8:	116 't'
+
+===== branch counters =====
+$20 = core::sync::atomic::AtomicU64 {v: core::cell::UnsafeCell<u64> {value: 0}}
+$21 = core::sync::atomic::AtomicU64 {v: core::cell::UnsafeCell<u64> {value: 3418}}
+$22 = core::sync::atomic::AtomicU64 {v: core::cell::UnsafeCell<u64> {value: 0}}
+[Inferior 1 (process 1) detached]

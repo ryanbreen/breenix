@@ -1,0 +1,6 @@
+attempt=1 verdict=stalled-output qemu_cpu=395.3 bytes=   20524
+attempt=2 verdict=pass qemu_cpu=193.1 bytes=   23241
+attempt=3 verdict=stalled-output qemu_cpu=394.5 bytes=   17974
+attempt=4 verdict=no-bsshd-80s qemu_cpu=395.4 bytes=    9056
+attempt=5 verdict=no-bsshd-80s qemu_cpu=398.6 bytes=   10941
+done BL2
