@@ -1,0 +1,7 @@
+pre-removal commit          : 29344251 fix(775): move strand census off dispatch logs
+heartbeat overlay commit    : 5b419714 test(775): overlay heartbeat on pre-removal census
+overlay + mutation E booted : 689deb376299326e811af97a1feba9ffbff8a22d
+
+$ git diff --stat 5b419714 689deb376299326e811af97a1feba9ffbff8a22d
+ kernel/src/task/scheduler.rs | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)

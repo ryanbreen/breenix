@@ -1,0 +1,36 @@
+[gate] repo: /root/breenix-775  head: 689deb37
+[gate] accel=kvm cpu=host
+[gate] repointing rust-fork at /root/breenix/rust-fork-real (not committed)
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 14s
+[gate] === Running 3 boot test(s), mode=full ===
+strand census: thread 21 (tcp_cloexec_exec_test) saved blocked and never restored
+strand census: thread 24 (loopback_wake_test) saved blocked and never restored
+strand census: thread 25 (clonevm_exec_test) saved blocked and never restored
+strand census: thread 26 (futex_handoff_oracle) saved blocked and never restored
+strand census: thread 28 (tcp_cloexec_exec_test_child_18_main) saved blocked and never restored
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and never restored
+STRAND_CENSUS: threads_saved_blocked=10 stranded=6 lines=5616
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and never restored (see the strand census above)
+  Test 1: FAIL (see /tmp/breenix_gate_1/serial_kernel.log)
+strand census: thread 21 (tcp_cloexec_exec_test) saved blocked and never restored
+strand census: thread 24 (loopback_wake_test) saved blocked and never restored
+strand census: thread 25 (clonevm_exec_test) saved blocked and never restored
+strand census: thread 26 (futex_handoff_oracle) saved blocked and never restored
+strand census: thread 28 (tcp_cloexec_exec_test_child_18_main) saved blocked and never restored
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and never restored
+STRAND_CENSUS: threads_saved_blocked=10 stranded=6 lines=6046
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and never restored (see the strand census above)
+  Test 2: FAIL (see /tmp/breenix_gate_2/serial_kernel.log)
+strand census: thread 21 (tcp_cloexec_exec_test) saved blocked and never restored
+strand census: thread 24 (loopback_wake_test) saved blocked and never restored
+strand census: thread 25 (clonevm_exec_test) saved blocked and never restored
+strand census: thread 26 (futex_handoff_oracle) saved blocked and never restored
+strand census: thread 27 (tcp_cloexec_exec_test_child_17_main) saved blocked and never restored
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and never restored
+STRAND_CENSUS: threads_saved_blocked=10 stranded=6 lines=5976
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and never restored (see the strand census above)
+  Test 3: FAIL (see /tmp/breenix_gate_3/serial_kernel.log)
+GATE: FAIL (0/3 passed, 3/3 failed; mode=full build=14s boot=451s total=473s)

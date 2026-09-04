@@ -1,0 +1,21 @@
+[gate] repo: /root/breenix-775  head: 07fa248b
+[gate] accel=kvm cpu=host
+[gate] repointing rust-fork at /root/breenix/rust-fork-real (not committed)
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 16s
+[gate] === Running 3 boot test(s), mode=full ===
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=6221
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+  Test 1: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=6111
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+  Test 2: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=6008
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
+  Test 3: PASS
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+GATE: PASS (3/3 boot tests passed; mode=full build=16s boot=450s total=475s)

@@ -1,0 +1,5 @@
+strand census: thread 26 (futex_handoff_oracle) saved blocked at line 2766 and never restored (3280 further lines followed)
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked at line 3383 and never restored (2663 further lines followed)
+strand census: thread 24 (loopback_wake_test) saved blocked at line 4596 and never restored (1450 further lines followed)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=3 lines=6046
+old_rc=1

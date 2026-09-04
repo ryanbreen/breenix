@@ -1,0 +1,135 @@
+================ boot1
+--- old census (git show bfbb7575:scripts/x86-strand-census.sh, on serial_user.txt serial_kernel.txt)
+strand census: thread 26 (futex_handoff_oracle) saved blocked at line 3184 and never restored (2432 further lines followed)
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked at line 3135 and never restored (2481 further lines followed)
+strand census: thread 24 (loopback_wake_test) saved blocked at line 4343 and never restored (1273 further lines followed)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=3 lines=5616
+old_rc=1
+--- new census (scripts/x86-strand-census.sh, same two files)
+strand census: thread 21 (tcp_cloexec_exec_test) saved blocked and never restored
+strand census: thread 24 (loopback_wake_test) saved blocked and never restored
+strand census: thread 25 (clonevm_exec_test) saved blocked and never restored
+strand census: thread 26 (futex_handoff_oracle) saved blocked and never restored
+strand census: thread 28 (tcp_cloexec_exec_test_child_18_main) saved blocked and never restored
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and never restored
+STRAND_CENSUS: threads_saved_blocked=10 stranded=6 lines=5616
+new_rc=1
+--- census snapshots present on COM1, in order
+     1	[DISPATCH_STRAND_CENSUS:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+     2	[DISPATCH_STRAND_CENSUS:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+     3	[DISPATCH_STRAND_CENSUS:saved=5:stranded=5:tids=21,26,28,34,36:tid_overflow=0:ledger_overflow=0]
+     4	[DISPATCH_STRAND_CENSUS:saved=7:stranded=7:tids=21,24,26,28,32,34,36:tid_overflow=0:ledger_overflow=0]
+     5	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     6	[DISPATCH_STRAND_CENSUS:saved=10:stranded=5:tids=21,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     7	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     8	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     9	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    10	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    11	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    12	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    13	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    14	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    15	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    16	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+--- per-TID record history, COM2 only (line numbers are serial_kernel.txt's own)
+tid    saves    restores first_save  last_save   last_rest   exit_line
+21     9        9        2065        4193        4197        4369
+23     3        3        2415        4575        4576        4618
+24     5        4        2276        3396        3388        -1
+25     148      148      2457        4626        4654        4663
+26     1        0        2237        2237        -1          -1
+28     111      111      2070        4063        4067        4145
+30     1        1        2451        2451        2555        2600
+32     1        1        2372        2372        2498        2511
+34     2        2        2220        2418        2442        3372
+36     1        0        2188        2188        -1          -1
+38     1        1        4602        4602        4624        4653
+total serial_kernel.txt lines: 4669
+
+================ boot2
+--- old census (git show bfbb7575:scripts/x86-strand-census.sh, on serial_user.txt serial_kernel.txt)
+strand census: thread 26 (futex_handoff_oracle) saved blocked at line 2766 and never restored (3280 further lines followed)
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked at line 3383 and never restored (2663 further lines followed)
+strand census: thread 24 (loopback_wake_test) saved blocked at line 4596 and never restored (1450 further lines followed)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=3 lines=6046
+old_rc=1
+--- new census (scripts/x86-strand-census.sh, same two files)
+strand census: thread 21 (tcp_cloexec_exec_test) saved blocked and never restored
+strand census: thread 24 (loopback_wake_test) saved blocked and never restored
+strand census: thread 25 (clonevm_exec_test) saved blocked and never restored
+strand census: thread 26 (futex_handoff_oracle) saved blocked and never restored
+strand census: thread 28 (tcp_cloexec_exec_test_child_18_main) saved blocked and never restored
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and never restored
+STRAND_CENSUS: threads_saved_blocked=10 stranded=6 lines=6046
+new_rc=1
+--- census snapshots present on COM1, in order
+     1	[DISPATCH_STRAND_CENSUS:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+     2	[DISPATCH_STRAND_CENSUS:saved=4:stranded=4:tids=25,26,28,30:tid_overflow=0:ledger_overflow=0]
+     3	[DISPATCH_STRAND_CENSUS:saved=9:stranded=8:tids=21,24,25,26,28,32,34,36:tid_overflow=0:ledger_overflow=0]
+     4	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     5	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     6	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     7	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     8	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+     9	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    10	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+    11	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,28,36:tid_overflow=0:ledger_overflow=0]
+--- per-TID record history, COM2 only (line numbers are serial_kernel.txt's own)
+tid    saves    restores first_save  last_save   last_rest   exit_line
+21     1        1        2192        2192        4241        4360
+23     3        3        2648        5015        5016        5046
+24     5        4        2441        3655        3647        -1
+25     269      269      2145        4764        5092        5101
+26     1        0        1825        1825        -1          -1
+28     129      129      1938        4155        4159        4237
+30     4        4        1992        2523        2626        2665
+32     1        1        2389        2389        2598        2612
+34     1        1        2248        2248        2548        3640
+36     1        0        2442        2442        -1          -1
+38     1        1        4759        4759        4762        5091
+total serial_kernel.txt lines: 5105
+
+================ boot3
+--- old census (git show bfbb7575:scripts/x86-strand-census.sh, on serial_user.txt serial_kernel.txt)
+strand census: thread 26 (futex_handoff_oracle) saved blocked at line 2866 and never restored (3110 further lines followed)
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked at line 3497 and never restored (2479 further lines followed)
+strand census: thread 24 (loopback_wake_test) saved blocked at line 4624 and never restored (1352 further lines followed)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=3 lines=5976
+old_rc=1
+--- new census (scripts/x86-strand-census.sh, same two files)
+strand census: thread 21 (tcp_cloexec_exec_test) saved blocked and never restored
+strand census: thread 24 (loopback_wake_test) saved blocked and never restored
+strand census: thread 25 (clonevm_exec_test) saved blocked and never restored
+strand census: thread 26 (futex_handoff_oracle) saved blocked and never restored
+strand census: thread 27 (tcp_cloexec_exec_test_child_17_main) saved blocked and never restored
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and never restored
+STRAND_CENSUS: threads_saved_blocked=10 stranded=6 lines=5976
+new_rc=1
+--- census snapshots present on COM1, in order
+     1	[DISPATCH_STRAND_CENSUS:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+     2	[DISPATCH_STRAND_CENSUS:saved=2:stranded=2:tids=26,27:tid_overflow=0:ledger_overflow=0]
+     3	[DISPATCH_STRAND_CENSUS:saved=4:stranded=4:tids=21,26,27,29:tid_overflow=0:ledger_overflow=0]
+     4	[DISPATCH_STRAND_CENSUS:saved=9:stranded=9:tids=21,24,25,26,27,29,31,34,36:tid_overflow=0:ledger_overflow=0]
+     5	[DISPATCH_STRAND_CENSUS:saved=10:stranded=5:tids=21,25,26,27,36:tid_overflow=0:ledger_overflow=0]
+     6	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,27,36:tid_overflow=0:ledger_overflow=0]
+     7	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,27,36:tid_overflow=0:ledger_overflow=0]
+     8	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,27,36:tid_overflow=0:ledger_overflow=0]
+     9	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,27,36:tid_overflow=0:ledger_overflow=0]
+    10	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,27,36:tid_overflow=0:ledger_overflow=0]
+    11	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,27,36:tid_overflow=0:ledger_overflow=0]
+    12	[DISPATCH_STRAND_CENSUS:saved=10:stranded=6:tids=21,24,25,26,27,36:tid_overflow=0:ledger_overflow=0]
+--- per-TID record history, COM2 only (line numbers are serial_kernel.txt's own)
+tid    saves    restores first_save  last_save   last_rest   exit_line
+21     1        1        1979        1979        4248        4316
+23     2        2        2732        4953        4959        4989
+24     5        4        2593        3682        3674        -1
+25     249      249      2618        4738        5023        5030
+26     1        0        1924        1924        -1          -1
+27     133      133      1923        4162        4166        4244
+29     4        4        2121        2742        2774        2786
+31     1        1        2565        2565        2683        2696
+34     1        1        2412        2412        2635        3667
+36     1        0        2555        2555        -1          -1
+38     1        1        4711        4711        4736        5022
+total serial_kernel.txt lines: 5034
+

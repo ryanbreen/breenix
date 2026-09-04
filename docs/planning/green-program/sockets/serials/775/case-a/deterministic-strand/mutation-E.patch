@@ -1,0 +1,25 @@
+diff --git a/kernel/src/task/scheduler.rs b/kernel/src/task/scheduler.rs
+index b6d5078c..2be45bc1 100644
+--- a/kernel/src/task/scheduler.rs
++++ b/kernel/src/task/scheduler.rs
+@@ -3651,6 +3651,20 @@ impl Scheduler {
+                 continue; // Stale entry — thread already woken or terminated
+             }
+ 
++            // #775 scratch mutation E (not for push): drop the timer wake for
++            // any thread that is blocked inside a syscall, so its saved kernel
++            // context is never restored and it is stranded by construction.
++            #[cfg(target_arch = "x86_64")]
++            {
++                if self
++                    .get_thread(tid)
++                    .map(|t| t.blocked_in_syscall)
++                    .unwrap_or(false)
++                {
++                    continue;
++                }
++            }
++
+             // SMP safety: Don't add to ready_queue if thread is currently
+             // running on any CPU. Same protection as unblock() — a thread
+             // in BlockedOnTimer state might still be executing its WFI poll
