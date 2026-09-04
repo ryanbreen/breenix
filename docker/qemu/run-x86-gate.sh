@@ -6,6 +6,7 @@
 # as a hand-maintained `/root/run-x86-gate.sh` on that VM, which is #564: every
 # hardening applied to it was one re-provision away from being lost, and two of
 # its properties lived nowhere else. Both are now versioned here:
+# claim-lint:ok: #564 records the gate migration and stale-image failure.
 #
 #   1. IT REPACKS THE USERSPACE TEST DISK. `./userspace/programs/build.sh`
 #      rebuilds the ELFs but `target/test_binaries.img` is only PACKED by
@@ -104,6 +105,7 @@ fi
 
 # #564: repack every run. The ELF build above does NOT touch the images the
 # kernel actually boots from.
+# claim-lint:ok: #564 records the separate build and packing steps.
 echo "[gate] === Repacking the userspace test disk and the ext2 image ==="
 rm -f target/test_binaries.img
 if ! cargo run -p xtask -- create-test-disk > /tmp/gate-test-disk.log 2>&1; then
@@ -142,6 +144,7 @@ for i in $(seq 1 "$COUNT"); do
   # BREENIX_NET_MODE=none: the qemu-uefi binary hardcodes a SLIRP hostfwd on
   # host port 2323; disabling networking avoids lingering port state between
   # runs and is not needed for these boot markers.
+  # claim-lint:ok: src/bin/qemu-uefi.rs resolves the hostfwd source.
   BREENIX_NET_MODE=none timeout "$TIMEOUT_SECS" ./target/release/qemu-uefi \
     -serial file:"$OUTDIR/serial_user.log" \
     -serial file:"$OUTDIR/serial_kernel.log" \
@@ -166,6 +169,7 @@ for i in $(seq 1 "$COUNT"); do
   # empirically (a boot here reports "PCI: ... Found 9 devices (3 VirtIO
   # block, 1 network)" and "E1000 network device found"), not assumed from
   # reading qemu-uefi.rs alone. The honest expected floor is therefore >=1.
+  # claim-lint:ok: #702 records the silent enumeration failure and gate requirement.
   census_ok=true
   census_reason=""
   # Anchored to the emitted -device arg form (leading whitespace then the
@@ -180,6 +184,7 @@ for i in $(seq 1 "$COUNT"); do
   # BREENIX_QEMU_STORAGE=ide (used elsewhere, e.g. CI's OVMF-discovery
   # profile) would attach zero and make this expected count wrong for that
   # profile; it is not read by this script today.
+  # claim-lint:ok: #702 and src/bin/qemu-uefi.rs resolve the attachment count.
   expected_virtio_block=$(grep -cE -- '^[[:space:]]*"virtio-blk-pci,drive=' "$REPO_DIR/src/bin/qemu-uefi.rs")
   pci_census_line=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
       "$OUTDIR"/serial_*.log 2>/dev/null | tail -1)
@@ -206,16 +211,15 @@ for i in $(seq 1 "$COUNT"); do
   # The census is an ADDITIONAL requirement, not a short-circuit (review
   # finding B5). In full mode, x86-gate-verdict.sh runs UNCONDITIONALLY --
   # even when census_ok is already false -- because that script runs the
-  # strand census FIRST (scripts/x86-strand-census.sh, its own comment:
-  # "so that a boot which died because a thread was silenced is named by
-  # its first cause rather than by its terminal symptom"). #702's own
-  # filing leans on that census's threads_saved_blocked=0 reading to tell
-  # a silent PCI-enumeration hang apart from the strand family (#695). A
-  # short-circuit that skips the verdict script on census failure removes
-  # that datum from exactly the gate #702 lives on, and mischaracterizes
-  # every pre-enumeration failure (early panic, OVMF failure, early
-  # timeout) as a drivers-layer reason alone. Both signals print on every
-  # boot now, pass or fail.
+  # strand census FIRST. A positive latest heartbeat names the stranded
+  # thread; an unavailable heartbeat is not strand evidence and the verdict
+  # continues to the existing ordered checks. That distinction preserves the
+  # reason #702's filing used threads_saved_blocked=0: a silent PCI-enumeration
+  # hang must not be folded into the strand family (#695). A short-circuit that
+  # skips the verdict script on census failure would remove that distinction
+  # from exactly the gate #702 lives on. Both consumers run on every boot,
+  # pass or fail.
+  # claim-lint:ok: #775 ruling R125 defines positive and unavailable census handling.
   if [ "$MODE" = "full" ]; then
     # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for
     # this profile's userspace program set.
