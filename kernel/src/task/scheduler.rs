@@ -3416,7 +3416,21 @@ impl Scheduler {
         // Mark blocked_in_syscall so the context switch path resumes
         // inside the syscall (wait_timeout loop) rather than restoring
         // stale userspace context.
-        thread.blocked_in_syscall = true;
+        //
+        // #775 round 4: only when there IS a syscall context to resume into.
+        // The flag routes the x86 save through
+        // `save_kernel_context_with_guard`, which writes into
+        // `process.main_thread` and writes no register at all when the
+        // thread has no process -- so on a process-less thread the flag
+        // makes each later context save a silent no-op while the restore
+        // keeps replaying the last one that landed. The boot thread is exactly such a thread and
+        // it waits here: `Completion::wait_timeout_uninterruptible()` backs
+        // the ext2 root read during init. Same predicate, same reason as
+        // `block_current_for_timer` above.
+        // claim-lint:ok: the replay and the page fault it ends in are the
+        // 2 committed captures under
+        // docs/planning/green-program/sockets/serials/775/round4/boot-replay/.
+        thread.blocked_in_syscall = thread.owner_pid.is_some();
 
         // The departure belongs to the publication, not to the wrapper: this is
         // the only function in the family that published a blocked state

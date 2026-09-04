@@ -1,0 +1,152 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001d874000,
+    metadata: 5034360,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 966cc, mem_size: 966cc, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 966d0, virtual_addr: 976d0, physical_addr: 976d0, file_size: 295280, mem_size: 295280, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 32b950, virtual_addr: 32d950, physical_addr: 32d950, file_size: 3db90, mem_size: 3e6b0, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 369500, virtual_addr: 36c500, physical_addr: 36c500, file_size: 2f8d0, mem_size: 89f38, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x100000a1100
+INFO : Creating GDT at PhysAddr(0x1ea000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x100000a1100)
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+manager.create_process: ENTRY - name='init', elf_size=187536
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x4000e974
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40019000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff011000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 1
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+BPBP_HANDLER_ENTRY!
+About to call preempt_disable from BP handler
+Called preempt_disable from BP handler
+BP from_userspace=false, CS=0x8
+BP handler: About to call preempt_enable
+BP handler: Called preempt_enable, exiting handler
+[SW]<T><U>RING3_ENTER: CS=0x33
+[ OK ] RING3_SMOKE: userspace executed + syscall path verified
+<S>[SW]<K>breenix> [SW]<T><U><R>RING3_SYSCALL: First syscall from userspace
+[ OK ] syscall path verified
+[init] Breenix init starting (PID 1)
+[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>
+breenix> [SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><S>[SW]<K>[SW]<T><B>[init] spawn smoke: exited (code 0)
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U>[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=3 (pty 0)
+[pty] Unlocked PTY 0 (fd 3)
+[TTY_ORACLE:openpt:verdict=PASS:slave=/dev/pts/0:locked_open_refused=1]
+[TTY_ORACLE:openpt:verdict=PASS:slave=/dev/pts/0:locked_open_refused=1]
+<S>[SW]<T><U><R>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:nonblock_open:verdict=PASS:master_fl=0x800:slave_fl=0x800:both_eagain=1]
+[TTY_ORACLE:nonblock_open:verdict=PASS:master_fl=0x800:slave_fl=0x800:both_eagain=1]
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:isatty:verdict=PASS:master=1:slave=1:regular_file=0]
+[TTY_ORACLE:isatty:verdict=PASS:master=1:slave=1:regular_file=0]
+[TTY_ORACLE:termios_roundtrip:verdict=PASS:default_lflag=0x803b:modified_lflag=0x8023:restored=1]
+[TTY_ORACLE:termios_roundtrip:verdict=PASS:default_lflag=0x803b:modified_lflag=0x8023:restored=1]
+[TTY_ORACLE:canonical_line:verdict=PASS:withheld_unterminated=1:delivered_on_newline=6]
+[TTY_ORACLE:canonical_line:verdict=PASS:withheld_unterminated=1:delivered_on_newline=6]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+<S>[SW]<K>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=3:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=3:crossed_ends=1]
+<S>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+<S>[SW]<T><U><R>[COW FAULT #0] addr=0x7fffff032aa8 cr3=0x4be8000
+[SW]<K>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff032aa8 cr3=0x4b39000
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[COW FAULT #2] addr=0x4001c058 cr3=0x4b39000
+[COW FAULT #3] addr=0x7ffffdff7010 cr3=0x4b39000
+[COW FAULT #4] addr=0x7ffffdff8010 cr3=0x4b39000
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+<S>[SW]<K>[SW]<T><B>[init] tty_oracle exited pid=3 code=0
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>p02r1 [SW]<K>[SW]<T><U>[EXEC_SMOKE:LAUNCH]
+[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[EXEC_SMOKE:TARGET_ENTER argc=2]
+[SW]<K>[SW]<I>[SW]<K>[SW]<T><B>[EXEC_SMOKE:TARGET_OK]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[EXEC_SMOKE:LAUNCHER_EXIT code=0]
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U>[FORK_SMOKE:LAUNCH]
+<S>[SW]<T><U><R>[COW FAULT #5] addr=0x7fffff058d78 cr3=0x4d09000
+[COW FAULT #6] addr=0x40017011 cr3=0x4d09000
+[COW FAULT #7] addr=0x7ffffdffe010 cr3=0x4d09000
+[COW FAULT #8] addr=0x7ffffdfff010 cr3=0x4d09000
+[FORK_SMOKE:CHILD pid=7]
+<S>[SW]<K>[SW]<K>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff058d78 cr3=0x4c8e000
+[COW FAULT #10] addr=0x40017008 cr3=0x4c8e000
+[COW FAULT #11] addr=0x7ffffdffe010 cr3=0x4c8e000
+[COW FAULT #12] addr=0x7ffffdfff010 cr3=0x4c8e000
+[FORK_SMOKE:COW_ISOLATION_OK probe=0xfeedfeed child_only=0x0]
+[FORK_SMOKE:PARENT_REAPED child=7 code=37]
+<S>[SW]<K>[SW]<T><B>[FORK_SMOKE:LAUNCHER_EXIT code=0]
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>p02r1 [init] bsshd started (PID 8)
+[SW]<K>[SW]<T><U><S>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>bsshd: starting on port 2222
+bsshd: listening on 0.0.0.0:2222
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><S>[SW]<K>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>Welcome to Breenix OS
+[bsh] init shell: loading /etc/init.js
+p00r0 [SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U>TELNETD_STARTING
+TELNETD_LISTENING
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><S>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[bwm] ERROR: fbinfo failed: EINVAL
+<S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>p00r0 [SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B><S>[SW]<T><U><S>[SW]<T><U><R>[SW]<K>[SW]<T><U><R>[SW]<T><U><R>[blog] Breenix Log Viewer starting
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><U>Bounce spheres demo starting (for Gus!) [boot_id=000000064337a9c4]
+[bounce] Window::new failed: EINVAL — falling back to mmap
+Error: Could not get framebuffer info
+<S>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><S>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[bcheck] Breenix Self-Check starting
+<S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>p00r1 <S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U>[blogd] Breenix log daemon starting
+EXT2_LOCK_PARK_FIRST lock=ROOT_EXT2_write parks=1
+[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[init] Boot script completed
+<S>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[init] Process 11 exited (code 1)
+<S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[init] Process 14 exited (code 1)
+[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><U><R>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[blogd] /var/log ready, logging to /var/log/kernel.log
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>p00r0 [SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>p00r0 [SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write elapsed_ns=530607372
+p01r1 p01r1 

@@ -237,9 +237,17 @@ halt returns without the timer handler switching away.
 
 | capture | emitters live | snapshots (COM2 / COM1) | gaps min/mean/max ms | census |
 |---|---|---:|---|---|
-| `round3/r3-head-green/` | idle loop + pump | 104 / 0 | 208 / 1342 / 27017 | `saved=11 stranded=0`, rc 0, GATE PASS |
-| `round3/r3-idle-cadence/` | idle loop only | 98 / 0 | 14 / 993 / 1190 | `saved=11 stranded=0`, rc 0, GATE PASS |
+| `round3/r3-head-green/` | idle loop + pump + completion site | 104 / 0 | 208 / 1342 / 27017 | `saved=11 stranded=0`, rc 0, GATE PASS |
+| `round3/r3-idle-cadence/` | idle loop + completion site | 98 / 0 | 14 / 993 / 1190 | `saved=11 stranded=0`, rc 0, GATE PASS |
 | `round3/r3-idle-strand/` | idle loop only, + mutation E | 90 / 0 | 1001 / 1025 / 2004 | `saved=11 stranded=3`, rc 1, GATE FAIL |
+
+
+The gap columns are over ALL snapshots, which is what the census script prints.
+Two of the three rows include one completion-site snapshot that the 1000 ms
+limiter does not govern, and dropping it changes the row: rows 1 and 2 become
+866 / 1355 / 27017 over 103 snapshots and 1000 / 1004 / 1204 over 97. Row 3
+carries no completion marker, so its 90 really are all idle-driven (round-4
+review finding R3-1).
 
 <!-- claim-lint:ok: each row is one committed capture under
      docs/planning/green-program/sockets/serials/775/round3/ with its gate
@@ -251,12 +259,35 @@ channel the removed records used, not on the interactive user console. The
 
 `r3-idle-cadence` is the no-loopback-emission condition. Its
 `pump-heartbeat-disabled.patch` removes the single call in
-`kernel/src/net/loopback_pump.rs`, so 98 of its 98 snapshots come from the idle
-loop. Its first snapshot is at ms=43183, because the CPU does not idle while
-the userspace test programs are running; from there to the end of the capture
-at ms=139552 — 96 seconds — the largest gap between consecutive snapshots is
-1190 ms against a 1000 ms limiter. Under the round-2 wiring this capture would
+`kernel/src/net/loopback_pump.rs`, so **97 of its 98 snapshots come from the
+idle loop**. The 98th is the completion-site snapshot: `seq=8` at ms=50381,
+which `kernel/src/syscall/handlers.rs` emits directly under the runner's
+final pass line, outside the limiter. Round 3 published
+"98 of its 98" here and the same sentence in the round-3 README; both were
+false, and round 4 corrects both (review finding R3-1).
+<!-- claim-lint:ok: the 98th snapshot is seq=8 in the committed capture; the
+     97-snapshot recomputation is the command block below. -->
+
+The correction moves the headline cadence number with it, because the published
+1190 ms was the gap from heartbeat `seq=7` to that non-heartbeat `seq=8`, and
+the 14 ms minimum printed in the same row was `seq=8` to `seq=9`. Over the 97
+idle-driven snapshots alone the gaps are **min 1000 / mean 1004 / max 1204 ms**
+against a 1000 ms limiter. The first is at ms=43183, because the CPU does not
+idle while the userspace test programs are running; the last is at ms=139552,
+so the cadence held for 96 seconds. Under the round-2 wiring this capture would
 have carried 0 idle-driven snapshots.
+
+```
+grep -o 'DISPATCH_STRAND_CENSUS:seq=[0-9]*:tick=[0-9]*:ms=[0-9]*' \
+  serials/775/round3/r3-idle-cadence/serial_kernel.txt |
+  awk -F'[=:]' '{seq=$3+0; ms=$7+0; if (seq==8) next;
+    if (p!="") {g=ms-p; if (g>mx) mx=g; if (mn==""||g<mn) mn=g; s+=g; n++}
+    p=ms; c++} END {printf "count=%d gaps=%d min=%d mean=%.0f max=%d\n",
+    c, n, mn, s/n, mx}'
+count=97 gaps=96 min=1000 mean=1004 max=1204
+```
+<!-- claim-lint:ok: the five numbers above are the output of the command
+     printed with them, run on the committed capture. -->
 
 `r3-idle-strand` adds `case-a/deterministic-strand/mutation-E.patch` on top, so
 the strand is by construction and the pump still cannot emit. 90 of its 90
@@ -272,6 +303,192 @@ still not restored at the latest census snapshot (see the strand census above)
 
 That pair is what the N1 fix is for: a wedged boot with no loopback emission
 still published the ledger 90 times in 91 seconds and still named the threads.
+
+## Round 4 — the third emission context, and what it cost to get there
+
+Round 3 shipped two cadence contexts, and the round-3 review measured what they
+are worth on the profile that ships: `docker/qemu/run-x86-prod-profile-boot-test.sh`
+published a post-init snapshot on 4 of 6 boots and, on the other 2, nothing but
+the loopback pump's pre-init `seq=1` (finding R3-5). Both contexts depend on the
+rest of the kernel giving them a reason to run.
+<!-- claim-lint:ok: 4 of 6 and 2 of 6 are the review's own counts, reproduced
+     at 6 of 6 by the lost-wake arm committed here. -->
+
+| context | where | when it runs | what stops it |
+|---|---|---|---|
+| idle loop | top of `idle_loop()`'s body, `kernel/src/interrupts/context_switch.rs` | on an idle dispatch, i.e. when the scheduler's queues are empty | a CPU that does not idle: the shipped profile takes 1 idle dispatch in a two-minute boot |
+| `kloopbackd` | top of `loopback_pump_fn()`'s loop, `kernel/src/net/loopback_pump.rs` | on a pump pass, i.e. when loopback traffic wakes the thread | a profile without loopback traffic: the shipped profile has 1 pump pass in a two-minute boot |
+| `kstrandd` | `census_thread_fn()`, `kernel/src/task/dispatch_strand_census.rs` | once per ~1 s, on the scheduler's timer heap, needing no help from the rest of the kernel | whatever stops the kthread running |
+<!-- claim-lint:ok: the 3 rows are the 3 call sites
+     tests/dispatch_strand_census_structure.rs pins at a count of 1 each. -->
+
+<!-- claim-lint:ok: the 3 contexts share the 1 LAST_HEARTBEAT_NS
+     compare-exchange in kernel/src/task/dispatch_strand_census.rs. -->
+All three go through `report_heartbeat_if_due()`, so they share one `AtomicU64`
+compare-exchange and cannot together exceed one snapshot per second. The
+completion site in `kernel/src/syscall/handlers.rs` is a fourth emitter and is
+NOT one of the three: it calls `report_snapshot()` directly, once, outside the
+limiter, immediately after `USERSPACE TEST COMPLETE`.
+
+### The lost wake `kstrandd` found
+
+The first six production boots with `kstrandd` present published fewer
+snapshots than round 3 did, not more: 1 or 2 markers per boot, 0 of them
+from `kstrandd`, and 3 of the 6 carried only the pre-init pump snapshot. The
+captures are `serials/775/round4/kstrandd-lost-wake/boot{1..6}/`. `kstrandd`
+was created (`Added thread 4 'kstrandd' to scheduler`), dispatched once, and
+not dispatched again across a boot carrying 3158 `[SW]` context switches.
+<!-- claim-lint:ok: 6 of 6 lost-wake boots carry 1 or 2 markers; boot1's
+     3158 is `grep -o '\[SW\]' serial_user.txt | wc -l`. -->
+
+The cause is not in this branch's code. `Scheduler::block_current_for_timer`
+set `thread.blocked_in_syscall = true` unconditionally, and that flag means
+"parked inside a syscall of an owning process". Its x86 consumer acts on
+exactly that reading: with the flag set and `from_userspace` false,
+`kernel/src/interrupts/context_switch.rs` saves through
+`save_kernel_context_with_guard`, which writes the registers into
+`process.main_thread`. A pure kernel thread has no process, so the lookup
+returns `None` and the registers are not written. The thread departs the CPU
+with no saved context, and `note_save` does not fire either -- which is why
+`kstrandd` did not appear in the census's own ledger while it was missing.
+
+The rest of the family already draws the distinction: `block_current()` leaves
+the flag clear, `block_current_in_syscall()` sets it, and the docstring on the
+pair says why. 6 of 6 aarch64 consumers conjoin `thread.owner_pid.is_some()`
+before acting on the flag. `block_current_for_timer`
+was one of 2 producers asserting it unconditionally, and x86 is where the
+missing conjunct bites. Both producers now set the flag from
+`thread.owner_pid.is_some()`; the second one is the subject of the boot-replay
+section below.
+
+This is also the diagnosis of the round-2 attempt at a dedicated census
+kthread, which page-faulted and was abandoned without a root cause. It slept
+through the same primitive, so it was dispatched from a context that had not
+been written.
+<!-- claim-lint:ok: the before-and-after boots are the two committed sets under
+     serials/775/round4/; the consumer census is 6 aarch64 sites conjoining
+     owner_pid.is_some() against 1 x86 site that does not. -->
+
+### The zero-feature production profile, before and after
+
+Six boots each side, one QEMU at a time, on the beast `breenix-x86` container.
+Both sets are committed: `serials/775/round4/kstrandd-lost-wake/` is `kstrandd`
+present with the lost wake, `serials/775/round4/production/` is `kstrandd`
+working. Both arms are 6 of 6 `PASS: x86 production profile reached steady
+state with the teardown census at rest`.
+
+| boot | markers, lost-wake arm | markers, fixed arm | newest snapshot, fixed arm |
+|---:|---:|---:|---|
+| 1 | 2 | 54 | `seq=54:tick=11510:ms=61725:saved=12:stranded=7` |
+| 2 | 2 | 54 | `seq=54:tick=11553:ms=61575:saved=12:stranded=7` |
+| 3 | 1 | 39 | `seq=39:tick=8394:ms=45979:saved=12:stranded=7` |
+| 4 | 1 | 40 | `seq=40:tick=8728:ms=47574:saved=12:stranded=7` |
+| 5 | 2 | 42 | `seq=42:tick=9210:ms=49639:saved=12:stranded=7` |
+| 6 | 1 | 54 | `seq=54:tick=11615:ms=62094:saved=12:stranded=7` |
+
+6 of 6 boots on the fixed arm carry a post-init snapshot; on the lost-wake arm
+3 of 6 carry only the pump's pre-init `seq=1`, which is R3-5 reproduced. Every
+fixed-arm boot's `seq=1` is the pump at ms 948-1298 with `saved=0`; everything
+after it is `kstrandd`.
+
+The two readings side by side are the point of the whole exercise:
+
+```
+# serials/775/round4/production/boot1  (kstrandd running)
+strand census: thread 5 (init) saved blocked and not restored as of the latest snapshot (seq 54, tick 11510)
+... 6 more named threads ...
+strand census: latest snapshot seq=54 tick=11510 at 61725 ms; 54 valid snapshot(s), previous 1022 ms earlier, largest gap 2662 ms
+STRAND_CENSUS: threads_saved_blocked=12 stranded=7 lines=2637     rc=1
+
+# serials/775/round4/kstrandd-lost-wake/boot3  (kstrandd never dispatched again)
+strand census: latest snapshot seq=1 tick=5 at 1001 ms; 1 valid snapshot(s), no earlier snapshot to measure cadence against
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=2217      rc=0
+```
+<!-- claim-lint:ok: both blocks are the output of
+     scripts/x86-strand-census.sh run on the two committed captures named
+     above; the marker counts are `grep -c DISPATCH_STRAND_CENSUS`. -->
+
+The blind boot reports `stranded=0` and exits 0. That is what an unobservable
+census costs, and it is why R3-5 was a blocking finding rather than a
+limitation.
+
+The rc=1 on the working boot is the round-3 caveat unchanged and still correct:
+on this profile the seven named threads are parked in syscalls, not stranded,
+and no in-repo consumer reads a production capture as a verdict -- the
+production gate does not call `scripts/x86-gate-verdict.sh`. What the fixed arm
+buys is that the reading is now CURRENT: on 6 of 6 boots the newest snapshot is
+about a second old at the end of the capture instead of tens of seconds.
+
+### The age at the completion marker, asserted
+
+Round-3 finding N14 was that the staleness of the newest snapshot is stated but
+not bounded. A capture carries no end-of-boot timestamp, so staleness at the
+END of a boot is still not derivable from it -- but a capture that reaches
+`USERSPACE TEST COMPLETE` does carry a kernel timestamp for a known late
+instant, because the completion site emits a snapshot there.
+
+`scripts/x86-strand-census.sh` now prints, on each capture it reads, the age of
+the
+newest CADENCE snapshot at that instant, and exits 4 when a `stranded=0`
+reading came from a snapshot more than 5000 ms stale. `scripts/x86-gate-verdict.sh`
+turns exit 4 into a gate FAIL. A red strand outranks it (exit 1 is taken
+first), so a strand is not masked by it; a capture with no completion marker
+prints that the age is not measurable rather than inventing a reference.
+
+On the three committed round-3 gate captures:
+
+| capture | age line |
+|---|---|
+| `round3/r3-head-green/` | `793 ms (newest cadence snapshot seq=18 at 53611 ms, completion snapshot seq=19 at 54404 ms, bound 5000 ms)` |
+| `round3/r3-idle-cadence/` | `1190 ms (newest cadence snapshot seq=7 at 49191 ms, completion snapshot seq=8 at 50381 ms, bound 5000 ms)` |
+| `round3/r3-idle-strand/` | `not measurable -- this capture carries no USERSPACE TEST COMPLETE` |
+
+The bound is pinned in both directions by `tests/x86_gate_verdict_test.rs`:
+`a_fresh_census_at_the_completion_marker_passes_and_prints_the_age` and
+`a_stale_clean_census_at_the_completion_marker_is_not_a_pass` use the same
+fixture shape and the same `stranded=0`, differing only in the cadence gap.
+Raising `stale_limit_ms` from 5000 to 100000 reddens the second and leaves the
+first green; lowering it to 50 reddens the first and leaves the second green.
+<!-- claim-lint:ok: both mutations were run; the two-arm result is the
+     anti-vacuity evidence for the pair. -->
+
+### The 30 surviving records, by function
+
+Round-3 finding R3-9: the record ratchet in
+`tests/dispatch_strand_census_structure.rs` said a change there "forces the
+equivalence document's surviving-record table to be updated", and this document
+had no such table -- only the parenthetical `30 records; 11 error, 9 trace,
+8 info, 2 debug`. The ratchet's comment now says what it enforces, and the
+breakdown it referred to is here. It is by FUNCTION, not by line: line pins in
+this branch's documents have gone stale twice already (findings F18 and R3-2).
+
+| function in `kernel/src/interrupts/context_switch.rs` | debug | error | info | trace | total |
+|---|---:|---:|---:|---:|---:|
+| `note_dispatch_guard_unavailable` | 0 | 1 | 0 | 1 | 2 |
+| `restore_userspace_thread_context` | 1 | 3 | 1 | 3 | 8 |
+| `save_current_thread_context_with_guard` | 0 | 3 | 0 | 1 | 4 |
+| `save_kthread_context` | 0 | 0 | 0 | 1 | 1 |
+| `setup_first_userspace_entry` | 0 | 0 | 3 | 0 | 3 |
+| `setup_kernel_thread_return` | 0 | 1 | 0 | 0 | 1 |
+| `switch_to_thread` | 1 | 3 | 4 | 3 | 11 |
+| **total** | **2** | **11** | **8** | **9** | **30** |
+
+```
+awk '
+  /^(pub )?fn /{f=$0; sub(/\(.*/,"",f); sub(/^.*fn /,"",f); fn=f}
+  /log::(trace|debug|info|warn|error)!/{lvl=$0; sub(/.*log::/,"",lvl);
+    sub(/!.*/,"",lvl); count[fn"|"lvl]++; grand++}
+  END{for (k in count) print k, count[k]; print "GRAND", grand}
+' kernel/src/interrupts/context_switch.rs | sort
+```
+<!-- claim-lint:ok: every cell above is a line of that command's output, run at
+     this head; GRAND is 30 and matches the ratchet's own count. -->
+
+19 of the 30 are non-`error`, and they sit inside the dispatch functions
+`CLAUDE.md` forbids serial output in. That is disclosed, not defended: the
+measurement below is why the whole class is not removed, and the 22 boots
+behind that measurement are now committed at
+`serials/775/round3/case-d-broad-removal/` (finding R3-10).
 
 ## The production profile
 
@@ -361,14 +578,19 @@ add back.
 
 ### Why the serial lock is legal where it prints
 
-`report_heartbeat_if_due()` is called from exactly two places
-(`tests/dispatch_strand_census_structure.rs` pins both counts at 1):
+`report_heartbeat_if_due()` is called from exactly three places
+(`tests/dispatch_strand_census_structure.rs` pins the 3 counts at 1 each):
 `idle_loop()` in `kernel/src/interrupts/context_switch.rs`, at the top of its
-loop body beside the reclaim and IRQ-log-flush housekeeping already there, and
-`loopback_pump_fn`'s loop in `kernel/src/net/loopback_pump.rs`. Neither is the
-interrupt path or the context-switch path — the two places `CLAUDE.md` forbids
-serial output in, and the two places the removed records lived. `idle_loop` is
-a plain function the dispatch path IRETQs into; it is not itself dispatch code.
+loop body beside the reclaim and IRQ-log-flush housekeeping already there;
+`loopback_pump_fn`'s loop in `kernel/src/net/loopback_pump.rs`; and
+`census_thread_fn` — the `kstrandd` kthread — in
+`kernel/src/task/dispatch_strand_census.rs`. 0 of the 3 is the interrupt path
+or the context-switch path — the two places `CLAUDE.md` forbids serial output in, and
+the two places the removed records lived. `idle_loop` is a plain function the
+dispatch path IRETQs into; it is not itself dispatch code. `kstrandd` is an
+ordinary kernel thread that has just returned from a halt.
+<!-- claim-lint:ok: 3 of 3 call sites are pinned at a count of 1 each by
+     tests/dispatch_strand_census_structure.rs. -->
 
 Three things make the emission safe there rather than merely conventional:
 
@@ -379,9 +601,12 @@ Three things make the emission safe there rather than merely conventional:
    `SERIAL2`, and re-enables only if the flag was set, so across its 1 lock
    acquisition interrupts are masked. That closes the re-entrancy that
    deadlocks a logging path.
-3. The rate limiter is a single `AtomicU64` compare-exchange shared by both
-   emitters, so two housekeeping threads cannot both decide to print for the
-   same second.
+3. The rate limiter is a single `AtomicU64` compare-exchange shared by all
+   three emitters, so two of them cannot both decide to print for the same
+   second. Adding `kstrandd` therefore cannot raise the serial volume above
+   the ceiling the other two already had.
+   claim-lint:ok: the 3 emitters share the 1 `LAST_HEARTBEAT_NS`
+   compare-exchange in kernel/src/task/dispatch_strand_census.rs.
 
 The recorders themselves — `note_save`, `note_restore`, `note_exit` — remain
 what they were: one bounds-checked slice index and one atomic RMW each, no
@@ -450,17 +675,31 @@ Still open:
   minutes. The predicate cannot tell a thread parked in a syscall from one
   stranded in it; only the passage of time can, and only if a later snapshot
   exists.
-- **Cadence depends on the CPU idling, and staleness is unbounded.** The
-  limiter caps emission at one per second; no mechanism sets a floor. Measured:
-  with the pump's heartbeat disabled, the idle loop alone held a maximum gap of
-  1190 ms across 98 snapshots on the test profile
-  (`round3/r3-idle-cadence/`), and 2004 ms across 90 on the wedged one
-  (`round3/r3-idle-strand/`) — but on the shipped profile, which barely idles,
-  boot 1 of `round3/r3-production/` published 2 snapshots 8323 ms apart and
-  then 0 more for the rest of the boot. A wedge that spins a CPU rather than
-  idling would do the same. The capture carries no end-of-boot timestamp, so
-  how stale the newest snapshot was when the boot ended is not derivable from
-  the log; what the census prints instead is the observed gaps.
+- **Cadence no longer depends on the CPU idling; staleness is bounded only at
+  the completion marker.** Round 4 added `kstrandd`, which sleeps on the
+  scheduler's timer heap, so the cadence holds on a profile that never idles
+  and carries no loopback traffic: 6 of 6 zero-feature production boots now
+  publish 39 to 54 snapshots each (`round4/production/`) where the same six
+  boots without it published 1 or 2. What is now ASSERTED is the age of the
+  newest cadence snapshot at the completion marker, bounded at 5000 ms with a
+  gate FAIL above it. What is still NOT bounded is staleness at the END of a
+  boot: the capture carries no end-of-boot timestamp, so on a profile with no
+  completion marker — the production one — the census says the age is not
+  measurable and prints the observed gaps instead. A wedge that stops
+  `kstrandd` running at all would still go unbounded there.
+
+- **What the limiter does and does not promise.** It caps emission at one per
+  second; no mechanism sets a floor. Measured on the round-3 captures, with
+  the pump's heartbeat disabled: the idle loop alone held a maximum gap of
+  1204 ms across its 97 idle-driven snapshots on the test profile
+  (`round3/r3-idle-cadence/`; round 3 published 1190 ms across 98, which
+  counted the completion-site snapshot the limiter does not govern — round-4
+  finding R3-1), and 2004 ms across 90 on the wedged one
+  (`round3/r3-idle-strand/`). On the shipped profile at the round-3 head, boot
+  1 of `round3/r3-production/` published 2 snapshots 8323 ms apart and then 0
+  more for the rest of the boot; `kstrandd` is what closed that, and
+  `round4/production/` is the same profile publishing throughout. A wedge that
+  keeps `kstrandd` off the CPU would still stop the cadence.
 - **`ledger_overflow > 0` is now rc=3, and rc=3 is fall-through, not FAIL.**
   `scripts/x86-gate-verdict.sh` reports `STRAND CENSUS INCOMPLETE ... NO usable
   strand evidence in either direction` and continues to the ordered first-cause
@@ -493,5 +732,11 @@ Still open:
   The prompt-count signature appears on 4 of 9 boots of the broad arm and on 0
   of 13 boots of the other two, so this branch ships the narrow removal and
   pins the surviving set as a census (30 records; 11 error, 9 trace, 8 info,
-  2 debug) in `tests/dispatch_strand_census_structure.rs`. The 5 boots of the
-  shipped arm are `round3/r3-production/gate-{1..5}.txt`.
+  2 debug) in `tests/dispatch_strand_census_structure.rs`, broken down by
+  function in the round-4 table above. The 5 boots of the shipped arm are
+  `round3/r3-production/gate-{1..5}.txt`; round-3 finding R3-10 was that the
+  other 22 had no committed evidence, and they are now at
+  `round3/case-d-broad-removal/`, 22 summary rows plus the 4
+  prompt-signature boots in full. The regression is filed as its own issue
+  (see that directory's README for the signature and the recipe): the
+  logging was load-bearing for something, and #775 does not know what.

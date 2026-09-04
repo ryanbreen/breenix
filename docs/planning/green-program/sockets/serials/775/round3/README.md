@@ -41,24 +41,35 @@ came from the pump.
 ## `r3-idle-cadence/` — the same boot with the pump's heartbeat disabled
 
 `pump-heartbeat-disabled.patch` removes the one call in
-`kernel/src/net/loopback_pump.rs`, so 98 of the 98 snapshots in this
-capture are idle-driven. This is the no-loopback-emission condition round 3 was asked to
-measure. `GATE: PASS`, census rc 0.
+`kernel/src/net/loopback_pump.rs`, so **97 of the 98 snapshots in this capture
+are idle-driven**. The 98th is `seq=8` at ms=50381, the completion-site
+snapshot `kernel/src/syscall/handlers.rs` emits directly under the
+`TEST RUNNER: the tests passed` line, outside the limiter. This file said
+"98 of the 98" and that was false (round-4 review finding R3-1). This is the
+no-loopback-emission condition round 3 was asked to measure. `GATE: PASS`,
+census rc 0.
 
 | item | value |
 |---:|---|
 | census markers, COM2 | 98 |
 | first snapshot | `seq=1:tick=8648:ms=43183:saved=11:stranded=2:tids=24,36` |
 | newest snapshot | `seq=98:tick=27984:ms=139552:saved=11:stranded=0` |
-| gaps | min 14 ms, mean 993 ms, **max 1190 ms** |
+| gaps over the 98 | min 14 ms, mean 993 ms, max 1190 ms |
+| gaps, the 97 idle-driven | min 1000 ms, mean 1004 ms, **max 1204 ms** |
 
 The first snapshot is at 43183 ms because the CPU does not idle before then:
 while the userspace test programs run, a runnable thread is available on each
-of the scheduler's picks that the capture records. From the
-moment the CPU first idles to the end of the capture — 96 seconds — the largest
-gap between snapshots is 1190 ms against a 1000 ms limiter. That is the cadence
-the idle hook produces on its own; under the round-2 wiring this capture would
-have had 0 idle-driven snapshots.
+of the scheduler's picks that the capture records. From the moment the CPU
+first idles to the end of the capture — 96 seconds — the largest gap between
+IDLE-DRIVEN snapshots is 1204 ms against a 1000 ms limiter. The 1190 ms this
+file used to quote was the gap from heartbeat `seq=7` to the completion-site
+`seq=8`, and the 14 ms minimum in the 98-snapshot row is `seq=8` to `seq=9`;
+the
+limiter governs neither. That 1204 ms is the cadence the idle hook produces on
+its own; under the round-2 wiring this capture would have had 0 idle-driven
+snapshots.
+<!-- claim-lint:ok: the idle-only figures are the output of the awk command
+     printed in 775-CENSUS-EQUIVALENCE-2026-09-04.md, run on this capture. -->
 
 ## `r3-idle-strand/` — the same, plus a deterministic strand
 
