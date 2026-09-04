@@ -279,11 +279,20 @@ reproduced above, and left for their own dedicated work.
   observed. Lane B therefore reported this step as blocked rather than
   substitute a weaker proxy.
 
-### Fix-forward execution and mutation
+### Fix-forward execution and mutation — re-derived in round 2
 
-The combined branch built the soft-float kernel with `--features
-testing,btrt` and the no-NEON guard reported 0 FP/SIMD load/store
-instructions. Its full-catalog QEMU boot printed:
+Each runtime number below was re-measured on `deebc5d1`, and the serial it
+comes from is committed under
+`docs/planning/green-program/aarch64-testing/serials/r2/README.md`'s directory.
+1 of the round-1 numbers did not survive that re-derivation and is corrected
+here rather than repeated.
+
+The kernel was built soft-float with `--features testing,btrt`
+(`aarch64-breenix-kernel.json`, `-Z build-std=core,alloc -Z
+build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`) and
+booted under QEMU `-M virt,gic-version=3 -cpu max -m 512 -smp 4`.
+
+**Against the full 78-entry fixture** (`musl-btrt-full-catalog.txt`):
 
 ```
 [test] Loaded 78/78 test binaries (0 failed, 0 not found)
@@ -291,30 +300,64 @@ ok 378 utest_hello_musl
 ok 379 utest_env_musl
 ok 380 utest_uname_musl
 ok 381 utest_rlimit_musl
-ok 382 utest_identity_musl
-MUSL_BTRT_TALLY: passed=5 failed=0 total=5
 ```
 
-The tally line was computed from the five distinct KTAP records with
-`grep -aoE '(not ok|ok) ...' | sort -u`; `-a -o` is load-bearing because
-SMP serial writers can concatenate two records on one physical line. The
-five names resolved once each, and 5 of 5 carried `ok`.
+4 of the 5 records, 4 of 4 carrying `ok`. `utest_identity_musl` is absent and
+`===BTRT_READY===` never fires: the boot reaches the post-loader soft lockup
+(see `TESTING-PROFILE-REVIVAL-2026-09-04.md`) before that process completes.
+At the round-1 tip against the same regenerated fixture,
+`identity_musl_test` ran and exited 1 (`identity_test: 7 passed, 1 failed`,
+`[syscall] exit(1) pid=59 name=identity_musl_test`, in
+`docs/planning/green-program/aarch64-testing/serials/r2/testing-profile-boot-at-06d149b6.txt`).
+So round 1's
+`MUSL_BTRT_TALLY: passed=5 failed=0 total=5` **is not what the full-catalog
+boot produces**, and that line is withdrawn as a full-catalog result.
 
-For the mutation check, a scratch copy of `hello.c` changed `return 0` to
-`return 7` and was linked with the same vendored musl objects and aarch64
-linker script. A five-program ext2 fixture isolated the scoring check from
-unrelated filesystem-mutator tests. The same kernel then reached
-`===BTRT_READY===` and printed:
+**Against a fixture holding only the 5 musl programs** plus `/sbin/init`
+(`musl-btrt-five-program-clean.txt`), which is where 5 of 5 does hold:
+
+```
+[test] Loaded 5/78 test binaries (0 failed, 73 not found)
+ok 378 utest_hello_musl
+ok 379 utest_env_musl
+ok 380 utest_uname_musl
+ok 381 utest_rlimit_musl
+ok 382 utest_identity_musl
+# 20 passed, 0 failed, 90 skipped
+===BTRT_READY===
+```
+
+`identity_test: 8 passed, 0 failed` in that boot, against 7 of 8 in the
+full-catalog one: the difference is the other catalog programs mutating the
+filesystem its `/etc/passwd`-backed checks read, not the scoring change.
+
+The tally is computed from the distinct KTAP records with
+`grep -aoE '(not ok|ok) [0-9]+ utest_[a-z_]*musl[a-z_]*' | sort -u`; `-a -o`
+is load-bearing because SMP serial writers concatenate records onto one
+physical line. It is a reader's arithmetic over the serial, not a line the
+kernel emits.
+
+**Mutation** (`musl-btrt-five-program-mutated.txt`): `hello.c`'s single
+`return 0;` became `return 7;`, rebuilt with the same vendored musl objects
+and aarch64 linker script, into the same five-program fixture:
 
 ```
 not ok 378 utest_hello_musl # FAIL error_code=2 detail=0x7
 # 19 passed, 1 failed, 90 skipped
-MUSL_BTRT_MUTATION: passed=4 failed=1 total=5 failed=[utest_hello_musl:0x7]
+===BTRT_READY===
 ```
 
-The clean `hello_musl.elf` was restored byte-for-byte (SHA-256
-`0146a714ec08841aa8b9e852d37549738aea3297a722e97c1753b8e35baccb34`),
-then the 78-entry ext2 fixture was regenerated from the restored binary set.
+The other 4 records stayed `ok`, so the reddening is the mutated program's
+own exit code and not a whole-suite failure.
+
+The clean `hello_musl.elf` was then rebuilt from the restored `hello.c` and
+hashes to SHA-256
+`0146a714ec08841aa8b9e852d37549738aea3297a722e97c1753b8e35baccb34` — the same
+digest round 1 recorded, which is independent confirmation of that restore
+claim rather than a repetition of it — and the 78-entry ext2 fixture was
+regenerated from the restored binary set (`Installed 44 binaries in /bin`, `3`
+in `/sbin`, `5` C binaries in `/usr/local/cbin`, `101` test binaries in
+`/usr/local/test/bin`).
 
 ## 6. Builds — 0 warnings
 
@@ -385,6 +428,6 @@ and are unrelated to this catalog change.
 | Arch reachable | aarch64 only, via call-site gating (2 of 2 `utest_name_to_id()` call sites are `target_arch="aarch64"`; no `Arch` field on `BootTestDef`) |
 | x86 ships these binaries | No (no x86_64 musl build target exists) |
 | Ratchets moved | 0 exist (`tests/*.rs` has 0 references to this catalog) |
-| Live aarch64 tally before/after | `MUSL_BTRT_TALLY: passed=5 failed=0 total=5` from the full 78/78 testing-profile boot |
-| Mutation-reddens-tally | `MUSL_BTRT_MUTATION: passed=4 failed=1 total=5 failed=[utest_hello_musl:0x7]`; clean ELF and full fixture restored afterward |
-| Builds clean | aarch64 (testing+btrt, boot_tests, and default), x86 (testing+external_test_bins), xtask — 5 of 5 configurations, 0 warnings beyond one pre-existing, branch-independent toolchain notice |
+| Live aarch64 tally | 5 of 5 `ok` (378-382) on a five-program fixture, with `===BTRT_READY===`; 4 of 5 `ok` and no `BTRT_READY` on the full 78-entry fixture, where the boot wedges before `utest_identity_musl` finishes. Serials: `musl-btrt-five-program-clean.txt`, `musl-btrt-full-catalog.txt` |
+| Mutation-reddens-tally | `hello.c` `return 0` -> `return 7` gives `not ok 378 utest_hello_musl # FAIL error_code=2 detail=0x7` and `# 19 passed, 1 failed, 90 skipped`, other 4 records unchanged. Clean ELF rebuilt to the same SHA-256 and the 78-entry fixture regenerated. Serial: `musl-btrt-five-program-mutated.txt` |
+| Builds clean | aarch64 (testing, testing+btrt, boot_tests, default) and x86 (testing+external_test_bins, on beast) — 0 project warnings; the only line the `^(warning|error)` grep returns on the aarch64 builds is the toolchain's `core v0.0.0` future-incompat notice, which is present on `main` too |

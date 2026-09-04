@@ -1,0 +1,556 @@
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a9a88c70421
+========================================
+
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[btrt] Boot Test Result Table at phys 0x000000004084d110 (8240 bytes)
+KTAP version 1
+1..115
+ok 1 kernel_entry
+ok 35 aarch64_uart_init
+ok 31 aarch64_mmu_init
+ok 5 memory_init
+ok 6 heap_init
+ok 7 frame_alloc_init
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 1000000000 Hz (1000 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 8099000
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+ok 33 aarch64_gic_init
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 524288 sectors (256 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x4116a
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1
+[virtio-net] MAC address: 52:54:00:12:34:56
+[virtio-net] RX queue max size: 1024
+[virtio-net] TX queue max size: 1024
+[virtio-net] Network device initialized successfully
+[virtio-net] Network device IRQ 75 (will enable after net init)
+[drivers] VirtIO network driver initialized
+[virtio-net] Device test - MAC: 52:54:00:12:34:56
+[virtio-net] Test passed!
+[virtio-gpu] Searching for GPU device...
+[virtio-gpu] Found GPU device at 0xa003e00
+[virtio-gpu] Device version: 1
+[virtio-gpu] Control queue max size: 1024
+[virtio-gpu] Display: 1280x800
+[virtio-gpu] GPU device initialized successfully
+[drivers] VirtIO GPU driver initialized
+[virtio-gpu] Device test - Display: 1280x800
+[virtio-gpu] Test passed!
+[virtio-sound] Searching for sound device...
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...
+[virtio-blk] Sector 0 data: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+[virtio-blk] Read test passed!
+ok 11 pci_enumeration
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] MAC address: 52:54:00:12:34:56
+NET: IP address: 10.0.2.15
+NET: Gateway: 10.0.2.2
+Network stack initialized
+NET: Sending ARP request for gateway 10.0.2.2
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.0.2.2
+NET: ARP cache miss for 10.0.2.2, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net] Enabling IRQ 75 for network device
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+ok 106 network_stack_init
+[boot] Initializing filesystem...
+[ext2] Using VirtIO block device (524288 sectors)
+[boot] ext2 root filesystem mounted
+ok 105 ext2_mount
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: Unknown Unknown
+[boot] procfs initialized at /proc
+ok 107 procfs_init
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[virtio-gpu] GPU device already initialized
+[arm64-fb] Shell framebuffer initialized: 1280x800
+[graphics] Framebuffer: 1280x800
+[graphics] Particle system initialized
+[render_queue] Initialized (64KB buffer)
+[graphics] Split-screen terminal UI initialized
+[boot] Initializing VirtIO keyboard...
+[virtio-input] Searching for input devices (ID=18)...
+[virtio-input] Slot 27 at 0xa003600: device_id=1
+[virtio-input] Slot 28 at 0xa003800: device_id=2
+[virtio-input] Slot 29 at 0xa003a00: device_id=18
+[virtio-input] Found tablet at 0xa003a00 (slot 29, supports EV_ABS)
+[virtio-input] Tablet device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 77 for tablet
+[virtio-input] Tablet initialized (16 buffers)
+[virtio-input] Slot 30 at 0xa003c00: device_id=18
+[virtio-input] Found keyboard at 0xa003c00 (slot 30, no EV_ABS)
+[virtio-input] Keyboard device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 78 for keyboard
+[virtio-input] Keyboard initialized (64 buffers)
+[virtio-input] Slot 31 at 0xa003e00: device_id=16
+[boot] VirtIO keyboard initialized
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+ok 101 scheduler_init
+[boot] Workqueue subsystem initialized
+ok 103 workqueue_init
+[boot] Softirq subsystem initialized
+ok 102 kthread_subsystem
+[boot] Render thread spawned (tid=4)
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[net] ICMP echo reply received from 10.0.2.2 seq=1
+[boot] Init binary pre-loaded: 298616 bytes
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=false
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (1000000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+ok 34 aarch64_timer_init
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] Probing secondary CPUs via PSCI...
+[smp] CPU 1: 1@PSCI CPU_ON success (ra1w_staAtus=B0C)
+[smp]2@D CPU 2:1A PESBCeCDEeFFI CPU_ONG succesG12s (raw_status=0)
+[sm3@1Ap] CPU 3: PBCSCI CPU_ON success (rawD_sEeFGtatus=0)
+3[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8cT02 (EOI1mode=1)
+[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+[smp] 4 CPUs online
+T2T3T4T5T6T7T8T9T0SOFTIRQ_TEST: iteration limit passed (25 total iterations, ksoftirqd/1)
+[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[test] Loading test binaries from ext2...
+[test] Not found: hello_time (Path component not found)
+[test] Not found: clock_gettime_test (Path component not found)
+[test] Not found: brk_test (Path component not found)
+[test] Not found: test_mmap (Path component not found)
+[test] Not found: syscall_diagnostic_test (Path component not found)
+[test] Not found: signal_test (Path component not found)
+[test] Not found: signal_handler_test (Path component not found)
+[test] Not found: signal_return_test (Path component not found)
+[test] Not found: signal_regs_test (Path component not found)
+[test] Not found: sigaltstack_test (Path component not found)
+[test] Not found: sigchld_test (Path component not found)
+[test] Not found: sigkill_teardown_test (Path component not found)
+[test] Not found: pause_test (Path component not found)
+[test] Not found: sigsuspend_test (Path component not found)
+[test] Not found: signal_exec_test (Path component not found)
+[test] Not found: signal_fork_test (Path component not found)
+[test] Not found: ctrl_c_test (Path component not found)
+[test] Not found: pipe_test (Path component not found)
+[test] Not found: unix_socket_test (Path component not found)
+[test] Not found: dup_test (Path component not found)
+[test] Not found: fcntl_test (Path component not found)
+[test] Not found: cloexec_test (Path component not found)
+[test] Not found: pipe2_test (Path component not found)
+[test] Not found: shell_pipe_test (Path component not found)
+[test] Not found: waitpid_test (Path component not found)
+[test] Not found: wnohang_timing_test (Path component not found)
+[test] Not found: poll_test (Path component not found)
+[test] Not found: select_test (Path component not found)
+[test] Not found: nonblock_test (Path component not found)
+[test] Not found: tty_test (Path component not found)
+[test] Not found: session_test (Path component not found)
+[test] Not found: file_read_test (Path component not found)
+[test] Not found: getdents_test (Path component not found)
+[test] Not found: lseek_test (Path component not found)
+[test] Not found: fs_write_test (Path component not found)
+[test] Not found: fs_rename_test (Path component not found)
+[test] Not found: fs_large_file_test (Path component not found)
+[test] Not found: fs_directory_test (Path component not found)
+[test] Not found: fs_link_test (Path component not found)
+[test] Not found: access_test (Path component not found)
+[test] Not found: devfs_test (Path component not found)
+[test] Not found: cwd_test (Path component not found)
+[test] Not found: exec_from_ext2_test (Path component not found)
+[test] Not found: fs_block_alloc_test (Path component not found)
+[test] Not found: true_test (Path component not found)
+[test] Not found: false_test (Path component not found)
+[test] Not found: head_test (Path component not found)
+[test] Not found: tail_test (Path component not found)
+[test] Not found: wc_test (Path component not found)
+[test] Not found: which_test (Path component not found)
+[test] Not found: cat_test (Path component not found)
+[test] Not found: ls_test (Path component not found)
+[test] Not found: hello_world (Path component not found)
+[test] Not found: fork_memory_test (Path component not found)
+[test] Not found: fork_state_test (Path component not found)
+[test] Not found: fork_pending_signal_test (Path component not found)
+[test] Not found: cow_signal_test (Path component not found)
+[test] Not found: cow_cleanup_test (Path component not found)
+[test] Not found: cow_sole_owner_test (Path component not found)
+[test] Not found: cow_stress_test (Path component not found)
+[test] Not found: cow_readonly_test (Path component not found)
+[test] Not found: argv_test (Path component not found)
+[test] Not found: exec_argv_test (Path component not found)
+[test] Not found: exec_stack_argv_test (Path component not found)
+[test] Not found: clonevm_exec_test (Path component not found)
+[test] Not found: futex_handoff_oracle (Path component not found)
+[test] Not found: fbinfo_test (Path component not found)
+[test] Not found: udp_socket_test (Path component not found)
+[test] Not found: tcp_socket_test (Path component not found)
+[test] Not found: tcp_dup_listener_test (Path component not found)
+[test] Not found: tcp_cloexec_exec_test (Path component not found)
+[test] Not found: dns_test (Path component not found)
+[test] Not found: http_test (Path component not found)
+create_user_process: ENTRY - Creating 'hello_musl' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='hello_musl', elf_size=108720, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 2
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40000000
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 2
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 2
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 21
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 2
+[test] Loaded hello_musl (PID 2)
+create_user_process: ENTRY - Creating 'env_musl_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='env_musl_test', elf_size=109624, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 3
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40000000
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 3
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 3
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 22
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 3
+[test] Loaded env_musl_test (PID 3)
+create_user_process: ENTRY - Creating 'uname_musl_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='uname_musl_test', elf_size=108904, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 4
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40000000
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 4
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 4
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 23
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 4
+[test] Loaded uname_musl_test (PID 4)
+create_user_process: ENTRY - Creating 'rlimit_musl_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='rlimit_musl_test', elf_size=108816, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 5
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40000000
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 5
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 5
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 24
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 5
+[test] Loaded rlimit_musl_test (PID 5)
+create_user_process: ENTRY - Creating 'identity_musl_test' (ARM64)
+create_user_process: Acquiring process manager lock
+create_user_process: Got process manager lock
+create_user_process: Calling manager.create_process_with_argv
+manager.create_process_with_argv [ARM64]: ENTRY - name='identity_musl_test', elf_size=133160, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 6
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40000000
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 6
+create_user_process: manager.create_process_with_argv returned: true
+create_user_process: Process created with PID 6
+create_user_process: About to add thread to scheduler
+create_user_process: Acquiring process manager for thread scheduling
+create_user_process: Got process manager lock for scheduling
+create_user_process: Calling scheduler::spawn for thread 25
+create_user_process: scheduler::spawn completed
+create_user_process: COMPLETE - returning PID 6
+[test] Loaded identity_musl_test (PID 6)
+[test] Loaded 5/78 test binaries (0 failed, 73 not found)
+[test] Test processes loaded - will run via timer interrupts
+[test] Entering scheduler idle loop
+breenix> EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+PASS: uname() returned 0
+PASS: getuid() = 0Hello from musl libc on Breenix!
+
+PASS: getgid() = 0
+[syscall] exit(0) pid=2 name=hello_musl
+  sysname:  Breenix
+PASS: geteuid() = 0
+  nodename: breenix
+  release:  0.1.0PASS: getegid() = 0
+
+ok 378 utest_hello_musl
+  version:  Breenix 0.1
+  machine:  aarch64
+PASS: umask(077) returned old mask 0022PASS: sysname = "Breenix
+"
+PASS: machine = "aarch64PASS: umask(022) returned 0077"
+
+
+uname_test: 3 passed, 0 failed
+[syscall] exit(0) pid=4 name=uname_musl_test
+ok 380 utest_uname_musl
+  RLIMIT_STACK: cur=8388608, max=18446744073709551615
+PASS: RLIMIT_STACK cur = 8388608 (8MB)
+PASS: getenv("PATH") = "/bin:/sbin:/usr/local/cbin"
+  RLIMIT_NOFILE: cur=1024, max=4096
+PASS: RLIMIT_NOFILE cur = 1024
+PASS: getenv("HOME") = "/home"
+
+PASS: getenv("TERM") = "vt100rlimit_test: 2 passed, 0"
+ failed
+  environ[0] = "PATH=/bin:/sbin:/usr/local/cbin[syscall] exit(0) pid=5 name=rlimit_musl_test
+"
+ok 381 utest_rlimit_musl
+  environ[1] = "HOME=/home"
+  environ[2] = "TERM=vt100"
+  environ[3] = "USER=root"
+  environ[4] = "SHELL=/bin/bsh"
+PASS: environ has 5 variables
+
+env_test: 4 passed, 0 failed
+[syscall] exit(0) pid=3 name=env_musl_test
+ok 379 utest_env_musl
+PASS: getpwuid(0)->pw_name = "root"
+PASS: getgrgid(0)->gr_name = "root"
+
+identity_test: 8 passed, 0 failed
+[syscall] exit(0) pid=6 name=identity_musl_test
+ok 382 utest_identity_musl
+# 20 passed, 0 failed, 90 skipped
+===BTRT_READY===
+
+========================================
+  Userspace Test Complete!
+  Exit code: 0
+========================================
+
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=1011:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=1017:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=1017:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=1011:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=1011:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=1722:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=1724:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=1724:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=1722:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=1722:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=2041:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=19:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=2046:kstack=0:uva=17:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=1875:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=1881:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=1881:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=1875:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=1875:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=2685:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=2691:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=2692:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=2685:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=2686:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=4979:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=4982:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=4982:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=4980:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=4981:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=5755:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=19:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=5760:kstack=0:uva=17:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=5760:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=5755:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=5755:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=17:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=17:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=3466:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=3472:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=3472:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=3466:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=3466:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=6541:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=6544:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=6544:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=6542:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=6542:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=7699:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=19:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=7705:kstack=0:uva=17:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=7705:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=7700:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=7700:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=17:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=17:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=4255:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=4261:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=4261:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=4255:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=4255:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=11:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=8177:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=8180:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=8180:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=8177:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=8178:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=5:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=9570:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=19:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=9575:kstack=0:uva=17:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=9575:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=9570:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=9570:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=17:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=17:smallint=2:other=0]
