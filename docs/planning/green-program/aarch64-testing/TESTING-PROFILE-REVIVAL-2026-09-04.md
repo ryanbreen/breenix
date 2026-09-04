@@ -284,24 +284,37 @@ publish `Blocked` anyway and be stranded.
 
 Both windows are counted, not asserted: `[WORKQUEUE_PARK_RACE:cancelled=N:intent_cleared=N]`
 and `[KSOFTIRQD_PARK_RACE:cancelled=N]` reach serial from the self-tests. In the
-committed 12-boot batch (`serials/r3/batches/README.md`), 1 of the 12 boots
-reported `WORKQUEUE_PARK_RACE:cancelled=0:intent_cleared=1` and the other 11
-reported zeroes; `KSOFTIRQD_PARK_RACE:cancelled=0` in 12 of 12. So the window is
-real and it is taken, at 1 boot in 12 on this host, and that 1 is a wakeup the
-old shape would have dropped. Round 3 published a higher rate over a batch whose
-serials were not committed; that number is withdrawn.
+committed 12-boot batch (`serials/r3/batches/README.md`, with all 12 raw
+serials committed beside it), 1 of the 12 boots reported
+`WORKQUEUE_PARK_RACE:cancelled=1:intent_cleared=0` and the other 11 reported
+zeroes; `KSOFTIRQD_PARK_RACE:cancelled=0` in 12 of 12. So the window is real and
+it is taken, at 1 boot in 12 on this host, and that 1 is a park the old shape
+would have raced. Round 3 published a higher rate over a batch whose serials
+were not committed, and round 4 published `intent_cleared=1` over a batch whose
+serials no longer exist; both are withdrawn in favour of the row above, which
+`grep -ao "WORKQUEUE_PARK_RACE:[^]]*" serials/r3/batches/testing-boot6.txt`
+reproduces.
 
 ### The measurement
 
-One 12-boot batch on this Mac at the round-4 head `ad455130`, 3 QEMUs at a
-time, 45s each, each boot on a fresh copy of the same fixture. Every row of it
-is committed at `serials/r3/batches/README.md`, one summary line per boot:
+One 12-boot batch on this Mac at the round-5 head, 3 QEMUs at a time, 45s
+each, each boot on a fresh copy of the same fixture. `kernel/src` is
+byte-identical to the round-4 head (`git diff --stat 436c93f7 HEAD -- kernel/`
+prints 0 lines), so this is round 4's kernel re-measured against a fixture
+rebuilt from the tree. 15 of the 15 raw serials are committed under
+`docs/planning/green-program/aarch64-testing/serials/r3/batches/README.md`'s
+directory, 1 file per row:
 
 | Profile | Result |
 |---|---|
-| `testing`, 12 boots | 12 of 12 reached `[test] Test processes loaded`, 12 of 12 loaded 78 of 78 |
+| `testing`, 12 boots | 12 of 12 reached `[test] Test processes loaded`, 12 of 12 loaded 73 of 78 |
 | `boot_tests`, 1 boot | 1 of 1 printed `[boot] All boot tests passed!` |
 | no features, 2 boots | 2 of 2 pre-loaded init and ran `/bin/heartbeat` |
+
+The count line is 73 of 78 rather than 78 of 78 because the rebuilt fixture is
+missing the 5 musl C programs, which need a musl libc this worktree does not
+carry; `serials/r3/batches/README.md` names them. Round 4's "78 of 78" is
+withdrawn -- its own fixture reads 77 of 78.
 
 `IDLE_SLEEP_REFUSED` appears 0 times in 12 of 12 of those boots, which is the
 runtime half of the refusal's claim: the boot sequence no longer asks the idle
@@ -405,14 +418,16 @@ supplies it: the 9 `EXT2_LOCK_SPIN_STALL` lines in that serial are 7 on
 0.5s, immediately before `!!! SOFT LOCKUP DETECTED !!!`.
 
 Incidence over the committed 12-boot batch (`serials/r3/batches/README.md`,
-every row of which is a committed summary line): 12 of 12 boots reach the
-marker, and there is a post-loader lockup with the #728 signature on 11 of the
-12. Signature means `EXT2_LOCK_SPIN_STALL` lines precede the lockup: in 11 of
-those 11 they do, 4 to 9 of them per boot, and the 1 boot that did not lock up
-logged 0 stalls. The 2 specimens committed in full are
-`serials/r3/batches/testing-lockup-boot6.txt` (9 stalls, all before the lockup
-at line 3464) and `serials/r3/batches/testing-lockup-boot1.txt` (4 stalls, all
-before the lockup at line 3327). The lockup is present at the round-1 tip too
+whose 12 raw serials are committed beside it): 12 of 12 boots reach the marker,
+and there is a post-loader lockup with the #728 signature on 12 of the 12.
+Signature means `EXT2_LOCK_SPIN_STALL` lines precede the lockup: in 12 of those
+12 they do, 2 to 8 of them per boot, and 0 stall lines appear after a lockup
+line. Round 4 measured 11 of 12 against a fixture with a different binary set;
+that is the same signature at a lower rate, not a different one. The shortest
+specimen is `serials/r3/batches/testing-boot6.txt` (2 stalls, both before the
+lockup at line 2284 of 2385) and the longest is
+`serials/r3/batches/testing-boot2.txt` (8 stalls, all before the lockup at line
+3353 of 7658). The lockup is present at the round-1 tip too
 (`serials/r2/testing-profile-boot-at-06d149b6.txt`), so it is not something
 this branch introduced. It is not fixed in this branch; #728 is the next
 lane.
@@ -426,7 +441,7 @@ in 1 of the 1 full-catalog capture (`serials/r2/musl-btrt-full-catalog.txt`).
 
 ## Validation
 
-Commands and their results at round 4, on the round-4 head `ad455130`. The 3
+Commands and their results at round 5, re-run on the round-5 head. The 3
 aarch64 builds use `aarch64-breenix-kernel.json`, `-Z build-std=core,alloc`,
 and `-Z build-std-features=compiler-builtins-mem`.
 
@@ -438,23 +453,28 @@ and `-Z build-std-features=compiler-builtins-mem`.
 | x86 `testing,external_test_bins` on beast | 0 | not applicable |
 
 0 of those lines is a project warning; the `core v0.0.0` notice is the
-toolchain's and appears on `main` too. The x86 build ran in an isolated beast
-checkout (`/root/breenix-a64r2`) with
+toolchain's and appears on `main` too. The 3 aarch64 rows were re-run at the
+round-5 head; the x86 row is round 4's, in an isolated beast checkout
+(`/root/breenix-a64r2`) with
 `BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork/library`, forced clean by
-touching `kernel/src/task/scheduler.rs` first.
+touching `kernel/src/task/scheduler.rs` first, and `kernel/` has not changed
+since (`git diff --stat 436c93f7 HEAD -- kernel/` prints 0 lines).
 
 Runtime, aarch64, on this Mac, 3 QEMUs at a time, 45s each, a fresh copy of the
-same fixture per boot. Every number here has a committed summary row in
-`serials/r3/batches/README.md`:
+same fixture per boot. Each number here is derived from 1 of the 15 serials
+committed beside
+`docs/planning/green-program/aarch64-testing/serials/r3/batches/README.md`:
 
 - `testing`: 12 of 12 boots reached
   `[test] Test processes loaded - will run via timer interrupts`, and 12 of 12
-  reported `Loaded 78/78`.
+  reported `Loaded 73/78 test binaries (0 failed, 5 not found)`. The 5 are the
+  musl C programs the rebuilt fixture does not carry.
 - no features: 2 of 2 boots pre-loaded init (`[boot] Init binary pre-loaded:
-  298616 bytes`) and went on to run `/bin/heartbeat`, 46 and 45 `[heartbeat]`
+  298704 bytes`) and went on to run `/bin/heartbeat`, 45 and 45 `[heartbeat]`
   lines. This profile matters because the init launch moved onto the boot
   continuation.
-- `boot_tests`: 1 of 1 boot printed `[boot] All boot tests passed!`.
+- `boot_tests`: 1 of 1 boot printed `[boot] All boot tests passed!`, 709
+  lines.
 
 x86 was booted as well, not only built: `./docker/qemu/run-boot-parallel.sh 1`
 under xvfb on beast, 2 runs at `ad455130`, both serials committed as
@@ -474,60 +494,115 @@ program, and the tally counts a nonzero exit as a failed process while
 "the x86 gate's known red" without filing it; it is now #781.
 
 Mutation legs, run against the working tree rather than an in-memory copy, so
-the red text below is what a reviewer gets by making the same edit:
+the red text below is what a reviewer gets by making the same edit. claim-lint:ok:
+6 of the 6 results in this section were re-run at the round-5 head, per the
+round-5 notes in `tests/teardown_structure.rs`; the filtered-out counts are 98
+because that file's test count is now 99.
 
 ```text
 $ # completion.rs: delete the call, keep the name in a comment
-$ cargo test --test teardown_structure sleep_predicates_consult_the_shared_idle_refusal
+$ cargo test --test teardown_structure sleep_predicates_consult_the_shared_idle_refusal -- --exact
 every *_can_sleep predicate routes through the shared idle refusal: ["kernel/src/task/completion.rs :: current_context_can_sleep  (sleep eligibility decided without the shared idle refusal)"]
-test result: FAILED. 0 passed; 1 failed
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
 $ # scheduler.rs: same edit against the in-lock spelling
-$ cargo test --test teardown_structure blocking_primitives_refuse_the_idle_identity
+$ cargo test --test teardown_structure blocking_primitives_refuse_the_idle_identity -- --exact
 every blocking primitive refuses the idle identity: ["kernel/src/task/scheduler.rs :: block_current_inner  (publishes a blocked state without refusing the idle identity, and delegates to no family member that does)"]
-test result: FAILED. 0 passed; 1 failed
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
 ```
 
 Both were reverted and both baselines re-run green afterwards.
 
-Round 4 adds a third and a fourth leg, for the 2 ratchet gaps the round-3
+Round 4 added a third and a fourth leg, for the 2 ratchet gaps the round-3
 review found. The call-site sleep-guard census, with AHCI's
 `&& !idle_identity_must_not_sleep()` replaced by
 `&& core::hint::black_box(true) /* idle_identity_must_not_sleep() */`:
 
 ```text
 $ cargo test --test teardown_structure sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal -- --exact
-every boolean consulted before a call that sleeps routes through the shared idle refusal: ["kernel/src/drivers/ahci/mod.rs :: wait_cmd_slot0 guards wait_timeout_uninterruptible on scheduler_sleep_ready  (sleep eligibility decided without the shared idle refusal)", "no discovered guard consults the shared refusal: the rule is passing vacuously"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 92 filtered out
+every boolean consulted before a call that sleeps routes through the shared idle refusal: ["kernel/src/drivers/ahci/mod.rs :: wait_cmd_slot0 guards wait_timeout_uninterruptible on scheduler_sleep_ready  (sleep eligibility decided without the shared idle refusal)"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
 ```
 
-The same edit left the `_can_sleep` name census green (1 passed; 0 failed),
-which is the N03/N15 gap. And the no-idle-join census, with a
-`#[cfg(feature = "testing")]` helper appended to `kernel/src/main_aarch64.rs`
-and called from `kernel_main` one line before the pin release:
+N21 (round-4 review): round 4 published `92 filtered out` for that run and the
+reviewer measured 94 at the round-4 head. Both are superseded by the 98 above,
+re-run at the round-5 head. The round-4 text also carried a second finding
+string, `"no discovered guard consults the shared refusal: the rule is passing
+vacuously"`. It is gone, and its absence is the round-5 repair: the census now
+reads `wait_timeout_inner` too, whose guard consults the refusal, so 1 guard
+still consults it while AHCI's does not.
+
+The same edit left the `_can_sleep` name census green (`test result: ok. 1
+passed; 0 failed; 0 ignored; 0 measured; 98 filtered out`), which is the
+N03/N15 gap. And the no-idle-join census, with a `#[cfg(feature = "testing")]`
+helper appended to `kernel/src/main_aarch64.rs` and called from `kernel_main`
+one line before the pin release:
 
 ```text
-$ cargo test --test teardown_structure no_kthread_join_is_reachable_from_the_idle_identity -- --exact
+$ cargo test --features testing --test teardown_structure no_kthread_join_is_reachable_from_the_idle_identity -- --exact
 every kthread_join caller is a kthread body, a feature-gated context, or a stop-then-join teardown: ["kernel/src/main_aarch64.rs :: testing_only_join_helper  (joins a kernel thread, is reachable from kernel_main -- the idle identity -- and is neither a kthread body nor a stop-then-join teardown)"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 94 filtered out
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
 ```
 
 With the reachability arm forced off -- round 3's rule exactly -- that same
-mutation passed 1 of 1, which is the N16 gap. Both mutations were reverted.
+mutation passed (`test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;
+98 filtered out`), which is the N16 gap. Both mutations were reverted.
 
-The call-site census discovers 5 guard positions on this tree, printed by the
+Round 5 adds a fifth and a sixth leg, for the 2 gaps the round-4 review found.
+N16: the same helper called as
+`testing_only_join_helper/* call from kernel_main */(&boot_continuation_thread);`
+used to leave that census green at 1 passed, because a call was recognised only
+when `(` sat immediately after the identifier; it now reddens with the finding
+above, and with round 4's rule restored (`bytes.get(end)`) it passes 1 of 1.
+
+N20: `alternate_sleep_eligibility()` ORed into `wait_timeout_inner`'s sleep-path
+guard, with `fn alternate_sleep_eligibility() -> bool { true }` added to
+`kernel/src/task/completion.rs`:
+
+```text
+$ cargo test --test teardown_structure sleep_guards_at_blocking_call_sites_consult_the_shared_idle_refusal -- --exact
+every boolean consulted before a call that sleeps routes through the shared idle refusal: ["kernel/src/task/completion.rs :: wait_timeout_inner guards block_current_for_io_with_timeout on alternate_sleep_eligibility  (sleep eligibility decided without the shared idle refusal)"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out
+```
+
+Against round 4's rule exactly -- the wrapper-body pass disabled and its 6
+classification rows removed -- that same mutation passed both sleep censuses
+(`test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 97 filtered out`),
+which is the N20 gap. With the pass disabled but the rows left in place the
+census reddens through its stale-row arm, naming 6 of 6. All 4 round-5 edits
+were reverted.
+
+The call-site census discovers 15 guard positions on this tree, printed by the
 test itself under `--nocapture`:
 
 ```text
-call-site sleep-guard census (5 discovered):
+call-site sleep-guard census (15 discovered):
   kernel/src/drivers/ahci/mod.rs :: wait_cmd_slot0 guards wait_timeout_uninterruptible on scheduler_sleep_ready
+  kernel/src/syscall/graphics.rs :: handle_virgl_op guards handle_compositor_wait on window_frame_pending
+  kernel/src/syscall/graphics.rs :: handle_virgl_op guards handle_wait_stress_wait on window_frame_pending
+  kernel/src/syscall/graphics.rs :: handle_virgl_op guards prepare_to_wait on window_frame_pending
+  kernel/src/syscall/handlers.rs :: sys_read guards block_current_in_syscall on is_home_path
+  kernel/src/syscall/handlers.rs :: sys_read guards block_current_in_syscall on tcp_has_data
+  kernel/src/syscall/signal.rs :: sys_pause_with_frame_aarch64 guards block_current_for_signal_with_context on has_deliverable_signals
+  kernel/src/syscall/signal.rs :: sys_sigsuspend_with_frame_aarch64 guards block_current_for_signal_with_context on has_deliverable_signals
+  kernel/src/syscall/socket.rs :: sys_connect_tcp guards block_current_in_syscall on tcp_is_established
+  kernel/src/syscall/socket.rs :: sys_connect_tcp guards block_current_in_syscall on tcp_is_failed
+  kernel/src/task/completion.rs :: wait_timeout_inner guards block_current_for_io_with_timeout on current_context_can_sleep
   kernel/src/task/kthread.rs :: kthread_park guards kthread_park_prepared on kthread_prepare_to_park
   kernel/src/task/softirqd.rs :: ksoftirqd_fn guards kthread_park_prepared on kthread_prepare_to_park
   kernel/src/task/softirqd.rs :: ksoftirqd_fn guards kthread_park_prepared on softirq_pending
   kernel/src/task/workqueue.rs :: worker_thread_fn guards kthread_park_prepared on kthread_prepare_to_park
 ```
 
+Of those 15, 2 consult the shared refusal -- `scheduler_sleep_ready` and
+`current_context_can_sleep` -- and 13 are answered by 1 of the 8 names in
+`GUARDS_THAT_DO_NOT_DECIDE_SLEEP_ELIGIBILITY`, each with the definition it
+reads. That table is exact-match in both directions: a discovered predicate
+that is in neither set is a finding, and so is a recorded name the census stops
+discovering.
+
 Structure tests, via `cargo test --test <name>` for each of the 26 files
-matching `tests/*_structure.rs`: 525 passed, 0 failed.
+matching `tests/*_structure.rs`: 529 passed, 0 failed, and 26 of the 26 report
+`0 failed`.
 
 ## Remaining scope
 
@@ -536,7 +611,6 @@ testing profile. The post-loader soft lockup above is open and attributed to
 #728. Indexed ext2 directories are supported by the reader that this round
 measured, so #778 is closed. Results for userspace programs after loader
 release remain owned by their individual test criteria rather than these two
-issue repairs.
 issue repairs.
 
 ### Disclosed and not fixed here

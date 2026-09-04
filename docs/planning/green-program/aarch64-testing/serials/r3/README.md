@@ -1,8 +1,9 @@
 # Round-3 serials, aarch64 `testing` profile
 
 The `batches/` subdirectory alongside this file holds the committed batch
-summary rows and 4 further serials (2 aarch64 lockup specimens, 2 x86 runs)
-that R138(3) asked for; this README covers the 2 captures at the top level.
+summary rows and the 17 serials they are derived from (12 aarch64 `testing`
+boots, 1 `boot_tests`, 2 no-feature, 2 x86) that R139(4) asked for; this README
+covers the 2 captures at the top level.
 
 2 files (`ls docs/planning/green-program/aarch64-testing/serials/r3/*.txt |
 wc -l` -> 2). Both were captured with the soft-float kernel target
