@@ -670,7 +670,7 @@ fn the_age_line_does_not_depend_on_argument_order() {
 /// #775 round 5. A census that exits 0 without printing its summary line has
 /// not RUN, and the gate used to read that as a clean census. The state is not
 /// hypothetical: an apostrophe inside a comment in the single-quoted awk
-/// program terminates the program string, and what is left prints nothing and
+/// program terminates the program string, and what is left prints 0 lines and
 /// exits 0. This round produced exactly that while editing a comment, and 6 of
 /// the 19 tests here stayed green against the broken tool.
 #[test]

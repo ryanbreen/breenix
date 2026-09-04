@@ -242,7 +242,17 @@ fn host_consumers_have_no_removed_record_dependency() {
     assert!(strand_gate.contains("names[tid] = rest"));
     assert!(strand_gate.contains("if (stranded > 0) {"));
     assert!(strand_gate.contains("if (age_measured && age_ms > stale_limit_ms) {"));
-    assert!(strand_gate.contains("stale_limit_ms = 5000"));
+    // The bound EXISTS, is printed with the age, and carries its derivation.
+    // Its VALUE is deliberately not pinned here. Round 5 finding R4-2 made it a
+    // derivation from #766's measured wake-to-dispatch distribution that
+    // TIGHTENS when #766 lands, so a literal here would be a second place to
+    // update and a false ratchet the day it is missed -- this repository's
+    // binding lesson from the census ratchets of #549 and #551. What holds the
+    // value is tests/x86_gate_verdict_test.rs, which asserts the printed bound
+    // on a committed capture and on a synthesised stale one.
+    assert!(strand_gate.contains("stale_limit_ms = "));
+    assert!(strand_gate.contains("bound %d ms)"));
+    assert!(strand_gate.contains("693-RCA-2026-09-02.md"));
     assert!(!strand_gate.contains("/Saved kernel context for blocked thread"));
     assert!(!strand_gate.contains("/Restored kernel context for thread"));
 
