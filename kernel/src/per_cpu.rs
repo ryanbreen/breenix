@@ -17,7 +17,7 @@ use crate::arch_impl::PerCpuOps;
 
 // Import HAL constants - single source of truth for per-CPU offsets
 use crate::arch_impl::current::constants::{
-    DISPATCH_MARK_ARMED, DISPATCH_MARK_INVALID, DISPATCH_MARK_REFUSAL_SPENT, PERCPU_CPU_ID_OFFSET,
+    DISPATCH_MARK_INVALID, DISPATCH_MARK_VALID, PERCPU_CPU_ID_OFFSET,
     PERCPU_CURRENT_THREAD_OFFSET, PERCPU_DISPATCH_MARK_RIP_OFFSET, PERCPU_DISPATCH_MARK_RSP_OFFSET,
     PERCPU_DISPATCH_MARK_STATE_OFFSET, PERCPU_DISPATCH_MARK_TID_OFFSET,
     PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET,
@@ -129,11 +129,12 @@ pub struct PerCpuData {
 
     // === Dispatch mark (#772) ===
     // The resume frame the most recent completed dispatch installed on this
-    // CPU. `check_need_resched_and_switch` compares the frame it was entered
-    // with against this pair to recognize a preemption that would take back a
-    // dispatch on which the thread has retired no instruction. These four
-    // words come out of the padding that already followed `switch_violations`,
-    // so the struct keeps its 192-byte size and no offset above moves.
+    // CPU. `check_need_resched_and_switch` and the three save sites compare
+    // the frame they see against this pair to count an identical-frame
+    // observation -- a wait-loop revisit census since R113, not a defect
+    // census. These four words come out of the padding that already followed
+    // `switch_violations`, so the struct keeps its 192-byte size and no offset
+    // above moves.
     /// Resume RIP recorded by the last completed dispatch (offset 128)
     pub dispatch_mark_rip: u64,
 
@@ -143,8 +144,8 @@ pub struct PerCpuData {
     /// Thread the last completed dispatch installed that frame for (offset 144)
     pub dispatch_mark_tid: u64,
 
-    /// Dispatch-mark state (offset 152): `DISPATCH_MARK_INVALID`,
-    /// `DISPATCH_MARK_ARMED`, or `DISPATCH_MARK_REFUSAL_SPENT`
+    /// Dispatch-mark state (offset 152): `DISPATCH_MARK_INVALID` or
+    /// `DISPATCH_MARK_VALID`
     pub dispatch_mark_state: u64,
 
     /// Padding to reach 192 bytes (align(64) boundary)
@@ -1089,26 +1090,27 @@ pub fn in_exception_cleanup_context() -> bool {
     hal_percpu::X86PerCpu::exception_cleanup_context()
 }
 
-/// How the frame an interrupt was entered with relates to the resume frame the
-/// last completed dispatch installed on this CPU (#772).
+/// How the frame observed at an interrupt return or a context save relates to
+/// the resume frame the last completed dispatch installed on this CPU (#772).
+///
+/// Both callers are census-only. R113 retired the identical-frame predicate as
+/// #772's oracle -- it recognizes a thread that went around its wait loop and
+/// re-parked on the same instruction just as readily as one that retired
+/// nothing -- and R115 removed the refusal that used to act on it, so no
+/// control flow depends on this value.
+// claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DispatchProgress {
     /// The mark does not describe this frame: either no dispatch is recorded,
     /// the recorded dispatch was of a different thread, or the thread has
-    /// moved off the RIP/RSP it was dispatched to. The caller proceeds with
-    /// the preemption.
+    /// moved off the RIP/RSP it was dispatched to.
     Advanced,
-    /// The frame is byte-identical to the one the last dispatch installed for
-    /// this same thread -- the thread has retired no instruction since it was
-    /// dispatched -- and this dispatch has not yet spent its one refusal.
-    NoProgressRefusable,
-    /// Byte-identical as above, but this dispatch has already had its one
-    /// refusal, so the caller must let the preemption through.
-    NoProgressRefusalSpent,
+    /// The frame is byte-identical -- RIP AND RSP -- to the one the last
+    /// dispatch installed for this same thread.
+    NoProgress,
 }
 
-/// Record the resume frame a completed dispatch installed, and arm its
-/// one-shot no-progress refusal.
+/// Record the resume frame a completed dispatch installed.
 ///
 /// Called from the interrupt-return path once the frame is final, so this is
 /// four GS-relative stores: no lock, no allocation, no formatting.
@@ -1125,10 +1127,11 @@ pub fn set_dispatch_mark(tid: u64, rip: u64, rsp: u64) {
 /// Invalidate the dispatch mark.
 ///
 /// A path that leaves the CPU running something other than the thread the
-/// mark names must reach this or `set_dispatch_mark`, or a stale mark could
-/// suppress a legitimate preemption of a different thread. Today there is 1
-/// such path -- the dispatch site in `check_need_resched_and_switch` -- and it
-/// reaches one of the two on a completed switch.
+/// mark names must reach this or `set_dispatch_mark`, or a stale mark would
+/// mis-attribute an identical-frame observation to a different thread. Today
+/// there is 1 such path -- the dispatch site in
+/// `check_need_resched_and_switch` -- and it reaches one of the two on a
+/// completed switch.
 #[inline(always)]
 pub fn clear_dispatch_mark() {
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
@@ -1159,33 +1162,11 @@ pub fn classify_dispatch_progress(tid: u64, rip: u64, rsp: u64) -> DispatchProgr
     {
         return DispatchProgress::Advanced;
     }
-    if state == DISPATCH_MARK_REFUSAL_SPENT {
-        DispatchProgress::NoProgressRefusalSpent
-    } else {
-        DispatchProgress::NoProgressRefusable
-    }
-}
-
-/// Spend the current dispatch's one-shot no-progress refusal.
-///
-/// The mark itself is kept so a second no-progress preemption on the same
-/// dispatch is still *observable* by the census counter; only the refusal is
-/// consumed. Clearing the mark instead would make that residual invisible,
-/// which is the one reading the oracle most needs.
-#[inline(always)]
-pub fn spend_dispatch_refusal() {
-    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
-        return;
-    }
-    unsafe {
-        hal_percpu::X86PerCpu::set_dispatch_mark_state(DISPATCH_MARK_REFUSAL_SPENT);
-    }
+    DispatchProgress::NoProgress
 }
 
 const _: () = assert!(
-    DISPATCH_MARK_INVALID != DISPATCH_MARK_ARMED
-        && DISPATCH_MARK_ARMED != DISPATCH_MARK_REFUSAL_SPENT
-        && DISPATCH_MARK_INVALID != DISPATCH_MARK_REFUSAL_SPENT,
+    DISPATCH_MARK_INVALID != DISPATCH_MARK_VALID,
     "dispatch mark states must be distinct"
 );
 

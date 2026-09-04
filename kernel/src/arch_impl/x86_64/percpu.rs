@@ -559,10 +559,10 @@ impl X86PerCpu {
         rsp
     }
 
-    /// Record a dispatch mark and arm its one-shot refusal.
+    /// Record a dispatch mark.
     ///
     /// The state word is written LAST, in a separate `asm!` block, so a reader
-    /// that sees `DISPATCH_MARK_ARMED` sees the tid/RIP/RSP that belong to it.
+    /// that sees `DISPATCH_MARK_VALID` sees the tid/RIP/RSP that belong to it.
     /// No explicit fence is emitted for that ordering, and 2 mechanisms make
     /// one unnecessary here: an
     /// `asm!` block without `nomem`/`readonly` is treated as arbitrarily
@@ -586,7 +586,7 @@ impl X86PerCpu {
             tid_off = const PERCPU_DISPATCH_MARK_TID_OFFSET,
             options(nostack, preserves_flags)
         );
-        Self::set_dispatch_mark_state(DISPATCH_MARK_ARMED);
+        Self::set_dispatch_mark_state(DISPATCH_MARK_VALID);
     }
 
     /// Overwrite the dispatch mark's state word.

@@ -136,15 +136,6 @@ interactive = ["testing"]  # Boot into init_shell instead of running automated t
 # it discriminates the fix rather than passing either way. Not implied by
 # any other feature, and not meant to ship enabled.
 disable_x86_prod_init = []
-# #772 anti-vacuity switch. Keeps the three DISPATCH_* census counters wired
-# exactly as the fix wires them, and turns ONLY the refusal at
-# `kernel/src/interrupts/context_switch.rs`'s need_resched gate into a no-op --
-# so the red-on-main arm and the anti-vacuity arm are one build flag apart and
-# the census stays comparable across them. Not implied by any other feature,
-# and not meant to ship enabled. Mirrors the `coreproof_mut_*` mutation
-# convention.
-no_progress_refusal_disabled = []
-
 # #772 Q2 diagnostic switch. Compiles OUT exactly the three formatted serial
 # records the x86 dispatch path writes with interrupts masked -- the
 # "Saved kernel context for blocked thread", "Restored kernel context for

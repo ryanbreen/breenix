@@ -217,14 +217,14 @@ pub const DISPATCH_ABANDON: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_DISPATCH_
 /// admitting gate is why that call was allowed to switch at all:
 ///
 /// * `*Mandatory` -- `current_thread_blocked_or_terminated` was true, so the
-///   switch is the one the scheduler must perform. The #772 refusal is
-///   conjoined out of this arm, so a no-progress save counted here is one the
-///   refusal's `if !current_thread_blocked_or_terminated` excludes.
+///   switch is the one the scheduler must perform. The 40-boot battery in
+///   docs/planning/green-program/sockets/772-DIAG-2026-09-03.md measured this
+///   arm at 84.7-97.6% of the kernel-blocked identical-frame saves.
 /// * `*Preempt` -- the current thread was neither blocked nor terminated, so
-///   gate 4 admitted on `need_resched`. This is the arm the refusal guards.
+///   gate 4 admitted on `need_resched` and the switch is discretionary.
 ///
-/// The two are read off the same boolean the refusal itself uses, so the split
-/// is exactly the refusal's own visibility boundary and not a second predicate.
+/// The two are read off the same boolean gate 4 computes, so the split is that
+/// gate's own boundary and not a second predicate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum DispatchSaveReason {
@@ -286,9 +286,14 @@ impl DispatchSaveReason {
 /// Where a dispatch was abandoned after `schedule()` had already committed to
 /// it (#772).
 ///
-/// 0 of these 16 sites saves a context of its own: the outgoing thread was
-/// already saved under one of the `DispatchSaveReason` values above, or, for
-/// the 2 exception-handler sites, was not saved at all. They are recorded
+// claim-lint:ok: 16 of 16 abandon sites classified here as 13 + 2 + 1, one
+// per variant of this enum.
+/// 0 of these 16 sites saves a context of its own. For 13 of them the outgoing
+/// thread was already saved under one of the `DispatchSaveReason` values
+/// above; the 2 exception-handler sites save nothing at all; and
+/// `RollbackSaveFailed` is reached precisely because the save was ATTEMPTED
+/// and returned false, so no `DispatchSaveReason` counter was incremented for
+/// it either. They are recorded
 /// because each one ends a dispatch, and the dispatch mark written when
 /// `switch_to_thread` returns then describes whatever thread the CPU was left
 /// running.
@@ -331,8 +336,8 @@ pub enum DispatchAbandonSite {
     /// redirected a terminated thread to idle.
     ExceptionGeneralProtection = 13,
     /// `check_and_deliver_signals_for_current_thread`: a signal terminated the
-    /// process on an interrupt-return arm that performed no switch -- including
-    /// the #772 refusal arm, which calls the same helper.
+    /// process on an interrupt-return arm that performed no switch -- gate 4's
+    /// `!need_resched && !blocked` return, which calls the same helper.
     IdleSignalTerminatedOnReturn = 14,
     /// `check_and_deliver_signals_for_current_thread`: the process was already
     /// terminated after a signal was delivered on a no-switch return arm.

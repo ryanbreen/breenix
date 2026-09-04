@@ -12,13 +12,9 @@ use crate::task::process_context::{
 };
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
-use crate::tracing::providers::counters::{DISPATCH_KERNEL_RESTORE_TOTAL, DISPATCH_NO_PROGRESS};
-// Only the refusal arm increments this one, and that arm is what the
-// `no_progress_refusal_disabled` mutation compiles out. The counter itself
-// stays registered in both builds, so the anti-vacuity arm can read it as 0.
-#[cfg(not(feature = "no_progress_refusal_disabled"))]
-use crate::tracing::providers::counters::DISPATCH_NO_PROGRESS_REFUSED;
-use crate::tracing::providers::counters::DISPATCH_GATE_PREEMPT_ACTIVE;
+use crate::tracing::providers::counters::{
+    DISPATCH_GATE_PREEMPT_ACTIVE, DISPATCH_KERNEL_RESTORE_TOTAL, DISPATCH_NO_PROGRESS,
+};
 use crate::tracing::providers::sched::{
     trace_ctx_switch, trace_dispatch_abandon, trace_dispatch_save, DispatchAbandonSite,
     DispatchSaveReason,
@@ -279,73 +275,48 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
-    // #772: refuse a preemption that would take back a dispatch on which the
-    // thread has retired no instruction.
+    // #772 census (R113/R115): count a preemption entered on a frame
+    // byte-identical -- RIP AND RSP -- to the one the last completed dispatch
+    // installed for this same thread.
     //
-    // The measured defect: this path writes three formatted serial records per
-    // blocked-in-syscall switch with interrupts masked and the timer EOI
-    // deferred (`:518`, `:961`, `:987` -- filed separately as the cause), so
-    // the dispatched thread is returned to with an interrupt already latched
-    // and is preempted before its first instruction. 64-76% of kernel-context
-    // restores on five specimen boots are of that kind
-    // (docs/planning/green-program/sockets/serials/772-exp-r2/). The thread
-    // then goes to the tail of the one ready queue and pays another full
-    // round.
+    // This used to be a refusal: candidate A spent a one-shot per dispatch,
+    // re-armed `need_resched` and returned to the thread. R115 removed that arm.
+    // R113 retired the predicate as #772's oracle, because
+    // docs/planning/green-program/sockets/772-DIAG-2026-09-03.md symbolised the
+    // two addresses this population sits on as the wait loop's own park points
+    // -- so an identical frame records a thread that went once around its wait
+    // loop and re-parked, not a dispatch that retired no instruction. What is
+    // left is a REVISIT census: the counter still measures something real and
+    // reproducible, it just does not measure the defect #772 is filed for, and
+    // nothing here changes control flow.
+    // claim-lint:ok: 8 of 8 `return;` statements in this function match main
+    // 5f81d92b, counted in this slot; the only additions are counter reads.
     //
-    // The refusal defers the reschedule by one delivered interrupt; it does
-    // not swallow it (`set_need_resched()` below re-arms what gate 4 just
-    // cleared). It is one-shot per dispatch, so a thread that keeps failing to
-    // advance cannot hold the CPU past the second attempt. And it is
-    // conjoined with `!current_thread_blocked_or_terminated` -- the SAME
-    // five-variant `is_blocked()` set computed at the gate above -- so a
-    // switch away from a blocked or terminated thread, which is mandatory, is
-    // not suppressed.
+    // The increment rule is unchanged from the build the 40-boot battery
+    // measured, so its committed `DISPATCH_NO_PROGRESS` readouts stay
+    // comparable with any future one.
     //
-    // Measured cost on the interrupt-return path (llvm-objdump of this build's
-    // own `check_need_resched_and_switch`): 0 added instructions for an
-    // interrupt that returns at gate 4 -- the common tick -- because this
-    // block sits after that return; 3 added instructions (load, test, taken
-    // branch) and 0 added calls when the current thread is blocked or
-    // terminated.
+    // Cost on the interrupt-return path: 0 added instructions for an interrupt
+    // that returns at gate 4 -- the common tick -- because this block sits
+    // after that return. On the arm that does reach it: one lock-free
+    // current-thread read plus `classify_dispatch_progress`'s four GS-relative
+    // loads and one `Acquire` load, then at most one per-CPU relaxed atomic
+    // add. No lock, no allocation, no formatting, no page-table work.
     //
-    // Short-circuit deliberately: the blocked/terminated arm is the mandatory
-    // switch, and it must not pay for the predicate -- not even the lock-free
-    // tid read.
+    // Short-circuited on the blocked/terminated arm deliberately: that switch
+    // is mandatory, it must not pay for the predicate -- not even the lock-free
+    // tid read -- and the per-reason save census
+    // (`DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_MANDATORY`) already records
+    // that arm's identical frames at the save site.
     if !current_thread_blocked_or_terminated {
         if let Some(current_tid) = crate::per_cpu::current_thread_id_lock_free() {
-            let progress = crate::per_cpu::classify_dispatch_progress(
+            if crate::per_cpu::classify_dispatch_progress(
                 current_tid,
                 interrupt_frame.instruction_pointer.as_u64(),
                 interrupt_frame.stack_pointer.as_u64(),
-            );
-            match progress {
-                crate::per_cpu::DispatchProgress::Advanced => {}
-                crate::per_cpu::DispatchProgress::NoProgressRefusalSpent => {
-                    // Census only: this dispatch has already had its refusal, so
-                    // the preemption goes through. Counted so the residual stays
-                    // visible rather than disappearing with the mark.
-                    crate::trace_count!(DISPATCH_NO_PROGRESS);
-                }
-                crate::per_cpu::DispatchProgress::NoProgressRefusable => {
-                    crate::trace_count!(DISPATCH_NO_PROGRESS);
-                    #[cfg(not(feature = "no_progress_refusal_disabled"))]
-                    {
-                        crate::per_cpu::spend_dispatch_refusal();
-                        crate::trace_count!(DISPATCH_NO_PROGRESS_REFUSED);
-                        // Re-arm: gate 4 cleared need_resched, and whoever raised
-                        // it is still owed a reschedule at the next interrupt.
-                        scheduler::set_need_resched();
-                        // Same signal handling the other early-return arms do, so
-                        // a refusal does not also defer signal delivery.
-                        if from_userspace {
-                            check_and_deliver_signals_for_current_thread(
-                                saved_regs,
-                                interrupt_frame,
-                            );
-                        }
-                        return;
-                    }
-                }
+            ) == crate::per_cpu::DispatchProgress::NoProgress
+            {
+                crate::trace_count!(DISPATCH_NO_PROGRESS);
             }
         }
     }
@@ -584,8 +555,12 @@ pub extern "C" fn check_need_resched_and_switch(
 /// `thread_id` is the thread whose context is being saved, which is also the
 /// thread the last completed dispatch installed the mark for, so the two ends
 /// of the comparison name the same identity. `Advanced` means the thread moved
-/// off the RIP/RSP it was dispatched to (or no mark applies); anything else
-/// means the frame is byte-identical -- the thread retired no instruction.
+/// off the RIP/RSP it was dispatched to (or no mark applies); `NoProgress`
+/// means the frame is byte-identical. Per R113 that is a wait-loop revisit
+/// census, not a defect census: a thread that re-parked on the same halt is
+/// indistinguishable here from one that retired nothing
+/// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md).
+// claim-lint:ok: docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
 ///
 /// Cost: four GS-relative loads and one relaxed atomic load inside
 /// `classify_dispatch_progress`, then one or two per-CPU atomic adds. No lock,
@@ -598,14 +573,11 @@ fn note_dispatch_save(
     interrupt_frame: &InterruptStackFrame,
 ) {
     let rip = interrupt_frame.instruction_pointer.as_u64();
-    let no_progress = !matches!(
-        crate::per_cpu::classify_dispatch_progress(
-            thread_id,
-            rip,
-            interrupt_frame.stack_pointer.as_u64(),
-        ),
-        crate::per_cpu::DispatchProgress::Advanced
-    );
+    let no_progress = crate::per_cpu::classify_dispatch_progress(
+        thread_id,
+        rip,
+        interrupt_frame.stack_pointer.as_u64(),
+    ) == crate::per_cpu::DispatchProgress::NoProgress;
     trace_dispatch_save(reason, no_progress, rip);
 }
 

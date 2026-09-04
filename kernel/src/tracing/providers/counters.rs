@@ -204,44 +204,42 @@ pub static RECV_WAIT_STILL_BLOCKED_FALSE: TraceCounter = TraceCounter::new(
 // Dispatch no-progress counters (#772)
 // =============================================================================
 //
-// x86 only. The three counters below are written from
-// `kernel/src/interrupts/context_switch.rs`, which is
-// `#![cfg(target_arch = "x86_64")]`; on aarch64 they register and stay 0.
+// x86 only. The two counters below are written from
+// `kernel/src/interrupts/context_switch.rs`, whose parent module
+// `kernel/src/interrupts.rs` carries the `#![cfg(target_arch = "x86_64")]`;
+// on aarch64 they register and stay 0.
 // #772's spec (section 3) records why the aarch64 dispatch path does not carry
 // the defect today and asks for a separate report-only census there rather
 // than a silent extension.
 
-/// A preemption was observed that would take back a dispatch on which the
-/// thread had retired no instruction.
+/// An identical-frame preemption was observed at the `need_resched` gate:
+/// a REVISIT census, not a defect census (R113).
 ///
-/// Incremented at the `need_resched` gate in `check_need_resched_and_switch`
-/// when the frame the interrupt was entered with is byte-identical (RIP *and*
-/// RSP) to the frame the last completed dispatch installed for the same
-/// thread. Incremented whether or not the preemption was then refused, so this
-/// is the census the #772 oracle reads: under the
-/// `no_progress_refusal_disabled` mutation it should return to main's
-/// measured 0.64-0.76 of `DISPATCH_KERNEL_RESTORE_TOTAL`.
+/// Incremented in `check_need_resched_and_switch` when the frame the interrupt
+/// was entered with is byte-identical (RIP *and* RSP) to the frame the last
+/// completed dispatch installed for the same thread, and that thread is
+/// neither blocked nor terminated.
+///
+// claim-lint:ok: 186 of 226 frame-changed pairs re-park on the two symbolised
+// wait sites -- docs/planning/green-program/sockets/772-DIAG-2026-09-03.md
+/// What it does NOT mean: that the dispatch retired no instruction.
+/// `docs/planning/green-program/sockets/772-DIAG-2026-09-03.md` symbolised the
+/// two addresses this population sits on -- the `ret` after `sti; hlt` inside
+/// `enable_and_hlt`, and the `jmp` after `call interrupts::enable` inside
+/// `without_interrupts` -- as the park points of the blocked-in-syscall wait
+/// loops. A thread that goes once around its wait loop, finds its condition
+/// still unmet and re-parks is saved at a byte-identical frame, and this
+/// counter cannot tell it apart from one that never ran
+/// (docs/planning/green-program/sockets/772-DIAG-2026-09-03.md). R113 therefore
+/// retired the predicate as #772's oracle and R115 removed the refusal that
+/// used to act on it; the counter itself stays, as the cheapest available
+/// measure of how often the wait loops re-park.
 ///
 /// GDB: `print DISPATCH_NO_PROGRESS`
 #[no_mangle]
 pub static DISPATCH_NO_PROGRESS: TraceCounter = TraceCounter::new(
     "DISPATCH_NO_PROGRESS",
-    "preemption of a dispatch that retired no instruction (#772)",
-);
-
-/// A no-progress preemption was refused so the dispatched thread could run.
-///
-/// Incremented only when `DISPATCH_NO_PROGRESS` was also incremented, the
-/// current thread was neither blocked nor terminated, and this dispatch had
-/// not already spent its one-shot refusal. `need_resched` is re-armed at the
-/// same time, so the reschedule is deferred to the next delivered interrupt
-/// rather than swallowed. Stays 0 under `no_progress_refusal_disabled`.
-///
-/// GDB: `print DISPATCH_NO_PROGRESS_REFUSED`
-#[no_mangle]
-pub static DISPATCH_NO_PROGRESS_REFUSED: TraceCounter = TraceCounter::new(
-    "DISPATCH_NO_PROGRESS_REFUSED",
-    "no-progress preemption refused, need_resched re-armed (#772)",
+    "identical-frame preemption observed at the need_resched gate (#772)",
 );
 
 /// Completed switches into a blocked-in-syscall kernel context.
@@ -267,17 +265,18 @@ pub static DISPATCH_KERNEL_RESTORE_TOTAL: TraceCounter = TraceCounter::new(
 // `#![cfg(target_arch = "x86_64")]`. They register on both arches and stay 0
 // on aarch64.
 //
-// R111/R112 ruled the candidate-A mechanism model incomplete: the refusal
-// moved neither the identical-RIP/RSP proxy nor the latency, and the landed
-// counters bound 3599 of the 7194 identical-RIP/RSP endings summed over the 25
-// committed green boots as switch-aways the refusal's
-// `!current_thread_blocked_or_terminated` conjunct excludes (proxy sum 7194
-// minus `DISPATCH_NO_PROGRESS - DISPATCH_NO_PROGRESS_REFUSED` = 3595, from
-// docs/planning/green-program/sockets/serials/772-fix-a/green-results.txt and
-// green-results-cont.txt). These counters answer WHICH path produces each
-// save, by splitting the dispatch path's context saves on (save flavour x
-// which gate admitted the switch) and counting the no-progress subset of each
-// reason separately.
+// R111/R112 ruled the candidate-A mechanism model incomplete: its refusal
+// moved neither the identical-RIP/RSP proxy nor the latency. These counters
+// were added to answer WHICH path produces each save, by splitting the
+// dispatch path's context saves on (save flavour x which gate admitted the
+// switch) and counting the identical-frame subset of each reason separately.
+// The 40-boot battery they were built for is reported in
+// docs/planning/green-program/sockets/772-DIAG-2026-09-03.md: the
+// blocked/terminated arm produces 84.7-97.6% of the kernel-blocked
+// identical-frame saves across its 4 arms, which is why the refusal -- whose
+// `!current_thread_blocked_or_terminated` conjunct excluded exactly that arm
+// -- could not move the aggregate. R115 withdrew the refusal; these counters
+// land as instrumentation.
 //
 // Reading them:
 //
@@ -292,10 +291,11 @@ pub static DISPATCH_KERNEL_RESTORE_TOTAL: TraceCounter = TraceCounter::new(
 //   AND RSP) to the frame the last completed dispatch installed for the same
 //   thread.
 // * `_MANDATORY` names the gate that admits the switch because the current
-//   thread is blocked or terminated -- the arm the refusal is conjoined out
-//   of, so a no-progress save counted there is one the refusal's
-//   `if !current_thread_blocked_or_terminated` excludes. `_PREEMPT` names the
-//   `need_resched` arm the refusal does guard.
+//   thread is blocked or terminated -- a switch the scheduler must perform,
+//   and the arm that carries the great majority of the identical-frame saves.
+//   `_PREEMPT` names the `need_resched` arm, where the thread was running and
+//   the switch is discretionary. The split is read off the same boolean the
+//   gate itself computes, not a second predicate.
 
 /// Userspace-frame saves admitted by the `need_resched` arm.
 ///
@@ -437,8 +437,8 @@ pub static DISPATCH_SWITCH_ROLLED_BACK: TraceCounter = TraceCounter::new(
 /// the userspace restore paths, the userspace restore error, the
 /// already-terminated-after-delivery arm, and the two signal-termination arms
 /// in `check_and_deliver_signals_for_current_thread`, which the no-switch
-/// return arms (the #772 refusal among them) reach. The per-site breakdown is
-/// in the trace event's flags.
+/// return arm at gate 4 reaches. The per-site breakdown is in the trace
+/// event's flags.
 ///
 /// GDB: `print DISPATCH_SWITCH_IDLE_REDIRECT`
 #[no_mangle]
@@ -565,12 +565,11 @@ pub fn init() {
     register_counter(&RECV_WAIT_STILL_BLOCKED_TRUE);
     register_counter(&RECV_WAIT_STILL_BLOCKED_FALSE);
     register_counter(&DISPATCH_NO_PROGRESS);
-    register_counter(&DISPATCH_NO_PROGRESS_REFUSED);
     register_counter(&DISPATCH_KERNEL_RESTORE_TOTAL);
     // #772 diagnostics (R111/R112). Registered with the same capacity
-    // assertion the teardown provider uses: before this block the registry
-    // held 159 of MAX_COUNTERS entries, and an unchecked registration failure
-    // here would drop a counter the census reads rather than fail loudly.
+    // assertion the teardown provider uses: `register_counter` already panics
+    // on a full registry, so this assert is a second, named guard rather than
+    // the only one.
     for counter in DISPATCH_SAVE_CENSUS_COUNTERS {
         assert!(
             register_counter(counter).is_some(),
