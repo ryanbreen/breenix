@@ -7,12 +7,12 @@
 # finding R7-004). This script is that scoring, written down, with the lockup
 # term in it.
 #
-# A boot that locks up is never "clean" here. The lockup is either
+# A boot that locks up is not scored clean here. The lockup is either
 #   728-signature  -- at least one `EXT2_LOCK_SPIN_STALL` line precedes the
 #                     lockup dump, which is the open #728 ext2 read-park
 #                     livelock: attributed, reported in the verdict, and not
 #                     this gate's red
-#   UNATTRIBUTED   -- a lockup with no preceding stall line: a red, always
+#   UNATTRIBUTED   -- a lockup with no preceding stall line: a red in each case
 # and either way the verdict line says which.
 #
 # Userspace panics and EL0 aborts are COUNTED and printed, not scored: the
@@ -35,7 +35,7 @@ BOOT_SECONDS="${BREENIX_TESTING_PROFILE_BOOT_SECONDS:-45}"
 OUTPUT_ROOT="${BREENIX_TESTING_PROFILE_OUTPUT_DIR:-/tmp/breenix_aarch64_testing_profile}"
 FAILURE_ROOT="${BREENIX_TESTING_PROFILE_FAILURE_DIR:-/tmp/breenix_testing_profile_failures}"
 
-# The loader marker and the catalog line: both must appear, in every boot.
+# The loader marker and the catalog line: both must appear in each boot.
 LOADED_LINE_RE='\[test\] Loaded [0-9]+/[0-9]+ test binaries'
 MARKER_LINE='[test] Test processes loaded - will run via timer interrupts'
 # The lockup dump, and the #728 signature that attributes one.
@@ -79,8 +79,8 @@ classify_serial() {
     # Markers that CANNOT occur on this profile, and what it means if they do.
     #
     # `boot_continuation` returns before `launch_init_from_elf` under
-    # `#[cfg(feature = "testing")]`, so the testing profile never launches init
-    # and never compiles the boot_tests suite. Two consequences are checkable:
+    # `#[cfg(feature = "testing")]`, so the testing profile does not launch init
+    # and does not compile the boot_tests suite. Two consequences are checkable:
     # init's `[BLOCK_EINTR_ORACLE:` marker and any `[BOOT_TESTS:FAIL` line must
     # both be absent. Either one appearing means the profile split moved, and
     # this gate is then scoring a different kernel than it claims to.

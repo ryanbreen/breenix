@@ -532,8 +532,9 @@ const SHADOW_NAMES: [&str; 4] = [
     "next_cr3",
 ];
 
-/// Whether every step that produces `operand` is either a parameter or a method
-/// call on something parameter-borne -- i.e. the function FETCHED nothing.
+/// Whether each step that produces `operand` is either a parameter or a method
+/// call on something parameter-borne -- i.e. the value came in through the
+/// signature rather than being fetched.
 ///
 /// R7-002: `traces_to_a_parameter` alone accepts `let root = fetch_root(flags);`
 /// because `flags` is a parameter, which would let a future process-root wrapper
@@ -564,7 +565,7 @@ fn derivation_fetches_nothing(body: &str, operand: &str) -> bool {
     true
 }
 
-/// Whether every call in `expression` is a method call rather than a
+/// Whether each call in `expression` is a method call rather than a
 /// path-qualified or free call.
 fn expression_only_calls_methods(expression: &str) -> bool {
     let characters: Vec<char> = expression.chars().collect();
@@ -587,8 +588,8 @@ fn expression_only_calls_methods(expression: &str) -> bool {
     true
 }
 
-/// A mechanism primitive installs what its caller decided and fetches nothing,
-/// so the obligation to settle the shadows belongs to that caller -- an
+/// A mechanism primitive installs what its caller decided and fetches no value
+/// of its own, so the obligation to settle the shadows belongs to that caller -- an
 /// obligation `every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows`
 /// then checks, rather than leaving the exemption a free pass.
 fn is_mechanism_primitive(signature: &str, body: &str, operand: &str) -> bool {
@@ -626,14 +627,14 @@ fn function_attributes(source: &str, name: &str) -> String {
     attributes.join("\n")
 }
 
-/// Functions this census can prove aarch64 compiles: everything under
+/// Functions this census can show are compiled on aarch64: those under
 /// `kernel/src/arch_impl/aarch64/`, plus any function carrying
 /// `#[cfg(target_arch = "aarch64")]`.
 ///
 /// Disclosed narrowing: shared code with no `cfg` at all is NOT in scope, so
 /// this census cannot speak for a primitive call added to a cfg-free shared
-/// helper. Every aarch64 TTBR0 site in the tree today follows one of the two
-/// conventions above.
+/// helper. 7 of the 7 censused TTBR0 install sites follow one of the 2
+/// conventions above (#786).
 fn aarch64_scoped_functions(sources: &[(String, String)]) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for (file, source) in sources {
@@ -899,7 +900,8 @@ fn an_unreadable_identity_is_not_a_refusal() {
 #[test]
 fn the_primitive_exemption_rejects_a_fetched_root() {
     // R7-002's hazard in one function: the operand traces to a parameter only
-    // because that parameter was handed to a fetch. Nothing here was given.
+    // because that parameter was handed to a fetch. The value was fetched, not
+    // given.
     let signature = "    unsafe fn install_for(flags: u64) {";
     let body = "let root = Aarch64PerCpu::process_root(flags); \
                 core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) root);";

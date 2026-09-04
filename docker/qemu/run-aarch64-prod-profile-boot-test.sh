@@ -51,8 +51,8 @@ CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandle
 
 # Two arms of an A/B (this branch's kernel against another checkout's) must be
 # able to run at the same time without writing each other's serial, so both
-# directories are overridable. Unset, they are exactly the paths this gate has
-# always used.
+# directories are overridable. Unset, they are the 2 paths this gate used
+# before this change.
 OUTPUT_DIR="${BREENIX_PROD_PROFILE_OUTPUT_DIR:-/tmp/breenix_aarch64_prod_profile}"
 FAILURE_ROOT="${BREENIX_PROD_PROFILE_FAILURE_DIR:-/tmp/breenix_prod_profile_failures}"
 SERIAL_FILE="$OUTPUT_DIR/serial.txt"
