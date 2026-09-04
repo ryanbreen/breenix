@@ -14386,7 +14386,7 @@ fn validate_x86_prod_profile_harness(script: &str) -> Result<(), ()> {
         }
     }
 
-    // Every marker assertion is an exact count. A relaxed comparison here is how
+    // Each marker assertion is an exact count. A relaxed comparison here is how
     // a gate stops being able to fail. Two shapes are exact: a literal 0 or 1,
     // and an equality against an expectation this script derives from its own
     // bytes (`VAR=$(grep -c... "${BASH_SOURCE[0]}")`, the census-not-a-list
