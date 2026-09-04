@@ -1,0 +1,202 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6dd990e0-39d-3/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6dd990e0-39d-3/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 #575 Service Sequence Gate
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6dd990e0-39d-3/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_6dd990e0-39d-3/target/ext2-aarch64.img
+Boots per profile: 25
+Profile selection: both
+Block IOPS throttle: 2000
+Per-boot timeout: 45s
+Output: /tmp/breenix_aarch64_service_sequence_gate_20260903T231714Z-33736
+
+Profile max: running 25 sequential boots
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 1/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=2, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 2/25: GREEN — all service-sequence and P5b markers observed [early, 18s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 3/25: GREEN — all service-sequence and P5b markers observed [early, 18s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 4/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 5/25: GREEN — all service-sequence and P5b markers observed [early, 18s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 6/25: GREEN — all service-sequence and P5b markers observed [early, 18s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 7/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 8/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 9/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 10/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 11/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 12/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 13/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 14/25: GREEN — all service-sequence and P5b markers observed [early, 22s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 15/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 16/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 17/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 18/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=2, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 19/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 20/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 21/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 22/25: GREEN — all service-sequence and P5b markers observed [early, 22s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 23/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 24/25: GREEN — all service-sequence and P5b markers observed [early, 22s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 25/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+
+Profile max census
+  575           0
+  576           0
+  626           0
+  635           0
+  641           0
+  690           0
+  DATA_ABORT    0
+  CLONE_EXEC    0
+  STRAND        0
+  BOOT_TEST_FAIL 0
+  596           0
+  612           0
+  609           0
+  P5B           0
+  GREEN         25
+  UNATTRIBUTED  0
+  GREEN rate: 25/25 (100.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+  CTX596 divergence: 11 marker line(s) across 9/25 boot(s) — reported, not gated
+  RET dispatch refused: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/25 boot(s) — gate-failing
+  Per-CPU stack alien: 0 marker line(s) across 0/25 boot(s) — gate-failing
+  CPU identity split: 0 marker line(s) across 0/25 boot(s) — gate-failing
+  Ret-dispatch staging refused: 0 marker line(s) across 0/25 boot(s) — gate-failing
+  Saved-LR non-PC words: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+Profile max gate: PASSED (575=0, 576=0, 626=0, 635=0, 641=0, 690=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)
+
+Profile cortex-a72: running 25 sequential boots
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 1/25: GREEN — all service-sequence and P5b markers observed [early, 23s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 2/25: GREEN — all service-sequence and P5b markers observed [early, 23s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 3/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 4/25: GREEN — all service-sequence and P5b markers observed [early, 22s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 5/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=2, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 6/25: GREEN — all service-sequence and P5b markers observed [early, 25s, ctx596_divergence=2, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 7/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 8/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 9/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 10/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 11/25: GREEN — all service-sequence and P5b markers observed [early, 23s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 12/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 13/25: GREEN — all service-sequence and P5b markers observed [early, 18s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 14/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 15/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 16/25: GREEN — all service-sequence and P5b markers observed [early, 21s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 17/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 18/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 19/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 20/25: GREEN — all service-sequence and P5b markers observed [early, 22s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 21/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 22/25: GREEN — all service-sequence and P5b markers observed [early, 22s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 23/25: GREEN — all service-sequence and P5b markers observed [early, 23s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 24/25: GREEN — all service-sequence and P5b markers observed [early, 20s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+qemu-system-aarch64: terminating on signal 15 from pid 33736 (<unknown process>)
+  Boot 25/25: GREEN — all service-sequence and P5b markers observed [early, 22s, ctx596_divergence=1, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=0]
+
+Profile cortex-a72 census
+  575           0
+  576           0
+  626           0
+  635           0
+  641           0
+  690           0
+  DATA_ABORT    0
+  CLONE_EXEC    0
+  STRAND        0
+  BOOT_TEST_FAIL 0
+  596           0
+  612           0
+  609           0
+  P5B           0
+  GREEN         25
+  UNATTRIBUTED  0
+  GREEN rate: 25/25 (100.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+  CTX596 divergence: 17 marker line(s) across 15/25 boot(s) — reported, not gated
+  RET dispatch refused: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/25 boot(s) — gate-failing
+  Per-CPU stack alien: 0 marker line(s) across 0/25 boot(s) — gate-failing
+  CPU identity split: 0 marker line(s) across 0/25 boot(s) — gate-failing
+  Ret-dispatch staging refused: 0 marker line(s) across 0/25 boot(s) — gate-failing
+  Saved-LR non-PC words: 0 marker line(s) across 0/25 boot(s) — reported, not gated
+Profile cortex-a72 gate: PASSED (575=0, 576=0, 626=0, 635=0, 641=0, 690=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=0, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)
+
+Total census
+  575           0
+  576           0
+  626           0
+  635           0
+  641           0
+  690           0
+  DATA_ABORT    0
+  CLONE_EXEC    0
+  STRAND        0
+  BOOT_TEST_FAIL 0
+  596           0
+  612           0
+  609           0
+  P5B           0
+  GREEN         50
+  UNATTRIBUTED  0
+  GREEN rate: 50/50 (100.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+  CTX596 divergence: 28 marker line(s) across 24/50 boot(s) — reported, not gated
+  RET dispatch refused: 0 marker line(s) across 0/50 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/50 boot(s) — gate-failing
+  Per-CPU stack alien: 0 marker line(s) across 0/50 boot(s) — gate-failing
+  CPU identity split: 0 marker line(s) across 0/50 boot(s) — gate-failing
+  Ret-dispatch staging refused: 0 marker line(s) across 0/50 boot(s) — gate-failing
+  Saved-LR non-PC words: 0 marker line(s) across 0/50 boot(s) — reported, not gated
+
+ARM64 #575 SERVICE SEQUENCE GATE: PASSED
+Preserved serials: /tmp/breenix_aarch64_service_sequence_gate_20260903T231714Z-33736

@@ -1,0 +1,33 @@
+=== boot 18/25 tag=green_18 ===
+/root/driver_boot.sh: line 87: 945034 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_18 outdir=/tmp/prove-green_18 markers_found=1 gdb_ok=1 verdict_rc=1 DISPATCH_NO_PROGRESS=598 DISPATCH_NO_PROGRESS_REFUSED=427 DISPATCH_KERNEL_RESTORE_TOTAL=596
+{"episodes": [{"tid": "27", "start_line": 2362, "end_line": 2607, "anchor_line": null, "turns": 1}], "restores_total": 596, "no_progress_proxy": 384, "no_progress_proxy_pct": 64.4, "data_latency_ms": 1191}
+=== boot 19/25 tag=green_19 ===
+/root/driver_boot.sh: line 87: 945447 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_19 outdir=/tmp/prove-green_19 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=501 DISPATCH_NO_PROGRESS_REFUSED=356 DISPATCH_KERNEL_RESTORE_TOTAL=507
+{"episodes": [{"tid": "28", "start_line": 2211, "end_line": 2286, "anchor_line": 2220, "turns": 1}, {"tid": "28", "start_line": 2425, "end_line": 2713, "anchor_line": null, "turns": 1}], "restores_total": 507, "no_progress_proxy": 321, "no_progress_proxy_pct": 63.3, "data_latency_ms": 2057}
+=== boot 20/25 tag=green_20 ===
+/root/driver_boot.sh: line 87: 945844 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_20 outdir=/tmp/prove-green_20 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=399 DISPATCH_NO_PROGRESS_REFUSED=279 DISPATCH_KERNEL_RESTORE_TOTAL=401
+{"episodes": [{"tid": "28", "start_line": 2191, "end_line": 2327, "anchor_line": 2199, "turns": 1}, {"tid": "28", "start_line": 2457, "end_line": 2629, "anchor_line": null, "turns": 1}], "restores_total": 401, "no_progress_proxy": 267, "no_progress_proxy_pct": 66.6, "data_latency_ms": 1327}
+=== boot 21/25 tag=green_21 ===
+/root/driver_boot.sh: line 87: 946229 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_21 outdir=/tmp/prove-green_21 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=561 DISPATCH_NO_PROGRESS_REFUSED=373 DISPATCH_KERNEL_RESTORE_TOTAL=470
+{"episodes": [{"tid": "28", "start_line": 2233, "end_line": 2350, "anchor_line": 2241, "turns": 1}, {"tid": "28", "start_line": 2427, "end_line": 2596, "anchor_line": null, "turns": 1}], "restores_total": 470, "no_progress_proxy": 299, "no_progress_proxy_pct": 63.6, "data_latency_ms": 1100}
+=== boot 22/25 tag=green_22 ===
+/root/driver_boot.sh: line 87: 946604 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_22 outdir=/tmp/prove-green_22 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=637 DISPATCH_NO_PROGRESS_REFUSED=473 DISPATCH_KERNEL_RESTORE_TOTAL=633
+{"episodes": [{"tid": "30", "start_line": 2470, "end_line": 2697, "anchor_line": null, "turns": 1}], "restores_total": 633, "no_progress_proxy": 444, "no_progress_proxy_pct": 70.1, "data_latency_ms": 679}
+=== boot 23/25 tag=green_23 ===
+/root/driver_boot.sh: line 87: 947027 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_23 outdir=/tmp/prove-green_23 markers_found=1 gdb_ok=1 verdict_rc=1 DISPATCH_NO_PROGRESS=511 DISPATCH_NO_PROGRESS_REFUSED=358 DISPATCH_KERNEL_RESTORE_TOTAL=459
+{"episodes": [{"tid": "28", "start_line": 2237, "end_line": 2373, "anchor_line": 2245, "turns": 1}, {"tid": "28", "start_line": 2441, "end_line": 2801, "anchor_line": null, "turns": 2}], "restores_total": 459, "no_progress_proxy": 289, "no_progress_proxy_pct": 63.0, "data_latency_ms": 1327}
+=== boot 24/25 tag=green_24 ===
+/root/driver_boot.sh: line 87: 947422 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_24 outdir=/tmp/prove-green_24 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=511 DISPATCH_NO_PROGRESS_REFUSED=359 DISPATCH_KERNEL_RESTORE_TOTAL=456
+{"episodes": [{"tid": "30", "start_line": 2285, "end_line": 2367, "anchor_line": 2293, "turns": 1}, {"tid": "30", "start_line": 2456, "end_line": 2618, "anchor_line": null, "turns": 1}], "restores_total": 456, "no_progress_proxy": 298, "no_progress_proxy_pct": 65.4, "data_latency_ms": 848}
+=== boot 25/25 tag=green_25 ===
+/root/driver_boot.sh: line 87: 947805 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_25 outdir=/tmp/prove-green_25 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=447 DISPATCH_NO_PROGRESS_REFUSED=324 DISPATCH_KERNEL_RESTORE_TOTAL=433
+{"episodes": [{"tid": "29", "start_line": 1995, "end_line": 2258, "anchor_line": 2151, "turns": 1}, {"tid": "29", "start_line": 2325, "end_line": 2542, "anchor_line": null, "turns": 1}], "restores_total": 433, "no_progress_proxy": 283, "no_progress_proxy_pct": 65.4, "data_latency_ms": 1363}
+=== loop_driver DONE N=25 ===

@@ -136,6 +136,20 @@ interactive = ["testing"]  # Boot into init_shell instead of running automated t
 # it discriminates the fix rather than passing either way. Not implied by
 # any other feature, and not meant to ship enabled.
 disable_x86_prod_init = []
+# #772 Q2 diagnostic switch. Compiles OUT exactly the three formatted serial
+# records the x86 dispatch path writes with interrupts masked -- the
+# "Saved kernel context for blocked thread", "Restored kernel context for
+# thread" and "Switched to process CR3 ... blocked-in-syscall kernel return"
+# records in kernel/src/interrupts/context_switch.rs, filed as #775 -- and
+# nothing else. It exists to measure whether silencing them collapses the
+# identical-RIP/RSP proxy; it is not a fix and is not meant to ship enabled.
+#
+# With this feature ON, scripts/x86-strand-census.sh goes blind: it keys on the
+# first two of those exact strings, so it reports threads_saved_blocked=0
+# stranded=0 and exits 0 vacuously. The script is deliberately NOT changed --
+# the feature is off by default, so main's census is unaffected -- and a run
+# under this feature is a diagnostic reading, never a gate result.
+quiet_dispatch_log = []
 
 [dependencies]
 bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927" }

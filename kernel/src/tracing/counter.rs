@@ -243,11 +243,22 @@ fn current_cpu_id() -> usize {
 
 /// Maximum number of counters that can be registered.
 ///
-/// The built-in providers currently register 106 counters on both x86_64 and
-/// aarch64 (110 when the optional `btrt` feature is enabled). Keep enough
-/// headroom for new observability counters without silently truncating the
-/// registry.
-pub const MAX_COUNTERS: usize = 160;
+/// Counted from the `init()` functions the provider registry calls
+/// (`kernel/src/tracing/providers/mod.rs`): counters.rs 16 + net_rx.rs 12 +
+/// virtgpu.rs 38 + xhci.rs 3 + teardown.rs `COUNTER_COUNT` 87 = 156, plus the
+/// 18 #772 dispatch counters = 174 on both x86_64 and aarch64, and 178 when
+/// the optional `btrt` feature adds its four. The previous doc comment said
+/// 106, which had gone stale as the teardown provider grew, and 178 does not
+/// fit under the previous cap of 160 -- which is what the bump is for.
+///
+/// It is NOT for a silent drop: `register_counter` asserts
+/// `count < MAX_COUNTERS` before every registration and its only
+/// non-panicking exit is `Some(i)`, so an overflow has always panicked loudly
+/// and no counter was ever registered-and-dropped. An earlier version of this
+/// comment said otherwise (round-2 review, m1).
+// claim-lint:ok: 1 of 1 non-panicking exit in register_counter below returns
+// Some(i); its tail is `unreachable!`.
+pub const MAX_COUNTERS: usize = 224;
 
 /// Global registry of trace counters.
 ///

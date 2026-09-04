@@ -1,0 +1,68 @@
+=== boot 1/25 tag=green_1 ===
+/root/driver_boot.sh: line 87: 938374 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_1 outdir=/tmp/prove-green_1 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=536 DISPATCH_NO_PROGRESS_REFUSED=367 DISPATCH_KERNEL_RESTORE_TOTAL=498
+{"episodes": [{"tid": "30", "start_line": 2166, "end_line": 2338, "anchor_line": 2174, "turns": 1}, {"tid": "30", "start_line": 2449, "end_line": 2584, "anchor_line": null, "turns": 1}], "restores_total": 498, "no_progress_proxy": 336, "no_progress_proxy_pct": 67.5, "data_latency_ms": 2069}
+=== boot 2/25 tag=green_2 ===
+/root/driver_boot.sh: line 87: 938772 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_2 outdir=/tmp/prove-green_2 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=333 DISPATCH_NO_PROGRESS_REFUSED=221 DISPATCH_KERNEL_RESTORE_TOTAL=329
+{"episodes": [{"tid": "27", "start_line": 2383, "end_line": 2598, "anchor_line": null, "turns": 1}], "restores_total": 329, "no_progress_proxy": 219, "no_progress_proxy_pct": 66.6, "data_latency_ms": 1774}
+=== boot 3/25 tag=green_3 ===
+/root/driver_boot.sh: line 87: 939144 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_3 outdir=/tmp/prove-green_3 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=378 DISPATCH_NO_PROGRESS_REFUSED=263 DISPATCH_KERNEL_RESTORE_TOTAL=332
+{"episodes": [{"tid": "30", "start_line": 2326, "end_line": 2396, "anchor_line": 2335, "turns": 1}, {"tid": "30", "start_line": 2484, "end_line": 2779, "anchor_line": null, "turns": 1}], "restores_total": 332, "no_progress_proxy": 202, "no_progress_proxy_pct": 60.8, "data_latency_ms": 636}
+=== boot 4/25 tag=green_4 ===
+/root/driver_boot.sh: line 87: 939517 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_4 outdir=/tmp/prove-green_4 markers_found=1 gdb_ok=1 verdict_rc=1 DISPATCH_NO_PROGRESS=486 DISPATCH_NO_PROGRESS_REFUSED=302 DISPATCH_KERNEL_RESTORE_TOTAL=369
+{"episodes": [{"tid": "27", "start_line": 2218, "end_line": 2353, "anchor_line": 2226, "turns": 1}, {"tid": "27", "start_line": 2390, "end_line": 2709, "anchor_line": null, "turns": 1}], "restores_total": 369, "no_progress_proxy": 239, "no_progress_proxy_pct": 64.8, "data_latency_ms": 1420}
+=== boot 5/25 tag=green_5 ===
+/root/driver_boot.sh: line 87: 939890 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_5 outdir=/tmp/prove-green_5 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=403 DISPATCH_NO_PROGRESS_REFUSED=285 DISPATCH_KERNEL_RESTORE_TOTAL=379
+{"episodes": [{"tid": "27", "start_line": 2233, "end_line": 2361, "anchor_line": 2242, "turns": 1}, {"tid": "27", "start_line": 2452, "end_line": 2620, "anchor_line": null, "turns": 1}], "restores_total": 379, "no_progress_proxy": 248, "no_progress_proxy_pct": 65.4, "data_latency_ms": 1218}
+=== boot 6/25 tag=green_6 ===
+/root/driver_boot.sh: line 87: 940272 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_6 outdir=/tmp/prove-green_6 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=448 DISPATCH_NO_PROGRESS_REFUSED=322 DISPATCH_KERNEL_RESTORE_TOTAL=407
+{"episodes": [{"tid": "30", "start_line": 2484, "end_line": 2652, "anchor_line": null, "turns": 1}], "restores_total": 407, "no_progress_proxy": 252, "no_progress_proxy_pct": 61.9, "data_latency_ms": 1199}
+=== boot 7/25 tag=green_7 ===
+/root/driver_boot.sh: line 87: 940653 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_7 outdir=/tmp/prove-green_7 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=490 DISPATCH_NO_PROGRESS_REFUSED=352 DISPATCH_KERNEL_RESTORE_TOTAL=415
+{"episodes": [{"tid": "27", "start_line": 2435, "end_line": 2627, "anchor_line": null, "turns": 1}], "restores_total": 415, "no_progress_proxy": 267, "no_progress_proxy_pct": 64.3, "data_latency_ms": 1107}
+=== boot 8/25 tag=green_8 ===
+/root/driver_boot.sh: line 87: 941029 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_8 outdir=/tmp/prove-green_8 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=346 DISPATCH_NO_PROGRESS_REFUSED=232 DISPATCH_KERNEL_RESTORE_TOTAL=346
+{"episodes": [{"tid": "29", "start_line": 2223, "end_line": 2338, "anchor_line": 2231, "turns": 1}, {"tid": "29", "start_line": 2451, "end_line": 2612, "anchor_line": null, "turns": 1}], "restores_total": 346, "no_progress_proxy": 215, "no_progress_proxy_pct": 62.1, "data_latency_ms": 1118}
+=== boot 9/25 tag=green_9 ===
+/root/driver_boot.sh: line 87: 941403 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_9 outdir=/tmp/prove-green_9 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=451 DISPATCH_NO_PROGRESS_REFUSED=312 DISPATCH_KERNEL_RESTORE_TOTAL=393
+{"episodes": [{"tid": "30", "start_line": 2638, "end_line": 2781, "anchor_line": null, "turns": 1}], "restores_total": 393, "no_progress_proxy": 246, "no_progress_proxy_pct": 62.6, "data_latency_ms": 2257}
+=== boot 10/25 tag=green_10 ===
+/root/driver_boot.sh: line 87: 941812 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_10 outdir=/tmp/prove-green_10 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=521 DISPATCH_NO_PROGRESS_REFUSED=364 DISPATCH_KERNEL_RESTORE_TOTAL=513
+{"episodes": [{"tid": "30", "start_line": 2264, "end_line": 2370, "anchor_line": 2273, "turns": 1}, {"tid": "30", "start_line": 2489, "end_line": 2730, "anchor_line": null, "turns": 1}], "restores_total": 513, "no_progress_proxy": 345, "no_progress_proxy_pct": 67.3, "data_latency_ms": 1092}
+=== boot 11/25 tag=green_11 ===
+/root/driver_boot.sh: line 87: 942240 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_11 outdir=/tmp/prove-green_11 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=370 DISPATCH_NO_PROGRESS_REFUSED=256 DISPATCH_KERNEL_RESTORE_TOTAL=357
+{"episodes": [{"tid": "27", "start_line": 2406, "end_line": 2507, "anchor_line": null, "turns": 1}], "restores_total": 357, "no_progress_proxy": 234, "no_progress_proxy_pct": 65.5, "data_latency_ms": 1896}
+=== boot 12/25 tag=green_12 ===
+/root/driver_boot.sh: line 87: 942644 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_12 outdir=/tmp/prove-green_12 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=424 DISPATCH_NO_PROGRESS_REFUSED=299 DISPATCH_KERNEL_RESTORE_TOTAL=390
+{"episodes": [{"tid": "29", "start_line": 2469, "end_line": 2686, "anchor_line": null, "turns": 1}], "restores_total": 390, "no_progress_proxy": 246, "no_progress_proxy_pct": 63.1, "data_latency_ms": 641}
+=== boot 13/25 tag=green_13 ===
+/root/driver_boot.sh: line 87: 943039 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_13 outdir=/tmp/prove-green_13 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=415 DISPATCH_NO_PROGRESS_REFUSED=291 DISPATCH_KERNEL_RESTORE_TOTAL=427
+{"episodes": [{"tid": "29", "start_line": 2204, "end_line": 2298, "anchor_line": 2212, "turns": 1}, {"tid": "29", "start_line": 2372, "end_line": 2610, "anchor_line": null, "turns": 1}], "restores_total": 427, "no_progress_proxy": 281, "no_progress_proxy_pct": 65.8, "data_latency_ms": 971}
+=== boot 14/25 tag=green_14 ===
+/root/driver_boot.sh: line 87: 943430 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_14 outdir=/tmp/prove-green_14 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=515 DISPATCH_NO_PROGRESS_REFUSED=371 DISPATCH_KERNEL_RESTORE_TOTAL=528
+{"episodes": [{"tid": "27", "start_line": 2377, "end_line": 2564, "anchor_line": null, "turns": 1}], "restores_total": 528, "no_progress_proxy": 332, "no_progress_proxy_pct": 62.9, "data_latency_ms": 1014}
+=== boot 15/25 tag=green_15 ===
+/root/driver_boot.sh: line 87: 943834 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_15 outdir=/tmp/prove-green_15 markers_found=1 gdb_ok=1 verdict_rc=1 DISPATCH_NO_PROGRESS=456 DISPATCH_NO_PROGRESS_REFUSED=309 DISPATCH_KERNEL_RESTORE_TOTAL=383
+{"episodes": [{"tid": "27", "start_line": 2348, "end_line": 2592, "anchor_line": null, "turns": 1}], "restores_total": 383, "no_progress_proxy": 253, "no_progress_proxy_pct": 66.1, "data_latency_ms": 1098}
+=== boot 16/25 tag=green_16 ===
+/root/driver_boot.sh: line 87: 944193 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_16 outdir=/tmp/prove-green_16 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=586 DISPATCH_NO_PROGRESS_REFUSED=414 DISPATCH_KERNEL_RESTORE_TOTAL=564
+{"episodes": [{"tid": "27", "start_line": 2272, "end_line": 2436, "anchor_line": 2280, "turns": 1}, {"tid": "27", "start_line": 2513, "end_line": 2704, "anchor_line": null, "turns": 1}], "restores_total": 564, "no_progress_proxy": 394, "no_progress_proxy_pct": 69.9, "data_latency_ms": 1691}
+=== boot 17/25 tag=green_17 ===
+/root/driver_boot.sh: line 87: 944608 Killed                  BREENIX_NET_MODE=none BREENIX_QEMU_ACCEL=$ACCEL BREENIX_QEMU_CPU=$CPU timeout 150 ./target/release/qemu-uefi -serial file:"$OUTDIR/serial_user.log" -serial file:"$OUTDIR/serial_kernel.log" -s > "$OUTDIR/stdout.log" 2>&1
+RESULT tag=green_17 outdir=/tmp/prove-green_17 markers_found=1 gdb_ok=1 verdict_rc=0 DISPATCH_NO_PROGRESS=553 DISPATCH_NO_PROGRESS_REFUSED=372 DISPATCH_KERNEL_RESTORE_TOTAL=504
+{"episodes": [{"tid": "29", "start_line": 2271, "end_line": 2402, "anchor_line": 2280, "turns": 1}, {"tid": "29", "start_line": 2482, "end_line": 2755, "anchor_line": null, "turns": 1}], "restores_total": 504, "no_progress_proxy": 300, "no_progress_proxy_pct": 59.5, "data_latency_ms": 1264}

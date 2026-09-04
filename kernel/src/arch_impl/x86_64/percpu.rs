@@ -487,6 +487,119 @@ impl X86PerCpu {
         );
     }
 
+    // ========================================================================
+    // Dispatch mark (#772)
+    // ========================================================================
+    //
+    // Four GS-relative words recording the resume frame the most recent
+    // completed dispatch installed on this CPU. Read and written from the
+    // interrupt-return path, so the 6 accessors below are plain loads and
+    // stores: no lock, no allocation, no formatting.
+
+    /// Read the dispatch mark's state word.
+    ///
+    /// Callers read this first: on `DISPATCH_MARK_INVALID` the remaining three
+    /// words need not be read at all.
+    #[inline(always)]
+    pub fn dispatch_mark_state() -> u64 {
+        let state: u64;
+        unsafe {
+            asm!(
+                "mov {}, gs:[{offset}]",
+                out(reg) state,
+                offset = const PERCPU_DISPATCH_MARK_STATE_OFFSET,
+                options(nostack, preserves_flags, readonly)
+            );
+        }
+        state
+    }
+
+    /// Read the dispatched thread id recorded in the dispatch mark.
+    #[inline(always)]
+    pub fn dispatch_mark_tid() -> u64 {
+        let tid: u64;
+        unsafe {
+            asm!(
+                "mov {}, gs:[{offset}]",
+                out(reg) tid,
+                offset = const PERCPU_DISPATCH_MARK_TID_OFFSET,
+                options(nostack, preserves_flags, readonly)
+            );
+        }
+        tid
+    }
+
+    /// Read the resume RIP recorded in the dispatch mark.
+    #[inline(always)]
+    pub fn dispatch_mark_rip() -> u64 {
+        let rip: u64;
+        unsafe {
+            asm!(
+                "mov {}, gs:[{offset}]",
+                out(reg) rip,
+                offset = const PERCPU_DISPATCH_MARK_RIP_OFFSET,
+                options(nostack, preserves_flags, readonly)
+            );
+        }
+        rip
+    }
+
+    /// Read the resume RSP recorded in the dispatch mark.
+    #[inline(always)]
+    pub fn dispatch_mark_rsp() -> u64 {
+        let rsp: u64;
+        unsafe {
+            asm!(
+                "mov {}, gs:[{offset}]",
+                out(reg) rsp,
+                offset = const PERCPU_DISPATCH_MARK_RSP_OFFSET,
+                options(nostack, preserves_flags, readonly)
+            );
+        }
+        rsp
+    }
+
+    /// Record a dispatch mark.
+    ///
+    /// The state word is written LAST, in a separate `asm!` block, so a reader
+    /// that sees `DISPATCH_MARK_VALID` sees the tid/RIP/RSP that belong to it.
+    /// No explicit fence is emitted for that ordering, and 2 mechanisms make
+    /// one unnecessary here: an
+    /// `asm!` block without `nomem`/`readonly` is treated as arbitrarily
+    /// reading and writing memory, so the compiler cannot hoist the state
+    /// store above the three data stores, and x86-64's store ordering keeps
+    /// them in program order for the only reader there is -- a later interrupt
+    /// on this same CPU. (An SMP reader of another CPU's mark would need a
+    /// real release store; 0 sites read a foreign CPU's mark today, and the
+    /// data is GS-relative, which is per-CPU by construction.)
+    #[inline(always)]
+    pub unsafe fn set_dispatch_mark(tid: u64, rip: u64, rsp: u64) {
+        asm!(
+            "mov gs:[{rip_off}], {rip}",
+            "mov gs:[{rsp_off}], {rsp}",
+            "mov gs:[{tid_off}], {tid}",
+            rip = in(reg) rip,
+            rsp = in(reg) rsp,
+            tid = in(reg) tid,
+            rip_off = const PERCPU_DISPATCH_MARK_RIP_OFFSET,
+            rsp_off = const PERCPU_DISPATCH_MARK_RSP_OFFSET,
+            tid_off = const PERCPU_DISPATCH_MARK_TID_OFFSET,
+            options(nostack, preserves_flags)
+        );
+        Self::set_dispatch_mark_state(DISPATCH_MARK_VALID);
+    }
+
+    /// Overwrite the dispatch mark's state word.
+    #[inline(always)]
+    pub unsafe fn set_dispatch_mark_state(state: u64) {
+        asm!(
+            "mov gs:[{offset}], {}",
+            in(reg) state,
+            offset = const PERCPU_DISPATCH_MARK_STATE_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
+
     /// Set the kernel CR3 in per-CPU data.
     #[inline(always)]
     pub unsafe fn set_kernel_cr3(cr3: u64) {

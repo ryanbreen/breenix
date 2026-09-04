@@ -1,0 +1,2 @@
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=7020
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0

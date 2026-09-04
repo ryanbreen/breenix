@@ -1,0 +1,4 @@
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked at line 3272 and never restored (2676 further lines followed)
+strand census: thread 24 (loopback_wake_test) saved blocked at line 5943 and never restored (5 further lines followed)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=2 lines=5948
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and never restored (see the strand census above)

@@ -1,0 +1,2 @@
+RESULT tag=A1_3 outdir=/root/breenix-772diag/diag-out/A1/boot_03 markers_found=0 gdb_ok=0 verdict_rc=1
+{"episodes": [{"tid": "30", "start_line": 2405, "end_line": 2582, "anchor_line": null, "turns": 1}], "restores_total": 415, "no_progress_proxy": 242, "no_progress_proxy_pct": 58.3, "data_latency_ms": 378, "saved_records": 417, "counters": {}}
