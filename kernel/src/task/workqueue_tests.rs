@@ -232,6 +232,14 @@ pub fn test_workqueue() {
     unsafe {
         arch_disable_interrupts();
     }
+    // aarch64 installs no logger, so the log lines in this test reach no one
+    // there. This one line does, and it reports the two park-race windows the
+    // publish-then-recheck protocol keeps wakeups across.
+    crate::serial_println!(
+        "[WORKQUEUE_PARK_RACE:cancelled={}:intent_cleared={}]",
+        crate::task::workqueue::worker_park_cancellations(),
+        crate::task::kthread::park_intents_cleared_before_sleep()
+    );
     log::info!("WORKQUEUE_TEST: all tests passed");
     log::info!("=== WORKQUEUE TEST: Completed ===");
 }

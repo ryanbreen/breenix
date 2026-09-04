@@ -83,6 +83,10 @@ fn report_ksoftirqd_deferral_phase() {
         ITERATION_COUNT.load(Ordering::SeqCst),
         observed
     );
+    crate::serial_println!(
+        "[KSOFTIRQD_PARK_RACE:cancelled={}]",
+        crate::task::softirqd::ksoftirqd_park_cancellations()
+    );
 }
 
 fn run_softirq_tests() {

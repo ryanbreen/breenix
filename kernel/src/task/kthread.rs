@@ -11,7 +11,10 @@ use super::thread::Thread;
 
 // Architecture-generic HAL wrappers for interrupt control and halt.
 // These delegate to the correct CpuOps implementation for each architecture.
-use crate::{arch_enable_interrupts, arch_halt, arch_without_interrupts as without_interrupts};
+use crate::{
+    arch_enable_interrupts, arch_halt, arch_halt_with_interrupts,
+    arch_without_interrupts as without_interrupts,
+};
 
 /// Kernel thread control block
 pub struct Kthread {
@@ -52,6 +55,18 @@ struct KthreadStart {
 }
 
 static KTHREAD_REGISTRY: Mutex<BTreeMap<u64, Arc<Kthread>>> = Mutex::new(BTreeMap::new());
+
+/// Published park intents that an unpark cleared before the parker slept.
+///
+/// Every increment is a wakeup kept that the older check-then-park shape had
+/// no way to keep. Diagnostic, not a fault.
+static PARK_INTENT_CLEARED_BEFORE_SLEEP: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Read the raced-park count. See PARK_INTENT_CLEARED_BEFORE_SLEEP.
+pub fn park_intents_cleared_before_sleep() -> u64 {
+    PARK_INTENT_CLEARED_BEFORE_SLEEP.load(Ordering::Relaxed)
+}
 
 /// Create and immediately start a kernel thread
 pub fn kthread_run<F>(func: F, name: &str) -> Result<KthreadHandle, KthreadError>
@@ -180,12 +195,21 @@ pub fn kthread_should_stop() -> bool {
         .unwrap_or(false)
 }
 
-/// Park current thread until unparked (sleep)
-/// Use this in kthread wait loops instead of bare HLT to ensure kthread_stop() can wake promptly.
-pub fn kthread_park() {
+/// Publish the current kthread's intent to park, without sleeping yet.
+///
+/// Returns false when there is nothing to park -- the caller is not a kthread,
+/// or a stop was already requested -- and then leaves no intent published.
+///
+/// This is the publish half of the protocol Linux spells prepare_to_wait:
+/// publish the sleep intent, THEN re-check the condition, then sleep. A
+/// producer that makes work available between a consumer's last check and its
+/// sleep can only cancel that sleep if the intent is already visible, so a
+/// consumer that checks its condition first and parks afterwards loses that
+/// wakeup.
+pub fn kthread_prepare_to_park() -> bool {
     let handle = match current_kthread() {
         Some(h) => h,
-        None => return, // Not a kthread, nothing to do
+        None => return false, // Not a kthread, nothing to do
     };
 
     // Set parked flag first
@@ -196,6 +220,33 @@ pub fn kthread_park() {
     // If kthread_stop() is called after we set parked, it will call kthread_unpark().
     if handle.inner.should_stop.load(Ordering::Acquire) {
         handle.inner.parked.store(false, Ordering::Release);
+        return false;
+    }
+
+    true
+}
+
+/// Abandon a park intent published by kthread_prepare_to_park.
+///
+/// The caller re-checked its condition, found work, and is not going to sleep.
+pub fn kthread_cancel_park() {
+    if let Some(handle) = current_kthread() {
+        handle.inner.parked.store(false, Ordering::Release);
+    }
+}
+
+/// Sleep out a park intent published by kthread_prepare_to_park.
+///
+/// Returns at once if the intent was already cleared -- that is the wakeup
+/// this protocol keeps, and it is counted.
+pub fn kthread_park_prepared() {
+    let handle = match current_kthread() {
+        Some(h) => h,
+        None => return, // Not a kthread, nothing to do
+    };
+
+    if !handle.inner.parked.load(Ordering::Acquire) {
+        PARK_INTENT_CLEARED_BEFORE_SLEEP.fetch_add(1, Ordering::Relaxed);
         return;
     }
 
@@ -203,26 +254,27 @@ pub fn kthread_park() {
     // For kthreads, we use the simple Blocked state (not BlockedOnSignal which
     // is designed for userspace syscalls and has special signal delivery logic).
     while handle.inner.parked.load(Ordering::Acquire) {
-        // CRITICAL: Disable interrupts while updating scheduler state to prevent
-        // race where timer interrupt fires between marking blocked and removing from queue
-        without_interrupts(|| {
-            // Re-check parked under interrupt disable to handle race with unpark
+        // The parked flag and the scheduler state are ONE decision, so they are
+        // read and written under ONE lock. Without that, an unpark can clear
+        // the flag and find this thread still Running -- so its unblock does
+        // nothing -- and this thread then publishes Blocked anyway and is
+        // stranded: dequeued, awake for a few more instructions, and gone at
+        // the next preemption with nobody left to wake it. Linux serialises
+        // task state against wakeups with the runqueue lock for this reason.
+        scheduler::with_scheduler(|sched| {
             if !handle.inner.parked.load(Ordering::Acquire) {
-                return; // Already unparked, don't block
+                return; // Already unparked under this lock, don't block
             }
-
             // Mark thread as Blocked and remove from ready queue.
-            // The publication goes through the inventoried `block_current`
+            // The publication goes through the inventoried block_current
             // primitive so no blocked state is written outside the family, and
             // the departure comes with it: the primitive removes the current
-            // thread from every per-CPU ready queue in the same acquisition, so
-            // there is no longer a caller-side dequeue to forget.
-            scheduler::with_scheduler(|sched| {
-                sched.block_current();
-            });
+            // thread from every per-CPU ready queue in the same acquisition.
+            sched.block_current();
         });
 
-        // Check again after critical section - unpark might have happened
+        // Check again after the critical section - unpark might have happened,
+        // and if it did it ran under the same lock, so this thread is Ready.
         if !handle.inner.parked.load(Ordering::Acquire) {
             break;
         }
@@ -231,18 +283,36 @@ pub fn kthread_park() {
         scheduler::yield_current();
 
         // HLT/WFI waits for the next interrupt (timer) which will perform the actual context switch
-        arch_halt();
+        arch_halt_with_interrupts();
+    }
+}
+
+/// Park current thread until unparked (sleep)
+/// Use this in kthread wait loops instead of bare HLT to ensure kthread_stop() can wake promptly.
+///
+/// Publish-then-sleep with no re-check between the halves. A caller whose wake
+/// condition can become true between its own last check and this call must use
+/// the three-part form instead: kthread_prepare_to_park, the re-check, then
+/// kthread_park_prepared or kthread_cancel_park.
+pub fn kthread_park() {
+    if kthread_prepare_to_park() {
+        kthread_park_prepared();
     }
 }
 
 /// Unpark a parked thread (wake)
+///
+/// The flag clear and the unblock are ONE decision and are made under ONE
+/// lock, the same lock kthread_park_prepared publishes Blocked under. Clearing
+/// the flag outside it lets a parker read the cleared flag, publish Blocked
+/// anyway, and never be woken again.
 pub fn kthread_unpark(handle: &KthreadHandle) {
-    handle.inner.parked.store(false, Ordering::Release);
     scheduler::with_scheduler(|sched| {
+        handle.inner.parked.store(false, Ordering::Release);
         sched.unblock(handle.inner.tid);
     });
     // CRITICAL: Set need_resched to ensure a context switch happens soon.
-    // Without this, the unparked thread won't run until the current thread's
+    // Without this, the unparked thread will not run until the current
     // quantum expires (up to 50ms). This matches spawn()'s behavior of setting
     // need_resched after adding a thread to ready_queue.
     scheduler::set_need_resched();
@@ -272,10 +342,16 @@ pub fn kthread_join(handle: &KthreadHandle) -> Result<i32, KthreadError> {
         return Ok(handle.inner.exit_code.load(Ordering::Acquire));
     }
 
-    // Wait for thread to exit using HLT/WFI to allow timer interrupts
-    // This lets the scheduler run the kthread to completion
+    // Wait for the thread to exit. The halt UNMASKS interrupts first, and that
+    // is load-bearing: a join waits for another thread, so this CPU has to be
+    // able to take a timer interrupt and switch to it.
+    // A masked wfi loop returns at once on every pending interrupt without
+    // taking it, so if the joined thread sits on this CPU -- a CPU-pinned
+    // kthread joined by a thread the scheduler placed on the same CPU -- it
+    // never runs. Measured: DAIF I set, CPU 1 spinning here, the pinned
+    // softirq-test kthread runnable on CPU 1 and never dispatched.
     while !handle.inner.exited.load(Ordering::SeqCst) {
-        arch_halt();
+        arch_halt_with_interrupts();
     }
 
     // The SeqCst load above synchronizes with kthread_exit()'s SeqCst store,

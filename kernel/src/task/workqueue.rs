@@ -32,12 +32,13 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
 use super::kthread::{
-    kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark,
+    kthread_cancel_park, kthread_join, kthread_park_prepared, kthread_prepare_to_park, kthread_run,
+    kthread_should_stop, kthread_stop, kthread_unpark,
     KthreadHandle,
 };
 
 // Architecture-generic HAL wrappers for interrupt control and halt.
-use crate::{arch_enable_interrupts, arch_halt};
+use crate::{arch_enable_interrupts, arch_halt_with_interrupts};
 
 /// Work states
 const WORK_IDLE: u8 = 0;
@@ -116,13 +117,16 @@ impl Work {
         }
 
         // Plain HLT/WFI loop, exactly like kthread_join()
-        // 1. HLT/WFI waits for timer interrupt (with interrupts enabled)
+        // 1. The halt UNMASKS interrupts first: this waits for the worker
+        //    thread, so this CPU has to be able to take a timer interrupt and
+        //    switch to it. A masked wfi loop cannot, and if the worker sits on
+        //    this CPU the wait never ends.
         // 2. Timer decrements quantum; when it expires, sets need_resched
         // 3. Context switch to worker thread
         // 4. Worker executes our work and sets completed=true
         // 5. Eventually we get scheduled again and see completed=true
         while !self.completed.load(Ordering::SeqCst) {
-            arch_halt();
+            arch_halt_with_interrupts();
         }
     }
 
@@ -303,6 +307,19 @@ impl Drop for Workqueue {
     }
 }
 
+/// Times a worker abandoned a published park because its re-check found work
+/// a producer had queued in the window the park protocol closes.
+///
+/// This is the window itself, counted: every increment is a wakeup the older
+/// check-then-park shape had no way to keep. Diagnostic, not a fault.
+static WORKER_PARK_CANCELLED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Read the park-cancellation count. See WORKER_PARK_CANCELLED.
+pub fn worker_park_cancellations() -> u64 {
+    WORKER_PARK_CANCELLED.load(Ordering::Relaxed)
+}
+
 /// Worker thread main function.
 #[allow(dead_code)] // Called by Workqueue::ensure_worker() which is part of the workqueue API
 fn worker_thread_fn(wq: Arc<Workqueue>) {
@@ -325,8 +342,25 @@ fn worker_thread_fn(wq: Arc<Workqueue>) {
                 work.execute();
             }
             None => {
-                // No work available, park until woken
-                kthread_park();
+                // No work available. Publish the park intent BEFORE the last
+                // look at the queue: a producer that pushes an item and calls
+                // wake_worker between the failed pop above and the sleep below
+                // finds nothing to wake -- this thread is still Running -- and
+                // its item sits in the queue until some later producer happens
+                // to wake the worker again.
+                //
+                // With the intent published first, both orders end awake: the
+                // producer clears the intent and the sleep below returns at
+                // once, or the re-check here sees the item and the sleep is
+                // abandoned. Same shape as Linux prepare_to_wait.
+                if kthread_prepare_to_park() {
+                    if wq.queue.lock().is_empty() {
+                        kthread_park_prepared();
+                    } else {
+                        WORKER_PARK_CANCELLED.fetch_add(1, Ordering::Relaxed);
+                        kthread_cancel_park();
+                    }
+                }
             }
         }
     }

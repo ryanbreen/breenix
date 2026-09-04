@@ -18,7 +18,8 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use spin::Once;
 
 use super::kthread::{
-    kthread_park, kthread_run_on_cpu, kthread_should_stop, kthread_unpark, KthreadHandle,
+    kthread_cancel_park, kthread_park_prepared, kthread_prepare_to_park, kthread_run_on_cpu,
+    kthread_should_stop, kthread_unpark, KthreadHandle,
 };
 use super::scheduler::MAX_CPUS;
 use crate::per_cpu;
@@ -113,6 +114,17 @@ static SOFTIRQ_HANDLERS: [AtomicPtr<()>; NR_SOFTIRQS] = [
 /// Per-CPU ksoftirqd handles. `Once::get` reads the published state without the
 /// mutex previously shared by IRQ-exit and thread context.
 static KSOFTIRQD: [Once<KthreadHandle>; MAX_CPUS] = [const { Once::new() }; MAX_CPUS];
+
+/// Times a daemon abandoned a published park because its re-check found its
+/// CPU's pending bitmap non-zero -- a raise that landed in the window the park
+/// protocol closes. Diagnostic, not a fault.
+static KSOFTIRQD_PARK_CANCELLED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Read the daemon park-cancellation count. See KSOFTIRQD_PARK_CANCELLED.
+pub fn ksoftirqd_park_cancellations() -> u64 {
+    KSOFTIRQD_PARK_CANCELLED.load(Ordering::Relaxed)
+}
 
 /// Flag indicating softirq system is initialized
 static SOFTIRQ_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -329,8 +341,19 @@ fn ksoftirqd_fn(cpu: usize) {
             // After processing, check if we should continue or park
             // This handles handlers that re-raised softirqs
         } else {
-            // No work - park until woken by wakeup_ksoftirqd()
-            kthread_park();
+            // No work -- park until woken by wakeup_ksoftirqd(). Publish the
+            // park intent BEFORE the last look at the pending bitmap: a raise
+            // and its wakeup_ksoftirqd landing between the read above and the
+            // sleep would otherwise find this daemon Running, wake nothing,
+            // and leave its own CPU's bitmap undrained until the next raise.
+            if kthread_prepare_to_park() {
+                if per_cpu::softirq_pending() == 0 {
+                    kthread_park_prepared();
+                } else {
+                    KSOFTIRQD_PARK_CANCELLED.fetch_add(1, Ordering::Relaxed);
+                    kthread_cancel_park();
+                }
+            }
         }
     }
 }
