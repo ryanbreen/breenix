@@ -375,7 +375,10 @@ builds use `aarch64-breenix-kernel.json`, `-Z build-std=core,alloc`, and
 | x86 `testing,external_test_bins` on beast | 0 | not applicable |
 
 0 of those lines is a project warning; the `core v0.0.0` notice is the
-toolchain's and appears on `main` too.
+toolchain's and appears on `main` too. The x86 build ran in an isolated beast
+checkout (`/root/breenix-a64r2`) with
+`BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork/library`, forced clean by
+touching `kernel/src/task/scheduler.rs` first.
 
 Runtime, aarch64, on this Mac, 3 QEMUs at a time, 45s each, a fresh copy of the
 same fixture per boot:
@@ -387,6 +390,21 @@ same fixture per boot:
   `[heartbeat]`. This profile matters because the init launch moved onto the
   boot continuation.
 - `boot_tests`: 1 of 1 boot printed `[boot] All boot tests passed!`.
+
+x86 was booted as well, not only built: `./docker/qemu/run-boot-parallel.sh 1`
+under xvfb on beast, 2 runs of this round and 1 each of `d7679a7b` (round 2)
+and `bfbb7575` (the branch base, which is on `main`).
+4 of those 4 reported the same
+line -- `TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]` -- after
+`USERSPACE TEST COMPLETE`, and 4 of 4 were scored FAIL by
+`scripts/x86-gate-verdict.sh`.
+
+That red is not this branch's. A fifth run at `52491c4b` (main, 2026-09-02)
+passed 1 of 1, so it arrives on `main` between that revision and `bfbb7575`.
+The cause is that `simple_exit` exits 42 because exiting 42 is the whole
+program, and the tally counts a nonzero exit as a failed process while
+`scripts/x86-gate-allowlist.txt` holds 0 entries. Round 2 recorded this as
+"the x86 gate's known red" without filing it; it is now #781.
 
 Mutation legs, run against the working tree rather than an in-memory copy, so
 the red text below is what a reviewer gets by making the same edit:
