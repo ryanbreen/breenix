@@ -41,20 +41,38 @@ if [ -z "$KERNEL_BIN" ]; then
 fi
 
 # Per-CPU slot count of a `TraceCounter`, i.e. kernel/src/tracing/core.rs's
-# MAX_CPUS. A slot past the CPUs a boot actually brings up reads 0, so summing
-# the 16 of them is safe; if MAX_CPUS ever exceeds this, the sum truncates.
-PERCPU_SLOTS=16
+# MAX_CPUS, derived from this build's own ELF rather than hard-coded --
+# MAX_CPUS itself is a const with no linker symbol, but each `TraceCounter`
+# carries it in its own size: `#[repr(C)]  { name: &str, description: &str,
+# per_cpu: [CpuCounterSlot; MAX_CPUS] }` with `CpuCounterSlot` `#[repr(C,
+# align(64))]`, so the struct is padded to a 64-byte boundary before the
+# array starts and is exactly `64 * (1 + MAX_CPUS)` bytes
+# (kernel/src/tracing/counter.rs). A slot past the CPUs a boot actually
+# brings up reads 0, so summing them is safe regardless of how many CPUs
+# are live.
+WLPT_HEX_SIZE=$(nm -S "$KERNEL_BIN" 2>/dev/null | awk '$4 == "WAIT_LOOP_PARK_TOTAL" { print $2 }')
+if [ -z "$WLPT_HEX_SIZE" ]; then
+    echo "RESULT tag=$TAG outdir=$OUTDIR error=no_wait_loop_park_total_symbol_for_percpu_slots"
+    exit 2
+fi
+PERCPU_SLOTS=$(( 16#$WLPT_HEX_SIZE / 64 - 1 ))
+if [ "$PERCPU_SLOTS" -le 0 ]; then
+    echo "RESULT tag=$TAG outdir=$OUTDIR error=percpu_slots_derivation_bad size=0x$WLPT_HEX_SIZE"
+    exit 2
+fi
 
 # The counter symbols in this build: name, file-relative address, and how many
-# per-CPU slots to read. DISPATCH_* are `TraceCounter`s and are read at slot 0
-# only (1), the reading the committed census.json files carry.
-# WAIT_LOOP_PARK_TOTAL is also a `TraceCounter` -- it is bumped after the park
-# path's per-CPU guard, so its slot lookup is safe there -- and is read as a
-# sum over its $PERCPU_SLOTS slots. WAIT_LOOP_PARK_SKIPPED must survive a park
-# that guard refuses, so it stays a plain whole-machine AtomicU64 and is read
-# at +0 (0 slots). See kernel/src/tracing/providers/counters.rs.
+# per-CPU slots to read. DISPATCH_* and WAIT_LOOP_PARK_TOTAL are both
+# `TraceCounter`s and are read the same way -- summed over $PERCPU_SLOTS
+# slots -- so the two families cannot silently diverge on an
+# SMP boot; the committed census.json files were produced when DISPATCH_*
+# was read at slot 0 only, and on today's x86 target, which brings up only
+# CPU0, the sum equals that slot-0 value exactly (verified below).
+# WAIT_LOOP_PARK_SKIPPED must survive a park that guard refuses, so it stays
+# a plain whole-machine AtomicU64 and is read at +0 (0 slots). See
+# kernel/src/tracing/providers/counters.rs.
 nm "$KERNEL_BIN" | awk -v slots="$PERCPU_SLOTS" '
-    $3 ~ /^DISPATCH_/            { print $3, "0x"$1, 1 }
+    $3 ~ /^DISPATCH_/            { print $3, "0x"$1, slots }
     $3 == "WAIT_LOOP_PARK_TOTAL" { print $3, "0x"$1, slots }
     $3 ~ /^WAIT_LOOP_PARK_/ && $3 != "WAIT_LOOP_PARK_TOTAL" { print $3, "0x"$1, 0 }' |
     sort > "$OUTDIR/counter_symbols.txt"
