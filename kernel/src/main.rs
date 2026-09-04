@@ -804,6 +804,11 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     ))]
     kernel::task::kthread_tests::test_kthread_stop_after_exit();
 
+    // #775/R125: the boot-time kthread lifecycle tests above have completed.
+    // Spawn the low-frequency reporter at this final boot-thread point before
+    // kernel_main_continue creates and dispatches userspace.
+    task::start_dispatch_strand_census();
+
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
     #[cfg(not(any(
@@ -2135,11 +2140,6 @@ fn kernel_main_continue() -> ! {
     // registered test processes have completed.
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
     kernel::test_framework::btrt::finalize();
-
-    // #775/R125: place this after the boot-time kthread lifecycle tests and
-    // before the scheduling brake is released. Its first dispatch therefore
-    // enters through kthread_entry, which enables IF before calling it.
-    task::start_dispatch_strand_census();
 
     // Release the scheduling brake taken in the first RING3_SMOKE block
     // above (see its preempt_disable() comment) - this is the true,
