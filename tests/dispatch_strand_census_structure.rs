@@ -77,11 +77,16 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
 #[test]
 fn host_consumers_have_no_removed_record_dependency() {
     let strand_gate = read("scripts/x86-strand-census.sh");
+    let verdict_gate = read("scripts/x86-gate-verdict.sh");
     let dispatch_census = read("scripts/772-dispatch-census.py");
 
     assert!(strand_gate.contains("DISPATCH_STRAND_CENSUS"));
+    assert!(strand_gate.contains("latest = substr(rest, RSTART, RLENGTH)"));
+    assert!(strand_gate.contains("names[tid] = rest"));
+    assert!(strand_gate.contains("exit (value[\"stranded\"] > 0) ? 1 : 0"));
     assert!(!strand_gate.contains("/Saved kernel context for blocked thread"));
     assert!(!strand_gate.contains("/Restored kernel context for thread"));
+    assert!(verdict_gate.contains("2) echo \"x86 userspace gate: census unavailable;"));
 
     assert!(dispatch_census.contains("#775 retired"));
     assert!(!dispatch_census.lines().any(|line| {

@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
-# x86 strand census: consume the kernel's end-of-test dispatch census.
+# x86 strand census: consume the kernel's latest dispatch-ledger snapshot.
 #
-# #568 round 2 review turned up a failure the gate could not see. When the
-# blocking `poll()` lost its wake, the polling thread was saved blocked and
-# never scheduled again.  The old host census recovered that fact from the
-# formatted save/restore records emitted by the context-switch path.  #775
-# removes those interrupt-path records; the kernel now maintains the same
-# save/restore/exit state in a fixed atomic ledger and emits one compact line
-# after the userspace test battery ends.
-# claim-lint:ok: #568 field failure and #775 migration definition.
+# #568 round 2 found a blocking poll thread that was saved and then stopped
+# running. #775 removed the formatted save/restore records from the dispatch
+# path and put the same state transitions in a fixed atomic ledger. Under R125,
+# a timer-blocked kthread emits that ledger about once per second from ordinary
+# thread context with interrupts enabled; the completion path emits a final
+# snapshot. The last snapshot in the serial is the source of truth, so a wedged
+# userspace thread does not have to resume or exit to make its state observable.
+# claim-lint:ok: #775 ruling R125 defines the replacement source and cadence.
 #
-# The rule is exactly one fact, taken from the kernel's own bookkeeping:
-#
-#   a thread which has ever been saved blocked, whose LAST save/restore event is
-#   save, and which never reported an exit, was never resumed.
-# claim-lint:ok: #775 preserves scripts/x86-strand-census.sh's pre-migration predicate.
-#
-# Threads that exit are excluded.  An overflow is a data error, not a green:
-# without a ledger slot the gate cannot apply the definition honestly.
+# Each snapshot carries the distinct ever-saved count, the stranded count, and
+# up to 16 stranded TIDs. This script recovers their names from the existing
+# `Added thread N <name>` records. A bounded-list overflow is reported beside
+# the named prefix; a ledger overflow is reported as an incomplete observation.
 #
 # Usage:  scripts/x86-strand-census.sh <serial-log> [<serial-log> ...]
-# Output: one line per stranded thread, then a STRAND_CENSUS summary line.
-# Exit:   0 when no thread was stranded, 1 when at least one was.
+# Output: one line per listed stranded thread, overflow diagnostics if present,
+#         then a STRAND_CENSUS summary line.
+# Exit:   0 when the last snapshot says stranded=0;
+#         1 when the last snapshot says stranded>0;
+#         2 when no usable census snapshot exists.
 
 set -euo pipefail
 
@@ -34,24 +33,70 @@ for serial_log in "$@"; do
     [[ -r "$serial_log" ]] || { echo "strand census: serial log is not readable: $serial_log" >&2; exit 2; }
 done
 
-line_count=$(cat -- "$@" | wc -l | tr -d ' ')
-census_lines=$(grep -hE '\[DISPATCH_STRAND_CENSUS:threads_saved_blocked=[0-9]+:stranded=[0-9]+:overflow=[0-9]+\]' -- "$@" || true)
-census_count=$(printf '%s\n' "$census_lines" | awk 'NF { count++ } END { print count + 0 }')
+cat -- "$@" | awk '
+BEGIN {
+    census_re = "\\[DISPATCH_STRAND_CENSUS:[^]]*\\]"
+    valid_re = "^\\[DISPATCH_STRAND_CENSUS:saved=[0-9]+:stranded=[0-9]+:tids=(-|[0-9]+(,[0-9]+)*):tid_overflow=[0-9]+:ledger_overflow=[0-9]+\\]$"
+}
+/Added thread [0-9]+ / {
+    line = $0
+    sub(/.*Added thread /, "", line)
+    tid = line; sub(/ .*/, "", tid)
+    rest = line; sub(/^[0-9]+ /, "", rest)
+    if (substr(rest, 1, 1) == "\047") {
+        sub(/^\047/, "", rest); sub(/\047.*/, "", rest)
+        names[tid] = rest
+    }
+}
+{
+    rest = $0
+    while (match(rest, census_re)) {
+        latest = substr(rest, RSTART, RLENGTH)
+        snapshots++
+        rest = substr(rest, RSTART + RLENGTH)
+    }
+}
+END {
+    if (snapshots == 0) {
+        print "strand census: no DISPATCH_STRAND_CENSUS line found" > "/dev/stderr"
+        exit 2
+    }
+    if (latest !~ valid_re) {
+        print "strand census: last DISPATCH_STRAND_CENSUS line is malformed: " latest > "/dev/stderr"
+        exit 2
+    }
 
-if [[ "$census_count" -ne 1 ]]; then
-    echo "strand census: expected exactly one DISPATCH_STRAND_CENSUS line, found $census_count" >&2
-    exit 2
-fi
+    data = latest
+    sub(/^\[/, "", data); sub(/\]$/, "", data)
+    field_count = split(data, fields, ":")
+    for (field = 2; field <= field_count; field++) {
+        equals = index(fields[field], "=")
+        key = substr(fields[field], 1, equals - 1)
+        value[key] = substr(fields[field], equals + 1)
+    }
 
-threads_saved_blocked=$(printf '%s\n' "$census_lines" | sed -E 's/.*threads_saved_blocked=([0-9]+).*/\1/')
-stranded=$(printf '%s\n' "$census_lines" | sed -E 's/.*:stranded=([0-9]+).*/\1/')
-overflow=$(printf '%s\n' "$census_lines" | sed -E 's/.*:overflow=([0-9]+).*/\1/')
+    listed = 0
+    if (value["tids"] != "-") {
+        listed = split(value["tids"], stranded_tids, ",")
+    }
+    if (listed + value["tid_overflow"] != value["stranded"]) {
+        print "strand census: last snapshot has an inconsistent stranded TID list" > "/dev/stderr"
+        exit 2
+    }
 
-if [[ "$overflow" -ne 0 ]]; then
-    echo "strand census: kernel ledger overflowed ($overflow event(s)); result is incomplete" >&2
-    exit 2
-fi
+    for (i = 1; i <= listed; i++) {
+        tid = stranded_tids[i]
+        name = (tid in names) ? names[tid] : "?"
+        printf "strand census: thread %s (%s) saved blocked and never restored\n", tid, name
+    }
+    if (value["tid_overflow"] > 0) {
+        printf "strand census: %d additional stranded thread(s) omitted by the kernel TID-list bound\n", value["tid_overflow"]
+    }
+    if (value["ledger_overflow"] > 0) {
+        printf "strand census: kernel ledger overflowed (%d event(s)); snapshot is incomplete\n", value["ledger_overflow"]
+    }
 
-printf 'STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n' \
-    "$threads_saved_blocked" "$stranded" "$line_count"
-[[ "$stranded" -eq 0 ]]
+    printf "STRAND_CENSUS: threads_saved_blocked=%d stranded=%d lines=%d\n", value["saved"], value["stranded"], NR
+    exit (value["stranded"] > 0) ? 1 : 0
+}
+'

@@ -72,7 +72,8 @@ fn repo_root() -> &'static Path {
 }
 
 fn green_log() -> &'static str {
-    "USERSPACE TEST COMPLETE\n\
+    "[DISPATCH_STRAND_CENSUS:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]\n\
+     USERSPACE TEST COMPLETE\n\
      TEST_TALLY: exited=10 nonzero=0 failed=[]\n\
      🏁 TEST RUNNER: All tests passed\n"
 }
@@ -145,7 +146,8 @@ fn rejects_empty_non_decimal_and_zero_expected_exits_values() {
 #[test]
 fn rejects_a_fault_killed_test_and_names_the_process() {
     let fixture = SerialFixture::new(
-        "USERSPACE TEST COMPLETE\n\
+        "[DISPATCH_STRAND_CENSUS:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]\n\
+         USERSPACE TEST COMPLETE\n\
          TEST_TALLY: exited=10 nonzero=1 failed=[brk_test:-11]\n\
          TEST RUNNER: FAILED\n",
         "",
@@ -157,5 +159,63 @@ fn rejects_a_fault_killed_test_and_names_the_process() {
     assert!(
         text.contains("brk_test"),
         "fault-killed process was not named by the failure: {text}"
+    );
+}
+
+#[test]
+fn rejects_a_strand_and_names_the_thread_from_the_scheduler_table() {
+    let fixture = SerialFixture::new(
+        "Added thread 23 'poll_tcp_oracle' to scheduler (user: true, target_cpu: 0)\n\
+         [DISPATCH_STRAND_CENSUS:saved=13:stranded=1:tids=23:tid_overflow=0:ledger_overflow=0]\n",
+        "",
+    );
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+
+    assert!(!output.status.success(), "unexpected green verdict: {text}");
+    assert!(
+        text.contains("thread 23 (poll_tcp_oracle) saved blocked and never restored"),
+        "strand failure did not name its thread: {text}"
+    );
+    assert!(
+        text.contains("a thread was saved blocked in a kernel wait and never restored"),
+        "strand failure did not retain the gate reason: {text}"
+    );
+}
+
+#[test]
+fn unavailable_census_falls_through_to_the_real_first_cause() {
+    let fixture = SerialFixture::new("OVMF: early boot stopped\n", "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+
+    assert!(!output.status.success(), "unexpected green verdict: {text}");
+    assert!(
+        text.contains("census unavailable"),
+        "rc=2 was not identified: {text}"
+    );
+    assert!(
+        text.contains("USERSPACE TEST COMPLETE was absent; boot did not finish"),
+        "early failure did not reach the existing first-cause check: {text}"
+    );
+    assert!(
+        !text.contains("a thread was saved blocked in a kernel wait"),
+        "unavailable census was misclassified as a strand: {text}"
+    );
+}
+
+#[test]
+fn last_census_marker_wins_even_when_two_share_a_physical_line() {
+    let mut kernel = String::from(
+        "[DISPATCH_STRAND_CENSUS:saved=13:stranded=1:tids=23:tid_overflow=0:ledger_overflow=0] ",
+    );
+    kernel.push_str(green_log());
+    let fixture = SerialFixture::new(&kernel, "");
+    let output = fixture.run(Some("10"));
+
+    assert!(
+        output.status.success(),
+        "last green snapshot did not supersede an earlier red one: {}",
+        output_text(&output)
     );
 }
