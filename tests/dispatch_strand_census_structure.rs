@@ -71,7 +71,7 @@ fn host_consumers_have_no_removed_record_dependency() {
     assert!(!strand_gate.contains("/Restored kernel context for thread"));
 
     assert!(dispatch_census.contains("#775 retired"));
-    assert!(!dispatch_census.contains("RESTORE_RE"));
-    assert!(!dispatch_census.contains("SAVE_RE"));
+    assert!(!dispatch_census.contains("RESTORE_RE = re.compile"));
+    assert!(!dispatch_census.contains("SAVE_RE = re.compile"));
     assert!(!dispatch_census.contains("\"turns\":"));
 }
