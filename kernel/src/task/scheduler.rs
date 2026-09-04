@@ -3361,7 +3361,33 @@ impl Scheduler {
 
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
-                thread.blocked_in_syscall = true;
+                // #775 round 4: `blocked_in_syscall` means "parked inside a
+                // syscall of an owning process", and the x86 context-switch
+                // path acts on exactly that reading: with the flag set and
+                // `from_userspace` false it saves through
+                // `save_kernel_context_with_guard`, which writes into
+                // `process.main_thread` and saves no register at all when
+                // the thread has no process. A pure kernel thread that slept
+                // here therefore departed with no saved context and was not
+                // dispatched again. `kstrandd` measured it: 1 dispatch, then
+                // 0 further snapshots across a 2-minute boot carrying 3158
+                // context switches.
+                // claim-lint:ok: 6 of 6 pre-fix production boots under
+                // docs/planning/green-program/sockets/serials/775/round4/
+                // kstrandd-lost-wake/ carry 1 or 2 census markers, never a
+                // cadence; 3 of the 6 carry only the pre-init pump snapshot.
+                //
+                // The rest of the family already draws this distinction --
+                // `block_current()` leaves the flag clear and
+                // `block_current_in_syscall()` sets it -- and every aarch64
+                // consumer conjoins `thread.owner_pid.is_some()` before acting
+                // on it. This was the one producer asserting it unconditionally.
+                // claim-lint:ok: the 6 aarch64 consumers that conjoin
+                // owner_pid.is_some() are in
+                // kernel/src/arch_impl/aarch64/context_switch.rs; the x86
+                // consumer without the conjunct is
+                // kernel/src/interrupts/context_switch.rs:460.
+                thread.blocked_in_syscall = thread.owner_pid.is_some();
             }
             #[cfg(target_arch = "aarch64")]
             set_cpu_idle(Self::current_cpu_id(), true);
