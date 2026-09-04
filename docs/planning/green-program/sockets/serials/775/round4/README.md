@@ -39,9 +39,56 @@ consumer reads a production capture as a verdict.
 
 | boot | verdict | markers | age at the completion marker |
 |---:|---|---:|---|
-| 1 | `x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0` | 118 | `1137 ms (newest cadence snapshot seq=28 at 49903 ms, completion snapshot seq=29 at 51040 ms, bound 5000 ms)` |
-| 2 | `x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0` | 115 | `842 ms (newest cadence snapshot seq=25 at 50173 ms, completion snapshot seq=26 at 51015 ms, bound 5000 ms)` |
+| 1 | `x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0` | 118 | `1137 ms (newest cadence snapshot seq=28 at 49903 ms, completion snapshot seq=29 at 51040 ms, bound 15000 ms)` |
+| 2 | `x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0` | 115 | `842 ms (newest cadence snapshot seq=25 at 50173 ms, completion snapshot seq=26 at 51015 ms, bound 15000 ms)` |
 
-Both are well inside the 5000 ms bound, which is the point: the bound is a
-ratchet against a census that stops being refreshed, not a tight fit. The
-round-3 head's committed capture would have read 793 ms on the same measure.
+Round 4 read those two ages as margin against a 5000 ms bound and called it
+"not a tight fit" on n=2. Round-5 finding R4-2 rejected that: nothing measured
+how close a green boot gets, and this round's own
+`boot-replay/control-round3-head/gate-2.txt` records a `GATE: PASS` boot whose
+printed cadence line puts the LAST snapshot in the capture 7731 ms after the
+one before it. If that last snapshot is the completion-site one -- which is
+what a boot reaching `USERSPACE TEST COMPLETE` emits -- the age was 7731 ms,
+over the 5000 ms bound and under the 15000 ms one. That inference cannot be
+checked here: those serials were overwritten on the host before they could be
+committed, so the transcript is all that survives. Round 5 re-ran the same
+control at the same head on the same host and committed both boots in full;
+see `../round5/x86/control-round3-head/`.
+
+**The bound is now 15000 ms, and it is derived rather than chosen.** It is
+#766's measured maximum wake-to-dispatch overrun -- 10318 ms over 324
+re-derivable trials, `docs/planning/green-program/sockets/693-RCA-2026-09-02.md`
+lines 109-110 -- plus margin, and it tightens when #766 lands. The derivation
+is in `scripts/x86-strand-census.sh`'s AGE header and repeated in
+`scripts/x86-gate-verdict.sh`.
+
+The 46 committed `serial_kernel.txt` captures under
+`docs/planning/green-program/sockets/serials/775/` were then re-read under it.
+6 of the 46 carry a measurable age at all, and those 6 are the whole in-repo
+population:
+
+| capture | age |
+|---|---:|
+| `round5/x86/control-round3-head/boot1/` | 435 ms |
+| `round3/r3-head-green/` | 793 ms |
+| `round5/x86/control-round3-head/boot2/` | 805 ms |
+| `round4/gate-green/boot2/` | 842 ms |
+| `round4/gate-green/boot1/` | 1137 ms |
+| `round3/r3-idle-cadence/` | 1190 ms |
+
+```
+for f in $(find docs/planning/green-program/sockets/serials/775 -name serial_kernel.txt | sort); do
+  scripts/x86-strand-census.sh "$f" 2>&1 | grep 'age at the completion marker'
+done
+```
+
+n=6 is not a margin measurement and this README does not present it as one; it
+is the reason the bound is derived from #766's distribution instead of from
+this population. Note what the two fresh controls do NOT reproduce: the
+archived `gate-2.txt` boot carried 14 snapshots with its last 7731 ms after the
+previous, while the two re-runs carry 108 and 106 at a 1 s cadence. Same head,
+same host, same accelerator. The disclosed cost is stated where the bound is: the largest
+census hole observed on any capture here is 19939 ms, which is LARGER than the
+bound, so a completion marker landing at the end of such a hole trips the arm.
+<!-- claim-lint:ok: the 4 ages are that loop's output, run at this head; the
+     19939 ms hole is boot1's own gate.txt line 8. -->

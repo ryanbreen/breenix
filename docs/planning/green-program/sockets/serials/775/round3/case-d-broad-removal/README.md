@@ -5,12 +5,26 @@ The regression these boots measure is filed as #783.
 Round-3 review finding R3-10: the arm table in
 `775-CENSUS-EQUIVALENCE-2026-09-04.md` -- the table that decides this
 branch ships the narrow record removal and not the broad one -- rested on 27
-boots of which only 5 were committed. This directory is the other 22.
+boots of which only 5 were committed. This directory accounts for the other 22.
+
+**What is here is not 22 boots' bytes.** It is 22 SUMMARY ROWS, one per boot,
+plus the bytes of 4 of them:
+
+* **4 of the 22 have committed bytes** -- the `specimens/` below:
+  `prod-r3head-b/gate-{3,4,5}.txt`, three of them with both serial captures,
+  and `standalone-gate.txt` with its gate transcript only.
+* **The other 18 are host-recorded rows.** Their captures were overwritten on
+  the host before the round-4 slot reached it, so the `source` column names a
+  path this repository cannot check, and a reader cannot re-derive those 18
+  cells from anything committed. Issue #783 states the same thing.
 
 They were produced by the round-3 implementation slot on the beast
 `breenix-x86` container, in `/root/p775r3-out`, one QEMU at a time, with
 `docker/qemu/run-x86-prod-profile-boot-test.sh`. The round-4 slot recovered
-them from that host; the `source` column is the path each row came from.
+what was left; the `source` column is the path each row came from.
+<!-- claim-lint:ok: 4 and 18 are the specimens listed below against the 22-row
+     table; round 4's version of this sentence read "This directory is the
+     other 22" (round-5 finding R4-11). -->
 
 Each of the 22 rows below was produced by running, on that host:
 

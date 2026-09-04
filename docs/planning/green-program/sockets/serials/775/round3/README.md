@@ -43,9 +43,17 @@ came from the pump.
 `pump-heartbeat-disabled.patch` removes the one call in
 `kernel/src/net/loopback_pump.rs`, so **97 of the 98 snapshots in this capture
 are idle-driven**. The 98th is `seq=8` at ms=50381, the completion-site
-snapshot `kernel/src/syscall/handlers.rs` emits directly under the
-`TEST RUNNER: the tests passed` line, outside the limiter. This file said
-"98 of the 98" and that was false (round-4 review finding R3-1). This is the
+snapshot `kernel/src/syscall/handlers.rs` emits outside the limiter, directly
+under the runner's final pass line. That line, verbatim, is
+`r3-idle-cadence/serial_kernel.txt:3897`:
+
+```
+[ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁
+```
+
+This file said "98 of the 98" and that was false (round-4 review finding
+R3-1); round-5 finding R4-13 is why the pass line is now quoted from the
+capture instead of paraphrased inside backticks. This is the
 no-loopback-emission condition round 3 was asked to measure. `GATE: PASS`,
 census rc 0.
 

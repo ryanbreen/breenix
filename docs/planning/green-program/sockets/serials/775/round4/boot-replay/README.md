@@ -53,14 +53,23 @@ of a stack slot the replayed code no longer owns.
 
 ## Why `kstrandd` is what surfaced it
 
-The dispatch breadcrumbs on COM1 are the rate. The failing boot reaches
-`<K>`=32 `<1>`=27 `<I>`=0 in 14 seconds; the passing round-3 head's committed
-150-second capture (`../../round3/r3-head-green/serial_user.txt`) has `<K>`=73
-`<1>`=27 `<I>`=28. `<1>` is the branch that restores the idle thread's SAVED
-context instead of sending it to `idle_loop`, and it is the boot-time-only
-special case the code's own comment warns about. `kstrandd` wakes once a
-second from the moment it is spawned, so it forces that branch tens of times
-during the pre-userspace init phase, where the round-3 head took it rarely.
+The dispatch breadcrumbs on COM1 are the rate. The failing arm's committed
+capture, `with-scheduler-fix/serial_user.txt`, reaches `<K>`=37 `<1>`=32
+`<I>`=0 in a 14-second boot (its own `gate.txt`: `boot=14s`); the passing
+round-3 head's committed 150-second capture
+(`../../round3/r3-head-green/serial_user.txt`) has `<K>`=73 `<1>`=27 `<I>`=28.
+`<1>` is the branch that restores the idle thread's SAVED context instead of
+sending it to `idle_loop`, and it is the boot-time-only special case the code's
+own comment warns about. `kstrandd` wakes once a second from the moment it is
+spawned, so it forces that branch 32 times in 14 seconds where the round-3 head
+took it 27 times in 150.
+<!-- claim-lint:ok: each triple is
+     `grep -o '<K>' FILE | wc -l` and the same for `<1>` and `<I>`, run at this
+     head on the two committed serial_user.txt files named in the sentence.
+     Round 4 published `<K>`=32 `<1>`=27 `<I>`=0 for the failing arm; no
+     committed capture carries that triple (round-5 finding R4-4), and
+     `without-scheduler-fix/` has no serial_user.txt at all, so the failing
+     arm's breadcrumbs are the with-scheduler-fix ones. -->
 
 ## The producer that made the save a no-op
 
@@ -80,9 +89,13 @@ Both producers now set the flag from `thread.owner_pid.is_some()`.
 ## The result
 
 With both producers guarded, the same gate is `GATE: PASS` on 2 of 2 boots,
-150 s each: `../gate-green/boot{1,2}/`. The dispatch breadcrumbs move with it --
-`<K>`=197 `<I>`=137 `<1>`=32 on boot 1, against `<K>`=32 `<I>`=0 `<1>`=27 on the
-failing arm -- so the boot thread now reaches `idle_loop` instead of being
-restored, over and over, from a boot-time saved context.
+150 s each: `../gate-green/boot{1,2}/`. The breadcrumbs move with it, though
+not the way round 4 published: `<K>`=197 `<1>`=32 `<I>`=137 on green boot 1,
+against `<K>`=37 `<1>`=32 `<I>`=0 on the failing arm. `<1>` is the SAME 32 on
+both. What changed is `<I>`: the green boot reaches `idle_loop` 137 times in
+150 seconds where the failing arm reached it 0 times in 14, so the boot thread
+now has somewhere to go other than a boot-time saved context. That is what
+these two captures support; the stronger reading round 4 wrote rested on a
+triple no capture carries.
 <!-- claim-lint:ok: the 2 green boots and the 2 failing ones are the four
      transcripts under serials/775/round4/. -->
