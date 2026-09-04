@@ -516,11 +516,17 @@ pub fn note_wait_loop_park() {
         crate::tracing::providers::counters::note_park_skipped();
         return;
     }
-    // Past the guard the per-CPU slot lookup `TraceCounter::increment` does is
-    // safe by construction, so the park total is a per-CPU counter rather than
-    // a read-modify-write on one whole-machine line that each parking CPU
-    // would contend for -- the same placement as the x86 twin, so the two
-    // arches keep one shape.
+    // Unlike the x86 twin, this guard being set does not by itself establish
+    // that this CPU's own per-CPU base is installed: `PER_CPU_INITIALIZED` is one
+    // whole-machine flag the boot CPU sets in `init()`, and a secondary CPU
+    // installs its own TPIDR_EL1 later, in `arch_impl::aarch64::smp`. The
+    // slot lookup `TraceCounter::increment` does is safe anyway, because
+    // `Aarch64PerCpu::cpu_id` (arch_impl/aarch64/percpu.rs) falls back to
+    // reading MPIDR_EL1 whenever TPIDR_EL1 reads 0, so a secondary CPU that
+    // parks before installing its own base still resolves its own slot
+    // rather than aliasing CPU0's. The park total is still a per-CPU counter
+    // rather than a read-modify-write on one whole-machine line, the same
+    // placement as the x86 twin, so the two arches keep one shape.
     crate::tracing::providers::counters::note_park_total();
     let thread_ptr =
         hal_percpu::Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
