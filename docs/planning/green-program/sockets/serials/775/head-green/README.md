@@ -37,11 +37,35 @@ newline that macro emits, on COM1 only.
 | 1 | 10 | 930 | 57936 | 1.61% | 0 |
 | 2 | 11 | 1051 | 54875 | 1.92% | 0 |
 
-Against that, the three records this change removes were 431–552 saves and an
-equal number of restores per boot on the same profile at the pre-removal
-commit (`../case-d/boot{1..5}/serial_kernel.txt`), and the COM2 capture shrinks
-from 496992–543031 bytes there to 330341–335459 bytes here. The heartbeat adds
-about a kilobyte to COM1; the removal takes about 165–210 kilobytes off COM2.
+> **Corrected 2026-09-04 (#775 round 3, finding N9).** The paragraph below used
+> to say the pre-removal boots had "an equal number of restores", and to quote
+> ranges computed over `case-d/boot{1..5}` while `case-d` holds six boots. Both
+> are re-derived here over the six, and the reduction is given in bytes so the
+> kilobyte is not left ambiguous.
+
+Against that, the three records this change removes ran 431 to 631 saves per
+boot on the same profile at the pre-removal commit, over the six captures in
+`../case-d/boot{1..6}/serial_kernel.txt`:
+
+| boot | saves | restores | COM2 bytes |
+|---:|---:|---:|---:|
+| 1 | 552 | 552 | 543031 |
+| 2 | 478 | 478 | 508320 |
+| 3 | 480 | 478 | 513649 |
+| 4 | 431 | 431 | 496992 |
+| 5 | 449 | 449 | 503034 |
+| 6 | 631 | 631 | 572581 |
+
+Saves and restores are equal on 5 of the 6; boot 3 has 480 saves and 478
+restores, which is the ordinary case of a capture ending with saves that had
+not been matched yet. The COM2 capture shrinks from 496992–572581 bytes there
+to 330341–335459 bytes here, so the removal takes between 161533 bytes
+(496992−335459, 157.7 KiB / 161.5 kB) and 242240 bytes (572581−330341,
+236.6 KiB / 242.2 kB) off COM2 per boot. The heartbeat adds about a kilobyte.
+
+Round 3 moves the snapshot itself onto COM2 (finding N8), so from that round on
+both figures are on the same channel; the per-snapshot byte cost is unchanged
+and the counts are re-measured in `../../775-CENSUS-EQUIVALENCE-2026-09-04.md`.
 
 ## Files
 
