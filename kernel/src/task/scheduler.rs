@@ -3382,23 +3382,20 @@ impl Scheduler {
                 // `block_current_in_syscall()` sets it. This was 1 of the 2
                 // producers asserting it unconditionally.
                 //
-                // On aarch64 the conjunct is the norm, at 14 of 16 branch
-                // sites, rather than a rule. Census, run at write time --
-                // `grep -n blocked_in_syscall
-                // kernel/src/arch_impl/aarch64/context_switch.rs` returns 23
-                // lines: 1 diagnostic string literal (:4163), 1 local binding
-                // of the field (:4720), 2 passes of that local as a field
-                // (:4729, :4741), 3 report-only reads that pack it into a
-                // diagnostic word or print it (:995, :1123, :4164), and 16
-                // expressions that BRANCH on it. 14 of the 16 also require
-                // `thread.owner_pid.is_some()` in the same expression; the 2
-                // that do not are both in `dispatch_thread_locked` (:4847,
-                // :4856), reading the local bound at :4720. The x86 consumer
-                // (kernel/src/interrupts/context_switch.rs:460) carries no
-                // such conjunct either. Guarding this producer closes the
-                // class at the producer; it does not make the flag's meaning
-                // universal at the consumers.
-                // claim-lint:ok: the census command and its 23 lines are in
+                // The conjunct is a NORM on aarch64, not a rule anywhere.
+                // Census, run at write time --
+                // `grep -rn blocked_in_syscall kernel/src --include='*.rs'`
+                // returns 202 lines, of which 30 are expressions that BRANCH
+                // on the flag. 14 of the 30 also require an owning process in
+                // the same expression and 16 do not; the 14 are on aarch64,
+                // 14 of 14.
+                // The x86 consumer this producer's bug ran through
+                // (kernel/src/interrupts/context_switch.rs:460) is one of the
+                // 16. Guarding this producer closes the class where it was
+                // reachable; it does not make the flag's meaning universal at
+                // the consumers.
+                // claim-lint:ok: the bucketing rules, the 202-line
+                // breakdown and the 30 branch sites by file:line are in
                 // docs/planning/green-program/sockets/
                 // 775-CENSUS-EQUIVALENCE-2026-09-04.md.
                 thread.blocked_in_syscall = thread.owner_pid.is_some();

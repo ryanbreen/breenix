@@ -192,8 +192,13 @@ pub(crate) fn report_heartbeat_if_due() {
 /// emitted no snapshot for 19939 ms (boot1, seq=5 at 4789 ms to seq=6 at
 /// 24728 ms) and 17888 ms (boot2, seq=5 at 4840 ms to seq=6 at 22728 ms),
 /// across the userspace-process creation burst. The other two contexts did
-/// not fill either hole: the CPU had runnable work throughout, so `idle_loop`
-/// did not run, and no loopback traffic arrived to wake `loopback_pump_fn`.
+/// not fill either hole, and the capture is what says so rather than an
+/// argument about them: the 3 emitters share ONE limiter, so a hole is an
+/// absence of snapshots from the 3 of them together. Neither of the other two
+/// published in
+/// that window, which is what being demand-driven predicts -- the CPU had
+/// runnable work across the burst, so `idle_loop` did not run, and
+/// `loopback_pump_fn` runs only on loopback traffic.
 /// claim-lint:ok: both holes are re-derivable from the `ms=` fields of
 /// docs/planning/green-program/sockets/serials/775/round4/gate-green/
 /// boot{1,2}/serial_kernel.txt, and each boot's own gate.txt line 8 prints
