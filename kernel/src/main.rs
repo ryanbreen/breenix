@@ -1100,7 +1100,7 @@ fn kernel_main_continue() -> ! {
     // #775/R125: start the x86 dispatch-strand heartbeat before any userspace
     // process can run. The kthread sleeps on the scheduler timer and formats a
     // snapshot only after kthread_entry has enabled interrupts.
-    task::dispatch_strand_census::start_heartbeat();
+    task::start_dispatch_strand_census();
 
     // INTERACTIVE MODE: Load init_shell as the only userspace process
     #[cfg(feature = "interactive")]

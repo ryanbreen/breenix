@@ -10,6 +10,10 @@ use core::{
 pub mod completion;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatch_strand_census;
+#[cfg(target_arch = "x86_64")]
+pub fn start_dispatch_strand_census() {
+    dispatch_strand_census::start_heartbeat();
+}
 pub mod executor;
 pub mod exit_tally;
 pub mod thread;
