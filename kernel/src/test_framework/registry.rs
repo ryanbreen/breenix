@@ -6024,6 +6024,37 @@ fn test_kernel_heap() -> TestResult {
     TestResult::Pass
 }
 
+/// Verify PCI enumeration found the exact device set this arch's x86-64 gate
+/// scripts attach (3x legacy virtio-blk-pci + 1x e1000 NIC) -- vendor:device
+/// IDs, class codes, a decoded non-zero BAR, and an assigned interrupt line
+/// for every device. Direct structural evidence for the "Bus / device
+/// infrastructure" gate row, not the pre-existing text-log census summary
+/// count `test_boot_sequence`-adjacent gates already check. The actual check
+/// (and the expected-device table it validates against) lives in
+/// `kernel::drivers::pci::run_gate_device_catalog_check()` so the identical
+/// logic can also run unconditionally from `drivers::init()` in the
+/// zero-feature production profile, where this test-framework registry does
+/// not compile at all. See
+/// docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md.
+#[cfg(target_arch = "x86_64")]
+fn test_pci_gate_device_catalog() -> TestResult {
+    if crate::drivers::pci::run_gate_device_catalog_check() {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("PCI gate device catalog mismatch -- see BUS_ENUM_CATALOG serial line")
+    }
+}
+
+/// Stub for aarch64 -- the gate device catalog check is x86-64-only. The
+/// x86-64 PCI vendor/device IDs and gate device set this test validates
+/// don't apply to aarch64's own VirtIO-MMIO/PCI platforms, which already
+/// have their own device-count census (see
+/// docs/planning/green-program/nic-bus/EVIDENCE-2026-08-31.md).
+#[cfg(not(target_arch = "x86_64"))]
+fn test_pci_gate_device_catalog() -> TestResult {
+    TestResult::Pass
+}
+
 // =============================================================================
 // IPC Test Functions (Phase 4m)
 // =============================================================================
@@ -7279,6 +7310,17 @@ static SYSTEM_TESTS: &[TestDef] = &[
         func: test_tty_foreground_pgrp,
         arch: Arch::Any,
         timeout_ms: 10000, // Increased: creates a user process (ELF load, page table, scheduler)
+        stage: TestStage::EarlyBoot,
+    },
+    TestDef {
+        // PCI enumeration (drivers::init(), called from kernel_main well
+        // before run_all_tests()) has already populated the device table by
+        // the time any EarlyBoot-stage test runs, so this needs no later
+        // stage despite reading PCI state.
+        name: "pci_gate_device_catalog",
+        func: test_pci_gate_device_catalog,
+        arch: Arch::X86_64,
+        timeout_ms: 2000,
         stage: TestStage::EarlyBoot,
     },
 ];

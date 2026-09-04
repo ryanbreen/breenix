@@ -1279,7 +1279,6 @@ pub fn assign_bars() {
 }
 
 /// Get a copy of all discovered PCI devices
-#[allow(dead_code)] // Part of public API, will be used by VirtIO driver
 pub fn get_devices() -> Option<Vec<Device>> {
     PCI_DEVICES.lock().clone()
 }
@@ -1351,4 +1350,209 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
             .collect(),
         None => Vec::new(),
     }
+}
+
+// =============================================================================
+// Gate Device Catalog Check (x86-64 only)
+// =============================================================================
+//
+// Direct, structural evidence for the "Bus / device infrastructure" gate row
+// (docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md). Unlike
+// the pre-existing text-log census this repo's x86-64 boot gates already
+// grep ("PCI: Enumeration complete. Found N devices (B VirtIO block, W
+// network)", above), this reads the actual parsed `Device` records
+// `enumerate()` populated in `PCI_DEVICES` and checks per-device facts --
+// vendor:device ID, class code, a BAR decoded non-zero, and an assigned
+// interrupt line -- for the exact function set each gate's own QEMU command
+// line attaches. A boot that quietly enumerated the right *count* of devices
+// but the wrong *identity* (e.g. a virtio-net masquerading as the expected
+// virtio-blk slot) reads as healthy to the count-only census; this check
+// reads as unhealthy.
+
+/// One PCI function a gate script attaches via an explicit QEMU
+/// `-device`/`-netdev` flag, and the facts `enumerate()`'s device table must
+/// show for the attachment to count as a genuine, driver-visible discovery
+/// rather than a bare QEMU-side attachment.
+#[cfg(target_arch = "x86_64")]
+pub struct GateExpectedDevice {
+    pub label: &'static str,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub class: DeviceClass,
+}
+
+/// The function set both `docker/qemu/run-x86-boot-tests.sh` and
+/// `docker/qemu/run-x86-prod-profile-boot-test.sh` attach -- identical sets,
+/// so one expected list serves both gates. Each entry cites the exact flag
+/// line(s) it corresponds to (verified against the scripts' own bytes, not
+/// from memory).
+#[cfg(target_arch = "x86_64")]
+pub static GATE_EXPECTED_DEVICES: &[GateExpectedDevice] = &[
+    // run-x86-boot-tests.sh:364-365
+    //   -drive "if=none,id=hd,...
+    //   -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off
+    // run-x86-prod-profile-boot-test.sh:883-884 (drive=hd, identical flag).
+    // `disable-modern=on` forces the legacy transport, so the reported
+    // device ID is the legacy one (0x1001), not the modern one (0x1042).
+    GateExpectedDevice {
+        label: "virtio-blk-pci (boot disk)",
+        vendor_id: VIRTIO_VENDOR_ID,
+        device_id: VIRTIO_BLOCK_DEVICE_ID_LEGACY,
+        class: DeviceClass::MassStorage,
+    },
+    // run-x86-boot-tests.sh:366-367 (drive=testdisk); run-x86-prod-profile-
+    // boot-test.sh:885-886 (drive=placeholder) -- same flag shape, second
+    // virtio-blk-pci function.
+    GateExpectedDevice {
+        label: "virtio-blk-pci (test/placeholder disk)",
+        vendor_id: VIRTIO_VENDOR_ID,
+        device_id: VIRTIO_BLOCK_DEVICE_ID_LEGACY,
+        class: DeviceClass::MassStorage,
+    },
+    // run-x86-boot-tests.sh:368-369 (drive=ext2disk); run-x86-prod-profile-
+    // boot-test.sh:887-888 (drive=ext2disk) -- same flag, third
+    // virtio-blk-pci function.
+    GateExpectedDevice {
+        label: "virtio-blk-pci (ext2 disk)",
+        vendor_id: VIRTIO_VENDOR_ID,
+        device_id: VIRTIO_BLOCK_DEVICE_ID_LEGACY,
+        class: DeviceClass::MassStorage,
+    },
+    // run-x86-prod-profile-boot-test.sh:889-890
+    //   -netdev user,id=net0 -device e1000,netdev=net0,mac=52:54:00:12:34:56
+    // run-x86-boot-tests.sh attaches no -netdev/-device NIC flag at all;
+    // QEMU auto-attaches its own default NIC whenever no -net/-netdev/-nic
+    // option is given, and that implicit default is the same e1000 model
+    // (confirmed 8086:100e in this repo's own measured boots -- see
+    // docs/planning/green-program/nic-bus/EVIDENCE-2026-08-31.md paragraph 3a), so
+    // the expected function is identical on both gates either way.
+    GateExpectedDevice {
+        label: "e1000 NIC",
+        vendor_id: INTEL_VENDOR_ID,
+        device_id: 0x100E,
+        class: DeviceClass::Network,
+    },
+];
+
+/// Verify the enumerated PCI device table against `GATE_EXPECTED_DEVICES`.
+///
+/// Prints one unconditional `BUS_ENUM_CATALOG:` line via `serial_println!`
+/// (visible regardless of log level or build profile) plus one `log::info!`
+/// detail line per matched device. Returns `true` iff every expected
+/// function was found (each match claims a distinct enumerated function, so
+/// two expected virtio-blk entries cannot both match the same physical
+/// device), each has a BAR decoded non-zero, each has an assigned interrupt
+/// line (`interrupt_line != 0xFF`, the PCI "unknown/not connected"
+/// sentinel), and the total enumerated function count is at least the
+/// expected set's size.
+///
+/// Called twice by design: once unconditionally from `drivers::init()`
+/// (every x86-64 build, including the zero-feature production profile,
+/// where the `boot_tests`-gated test-framework registry does not compile at
+/// all), and once more from the `pci_gate_device_catalog` boot test
+/// (`test_framework::registry`, `boot_tests` feature only) so that profile
+/// also gets a structured `[TEST:System:pci_gate_device_catalog:PASS]` tally
+/// entry. Both calls check the same already-populated device table; the
+/// second call is not a re-enumeration.
+#[cfg(target_arch = "x86_64")]
+pub fn run_gate_device_catalog_check() -> bool {
+    let devices = match get_devices() {
+        Some(d) => d,
+        None => {
+            crate::serial_println!(
+                "BUS_ENUM_CATALOG: FAIL reason=\"pci::enumerate() has not populated the device table\""
+            );
+            return false;
+        }
+    };
+
+    if devices.len() < GATE_EXPECTED_DEVICES.len() {
+        crate::serial_println!(
+            "BUS_ENUM_CATALOG: FAIL reason=\"enumerated {} function(s), expected at least {}\"",
+            devices.len(),
+            GATE_EXPECTED_DEVICES.len()
+        );
+        return false;
+    }
+
+    let mut claimed: Vec<bool> = Vec::new();
+    claimed.resize(devices.len(), false);
+
+    for expected in GATE_EXPECTED_DEVICES {
+        let mut matched_idx: Option<usize> = None;
+        for (i, dev) in devices.iter().enumerate() {
+            if !claimed[i]
+                && dev.vendor_id == expected.vendor_id
+                && dev.device_id == expected.device_id
+                && dev.class == expected.class
+            {
+                matched_idx = Some(i);
+                break;
+            }
+        }
+
+        let idx = match matched_idx {
+            Some(i) => i,
+            None => {
+                crate::serial_println!(
+                    "BUS_ENUM_CATALOG: FAIL reason=\"no enumerated function matches expected '{}' ({:04x}:{:04x} class {:?})\"",
+                    expected.label,
+                    expected.vendor_id,
+                    expected.device_id,
+                    expected.class
+                );
+                return false;
+            }
+        };
+        claimed[idx] = true;
+        let dev = &devices[idx];
+
+        if !dev.bars.iter().any(|b| b.is_valid()) {
+            crate::serial_println!(
+                "BUS_ENUM_CATALOG: FAIL reason=\"'{}' ({:02x}:{:02x}.{}) has no BAR decoded non-zero\"",
+                expected.label,
+                dev.bus,
+                dev.device,
+                dev.function
+            );
+            return false;
+        }
+
+        if dev.interrupt_line == 0xFF {
+            crate::serial_println!(
+                "BUS_ENUM_CATALOG: FAIL reason=\"'{}' ({:02x}:{:02x}.{}) has no interrupt line assigned (IRQ=0xff)\"",
+                expected.label,
+                dev.bus,
+                dev.device,
+                dev.function
+            );
+            return false;
+        }
+
+        let bar = dev
+            .bars
+            .iter()
+            .find(|b| b.is_valid())
+            .expect("checked is_valid() above");
+        log::info!(
+            "BUS_ENUM_CATALOG:   {} = [{:04x}:{:04x}] @ {:02x}:{:02x}.{} class={:?} IRQ={} BAR={:#x} (size={:#x})",
+            expected.label,
+            dev.vendor_id,
+            dev.device_id,
+            dev.bus,
+            dev.device,
+            dev.function,
+            dev.class,
+            dev.interrupt_line,
+            bar.address,
+            bar.size
+        );
+    }
+
+    crate::serial_println!(
+        "BUS_ENUM_CATALOG: PASS functions={} expected={}",
+        devices.len(),
+        GATE_EXPECTED_DEVICES.len()
+    );
+    true
 }

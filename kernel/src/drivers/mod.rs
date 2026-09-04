@@ -27,6 +27,19 @@ pub fn init() -> usize {
     // Enumerate PCI bus and detect devices
     let device_count = pci::enumerate();
 
+    // Direct structural evidence for the "Bus / device infrastructure" gate
+    // row (docs/planning/green-program/bus/BUS-X86-ENUM-GATE-2026-09-04.md):
+    // check the actual parsed device table against this arch's gate device
+    // set, not just the summary count in the "PCI: Enumeration complete"
+    // log line pci::enumerate() already printed. Runs unconditionally in
+    // every build profile, including the zero-feature production profile,
+    // where the `boot_tests`-gated test-framework registry
+    // (kernel::test_framework::registry) does not compile at all -- this is
+    // the only place that profile gets this check. A FAIL is logged to
+    // serial (BUS_ENUM_CATALOG: FAIL ...) but does not abort boot; the gate
+    // scripts themselves treat that line as fatal.
+    pci::run_gate_device_catalog_check();
+
     // Initialize VirtIO block driver if device was found
     match virtio::block::init() {
         Ok(()) => {
