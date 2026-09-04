@@ -494,8 +494,12 @@ fn closure_ranges(body: &str, wrapper: &str) -> Vec<(usize, usize)> {
         .into_iter()
         .filter_map(|offset| {
             let block = braced_block(body, &mask, offset)?;
-            let start = block.as_ptr() as usize - body.as_ptr() as usize;
-            Some((start, start + block.len()))
+            let open = (offset..body.len())
+                .find(|index| mask[*index] && body.as_bytes()[*index] == b'{')?;
+            if !normalized_code(&body[offset..open]).contains("||") {
+                return None;
+            }
+            Some((open, offset + block.len()))
         })
         .collect()
 }
