@@ -245,7 +245,9 @@ halt returns without the timer handler switching away.
      docs/planning/green-program/sockets/serials/775/round3/ with its gate
      transcript beside it. -->
 The N-to-0 column is finding N8 closed: the snapshot is on the kernel-log
-channel the removed records used, not on the interactive user console.
+channel the removed records used, not on the interactive user console. The
+27017 ms gap in the first row sits between seq=1 at 550 ms and seq=2 at
+27567 ms -- boot and early userspace, where neither emitter ran.
 
 `r3-idle-cadence` is the no-loopback-emission condition. Its
 `pump-heartbeat-disabled.patch` removes the single call in
@@ -309,7 +311,7 @@ reported `1 -> 2`. Boot 1 carries 2 markers, both on COM2:
 pre-init reading. That is the N1 fix visible in the shipped kernel.
 
 What this profile does not give is a cadence, and the reason is measurable: the
-shipped kernel barely idles. Boot 1 has 1 `<I>` idle dispatch across 2028 `[SW]`
+shipped kernel barely idles. Boot 1 has 1 `<I>` idle dispatch across 2947 `[SW]`
 context switches, so the newest snapshot is at 9356 ms of a boot that then ran
 for two more minutes. `scripts/x86-strand-census.sh` on that capture therefore
 exits 1, naming thread 4 (`init`) and thread 10 (`exec_smoke`) — both parked in

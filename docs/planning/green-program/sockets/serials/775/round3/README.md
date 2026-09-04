@@ -31,9 +31,12 @@ the measurement of that, and of the channel change (N8).
 
 The 104-to-0 split is finding N8 closed: the snapshot is on the kernel-log
 channel the three removed records used, and no longer on the interactive user
-console. The 27017 ms gap is the userspace test phase, where the CPU is
-saturated and does not idle; the pump covers the first 43 seconds and the idle
-loop covers the rest.
+console. The 27017 ms gap sits between seq=1 at 550 ms and seq=2 at 27567 ms:
+that is boot and early userspace, where neither emitter ran. Which emitter
+produced which snapshot is not readable from the capture, but the comparison
+with `r3-idle-cadence/` below bounds it -- with the pump silenced, the first
+idle-driven snapshot is at 43183 ms, so everything before that in this capture
+came from the pump.
 
 ## `r3-idle-cadence/` — the same boot with the pump's heartbeat disabled
 
@@ -105,7 +108,7 @@ marker round 2's production boots carried, and why they read `saved=0`. `seq=2`
 is new: it is the idle loop, and it reads real ledger state.
 
 **What this profile does NOT give, stated plainly.** The shipped kernel barely
-idles: boot 1 has 1 `<I>` idle dispatch across 2028 `[SW]` context switches, so
+idles: boot 1 has 1 `<I>` idle dispatch across 2947 `[SW]` context switches, so
 the newest snapshot is at 9356 ms of a boot that then ran for another two
 minutes. Reading it as a verdict is therefore wrong here, and
 `scripts/x86-strand-census.sh` on this capture exits 1, naming thread 4
