@@ -996,22 +996,52 @@ fn validate_exec_sched_commit(scheduler: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_sys_exec_releases_process_manager(syscall_entry: &str) -> Result<(), String> {
+/// `ttbr0_source` is `kernel/src/arch_impl/aarch64/ttbr0.rs`, which owns the
+/// install. `sys_exec_aarch64` used to write the register with a raw `msr` and
+/// publish `saved_process_cr3` beside it, so this validator counted those two
+/// literals; it now installs through `ttbr0::adopt_process_ttbr0`, which does
+/// both AND additionally clears `next_cr3` -- the word the syscall return
+/// corridor consults FIRST, which this site previously left holding whatever the
+/// last dispatch or idle redirect published (#786). The ordering requirement is
+/// unchanged and the shadow-publication requirement is still an independent
+/// conjunct: it is checked in the helper the exec path calls.
+fn validate_sys_exec_releases_process_manager(
+    syscall_entry: &str,
+    ttbr0_source: &str,
+) -> Result<(), String> {
     let body = function_body(syscall_entry, "sys_exec_aarch64");
     let mask = code_mask(body);
     let drops = code_offsets(body, &mask, "drop(manager_guard)");
     let applies = code_offsets(body, &mask, "commit.apply()");
-    let saved_cr3 = code_offsets(body, &mask, "set_saved_process_cr3(");
-    let ttbr0: Vec<usize> = body
+    let installs = code_offsets(body, &mask, "adopt_process_ttbr0(");
+    let raw_installs: Vec<usize> = body
         .match_indices("msr ttbr0_el1")
         .map(|(offset, _)| offset)
         .collect();
+    if !raw_installs.is_empty() {
+        return Err(format!(
+            "sys_exec_aarch64 must install the new root through the shared discipline, found {} raw msr ttbr0_el1",
+            raw_installs.len()
+        ));
+    }
+    let adopt = function_body(ttbr0_source, "adopt_process_ttbr0");
+    if !adopt.contains("msr ttbr0_el1")
+        || !adopt.contains("set_saved_process_cr3(")
+        || !adopt.contains("set_next_cr3(0)")
+    {
+        return Err(
+            "the install the exec path calls must write the register, publish saved_process_cr3, and clear next_cr3"
+                .to_owned(),
+        );
+    }
+    let ttbr0 = installs.clone();
+    let saved_cr3 = installs;
 
     for (label, count) in [
         ("drop(manager_guard)", drops.len()),
         ("commit.apply()", applies.len()),
-        ("msr ttbr0_el1", ttbr0.len()),
-        ("set_saved_process_cr3(", saved_cr3.len()),
+        ("adopt_process_ttbr0(", ttbr0.len()),
+        ("adopt_process_ttbr0( (shadow publication)", saved_cr3.len()),
     ] {
         if count != 1 {
             return Err(format!(
@@ -1762,7 +1792,9 @@ fn exec_sched_commit_is_a_must_use_receipt_applied_in_the_scheduler() {
 #[test]
 fn sys_exec_releases_the_process_manager_before_the_scheduler() {
     let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
-    validate_sys_exec_releases_process_manager(&syscall_entry).expect("T4 validation");
+    let ttbr0_source = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    validate_sys_exec_releases_process_manager(&syscall_entry, &ttbr0_source)
+        .expect("T4 validation");
 }
 
 /// #721 K3: the x86_64 analogue of T4 above.
@@ -1994,7 +2026,34 @@ fn negative_sys_exec_apply_before_drop_is_rejected() {
         1,
     );
     assert_ne!(mutated, syscall_entry, "drop/apply swap mutation applied");
-    assert!(validate_sys_exec_releases_process_manager(&mutated).is_err());
+    let ttbr0_source = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    assert!(validate_sys_exec_releases_process_manager(&mutated, &ttbr0_source).is_err());
+}
+
+/// The install conjunct is load-bearing: a discipline helper that stopped
+/// clearing `next_cr3` would leave the exec return on whatever root the last
+/// dispatch or idle redirect published, which is #786.
+#[test]
+fn negative_sys_exec_install_without_next_cr3_clear_is_rejected() {
+    let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let ttbr0_source = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    let mutated = ttbr0_source.replacen("set_next_cr3(0);", "let _ = 0;", 1);
+    assert_ne!(mutated, ttbr0_source, "next_cr3 clear deletion applied");
+    assert!(validate_sys_exec_releases_process_manager(&syscall_entry, &mutated).is_err());
+}
+
+/// And the exec path may not go back to writing the register itself.
+#[test]
+fn negative_sys_exec_raw_ttbr0_install_is_rejected() {
+    let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
+    let ttbr0_source = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    let mutated = syscall_entry.replacen(
+        "crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(new_ttbr0);",
+        "unsafe { core::arch::asm!(\"msr ttbr0_el1, {}\", in(reg) new_ttbr0); }",
+        1,
+    );
+    assert_ne!(mutated, syscall_entry, "raw install mutation applied");
+    assert!(validate_sys_exec_releases_process_manager(&mutated, &ttbr0_source).is_err());
 }
 
 #[test]
@@ -2006,7 +2065,8 @@ fn negative_sys_exec_missing_drop_is_rejected() {
         1,
     );
     assert_ne!(mutated, syscall_entry, "drop deletion mutation applied");
-    assert!(validate_sys_exec_releases_process_manager(&mutated).is_err());
+    let ttbr0_source = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    assert!(validate_sys_exec_releases_process_manager(&mutated, &ttbr0_source).is_err());
 }
 
 /// #721 K3/K13: the x86_64 analogue of the two aarch64 negative tests above.
