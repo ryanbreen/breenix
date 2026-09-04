@@ -15300,8 +15300,42 @@ fn spawned_name(source: &str, spawn: usize) -> Option<String> {
     Some(source[start..at].to_owned())
 }
 
-/// The identifiers a body calls: an identifier immediately followed by an
-/// opening parenthesis, read from the executable text only.
+/// The first offset at or after `from` that the compiler reads as code:
+/// whitespace and comment text are stepped over, because neither separates a
+/// callee from its argument list.
+///
+/// A comment is a `code_mask` run that opens with `/` -- both `//` and `/*`
+/// mask their opening `/`, and no other masked run begins with one. String
+/// and character literals are masked too and are deliberately NOT stepped
+/// over: they are text the compiler reads, and skipping one would invent a
+/// call out of `NAME "literal" (`.
+fn skip_comments_and_space(bytes: &[u8], mask: &[bool], from: usize) -> usize {
+    let mut at = from;
+    while at < bytes.len() {
+        if bytes[at].is_ascii_whitespace() {
+            at += 1;
+            continue;
+        }
+        if !mask[at] && bytes[at] == b'/' {
+            at += 1;
+            while at < bytes.len() && !mask[at] {
+                at += 1;
+            }
+            continue;
+        }
+        break;
+    }
+    at
+}
+
+/// The identifiers a body calls, read from comment-stripped executable text:
+/// an identifier followed -- across any run of comment text or whitespace,
+/// both of which the compiler discards -- by an opening parenthesis.
+///
+/// N16: this used to require the `(` to sit immediately after the identifier,
+/// so `joiner/* call from kernel_main */(handle)` and `joiner // c\n(handle)`
+/// both compile, survive rustfmt, and were read as 0 calls. The reachability
+/// closure this feeds therefore had a hole a comment could open.
 fn called_names(body: &str) -> BTreeSet<String> {
     let mask = code_mask(body);
     let bytes = body.as_bytes();
@@ -15313,11 +15347,12 @@ fn called_names(body: &str) -> BTreeSet<String> {
             continue;
         }
         let start = at;
-        while at < bytes.len() && identifier_byte(bytes[at]) {
+        while at < bytes.len() && mask[at] && identifier_byte(bytes[at]) {
             at += 1;
         }
-        if bytes.get(at) == Some(&b'(') {
-            names.insert(body[start..at].to_owned());
+        let end = at;
+        if bytes.get(skip_comments_and_space(bytes, &mask, end)) == Some(&b'(') {
+            names.insert(body[start..end].to_owned());
         }
     }
     names
@@ -16093,4 +16128,69 @@ fn the_kthread_join_reachability_closure_crosses_a_feature_gate() {
         "the closure stopped at the feature gate"
     );
     assert!(validate_kthread_joins_are_kthread_bodies_or_tests(&perturbed).is_err());
+}
+
+#[test]
+fn the_kthread_join_census_reads_a_call_written_across_a_comment() {
+    // N16, the exact escape the round-4 review named: the census recognized a
+    // callee only when `(` sat immediately after the identifier, so a comment
+    // between the two hid the call. Both forms below compile, both survive
+    // rustfmt, and both used to leave this census green at 1 passed.
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/main_aarch64.rs");
+    let release = "kernel::per_cpu_aarch64::preempt_enable();";
+    assert_eq!(
+        source.matches(release).count(),
+        1,
+        "the fixture anchor must be kernel_main's own pin release"
+    );
+    let helper = concat!(
+        "#[cfg(feature = \"testing\")]\n",
+        "fn testing_only_join_helper(handle: &kernel::task::kthread::KthreadHandle) {\n",
+        "    let _ = kernel::task::kthread::kthread_join(handle);\n",
+        "}\n\n",
+    );
+    // The reviewer's mutation verbatim, then the line-comment form of it.
+    let call_forms = [
+        "testing_only_join_helper/* call from kernel_main */(&boot_continuation_thread);",
+        "testing_only_join_helper // call from kernel_main\n    (&boot_continuation_thread);",
+    ];
+    for call in call_forms {
+        let injected = format!("{call}\n    {release}");
+        let mutated = format!("{helper}{}", source.replacen(release, &injected, 1));
+        assert_ne!(mutated, source, "fixture mutation must apply: {call}");
+        let perturbed = with_replaced_source(&sources, "kernel/src/main_aarch64.rs", mutated);
+        let reachable = names_reachable_from_kernel_main(&perturbed);
+        assert!(
+            reachable.contains("testing_only_join_helper"),
+            "the reachability closure did not read the call written as: {call}"
+        );
+        let verdict = validate_kthread_joins_are_kthread_bodies_or_tests(&perturbed);
+        assert!(
+            verdict.is_err(),
+            "the census stayed green on a join called as: {call}"
+        );
+    }
+}
+
+#[test]
+fn called_names_reads_across_comments_but_not_across_a_literal() {
+    // The narrow half of the N16 repair: comment text and whitespace are
+    // stepped over, string and character literals are not.
+    assert!(called_names("joiner/* c */(handle);").contains("joiner"));
+    assert!(called_names("joiner // c\n(handle);").contains("joiner"));
+    assert!(called_names("joiner\n    (handle);").contains("joiner"));
+    let welded = called_names("outer/* c */inner(handle);");
+    assert!(
+        welded.contains("inner") && !welded.contains("outer"),
+        "a comment must not weld two identifiers into one call"
+    );
+    assert!(
+        !called_names("NAME \"literal\" (handle);").contains("NAME"),
+        "a string literal is code: stepping over it would invent a call"
+    );
+    assert!(
+        !called_names("// joiner(handle);\n").contains("joiner"),
+        "a call that is itself commented out is not a call"
+    );
 }
