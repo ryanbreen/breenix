@@ -462,9 +462,22 @@ pub fn arch_halt() {
 /// is `ec0_fault_inject`'s timed delay, which is feature-gated off in the
 /// profiles this oracle is measured in.
 // claim-lint:ok: 12 of 12 x86 and 15 of 15 aarch64 uncounted raw-halt sites
-// are enumerated above, from `grep -rn 'X86Cpu::halt()\|instructions::hlt()\|
-// asm!("wfi' kernel/src --include='*.rs'` minus the 3 park primitives and the
-// 3 hand-bump sites, read one by one in this slot.
+// are enumerated above. Formula, re-run in this slot: `grep -rn
+// 'X86Cpu::halt()\|instructions::hlt()\|"wfi' kernel/src --include='*.rs' |
+// grep -vE ':[[:space:]]*//'`. The loose `"wfi` alternative (not the
+// stricter `asm!("wfi`) is required to reach a `wfi` written as one
+// instruction string inside a multi-instruction `asm!` block, which is how
+// `arch_impl/aarch64/context_switch.rs:7146` (`idle_loop_arm64`, listed
+// above), `arch_impl/aarch64/cpu.rs:97` and `task/spawn.rs:159` are written;
+// the stricter pattern reaches only 14 of the 15 aarch64 sites, missing
+// `context_switch.rs:7146`. The formula above yields 35 code hits; minus 8
+// already-accounted-for sites -- the 3 park-primitive bodies
+// (`arch_impl/x86_64/cpu.rs:33`, `arch_impl/aarch64/cpu.rs:81` and `:97`),
+// the 2 render_task.rs private-primitive call sites (`:142`, `:145`) already
+// in the Counted paragraph above, `arch_halt`'s own internal x86 dispatch to
+// `X86Cpu::halt` (`lib.rs:405`), and the 2 hand-bump sites this pattern
+// reaches (`task/executor.rs:108`, `task/spawn.rs:159`) -- leaves 27: 12 x86
+// and 15 aarch64, read one by one in this slot.
 // claim-lint:ok: 25 of 25 arch_halt_with_interrupts call sites and 24 of 24
 // arch_halt call sites under kernel/src reach a bump, counted by grep in this
 // slot.
