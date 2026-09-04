@@ -421,6 +421,38 @@ struct TtbrInstall {
     function: String,
     signature: String,
     body: String,
+    /// The `impl` type that owns this function, when it has one.
+    owner: Option<String>,
+}
+
+/// The type whose `impl` block encloses `name`, if any: the call-site prefix a
+/// caller has to spell. `write` alone is far too common a name to search for;
+/// `Cr3::write` is the call this census is about.
+fn enclosing_impl_type(source: &str, name: &str) -> Option<String> {
+    let needle = format!("fn {name}");
+    let lines: Vec<&str> = source.lines().collect();
+    let declaration = lines.iter().position(|line| line.contains(&needle))?;
+    for index in (0..declaration).rev() {
+        let line = lines[index].trim_start();
+        if !line.starts_with("impl") {
+            continue;
+        }
+        let header = line.trim_end_matches('{').trim();
+        let subject = match header.rsplit_once(" for ") {
+            Some((_, target)) => target,
+            None => header.trim_start_matches("impl").trim(),
+        };
+        let type_name: String = subject
+            .trim()
+            .chars()
+            .take_while(|character| character.is_alphanumeric() || *character == '_')
+            .collect();
+        if type_name.is_empty() {
+            return None;
+        }
+        return Some(type_name);
+    }
+    None
 }
 
 /// The declaration line of `name` in `source`.
@@ -466,6 +498,7 @@ fn ttbr0_install_census(sources: &[(String, String)]) -> Vec<TtbrInstall> {
                 function: name.clone(),
                 signature: function_signature(source, &name),
                 body: body.to_string(),
+                owner: enclosing_impl_type(source, &name),
             });
         }
         assert!(
@@ -489,6 +522,206 @@ fn install_operand(body: &str) -> String {
     }
 }
 
+/// The per-CPU TTBR0 shadow words and their accessors. A function that names
+/// any of them is deciding TTBR0 policy, not performing a mechanical write, so
+/// it cannot claim the mechanism-primitive exemption below.
+const SHADOW_NAMES: [&str; 4] = [
+    "set_saved_process_cr3",
+    "set_next_cr3",
+    "saved_process_cr3",
+    "next_cr3",
+];
+
+/// Whether every step that produces `operand` is either a parameter or a method
+/// call on something parameter-borne -- i.e. the function FETCHED nothing.
+///
+/// R7-002: `traces_to_a_parameter` alone accepts `let root = fetch_root(flags);`
+/// because `flags` is a parameter, which would let a future process-root wrapper
+/// call itself a primitive. A path-qualified call or a bare free call in the
+/// derivation chain means the value came from somewhere the caller did not hand
+/// over, and that is the shape the exemption must not cover.
+fn derivation_fetches_nothing(body: &str, operand: &str) -> bool {
+    let mut frontier = vec![operand.to_string()];
+    let mut seen = BTreeSet::new();
+    for _ in 0..4 {
+        let mut next = Vec::new();
+        for name in std::mem::take(&mut frontier) {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(rhs) = let_binding_rhs(body, &name) {
+                if !expression_only_calls_methods(&rhs) {
+                    return false;
+                }
+                next.extend(identifiers(&rhs));
+            }
+        }
+        if next.is_empty() {
+            return true;
+        }
+        frontier = next;
+    }
+    true
+}
+
+/// Whether every call in `expression` is a method call rather than a
+/// path-qualified or free call.
+fn expression_only_calls_methods(expression: &str) -> bool {
+    let characters: Vec<char> = expression.chars().collect();
+    for (index, character) in characters.iter().enumerate() {
+        if *character != '(' {
+            continue;
+        }
+        let mut start = index;
+        while start > 0 && (characters[start - 1].is_alphanumeric() || characters[start - 1] == '_')
+        {
+            start -= 1;
+        }
+        if start == index {
+            continue;
+        }
+        if start == 0 || characters[start - 1] != '.' {
+            return false;
+        }
+    }
+    true
+}
+
+/// A mechanism primitive installs what its caller decided and fetches nothing,
+/// so the obligation to settle the shadows belongs to that caller -- an
+/// obligation `every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows`
+/// then checks, rather than leaving the exemption a free pass.
+fn is_mechanism_primitive(signature: &str, body: &str, operand: &str) -> bool {
+    if operand.is_empty() {
+        return false;
+    }
+    if !traces_to_a_parameter(signature, body, operand) {
+        return false;
+    }
+    if !derivation_fetches_nothing(body, operand) {
+        return false;
+    }
+    !SHADOW_NAMES.iter().any(|name| body.contains(name))
+}
+
+/// The attribute block immediately above `name`'s declaration.
+fn function_attributes(source: &str, name: &str) -> String {
+    let needle = format!("fn {name}");
+    let lines: Vec<&str> = source.lines().collect();
+    let declaration = match lines.iter().position(|line| line.contains(&needle)) {
+        Some(index) => index,
+        None => return String::new(),
+    };
+    let mut attributes = Vec::new();
+    let mut cursor = declaration;
+    while cursor > 0 {
+        let candidate = lines[cursor - 1].trim();
+        if candidate.starts_with("#[") || candidate.starts_with("//") {
+            attributes.push(candidate.to_string());
+            cursor -= 1;
+        } else {
+            break;
+        }
+    }
+    attributes.join("\n")
+}
+
+/// Functions this census can prove aarch64 compiles: everything under
+/// `kernel/src/arch_impl/aarch64/`, plus any function carrying
+/// `#[cfg(target_arch = "aarch64")]`.
+///
+/// Disclosed narrowing: shared code with no `cfg` at all is NOT in scope, so
+/// this census cannot speak for a primitive call added to a cfg-free shared
+/// helper. Every aarch64 TTBR0 site in the tree today follows one of the two
+/// conventions above.
+fn aarch64_scoped_functions(sources: &[(String, String)]) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for (file, source) in sources {
+        let arch_file = file.contains("/aarch64/");
+        for name in declared_function_names(source) {
+            let attributes = function_attributes(source, &name);
+            if !arch_file && !attributes.contains("target_arch = \"aarch64\"") {
+                continue;
+            }
+            out.push((
+                file.clone(),
+                name.clone(),
+                function_body(source, &name).to_string(),
+            ));
+        }
+    }
+    out
+}
+
+/// Whether `body` calls `name` other than as a method or in its own declaration.
+fn calls_function(body: &str, name: &str) -> bool {
+    let needle = format!("{name}(");
+    let mut cursor = 0usize;
+    while let Some(offset) = body[cursor..].find(&needle) {
+        let at = cursor + offset;
+        let preceding = body[..at].chars().last();
+        let is_method = preceding == Some('.');
+        let is_declaration = body[..at].ends_with("fn ");
+        let is_longer_identifier = preceding
+            .map(|character| character.is_alphanumeric() || character == '_')
+            .unwrap_or(false);
+        if !is_method && !is_declaration && !is_longer_identifier {
+            return true;
+        }
+        cursor = at + needle.len();
+    }
+    false
+}
+
+/// aarch64-scoped functions that call a mechanism primitive without settling the
+/// per-CPU shadows themselves. Returned as `file::function` strings.
+fn unsettled_primitive_callers(sources: &[(String, String)]) -> Vec<String> {
+    let census = ttbr0_install_census(sources);
+    let primitives: Vec<String> = census
+        .iter()
+        .filter(|install| {
+            is_mechanism_primitive(
+                &install.signature,
+                &install.body,
+                &install_operand(&install.body),
+            )
+        })
+        .map(|install| match &install.owner {
+            Some(owner) => format!("{owner}::{}", install.function),
+            None => install.function.clone(),
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    for (file, name, body) in aarch64_scoped_functions(sources) {
+        if file.ends_with("arch_impl/aarch64/ttbr0.rs") {
+            continue;
+        }
+        if !primitives
+            .iter()
+            .any(|primitive| calls_function(&body, primitive))
+        {
+            continue;
+        }
+        // The caller settles the shadows itself, or hands the whole install to
+        // the discipline that does.
+        if body.contains("adopt_process_ttbr0")
+            || body.contains("quiesce_ttbr0_for_exit")
+            || body.contains("set_saved_process_cr3")
+        {
+            continue;
+        }
+        // MMU bring-up: this install runs while TCR and MAIR are being
+        // programmed, before there is per-CPU state to shadow, and it installs
+        // the kernel root rather than a process root.
+        if body.contains("msr tcr_el1") {
+            continue;
+        }
+        out.push(format!("{file}::{name}"));
+    }
+    out
+}
+
 #[test]
 fn every_ttbr0_install_settles_the_per_cpu_shadows() {
     let sources = rust_sources_below("kernel/src");
@@ -509,8 +742,7 @@ fn every_ttbr0_install_settles_the_per_cpu_shadows() {
             continue;
         }
         let operand = install_operand(&install.body);
-        if !operand.is_empty() && traces_to_a_parameter(&install.signature, &install.body, &operand)
-        {
+        if is_mechanism_primitive(&install.signature, &install.body, &operand) {
             continue;
         }
         unreconciled.push(format!("{}::{}", install.file, install.function));
@@ -661,5 +893,170 @@ fn an_unreadable_identity_is_not_a_refusal() {
     assert!(
         scheduler.matches("self.refuse_idle_block()").count() >= 6,
         "every blocking primitive that publishes the caller blocked state must keep calling it"
+    );
+}
+
+#[test]
+fn the_primitive_exemption_rejects_a_fetched_root() {
+    // R7-002's hazard in one function: the operand traces to a parameter only
+    // because that parameter was handed to a fetch. Nothing here was given.
+    let signature = "    unsafe fn install_for(flags: u64) {";
+    let body = "let root = Aarch64PerCpu::process_root(flags); \
+                core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) root);";
+    let operand = install_operand(body);
+    assert!(
+        traces_to_a_parameter(signature, body, &operand),
+        "the loose predicate is what this test exists to tighten, so it must still accept this"
+    );
+    assert!(
+        !is_mechanism_primitive(signature, body, &operand),
+        "a site that FETCHES the root it installs is deciding policy, not performing a write"
+    );
+}
+
+#[test]
+fn the_primitive_exemption_rejects_a_shadow_touching_install() {
+    let signature = "    unsafe fn write_root(addr: u64) {";
+    let body = "let aligned = addr & 0x0000_FFFF_FFFF_F000; \
+                core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) aligned); \
+                Aarch64PerCpu::set_next_cr3(0);";
+    assert!(
+        !is_mechanism_primitive(signature, body, &install_operand(body)),
+        "a function that touches one shadow is a policy site and owns both of them"
+    );
+}
+
+#[test]
+fn every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows() {
+    let sources = rust_sources_below("kernel/src");
+    let census = ttbr0_install_census(&sources);
+    let primitives: Vec<&TtbrInstall> = census
+        .iter()
+        .filter(|install| {
+            is_mechanism_primitive(
+                &install.signature,
+                &install.body,
+                &install_operand(&install.body),
+            )
+        })
+        .collect();
+    assert!(
+        !primitives.is_empty(),
+        "the exemption this census polices reached no site at all, so it is checking nothing"
+    );
+
+    let unsettled = unsettled_primitive_callers(&sources);
+    assert!(
+        unsettled.is_empty(),
+        "these aarch64 callers install a root through a mechanism primitive and leave the per-CPU \
+         TTBR0 shadows naming another one: {unsettled:?}"
+    );
+}
+
+#[test]
+fn the_caller_census_catches_a_wrapper_that_skips_the_discipline() {
+    // The exemption transfers the obligation to the caller. This is a caller
+    // that does not discharge it: an aarch64 switch handing a process root
+    // straight to the primitive.
+    let primitive = "unsafe fn write_root(addr: u64) {\n\
+        let aligned = addr & 0x0000_FFFF_FFFF_F000;\n\
+        core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) aligned);\n\
+    }\n";
+    let skipping_caller = "#[cfg(target_arch = \"aarch64\")]\n\
+        pub unsafe fn switch_to_root(page_table: &ProcessPageTable) {\n\
+            let root = page_table.level_4_frame().start_address().as_u64();\n\
+            Aarch64PageTableOps::write_root(root);\n\
+        }\n";
+    let sources = vec![
+        (
+            "kernel/src/arch_impl/aarch64/paging.rs".to_string(),
+            primitive.to_string(),
+        ),
+        (
+            "kernel/src/memory/process_memory.rs".to_string(),
+            skipping_caller.to_string(),
+        ),
+    ];
+    assert_eq!(
+        unsettled_primitive_callers(&sources),
+        vec!["kernel/src/memory/process_memory.rs::switch_to_root".to_string()],
+        "a wrapper that routes a process root around the discipline has to be caught"
+    );
+
+    let settled = skipping_caller.replace(
+        "Aarch64PageTableOps::write_root(root);",
+        "crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(root);",
+    );
+    let repaired = vec![
+        (
+            "kernel/src/arch_impl/aarch64/paging.rs".to_string(),
+            primitive.to_string(),
+        ),
+        ("kernel/src/memory/process_memory.rs".to_string(), settled),
+    ];
+    assert!(
+        unsettled_primitive_callers(&repaired).is_empty(),
+        "routing the same switch through the discipline has to clear it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The testing-profile gate's own scoring (#728, review finding R7-004)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_testing_profile_gate_detects_and_classifies_a_soft_lockup() {
+    let gate = repo_text("docker/qemu/run-aarch64-testing-profile-boot-test.sh");
+    let classifier = gate
+        .split("classify_serial()")
+        .nth(1)
+        .expect("the gate must keep its scoring in one function");
+
+    assert!(
+        gate.contains("SOFT LOCKUP DETECTED"),
+        "round 7 scored this profile with a term list that had no lockup in it, and called a boot \
+         carrying a five-second lockup dump a clean pass; that is what this gate exists to stop"
+    );
+    assert!(
+        classifier.contains("$LOCKUP_LINE") && classifier.contains("$EXT2_STALL_LINE"),
+        "the scoring itself must read both the lockup line and the signature that attributes one"
+    );
+    for verdict in ["728-signature", "UNATTRIBUTED"] {
+        assert!(
+            classifier.contains(verdict),
+            "the classifier must be able to reach the {verdict} verdict"
+        );
+    }
+    assert!(
+        classifier.contains("unattributed-lockup"),
+        "an unattributed lockup has to be a red, not a note"
+    );
+    // Attribution is an ORDERING question: a stall printed after the dump does
+    // not explain it.
+    assert!(
+        classifier.contains("$1 < l"),
+        "attribution must compare line numbers, not merely ask whether both strings appear"
+    );
+    assert!(
+        classifier.contains("userspace_panic=") && classifier.contains("kernel_panic="),
+        "panics are counted and reported, and a kernel-side panic is scored separately"
+    );
+}
+
+#[test]
+fn the_testing_profile_gate_scores_committed_serials_with_the_same_code() {
+    let gate = repo_text("docker/qemu/run-aarch64-testing-profile-boot-test.sh");
+    assert!(
+        gate.contains("--classify"),
+        "an evidence serial has to be readable back by the code that scored it live, or a \
+         committed classification is a second implementation nobody runs"
+    );
+    let live_mode = gate
+        .split("for i in $(seq 1 \"$ITERATIONS\")")
+        .nth(1)
+        .expect("the gate must still boot the profile");
+    assert!(
+        live_mode.contains("classify_serial"),
+        "the live path must call the same scoring function the offline path does"
     );
 }
