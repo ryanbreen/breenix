@@ -1117,6 +1117,15 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn emit_ring3_syscall_marker",
         2,
     ),
+    // The idle-identity refusal and the pinned-worker park emit one-shot
+    // markers from inside the scheduler lock with interrupts masked, where the
+    // logger's own lock would deadlock -- the same exception the injectors
+    // below already carry. Each fires at most once per boot.
+    (
+        "kernel/src/task/idle_sleep.rs",
+        "fn refuse_idle_identity",
+        2,
+    ),
     (
         "kernel/src/task/ret_zero_pc_oracle.rs",
         "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle_exec))] fn inject_exec_commit_if_armed",
@@ -1163,6 +1172,11 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "kernel/src/task/scheduler.rs",
         "#[cfg(target_arch=aarch64)] fn dump_cpu_state_history",
         9,
+    ),
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn park_pinned_worker_without_home",
+        5,
     ),
     (
         "kernel/src/test_framework/registry.rs",

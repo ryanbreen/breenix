@@ -1,0 +1,21 @@
+== /tmp/m_a.txt
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]
+== /tmp/m_b.txt
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]
+== /tmp/b_a.txt
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]
+== /tmp/b_b.txt
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]
+== /tmp/x86boot2.txt
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=3 failed=[loopback_wake_test_child:15,simple_exit:42,loopback_wake_test:1]
+== /tmp/x86boot.txt
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+== /tmp/x86boot_main.txt
+[ INFO] kernel::syscall::handlers: 🎯 USERSPACE TEST COMPLETE - All processes finished successfully
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=22 nonzero=1 failed=[simple_exit:42]
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h
