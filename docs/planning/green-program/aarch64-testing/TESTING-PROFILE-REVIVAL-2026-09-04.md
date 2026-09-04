@@ -453,12 +453,12 @@ and `-Z build-std-features=compiler-builtins-mem`.
 | x86 `testing,external_test_bins` on beast | 0 | not applicable |
 
 0 of those lines is a project warning; the `core v0.0.0` notice is the
-toolchain's and appears on `main` too. The 3 aarch64 rows were re-run at the
-round-5 head; the x86 row is round 4's, in an isolated beast checkout
-(`/root/breenix-a64r2`) with
+toolchain's and appears on `main` too. 4 of the 4 rows were re-run at the
+round-5 head `6cb75784`. The x86 row ran in an isolated beast checkout
+(`/root/breenix-a64r2` on the `breenix-x86` container) with
 `BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork/library`, forced clean by
-touching `kernel/src/task/scheduler.rs` first, and `kernel/` has not changed
-since (`git diff --stat 436c93f7 HEAD -- kernel/` prints 0 lines).
+touching `kernel/src/task/scheduler.rs` first, so the `kernel` crate did
+recompile.
 
 Runtime, aarch64, on this Mac, 3 QEMUs at a time, 45s each, a fresh copy of the
 same fixture per boot. Each number here is derived from 1 of the 15 serials
