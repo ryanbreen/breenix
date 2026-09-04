@@ -57,9 +57,12 @@ failed, 5 not found)`. The 5 absent binaries are `hello_musl`, `env_musl_test`,
 `uname_musl_test`, `rlimit_musl_test` and `identity_musl_test`: they come from
 `userspace/c-programs`, which needs a musl libc under `third-party/musl-install`
 that this worktree does not have, so `userspace/programs/build.sh --arch
-aarch64` does not produce them. Round 4's fixture had a different 1 missing
-(`tcp_cloexec_exec_test`) and its "78 of 78" sentence is withdrawn: it does not
-reproduce against either fixture.
+aarch64` does not produce them. Round 4's fixture was a different one and
+carried 78 of 78. Its 2 specimens live in history at `436c93f7`
+(`testing-lockup-boot1.txt` line 1903, `testing-lockup-boot6.txt` line 1918);
+each prints `[test] Loaded 78/78 test binaries (0 failed, 0 not found)`, which
+`git show 436c93f7:<path> | grep -n "Loaded [0-9]*/78"` reproduces. So 73 of 78
+is a fact about this fixture, not a restatement of round 4's.
 
 ## `--features testing`, 12 boots
 

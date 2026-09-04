@@ -313,8 +313,14 @@ directory, 1 file per row:
 
 The count line is 73 of 78 rather than 78 of 78 because the rebuilt fixture is
 missing the 5 musl C programs, which need a musl libc this worktree does not
-carry; `serials/r3/batches/README.md` names them. Round 4's "78 of 78" is
-withdrawn -- its own fixture reads 77 of 78.
+carry; `serials/r3/batches/README.md` names them. The denominator is the 78
+names in `kernel/src/boot/test_list.rs`, which
+`grep -cE '^\s*"' kernel/src/boot/test_list.rs` counts as 78. Round 4's fixture loaded 78 of 78, and round 4's own committed
+serials say so: at `436c93f7`, `serials/r3/batches/testing-lockup-boot1.txt`
+line 1903 and `testing-lockup-boot6.txt` line 1918 each print
+`[test] Loaded 78/78 test binaries (0 failed, 0 not found)`
+(`git show 436c93f7:<path> | grep -n "Loaded [0-9]*/78"`). The drop to 73 is a
+property of this round's fixture, not a correction to round 4's count.
 
 `IDLE_SLEEP_REFUSED` appears 0 times in 12 of 12 of those boots, which is the
 runtime half of the refusal's claim: the boot sequence no longer asks the idle
@@ -334,18 +340,20 @@ soft lockup 3 lines later. The halt fix below is aimed at exactly that.
 
 ## The fixture, and the count line
 
-Round 1 published `[test] Loaded 78/78`; the round-1 review reproduced 77/78
-against the fixture it had. Both are right about their own fixture. The cause
-is not in the kernel or the image builder: `tcp_cloexec_exec_test` entered
+Round 1 published `[test] Loaded 78/78`. The round-1 review, reading an image
+built before that day, reported a lower count; that figure lives in the review
+and in no committed serial, so this document does not restate it as a
+measurement. Both readings are right about their own fixture. The cause is
+not in the kernel or the image builder: `tcp_cloexec_exec_test` entered
 `kernel/src/boot/test_list.rs` with PR #765 on 2026-09-02 (`63e5f8e0`, author and commit date
 `2026-09-02T10:51:17-04:00`; merge `509802e5`, `2026-09-02T15:42:07-04:00`),
 and the
 `userspace/programs/aarch64/` ELF set the reviewer's image was built from
 predates it. Rebuilding the aarch64 userspace produces
-`tcp_cloexec_exec_test.elf` like the other 147, and building the five vendored
-musl programs alongside it leaves 0 of the 78 catalog names without a file --
-after which the round-1 branch tip itself also loads 78 of 78
-(`serials/r2/testing-profile-boot-at-06d149b6.txt`).
+`tcp_cloexec_exec_test.elf` alongside the rest of the catalog, and building the
+five vendored musl programs with it leaves 0 of the 78 catalog names without a
+file -- after which the round-1 branch tip itself also loads 78 of 78
+(`serials/r2/testing-profile-boot-at-06d149b6.txt` line 1900).
 
 So the count line is left to follow the fixture, and the loader now names what
 it could not resolve and why (`[test] Not found: <name> (<reason>)`), which is
