@@ -4,24 +4,37 @@
      and the captures backing every table below are committed under
      docs/planning/green-program/sockets/serials/775/case-a/README.md and its
      five sibling directories. -->
-`#775` removes three formatted records from the x86 context-switch path and
-replaces the host-side census that parsed them with a fixed atomic per-TID
-ledger the kernel publishes itself. Round 1 measured that migration on 5 boots,
-all green, with 0 serials committed. This document is the round-2 replacement:
-19 boots across the four cases and a head-green pair, plus 2 production boots
-and a 102-file replay, with the captures committed and the command that
-produced each number printed beside it.
+`#775` removes formatted records from the x86 context-switch path and replaces
+the host-side census that parsed them with a fixed atomic per-TID ledger the
+kernel publishes itself. Round 1 measured that migration on 5 boots, all green,
+with 0 serials committed. Round 2 replaced that with 19 boots across four
+cases, a head-green pair, 2 production boots and a 102-file replay.
+
+Round 3 (this revision) changes what the kernel emits and where, and re-measures
+it: the heartbeat moves to the idle loop x86 actually runs (finding N1), the
+snapshot moves to COM2 (N8), and each snapshot gains `seq`, `tick` and `ms` so
+the consumer can select the newest one rather than the last one in argument
+order (F9) and report how stale its reading is (N14). The round-3 captures are
+under `serials/775/round3/`; the round-2 tables below are unchanged except
+where a number did not survive re-derivation, which is marked where it sits.
+
+<!-- claim-lint:ok: the captures are the 21 round-2 boots and the 4 round-3
+     boots committed under docs/planning/green-program/sockets/serials/775. -->
+Each number in this document is derived from a capture committed under
+`docs/planning/green-program/sockets/serials/775/`, with the command beside it.
 
 ## The two mechanisms
 
 | | old | new |
 |---|---|---|
 | source | `Saved kernel context for blocked thread N`, `Restored kernel context for thread N`, `(thread N) exited with code`, on COM2 | `kernel/src/task/dispatch_strand_census.rs`, a 4096-entry `[AtomicU8]` |
-| consumer | `git show bfbb7575:scripts/x86-strand-census.sh`, awk over the whole log | `scripts/x86-strand-census.sh`, awk over the LAST `[DISPATCH_STRAND_CENSUS:...]` snapshot |
+| consumer | `git show bfbb7575:scripts/x86-strand-census.sh`, awk over the whole log | `scripts/x86-strand-census.sh`, awk over the highest-`seq` `[DISPATCH_STRAND_CENSUS:...]` snapshot |
 | `threads_saved_blocked` | distinct TIDs with at least one save record anywhere in the log | ledger slots with `EVER_SAVED` at the instant of that snapshot |
 | `stranded` | ever-saved, not exited, last restore line before last save line | ever-saved, and neither `EXITED` nor `LAST_EVENT_RESTORED` at that instant |
-| exit codes | 0 for `stranded=0`, 1 for `stranded>0`, 2 for usage/IO error | 0 when the last snapshot says `stranded=0`, 1 when it says `stranded>0`, 2 when no usable snapshot exists |
-| where it is emitted from | the dispatch path, once per save and once per restore | `idle_thread_fn` and the loopback pump, at most once per second, plus 1 final snapshot at the last userspace exit |
+| exit codes | 0 for `stranded=0`, 1 for `stranded>0`, 2 for usage/IO error | 0 when the newest valid snapshot says `stranded=0`, 1 when it says `stranded>0`, 2 when there is no valid snapshot or the inputs mix two boots, 3 when the ledger overflowed so the snapshot is incomplete |
+| which snapshot decides | n/a (whole-log aggregate) | the one with the highest `seq`, so the reading does not depend on argument order |
+| where it is emitted from | the dispatch path, once per save and once per restore | `context_switch.rs::idle_loop()` and the loopback pump, at most once per second, plus 1 final snapshot at the last userspace exit |
+| which serial channel | COM2, the kernel log | COM2 (round 3, finding N8; round 2 used COM1) |
 
 The predicate is the same relation. What changed is *when an answer exists*
 and *what instant it describes*, and that is what the four cases below
@@ -206,75 +219,162 @@ through `run-x86-gate.sh 4 full` then `1 full` then `1 full`.
 census, of the same class that hit `case-a/historical-wedge` boot 7 at a
 different commit naming a different program.
 
+## Round 3 — the idle loop, measured
+
+<!-- claim-lint:ok: N1's repro counted 0 of 215 round-2 census markers preceded
+     by an idle-dispatch breadcrumb; the boot-level consequence is the
+     r3-idle-cadence capture in this same table. -->
+`serials/775/round3/`, 3 gate boots at this head, one QEMU at a time. Round-2
+finding N1 was that `report_heartbeat_if_due()` was called from `main.rs`'s
+`idle_thread_fn`, whose body is not dispatched on x86: `kernel_main_continue`
+stores it as `init_task`'s entry point and immediately marks that thread
+Running on the boot context, and once any thread reaches Ring 3
+`is_ring3_confirmed()` latches and `context_switch.rs` rewrites idle's frame to
+its own `idle_loop()`. The hook now sits at the TOP of `idle_loop`'s body —
+not after its `enable_and_hlt()`, because `setup_idle_return` restarts the
+function on every idle dispatch, so the code after the halt runs only when the
+halt returns without the timer handler switching away.
+
+| capture | emitters live | snapshots (COM2 / COM1) | gaps min/mean/max ms | census |
+|---|---|---:|---|---|
+| `round3/r3-head-green/` | idle loop + pump | 104 / 0 | 208 / 1342 / 27017 | `saved=11 stranded=0`, rc 0, GATE PASS |
+| `round3/r3-idle-cadence/` | idle loop only | 98 / 0 | 14 / 993 / 1190 | `saved=11 stranded=0`, rc 0, GATE PASS |
+| `round3/r3-idle-strand/` | idle loop only, + mutation E | 90 / 0 | 1001 / 1025 / 2004 | `saved=11 stranded=3`, rc 1, GATE FAIL |
+
+<!-- claim-lint:ok: each row is one committed capture under
+     docs/planning/green-program/sockets/serials/775/round3/ with its gate
+     transcript beside it. -->
+The N-to-0 column is finding N8 closed: the snapshot is on the kernel-log
+channel the removed records used, not on the interactive user console.
+
+`r3-idle-cadence` is the no-loopback-emission condition. Its
+`pump-heartbeat-disabled.patch` removes the single call in
+`kernel/src/net/loopback_pump.rs`, so 98 of its 98 snapshots come from the idle
+loop. Its first snapshot is at ms=43183, because the CPU does not idle while
+the userspace test programs are running; from there to the end of the capture
+at ms=139552 — 96 seconds — the largest gap between consecutive snapshots is
+1190 ms against a 1000 ms limiter. Under the round-2 wiring this capture would
+have carried 0 idle-driven snapshots.
+
+`r3-idle-strand` adds `case-a/deterministic-strand/mutation-E.patch` on top, so
+the strand is by construction and the pump still cannot emit. 90 of its 90
+snapshots read `stranded>0`; the newest one, at ms=139014, names threads 24
+(`loopback_wake_test`), 26 (`futex_handoff_oracle`) and 36
+(`loopback_wake_test_child_22_main`), and the gate fails on the strand arm with
+the round-3 wording:
+
+```
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and was
+still not restored at the latest census snapshot (see the strand census above)
+```
+
+That pair is what the N1 fix is for: a wedged boot with no loopback emission
+still published the ledger 90 times in 91 seconds and still named the threads.
+
 ## The production profile
 
-`serials/775/production/`. Two boots of
-`docker/qemu/run-x86-prod-profile-boot-test.sh` at head `365c20c2`, whose own
-build line passes no `--features` flag.
+`serials/775/production/` (round 2) and `serials/775/round3/r3-production/`
+(round 3). Boots of `docker/qemu/run-x86-prod-profile-boot-test.sh`, whose own
+build line passes no `--features` flag at all.
 
-Both printed, at line 249 of their transcripts:
-
-```
-PASS: x86 production profile reached steady state with the teardown census at rest
-```
-
-and both carry a snapshot on COM1. The last line of each, verbatim:
+**Round 2, 2 boots at `365c20c2`.** Both printed, at line 249 of their
+transcripts, `PASS: x86 production profile reached steady state with the
+teardown census at rest`, and both carried exactly 1 census marker, on COM1:
 
 ```
 [SW]<K>[SW]<K>[DISPATCH_STRAND_CENSUS:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
 ```
 
-`scripts/x86-strand-census.sh` reads them as `threads_saved_blocked=0
-stranded=0` over 2213 and 2459 lines, rc 0 on 2 of 2. Under round 1 this
-profile carried no marker and the census exited 2 (round-1 F6). The marker has
-to be the heartbeat: `grep -c 'USERSPACE TEST COMPLETE'` is 0 in both captures
-on both serials, and the completion snapshot only runs inside the block that
-prints that line.
+That is the last census-CARRYING line, not the last line of the capture: it is
+line 32 of a 152-line `serial_user.txt` (151 in boot 2), and about 120 lines of
+console output follow it (round-3 finding N12). It also precedes init: `Added
+thread 4 'init' to scheduler` is at line 519 of the same boot's COM2 capture.
+So `saved=0` on those boots was structural, and round 2's explanation for the
+single snapshot — that the boots had not run long enough — was wrong; each held
+steady state for at least 60 seconds (`boot1/gate.txt`: `console prompt count
+over 60s: 1 -> 2`). The real reason is round-3 finding N1: the only reachable
+emitter at that commit was the loopback pump, which blocks itself absent
+loopback traffic, and this profile carries 0 loopback packets.
 
-Each of the 2 boots admitted exactly 1 snapshot. That is census
-*availability*, which is what the prod gate needs; 2 boots at 1 snapshot each
-is not a measurement of steady-state cadence, and no measurement in this
-document bounds it.
+**Round 3, 5 boots at this head.** 5 of 5 printed the same PASS line and 5 of 5
+reported `1 -> 2`. Boot 1 carries 2 markers, both on COM2:
+
+```
+[DISPATCH_STRAND_CENSUS:seq=1:tick=4:ms=1033:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=2:tick=1370:ms=9356:saved=4:stranded=2:tids=4,10:tid_overflow=0:ledger_overflow=0]
+```
+
+`seq=1` is the pump's first pass again; `seq=2` is the idle loop, and it reads
+`saved=4` — real ledger state, taken after init exists, rather than round 2's
+pre-init reading. That is the N1 fix visible in the shipped kernel.
+
+What this profile does not give is a cadence, and the reason is measurable: the
+shipped kernel barely idles. Boot 1 has 1 `<I>` idle dispatch across 2028 `[SW]`
+context switches, so the newest snapshot is at 9356 ms of a boot that then ran
+for two more minutes. `scripts/x86-strand-census.sh` on that capture therefore
+exits 1, naming thread 4 (`init`) and thread 10 (`exec_smoke`) — both parked in
+a syscall at that instant, neither stranded. No in-repo consumer reads it that
+way: the production gate does not call `scripts/x86-gate-verdict.sh`, and the 3
+callers that do run on the test profile. The cadence measurement is
+`round3/r3-idle-cadence/`, below, not this directory.
 
 ## What the heartbeat costs
 
-Each snapshot is one `serial_println!`, so it costs its own text plus the
-newline that macro emits, on COM1 only. Measured on the committed head
-captures (`serials/775/head-green/`, commit `365c20c2`,
-`testing,external_test_bins`):
+Each snapshot is one line. Round 3 moves it from COM1 to COM2 (finding N8), so
+both sides of the trade are now on the same channel. Measured on the committed
+round-3 head capture (`serials/775/round3/r3-head-green/`,
+`testing,external_test_bins`, 150 s boot):
 
 | capture | snapshots | bytes added | capture bytes | share |
 |---|---:|---:|---:|---:|
-| `head-green/boot1/serial_user.txt` | 10 | 930 | 57936 | 1.61% |
-| `head-green/boot2/serial_user.txt` | 11 | 1051 | 54875 | 1.92% |
-| `head-green/boot1/serial_kernel.txt` | 0 | 0 | 335459 | 0% |
-| `head-green/boot2/serial_kernel.txt` | 0 | 0 | 330341 | 0% |
+| `round3/r3-head-green/serial_kernel.txt` | 104 | 11808 | 342907 | 3.44% |
+| `round3/r3-head-green/serial_user.txt` | 0 | 0 | 55458 | 0% |
 
-So about a kilobyte per boot, on COM1. Against it, the records this change
-removes ran 431 to 552 saves and an equal number of restores per boot on the
-same profile at the pre-removal commit (`case-d/boot{1..5}/serial_kernel.txt`),
-and the COM2 capture shrinks from 496992–543031 bytes there to 330341–335459
-bytes here. The net effect on serial volume is a reduction of about 165 to 210
-kilobytes per boot.
+Round 2's figures, for comparison, were 10 and 11 snapshots at 930 and 1051
+bytes on COM1 and 0 on COM2 (`head-green/`); the count went up because the
+heartbeat now runs from a context that actually executes.
+
+Against that, the records this change removes ran 431 to 631 saves per boot on
+the same profile at the pre-removal commit, over the 6 committed captures in
+`case-d/boot{1..6}/serial_kernel.txt`:
+
+| boot | saves | restores | COM2 bytes |
+|---:|---:|---:|---:|
+| 1 | 552 | 552 | 543031 |
+| 2 | 478 | 478 | 508320 |
+| 3 | 480 | 478 | 513649 |
+| 4 | 431 | 431 | 496992 |
+| 5 | 449 | 449 | 503034 |
+| 6 | 631 | 631 | 572581 |
+
+<!-- claim-lint:ok: the six rows above are the six committed case-d captures;
+     the command is `grep -c` over each serial_kernel.txt. -->
+Saves and restores are equal on 5 of the 6 — round 2 said "an equal number of
+restores", which boot 3 (480 saves, 478 restores) falsifies — and round 2's
+quoted ranges were computed over `boot{1..5}` while the directory holds six
+(round-3 finding N9). The COM2 capture shrinks from 496992–572581 bytes there
+to 342907 bytes here, a reduction of 154085 B (150.5 KiB / 154.1 kB) to
+229674 B (224.3 KiB / 229.7 kB) per boot, net of the 11808 bytes the snapshots
+add back.
 
 ### Why the serial lock is legal where it prints
 
 `report_heartbeat_if_due()` is called from exactly two places
 (`tests/dispatch_strand_census_structure.rs` pins both counts at 1):
-`idle_thread_fn` in `kernel/src/main.rs`, immediately after
-`enable_and_hlt()` returns, and `loopback_pump_fn`'s loop in
-`kernel/src/net/loopback_pump.rs`. Both are ordinary kernel-thread bodies, not
-the interrupt path and not the context-switch path — the two places
-`CLAUDE.md` forbids serial output in, and the two places the removed records
-lived.
+`idle_loop()` in `kernel/src/interrupts/context_switch.rs`, at the top of its
+loop body beside the reclaim and IRQ-log-flush housekeeping already there, and
+`loopback_pump_fn`'s loop in `kernel/src/net/loopback_pump.rs`. Neither is the
+interrupt path or the context-switch path — the two places `CLAUDE.md` forbids
+serial output in, and the two places the removed records lived. `idle_loop` is
+a plain function the dispatch path IRETQs into; it is not itself dispatch code.
 
 Three things make the emission safe there rather than merely conventional:
 
 1. The callee refuses to emit unless `crate::arch_interrupts_enabled()` is
    true, so it cannot print from a caller that arrived with interrupts masked
    even if a future call site is added in one.
-2. `serial::_print` samples the interrupt flag, disables interrupts, takes
-   `SERIAL1`, and re-enables only if the flag was set, so across its 1 lock
+2. `serial::_log_print` samples the interrupt flag, disables interrupts, takes
+   `SERIAL2`, and re-enables only if the flag was set, so across its 1 lock
    acquisition interrupts are masked. That closes the re-entrancy that
    deadlocks a logging path.
 3. The rate limiter is a single `AtomicU64` compare-exchange shared by both
@@ -287,16 +387,16 @@ lock, no allocation, no formatting, on the paths the removed records occupied.
 
 ## Builds and tests at the head
 
-The 4 transcripts under `serials/775/builds/x86-testing.txt` and its three
-siblings are at `365c20c2`. Each of the 3 build commands was forced to
+`serials/775/round3/builds/` holds the round-3 transcripts; `serials/775/builds/`
+holds round 2's, at `365c20c2`. Each of the 3 build commands was forced to
 recompile by touching `kernel/src/task/dispatch_strand_census.rs` first, so
 each transcript is a real compile rather than a cache hit.
 
-| command | result |
+| command | round-3 result |
 |---|---|
-| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | `Finished ... in 13.86s`, exit 0, 0 warning lines |
-| `cargo build --release --bin qemu-uefi` | `Finished ... in 13.53s`, exit 0, 0 warning lines |
-| `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | `Finished ... in 28.29s`, exit 0, 1 warning line |
+| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | `Finished ... in 20.76s`, exit 0, 0 lines matching `^(warning\|error)` |
+| `cargo build --release --bin qemu-uefi` | `Finished ... in 15.95s`, exit 0, 0 such lines |
+| `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | exit 0, 1 such line |
 
 <!-- claim-lint:ok: the aarch64 warning line names only the toolchain's own
      core package; the same established exception is recorded in
@@ -310,28 +410,65 @@ did not self-lock, so no `rustc --test` fallback was needed. 26 invocations,
 26 `exit=0`, 26 `test result: ok` lines, 502 passed, 0 failed, 0 lines
 matching `^(warning|error)`. Full output in `builds/structure-tests.txt`.
 
-## Narrowings this round did not close
+## Narrowings still open, and what round 3 closed
 
-- **A snapshot is an instant, not the boot.** Documented and measured in case
-  A leg 2. The `stranded` set on an unfinished boot can name a thread that a
-  later record shows resuming.
-- **Snapshot freshness is bounded by the guest's monotonic clock**, which is
-  what the one-second limiter counts. The committed captures carry 10 to 16
-  snapshots for boots the host timed out at 150 seconds; this round did not
-  measure the guest's monotonic-to-wall ratio, so the honest statement is that
-  the last snapshot is the newest reading the kernel published, not that it
-  describes the end of the capture.
-- **`ledger_overflow > 0` still exits 0.** The script prints
-  `kernel ledger overflowed (N event(s)); snapshot is incomplete` and then
-  exits on `stranded` alone, so an incomplete snapshot reading `stranded=0`
-  passes. That is the exit contract R125 specifies. Reaching it needs a TID at
+Closed this round: the multi-log reading is now order-independent and rejects
+two boots (F9/N5); each marker is validated and a malformed one is counted
+rather than discarding the reading (N6); an overflowed ledger exits 3 and can
+no longer be reported as clean (F21); the emitted sentence says "not restored
+as of the latest snapshot" rather than the overclaim round 2 printed (N4); the snapshot is
+back on COM2 (N8); the idle-side emitter runs (N1).
+
+Still open:
+
+- **A snapshot is an instant, not the boot.** Measured in case A leg 2, and
+  again in `round3/r3-production/`, where the newest snapshot names `init` and
+  `exec_smoke` as not-restored at 9356 ms of a boot that ran for two more
+  minutes. The predicate cannot tell a thread parked in a syscall from one
+  stranded in it; only the passage of time can, and only if a later snapshot
+  exists.
+- **Cadence depends on the CPU idling, and staleness is unbounded.** The
+  limiter caps emission at one per second; no mechanism sets a floor. Measured:
+  with the pump's heartbeat disabled, the idle loop alone held a maximum gap of
+  1190 ms across 98 snapshots on the test profile
+  (`round3/r3-idle-cadence/`), and 2004 ms across 90 on the wedged one
+  (`round3/r3-idle-strand/`) — but on the shipped profile, which barely idles,
+  boot 1 of `round3/r3-production/` published 2 snapshots 8323 ms apart and
+  then 0 more for the rest of the boot. A wedge that spins a CPU rather than
+  idling would do the same. The capture carries no end-of-boot timestamp, so
+  how stale the newest snapshot was when the boot ended is not derivable from
+  the log; what the census prints instead is the observed gaps.
+- **`ledger_overflow > 0` is now rc=3, and rc=3 is fall-through, not FAIL.**
+  `scripts/x86-gate-verdict.sh` reports `STRAND CENSUS INCOMPLETE ... NO usable
+  strand evidence in either direction` and continues to the ordered first-cause
+  checks, exactly as it does for rc=2. A boot whose ledger overflowed is
+  therefore judged by the other checks alone. Reaching the arm needs a TID at
   or above `LEDGER_CAPACITY` = 4096; saved-blocked populations in the captures
-  this document cites run 0 to 11, and of the 260 snapshots the committed
-  captures under `serials/775/` carry, 260 read `ledger_overflow=0` and 260
-  read `tid_overflow=0` (`grep -rho 'ledger_overflow=[0-9]*'`, `sort | uniq
-  -c`). No boot in this round exercised either overflow arm.
-- **Multi-log aggregation changed meaning** (round-1 F9). The old script
-  concatenated N logs and aggregated across them; the new one concatenates the
-  same N and reports the last snapshot found, so a multi-boot capture now
-  reads as its final boot rather than as a union. No in-repo caller passes
-  more than one boot's pair of files.
+  this document cites run 0 to 11. Of the 215 snapshots carried by the round-2
+  capture files (`find serials/775 -name 'serial_*.txt' | xargs grep -oh
+  DISPATCH_STRAND_CENSUS | wc -l`), 215 read `ledger_overflow=0` and 215 read
+  `tid_overflow=0`; of the 294 in the round-3 captures, 294 read both as 0.
+  Round 2 quoted 260 for that universal, which came from `grep -rho` over the
+  whole directory and so counted the READMEs, gate transcripts and census
+  outputs that echo the markers as well (round-3 finding N10).
+- **`drain_loopback_from_idle()` in `main.rs`'s `idle_thread_fn` is dead** for
+  the same reason the heartbeat was: that body is not dispatched. #775 does not
+  move it, because doing so changes loopback behaviour and is unrelated to the
+  census.
+- **The broad record removal is not shipped.** Removing the 22 non-`error` log
+  records from `kernel/src/interrupts/context_switch.rs` — the whole class, not
+  the 3 finding F15 names — was built and measured, and reddened the x86
+  production-profile gate:
+
+  | arm | boots | pass | fail | failure signatures |
+  |---|---:|---:|---:|---|
+  | `51d7468f`, the pre-round-3 head | 8 | 6 | 2 | `bsshd started != 1` (:1016) x2 |
+  | census on COM2 + idle hook, 33 of 33 records kept | 5 | 5 | 0 | — |
+  | + only the 3 records F15 names removed (this head) | 5 | 5 | 0 | — |
+  | + the 22 non-error records removed | 9 | 4 | 5 | prompt count 3 or 0 (:942/:952/:953) x4, `bsshd started != 1` x1 |
+
+  The prompt-count signature appears on 4 of 9 boots of the broad arm and on 0
+  of 13 boots of the other two, so this branch ships the narrow removal and
+  pins the surviving set as a census (30 records; 11 error, 9 trace, 8 info,
+  2 debug) in `tests/dispatch_strand_census_structure.rs`. The 5 boots of the
+  shipped arm are `round3/r3-production/gate-{1..5}.txt`.

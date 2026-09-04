@@ -1,0 +1,5 @@
+--- a/kernel/src/net/loopback_pump.rs
++++ b/kernel/src/net/loopback_pump.rs
+@@
+-        crate::task::report_dispatch_strand_census_heartbeat();
++        // SCRATCH: pump heartbeat disabled for the #775 round-3 N1 proof.

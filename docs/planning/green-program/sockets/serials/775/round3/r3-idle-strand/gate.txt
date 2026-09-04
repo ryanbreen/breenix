@@ -1,0 +1,16 @@
+[gate] repo: /root/breenix-775  head: 51d7468f
+[gate] accel=kvm cpu=host
+[gate] repointing rust-fork at /root/breenix/rust-fork-real (not committed)
+[gate] === Building userspace ELFs ===
+[gate] === Repacking the userspace test disk and the ext2 image ===
+[gate] === Building (release, features=testing,external_test_bins) ===
+[gate] Build clean (0 warnings) in 15s
+[gate] === Running 1 boot test(s), mode=full ===
+strand census: thread 24 (loopback_wake_test) saved blocked and not restored as of the latest snapshot (seq 90, tick 27880)
+strand census: thread 26 (futex_handoff_oracle) saved blocked and not restored as of the latest snapshot (seq 90, tick 27880)
+strand census: thread 36 (loopback_wake_test_child_22_main) saved blocked and not restored as of the latest snapshot (seq 90, tick 27880)
+strand census: latest snapshot seq=90 tick=27880 at 139014 ms; 90 valid snapshot(s), previous 1002 ms earlier, largest gap 2004 ms
+STRAND_CENSUS: threads_saved_blocked=11 stranded=3 lines=4853
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and was still not restored at the latest census snapshot (see the strand census above)
+  Test 1: FAIL (see /tmp/breenix_gate_1/serial_kernel.log)
+GATE: FAIL (0/1 passed, 1/1 failed; mode=full build=15s boot=151s total=177s)

@@ -1,0 +1,15 @@
+   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-775)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.13s
+     Running tests/dispatch_strand_census_structure.rs (target/debug/deps/dispatch_strand_census_structure-341e99c2348b0d88)
+
+running 6 tests
+test the_snapshot_is_emitted_on_the_kernel_log_channel ... ok
+test every_in_repo_caller_hands_the_census_the_kernel_serial ... ok
+test the_surviving_record_census_in_the_dispatch_path_is_pinned ... ok
+test dispatch_records_and_diagnostic_feature_are_gone ... ok
+test host_consumers_have_no_removed_record_dependency ... ok
+test replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
