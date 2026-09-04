@@ -27,25 +27,43 @@ done
 
 [[ -r "$ALLOWLIST_PATH" ]] || fail "allowlist is not readable: $ALLOWLIST_PATH"
 
-# Run the strand census first. A periodic kernel-thread snapshot can name a
-# saved-blocked thread even when that userspace thread never runs again. The
-# consumer judges the last snapshot because it contains the newest ledger
-# state and completion emits a final snapshot.
-# claim-lint:ok: #775 ruling R125 defines the periodic and final sources.
+# Run the strand census first. The kernel emits a ledger snapshot from the
+# scheduler's idle loop and from the loopback pump, at most once per second, so
+# a saved-blocked thread can be NAMED even when that userspace thread never runs
+# again. The consumer judges the highest-seq snapshot because it carries the
+# newest ledger state, and the completion path emits a final one.
+# claim-lint:ok: the 3 emission sites are pinned by
+# tests/dispatch_strand_census_structure.rs.
+#
+# The emission is rate-LIMITED, not guaranteed-periodic: the idle loop runs
+# whenever no thread is runnable, so a wedge that idles publishes at cadence,
+# while a wedge that spins a CPU can stop the cadence and leave the newest
+# snapshot stale. The census prints the observed gaps for that reason, and
+# reports what the snapshot supports -- "not restored as of the latest snapshot"
+# -- not "never restored".
+# claim-lint:ok: #775 ruling R134 defines the idle-loop and pump sources; the
+# cadence and its failure mode are measured in
+# docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
 #
 # No snapshot means the kernel never reached the heartbeat, or failed before
 # its first emission. That is census unavailability, not evidence of a strand:
 # continue so the existing ordered checks name the first observed cause. This
 # preserves run-x86-gate.sh's #702-vs-strand distinction.
 # claim-lint:ok: #775 ruling R125 defines rc=2 as census unavailable.
+#
+# rc=3 is an OVERFLOWED ledger: the snapshot is incomplete, so `stranded=0` in
+# it is not evidence of anything. It is reported loudly and treated as census
+# unavailability -- never as a clean census.
+# claim-lint:ok: #775 ruling R134 item 2 forbids passing on an overflowed ledger.
 strand_output=""
 strand_rc=0
 strand_output="$("$SCRIPT_DIR/x86-strand-census.sh" "$@" 2>&1)" || strand_rc=$?
 printf '%s\n' "$strand_output"
 case "$strand_rc" in
     0) ;;
-    1) fail "a thread was saved blocked in a kernel wait and never restored (see the strand census above)" ;;
+    1) fail "a thread was saved blocked in a kernel wait and was still not restored at the latest census snapshot (see the strand census above)" ;;
     2) echo "x86 userspace gate: census unavailable; continuing with ordered first-cause checks" ;;
+    3) echo "x86 userspace gate: STRAND CENSUS INCOMPLETE - the kernel ledger overflowed, so this boot has NO usable strand evidence in either direction; continuing with ordered first-cause checks" ;;
     *) fail "strand census returned unexpected status $strand_rc" ;;
 esac
 

@@ -211,15 +211,23 @@ for i in $(seq 1 "$COUNT"); do
   # The census is an ADDITIONAL requirement, not a short-circuit (review
   # finding B5). In full mode, x86-gate-verdict.sh runs UNCONDITIONALLY --
   # even when census_ok is already false -- because that script runs the
-  # strand census FIRST. A positive latest heartbeat names the stranded
-  # thread; an unavailable heartbeat is not strand evidence and the verdict
-  # continues to the existing ordered checks. That distinction preserves the
-  # reason #702's filing used threads_saved_blocked=0: a silent PCI-enumeration
-  # hang must not be folded into the strand family (#695). A short-circuit that
-  # skips the verdict script on census failure would remove that distinction
-  # from exactly the gate #702 lives on. Both consumers run on every boot,
-  # pass or fail.
-  # claim-lint:ok: #775 ruling R125 defines positive and unavailable census handling.
+  # strand census FIRST. A snapshot that still lists a saved-blocked thread
+  # names it; an unavailable snapshot, and an overflowed ledger, are not strand
+  # evidence in either direction and the verdict continues to the existing
+  # ordered checks. That distinction preserves the reason #702's filing used
+  # threads_saved_blocked=0: a silent PCI-enumeration hang must not be folded
+  # into the strand family (#695). A short-circuit that skips the verdict script
+  # on census failure would remove that distinction from exactly the gate #702
+  # lives on. Both consumers run on every boot, pass or fail.
+  # claim-lint:ok: #775 ruling R134 items 1-2; the boots behind the census and
+  # overflow arms are in docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md
+  #
+  # The snapshots are on COM2, so serial_kernel.log below is the argument that
+  # actually carries them (kernel/src/task/dispatch_strand_census.rs). The COM1
+  # capture is passed as well because the rest of this script's checks read it,
+  # and the census reads whichever argument the markers are in -- it selects by
+  # snapshot `seq`, not by argument order.
+  # claim-lint:ok: #775 ruling R134 defines the census input contract.
   if [ "$MODE" = "full" ]; then
     # EXPECTED_EXITS is mandatory for the verdict script; 10 is the count for
     # this profile's userspace program set.
