@@ -560,6 +560,12 @@ pub struct Thread {
     /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
     pub cached_ttbr0: u64,
+
+    /// Optional CPU target: `Some(cpu)` pins the thread; the empty state permits migration.
+    ///
+    /// Per-CPU kernel workers use this to keep their execution context aligned
+    /// with the per-CPU state they service.
+    pub cpu_affinity: Option<usize>,
 }
 
 impl Clone for Thread {
@@ -594,6 +600,7 @@ impl Clone for Thread {
             cpu_ticks_total: self.cpu_ticks_total,
             owner_pid: self.owner_pid,
             cached_ttbr0: self.cached_ttbr0,
+            cpu_affinity: self.cpu_affinity,
         }
     }
 }
@@ -704,6 +711,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            cpu_affinity: None,
         })
     }
 
@@ -768,6 +776,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            cpu_affinity: None,
         })
     }
 
@@ -819,6 +828,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            cpu_affinity: None,
         }
     }
 
@@ -869,6 +879,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            cpu_affinity: None,
         }
     }
 
@@ -932,6 +943,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            cpu_affinity: None,
         }
     }
 
@@ -990,6 +1002,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            cpu_affinity: None,
         }
     }
 
@@ -1067,6 +1080,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            cpu_affinity: None,
         }
     }
 
@@ -1113,6 +1127,7 @@ impl Thread {
             cpu_ticks_total: 0,
             owner_pid: None,
             cached_ttbr0: 0,
+            cpu_affinity: None,
         }
     }
 }

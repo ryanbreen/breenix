@@ -13,7 +13,36 @@ use crate::task::softirqd::{do_softirq, raise_softirq, register_softirq_handler,
 use crate::{arch_enable_interrupts, arch_halt};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+static ITERATION_COUNT: AtomicU32 = AtomicU32::new(0);
+static KSOFTIRQD_PROCESSED: AtomicBool = AtomicBool::new(false);
+const TARGET_ITERATIONS: u32 = 25;
+
+#[cfg(target_arch = "aarch64")]
 pub fn test_softirq() {
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    assert!(
+        online > 1,
+        "aarch64 softirq daemon test requires a schedulable secondary CPU"
+    );
+    let test_cpu = 1;
+    let handle =
+        crate::task::kthread::kthread_run_on_cpu(run_softirq_tests, "softirq-test/1", test_cpu)
+            .unwrap_or_else(|error| panic!("failed to spawn softirq test kthread: {:?}", error));
+    crate::task::kthread::kthread_join(&handle)
+        .unwrap_or_else(|error| panic!("failed to join softirq test kthread: {:?}", error));
+    crate::serial_println!(
+        "SOFTIRQ_TEST: iteration limit passed ({} total iterations, ksoftirqd/{})",
+        ITERATION_COUNT.load(Ordering::SeqCst),
+        test_cpu
+    );
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn test_softirq() {
+    run_softirq_tests();
+}
+
+fn run_softirq_tests() {
     static TIMER_HANDLER_CALLED: AtomicU32 = AtomicU32::new(0);
     static NET_RX_HANDLER_CALLED: AtomicU32 = AtomicU32::new(0);
 
@@ -144,15 +173,11 @@ pub fn test_softirq() {
     // A handler that re-raises itself will exceed MAX_SOFTIRQ_RESTART=10
     // After the limit, remaining work is deferred to ksoftirqd
     log::info!("SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...");
-    static ITERATION_COUNT: AtomicU32 = AtomicU32::new(0);
-    static KSOFTIRQD_PROCESSED: AtomicBool = AtomicBool::new(false);
-    const MAX_SOFTIRQ_RESTART: u32 = 10;
+    const MAX_SOFTIRQ_RESTART: u32 = crate::task::softirqd::MAX_SOFTIRQ_RESTART;
     // TARGET must exceed 2 * MAX_SOFTIRQ_RESTART to force ksoftirqd involvement:
     // - test's do_softirq(): 10 iterations, hits limit, wakes ksoftirqd
     // - timer's irq_exit do_softirq(): 10 more iterations, hits limit, wakes ksoftirqd
     // - ksoftirqd finally runs and processes remaining iterations
-    const TARGET_ITERATIONS: u32 = 25;
-
     ITERATION_COUNT.store(0, Ordering::SeqCst);
     KSOFTIRQD_PROCESSED.store(false, Ordering::SeqCst);
 
@@ -178,11 +203,17 @@ pub fn test_softirq() {
         }
     });
 
-    raise_softirq(SoftirqType::Tasklet);
-    do_softirq();
+    // Measure only this bounded call. Once ksoftirqd is correctly local and
+    // runnable, it may finish the workload immediately after do_softirq returns;
+    // masking IRQs through the snapshot keeps that valid concurrency from being
+    // attributed to the bounded call itself.
+    let count_after_dosoftirq = crate::arch_without_interrupts(|| {
+        raise_softirq(SoftirqType::Tasklet);
+        do_softirq();
+        ITERATION_COUNT.load(Ordering::SeqCst)
+    });
 
-    // After do_softirq() returns at iteration limit, some iterations should be done
-    let count_after_dosoftirq = ITERATION_COUNT.load(Ordering::SeqCst);
+    // The directly invoked do_softirq() must stop at the iteration limit.
     assert!(
         count_after_dosoftirq <= MAX_SOFTIRQ_RESTART,
         "do_softirq() should stop at iteration limit: got {}, expected <= {}",

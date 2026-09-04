@@ -15,11 +15,12 @@
 
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use spin::Mutex;
+use spin::Once;
 
 use super::kthread::{
-    kthread_park, kthread_run, kthread_should_stop, kthread_unpark, KthreadHandle,
+    kthread_park, kthread_run_on_cpu, kthread_should_stop, kthread_unpark, KthreadHandle,
 };
+use super::scheduler::MAX_CPUS;
 use crate::per_cpu;
 
 /// Architecture-specific enable interrupts
@@ -34,7 +35,7 @@ unsafe fn arch_enable_interrupts() {
 
 /// Maximum number of softirq restarts before deferring to ksoftirqd
 /// Linux uses 10, we match that
-const MAX_SOFTIRQ_RESTART: u32 = 10;
+pub(crate) const MAX_SOFTIRQ_RESTART: u32 = 10;
 
 /// Maximum number of softirq types (matches Linux)
 pub const NR_SOFTIRQS: usize = 10;
@@ -109,8 +110,9 @@ static SOFTIRQ_HANDLERS: [AtomicPtr<()>; NR_SOFTIRQS] = [
     AtomicPtr::new(core::ptr::null_mut()),
 ];
 
-/// Per-CPU ksoftirqd handle (single CPU for now)
-static KSOFTIRQD: Mutex<Option<KthreadHandle>> = Mutex::new(None);
+/// Per-CPU ksoftirqd handles. `Once::get` reads the published state without the
+/// mutex previously shared by IRQ-exit and thread context.
+static KSOFTIRQD: [Once<KthreadHandle>; MAX_CPUS] = [const { Once::new() }; MAX_CPUS];
 
 /// Flag indicating softirq system is initialized
 static SOFTIRQ_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -119,7 +121,39 @@ static SOFTIRQ_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Returns None if softirq system is not initialized
 #[allow(dead_code)] // Part of public softirq API surface
 pub fn ksoftirqd_tid() -> Option<u64> {
-    KSOFTIRQD.lock().as_ref().map(|h| h.tid())
+    ksoftirqd_tid_for_cpu(current_cpu_id())
+}
+
+/// Get the ksoftirqd thread ID for a specific CPU.
+pub fn ksoftirqd_tid_for_cpu(cpu: usize) -> Option<u64> {
+    KSOFTIRQD
+        .get(cpu)
+        .and_then(Once::get)
+        .map(KthreadHandle::tid)
+}
+
+#[inline(always)]
+fn current_cpu_id() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
+    }
+}
+
+#[inline(always)]
+fn online_cpu_count() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        (crate::arch_impl::aarch64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        MAX_CPUS
+    }
 }
 
 /// Register a softirq handler
@@ -233,15 +267,16 @@ pub fn do_softirq() -> bool {
 
 /// Wake up ksoftirqd to process remaining softirqs
 fn wakeup_ksoftirqd() {
-    if let Some(ref handle) = *KSOFTIRQD.lock() {
+    let cpu = current_cpu_id();
+    if let Some(handle) = KSOFTIRQD[cpu].get() {
         kthread_unpark(handle);
     }
 }
 
 /// ksoftirqd kernel thread function
 /// Processes softirqs that were deferred due to high load
-fn ksoftirqd_fn() {
-    log::info!("KSOFTIRQD_SPAWN: ksoftirqd/0 started");
+fn ksoftirqd_fn(cpu: usize) {
+    log::info!("KSOFTIRQD_SPAWN: ksoftirqd/{} started", cpu);
 
     // Enable interrupts so timer can preempt us and switch to other threads
     unsafe {
@@ -298,18 +333,31 @@ pub fn init_softirq() {
 
     log::info!("SOFTIRQ_INIT: Initializing softirq subsystem");
 
-    // Spawn ksoftirqd thread
-    match kthread_run(ksoftirqd_fn, "ksoftirqd/0") {
-        Ok(handle) => {
-            *KSOFTIRQD.lock() = Some(handle);
-            log::info!("SOFTIRQ_INIT: ksoftirqd spawned successfully");
-        }
-        Err(e) => {
-            log::error!("SOFTIRQ_INIT: Failed to spawn ksoftirqd: {:?}", e);
-        }
-    }
+    init_online_ksoftirqds();
 
     log::info!("SOFTIRQ_INIT: Softirq subsystem initialized");
+}
+
+/// Populate pinned daemon slots over the currently online CPU range.
+///
+/// AArch64 initializes the subsystem while CPU 0 is still alone, then calls
+/// this again after SMP bring-up to add the secondary-CPU instances.
+pub fn init_online_ksoftirqds() {
+    for cpu in 0..online_cpu_count() {
+        if KSOFTIRQD[cpu].get().is_some() {
+            continue;
+        }
+        let name = alloc::format!("ksoftirqd/{}", cpu);
+        match kthread_run_on_cpu(move || ksoftirqd_fn(cpu), &name, cpu) {
+            Ok(handle) => {
+                KSOFTIRQD[cpu].call_once(|| handle);
+                log::info!("SOFTIRQ_INIT: ksoftirqd/{} spawned successfully", cpu);
+            }
+            Err(e) => {
+                log::error!("SOFTIRQ_INIT: Failed to spawn ksoftirqd/{}: {:?}", cpu, e);
+            }
+        }
+    }
 }
 
 /// Shutdown the softirq subsystem
@@ -321,10 +369,13 @@ pub fn shutdown_softirq() {
 
     log::info!("Shutting down softirq subsystem");
 
-    // Stop ksoftirqd
-    if let Some(handle) = KSOFTIRQD.lock().take() {
-        let _ = super::kthread::kthread_stop(&handle);
-        let _ = super::kthread::kthread_join(&handle);
+    // Stop the published ksoftirqd instances. The subsystem is boot-lifetime;
+    // these `Once` slots deliberately cannot be republished after shutdown.
+    for handle in KSOFTIRQD.iter().filter_map(Once::get) {
+        let _ = super::kthread::kthread_stop(handle);
+    }
+    for handle in KSOFTIRQD.iter().filter_map(Once::get) {
+        let _ = super::kthread::kthread_join(handle);
     }
 
     SOFTIRQ_INITIALIZED.store(false, Ordering::Release);

@@ -1232,6 +1232,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         );
     }
 
+    // Softirq initialization ran while CPU 0 was alone. Add one pinned daemon
+    // for each secondary CPU now that its scheduler and per-CPU state are live.
+    kernel::task::softirqd::init_online_ksoftirqds();
+
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]

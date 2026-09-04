@@ -340,6 +340,25 @@ fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> 
     Some(guard)
 }
 
+/// Keep a CPU-affine production thread on the queue for its owning CPU when a
+/// peer attempts to steal or reclaim it.
+fn retain_cpu_affine_thread(
+    threads: &[Box<Thread>],
+    queue: &mut VecDeque<u64>,
+    thread_id: u64,
+    current_cpu: usize,
+) -> bool {
+    let target_cpu = threads
+        .iter()
+        .find(|thread| thread.id() == thread_id)
+        .and_then(|thread| thread.cpu_affinity);
+    if target_cpu.is_none() || target_cpu == Some(current_cpu) {
+        return false;
+    }
+    queue.push_back(thread_id);
+    true
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 fn retain_cpu_affine_test_thread(
     queue: &mut VecDeque<u64>,
@@ -1518,6 +1537,14 @@ impl Scheduler {
                 let Some(thread_id) = self.per_cpu_queues[cpu].pop_front() else {
                     break;
                 };
+                if retain_cpu_affine_thread(
+                    &self.threads,
+                    &mut self.per_cpu_queues[cpu],
+                    thread_id,
+                    current_cpu,
+                ) {
+                    continue;
+                }
                 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                 if retain_cpu_affine_test_thread(
                     &mut self.per_cpu_queues[cpu],
@@ -1580,9 +1607,13 @@ impl Scheduler {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
+        let cpu_affinity = thread.cpu_affinity;
         self.threads.push(thread);
-        // Route to least-loaded CPU queue (or current CPU if tied).
-        let target = self.least_loaded_cpu();
+        // CPU-local workers retain their requested queue. Migratable work uses
+        // the least-loaded online CPU (or current CPU if tied).
+        let target = cpu_affinity
+            .filter(|cpu| *cpu < self.online_cpu_count())
+            .unwrap_or_else(|| self.least_loaded_cpu());
         if front {
             self.per_cpu_queues[target].push_front(thread_id);
         } else {
@@ -1901,6 +1932,14 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
                         break;
                     };
+                    if retain_cpu_affine_thread(
+                        &self.threads,
+                        &mut self.per_cpu_queues[steal_cpu],
+                        n,
+                        current_cpu,
+                    ) {
+                        continue;
+                    }
                     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                     if retain_cpu_affine_test_thread(
                         &mut self.per_cpu_queues[steal_cpu],
@@ -1966,6 +2005,14 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            if retain_cpu_affine_thread(
+                                &self.threads,
+                                &mut self.per_cpu_queues[steal_cpu],
+                                n,
+                                current_cpu,
+                            ) {
+                                continue;
+                            }
                             #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                             if retain_cpu_affine_test_thread(
                                 &mut self.per_cpu_queues[steal_cpu],
@@ -2393,6 +2440,14 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
                         break;
                     };
+                    if retain_cpu_affine_thread(
+                        &self.threads,
+                        &mut self.per_cpu_queues[steal_cpu],
+                        n,
+                        current_cpu,
+                    ) {
+                        continue;
+                    }
                     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                     if retain_cpu_affine_test_thread(
                         &mut self.per_cpu_queues[steal_cpu],
@@ -2457,6 +2512,14 @@ impl Scheduler {
                             continue;
                         }
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            if retain_cpu_affine_thread(
+                                &self.threads,
+                                &mut self.per_cpu_queues[steal_cpu],
+                                n,
+                                current_cpu,
+                            ) {
+                                continue;
+                            }
                             #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                             if retain_cpu_affine_test_thread(
                                 &mut self.per_cpu_queues[steal_cpu],
@@ -3862,6 +3925,11 @@ impl Scheduler {
     /// Used by wakeup paths for cache-affinity routing.
     fn find_target_cpu_for_wakeup(&self, tid: u64) -> usize {
         let current_cpu = Self::current_cpu_id();
+        if let Some(target) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
+            if target < self.online_cpu_count() {
+                return target;
+            }
+        }
         // If the thread is still "current" on a CPU, use that CPU (affinity).
         for cpu in 0..MAX_CPUS {
             if self.cpu_state[cpu].current_thread == Some(tid) {
@@ -4247,6 +4315,32 @@ pub fn spawn(thread: Box<Thread>) {
             }
         } else {
             panic!("Scheduler not initialized");
+        }
+    });
+}
+
+/// Add a production thread that must remain on `cpu`.
+pub(crate) fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
+    note_scheduler_publication();
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        let scheduler = scheduler_lock
+            .as_mut()
+            .expect("scheduler not initialized for CPU-affine spawn");
+        assert!(
+            cpu < scheduler.online_cpu_count(),
+            "CPU-affine spawn target {} is offline",
+            cpu
+        );
+        thread.cpu_affinity = Some(cpu);
+        scheduler.add_thread(thread);
+        NEED_RESCHED.store(true, Ordering::Relaxed);
+        #[cfg(target_arch = "x86_64")]
+        crate::per_cpu::set_need_resched(true);
+        #[cfg(target_arch = "aarch64")]
+        {
+            crate::per_cpu_aarch64::set_need_resched(true);
+            scheduler.send_resched_ipi_to_cpu(cpu);
         }
     });
 }

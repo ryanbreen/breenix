@@ -1386,6 +1386,7 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
+            cpu_affinity: None,
         };
 
         Ok(thread)
@@ -1464,6 +1465,7 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
+            cpu_affinity: None,
         };
 
         Ok(thread)
@@ -1541,6 +1543,7 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
+            cpu_affinity: None,
         };
 
         Ok(thread)
@@ -1624,6 +1627,7 @@ impl ProcessManager {
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
             cached_ttbr0: 0,
+            cpu_affinity: None,
         };
 
         Ok(thread)
