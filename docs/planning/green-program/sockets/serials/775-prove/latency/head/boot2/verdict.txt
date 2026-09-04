@@ -1,0 +1,4 @@
+strand census: latest snapshot seq=31 tick=10356 at 51674 ms; 31 valid snapshot(s), previous 815 ms earlier, largest gap 18830 ms
+strand census: age at the completion marker: 186 ms (newest cadence snapshot seq=29 at 50673 ms, completion snapshot seq=30 at 50859 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=4892
+x86 userspace gate: PASS - exited=22 expected>=10 nonzero=0 allowlist=0
