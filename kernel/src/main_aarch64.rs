@@ -177,13 +177,11 @@ fn launch_init_from_elf(
         }
     };
 
-    // Re-enable preemption now that the boot sequence is complete.
-    // It was disabled in kernel_main after per-CPU init to prevent the scheduler
-    // from context-switching the boot CPU away from its boot stack (which would
-    // leave the boot CPU stuck in idle_loop_arm64 and never return here).
-    // From this point on, the init thread is being set as CPU 0's current thread,
-    // and the scheduler can run normally.
-    kernel::per_cpu_aarch64::preempt_enable();
+    // No preempt_enable here. The boot pin taken after per-CPU init is
+    // released by kernel_main at the boot-continuation handoff, and this
+    // function now runs on that continuation kthread rather than on CPU 0's
+    // idle identity -- so the count this would decrement is another CPU's,
+    // and decrementing it here underflows it.
 
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(init_thread);
@@ -1236,6 +1234,58 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // for each secondary CPU now that its scheduler and per-CPU state are live.
     kernel::task::softirqd::init_online_ksoftirqds();
 
+    // Everything the boot sequence has left -- the kthread/workqueue/softirq
+    // self-tests, the boot-test batteries, the ext2 test-binary loader and the
+    // init launch -- waits: on other kthreads, on IRQ-driven VirtIO
+    // completions, on the ext2 lock. None of it may run on THIS identity.
+    // init_scheduler above turned the boot context into CPU 0's idle task, and
+    // the aarch64 dispatch path deliberately resets an idle thread to
+    // idle_loop_arm64 rather than resuming a saved kernel continuation, so a
+    // block taken here abandons the boot stack -- that is #761.
+    //
+    // So the boot sequence continues in one kernel thread: a genuine
+    // schedulable identity the scheduler hands a continuation back to, which
+    // may join, block and sleep like any other. This identity then does the
+    // only thing an idle identity may do -- idle. It joins nothing.
+    let boot_continuation_thread = kernel::task::kthread::kthread_run(
+        move || boot_continuation(device_count, init_elf),
+        "kboot",
+    )
+    .unwrap_or_else(|error| panic!("failed to spawn the boot continuation: {:?}", error));
+    serial_println!(
+        "[boot] Boot continuation running as kthread tid={}",
+        boot_continuation_thread.tid()
+    );
+
+    // Release the boot pin taken right after per-CPU init. It existed to keep
+    // the boot sequence on its own stack across a timer tick; the boot sequence
+    // is a schedulable thread now, and CPU 0 has to be preemptible for the
+    // scheduler to dispatch that thread at all.
+    kernel::per_cpu_aarch64::preempt_enable();
+    unsafe {
+        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
+    }
+
+    loop {
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
+        kernel::net::drain_loopback_from_idle();
+    }
+}
+
+/// The boot sequence from the point the scheduler, timer and secondary CPUs
+/// are all live, running as one kernel thread rather than on CPU 0's idle
+/// identity.
+///
+/// Everything here is allowed to block: the kthread self-tests join their
+/// workers, Test 7's daemon phase joins its CPU-pinned kthread, the ext2
+/// loader sleeps on IRQ-driven VirtIO completions, and the init launch hands
+/// its CPU to userspace. kernel_main can do none of that -- it is CPU 0's idle
+/// task, and #761 is what happens when it tries -- so it spawns this and idles.
+#[cfg(target_arch = "aarch64")]
+#[cfg_attr(feature = "kthread_test_only", allow(unreachable_code))]
+fn boot_continuation(device_count: usize, init_elf: Option<alloc::vec::Vec<u8>>) {
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]
@@ -1366,53 +1416,32 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "testing")]
     if device_count > 0 {
         serial_println!("[test] Loading test binaries from ext2...");
-        // Unmask the boot CPU before the loader runs anywhere else. The
-        // preceding kthread/workqueue self-tests return with IRQs masked on
-        // this CPU, and the VirtIO block interrupt is an SPI the GIC targets
-        // here: with the loader on the boot CPU that did not matter, because
-        // the loader unmasked the CPU it was already running on. Now that the
-        // loader runs in a kernel thread, a masked boot CPU leaves the block
-        // completion pending forever -- measured, before this line existed, as
-        // "Block MMIO read timeout" on the first inode read and then a wedged
-        // request gate for every read after it (0 of 78 binaries resolved).
+        // Undo the self-tests' deliberate IRQ mask before any ext2 I/O: the
+        // preceding kthread and workqueue self-tests return with IRQs masked,
+        // and the loader waits on an IRQ-published VirtIO completion.
         unsafe {
             kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
         }
-        // The loader waits on IRQ-driven VirtIO completions and on the ext2
-        // lock, so it must not run as the boot CPU's idle identity: blocking
-        // that identity abandons its continuation, which is #761. It runs in a
-        // kernel thread instead -- a genuine schedulable identity the scheduler
-        // can hand a continuation back to -- spawned here, after the scheduler
-        // is live, and joined from boot the same way the softirq daemon phase
-        // is. The boot CPU keeps the preemption pin documented at the
-        // `preempt_disable()` in kernel_main; what remains on it is the join's
-        // bounded halt loop, which enters no blocking primitive.
-        let loader = kernel::task::kthread::kthread_run(
-            load_test_binaries_from_ext2,
-            "test-binary-loader",
-        )
-        .unwrap_or_else(|error| panic!("failed to spawn the test binary loader: {:?}", error));
-        kernel::task::kthread::kthread_join(&loader)
-            .unwrap_or_else(|error| panic!("failed to join the test binary loader: {:?}", error));
+        // The loader sleeps on IRQ-driven VirtIO completions and on the ext2
+        // lock. It runs directly on this identity because this identity is a
+        // kernel thread -- the scheduler can take it away and hand its
+        // continuation back. It needs no kthread of its own, and this thread
+        // joins nothing to wait for it.
+        load_test_binaries_from_ext2();
         serial_println!("[test] Test processes loaded - will run via timer interrupts");
+        // The boot stage this marker names is CPU 0's: this thread is about
+        // to exit, and CPU 0's idle identity is the scheduler idle loop.
         serial_println!("[test] Entering scheduler idle loop");
-        // The loader enabled interrupts for VirtIO completion. The boot CPU's
-        // preemption pin still keeps this continuation resident until the
-        // scheduler idle loop below.
         // The prompt signals to the test harness that boot is complete.
         serial_print!("breenix> ");
-        // Keep interrupts enabled; the scheduler dispatches test processes via
-        // timer after the boot preemption pin is released by the idle path.
         unsafe {
             kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
         }
         kernel::task::scheduler::finish_test_binary_staging();
-        loop {
-            unsafe {
-                core::arch::asm!("wfi", options(nomem, nostack));
-            }
-            kernel::net::drain_loopback_from_idle();
-        }
+        // The catalog is published and dispatching. This thread has nothing
+        // left to do, so it exits and is reaped; CPU 0's idle identity does
+        // the idling.
+        return;
     }
 
     // Launch userspace init from the pre-loaded ELF (read before SMP bring-up).
@@ -1474,17 +1503,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
-    // No userspace init loaded — idle the kernel.
-    // With the kernel shell removed, there's nothing to do here except
-    // keep the kernel alive so interrupt-driven subsystems (timer, scheduler)
-    // continue running.
+    // No userspace init loaded. Nothing is left for this thread to do, so it
+    // exits and is reaped; CPU 0's idle identity keeps the kernel alive for
+    // the interrupt-driven subsystems.
     serial_println!("[interactive] No userspace init — idling");
-    loop {
-        unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack));
-        }
-        kernel::net::drain_loopback_from_idle();
-    }
 }
 
 /// Load test binaries from ext2 filesystem and create userspace processes.
@@ -1607,10 +1629,11 @@ fn load_test_binaries_from_ext2() {
         loaded_images.push((name, elf_data));
     }
 
-    // The ext2 read phase is complete. Stage the runnable batch on CPU 0 so
-    // secondary CPUs cannot observe a partial catalog or interleave the loader's
-    // status markers. The caller releases the batch after printing its completion
-    // marker.
+    // The ext2 read phase is complete. Stage the runnable batch on this
+    // thread's own CPU, which begin_test_binary_staging holds non-dispatching,
+    // so no CPU can observe a partial catalog or interleave the loader's status
+    // markers. The caller releases the batch, and the pin, after printing its
+    // completion marker.
     kernel::task::scheduler::begin_test_binary_staging();
     for (name, elf_data) in loaded_images {
         // Create userspace process (adds to scheduler ready queue)

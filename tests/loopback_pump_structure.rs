@@ -543,24 +543,38 @@ fn validate_general_idle_loops_drain_loopback(
         return Err("x86 idle_thread_fn does not use the idle drain seam".to_string());
     }
 
-    for (anchor, description) in [
-        (
-            r#"serial_print!("breenix> ");"#,
-            "aarch64 testing boot-thread idle loop",
-        ),
-        (
-            r#"serial_println!("[interactive] No userspace init — idling");"#,
-            "aarch64 no-userspace boot-thread idle loop",
-        ),
-    ] {
-        let body = loop_body_after_anchor(aarch64_source, anchor)
-            .ok_or_else(|| format!("missing {description}"))?;
+    // A census, not two anchors. Round 3 replaced the aarch64 boot thread's two
+    // wfi idle loops with one, so anchored lookups either miss or silently
+    // match a later loop. Every wfi loop in main_aarch64.rs that the kernel can
+    // reach while it is still running has to drain loopback; the ones that
+    // follow an exit_qemu, and the panic handler's, are termination spins.
+    let mask = code_mask(aarch64_source);
+    let mut censused = 0usize;
+    for at in identifier_offsets(aarch64_source, &mask, "loop") {
+        let Some(body) = braced_block(aarch64_source, &mask, at + 4) else {
+            continue;
+        };
         if !body.contains(r#"core::arch::asm!("wfi", options(nomem, nostack))"#) {
-            return Err(format!("{description} is not a wfi loop"));
+            continue;
         }
+        let head = &aarch64_source[..at];
+        let enclosing = head.rfind("fn ").unwrap_or(0);
+        let exited = head.rfind("exit_qemu(").unwrap_or(0);
+        let in_panic_handler = aarch64_source[enclosing..].starts_with("fn panic(");
+        if exited > enclosing || in_panic_handler {
+            continue;
+        }
+        censused += 1;
         if !has_identifier(body, "drain_loopback_from_idle") {
-            return Err(format!("{description} does not use the idle drain seam"));
+            return Err(format!(
+                "an aarch64 wfi idle loop at byte {at} does not use the idle drain seam"
+            ));
         }
+    }
+    if censused < 2 {
+        return Err(format!(
+            "the aarch64 idle-loop census found {censused} loops, expected at least 2"
+        ));
     }
     Ok(())
 }
@@ -1305,13 +1319,16 @@ fn general_idle_loop_validator_rejects_missing_x86_drain() {
     assert!(validate_general_idle_loops_drain_loopback(&mutated, &aarch64_source).is_err());
 }
 
+
 #[test]
-fn general_idle_loop_validator_rejects_missing_aarch64_testing_drain() {
+fn general_idle_loop_validator_rejects_missing_aarch64_boot_identity_drain() {
+    // The censused loop in kernel_main: CPU 0's idle identity, after the boot
+    // sequence has been handed to a kernel thread.
     let x86_source = repo_text("kernel/src/main.rs");
     let aarch64_source = repo_text("kernel/src/main_aarch64.rs");
     let mutated = remove_call_from_loop_after_anchor(
         &aarch64_source,
-        r#"serial_print!("breenix> ");"#,
+        "kernel::per_cpu_aarch64::preempt_enable();",
         "kernel::net::drain_loopback_from_idle();",
     )
     .expect("fixture mutation must apply");
@@ -1319,12 +1336,13 @@ fn general_idle_loop_validator_rejects_missing_aarch64_testing_drain() {
 }
 
 #[test]
-fn general_idle_loop_validator_rejects_missing_aarch64_no_userspace_drain() {
+fn general_idle_loop_validator_rejects_missing_aarch64_idle_thread_drain() {
+    // The other censused loop: the aarch64 idle_thread_fn body.
     let x86_source = repo_text("kernel/src/main.rs");
     let aarch64_source = repo_text("kernel/src/main_aarch64.rs");
     let mutated = remove_call_from_loop_after_anchor(
         &aarch64_source,
-        r#"serial_println!("[interactive] No userspace init — idling");"#,
+        "fn idle_thread_fn()",
         "kernel::net::drain_loopback_from_idle();",
     )
     .expect("fixture mutation must apply");

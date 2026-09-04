@@ -327,10 +327,18 @@ fn arch_can_dispatch_here() -> bool {
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 /// While the aarch64 testing-profile loader publishes its process batch, keep
-/// new user threads on the non-preemptible boot CPU. This leaves IRQs available
-/// for VirtIO without allowing a secondary CPU to run a partial test catalog.
+/// new user threads on the CPU the loader is running on, which the loader has
+/// made non-dispatching for the duration. This leaves IRQs available for
+/// VirtIO without allowing any CPU to run a partial test catalog.
 #[cfg(all(target_arch = "aarch64", feature = "testing"))]
 static TEST_BINARY_STAGING: AtomicBool = AtomicBool::new(false);
+
+/// The CPU the staging window is pinned to: whichever CPU called
+/// begin_test_binary_staging, held non-dispatching by that call's preempt
+/// pin until finish_test_binary_staging releases it.
+#[cfg(all(target_arch = "aarch64", feature = "testing"))]
+static TEST_BINARY_STAGING_CPU: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 
 #[inline(always)]
 fn lock_scheduler() -> spin::MutexGuard<'static, Option<Scheduler>> {
@@ -1724,7 +1732,9 @@ impl Scheduler {
         let thread = {
             let mut staged_thread = thread;
             if is_user && TEST_BINARY_STAGING.load(Ordering::Acquire) {
-                staged_thread.cpu_affinity = Some(super::thread::CpuPin::hold_pen(0));
+                staged_thread.cpu_affinity = Some(super::thread::CpuPin::hold_pen(
+                    TEST_BINARY_STAGING_CPU.load(Ordering::Acquire),
+                ));
             }
             staged_thread
         };
@@ -4576,10 +4586,19 @@ pub fn spawn(thread: Box<Thread>) {
     });
 }
 
-/// Stage aarch64 testing-profile user threads on CPU 0 until the complete
-/// catalog has been published and its loader markers have reached serial.
+/// Stage aarch64 testing-profile user threads until the complete catalog has
+/// been published and its loader markers have reached serial.
+///
+/// The hold is the caller's own CPU made non-dispatching: the loader runs on a
+/// kernel thread now, not on the boot CPU's permanently pinned idle identity,
+/// so the window has to carry its own preempt pin instead of borrowing one.
+/// The pin also fixes the staging CPU for the duration -- the caller cannot
+/// migrate while preemption is off, so the CPU recorded here is the CPU that
+/// releases it.
 #[cfg(all(target_arch = "aarch64", feature = "testing"))]
 pub fn begin_test_binary_staging() {
+    crate::per_cpu_aarch64::preempt_disable();
+    TEST_BINARY_STAGING_CPU.store(Scheduler::current_cpu_id(), Ordering::Release);
     assert!(
         TEST_BINARY_STAGING
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -4588,19 +4607,30 @@ pub fn begin_test_binary_staging() {
     );
 }
 
-/// Release the complete testing-profile process batch for SMP dispatch.
+/// Release the complete testing-profile process batch for SMP dispatch, and
+/// with it the staging CPU's preempt pin.
 #[cfg(all(target_arch = "aarch64", feature = "testing"))]
 pub fn finish_test_binary_staging() {
-    TEST_BINARY_STAGING.store(false, Ordering::Release);
+    if TEST_BINARY_STAGING
+        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        // Staging never opened -- the loader returned before it published a
+        // batch. There is no pin to release and nothing to unpin, and calling
+        // preempt_enable here would underflow this CPU's count.
+        return;
+    }
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         let scheduler = scheduler_lock
             .as_mut()
             .expect("scheduler not initialized for test binary release");
         for thread in scheduler.threads.iter_mut() {
-            if thread.privilege == super::thread::ThreadPrivilege::User
-                && thread.cpu_affinity == Some(super::thread::CpuPin::hold_pen(0))
-            {
+            let held = matches!(
+                thread.cpu_affinity,
+                Some(pin) if !pin.per_cpu_worker
+            );
+            if thread.privilege == super::thread::ThreadPrivilege::User && held {
                 thread.cpu_affinity = None;
             }
         }
@@ -4608,6 +4638,7 @@ pub fn finish_test_binary_staging() {
         crate::per_cpu_aarch64::set_need_resched(true);
         scheduler.send_resched_ipi();
     });
+    crate::per_cpu_aarch64::preempt_enable();
 }
 
 /// Add a production thread that must remain on `cpu`.

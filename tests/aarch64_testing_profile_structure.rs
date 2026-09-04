@@ -123,21 +123,29 @@ fn softirq_handler_reads_its_identity_without_the_scheduler_lock() {
 }
 
 #[test]
-fn the_testing_loader_runs_in_a_kernel_thread() {
+fn the_boot_sequence_runs_in_a_kernel_thread_and_the_loader_with_it() {
     let main = repo_text("kernel/src/main_aarch64.rs");
-    let launch = main
-        .find("load_test_binaries_from_ext2,")
-        .expect("the loader is handed to a kthread");
-    let spawn = main
-        .find("kernel::task::kthread::kthread_run(")
-        .expect("the loader kthread is spawned");
-    let join = main
-        .find("kernel::task::kthread::kthread_join(&loader)")
-        .expect("boot joins the loader kthread");
+    let entry = function_body(&main, "kernel_main");
+    let body = function_body(&main, "boot_continuation");
     assert!(
-        spawn < launch && launch < join,
-        "the loader must be spawned as a kernel thread and joined, not called on the boot identity"
+        entry.contains("kthread_run(") && entry.contains("boot_continuation("),
+        "kernel_main must hand the rest of the boot sequence to a kernel thread"
     );
+    assert!(
+        !entry.contains("kthread_join"),
+        "the idle identity must join nothing"
+    );
+    assert!(
+        entry.contains("preempt_enable()"),
+        "the boot pin must be released once the boot sequence is a schedulable thread"
+    );
+    let load = body
+        .find("load_test_binaries_from_ext2();")
+        .expect("the loader runs on the boot continuation");
+    let marker = body
+        .find("[test] Test processes loaded - will run via timer interrupts")
+        .expect("the completion marker follows the loader");
+    assert!(load < marker, "the loader must complete before its marker");
 }
 
 #[test]
