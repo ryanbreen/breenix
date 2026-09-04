@@ -7233,18 +7233,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                 // Switch to process's page table for signal delivery
                 if let Some(ref page_table) = process.page_table {
                     let raw_ttbr0 = page_table.level_4_frame().start_address().as_u64();
-                    unsafe {
-                        core::arch::asm!(
-                            "dsb ishst",
-                            "msr ttbr0_el1, {}",
-                            "isb",
-                            "tlbi vmalle1is",
-                            "dsb ish",
-                            "isb",
-                            in(reg) raw_ttbr0,
-                            options(nomem, nostack)
-                        );
-                    }
+                    crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(raw_ttbr0);
                 }
 
                 // Create SavedRegisters from exception frame for signal delivery

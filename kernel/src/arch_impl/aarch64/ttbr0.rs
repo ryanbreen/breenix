@@ -52,6 +52,51 @@ pub fn switch_ttbr0_to_kernel() {
     }
 }
 
+/// Install `ttbr0_value` as this CPU's running process root and leave the
+/// per-CPU TTBR0 shadows describing what the register now holds.
+///
+/// The shadows are not bookkeeping: `saved_process_cr3` (per-CPU offset 80) and
+/// `next_cr3` (offset 64) are both read by the syscall return corridor in
+/// `syscall_entry.S`, which installs `next_cr3` when it is non-zero and
+/// otherwise restores `saved_process_cr3`, and both are read by
+/// `is_ttbr0_root_live_in_mask` when a page-table root is considered for
+/// reclamation. A site that writes the register with a raw `msr` and leaves the
+/// shadows alone is therefore not "just" out of sync -- it lets the next return
+/// to EL0 install whatever root the shadows still name.
+/// claim-lint:ok: the corridor reads are cited in
+/// docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
+///
+/// That is issue #786: `launch_init_from_elf` installed init's root with a raw
+/// `msr`, the shadows still held the kernel root a preceding idle redirect had
+/// published into `next_cr3`, and init's first `svc` returned onto the kernel
+/// root -- an instruction abort at init's own return address (ESR
+/// `0x8200000e`, a level-2 permission fault: the page is mapped by the kernel
+/// root's identity map but is not EL0-executable).
+/// claim-lint:ok: the corridor reads and the 7-function install census are in
+/// docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
+///
+/// Clearing `next_cr3` is part of the install, not a separate courtesy: after
+/// this call the architectural register is the decision, so a pending "switch
+/// to some other root on the way out" request is either the same root or a
+/// stale one, and applying either on the return path is wrong.
+#[inline(always)]
+pub fn adopt_process_ttbr0(ttbr0_value: u64) {
+    unsafe {
+        core::arch::asm!(
+            "dsb ishst",
+            "msr ttbr0_el1, {ttbr0}",
+            "isb",
+            "tlbi vmalle1is",
+            "dsb ish",
+            "isb",
+            ttbr0 = in(reg) ttbr0_value,
+            options(nomem, nostack)
+        );
+        super::percpu::Aarch64PerCpu::set_saved_process_cr3(ttbr0_value);
+        super::percpu::Aarch64PerCpu::set_next_cr3(0);
+    }
+}
+
 /// Leave the current userspace root and prevent an exception-return path from
 /// reinstalling it. This must complete before publishing deferred exit work.
 #[inline(always)]
