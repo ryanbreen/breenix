@@ -11,6 +11,22 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# #825: two concurrent runs of this gate (e.g. two worktrees on the same
+# host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
+# so one run's rm -rf/mkdir could delete and rewrite the serial another run
+# was mid-boot writing to, and both booted from the same ext2-writable.img
+# either could be rewriting. Defaulting to /tmp keeps every existing caller
+# byte-identical; a concurrent-lane launcher sets this to a per-worktree
+# directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever
+# directory happens to be current when it is read (the same F6 guard PR
+# #801 gave the x86 gate scripts for #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2; exit 1 ;;
+esac
+
 # -110 is -ETIMEDOUT. Exactly one occurrence proves the unarmed kernel honoured
 # the driver's probe timeout and that the seam-absent path actually executed.
 PROD_SEAM_ABSENT_LITERAL='[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]'
@@ -88,7 +104,7 @@ PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discard
 PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected'
 
-OUTPUT_DIR="/tmp/breenix_aarch64_prod_profile"
+OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_prod_profile"
 SERIAL_FILE="$OUTPUT_DIR/serial.txt"
 QEMU_PID=""
 
@@ -200,11 +216,11 @@ cleanup() {
 
     if [ "$status" -ne 0 ]; then
         timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-        failure_dir="/tmp/breenix_prod_profile_failures/$timestamp"
+        failure_dir="$BREENIX_GATE_TMP/breenix_prod_profile_failures/$timestamp"
         while [ -e "$failure_dir" ]; do
             sleep 1
             timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-            failure_dir="/tmp/breenix_prod_profile_failures/$timestamp"
+            failure_dir="$BREENIX_GATE_TMP/breenix_prod_profile_failures/$timestamp"
         done
         mkdir -p "$failure_dir"
         if [ -f "$SERIAL_FILE" ]; then
