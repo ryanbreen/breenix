@@ -1239,7 +1239,9 @@ fn test_timer_ticks() -> TestResult {
 ///
 /// Attempts to delay for approximately 10ms and checks that the elapsed
 /// time is within the MIN_MS..=MAX_MS band. This accounts for timer resolution
-/// and scheduling variance. On ARM64 the busy-wait additionally proves, from
+/// and scheduling variance. The x86 branch raises its own ceiling to
+/// `MAX_MS + 2 * MS_PER_TICK` because the clock it reads only moves in 5 ms
+/// steps; see the comment there. On ARM64 the busy-wait additionally proves, from
 /// inside the guest, whether wall-clock time advanced while this vCPU executed
 /// nothing at all; only those windows are re-measured, and the scored bounds
 /// never move (see the attribution comment in the aarch64 branch).
@@ -1272,9 +1274,29 @@ fn test_timer_delay() -> TestResult {
         // 1000 Hz, which #767 records as false -- PIT_HZ is 200.
         //
         // Since #767 both ends read milliseconds, so TARGET_MS, MIN_MS and
-        // MAX_MS are milliseconds here, at the 5 ms resolution one PIT tick
-        // gives: the loop waits for 10 ms of tick advance and the band admits
-        // 5..=20 ms.
+        // MAX_MS are milliseconds here -- but only at the resolution one PIT
+        // tick gives, and that is what the ceiling below is about.
+        //
+        // #767 (ruling R176): this clock advances in MS_PER_TICK steps (5 ms on
+        // x86), so `elapsed` can only ever be a multiple of 5. Scored against a
+        // flat MAX_MS = 20 the admissible set is {5, 10, 15, 20}: the loop exits
+        // at the first reading >= 10, the re-read below typically lands on 10 or
+        // 15, and ONE more tick of scheduling jitter past that is a
+        // "delay too long on x86_64" FAIL. A four-value band on a clock with
+        // one-value granularity is not a tolerance. The ceiling is therefore
+        // expressed at the granularity of the clock doing the measuring: the
+        // nominal 20 ms plus the two ticks the reading itself can contribute --
+        // one for the loop's overshoot past TARGET_MS, one for the sample taken
+        // after it.
+        //
+        // This widens the x86 ceiling from 20 ms to 30 ms. It is a tolerance
+        // change, not a budget change, and it is confined to this branch: the
+        // aarch64 arm reads CNTVCT at microsecond resolution and keeps the
+        // 5..=20 band it was measured with. Nothing in this round executes this
+        // arm -- the x86 staged registry is off in every gate (#533) -- so it is
+        // argued from the arithmetic above, not from a boot.
+        const X86_MAX_MS: u64 = MAX_MS + 2 * crate::time::timer::MS_PER_TICK;
+
         let start = crate::time::get_monotonic_time();
 
         while crate::time::get_monotonic_time().saturating_sub(start) < TARGET_MS {
@@ -1283,7 +1305,7 @@ fn test_timer_delay() -> TestResult {
 
         let elapsed = crate::time::get_monotonic_time().saturating_sub(start);
 
-        if elapsed >= MIN_MS && elapsed <= MAX_MS {
+        if elapsed >= MIN_MS && elapsed <= X86_MAX_MS {
             TestResult::Pass
         } else if elapsed < MIN_MS {
             TestResult::Fail("delay too short on x86_64")
