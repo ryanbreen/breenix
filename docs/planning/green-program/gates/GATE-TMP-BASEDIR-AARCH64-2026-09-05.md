@@ -260,3 +260,93 @@ before and after the rewording.
 - This branch does not add the lock #826 is expected to add; "launch only
   when the concurrent-QEMU count is <= 2" was this round's own operating
   discipline, not a mechanism this branch ships.
+
+## Landing re-smoke (2026-09-05)
+
+This branch's tip (`87a38ab5`) sat 17 commits behind `origin/main`
+(`57fa389c`, PR #831's `p767-land` merge) at landing time. `git merge --no-ff
+origin/main` from `87a38ab5` produced merge commit `f762c003`; `git status`
+read "nothing to commit, working tree clean" immediately after, with no
+CONFLICT line in the merge's own output and no manual resolution performed.
+The merge's own `kernel/` diffstat (`test_framework/registry.rs`,
+`time/timer.rs`, `time_test.rs`, `tracing/providers/teardown.rs`) is
+byte-identical to `git diff 87a38ab5 origin/main -- kernel/`, confirming every
+`kernel/` line the merge carries came from `origin/main` and this branch itself
+still touches no `kernel/` file. The merge commit's message
+(`Merge remote-tracking branch 'origin/main' into ld-825`) passed
+`scripts/claim-lint.py --commit-msg` at exit 0 before this doc records it.
+claim-lint:ok: #825, the `git status` output and the matched `kernel/`
+diffstat quoted above are this same merge's own terminal output, read
+directly.
+
+Re-smoke at the merged head (`f762c003`), in a fresh worktree that needed its
+own `rust-fork` symlink and its own `userspace/programs/build.sh --arch
+aarch64` + `scripts/create_ext2_disk.sh --arch aarch64` run (a worktree has no
+inherited `target/`):
+
+```
+cargo test --test <name>   for each of the 31 tests/*_structure.rs files
+-> 31/31 green, 0 failed, 582 test cases total (summed from each suite's own
+   "N passed" line; teardown_structure.rs contributed 88 of the 582, matching
+   the count recorded earlier in this doc)
+
+python3 scripts/test_claim_lint.py
+-> OK, 72/72, exit 0
+
+python3 scripts/claim-lint.py
+-> "claim-lint: clean (15 file(s) checked, changed hunks vs 57fa389c48ec)."
+   "claim-lint: 213 pre-existing finding(s) outside this branch's changed
+   hunks not reported (--whole-file shows them)." exit 0
+```
+
+Two independent, unrelated aarch64 gates (from other worktrees on this same
+host — `fix-627`, `fix-812`, `fix-819`) were live at various points during
+this re-smoke, `pgrep -fl qemu-system-aarch64` reading as high as 12 at one
+point; each boot below was launched only once that count read <= 2, per this
+round's own operating discipline. Both re-smoke runs used a private
+`BREENIX_GATE_TMP` rather than the unset default specifically because a
+same-shaped concurrent run was live on the shared default path at launch
+time — using the private variable this branch adds, rather than colliding
+with it, is itself a live instance of the behavior this branch exists to
+provide; the unset-default backward-compatibility path was already covered
+by the "Boot runs" section (b) above, whose file-listing evidence this
+re-smoke did not repeat.
+
+Strict gate, kernel rebuilt at `f762c003` with
+`cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
+(after `touch kernel/src/main_aarch64.rs`), passing
+`scripts/check-kernel-no-neon.sh` (0 FP/SIMD instructions):
+
+```
+BREENIX_GATE_TMP=/tmp/ld825-gate-tmp ./docker/qemu/run-aarch64-boot-test-strict.sh
+-> PASS: 20/20 boots succeeded (Duration: 245s)
+```
+
+Evidence landed under `/tmp/ld825-gate-tmp/breenix_aarch64_strict_{1..20}/`,
+confirmed by directory listing after the run; no file under the unset-default
+`/tmp/breenix_aarch64_strict_*` path was touched by this run. No
+`qemu-system-aarch64` process attributable to this worktree remained after
+the run exited (`pgrep -fl qemu-system-aarch64` immediately after showed only
+the concurrent `fix-627` worktree's own two processes, identified by their
+`-kernel`/`-serial` arguments naming that worktree's path).
+
+Prod-profile gate, same head, kernel rebuilt by the script itself (no
+`--features`, the shipped profile) against the pre-built
+`target/ext2-aarch64.img`:
+
+```
+BREENIX_GATE_TMP=/tmp/ld825-prod-tmp ./docker/qemu/run-aarch64-prod-profile-boot-test.sh
+-> PASS: production profile reached bsshd with the futex oracle seam absent
+```
+
+Evidence landed under `/tmp/ld825-prod-tmp/breenix_aarch64_prod_profile/`.
+
+claim-lint:ok: #825, every count and path in this section (582 test cases,
+20/20, the two `BREENIX_GATE_TMP` values, the `pgrep` readings) is this same
+re-smoke's own terminal output and directory listings, read directly rather
+than assumed.
+
+```
+claim-lint: scripts/claim-lint.py -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg /tmp/merge-msg-825.txt -> exit 0
+```
