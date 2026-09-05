@@ -603,6 +603,53 @@ fn statement_start(body: &str, mask: &[bool], offset: usize) -> usize {
 /// on the way to a later acquisition. Unknown introducers fall on the
 /// conditional side by construction: the identifier scan admits the single
 /// literal `unsafe` and no other.
+///
+/// Review round 2, finding B2 (second half). A `}` sitting directly before
+/// `open` used to be admitted unconditionally on the theory that it closes a
+/// separate, already-complete preceding statement. That theory is false when
+/// the matched block is itself the condition or scrutinee of an enclosing
+/// `if`/`while`/`for`/`match` -- a Rust condition may legally end in `}` (a
+/// `match` expression, an `unsafe` block, or a nested `if`), and when it does,
+/// `open` is that construct's own controlled body, not a sibling statement.
+/// Two probes exploited exactly this shape: `if match cpu_id() { .. } {
+/// disable(); }` and `if unsafe { .. } { disable(); }` both read as a bare
+/// block following an already-finished statement. The fix below matches the
+/// `}` back to its opening `{` and looks at what introduces THAT block: if it
+/// is `if`, `while`, `for`, or `match`, the matched block is a condition, not
+/// a finished statement, so `open` stays conditional. Both probes are legs 16
+/// and 17 of `scheduler_lock_irq_shape_ratchet_is_not_vacuous`.
+fn matching_open_brace(body: &str, mask: &[bool], close: usize) -> Option<usize> {
+    let bytes = body.as_bytes();
+    let mut depth: i32 = 0;
+    let mut index = close;
+    while index > 0 {
+        index -= 1;
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'}' => depth += 1,
+            b'{' => {
+                if depth == 0 {
+                    return Some(index);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The leading identifier/keyword of `text`, ignoring leading whitespace.
+fn leading_keyword(text: &str) -> &str {
+    let text = text.trim_start();
+    let end = text
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(text.len());
+    &text[..end]
+}
+
 fn block_is_unconditional(body: &str, mask: &[bool], open: usize) -> bool {
     let bytes = body.as_bytes();
     let mut cursor = open;
@@ -612,7 +659,17 @@ fn block_is_unconditional(body: &str, mask: &[bool], open: usize) -> bool {
     if cursor == 0 {
         return true;
     }
-    if matches!(bytes[cursor - 1], b';' | b'{' | b'}') {
+    if bytes[cursor - 1] == b'}' {
+        if let Some(inner_open) = matching_open_brace(body, mask, cursor - 1) {
+            let start = statement_start(body, mask, inner_open);
+            let introducer = leading_keyword(&body[start..inner_open]);
+            if matches!(introducer, "if" | "while" | "for" | "match") {
+                return false;
+            }
+        }
+        return true;
+    }
+    if bytes[cursor - 1] == b';' || bytes[cursor - 1] == b'{' {
         return true;
     }
     let end = cursor;
@@ -761,6 +818,15 @@ fn assembly_external_calls(body: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Review round 2, finding m7. The vector-table end used to be a prose-comment
+/// banner (`/*\n * Exception handlers`), pinned to the exact wording of a
+/// comment rather than to anything the assembler enforces -- reflowing that
+/// comment would panic this function. The table's own `.section
+/// .text.vectors` closes at the next `.section` directive, which is where
+/// the assembler's own section boundary sits, so anchoring there survives a
+/// comment edit the way the boot.S/interrupts.rs/breakpoint_entry.asm/
+/// timer_entry.asm PATH anchors already do -- loud panic on drift, but no
+/// longer wired to prose.
 fn derived_interrupt_entry_names() -> BTreeSet<String> {
     let mut names = BTreeSet::new();
 
@@ -769,7 +835,7 @@ fn derived_interrupt_entry_names() -> BTreeSet<String> {
         .find("exception_vectors:")
         .expect("AArch64 vector table label");
     let vector_end = arm_vectors[vector_start..]
-        .find("/*\n * Exception handlers")
+        .find("\n.section")
         .map(|offset| vector_start + offset)
         .expect("AArch64 vector table end");
     for handler in assembly_branch_targets(&arm_vectors[vector_start..vector_end]) {
@@ -1207,6 +1273,35 @@ fn scheduler_lock_irq_shape_ratchet_is_not_vacuous() {
             .any(|failure| failure.contains("primitive census is empty")),
         "an empty primitive census must fail rather than pass vacuously"
     );
+
+    // Legs 16-17 -- review round 2, finding B2 (second half).
+    // `block_is_unconditional` used to admit any block whose immediately
+    // preceding byte was `}`, on the theory that it closes an
+    // already-finished sibling statement. Both probes below put that `}`
+    // inside an if's OWN condition instead -- a `match` expression and an
+    // `unsafe` block, each closing right before the disable's enclosing
+    // block -- so the disable is conditional even though a `}` sits
+    // directly in front of it.
+    for (leg, shape, name) in [
+        (
+            "match-as-condition disable",
+            "pub fn probe_if_match_condition_disable(kind: u8) {\n    if match kind {\n        0 => true,\n        _ => false,\n    } {\n        crate::arch_disable_interrupts();\n    }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_if_match_condition_disable",
+        ),
+        (
+            "unsafe-as-condition disable",
+            "pub fn probe_if_unsafe_condition_disable(flag: bool) {\n    if unsafe { core::ptr::read_volatile(&flag) } {\n        crate::arch_disable_interrupts();\n    }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_if_unsafe_condition_disable",
+        ),
+    ] {
+        let refused = with_synthetic_source(&sources, PROBE_PATH, shape);
+        assert!(
+            scheduler_lock_irq_shape_failures(&refused)
+                .iter()
+                .any(|failure| failure.ends_with(name)),
+            "{leg} must not be admitted"
+        );
+    }
 }
 
 /// The transitive callee closure of `roots` within one module.

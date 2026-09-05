@@ -909,6 +909,11 @@ pub struct SchedulerLivenessSnapshot {
 /// is here so the caller that lands does not have to rediscover R153.
 /// `tests/teardown_structure.rs::scheduler_lock_acquisitions_are_irq_safe_by_shape`
 /// reddens if it is removed.
+///
+/// Review round 2, finding m5. Retained for the same reason as
+/// `is_current_idle_thread` above: a named future caller (the watchdog), not
+/// `try_schedule`'s no-caller, no-plan case, which was deleted rather than
+/// annotated.
 pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot> {
     without_interrupts(|| {
         let guard = try_lock_scheduler()?;
@@ -4684,6 +4689,12 @@ pub fn preempt_schedule_irq() {
 /// shipped kernel. Its live caller is `task::idle_sleep`'s idle-block refusal,
 /// which arrives in slice 3; landing the repair first means that caller arrives
 /// onto a masked function instead of re-deriving R153.
+///
+/// Review round 2, finding m5. `try_schedule` was deleted outright for having
+/// no caller on `origin/main` and no named future one. This function differs
+/// in the one fact that matters: it has a named future caller already,
+/// `task::idle_sleep` per the paragraph above, so `#[allow(dead_code)]` here is a
+/// placeholder for slice 3, not a hiding place for incomplete work.
 #[allow(dead_code)]
 pub fn is_current_idle_thread() -> Option<bool> {
     without_interrupts(|| {
