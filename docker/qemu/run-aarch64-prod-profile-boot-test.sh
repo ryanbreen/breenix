@@ -26,6 +26,12 @@ STRAND_INJECT_ORACLE_LITERAL='[STRAND_INJECT_ORACLE:'
 # same reason as the other 3: a count of 0 on the shipped profile is a reading,
 # where a silent absence would be an assumption.
 FCNTL_PM_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:'
+# #812's IRQ-hold oracle is boot_tests-only for the same reason: it holds the
+# process-manager lock on a peer CPU with interrupts masked on purpose. This is
+# the 5th boot_tests-only marker asserted absent here, and for the same reason
+# as the other 4 -- a count of 0 on the shipped profile is a reading, where a
+# silent absence would be an assumption.
+IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:'
 # This proves init resumed after waiting for the self-limiting driver.
 INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='
 # This proves init's earlier oracle also completes on the unarmed profile.
@@ -136,6 +142,7 @@ print_observed_values() {
     echo "Observed scheduler strand oracle marker count: $(marker_count "$serial_file" "$SCHED_STRAND_ORACLE_LITERAL")"
     echo "Observed strand injection oracle marker count: $(marker_count "$serial_file" "$STRAND_INJECT_ORACLE_LITERAL")"
     echo "Observed fcntl contention oracle marker count: $(marker_count "$serial_file" "$FCNTL_PM_ORACLE_LITERAL")"
+    echo "Observed IRQ-hold oracle marker count: $(marker_count "$serial_file" "$IRQ_HOLD_ORACLE_LITERAL")"
     echo "Observed init-resumed marker count: $(marker_count "$serial_file" "$INIT_EXIT_LITERAL")"
     echo "Observed block EINTR oracle marker count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_LITERAL")"
     echo "Observed block EINTR oracle failure count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")"
@@ -283,6 +290,7 @@ KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
 SCHED_STRAND_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$SCHED_STRAND_ORACLE_LITERAL")
 STRAND_INJECT_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$STRAND_INJECT_ORACLE_LITERAL")
 FCNTL_PM_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$FCNTL_PM_ORACLE_LITERAL")
+IRQ_HOLD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$IRQ_HOLD_ORACLE_LITERAL")
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
 BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
 BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
@@ -323,6 +331,10 @@ fi
 }
 [ "$FCNTL_PM_ORACLE_COUNT" -eq 0 ] || {
     echo "FAIL: boot_tests-only fcntl contention oracle marker was present"
+    exit 1
+}
+[ "$IRQ_HOLD_ORACLE_COUNT" -eq 0 ] || {
+    echo "FAIL: boot_tests-only IRQ-hold oracle marker was present"
     exit 1
 }
 [ "$INIT_EXIT_COUNT" -ge 1 ] || {

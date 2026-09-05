@@ -335,6 +335,12 @@ CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocess
 # line keeps the emitter alive on this arch -- deleting the oracle would
 # otherwise leave this gate green.
 FCNTL_PM_CONTENTION_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]'
+# #812. x86's irq_exit() runs do_softirq() only at preempt_count 0 and the
+# oracle's holder is preempt-disabled, so the aarch64 race has no way to fire
+# here; the oracle says so in its own marker rather than printing a PASS it did
+# not earn. Pinning the SKIP line keeps the emitter alive on this arch --
+# deleting the oracle would otherwise leave this gate green.
+IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -501,6 +507,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qF "$CENSUS_WIDEN_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$IRQ_HOLD_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \

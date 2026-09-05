@@ -74,6 +74,34 @@ if ! fcntl_pm_oracle_sample 8032 | grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN
     echo "FAIL: FCNTL_PM_CONTENTION_ORACLE_PATTERN rejects first_wait_us=8032, a wait the repaired oracle really records, so this gate can never pass"
     exit 1
 fi
+# #812. The holder takes the same non-blocking PROCESS_MANAGER acquisition a
+# syscall body takes, with a preempt-disable and NetRx softirq work pending on
+# its own CPU, and stays there for longer than two timer ticks. Two of the
+# eleven fields are the anti-vacuity pair: masked_in_hold=1 is the reading that
+# the acquisition really masked this CPU, and netrx_pending_at_release=1 is the
+# reading that the softirq that would have deadlocked it really was pending for
+# the whole window. irqs_enabled_before=1 pins the precondition -- the holder
+# entered with interrupts live, the way an aarch64 syscall body does -- so a
+# window that was already masked by its caller cannot score. On origin/main the
+# holder's own IRQ exit runs that softirq inside the hold and wedges the CPU on
+# a lock it already owns, so no verdict line is printed at all.
+IRQ_HOLD_ORACLE_PATTERN='\[IRQ_HOLD_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:irqs_enabled_before=1:masked_in_hold=1:sends=[1-9][0-9]*:hold_us=[1-9][0-9]{3,}:netrx_pending_at_release=1:received=[1-9][0-9]*:stalled=0:hold_done=1:joined=1:PASS\]'
+# IRQ_HOLD_SELFCHECK. hold_us is this gate's only gate-side reading that the
+# window was actually wide enough for a timer tick to land in it, so check that
+# the pattern separates the two cases BEFORE it scores any boot -- the same
+# failure the #796 review found on first_wait_us, where a [0-9]+ pin accepted a
+# hold of 0 us and left the oracle's own floor as the sole authority.
+irq_hold_oracle_sample() {
+    printf '[IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=%s:netrx_pending_at_release=1:received=1:stalled=0:hold_done=1:joined=1:PASS]\n' "$1"
+}
+if irq_hold_oracle_sample 0 | grep -qE "$IRQ_HOLD_ORACLE_PATTERN"; then
+    echo "FAIL: IRQ_HOLD_ORACLE_PATTERN accepts hold_us=0, so this gate would score green on a hold no timer tick could land in"
+    exit 1
+fi
+if ! irq_hold_oracle_sample 12034 | grep -qE "$IRQ_HOLD_ORACLE_PATTERN"; then
+    echo "FAIL: IRQ_HOLD_ORACLE_PATTERN rejects hold_us=12034, a window the repaired oracle really records, so this gate can never pass"
+    exit 1
+fi
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 # #786 follow-on: the TTBR0 ASID census, emitted before userspace and at every
 # process exit. `untagged` counts publishes into `saved_process_cr3`/`next_cr3`
@@ -138,7 +166,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -330,6 +358,16 @@ score_serial() {
     fi
     if ! grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "fcntl process-manager contention oracle marker missing or failed"
+        return 1
+    fi
+    # #812, pinned as the same pair for the same reason.
+    if grep -qF "[IRQ_HOLD_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
+        && grep -q "IRQ_HOLD_ORACLE.*:FAIL\]" "$serial_file" 2>/dev/null; then
+        echo "IRQ-hold oracle reported failure ($(grep -aoE '\[IRQ_HOLD_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$IRQ_HOLD_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "IRQ-hold oracle marker missing or failed"
         return 1
     fi
     if ! grep -qF "[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]" "$serial_file" 2>/dev/null; then
