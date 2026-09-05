@@ -341,6 +341,24 @@ claim-lint: scripts/claim-lint.py --files <this doc>               -> exit 0
   stall is `arm_wait_us` plus the call window, tens to hundreds of microseconds
   plus about 8 ms on the boots above. The 2 s deadline is the worst case, and a
   boot that reaches it is a boot the gate fails.
+* **The hold masks interrupts on other CPUs too, not only on the two the
+  rendezvous names.** The peer holds `PROCESS_MANAGER` with its own interrupts
+  masked, and on aarch64 both blocking ways into that lock --
+  `crate::process::manager()` and `with_process_manager()`
+  (`kernel/src/process/mod.rs`) -- mask before they acquire, not after. A third
+  CPU that enters either one while the hold is up therefore keeps its own
+  interrupts masked until the hold drops: the driver's notice time plus the 8 ms
+  overlap on the arms that pass, and up to `FCNTL_PM_HOLD_SAFETY_US` (250 ms) on
+  `hold_safety_release`, the arm the holder takes when no request arrives. The
+  boot-test population does contain concurrent callers -- `process_list_populated`
+  is the one (a)(2) above names. This round introduces neither half of that:
+  masking before blocking is the shape of those two entry points on
+  `origin/main`, and it is the same property the falsified unpinned-driver
+  design ran into from the other side. What this round does about it is bound it and make reaching the bound
+  loud -- the safety deadline is read from CNTVCT_EL0, which advances whatever
+  any CPU's mask state is, and `hold_safety=1` is gate-red. The oracle is
+  `boot_tests`-only, and the production-profile gate above asserts its marker
+  count at 0.
 * **`first_wait_us` measures a wait, not a fairness property.** It says the call
   waited for a lock that was held; it does not say the call was the first waiter
   to get it, and under load it reads well above the overlap window.

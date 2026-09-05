@@ -4190,6 +4190,25 @@ const FCNTL_PM_ACQUIRE_US: u64 = 20_000;
 /// that has not asked within it is not merely late; and it bounds what the rest
 /// of the system sees, because this window is masked on the peer CPU and a
 /// `try_manager()` on any other CPU reads busy for its duration.
+///
+/// `try_manager()` is the narrow half of "what the rest of the system sees" --
+/// it reads busy and moves on. The wide half is the blocking one, and this is
+/// the constant that bounds it: on aarch64 `crate::process::manager()` masks
+/// DAIF *before* it spins for the lock, and `with_process_manager()` runs its
+/// acquire inside `without_interrupts` (both in `kernel/src/process/mod.rs`),
+/// so a third CPU entering either one while this hold is up keeps its own
+/// interrupts masked until the hold drops. On the arms that pass that is the
+/// driver's notice time plus the 8 ms overlap; on the degenerate arm, where the
+/// driver's request never arrives, it is this constant. Neither is introduced
+/// here -- masking before blocking is the pre-existing shape of those two entry
+/// points, and it is the same property the round doc's root cause (a)(2) names
+/// as one of the starvation paths this oracle set out to measure. The deadline
+/// is read from CNTVCT_EL0, which advances regardless of any CPU's mask state,
+/// so the bound does not depend on the masked CPUs making progress.
+/// claim-lint:ok: the two acquire shapes are readable at `manager()` and
+/// `with_process_manager()` in kernel/src/process/mod.rs; the per-boot notice
+/// times are tabulated in
+/// docs/planning/green-program/syscalls/819-ORACLE-ARMING-2026-09-05.md
 #[cfg(target_arch = "aarch64")]
 const FCNTL_PM_HOLD_SAFETY_US: u64 = 250_000;
 /// Microseconds the driver waits for the holder to publish its hold.
