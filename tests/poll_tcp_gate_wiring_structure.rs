@@ -98,9 +98,17 @@ fn scripts_asserting_oracle_fail() -> Vec<PathBuf> {
     candidates
         .into_iter()
         .filter(|path| {
-            let text = fs::read_to_string(path)
-                .unwrap_or_else(|_| panic!("read script {}", path.display()));
-            text.contains(ORACLE_FAIL_LITERAL)
+            // A file that is not valid UTF-8 cannot carry the literal, so it is
+            // not a member of this census and reading it is not an error. The
+            // specimen: `python3 scripts/test_claim_lint.py` -- 1 of the 2
+            // claim-discipline commands a round runs -- imports
+            // `scripts/claim-lint.py` and leaves
+            // `scripts/__pycache__/claim-lint.cpython-*.pyc` behind, and the
+            // panic this replaces then reddened this ratchet on a tree
+            // whose 8 of 8 censused scripts were correctly wired.
+            fs::read_to_string(path)
+                .map(|text| text.contains(ORACLE_FAIL_LITERAL))
+                .unwrap_or(false)
         })
         .collect()
 }
