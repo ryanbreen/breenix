@@ -281,3 +281,108 @@ This round adds no new rule to `claim-lint.py` and no new fixture to
 `test_claim_lint.py`; the run above is the tool's own pre-existing
 harness-and-corpus suite, unrelated to this branch's files, confirming this
 round's edits did not perturb it.
+
+## Landing — re-recording the shared slice3d strict fixture
+
+Merging `origin/main` onto this branch for landing (merge commit `99820c62`,
+merging `7a19f550` -- PR #833, `fix/812-try-manager-masked` -- onto this
+branch's pre-merge tip `d8565db0`) produced exactly one textual conflict, in
+`docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt`.
+Both sides of the merge had independently re-recorded this same fixture from
+a shared ancestor content (`fc76c8cc`, the `#562` slice-3d landing): `main`'s
+own `#812` landing re-recorded it again at `681c1d58` for an `IRQ_HOLD_ORACLE`
+requirement change unrelated to this round, while this branch's own
+`2507b48c` re-recorded it for the `arm_delay_us` field this round's fix
+introduces. Both replay tests --
+`tests/loopback_pump_structure.rs::both_aarch64_gates_fail_on_a_pinned_placement_refusal`
+and `tests/ttbr0_shadow_reconciliation_structure.rs::both_aarch64_gates_fail_on_an_untagged_publish`
+-- read this file through `docker/qemu/run-aarch64-boot-test-strict.sh`'s
+scoring-only mode, so the merge needed a fixture satisfying both scorer
+requirements at once, not a textual pick of either parent's content.
+
+Re-recorded from a single strict-gate boot at the merge commit `99820c62`
+(BUILD_ID `006a9c7287347d`), which carries both required lines:
+
+```
+[IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=2:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12013:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:PASS]
+[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=50:arm_delay_us=2:rescues=0:queue_residual=0:balance=0]
+```
+
+The strict scorer accepts the re-recorded file (`BREENIX_STRICT_SCORE_ONLY=...
+run-aarch64-boot-test-strict.sh` -> `SCORE: PASS`), and both replay tests
+pass against it (below). `02-prod-boot1-serial.txt` needed no re-record:
+checked directly against the merged head's production scorer
+(`BREENIX_PROD_SCORE_ONLY=... run-aarch64-prod-profile-boot-test.sh`), it
+still scores `PASS: production profile reached bsshd with the futex oracle
+seam absent` -- the production scorer's `KERNEL_ORACLE_COUNT` check does not
+touch either oracle this landing or `#812` changed. The capture that landed
+was the first attempt taken (`pgrep -fl qemu-system-aarch64` read 0
+immediately before launch); no discarded attempt this round. Both findings
+are appended to
+`docs/planning/green-program/aarch64-testing/serials/slice3d/README.md`.
+
+claim-lint:ok: the re-recorded file, its BUILD_ID, and both required oracle
+lines are the STEP 1/STEP 2 evidence committed alongside this doc update.
+
+## Landing re-smoke (merged head `99820c62`)
+
+Re-smoke ran at `99820c62d665ad0bcd1a9a95db717fa6b42f0c98` -- the merge
+commit above, pushed as `fix/627-futex-oracle-anchor` -- on the Mac at
+`/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ld-627`
+and on beast at `/root/breenix-p627` (`BREENIX_GATE_TMP=/root/breenix-p627-tmp`
+for the x86 gates; the aarch64 strict and production-profile gates were run
+with an isolated `BREENIX_GATE_TMP` on the Mac instead, since a per-worktree
+override for those two scripts predates this round -- `pgrep -fl
+qemu-system-aarch64` read 0 immediately before each launch).
+
+### aarch64
+
+`cargo build --release --features boot_tests --target aarch64-breenix-kernel.json
+-Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel
+--bin kernel-aarch64` piped through `grep -E "^(warning|error)"`: 1 line, the
+pre-existing toolchain `core` future-incompat note this round's own Proofs
+section above already discloses as unrelated to this branch's files.
+`scripts/check-kernel-no-neon.sh` against the resulting ELF: `PASS: 0 FP/SIMD
+load/store instructions in kernel .text (allowlisted & suppressed: 0)`.
+
+| gate | result |
+|---|---|
+| strict, 20 boots (`docker/qemu/run-aarch64-boot-test-strict.sh 20`) | `PASS: 20/20 boots succeeded`; every boot `stage3_elapsed_ok=1`; `stage3_elapsed_ms` ranged 50-53; `arm_delay_us` ranged 2-86 (microseconds) |
+| production (`docker/qemu/run-aarch64-prod-profile-boot-test.sh`) | `PASS: production profile reached bsshd with the futex oracle seam absent` |
+
+### x86 (beast, `breenix-x86` container)
+
+`git -C /root/breenix fetch origin` then `git -C /root/breenix-p627 fetch
+/root/breenix refs/remotes/origin/fix/627-futex-oracle-anchor:refs/heads/ld-627`
+(the intermediate `/root/breenix` hop the container's no-outbound-GitHub rule
+requires does not carry a bare local branch of this name, only the
+remote-tracking ref, so the explicit refspec was needed -- same shape as the
+`#812` landing's equivalent step above) then `git checkout ld-627`.
+`cargo build --release --features testing,external_test_bins --bin
+qemu-uefi` piped through `grep -cE "^(warning|error)"`: `0`.
+
+| gate | result |
+|---|---|
+| `docker/qemu/run-x86-boot-tests.sh 1` | `x86 frame-custody gate run 1: PASS`; futex marker carries the new field on x86 too: `[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=836:arm_delay_us=131:rescues=0:queue_residual=0:balance=0]` |
+| `docker/qemu/run-x86-prod-profile-boot-test.sh` | `PASS: x86 production profile reached steady state with the teardown census at rest` |
+
+Beast clone (`/root/breenix-p627`) and its gate tmp dir removed at the end of
+this landing.
+
+### Structure suites
+
+All 31 of 31 `tests/*_structure.rs` suites, run via `cargo test` against
+this merged head: **31 of 31 green, 584 cases**, `loopback_pump_structure::both_aarch64_gates_fail_on_a_pinned_placement_refusal`
+and `ttbr0_shadow_reconciliation_structure::both_aarch64_gates_fail_on_an_untagged_publish`
+among them, both replaying the re-recorded fixture above.
+
+**Unattributed reds: 0 of 6** re-smoke checks this landing (2 aarch64 gates,
+2 x86 gates, the structure-suite sweep, and the x86 build check) matched
+their expected verdict; none needed separate triage.
+
+```
+claim-lint: scripts/claim-lint.py                                              -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <merge-msg>                     -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <landing-doc-msg>               -> exit 0
+claim-lint: scripts/test_claim_lint.py                                         -> exit 0
+```
