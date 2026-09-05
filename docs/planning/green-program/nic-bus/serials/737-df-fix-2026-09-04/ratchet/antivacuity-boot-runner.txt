@@ -1,0 +1,26 @@
+Running 1 parallel full boot tests (runner: native)...
+Image: /root/breenix-737-oracle/target/release/build/breenix-1ddb662735daef9c/out/breenix-uefi.img
+  Started test 1
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: FAIL (x86 userspace verdict rejected the run)
+    strand census: thread 27 (futex_handoff_oracle) saved blocked and not restored as of the latest snapshot (seq 6, tick 671)
+strand census: thread 29 (tcp_cloexec_exec_test_child_18_main) saved blocked and not restored as of the latest snapshot (seq 6, tick 671)
+strand census: thread 31 (loopback_wake_test_child_19_main) saved blocked and not restored as of the latest snapshot (seq 6, tick 671)
+strand census: latest snapshot seq=6 tick=671 at 11186 ms; 6 valid snapshot(s), previous 6146 ms earlier, largest gap 6146 ms
+strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=6 at 11186 ms
+STRAND_CENSUS: threads_saved_blocked=3 stranded=3 lines=3280
+x86 userspace gate: FAIL - a thread was saved blocked in a kernel wait and was still not restored at the latest census snapshot (see the strand census above)
+    stack_pointer: VirtAddr(
+        0xffffc90000e9c0b8,
+    ),
+    stack_segment: SegmentSelector {
+        index: 0,
+        rpl: Ring0,
+    },
+}
+[ERROR] kernel: KERNEL PANIC: panicked at kernel/src/interrupts.rs:1498:9:
+Kernel page fault at 0x0 (error: PageFaultErrorCode(0x0))
+
+=========================================
+Results: 0 passed, 1 failed out of 1
+=========================================

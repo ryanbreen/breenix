@@ -1,0 +1,13 @@
+Running 1 parallel full boot tests (runner: native)...
+Image: /root/breenix-737-oracle/target/release/build/breenix-1ddb662735daef9c/out/breenix-uefi.img
+  Started test 1
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: PASS
+    strand census: latest snapshot seq=40 tick=7880 at 56188 ms; 40 valid snapshot(s), previous 447 ms earlier, largest gap 7381 ms
+strand census: age at the completion marker: 556 ms (newest cadence snapshot seq=38 at 55185 ms, completion snapshot seq=39 at 55741 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5342
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+
+=========================================
+Results: 1 passed, 0 failed out of 1
+=========================================

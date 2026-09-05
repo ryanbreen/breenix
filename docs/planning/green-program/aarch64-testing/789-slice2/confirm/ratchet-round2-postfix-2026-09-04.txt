@@ -1,0 +1,9 @@
+== compiling teardown_structure ==
+== running teardown_structure scheduler_lock ==
+
+running 2 tests
+test scheduler_lock_acquisitions_are_irq_safe_by_shape ... ok
+test scheduler_lock_irq_shape_ratchet_is_not_vacuous ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 81 filtered out; finished in 11.76s
+

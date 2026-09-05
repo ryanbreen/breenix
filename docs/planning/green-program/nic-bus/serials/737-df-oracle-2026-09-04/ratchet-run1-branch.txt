@@ -1,0 +1,141 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.4
+   Compiling serde v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling bitflags v2.13.1
+   Compiling x86 v0.52.0
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling bit_field v0.10.3
+   Compiling const_fn v0.4.12
+   Compiling log v0.4.34
+   Compiling libc v0.2.189
+   Compiling scopeguard v1.2.0
+   Compiling autocfg v1.5.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.12
+   Compiling cc v1.4.5
+   Compiling num-traits v0.2.19
+   Compiling lock_api v0.4.14
+   Compiling az v1.2.1
+   Compiling bitflags v1.3.2
+   Compiling syn v3.0.5
+   Compiling volatile v0.4.6
+   Compiling getrandom v0.4.3
+   Compiling itoa v1.0.18
+   Compiling raw-cpuid v10.7.0
+   Compiling conquer-util v0.3.0
+   Compiling crc-catalog v2.5.0
+   Compiling rand_core v0.6.4
+   Compiling once_cell v1.21.4
+   Compiling crossbeam-utils v0.8.22
+   Compiling crc v3.4.0
+   Compiling ring v0.17.14
+   Compiling spinning_top v0.2.5
+   Compiling typenum v1.20.1
+   Compiling zeroize v1.9.0
+   Compiling zero v0.1.3
+   Compiling rustix v1.1.4
+   Compiling zmij v1.0.23
+   Compiling byteorder v1.5.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling xmas-elf v0.8.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling hybrid-array v0.4.14
+   Compiling uart_16550 v0.3.2
+   Compiling serde_derive v1.0.229
+   Compiling float-cmp v0.9.0
+   Compiling getrandom v0.2.17
+   Compiling rand_hc v0.3.2
+   Compiling rand v0.8.8
+   Compiling conquer-once v0.3.2
+   Compiling x86_64 v0.14.13
+   Compiling x86_64 v0.15.4
+   Compiling llvm-tools v0.1.1
+   Compiling kernel v0.1.0 (/root/breenix-737-oracle/kernel)
+   Compiling slab v0.4.12
+   Compiling noto-sans-mono-bitmap v0.2.0
+   Compiling futures-task v0.3.34
+   Compiling micromath v2.1.0
+   Compiling pin-project-lite v0.2.17
+   Compiling untrusted v0.9.0
+   Compiling futures-core v0.3.34
+   Compiling httparse v1.10.1
+   Compiling usize_conversions v0.2.0
+   Compiling serde_json v1.0.151
+   Compiling futures-util v0.3.34
+   Compiling anyhow v1.0.104
+   Compiling embedded-graphics v0.8.2
+   Compiling bootloader v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling pic8259 v0.10.4
+   Compiling crossbeam-queue v0.3.13
+   Compiling linked_list_allocator v0.10.6
+   Compiling uuid v1.26.0
+   Compiling conquer-once v0.4.0
+   Compiling spin v0.9.9
+   Compiling rustls v0.23.43
+   Compiling memchr v2.8.3
+   Compiling bytes v1.12.1
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling fastrand v2.5.0
+   Compiling rustls-webpki v0.103.15
+   Compiling fatfs v0.3.6
+   Compiling bootloader-boot-config v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling http v1.5.0
+   Compiling bootloader-x86_64-common v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling tempfile v3.27.0
+   Compiling gpt v3.1.0
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling subtle v2.6.1
+   Compiling const-oid v0.10.2
+   Compiling base64 v0.23.1
+   Compiling ureq-proto v0.6.1
+   Compiling digest v0.11.3
+   Compiling xattr v1.6.1
+   Compiling webpki-roots v1.0.9
+   Compiling filetime v0.2.29
+   Compiling percent-encoding v2.3.2
+   Compiling cpufeatures v0.3.1
+   Compiling utf8-zero v0.8.1
+   Compiling lzma-rs v0.3.0
+   Compiling sha2 v0.11.0
+   Compiling tar v0.4.46
+   Compiling breenix v0.1.0 (/root/breenix-737-oracle)
+   Compiling base16ct v1.0.0
+   Compiling ureq v3.4.0
+   Compiling ovmf-prebuilt v0.2.9
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.57s
+     Running tests/entry_point_df_structure.rs (target/debug/deps/entry_point_df_structure-95835f5ce9aacc2e)
+
+running 4 tests
+test the_analyzer_reddens_on_a_synthetic_entry_that_omits_cld ... ok
+census: 3 hand-written .asm file(s), 3 assembled into the kernel image
+census: 4 global symbol(s) in the assembled files
+test the_asm_entry_census_is_not_vacuous ... ok
+exempt census: kernel/src/interrupts.rs declares 12
+exempt census: kernel/src/interrupts_fix.rs declares 1
+exempt census: kernel/src/syscall/mod.rs declares 1
+exempt census: 14 compiler-generated interrupt handler(s) across 3 file(s)
+test llvm_generated_x86_interrupt_handlers_are_censused_and_exempt ... ok
+census: kernel/src/syscall/entry.asm:syscall_return_to_userspace is declared in Rust as a parameter-taking callable, so it is entered by an ordinary call under the SysV ABI (DF clear on entry) and is exempt
+ok: kernel/src/interrupts/breakpoint_entry.asm:breakpoint_entry clears DF [address-taken (installed in a descriptor table or MSR)]
+ok: kernel/src/syscall/entry.asm:syscall_entry clears DF [address-taken (installed in a descriptor table or MSR)]
+
+thread 'every_hand_written_entry_clears_df_before_its_first_call_or_string_op' panicked at tests/entry_point_df_structure.rs:429:5:
+1 of 3 hand-written entry point(s) do not clear the direction flag before reaching a call into Rust or a string operation. An x86-64 interrupt gate preserves DF, so such an entry runs every rep-prefixed string operation backwards when it preempts a ring-3 thread that legitimately holds DF=1 (#737):
+  kernel/src/interrupts/timer_entry.asm:timer_interrupt_entry [address-taken (installed in a descriptor table or MSR)] -- line 88: reaches `call log_timer_frame_from_userspace` with no preceding cld
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test every_hand_written_entry_clears_df_before_its_first_call_or_string_op ... FAILED
+
+failures:
+
+failures:
+    every_hand_written_entry_clears_df_before_its_first_call_or_string_op
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+error: test failed, to rerun pass `--test entry_point_df_structure`
+TEST_EXIT=101
