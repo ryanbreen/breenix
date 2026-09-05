@@ -1,6 +1,11 @@
 //! Shared TTBR0 transition helpers for AArch64 teardown paths.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 const TTBR0_ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
+
+/// Bits [63:48] of a TTBR0 value: the ASID field the corridor installs verbatim.
+const TTBR0_ASID_MASK: u64 = 0xFFFF_0000_0000_0000;
 
 /// The ASID userspace runs under, positioned in TTBR0 bits [63:48].
 ///
@@ -11,8 +16,10 @@ const TTBR0_ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
 /// page-table entries a non-zero ASID is what keeps a user VA from matching one
 /// of them.
 /// claim-lint:ok: 1 of 1 site in the kernel tags a root before publishing it
-/// into `next_cr3` -- `set_next_ttbr0_for_thread`, whose tag is pinned against
-/// this constant by `the_discipline_publishes_the_dispatch_asid` in
+/// into `next_cr3` -- `set_next_ttbr0_for_thread`, which since R157/ASID-05
+/// applies the tag by calling `process_root_ttbr0` rather than by or-ing a
+/// literal; that routing is pinned by
+/// `the_discipline_publishes_the_dispatch_asid` in
 /// `tests/ttbr0_shadow_reconciliation_structure.rs`.
 ///
 /// It is not only the register that has to carry it. `switch_ttbr0_if_needed`
@@ -20,12 +27,133 @@ const TTBR0_ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
 /// `.Lrestore_saved_ttbr` arm of `syscall_entry.S` installs that word verbatim,
 /// ASID bits included -- so a site that publishes an untagged root decides that
 /// the next return to EL0 runs on ASID 0.
-/// claim-lint:ok: the dispatch tag is `context_switch.rs`'s `1u64 << 48` and the
-/// corridor install is `syscall_entry.S`'s `.Lrestore_saved_ttbr`; both are
-/// pinned against this constant by
-/// `the_discipline_publishes_the_dispatch_asid` in
+/// claim-lint:ok: the dispatch tag is now this constant, reached through
+/// `process_root_ttbr0`, and the corridor install is `syscall_entry.S`'s
+/// `.Lrestore_saved_ttbr`; the routing is pinned by
+/// `the_discipline_publishes_the_dispatch_asid` and the count of places that
+/// construct the tag by `the_asid_tag_is_constructed_in_one_place`, both in
 /// `tests/ttbr0_shadow_reconciliation_structure.rs`.
 pub(crate) const USER_ASID_TTBR0: u64 = 1 << 48;
+
+// ---------------------------------------------------------------------------
+// Runtime census of what the corridor shadow words are handed (#786 follow-on)
+// ---------------------------------------------------------------------------
+//
+// The structural ratchet in `tests/ttbr0_shadow_reconciliation_structure.rs`
+// reads shapes: which function publishes, and whether the value it publishes
+// was normalised in that same function. Nothing it can read says what the
+// published WORD held on a running kernel, and the defect this census exists
+// for was a value defect -- `adopt_process_ttbr0` published its caller's
+// ASID-untagged root, so the `.Lrestore_saved_ttbr` arm of `syscall_entry.S`
+// returned EL0 to ASID 0 while the dispatch path returned it to ASID 1.
+// claim-lint:ok: the shape ratchet's own census -- 17 of 17 publishes and
+// their dispositions -- is printed by
+// `every_shadow_publish_has_an_accounted_asid -- --nocapture` in
+// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/05-suite-green-with-census.txt
+//
+// So the shadow publishes are counted where they are WRITTEN -- both per-CPU
+// setters in `super::percpu` call `note_shadow_publish` -- and sorted into the
+// four dispositions a published word can legitimately have. The count is
+// lock-free, allocation-free, does no formatting and takes no lock: four
+// relaxed counters and, on the non-zero arm, one per-CPU read of this CPU's
+// kernel root. `emit_asid_census` is the only part that prints, and it runs
+// from normal context alongside the root-custody summary.
+// claim-lint:ok: 2 of 2 per-CPU setters call it, pinned by
+// `the_shadow_setters_feed_the_runtime_census` in
+// `tests/ttbr0_shadow_reconciliation_structure.rs`
+//
+// WHERE THIS RUNS (R157/ASID-02 -- the round that added the counter said the
+// opposite, and was wrong). `note_shadow_publish` is `#[inline(always)]` into
+// both setters, and both setters ARE reached from the exception-return
+// corridor. `syscall_entry.S` and `boot.S` each `bl
+// check_need_resched_and_switch_arm64`; that function reaches
+// `dispatch_thread_locked`, which calls `set_next_ttbr0_for_thread` and
+// `switch_ttbr0_if_needed`, and `dispatch_idle_locked`, which calls
+// `setup_idle_return_locked`. `handle_sync_exception` reaches
+// `set_idle_stack_for_eret`. Every one of those publishes a shadow word, so
+// every one of them now runs the counter. The `.S` files are untouched; the
+// code they branch to is not. Saying otherwise is what licensed adding an RMW
+// here without measuring it.
+// claim-lint:ok: 4 of 4 corridor-reached publish sites are named in this paragraph,
+// each appearing in the census table of docs/planning/green-
+// program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md
+//
+// WHAT IT COSTS. Measured, not asserted: disassembling the shipped
+// production-profile kernel with and without the two `note_shadow_publish`
+// calls and diffing the instruction count of `switch_ttbr0_if_needed` -- the
+// corridor-reached function that publishes twice -- is the arithmetic recorded
+// in the round document. It is a static instruction count on one function, not
+// a cycle measurement, and it does not measure LL/SC retry under contention.
+// claim-lint:ok: the two objdumps, the counts and the delta are in
+// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/08-corridor-instruction-delta.txt
+//
+// What this cannot see: the two stores `syscall_entry.S` makes itself. The
+// entry path copies the live `ttbr0_el1` into `saved_process_cr3` and the
+// return path clears `next_cr3` with `xzr`; both are in assembly on the
+// syscall hot path, neither introduces a value the register did not already
+// hold, and neither is counted here.
+// claim-lint:ok: 2 of 2 assembly stores to the shadow offsets are in
+// `kernel/src/arch_impl/aarch64/syscall_entry.S` (offset 80 from `ttbr0_el1`,
+// offset 64 from `xzr`); the Rust-side writes all funnel through the two
+// setters in `kernel/src/arch_impl/aarch64/percpu.rs`.
+
+/// A publish of the literal 0: the corridor arm for that word is disarmed.
+static ASID_PUBLISH_CLEARED: AtomicU64 = AtomicU64::new(0);
+/// A publish of this CPU's kernel root. The kernel root runs under ASID 0 by
+/// construction -- it is the boot identity map -- so it is not a process root
+/// and the userspace ASID does not apply to it.
+static ASID_PUBLISH_KERNEL: AtomicU64 = AtomicU64::new(0);
+/// A publish of a process root carrying the userspace ASID.
+static ASID_PUBLISH_TAGGED: AtomicU64 = AtomicU64::new(0);
+/// A publish of a process root whose ASID field is NOT the userspace ASID.
+/// This is the defect class: the corridor installs the word verbatim.
+static ASID_PUBLISH_UNTAGGED: AtomicU64 = AtomicU64::new(0);
+
+/// Count one publish into `saved_process_cr3` or `next_cr3`.
+///
+/// Called from both per-CPU setters, which is 2 of 2 Rust-side writes of
+/// either word. No lock, no allocation, no formatting, no page-table walk: a
+/// compare against this CPU's kernel root and one relaxed increment.
+/// claim-lint:ok: the 2 setters and the ordering of the count before the
+/// write are pinned by `the_shadow_setters_feed_the_runtime_census` in
+/// `tests/ttbr0_shadow_reconciliation_structure.rs`
+#[inline(always)]
+pub(crate) fn note_shadow_publish(value: u64) {
+    if value == 0 {
+        ASID_PUBLISH_CLEARED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    if value & TTBR0_ROOT_MASK == kernel_ttbr0() & TTBR0_ROOT_MASK {
+        ASID_PUBLISH_KERNEL.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    if value & TTBR0_ASID_MASK == USER_ASID_TTBR0 {
+        ASID_PUBLISH_TAGGED.fetch_add(1, Ordering::Relaxed);
+    } else {
+        ASID_PUBLISH_UNTAGGED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Emit the ASID census from normal context.
+///
+/// `untagged` is the field the prod-profile and strict gates fail on. The other
+/// three are carried so the line can be read as evidence rather than as an
+/// assertion about a counter that might not have been reached: a boot that
+/// dispatched userspace has a large `tagged`, and a `tagged=0` line says the
+/// census saw no process-root publish at all.
+/// claim-lint:ok: 3 of 3 production boots end at `tagged` above 19000 with
+/// `untagged=0`, in
+/// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
+/// and its 2 siblings
+pub fn emit_asid_census() {
+    crate::serial_println!(
+        "[TTBR0_ASID_CENSUS:untagged={}:tagged={}:kernel={}:cleared={}]",
+        ASID_PUBLISH_UNTAGGED.load(Ordering::Relaxed),
+        ASID_PUBLISH_TAGGED.load(Ordering::Relaxed),
+        ASID_PUBLISH_KERNEL.load(Ordering::Relaxed),
+        ASID_PUBLISH_CLEARED.load(Ordering::Relaxed),
+    );
+}
 
 /// Normalise a process page-table root to the ASID userspace runs under.
 ///
@@ -151,12 +279,15 @@ pub fn adopt_process_ttbr0(ttbr0_value: u64) {
     // routed call site makes the ASID a property of the discipline instead of
     // one each caller has to remember, and the field is not the caller's to
     // choose in any case.
-    // claim-lint:ok: of the 10 routed process-root install decision sites, 8
-    // hand over a bare `level_4_frame().start_address().as_u64()` with an empty
-    // ASID field, 1 (`launch_init_from_elf`) already tags ASID 1, and 1
-    // (`switch_to_process_page_table`) ors back whatever ASID the register
-    // held; the sites are enumerated in
+    // claim-lint:ok: of the 10 routed process-root install decision sites, all
+    // 10 hand over a root with an empty ASID field since R157/ASID-05; the
+    // 2 that did not -- `launch_init_from_elf`, which or-ed ASID 1 in, and
+    // `switch_to_process_page_table`, which or-ed back whatever ASID the
+    // register held -- were changed in that round to hand over the root alone.
+    // The sites are enumerated in
     // docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
+    // and the change is recorded in
+    // docs/planning/green-program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md
     let ttbr0_value = process_root_ttbr0(ttbr0_value);
 
     unsafe {

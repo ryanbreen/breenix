@@ -1,0 +1,8 @@
+== leg A: the green serial as captured ==
+SCORE: PASS - /tmp/asid-ratchet/leg-green.txt
+== leg B: one line mutated to untagged=3 ==
+SCORE: FAIL - TTBR0 ASID census reported an untagged process-root publish ([TTBR0_ASID_CENSUS:untagged=3:tagged=20718:kernel=24444:cleared=44485]) (/tmp/asid-ratchet/leg-untagged.txt)
+== leg C: every census line deleted ==
+SCORE: FAIL - TTBR0 ASID census marker missing (/tmp/asid-ratchet/leg-missing.txt)
+== leg D: every line forced to tagged=0 ==
+SCORE: FAIL - TTBR0 ASID census never counted a process-root publish (/tmp/asid-ratchet/leg-vacuous.txt)
