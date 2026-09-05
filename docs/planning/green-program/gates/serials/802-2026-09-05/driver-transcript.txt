@@ -1,0 +1,27 @@
+=== START 2026-09-05T06:56:10Z ===
+head=4b6b82d42462635a5296f54524144518db5fa6b6
+sha256_script=131d1304db8a1a78b4d36db06022a311d6a007458c5ba72d192a953c29ba0764  docker/qemu/run-x86-prod-profile-boot-test.sh
+=== STEP 1: clean-build check (testing,external_test_bins) ===
+build_rc=0
+--- grep -E '^(warning|error)' output (expect empty) ---
+--- grep_rc=1 (1 = no match = clean) ---
+=== STEP 2: production-profile gate, default run ===
+qemu_before=0
+gate_rc=0
+--- verdict lines ---
+PASS: x86 production profile reached steady state with the teardown census at rest
+--- booted image sha256 ---
+d1b3eb0e4461845bcb01381e8c6a66439c54924f7641df9ccfc242ac21abd71e  target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img
+=== STEP 3: preflight failure (over-length BREENIX_GATE_TMP) ===
+longdir_len=109
+preflight_rc=1
+--- preflight-fail output ---
+x86 production-profile gate preflight: console socket path "/root/gate-tmp-802-gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg/breenix_x86_prod_profile/console.sock" is 147 chars, over the AF_UNIX sun_path limit of 107 -- shorten BREENIX_GATE_TMP
+x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-profile-boot-test.sh:830, exit 1)
+  failing command: false
+=== STEP 4: preflight failure (relative BREENIX_GATE_TMP) ===
+preflight_rel_rc=1
+x86 production-profile gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
+x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-profile-boot-test.sh:826, exit 1)
+  failing command: false
+=== END 2026-09-05T06:58:22Z ===

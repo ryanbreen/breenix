@@ -230,6 +230,18 @@ second, before either script reached its build step (claim-lint:ok: #797 F7
 rejected commands and their output, both a real run captured firsthand this
 round).
 
+### Superseded for `run-x86-prod-profile-boot-test.sh` (#802)
+
+The two snippets above are the shape #797 landed, and they are what the other
+seven scripts still carry. In `run-x86-prod-profile-boot-test.sh` the bare
+`exit 1` tripped
+`tests/teardown_structure.rs::x86_production_profile_gate_verdict_discipline_holds`,
+which forbids an `exit` that can end that gate before its verdict line is
+printed; both of its checks were moved under the gate's `ERR` trap and now
+reject through `report_gate_failure` instead. What replaced them, and the
+beast evidence for the replacement, is in
+`GATE-PREFLIGHT-VERDICT-802-2026-09-05.md`.
+
 ## The evidence-capture driver at `docs/planning/713-x86-spawn/serials/run-leg1.sh` (review finding F4)
 
 This checked-in script is a historical record of a 12-boot evidence-capture
