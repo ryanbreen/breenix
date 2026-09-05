@@ -418,6 +418,44 @@ pub static PINNED_HOLD_PEN_MIGRATED: core::sync::atomic::AtomicU64 =
 pub static PINNED_WAKES_DELIVERED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// Migrations a site refused because the thread carries a `per_cpu_worker` pin
+/// naming another CPU.
+///
+/// Slice 3d left 11 of 11 migration sites pin-blind and enumerated them; this
+/// is what those sites now report. A refusal is not a discard: the thread is
+/// placed on the CPU its pin names, or -- when that CPU is not accepting
+/// wakeups and the thread is in the shape the delivery predicate recognises --
+/// its wake is held for that CPU by `hold_pinned_wake_for_home`, which counts
+/// separately into `PINNED_HOME_CPU_UNAVAILABLE`.
+///
+/// Gate-failing on both aarch64 boot gates, and unreachable in the shipped
+/// profiles for the same structural reason as the four fields above: no thread
+/// carries a pin of either kind, because `spawn_on_cpu` is the 1 mutating
+/// writer of `Thread::cpu_affinity` and its 1 call site has 0 callers.
+/// claim-lint:ok: 1 of 1 mutating writer of the field is `spawn_on_cpu`,
+/// counted by grep over kernel/src in this round
+pub static PINNED_MIGRATION_REFUSED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Threads whose saved kernel SP stands in a per-CPU stack slot that is not the
+/// CPU their pin names.
+///
+/// The stack slot is a hardware fact and the pin is a software claim, so the
+/// slot wins: resuming a thread anywhere but the CPU that owns the stack under
+/// its saved SP puts two CPUs on one stack, which is the corruption family
+/// PR #645 repaired. The two can only disagree if the pin has already been
+/// violated somewhere, so the disagreement is counted and both gates fail on it
+/// rather than being assumed away.
+///
+/// Structurally unreachable once every migration site consults the pin: a
+/// thread that is only ever queued on its home CPU can only ever save an SP in
+/// that CPU's slot.
+/// claim-lint:ok: 11 of 11 sites of the slice 3d census consult the pin at this
+/// head, counted by
+/// `tests/loopback_pump_structure.rs::pin_blind_migration_census_matches_the_slice_3e_table`
+pub static PINNED_STACK_HOME_CONFLICT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
 /// Whether the one-shot `[PINNED_HOME_CPU_UNAVAILABLE:first:...]` serial marker
 /// has been emitted this boot.
 static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
@@ -431,8 +469,8 @@ static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
 /// score the line against the all-zero literal rather than against a
 /// field-by-field pattern, so a field added later is gated on the day it
 /// appears rather than on the day someone remembers to widen a regex.
-/// claim-lint:ok: 4 of 4 gate legs -- green, refused, missing and late-hold --
-/// are in tests/loopback_pump_structure.rs
+/// claim-lint:ok: 6 of 6 gate legs -- green, refused, missing, late-hold,
+/// hold-pen and migration-refused -- are in tests/loopback_pump_structure.rs
 ///
 /// Normal context only: this is a `serial_println!`, called from the boot
 /// sequence and from the boot-test sampling kthread, never from a wake path.
@@ -441,11 +479,13 @@ static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
 /// the 4 gate legs that score it are in tests/loopback_pump_structure.rs
 pub fn emit_pinned_placement_census() {
     crate::serial_println!(
-        "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}:hold_pen_migrated={}:delivered={}]",
+        "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}:hold_pen_migrated={}:delivered={}:migration_refused={}:stack_home_conflict={}]",
         PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
         PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
         PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
         PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+        PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed),
+        PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
     );
 }
 
@@ -1723,6 +1763,13 @@ impl Scheduler {
                 ) {
                     continue;
                 }
+                // Slice 3e: a per-CPU worker is not rescued onto the rescuing
+                // CPU. Its work lives in the stalled CPU's per-CPU state, so
+                // moving it here would read the wrong state; the guard puts it
+                // back on its home CPU, or holds its wake for that CPU.
+                if self.retain_cpu_affine_thread(thread_id, current_cpu) {
+                    continue;
+                }
                 self.per_cpu_queues[current_cpu].push_back(thread_id);
                 reclaimed += 1;
             }
@@ -2150,6 +2197,17 @@ impl Scheduler {
                         self.per_cpu_queues[home].push_back(n);
                         continue;
                     }
+                    // Slice 3e: the steal is what moves a thread between CPUs
+                    // here -- the pop above has already taken it off the peer's
+                    // queue and this loop is about to run it on this one. The
+                    // guard returns a per-CPU worker to the CPU its pin names
+                    // before that can happen. It runs after the per-CPU stack
+                    // re-route above because that route is a hardware fact
+                    // about which CPU owns the stack under the thread's saved
+                    // SP, and a software pin cannot overrule it.
+                    if self.retain_cpu_affine_thread(n, current_cpu) {
+                        continue;
+                    }
                     let (terminated, owner_pid) = self
                         .get_thread(n)
                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -2214,6 +2272,11 @@ impl Scheduler {
                             if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
                                 PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
                                 self.per_cpu_queues[home].push_back(n);
+                                continue;
+                            }
+                            // Slice 3e: the same-thread branch of the same
+                            // steal, with the same disposition.
+                            if self.retain_cpu_affine_thread(n, current_cpu) {
                                 continue;
                             }
                             found = Some(n);
@@ -2405,7 +2468,13 @@ impl Scheduler {
             };
             thread.set_ready();
             let _ = self.cpu_state[cpu].pending_next.take();
-            self.per_cpu_queues[cpu].push_back(tid);
+            // Slice 3e: the handoff is completed onto the CPU the thread's pin
+            // names when it carries one, and onto the handoff's own CPU
+            // otherwise. The slot is already cleared above, so the guard sees
+            // the thread in the shape its delivery predicate recognises.
+            if !self.retain_cpu_affine_thread(tid, cpu) {
+                self.per_cpu_queues[cpu].push_back(tid);
+            }
             crate::per_cpu_aarch64::set_need_resched(true);
             self.send_resched_ipi();
             #[cfg(feature = "boot_tests")]
@@ -2643,6 +2712,17 @@ impl Scheduler {
                         self.per_cpu_queues[home].push_back(n);
                         continue;
                     }
+                    // Slice 3e: the steal is what moves a thread between CPUs
+                    // here -- the pop above has already taken it off the peer's
+                    // queue and this loop is about to run it on this one. The
+                    // guard returns a per-CPU worker to the CPU its pin names
+                    // before that can happen. It runs after the per-CPU stack
+                    // re-route above because that route is a hardware fact
+                    // about which CPU owns the stack under the thread's saved
+                    // SP, and a software pin cannot overrule it.
+                    if self.retain_cpu_affine_thread(n, current_cpu) {
+                        continue;
+                    }
                     let (terminated, owner_pid) = self
                         .get_thread(n)
                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -2705,6 +2785,11 @@ impl Scheduler {
                             if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
                                 PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
                                 self.per_cpu_queues[home].push_back(n);
+                                continue;
+                            }
+                            // Slice 3e: the same-thread branch of the same
+                            // steal, with the same disposition.
+                            if self.retain_cpu_affine_thread(n, current_cpu) {
                                 continue;
                             }
                             found = Some(n);
@@ -2946,7 +3031,14 @@ impl Scheduler {
                     thread.set_ready();
                 }
             }
-            self.per_cpu_queues[target_cpu].push_back(thread_id);
+            // Slice 3e: the destination is an explicit parameter here, and
+            // `requeue_thread_on_cpu` passes the CPU that owns the stack under
+            // the thread's saved SP. The guard consults the pin and yields to
+            // that stack home when the two disagree, so this call cannot
+            // reintroduce the two-CPUs-on-one-stack shape.
+            if !self.retain_cpu_affine_thread(thread_id, target_cpu) {
+                self.per_cpu_queues[target_cpu].push_back(thread_id);
+            }
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             // Send IPI to wake an idle CPU to pick up the requeued thread
             self.send_resched_ipi();
@@ -4148,7 +4240,17 @@ impl Scheduler {
                     })
                     .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
                 {
-                    self.per_cpu_queues[target].push_back(thread_id);
+                    // Slice 3e: the pin is consulted here as at the other 10
+                    // sites, and its answer is "no constraint" on 1 of 1 arm
+                    // reachable from this loop -- the loop above has just
+                    // published `Terminated`, and the guard's second test
+                    // declines for a terminated thread because a pin
+                    // constrains where a thread runs. That is what keeps this
+                    // token on a queue with spare capacity, which the
+                    // no-allocation rule above requires.
+                    if !self.retain_cpu_affine_thread(thread_id, target) {
+                        self.per_cpu_queues[target].push_back(thread_id);
+                    }
                 }
             }
         }
@@ -4354,6 +4456,136 @@ impl Scheduler {
             PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
             ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Keep a CPU-pinned thread on the CPU its pin names, instead of letting a
+    /// migration site move it somewhere else.
+    ///
+    /// This is the guard slice 3d's census owed. 11 of 11 functions in this
+    /// file that push a thread id onto a `per_cpu_queues` slot call it before
+    /// they push, and the answer decides whether the caller's own placement
+    /// stands:
+    ///
+    /// * `false` -- the caller places the thread exactly as it would have. An
+    ///   unpinned thread takes this answer on 1 of 1 reachable arm, so its path
+    ///   through a migration site is unchanged apart from the 1 thread lookup
+    ///   that answers "no pin".
+    /// * `true` -- the guard has already disposed of the thread: it is on the
+    ///   queue of the CPU its pin names, or its wake is held for that CPU. The
+    ///   caller must not place it again.
+    ///
+    /// The rule is one sentence: a `per_cpu_worker` pin is a claim that the
+    /// thread services one CPU's per-CPU state, so the thread is placed on that
+    /// CPU and on no other. What varies between the arms below is only what to
+    /// do when that CPU cannot take it right now.
+    /// claim-lint:ok: 11 of 11 sites of the slice 3d census call this before
+    /// their push, counted by
+    /// `tests/loopback_pump_structure.rs::pin_blind_migration_census_matches_the_slice_3e_table`
+    ///
+    /// 0 locks are taken and 0 allocations are made beyond the `VecDeque`
+    /// growth the caller's own `push_back` would have caused on the queue it
+    /// chose: this runs under the scheduler lock the caller already holds.
+    fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool {
+        let Some(thread) = self.get_thread(thread_id) else {
+            return false;
+        };
+        let state = thread.state;
+        let affinity = thread.cpu_affinity;
+        #[cfg(target_arch = "aarch64")]
+        let saved_sp = thread.context.sp;
+
+        // A pin constrains where a thread RUNS. A `Terminated` thread has 0
+        // CPUs it can run on: the dispatch loop is the 1 admission point in
+        // this file and it refuses a `Terminated` candidate on each of the
+        // queues it pops from, so the pin is read here and correctly reports no
+        // constraint. This is what keeps the teardown quarantine in
+        // `terminate_process_threads` placing its token on a queue with spare
+        // capacity, which it must, because a quarantine pass may not allocate
+        // while SCHEDULER is held.
+        // claim-lint:ok: 4 of 4 pop-and-admit loops in `schedule` and
+        // `schedule_deferred_requeue` test `state == ThreadState::Terminated`
+        // before breaking to a dispatch
+        if state == ThreadState::Terminated {
+            return false;
+        }
+        let Some(pin) = affinity else {
+            return false;
+        };
+        if !pin.per_cpu_worker {
+            // Slice 3d ruling M1: a hold pen is placement only, released by
+            // whoever set it, so a migration site may override it -- holding it
+            // would strand whatever the pen is holding. Overriding it in
+            // silence is the state that ruling forbade, so it is counted and
+            // both aarch64 gates fail on the count.
+            if pin.cpu != taking_cpu {
+                PINNED_HOLD_PEN_MIGRATED.fetch_add(1, Ordering::Relaxed);
+            }
+            return false;
+        }
+        if pin.cpu == taking_cpu {
+            // The destination the caller chose IS the home CPU: 0 CPUs are
+            // crossed, so there is no migration to refuse.
+            return false;
+        }
+        if pin.cpu >= self.online_cpu_count() {
+            // Slice 3d ruling (1) at a second face: an out-of-range pin is
+            // counted and the row corrected, rather than leaving a row naming a
+            // queue that 0 CPUs dispatch from. 0 producers reach this arm --
+            // `spawn_on_cpu` asserts an online target, `add_thread_inner`
+            // discards an out-of-range pin at publication, and 0 of the 2
+            // child-creation paths inherit one -- so a reading above zero says
+            // a third writer of the field appeared.
+            // claim-lint:ok: 1 of 1 mutating writer of `Thread::cpu_affinity`
+            // is `spawn_on_cpu` and 14 of 15 `Thread` build sites carry `None`,
+            // both counted by grep over kernel/src in slice 3d's round
+            PINNED_PUBLISH_DISCARDED.fetch_add(1, Ordering::Relaxed);
+            if let Some(thread) = self.get_thread_mut(thread_id) {
+                thread.cpu_affinity = None;
+            }
+            return false;
+        }
+        // A saved kernel SP standing in a per-CPU stack slot outranks the pin:
+        // that stack belongs to one CPU, and resuming the thread anywhere else
+        // puts two CPUs on one stack, which is the corruption family PR #645
+        // repaired. The slot can only disagree with the pin if the pin has
+        // already been violated, so the disagreement is counted and gate-failing
+        // rather than assumed away.
+        #[cfg(target_arch = "aarch64")]
+        if let Some(slot) = crate::arch_impl::aarch64::constants::percpu_stack_slot_of(saved_sp) {
+            if slot != pin.cpu {
+                PINNED_STACK_HOME_CONFLICT.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+        }
+        PINNED_MIGRATION_REFUSED.fetch_add(1, Ordering::Relaxed);
+        if self.cpu_accepts_wakeups(pin.cpu) {
+            // The home CPU can take it. Place it there rather than where the
+            // caller proposed: a placement needs no delivery, so a hold here
+            // would only add a step.
+            self.per_cpu_queues[pin.cpu].push_back(thread_id);
+            return true;
+        }
+        // The home CPU is not accepting wakeups, which is slice 3d's hold: the
+        // hold writes no thread row and no queue, so the thread stays runnable-
+        // pending, and `deliver_pinned_wakes_for_this_cpu` completes the
+        // placement at the home CPU's next scheduler entry.
+        //
+        // The hold is taken only when the thread is in the exact shape that
+        // delivery recognises. It is not in that shape while 1 or more of the
+        // other reachability records still names it -- a `previous_thread`
+        // slot, a `pending_next` handoff, a deferred requeue -- and holding it
+        // then would leave a wake with 0 deliverers. The thread then goes onto
+        // its home CPU's queue instead: it waits there for the home CPU to come
+        // back, which is what a per-CPU worker must do, and the strand oracle is
+        // left free to report it if the home does not return.
+        // claim-lint:ok: 5 of 5 dimensions of `reachability_dimensions` are
+        // tested by `pinned_wake_is_waiting_here`, which slice 3d recorded
+        if self.pinned_wake_is_waiting_here(thread_id, pin.cpu) {
+            self.hold_pinned_wake_for_home(thread_id);
+        } else {
+            self.per_cpu_queues[pin.cpu].push_back(thread_id);
+        }
+        true
     }
 
     /// Find the CPU with the fewest threads in its queue.
@@ -4627,7 +4859,12 @@ impl Scheduler {
             (0..MAX_CPUS).any(|c| c != cpu && self.cpu_state[c].previous_thread == Some(previous));
 
         if is_ready && !is_idle && !is_queued && !is_current && !is_other_deferred {
-            self.per_cpu_queues[cpu].push_back(previous);
+            // Slice 3e: the drain of this CPU's `previous_thread` slot places
+            // the thread on this CPU by default. A per-CPU worker goes back to
+            // its own CPU instead.
+            if !self.retain_cpu_affine_thread(previous, cpu) {
+                self.per_cpu_queues[cpu].push_back(previous);
+            }
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             set_need_resched();
         }
@@ -5807,7 +6044,15 @@ pub fn requeue_refused_dispatch(thread_id: u64) {
             return;
         }
         let cpu = Scheduler::current_cpu_id();
-        sched.per_cpu_queues[cpu].push_back(thread_id);
+        // Slice 3e: this CPU refused the dispatch, so the thread goes back onto
+        // this CPU's queue -- unless its pin names another, in which case the
+        // dispatch that was refused was already on the wrong CPU and the guard
+        // returns it to the right one. On x86_64 `MAX_CPUS` is 1, so the guard
+        // has one queue to choose from and cannot answer anything but "no
+        // constraint" here.
+        if !sched.retain_cpu_affine_thread(thread_id, cpu) {
+            sched.per_cpu_queues[cpu].push_back(thread_id);
+        }
     });
 }
 
@@ -5845,7 +6090,11 @@ pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) 
             .iter()
             .any(|queue| queue.contains(&aborted_thread_id));
         if should_queue && !in_queue {
-            sched.per_cpu_queues[cpu_id].push_back(aborted_thread_id);
+            // Slice 3e: same disposition as `requeue_refused_dispatch`, and
+            // inert for the same reason -- one queue on this architecture.
+            if !sched.retain_cpu_affine_thread(aborted_thread_id, cpu_id) {
+                sched.per_cpu_queues[cpu_id].push_back(aborted_thread_id);
+            }
         }
 
         let (resume_runnable, kernel_stack_top, thread_ptr) =
