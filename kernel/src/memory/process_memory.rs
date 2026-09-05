@@ -2709,7 +2709,7 @@ pub fn run_x86_page_table_custody_gate() {
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
-    let (current_frame, flags) = Cr3::read(); // Reads TTBR0_EL1
+    let (current_frame, _) = Cr3::read(); // Reads TTBR0_EL1
     let new_frame = page_table.level_4_frame();
 
     if current_frame != new_frame {
@@ -2724,8 +2724,18 @@ pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
         // return to EL0 running on whatever root the shadows still name. The
         // discipline installs and settles both in one place, with the same
         // barriers and TLB invalidation this path used to issue itself.
-        let ttbr0_value =
-            new_frame.start_address().as_u64() | (flags.bits() & 0xFFFF_0000_0000_0000);
+        //
+        // R157/ASID-05: this site used to carry the ASID field forward out of
+        // the register it had just read --
+        // `| (flags.bits() & 0xFFFF_0000_0000_0000)`. That is the or-only
+        // shape `process_root_ttbr0`'s doc comment refuses, spelled with the
+        // mask instead of the shift, and `adopt_process_ttbr0` replaced the
+        // field anyway. What is handed over now is the root alone.
+        // claim-lint:ok: this spelling is the one the tag census in
+        // `tests/ttbr0_shadow_reconciliation_structure.rs` cannot see, because
+        // the mask literal is also the HHDM base; it was removed rather than
+        // left for a predicate that does not reach it.
+        let ttbr0_value = new_frame.start_address().as_u64();
         crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0_value);
         log::debug!("ARM64: TTBR0 switch completed");
     }

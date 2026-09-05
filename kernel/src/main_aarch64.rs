@@ -266,7 +266,17 @@ fn launch_init_from_elf(
     // Switch to process page table with ASID=1 tagging. The TLB pressure
     // above has evicted stale entries from the boot identity map. ASID=1
     // ensures any remaining stale boot entries (ASID=0) don't match.
-    let ttbr0_value = ttbr0_phys | (1u64 << 48); // ASID=1
+    //
+    // R157/ASID-05: this site used to spell the tag itself, as
+    // `ttbr0_phys | (1u64 << 48)`. It no longer does. `adopt_process_ttbr0`
+    // normalises what it is handed -- clearing bits [63:48] before setting the
+    // userspace ASID -- so an or-only tag here was both redundant and a second
+    // spelling of a field the discipline owns.
+    // claim-lint:ok: 0 of 0 constructions of the userspace ASID tag remain
+    // outside the discipline's own file; the census is
+    // `the_asid_tag_is_constructed_in_one_place` in
+    // `tests/ttbr0_shadow_reconciliation_structure.rs`
+    let ttbr0_value = ttbr0_phys;
     //
     // Install through the shared discipline rather than a raw `msr`: init is
     // the one thread that reaches EL0 without passing through

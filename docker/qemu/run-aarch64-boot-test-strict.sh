@@ -56,6 +56,14 @@ ASID_CENSUS_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[0-9]+:kernel=[0
 ASID_CENSUS_UNTAGGED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[1-9][0-9]*:'
 ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][0-9]*:'
 
+# R157/ASID-01: the scoring-only entry point further down scores a serial that
+# was captured earlier, so it needs no kernel, no disk and no preflight. Those
+# checks are guarded on this being empty; the scoring rules themselves are not
+# guarded at all, which is the point of running them from a test.
+SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
+
+if [ -z "$SCORE_ONLY_SERIAL" ]; then
+
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
@@ -121,6 +129,8 @@ EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then
     echo "Error: ext2 disk not found at $EXT2_DISK"
     exit 1
+fi
+
 fi
 
 # Track results
@@ -329,12 +339,16 @@ score_serial() {
 # exists so the scoring rules can be exercised against a preserved serial without
 # booting, which is how the "a serial containing every success marker scores as a
 # success" property is proven.
-if [ -n "${BREENIX_STRICT_SCORE_ONLY:-}" ]; then
-    if SCORE_REASON=$(score_serial "$BREENIX_STRICT_SCORE_ONLY"); then
-        echo "SCORE: PASS - $BREENIX_STRICT_SCORE_ONLY"
+if [ -n "$SCORE_ONLY_SERIAL" ]; then
+    if [ ! -f "$SCORE_ONLY_SERIAL" ]; then
+        echo "SCORE: FAIL - BREENIX_STRICT_SCORE_ONLY names no readable serial ($SCORE_ONLY_SERIAL)"
+        exit 1
+    fi
+    if SCORE_REASON=$(score_serial "$SCORE_ONLY_SERIAL"); then
+        echo "SCORE: PASS - $SCORE_ONLY_SERIAL"
         exit 0
     else
-        echo "SCORE: FAIL - $SCORE_REASON ($BREENIX_STRICT_SCORE_ONLY)"
+        echo "SCORE: FAIL - $SCORE_REASON ($SCORE_ONLY_SERIAL)"
         exit 1
     fi
 fi

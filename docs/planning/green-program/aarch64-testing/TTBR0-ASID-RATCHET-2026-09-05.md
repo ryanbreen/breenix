@@ -43,7 +43,8 @@ function installs, whether it settles both shadow words, whether it settles them
 in the right order, whether the value it installs traces to a parameter.
 `adopt_process_ttbr0` did all of that correctly. What was wrong was the VALUE in
 the binding it published, and no check in the file read a value.
-claim-lint:ok: 25 of the 27 checks in that file at this head still pass with the
+claim-lint:ok: 25 of the 27 checks in that file at this head still pass with
+the
 defect restored, and the 2 that redden are named in
 `serials/asid-ratchet/01-structural-anti-vacuity-raw-adopt.txt`.
 
@@ -119,9 +120,18 @@ The three supporting tests: `the_publication_census_catches_an_untagged_root`
 (five synthetic legs, section 5), `the_shadow_setters_feed_the_runtime_census`
 (both per-CPU setters count before they write; the counter takes no lock, makes
 no allocation, does no formatting), and
-`both_aarch64_gates_fail_on_an_untagged_publish` (both gate scripts carry the
+`both_aarch64_gates_fail_on_an_untagged_publish`.
+
+The sentence that stood here about that last test — "both gate scripts carry the
 three assertion patterns, so deleting one is a test failure rather than a silent
-loss of the ratchet).
+loss of the ratchet" — was FALSE, and R157/ASID-01 proved it by mutation: the
+test asserted only that each script CONTAINS three pattern strings, which stays
+true after every assertion using them is deleted. With the assertions removed
+and the variable definitions left in place, the strict gate scored a serial
+reporting `untagged=3` as PASS while the test stayed green. What the test does
+now is in section 12.
+claim-lint:ok: the mutation deleted 3 of 3 assertions from each of the 2
+gates; the reproduction is section 12
 
 ## 4. The runtime census and the gate assertion
 
@@ -240,6 +250,16 @@ the count climbs monotonically to 14 as exec-driven adoptions accumulate. Gate
 output: `serials/asid-ratchet/02-runtime-anti-vacuity-prod-gate.txt`; the boot's
 own serial: `serials/asid-ratchet/02-runtime-anti-vacuity-prod-serial.txt`. The
 line was then restored and the kernel rebuilt for every run in section 8.
+
+**What this leg does NOT exercise (R157/ASID-04).** The 14 untagged publishes it
+counts are the exec/init population. Every blocking-resume site routes through
+`restore_process_ttbr0`, not through `adopt_process_ttbr0` directly, so
+`nanosleep`, EINTR, `wait`, futex and poll returns — the class section 1 opens
+with — are not among them. Section 13 runs the leg that reaches them.
+claim-lint:ok: 5 of 5 blocking-resume helpers route through
+`restore_process_ttbr0`, printed by
+`every_blocking_resume_restore_uses_the_guarded_helper` in serials/asid-
+ratchet/09-suite-green-after-r157.txt
 
 The strict gate's scoring legs, run against preserved serials:
 
@@ -362,7 +382,8 @@ Compile evidence: the kernel crate is built for `x86_64-unknown-none` as part of
 every structural-suite run, and
 `target/x86_64-unknown-none/debug/deps/libkernel-*.rlib` was rebuilt during the
 29-suite sweep in section 7.
-claim-lint:ok: 29 of 29 suites in `serials/asid-ratchet/06-structure-suites.txt`
+claim-lint:ok: 29 of 29 suites in `serials/asid-ratchet/06-structure-
+suites.txt`
 build that rlib as a dependency.
 
 Not done: no beast x86 build and no x86 boot test were run this round. The
@@ -406,12 +427,40 @@ claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-te
   claim-lint:ok: 0 experiments in this round tried to make a process root
   collide with the kernel root; the comparison is `TTBR0_ROOT_MASK` in
   `kernel/src/arch_impl/aarch64/ttbr0.rs`.
-* **No timing measurement was taken for the counter.** The cost argument is
-  structural — four relaxed counters, and on the arm where the value is not 0,
-  one per-CPU read
-  of the kernel root — and this round took 0 cycle counts. The counter is not
-  on the ERET or IRQ path; it is at the per-CPU write and at the two discipline
-  helpers.
+* **The counter IS reached from the exception-return corridor, and this
+  document said the opposite.** The sentence that stood here — "The counter is
+  not on the ERET or IRQ path; it is at the per-CPU write and at the two
+  discipline helpers" — was false, and it is the sentence that licensed adding
+  an atomic read-modify-write at the per-CPU write with no measurement. The
+  commit message of `6bd6edf3` ("nothing added to the ERET corridor") and the
+  round's fix report carry the same defect; pushed history is not rewritten, so
+  the correction lives here and in the PR body. What is true is narrower: the
+  `.S` files are untouched. The Rust the corridor branches to is not.
+  The chain, read out of the tree: `syscall_entry.S` and `boot.S` each
+  `bl check_need_resched_and_switch_arm64`; that reaches `dispatch_thread_locked`
+  (which calls `set_next_ttbr0_for_thread` and `switch_ttbr0_if_needed`) and
+  `dispatch_idle_locked` (which calls `setup_idle_return_locked`);
+  `handle_sync_exception` reaches `set_idle_stack_for_eret`. All four publish a
+  shadow word, so all four run the counter — and all four were already listed as
+  publish sites in this document's own section-3 table, which is what made the
+  sentence self-contradicting.
+  claim-lint:ok: 4 of 4 corridor-reached publish sites named in this bullet
+  appear in this document's own section-3 census table; the quoted commit
+  message is `6bd6edf3`.
+* **The cost is now measured, as a static instruction count, and only that.**
+  R157 built the shipped production profile twice, differing only in whether the
+  two `note_shadow_publish` calls are present, disassembled both and counted
+  instructions per symbol: `switch_ttbr0_if_needed` 20 → 53 (+33, for its two
+  publishes), `set_next_ttbr0_for_thread` 1925 → 1943 (+18),
+  `setup_idle_return_locked` 255 → 294 (+39). Per publish that is a load-acquire
+  of the per-CPU-initialised flag plus a per-CPU read of this CPU's kernel root,
+  a four-way counter select, and an `ldxr`/`add`/`stxr`/`cbnz` retry loop — there
+  is no LSE atomic on this target. This is an instruction count, NOT a cycle
+  measurement: it says nothing about LL/SC retry under contention or about cache
+  behaviour, and 0 cycle counts were taken in this round either.
+  claim-lint:ok: 2 builds, 3 symbols, both disassemblies and the arithmetic
+  are
+  in `serials/asid-ratchet/08-corridor-instruction-delta.txt`
 * **Three boots per profile is a small sample.** It is adequate for "the gates
   these changes touch still pass and the census reads 0 on them" and
   inadequate for a rate claim. 0 rate claims are made here, and the 6 boots are
@@ -421,3 +470,304 @@ claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-te
   PR #795.
 * **Ruling R19 is not quoted**, for the reason in section 2: its text is not in
   this repository, in issue #786, or in PR #800's body.
+
+---
+
+# R157 review round: what the five findings changed
+
+The sections above are the round as first written. Five review findings against
+it — two blocking, three major — are closed below. Where a section above stated
+something the findings showed to be false, that section has been corrected in
+place rather than annotated; this part records what was done and what it cost.
+
+## 12. ASID-01: the gate ratchet is behavioural now
+
+The finding, reproduced at the previous head: deleting the three census
+assertions from `score_serial` in the strict gate and the three `[ ... ] || {}`
+assertions from the production gate — 598 and 483 characters, both scripts still
+`bash -n` clean — left `both_aarch64_gates_fail_on_an_untagged_publish` green
+AND made the strict gate score a serial reporting `untagged=3` as `SCORE: PASS`.
+The test read three `script.contains(...)` strings and nothing anchored them to
+a `return 1` or an `exit 1`.
+claim-lint:ok: the mutation was reproduced at the previous head and again at
+this one, on 2 of 2 gates, singly
+
+What replaced it RUNS both gates. Each gate now has a scoring-only entry point
+that skips the boot and executes its own verdict block against a named serial:
+`BREENIX_STRICT_SCORE_ONLY`, which the strict gate already had (its preflight —
+kernel present, no-NEON, boot_tests profile, ext2 disk — is now guarded on the
+variable so the entry point needs no build), and `BREENIX_PROD_SCORE_ONLY`,
+added to the production gate in the same shape. Neither guards the verdict
+itself; that is the point.
+
+Four legs run against each gate, on a serial that gate was recorded green on
+(`03-strict-boot1-serial.txt`, `04-prod-boot1-serial.txt`):
+
+| leg | serial | required verdict |
+|-----|--------|------------------|
+| A | as captured | PASS — anti-vacuity: a gate that rejected everything would satisfy B–D |
+| B | one census line rewritten to `untagged=3` | FAIL, naming `untagged` |
+| C | every census line deleted (claim-lint:ok: 13 of 13 in each baseline serial) | FAIL |
+| D | every census line forced to `tagged=0` (claim-lint:ok: 13 of 13 in each baseline serial) | FAIL |
+
+The `script.contains(variable)` check that remains is a guard, not the
+assertion: without the entry point, invoking a gate from a unit test would boot
+QEMU, so the test fails first instead.
+
+Mutation-proven, at this head, one mutation at a time:
+
+* assertions deleted from the STRICT gate only →
+  `both_aarch64_gates_fail_on_an_untagged_publish` FAILED with
+  "run-aarch64-boot-test-strict.sh passed a serial reporting an untagged
+  process-root publish: SCORE: PASS - …-untagged.txt".
+* strict restored, assertions deleted from the PRODUCTION gate only → the same
+  test FAILED naming `run-aarch64-prod-profile-boot-test.sh`, whose output was
+  "PASS: production profile reached bsshd …".
+
+Both scripts were then restored.
+
+## 13. ASID-04: the leg that actually reaches the blocking-resume class
+
+The finding: section 5b's runtime mutation deletes normalisation from
+`adopt_process_ttbr0`, and every blocking-resume site routes through
+`restore_process_ttbr0`, so the untagged publishes it counts are exec/init ones.
+The finding proposed deleting `let root = process_root_ttbr0(root);` from
+`restore_process_ttbr0` instead.
+claim-lint:ok: 5 of 5 blocking-resume helpers route through
+`restore_process_ttbr0`, printed by
+`every_blocking_resume_restore_uses_the_guarded_helper` in serials/asid-
+ratchet/09-suite-green-after-r157.txt
+
+**That leg was run, and it does NOT redden the gate.** Production gate exit 0,
+15 census lines, final line
+`[TTBR0_ASID_CENSUS:untagged=0:tagged=24767:kernel=28311:cleared=52360]`.
+Evidence: `serials/asid-ratchet/10-leg-restore-normalisation-deleted.txt` and
+`10-leg-restore-normalisation-deleted-serial.txt`.
+
+The reason is structural and worth recording, because it says something about
+the shape of the defence. With the normalisation gone, `root` is the caller's
+untagged root; `local_ttbr0() == root` is then false against a register holding
+the tagged root, so the fast arm is never taken and control falls through to
+`adopt_process_ttbr0(root)` — which normalises. The blocking-resume path is
+defended by the adopt path's normalisation even with its own removed.
+claim-lint:ok: the mutation was booted and its gate output is serials/asid-
+ratchet/10-leg-restore-normalisation-deleted.txt, 15 of 15 census lines at
+untagged=0
+
+The publish that is NOT defended that way is the fast arm's, which writes both
+corridor words directly and returns. So the leg that reaches the class is:
+publish the caller's RAW operand on that arm, leaving the comparison and the
+adopt call on the normalised value.
+
+```
+ pub fn restore_process_ttbr0(raw: u64) {
+     let root = process_root_ttbr0(raw);
+     if local_ttbr0() == root {
+         unsafe {
+-            super::percpu::Aarch64PerCpu::set_saved_process_cr3(root);
++            super::percpu::Aarch64PerCpu::set_saved_process_cr3(raw);
+```
+
+Production gate, that build, exit 1:
+
+```
+FAIL: TTBR0 ASID census reported an untagged process-root publish:
+  [TTBR0_ASID_CENSUS:untagged=104:tagged=22235:kernel=25920:cleared=47607]
+Observed TTBR0 ASID census marker count: 14
+Observed TTBR0 ASID census untagged-publish line count: 13
+```
+
+13 of 14 lines report a non-zero `untagged`, and the population is the right one:
+the count is 9 while init is still starting and jumps 9 → 52 → 92 across the
+poll/TTY/bsshd phase, which is where the blocking-resume returns are. Gate
+output: `serials/asid-ratchet/11-leg-resume-fast-arm-raw-gate.txt`; serial:
+`11-leg-resume-fast-arm-raw-serial.txt`. The line was restored and the kernel
+rebuilt for section 16.
+
+## 14. ASID-05: one place constructs the ASID tag
+
+The finding: `set_next_ttbr0_for_thread` still spelled the tag as
+`ttbr0 | (1u64 << 48)` — the or-only form `process_root_ttbr0`'s own doc comment
+refuses, because it preserves a foreign ASID the operand already carried — and
+the new publish census scored that operand `[dispatch-tagged]` and ACCEPTED it,
+so the value ratchet could not tell "replaced" from "or-ed".
+
+Three sites were changed, not one. The census that found the other two is a
+scan for the tag's two spellings across `kernel/src`:
+
+| site | was | is |
+|------|-----|-----|
+| `context_switch.rs::set_next_ttbr0_for_thread` | `ttbr0 \| (1u64 << 48)` | `super::ttbr0::process_root_ttbr0(ttbr0)` |
+| `main_aarch64.rs` init launch | `ttbr0_phys \| (1u64 << 48)` | `ttbr0_phys` (adopt normalises) |
+| `process_memory.rs::switch_to_process_page_table` (aarch64) | `root \| (flags.bits() & 0xFFFF_0000_0000_0000)` | `root` (adopt normalises) |
+
+The first is the one that mattered: its operand is `process.inherited_cr3` on the
+arm where the row has no page table, a word that came from a register rather than
+from a frame address.
+
+Two ratchets, both anti-vacuity-proven:
+claim-lint:ok: 2 of 2 ratchets are proven by the mutation below, which reddens
+3 of 32 tests
+
+* `Provenance::DispatchTagged` is gone. Reaching the discipline's tag WITHOUT
+  going through `process_root_ttbr0` is now `HandTagged`, which is not accounted,
+  so the publish census fails on it.
+  `the_publish_census_tells_a_replaced_tag_from_an_or_ed_one` runs both spellings
+  of one synthetic publish and requires the census to separate them.
+* `the_asid_tag_is_constructed_in_one_place` censuses every line under
+  `kernel/src` that ors the tag in — naming `USER_ASID_TTBR0`, or spelling a
+  shift that parses to the discipline's own tag — and requires them all to be in
+  `arch_impl/aarch64/ttbr0.rs`, with an anti-vacuity assertion that the
+  discipline's file does construct it.
+  `the_tag_census_reads_the_or_and_not_the_comparison` pins the predicate's six
+  cases, including that a comparison against the tag and a commented-out or are
+  not findings.
+claim-lint:ok: 3 of 3 or-only sites in the tree were found by this census and
+changed; the mutation that reddens it is below
+
+Mutation-proven: restoring `let tagged_ttbr0 = ttbr0 | (1u64 << 48);` at the
+dispatch site reddens THREE tests —
+`every_shadow_publish_has_an_accounted_asid`, naming
+`set_next_ttbr0_for_thread set_next_cr3(tagged_ttbr0) [HAND-TAGGED]`;
+`the_asid_tag_is_constructed_in_one_place`; and
+`the_discipline_publishes_the_dispatch_asid`, which no longer parses a literal
+out of the dispatch body but requires the published value to be bound through
+`process_root_ttbr0(`.
+
+Disclosed narrowing, and it is why the third site was CHANGED rather than left
+for the predicate: the tag census reads the constant and the shift. It does not
+reach a hand-managed ASID field spelled with the `0xFFFF_0000_0000_0000` mask,
+because that literal is also this kernel's HHDM base and appears on a dozen
+unrelated lines under `kernel/src`. `switch_to_process_page_table` was the one
+site with that spelling; removing it is not the same as being able to catch the
+next one.
+
+## 15. ASID-03: the completeness premise is enforced
+
+The finding: `SHADOW_WRITERS` is keyed on two function names, the comment above
+it claims "a new publish site is reached because it has to call one of them",
+and nothing pinned that. A third function calling `percpu_write_u64` with either
+offset would evade the structural census (keyed on the names) AND the runtime
+counter (living inside them). That `percpu_write_u64` is module-private is a fact
+about today's tree, not a ratchet — the module it is private to is the one that
+would host the third writer.
+claim-lint:ok: 0 of 32 tests at the previous head counted writers of either
+offset; the mutation that reddens the new one is below
+
+`each_corridor_shadow_word_has_exactly_one_writer` censuses, for each of
+`PERCPU_SAVED_PROCESS_CR3_OFFSET` and `PERCPU_NEXT_CR3_OFFSET`, every function
+under `kernel/src` whose comment-stripped body names it, and requires: exactly
+one writes it through `percpu_write_u64`; that one is in `SHADOW_WRITERS`; and
+every other function naming it reads it through `percpu_read_u64`, so a function
+that names the offset while doing neither is a failure rather than a silence.
+claim-lint:ok: 2 of 2 offsets are censused, each reaching 2 of 2 functions at
+this head, named in the failure message of the mutation below
+
+Anti-vacuity: `the_writer_census_catches_a_second_writer` counts 1 writer in a
+synthetic source and 2 when a second is appended. And on the real tree, adding
+
+```rust
+pub unsafe fn arm_the_corridor(val: u64) {
+    percpu_write_u64(PERCPU_NEXT_CR3_OFFSET, val);
+}
+```
+
+to `percpu.rs` failed the test, naming both writers and all three functions.
+claim-lint:ok: the mutation named 2 writers and 3 of 3 functions; the failure
+message is quoted from that run
+
+Disclosed narrowings: the census counts functions that NAME the constants, so a
+write that computed the offset arithmetically or went through a raw pointer is
+outside it, as are the two assembly stores accounted separately. Files under
+`arch_impl/x86_64/` are skipped: that module defines constants with the same two
+names, a different block's offsets reached only from x86_64 code, and counting
+them would make this census fail on a namesake. The walk is otherwise
+kernel-wide rather than confined to `arch_impl/aarch64/`, because the aarch64
+constants are `pub`.
+
+## 16. Builds, gates and suites for this round
+
+Every aarch64 build is the mandated invocation:
+claim-lint:ok: 2 of 2 aarch64 builds in this round used this invocation, one
+per profile
+
+```
+cargo build --release --target aarch64-breenix-kernel.json \
+  -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
+  -p kernel --bin kernel-aarch64            # production profile
+  … --features boot_tests …                 # strict-gate profile
+```
+
+followed by `scripts/check-kernel-no-neon.sh`, which passed on both profiles
+(0 FP/SIMD load/store instructions in `.text`).
+
+Host-load rule: `pgrep -fl qemu-system-aarch64 | wc -l` was read before each gate
+invocation and returned 0 every time; one boot ran at a time. Six gate
+invocations booted QEMU in this round: two mutation legs and two gates run
+twice, once for the code change and once at the head that carries the
+documentation corrections. The one invocation without its own fresh check was
+the immediate `--rebuild-userspace` retry of a command whose first attempt had
+just been checked and had exited before booting, on a missing ext2 disk.
+claim-lint:ok: 6 of 6 booting gate invocations in this round are listed in the
+table below or in sections 13 and 12
+
+| run | result | evidence |
+|-----|--------|----------|
+| structure suite, 32 tests | 32 passed | `serials/asid-ratchet/09-suite-green-after-r157.txt` |
+| production gate ×1 | PASS, `untagged=0:tagged=24924:kernel=28996:cleared=53224`, 15 census lines | `12-prod-boot-r157.txt`, `12-prod-boot-r157-serial.txt` |
+| strict gate ×1 | PASS 1/1, 14 census lines, last `untagged=0:tagged=17349` | `13-strict-boot-r157.txt`, `13-strict-boot-r157-serial.txt` |
+
+The publish census at this head is 17 calls, unchanged in count; the one that
+moved is `set_next_ttbr0_for_thread set_next_cr3(tagged_ttbr0)`, now
+`[normalised]` where it read `[dispatch-tagged]`. The four accounted
+provenances — cleared, normalised, kernel root, read back — are each still
+present in the tree, which is what `every_shadow_publish_has_an_accounted_asid`
+requires so that "no unaccounted publishes" is a statement about a classifier
+that fires.
+
+## 17. What is still NOT claimed, after this round
+
+* **No boot samples `ttbr0_el1` at an exception return.** Unchanged from
+  section 11: the counter reads what is PUBLISHED, not the regime EL0 ran under.
+* **The cost measurement in section 11 is an instruction count.** No cycle count
+  was taken, on any path, in this round either. The <1000-cycle budget comparison
+  is arithmetic over instructions, not a timing result.
+* **One boot per profile at the shipping head.** Two gates, one boot each, plus
+  two booted mutation legs and one earlier pass of both gates before the
+  documentation corrections. Adequate for "these changes leave both gates
+  passing and the census reading 0"; 0 rate claims are made.
+* **The tag census cannot see a mask-spelled ASID field.** Stated in section 14
+  with the reason. The one site in the tree with that spelling was removed, which
+  is not the same as the predicate reaching the next one.
+* **`each_corridor_shadow_word_has_exactly_one_writer` counts named offsets.**
+  A raw-pointer write, or an arithmetically computed offset, is outside it.
+* **The ASID-04 leg proves the counter SEES a blocking-resume untagged publish.**
+  It does not prove the shipped kernel's blocking-resume publishes are tagged for
+  the reason the discipline gives; what it proves is that if they were not, this
+  gate would be red.
+  claim-lint:ok: the leg is a booted mutation whose gate output is
+  serials/asid-ratchet/11-leg-resume-fast-arm-raw-gate.txt, 13 of 14 census
+  lines above 0.
+* **Section 13's first leg is a null result, not a repair.** Deleting
+  normalisation from `restore_process_ttbr0` leaves the gate green because
+  `adopt_process_ttbr0` re-normalises on the fall-through. That is an observation
+  about this tree, and no claim is made that the fall-through is a designed
+  defence.
+
+## 18. claim-lint, R157 review round
+
+Run at the head this branch now carries, after the annotations this round added:
+
+```
+claim-lint: scripts/claim-lint.py -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md docs/planning/green-program/aarch64-testing/serials/asid-ratchet/README.md -> exit 0
+```
+
+The first run reported 28 findings across this round's changed hunks; each was
+discharged with a same-paragraph `claim-lint:ok:` citation naming an N-of-M
+count or a captured artifact, and 0 were discharged by weakening a claim the
+round measures. The 228 pre-existing findings outside this branch's changed
+hunks are unchanged and unreported, as they were before this round.
+claim-lint:ok: 28 of 28 findings in the changed hunks are discharged by
+citation; the tool's own scope statement is in
+docs/planning/green-program/claim-linting.md

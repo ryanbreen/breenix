@@ -16,8 +16,10 @@ const TTBR0_ASID_MASK: u64 = 0xFFFF_0000_0000_0000;
 /// page-table entries a non-zero ASID is what keeps a user VA from matching one
 /// of them.
 /// claim-lint:ok: 1 of 1 site in the kernel tags a root before publishing it
-/// into `next_cr3` -- `set_next_ttbr0_for_thread`, whose tag is pinned against
-/// this constant by `the_discipline_publishes_the_dispatch_asid` in
+/// into `next_cr3` -- `set_next_ttbr0_for_thread`, which since R157/ASID-05
+/// applies the tag by calling `process_root_ttbr0` rather than by or-ing a
+/// literal; that routing is pinned by
+/// `the_discipline_publishes_the_dispatch_asid` in
 /// `tests/ttbr0_shadow_reconciliation_structure.rs`.
 ///
 /// It is not only the register that has to carry it. `switch_ttbr0_if_needed`
@@ -25,10 +27,11 @@ const TTBR0_ASID_MASK: u64 = 0xFFFF_0000_0000_0000;
 /// `.Lrestore_saved_ttbr` arm of `syscall_entry.S` installs that word verbatim,
 /// ASID bits included -- so a site that publishes an untagged root decides that
 /// the next return to EL0 runs on ASID 0.
-/// claim-lint:ok: the dispatch tag is `context_switch.rs`'s `1u64 << 48` and the
-/// corridor install is `syscall_entry.S`'s `.Lrestore_saved_ttbr`; both are
-/// pinned against this constant by
-/// `the_discipline_publishes_the_dispatch_asid` in
+/// claim-lint:ok: the dispatch tag is now this constant, reached through
+/// `process_root_ttbr0`, and the corridor install is `syscall_entry.S`'s
+/// `.Lrestore_saved_ttbr`; the routing is pinned by
+/// `the_discipline_publishes_the_dispatch_asid` and the count of places that
+/// construct the tag by `the_asid_tag_is_constructed_in_one_place`, both in
 /// `tests/ttbr0_shadow_reconciliation_structure.rs`.
 pub(crate) const USER_ASID_TTBR0: u64 = 1 << 48;
 
@@ -58,6 +61,31 @@ pub(crate) const USER_ASID_TTBR0: u64 = 1 << 48;
 // claim-lint:ok: 2 of 2 per-CPU setters call it, pinned by
 // `the_shadow_setters_feed_the_runtime_census` in
 // `tests/ttbr0_shadow_reconciliation_structure.rs`
+//
+// WHERE THIS RUNS (R157/ASID-02 -- the round that added the counter said the
+// opposite, and was wrong). `note_shadow_publish` is `#[inline(always)]` into
+// both setters, and both setters ARE reached from the exception-return
+// corridor. `syscall_entry.S` and `boot.S` each `bl
+// check_need_resched_and_switch_arm64`; that function reaches
+// `dispatch_thread_locked`, which calls `set_next_ttbr0_for_thread` and
+// `switch_ttbr0_if_needed`, and `dispatch_idle_locked`, which calls
+// `setup_idle_return_locked`. `handle_sync_exception` reaches
+// `set_idle_stack_for_eret`. Every one of those publishes a shadow word, so
+// every one of them now runs the counter. The `.S` files are untouched; the
+// code they branch to is not. Saying otherwise is what licensed adding an RMW
+// here without measuring it.
+// claim-lint:ok: 4 of 4 corridor-reached publish sites are named in this paragraph,
+// each appearing in the census table of docs/planning/green-
+// program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md
+//
+// WHAT IT COSTS. Measured, not asserted: disassembling the shipped
+// production-profile kernel with and without the two `note_shadow_publish`
+// calls and diffing the instruction count of `switch_ttbr0_if_needed` -- the
+// corridor-reached function that publishes twice -- is the arithmetic recorded
+// in the round document. It is a static instruction count on one function, not
+// a cycle measurement, and it does not measure LL/SC retry under contention.
+// claim-lint:ok: the two objdumps, the counts and the delta are in
+// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/08-corridor-instruction-delta.txt
 //
 // What this cannot see: the two stores `syscall_entry.S` makes itself. The
 // entry path copies the live `ttbr0_el1` into `saved_process_cr3` and the
@@ -251,12 +279,15 @@ pub fn adopt_process_ttbr0(ttbr0_value: u64) {
     // routed call site makes the ASID a property of the discipline instead of
     // one each caller has to remember, and the field is not the caller's to
     // choose in any case.
-    // claim-lint:ok: of the 10 routed process-root install decision sites, 8
-    // hand over a bare `level_4_frame().start_address().as_u64()` with an empty
-    // ASID field, 1 (`launch_init_from_elf`) already tags ASID 1, and 1
-    // (`switch_to_process_page_table`) ors back whatever ASID the register
-    // held; the sites are enumerated in
+    // claim-lint:ok: of the 10 routed process-root install decision sites, all
+    // 10 hand over a root with an empty ASID field since R157/ASID-05; the
+    // 2 that did not -- `launch_init_from_elf`, which or-ed ASID 1 in, and
+    // `switch_to_process_page_table`, which or-ed back whatever ASID the
+    // register held -- were changed in that round to hand over the root alone.
+    // The sites are enumerated in
     // docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
+    // and the change is recorded in
+    // docs/planning/green-program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md
     let ttbr0_value = process_root_ttbr0(ttbr0_value);
 
     unsafe {

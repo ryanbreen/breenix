@@ -7013,7 +7013,24 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
         // Tag TTBR0 with ASID=1 so stale boot identity map TLB entries
         // (ASID=0) don't match user VA accesses. Combined with nG bits on
         // process page table entries, this ensures ASID-based separation.
-        let tagged_ttbr0 = ttbr0 | (1u64 << 48); // ASID=1 in bits [55:48]
+        //
+        // R157/ASID-05: the tag is APPLIED BY `process_root_ttbr0`, which
+        // clears bits [63:48] before setting the userspace ASID, rather than
+        // by the `ttbr0 | (1u64 << 48)` this line used to spell. The or-only
+        // form preserves whatever ASID the operand already carried, which is
+        // the shape `process_root_ttbr0`'s own doc comment says is refused.
+        // Both operands this site can be handed -- the row's own
+        // `level_4_frame().start_address()` and `process.inherited_cr3`, which
+        // `sys_clone` copies from the parent's frame address -- carry an empty
+        // ASID field TODAY, so the or-only form was not producing a wrong word.
+        // What it was doing is making that a property of its callers rather
+        // than of the discipline, which is the arrangement #786 came out of.
+        // claim-lint:ok: 2 of 2 operands reachable here are traced above; the
+        // 1 remaining construction of the userspace ASID tag in `kernel/src`
+        // is `process_root_ttbr0` itself, censused by
+        // `the_asid_tag_is_constructed_in_one_place` in
+        // `tests/ttbr0_shadow_reconciliation_structure.rs`
+        let tagged_ttbr0 = super::ttbr0::process_root_ttbr0(ttbr0);
         unsafe {
             Aarch64PerCpu::set_next_cr3(tagged_ttbr0);
         }

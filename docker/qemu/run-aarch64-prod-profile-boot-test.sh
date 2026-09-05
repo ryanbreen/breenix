@@ -71,6 +71,29 @@ OUTPUT_DIR="/tmp/breenix_aarch64_prod_profile"
 SERIAL_FILE="$OUTPUT_DIR/serial.txt"
 QEMU_PID=""
 
+# Scoring-only entry point, the same shape run-aarch64-boot-test-strict.sh has
+# carried as BREENIX_STRICT_SCORE_ONLY. R157/ASID-01: without it the only thing
+# a test could say about this gate's verdict rules was that the script CONTAINS
+# some pattern strings, which stays true after every assertion using them is
+# deleted. With it, the verdict block below is what runs -- unchanged, on the
+# serial named here -- so deleting an assertion changes the exit status a test
+# can read.
+# claim-lint:ok: 3 of 3 assertions in this gate were deleted as a mutation and the test
+# caught it; the leg is section 12 of docs/planning/green-
+# program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md
+#
+# The boot is skipped, not the scoring: everything between here and the verdict
+# is guarded on this variable being empty, and the verdict block itself is not
+# guarded at all.
+SCORE_ONLY_SERIAL="${BREENIX_PROD_SCORE_ONLY:-}"
+if [ -n "$SCORE_ONLY_SERIAL" ]; then
+    SERIAL_FILE="$SCORE_ONLY_SERIAL"
+    if [ ! -f "$SERIAL_FILE" ]; then
+        echo "FAIL: BREENIX_PROD_SCORE_ONLY names no readable serial: $SERIAL_FILE"
+        exit 1
+    fi
+fi
+
 marker_count() {
     local serial_file="$1"
     local literal="$2"
@@ -155,6 +178,7 @@ cleanup() {
     fi
     exit "$status"
 }
+if [ -z "$SCORE_ONLY_SERIAL" ]; then
 trap 'cleanup $?' EXIT
 
 rm -rf "$OUTPUT_DIR"
@@ -245,6 +269,7 @@ done
 kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
 QEMU_PID=""
+fi
 
 PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")
 KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
@@ -358,5 +383,8 @@ echo "Observed kernel poll timeout report count: $POLL_TCP_TIMEOUT_COUNT"
 echo "Observed kernel lost-readiness report count: $POLL_TCP_READY_LOST_COUNT"
 echo "Observed TTY oracle marker count: $TTY_ORACLE_COUNT"
 echo "Observed TTY oracle failure count: $TTY_ORACLE_FAIL_COUNT"
+echo "Observed TTBR0 ASID census marker count: $ASID_CENSUS_COUNT"
+echo "Observed TTBR0 ASID census untagged-publish line count: $ASID_CENSUS_UNTAGGED_COUNT"
+echo "Observed: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0
