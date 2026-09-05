@@ -19,6 +19,23 @@ set -e
 ITERATIONS=${1:-20}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #825: two concurrent runs of this gate (e.g. two worktrees on the same host,
+# both native QEMU rather than the shared beast container #797/#801 covered)
+# each hardcoded the identical /tmp/breenix_aarch64_strict_$iteration and
+# /tmp/breenix_aarch64_strict_failures paths, so one run's rm -rf/mkdir could
+# delete and rewrite the serial another run's poll loop was mid-boot scoring,
+# and the first run then reported the second run's kernel as its own result --
+# the false 18/20 red this issue reports. Defaulting to /tmp keeps every
+# existing caller byte-identical; a concurrent-lane launcher sets this to a
+# per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever directory
+# happens to be current when each function below runs (the same F6 guard PR
+# #801 gave the x86 gate scripts for #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
+esac
 # construct_residual is the counted frame residue of the two construction-failure arms read off a measured green run, and it is architecture-specific (4 on x86, 2 on aarch64) because the two page-table constructors record different table-frame counts.
 INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
@@ -430,7 +447,7 @@ report_failure() {
     local iteration="$1"
     local reason="$2"
     local serial_file="$3"
-    local failure_dir="/tmp/breenix_aarch64_strict_failures"
+    local failure_dir="$BREENIX_GATE_TMP/breenix_aarch64_strict_failures"
     local timestamp
     local preserved_serial
     local lines
@@ -452,7 +469,7 @@ report_failure() {
 
 run_single_test() {
     local iteration=$1
-    local OUTPUT_DIR="/tmp/breenix_aarch64_strict_$iteration"
+    local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_strict_$iteration"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -587,6 +604,6 @@ else
     echo "========================================="
     echo ""
     echo "This indicates a regression or timing bug that needs investigation."
-    echo "Serial output from failed boots can be found in /tmp/breenix_aarch64_strict_N/"
+    echo "Serial output from failed boots can be found in $BREENIX_GATE_TMP/breenix_aarch64_strict_N/"
     exit 1
 fi

@@ -16,9 +16,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KERNEL_SRC="$BREENIX_ROOT/kernel/src/main_aarch64.rs"
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+# #825: two concurrent runs of this script on the same host each hardcoded
+# the identical /tmp/breenix_arm64_test_results path, so one run's rm
+# -rf/mkdir could delete and rewrite another run's in-flight results.
+# Defaulting to /tmp keeps a caller that leaves it unset byte-identical; a
+# concurrent-lane launcher sets this to a per-worktree directory instead.
+# NOTE: this script also mutates $KERNEL_SRC in place per test, a separate,
+# pre-existing concurrency hazard BREENIX_GATE_TMP does not address --
+# disclosed, not fixed, in this change's round doc.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+esac
 
 # Output directory for results
-RESULTS_DIR="/tmp/breenix_arm64_test_results"
+RESULTS_DIR="$BREENIX_GATE_TMP/breenix_arm64_test_results"
 rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 
