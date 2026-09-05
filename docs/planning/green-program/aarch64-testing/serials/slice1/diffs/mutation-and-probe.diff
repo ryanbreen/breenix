@@ -10,7 +10,7 @@
 +        // dispatch or idle redirect published.
      }
  }
- 
+
 --- /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/main_aarch64_clean.rs	2026-09-04 18:34:03
 +++ kernel/src/main_aarch64.rs	2026-09-04 18:34:15
 @@ -289,7 +289,19 @@

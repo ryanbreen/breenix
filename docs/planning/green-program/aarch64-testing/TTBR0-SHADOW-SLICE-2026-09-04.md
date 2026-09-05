@@ -108,10 +108,14 @@ function. Without it the existing suite goes red on a correct change.
 
 `launch_init_from_elf` came across because it is the same shape and the hunk
 applied cleanly; nothing kboot-related or boot-sequence-related rode with it.
-`main` still launches init from the pinned boot continuation, and the diff to
-that function is one raw `asm!` block replaced by one call.
-claim-lint:ok: the whole diff to that function is 1 hunk, reproducible with
-`git diff origin/main -- kernel/src/main_aarch64.rs`.
+`main` still launches init from the pinned boot continuation. The diff to
+`kernel/src/main_aarch64.rs` is two hunks, not one: the raw `asm!` block
+replaced by one call, and the removal of the `use core::arch::asm;` import that
+block was the file's last user of. The behaviour-bearing change is the first
+hunk; the second is what the first makes dead.
+claim-lint:ok: `git diff --unified=0 origin/main..HEAD --
+kernel/src/main_aarch64.rs | rg "^@@"` prints 2 hunk headers, `@@ -90 +89,0 @@`
+and `@@ -271,12 +270,26 @@`.
 
 ## 3. Why the trigger is latent on `main`, and how that was measured
 
@@ -255,14 +259,27 @@ coverage floor in the same test is what notices.
 `tests/ttbr0_shadow_reconciliation_structure.rs` walks every Rust function
 under `kernel/src` whose body writes `TTBR0_EL1` and sorts the result by shape
 rather than by a list of known sites. A censused function must be the
-discipline itself, or reconcile inline (it names `set_saved_process_cr3`), or
-be a mechanism primitive — one whose installed value came in through its own
-signature and which fetched nothing and named no shadow. Anything left over
+discipline itself, or reconcile inline, or be a mechanism primitive — one whose
+installed value came in through its own signature and which fetched nothing and
+named no shadow. Anything left over
 must live in a file CLAUDE.md lists as Tier-1 prohibited, and
 `the_tier_one_exemption_matches_the_project_rule` reads that list back out of
 CLAUDE.md rather than trusting the test's own copy.
 claim-lint:ok: 7 of 7 censused functions are listed immediately below and
 reproduced by the `--nocapture` run cited in section 6.
+
+"Reconciles inline" means the site settles BOTH corridor words: it publishes a
+root into `saved_process_cr3` and it retires the pending switch with
+`set_next_cr3(0)`. Round 2 tightened this — the earlier predicate cleared a site
+that merely named `set_saved_process_cr3`, which is the weaker half, because the
+corridor reads `next_cr3` first and installs it whenever it is non-zero. The
+predicate is a shape (`settles_both_shadows`), not a list of blessed names, and
+it is applied at both ends: to the inline installers themselves and to the
+aarch64 callers of a mechanism primitive. Section 11 records the mutation runs
+that show each end reddening.
+claim-lint:ok: both ends redden under the round-2 mutations recorded at
+`serials/slice1/r2/mutation-a-nomem-readded.txt` and
+`serials/slice1/r2/mutation-b-next-cr3-deleted.txt`, each exit 101.
 
 The census reaches 7 functions at this head, the same 7 the parked branch
 reported:
@@ -282,10 +299,27 @@ longer write the register themselves.
 
 `every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows` closes the
 exemption's other end: an aarch64-scoped caller of an exempt primitive must
-name `adopt_process_ttbr0`, `quiesce_ttbr0_for_exit` or
-`set_saved_process_cr3`, or be the MMU bring-up that installs the kernel root
-before per-CPU state exists. That census is what found the
-`process_memory.rs` site.
+name `adopt_process_ttbr0` or `quiesce_ttbr0_for_exit`, or settle both shadow
+words itself, or be the MMU bring-up that installs the kernel root before
+per-CPU state exists. That census is what found the `process_memory.rs` site.
+
+`the_discipline_installs_in_order_and_orders_the_shadow_stores` pins the
+discipline module's own asm: each of the 2 install helpers in
+`kernel/src/arch_impl/aarch64/ttbr0.rs` must run `dsb ishst` → `msr ttbr0_el1` →
+`isb` → `tlbi vmalle1is` → `dsb ish` → `isb` in that order, and must not carry
+`nomem`. Its coverage is an equality rather than a floor — the install
+occurrences reached by the walk must equal the occurrences the file holds — so a
+helper added later cannot slip past it.
+`no_ttbr0_installer_claims_it_touches_no_memory` applies the `nomem` half to
+the censused installers kernel-wide, with the same Tier-1 disposition as the
+shadow census: print, do not pin.
+claim-lint:ok: 7 of 7 censused installs are checked and 1 of 7 is the Tier-1
+site it prints; the run is `serials/slice1/r2/structure-suites.txt`.
+`the_dispatch_ttbr0_switch_settles_both_shadows` pins
+`context_switch::switch_ttbr0_if_needed` independently of the census, because it
+is the install every userspace thread takes on dispatch: the root it publishes
+into `saved_process_cr3` must be the operand it just installed, it must clear
+`next_cr3`, and its block must not be `nomem`.
 
 Anti-vacuity, 5 legs in that same file: a synthetic site that reads a root out of
 the process manager and installs it raw is classified unreconciled; a synthetic
@@ -295,11 +329,26 @@ site that touches one shadow is rejected as a primitive; and a synthetic
 aarch64 wrapper handing a process root straight to a primitive is caught by the
 caller census and cleared once routed through the discipline.
 
+Round 2 added 4 more self-contained legs, so the tightened predicates cannot go
+vacuous without a test going red: a synthetic install block carrying
+`options(nomem, nostack)` is caught and clears once the option is dropped, while
+prose above the block naming the option does not decide the answer; a synthetic
+bare `msr` with no barriers fails the sequence check; the four one-word-settled
+shapes (both / saved only / pending only / pending left armed) are accepted and
+rejected as their names say; and a synthetic aarch64 caller that hands a process
+root to a primitive and publishes only `saved_process_cr3` is caught by the
+caller census, clearing only when `set_next_cr3(0)` is added beside it.
+
 `tests/exec_lock_order_structure.rs` gains two negative tests of its own:
 deleting `set_next_cr3(0)` from the helper reddens the exec-path T4 validator,
 and putting a raw `msr` back into `sys_exec_aarch64` reddens it too.
 
-## 8. Builds and suites at this head
+## 8. Builds and suites at the round-1 head
+
+The rows below were run at the round-1 head, `ceda999d`. Review round 2 changed
+kernel source, so the 3 aarch64 profiles and the 27 suites were rebuilt and
+re-run afterwards; section 11 carries those results and the artifact path for
+each. The x86_64 row is beast-only and was not re-run.
 
 | what | result |
 |---|---|
@@ -307,7 +356,7 @@ and putting a raw `msr` back into `sys_exec_aarch64` reddens it too.
 | aarch64 no features (the production profile, built by the prod gate itself) | builds; `check-kernel-no-neon.sh` PASS |
 | aarch64 `--features testing` | builds; `check-kernel-no-neon.sh` PASS (it is the boot that fails, section 5) |
 | x86_64 `--features testing,external_test_bins --bin qemu-uefi`, on beast | builds, exit 0, 0 lines matching `^(warning\|error)` |
-| the 27 `tests/*_structure.rs` suites | 27 of 27 suites green, 0 failures |
+| the 27 `tests/*_structure.rs` suites | 27 of 27 suites green, 0 failures (round 2 re-ran them: 27 of 27, 524 cases) |
 | the 9-boot R13 smoke, re-run at the final head | `serials/slice1/r13-final/` |
 
 0 of the 3 aarch64 builds emit a warning attributable to this tree. The one
@@ -349,5 +398,224 @@ x86 gate reds tracked at #630, #636, #554, #608 and #540 are unrelated to it.
 | `serials/slice1/builds/aarch64-testing-build.txt` | the `--features testing` build at this head, exit 0 |
 | `serials/slice1/builds/aarch64-testing-no-neon.txt` | its `check-kernel-no-neon.sh` PASS |
 | `serials/slice1/builds/x86-testing-external_test_bins-build.txt` | the beast x86 build, exit 0 |
+| `serials/slice1/r2/` | review round 2: the 3 rebuilt aarch64 profiles with their no-neon runs, the 27-suite run, and the 2 anti-vacuity mutation runs |
+
+
+## 11. Review round 2 (R154)
+
+Five findings were closed on this branch. Sections 1–10 were rewritten where a
+round-1 sentence was wrong, so they read as the tree stands; what follows is the
+round's own record — what changed, and the run that shows each ratchet is not
+vacuous.
+
+### F-001 — `nomem` on the install blocks
+
+`adopt_process_ttbr0` declared its asm `options(nomem, nostack)`. `nomem` tells
+the compiler the block reads and writes no memory, which is a licence to move
+memory accesses across it — and the memory in question is exactly the two
+per-CPU shadow stores that follow the install and the caller's page-table
+stores that must precede it. The option is dropped; `nostack` stays.
+
+What the block now orders relative to the surrounding Rust stores: without
+`nomem` the compiler must assume the asm may read or write the same memory as
+the code around it, so it may not move the `set_saved_process_cr3` /
+`set_next_cr3(0)` stores, or a caller's page-table stores, across the block.
+That is a constraint on the compiler alone. It adds no instruction, and it makes
+no claim about what another CPU observes. The hardware ordering is unchanged:
+`dsb ishst` before the `msr`, `dsb ish; isb` after.
+claim-lint:ok: the rebuilt kernels are at
+`serials/slice1/r2/aarch64-no-features-build.txt`,
+`serials/slice1/r2/aarch64-boot_tests-build.txt` and
+`serials/slice1/r2/aarch64-testing-build.txt`, 3 of 3 exit 0.
+
+No miscompilation was observed. This closes a permission, not a measured
+reorder, and the doc comments on both helpers say so in those terms.
+
+The finding named the discipline helper. 3 more sites in this kernel had the
+identical shape — an install block declared `nomem` with shadow stores beside
+it — so 4 of the 4 are fixed together:
+
+```
+kernel/src/arch_impl/aarch64/ttbr0.rs::adopt_process_ttbr0            (the finding)
+kernel/src/arch_impl/aarch64/ttbr0.rs::switch_ttbr0_to_kernel         (same file, quiesce_ttbr0_for_exit stores after it)
+kernel/src/arch_impl/aarch64/syscall_entry.rs::restore_ttbr0_after_failed_exec
+kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed
+```
+
+The two mechanism primitives, `paging.rs::write_root` and
+`memory/arch_stub.rs::Cr3::write`, already carried `options(nostack)` alone and
+were not touched. The tenth site,
+`kernel/src/syscall/time.rs::ensure_current_address_space`, is `nomem` and
+carries the same hazard; it is Tier-1 and is disclosed here and printed by the
+suite on every run rather than changed (section 6).
+claim-lint:ok: 4 of the 6 non-Tier-1 censused installs carried `nomem` and were
+changed; the run that prints the remaining Tier-1 site is
+`serials/slice1/r2/structure-suites.txt`.
+
+One consequence worth stating plainly: the raw block this slice replaced at
+`launch_init_from_elf` carried `options(nostack, preserves_flags)`. Routing that
+site through the discipline helper as round 1 shipped it therefore *added*
+`nomem` where the code had not had it. This change removes it again.
+
+### F-002 — ratchet for the install shape
+
+`the_discipline_installs_in_order_and_orders_the_shadow_stores` (new) asserts,
+for each of the 2 install helpers `kernel/src/arch_impl/aarch64/ttbr0.rs` holds
+(found by shape, not by name), that the asm block performs `dsb ishst` → `msr ttbr0_el1` → `isb` →
+`tlbi vmalle1is` → `dsb ish` → `isb` in order and does not carry `nomem`. The
+option is read off the extracted `asm!` block, not the function body, so prose
+naming `nomem` cannot decide the answer. Coverage is an equality, not a floor:
+the install occurrences inside the checked bodies must equal the occurrences the
+file holds.
+
+`no_ttbr0_installer_claims_it_touches_no_memory` (new) applies the `nomem` half
+to the censused installers kernel-wide, with the shadow census's Tier-1
+disposition — print, do not pin.
+claim-lint:ok: 7 of 7 censused installs are checked, 6 of 7 pinned and 1 of 7
+printed, in `serials/slice1/r2/structure-suites.txt`.
+
+Anti-vacuity, recorded verbatim in
+`serials/slice1/r2/mutation-a-nomem-readded.txt`: `options(nostack)` was put
+back to `options(nomem, nostack)` in `adopt_process_ttbr0` in a scratch copy of
+the file, and
+
+```
+$ cargo test --test ttbr0_shadow_reconciliation_structure
+exit: 101
+test result: FAILED. 14 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+
+the_discipline_installs_in_order_and_orders_the_shadow_stores panicked:
+adopt_process_ttbr0: the install block carries `nomem`, which tells the
+compiler it reads and writes no memory -- a licence to move the per-CPU shadow
+stores and the caller's page-table stores across the barriers
+
+no_ttbr0_installer_claims_it_touches_no_memory panicked:
+these TTBR0 installs are declared `nomem`, so the compiler may move the
+surrounding shadow and page-table stores across the barriers:
+["kernel/src/arch_impl/aarch64/ttbr0.rs::adopt_process_ttbr0"]
+```
+
+The file was then restored from the byte copy taken before the edit, and the
+suite is green at the recorded commit (`serials/slice1/r2/structure-suites.txt`,
+`ttbr0_shadow_reconciliation_structure ... passed=16 failed=0`).
+
+### F-003 — one shadow was being accepted for two
+
+The raw-install ratchet cleared an inline installer as soon as its body named
+`set_saved_process_cr3`; it did not ask for `set_next_cr3(0)`. That is the
+weaker half. The corridor reads `next_cr3` FIRST and installs it whenever it
+holds a value other than `0`, so a site that publishes a correct
+`saved_process_cr3` and leaves a stale `next_cr3` armed has decided which root
+the next return to EL0 runs on just as surely as a raw `msr` would. The primitive-caller census had the same
+asymmetry in its clearance list.
+
+Both now go through one shape predicate, `settles_both_shadows`: a body
+qualifies when it publishes a root other than `0` into `saved_process_cr3` and
+clears `next_cr3` with a literal `0`. It is a shape, not a list of blessed
+function names — any site that keeps the two corridor words in agreement with
+the register satisfies it.
+claim-lint:ok: the 4 shapes it separates (both / saved only / pending only /
+pending left armed) are the 4 legs of
+`settling_one_shadow_is_not_settling_the_shadows`, run in
+`serials/slice1/r2/structure-suites.txt`.
+
+`context_switch::switch_ttbr0_if_needed` was reached through the census and had
+no pin of its own, though it is the install a userspace thread takes on each
+dispatch that changes address space. `the_dispatch_ttbr0_switch_settles_both_shadows` (new) pins
+it directly: the root it publishes into `saved_process_cr3` must be the operand
+it just installed, it must clear `next_cr3`, and its block must not be `nomem`.
+
+Anti-vacuity, recorded verbatim in
+`serials/slice1/r2/mutation-b-next-cr3-deleted.txt`: `set_next_cr3(0)` was
+deleted from `switch_ttbr0_if_needed` in a scratch copy of the file, and
+
+```
+$ cargo test --test ttbr0_shadow_reconciliation_structure
+exit: 101
+test result: FAILED. 14 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+
+the_dispatch_ttbr0_switch_settles_both_shadows panicked:
+the dispatch switch must also retire the pending switch it consumed: a
+`next_cr3` left armed is installed FIRST on the next return to EL0
+
+every_ttbr0_install_settles_the_per_cpu_shadows panicked:
+these TTBR0 installs leave one or both per-CPU shadows naming another root:
+["kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed"]
+```
+
+The file was then restored from the byte copy taken before the edit, and the
+suite is green at the recorded commit — the same
+`ttbr0_shadow_reconciliation_structure ... passed=16 failed=0` row.
+
+Four self-contained legs were added beside the two mutations, so the tightened
+predicates cannot quietly go vacuous later:
+`the_nomem_check_reads_the_asm_block_and_not_the_prose`,
+`settling_one_shadow_is_not_settling_the_shadows` (both / saved only / pending
+only / pending left armed), `the_caller_census_rejects_a_half_settled_caller`,
+and the bare-`msr` leg of the sequence check.
+
+### F-009 — "one hunk" was false
+
+Section 2 said the diff to `launch_init_from_elf` is one hunk. It is two:
+
+```
+$ git diff --unified=0 origin/main..HEAD -- kernel/src/main_aarch64.rs | rg "^@@"
+@@ -90 +89,0 @@ fn launch_init_from_elf(
+@@ -271,12 +270,26 @@ fn launch_init_from_elf(
+```
+
+The first removes `use core::arch::asm;`, which the replaced block was the
+file's last user of; the second is the install itself. The sentence in section 2
+now says two hunks and names both.
+
+### F-012 — trailing whitespace in an evidence artifact
+
+`serials/slice1/diffs/mutation-and-probe.diff` line 13 was a single space — the
+unified-diff context line for a blank source line — which made
+`git diff --check origin/main..HEAD` exit 2. Only that whitespace was removed;
+the line is now empty and no other byte of the artifact changed. It is the sole
+trailing-whitespace line the file held (`grep -c ' $'` on it returns 1 before,
+0 after), and `git diff --check` is clean at the round-2 head.
+
+### F-007 — disposition
+
+Recorded verbatim, as the arbitration rule this branch is held to:
+
+> the reviewer's strict smoke 1/3 miss (exec smoke outside the fixed window,
+> heartbeats alive through 18617 ms, no fault marker) matches the
+> pre-adjudicated host-load window-miss signature only when the host was loaded
+> at launch; the round-2 prove (strict x10 under the <=2-QEMU rule) is the
+> arbiter; a same-shape miss on a quiet host is UNATTRIBUTED and gate-failing
+
+No boot was run in this round: it is a source-and-docs round, and the strict x10
+run named above is the separate arbiter.
+claim-lint:ok: the round's own evidence is the 2 mutation runs and the 27-suite
+run under `serials/slice1/r2/`; F-007 is dispositioned, not measured, here.
+
+### Builds, suites and claim-lint at the round-2 head
+
+| what | result | artifact |
+|---|---|---|
+| aarch64 no features (production profile) | `BUILD_EXIT=0`, 1 of 1 `^(warning\|error)` line is the toolchain's `core v0.0.0` future-incompat notice | `serials/slice1/r2/aarch64-no-features-build.txt` |
+| its `check-kernel-no-neon.sh` | exit 0, PASS, 0 FP/SIMD load/store in `.text` | `serials/slice1/r2/aarch64-no-features-no-neon.txt` |
+| aarch64 `--features boot_tests` | `BUILD_EXIT=0`, same single toolchain warning | `serials/slice1/r2/aarch64-boot_tests-build.txt` |
+| its `check-kernel-no-neon.sh` | exit 0, PASS | `serials/slice1/r2/aarch64-boot_tests-no-neon.txt` |
+| aarch64 `--features testing` | `BUILD_EXIT=0`, same single toolchain warning | `serials/slice1/r2/aarch64-testing-build.txt` |
+| its `check-kernel-no-neon.sh` | exit 0, PASS | `serials/slice1/r2/aarch64-testing-no-neon.txt` |
+| the 27 `tests/*_structure.rs` suites | 27 of 27 green, 524 cases, 0 failures | `serials/slice1/r2/structure-suites.txt` |
+
+The `boot_tests` profile `include_bytes!`s userspace ELFs that a fresh worktree
+does not carry; they were produced here by
+`./userspace/programs/build.sh --arch aarch64` (148 binaries installed, exit 0)
+before that build was run. This branch changes no userspace source.
+
+x86_64 was not rebuilt this round: x86 builds run on beast, this round touches
+no x86 code path, and section 9's x86 result stands as the round-1 record of a
+tree whose x86 sources are byte-identical to this one's.
+
+```
+claim-lint: scripts/claim-lint.py                                                    -> exit 0
+claim-lint: scripts/claim-lint.py --files <the 2 prose files this round touched>     -> exit 0
+```
 
 claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md -> exit 0

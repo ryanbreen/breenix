@@ -1,0 +1,53 @@
+MUTATION B (review round 2, F-003 anti-vacuity)
+set_next_cr3(0) deleted from
+kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed.
+Scratch only: reverted from a byte copy taken before the edit; the tree at
+the recorded commit carries the clear.
+
+$ cargo test --test ttbr0_shadow_reconciliation_structure
+
+running 16 tests
+test settling_one_shadow_is_not_settling_the_shadows ... ok
+test the_nomem_check_reads_the_asm_block_and_not_the_prose ... ok
+test the_tier_one_exemption_matches_the_project_rule ... ok
+test the_ttbr0_discipline_publishes_both_shadows ... ok
+test init_reaches_userspace_on_the_root_the_shadows_name ... ok
+test the_shadow_census_accepts_a_mechanism_primitive ... ok
+test the_primitive_exemption_rejects_a_shadow_touching_install ... ok
+test the_shadow_census_rejects_an_unreconciled_install ... ok
+test the_primitive_exemption_rejects_a_fetched_root ... ok
+test the_discipline_installs_in_order_and_orders_the_shadow_stores ... ok
+test the_caller_census_rejects_a_half_settled_caller ... ok
+test the_caller_census_catches_a_wrapper_that_skips_the_discipline ... ok
+test the_dispatch_ttbr0_switch_settles_both_shadows ... FAILED
+test every_ttbr0_install_settles_the_per_cpu_shadows ... FAILED
+test no_ttbr0_installer_claims_it_touches_no_memory ... ok
+test every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows ... ok
+
+failures:
+
+---- the_dispatch_ttbr0_switch_settles_both_shadows stdout ----
+
+thread 'the_dispatch_ttbr0_switch_settles_both_shadows' panicked at tests/ttbr0_shadow_reconciliation_structure.rs:979:5:
+the dispatch switch must also retire the pending switch it consumed: a `next_cr3` left armed is installed FIRST on the next return to EL0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- every_ttbr0_install_settles_the_per_cpu_shadows stdout ----
+
+thread 'every_ttbr0_install_settles_the_per_cpu_shadows' panicked at tests/ttbr0_shadow_reconciliation_structure.rs:539:5:
+these TTBR0 installs leave one or both per-CPU shadows naming another root: ["kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed"]
+
+
+failures:
+    every_ttbr0_install_settles_the_per_cpu_shadows
+    the_dispatch_ttbr0_switch_settles_both_shadows
+
+test result: FAILED. 14 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.41s
+
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_2c66cb89-0c7-1/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_2c66cb89-0c7-1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.27s
+     Running tests/ttbr0_shadow_reconciliation_structure.rs (target/debug/deps/ttbr0_shadow_reconciliation_structure-fe46c1b52eab6525)
+error: test failed, to rerun pass `--test ttbr0_shadow_reconciliation_structure`
+
+exit: 101
