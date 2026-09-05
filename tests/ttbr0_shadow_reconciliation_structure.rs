@@ -7,25 +7,28 @@
 //! are intentionally about behavior-bearing call shapes rather than line
 //! numbers.
 //!
-//! Two different things are counted in this slice and they are not the same
-//! number, so both are stated here rather than left to be inferred:
+//! Two different things are counted here and they are not the same number, so
+//! both are stated rather than left to be inferred:
 //!
-//!   * 10 process-root install DECISION sites existed on `main` -- the places
-//!     that chose a root and put it in TTBR0_EL1. 9 of the 10 are routed
-//!     through `ttbr0::adopt_process_ttbr0` by this slice; the 10th is the
-//!     Tier-1 site `kernel/src/syscall/time.rs::ensure_current_address_space`,
-//!     which this branch may not touch.
-//!   * 7 FUNCTIONS still write TTBR0_EL1 with a raw `msr` at this head, and
-//!     those 7 are what the census below walks: 2 discipline-module helpers,
-//!     2 that reconcile both shadows inline, 2 mechanism primitives that
-//!     install what a caller decided, and the 1 Tier-1 site.
+//!   * 10 process-root install DECISION sites existed on `main` before this
+//!     work -- the places that chose a root and put it in TTBR0_EL1. Slice 1
+//!     routed 9 of the 10 through `ttbr0::adopt_process_ttbr0`; slice 1b
+//!     routed the 10th,
+//!     `kernel/src/syscall/time.rs::ensure_current_address_space`, under the
+//!     Tier-1 approval slice 1 did not have (operator ruling R156). 10 of 10
+//!     are routed at this head.
+//!   * 6 FUNCTIONS still write TTBR0_EL1 with a raw `msr` at this head, and
+//!     those 6 are what the census below walks: 2 discipline-module helpers,
+//!     2 that reconcile both shadows inline, and 2 mechanism primitives that
+//!     install what a caller decided.
 //!
-//! The 9 routed sites are absent from the 7 precisely because they no longer
+//! The 10 routed sites are absent from the 6 precisely because they no longer
 //! write the register themselves. Both accountings are enumerated in
-//! docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
-//! claim-lint:ok: 9 of 10 decision sites are routed at this head and the 10th
-//! is the Tier-1 site, which
-//! `every_ttbr0_install_settles_the_per_cpu_shadows` prints on each run.
+//! docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
+//! claim-lint:ok: the 6 censused functions and their dispositions are printed
+//! by `every_ttbr0_install_settles_the_per_cpu_shadows -- --nocapture`, which
+//! is recorded verbatim under
+//! docs/planning/green-program/aarch64-testing/serials/slice1b/
 
 
 use std::collections::BTreeSet;
@@ -115,19 +118,12 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
 //   * mechanism primitives, whose installed value traces back to one of their
 //     own parameters -- they install what a caller decided, so the caller owns
 //     the shadows;
-//   * everything else, which must be empty outside the files CLAUDE.md lists
-//     as Tier-1 prohibited.
-// claim-lint:ok: 7 censused functions at this head, enumerated in
-// docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
-
-/// Files CLAUDE.md forbids modifying without explicit user approval. Checked
-/// back against CLAUDE.md by `the_tier_one_exemption_matches_the_project_rule`
-/// so this stays the project's rule rather than this test's opinion.
-const TIER_ONE_PROHIBITED: [&str; 3] = [
-    "kernel/src/syscall/handler.rs",
-    "kernel/src/syscall/time.rs",
-    "kernel/src/interrupts/timer.rs",
-];
+//   * everything else, which must be empty. There is no file-scoped exemption:
+//     slice 1b routed the last unreconciled install, which lived in a Tier-1
+//     file, so this census requires zero unreconciled installs kernel-wide.
+// claim-lint:ok: the censused functions and their dispositions are printed by
+// `every_ttbr0_install_settles_the_per_cpu_shadows -- --nocapture` and recorded
+// in docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
 
 fn identifiers(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -537,44 +533,53 @@ fn every_ttbr0_install_settles_the_per_cpu_shadows() {
     );
 
     let mut unreconciled = Vec::new();
+    let mut disposition = Vec::new();
     for install in &census {
+        let site = format!("{}::{}", install.file, install.function);
         if install.file == "kernel/src/arch_impl/aarch64/ttbr0.rs" {
+            disposition.push(format!("{site} (the discipline)"));
             continue;
         }
         if settles_both_shadows(&install.body) {
+            disposition.push(format!("{site} (reconciles inline)"));
             continue;
         }
         let operand = install_operand(&install.body);
         if is_mechanism_primitive(&install.signature, &install.body, &operand) {
+            disposition.push(format!("{site} (parameter-borne)"));
             continue;
         }
-        unreconciled.push(format!("{}::{}", install.file, install.function));
+        disposition.push(format!("{site} (unreconciled)"));
+        unreconciled.push(site);
     }
 
-    let escaped: Vec<&String> = unreconciled
-        .iter()
-        .filter(|entry| {
-            !TIER_ONE_PROHIBITED
-                .iter()
-                .any(|tier_one| entry.starts_with(tier_one))
-        })
-        .collect();
-    assert!(
-        escaped.is_empty(),
-        "these TTBR0 installs leave one or both per-CPU shadows naming another root: \
-         {escaped:?}"
+    // The census, disclosed rather than summarised: a `--nocapture` run prints
+    // every function the walk reached and how each was classified, so the
+    // counts in the slice documents are reproducible from the tree instead of
+    // being asserted about it. This is disclosure, not exemption -- the
+    // assertion below is on the whole list.
+    // claim-lint:ok: 6 of 6 censused functions are printed by this run at the
+    // slice-1b head; recorded in
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
+    eprintln!(
+        "TTBR0 install census ({} functions): {disposition:#?}",
+        disposition.len()
     );
 
-    // Print, rather than pin, what the Tier-1 rule is holding back: these are
-    // real members of the same defect class that this branch was not allowed to
-    // touch. If the list empties because someone repaired them, the test still
-    // passes; if it empties because the census stopped reaching them, the
-    // coverage floor above is what notices.
-    if !unreconciled.is_empty() {
-        eprintln!(
-            "TTBR0 installs still unreconciled behind the Tier-1 rule: {unreconciled:?}"
-        );
-    }
+    // No file-scoped exemption. Slice 1b routed the last raw process-root
+    // install, `kernel/src/syscall/time.rs::ensure_current_address_space`,
+    // through the discipline under operator ruling R156, so this census
+    // requires zero unreconciled installs kernel-wide rather than printing a
+    // list it declines to pin. Mechanism primitives keep the disposition
+    // documented on `ttbr0_install_census`: they install a value their caller
+    // chose, so the caller owns the shadows.
+    // claim-lint:ok: 0 of 6 censused installs are unreconciled at this head;
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
+    assert!(
+        unreconciled.is_empty(),
+        "these TTBR0 installs leave one or both per-CPU shadows naming another root: \
+         {unreconciled:?}"
+    );
 }
 
 #[test]
@@ -613,21 +618,6 @@ fn the_shadow_census_accepts_a_mechanism_primitive() {
         traces_to_a_parameter(signature, body, &install_operand(body)),
         "a primitive that installs what its caller handed it must not be asked to own the shadows"
     );
-}
-
-#[test]
-fn the_tier_one_exemption_matches_the_project_rule() {
-    let claude_md = repo_text("CLAUDE.md");
-    let prohibited = claude_md
-        .split("PROHIBITED CODE SECTIONS")
-        .nth(1)
-        .expect("CLAUDE.md must carry its prohibited-sections table");
-    for path in TIER_ONE_PROHIBITED {
-        assert!(
-            prohibited.contains(path),
-            "{path} is exempted as Tier-1, but CLAUDE.md does not list it as prohibited"
-        );
-    }
 }
 
 #[test]
@@ -982,26 +972,15 @@ fn no_ttbr0_installer_claims_it_touches_no_memory() {
         }
     }
 
-    let escaped: Vec<&String> = nomem
-        .iter()
-        .filter(|entry| {
-            !TIER_ONE_PROHIBITED
-                .iter()
-                .any(|tier_one| entry.starts_with(tier_one))
-        })
-        .collect();
+    // Same disposition as the shadow census, and no file-scoped exemption
+    // beside it: every censused install kernel-wide must be free of `nomem`.
+    // claim-lint:ok: 0 of 6 censused installs carry `nomem` at this head;
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
     assert!(
-        escaped.is_empty(),
+        nomem.is_empty(),
         "these TTBR0 installs are declared `nomem`, so the compiler may move the surrounding \
-         shadow and page-table stores across the barriers: {escaped:?}"
+         shadow and page-table stores across the barriers: {nomem:?}"
     );
-
-    // Same disposition as the shadow census: print what the Tier-1 rule holds
-    // back rather than pinning it, so a repair there cannot redden this test
-    // and a coverage regression is still caught by the floor above.
-    if !nomem.is_empty() {
-        eprintln!("TTBR0 installs still `nomem` behind the Tier-1 rule: {nomem:?}");
-    }
 }
 
 #[test]
@@ -1207,25 +1186,17 @@ fn every_non_primitive_ttbr0_install_performs_the_install_sequence() {
          discipline-module check did not already say: {checked:?}"
     );
 
-    let escaped: Vec<&String> = out_of_order
-        .iter()
-        .filter(|entry| {
-            !TIER_ONE_PROHIBITED
-                .iter()
-                .any(|tier_one| entry.starts_with(tier_one))
-        })
-        .collect();
+    // Same disposition as the other kernel-wide censuses, and no file-scoped
+    // exemption beside it: every non-primitive censused install must run the
+    // sequence in order.
+    // claim-lint:ok: 0 of 4 non-primitive censused installs are out of order at
+    // this head;
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
     assert!(
-        escaped.is_empty(),
+        out_of_order.is_empty(),
         "these TTBR0 installs do not run {INSTALL_SEQUENCE:?} in order, so a stale translation \
-         can survive the install or the root can be taken before it is visible: {escaped:?}"
+         can survive the install or the root can be taken before it is visible: {out_of_order:?}"
     );
-
-    // Same disposition as the other kernel-wide censuses: print what the Tier-1
-    // rule holds back rather than pinning it.
-    if !out_of_order.is_empty() {
-        eprintln!("TTBR0 installs still out of sequence behind the Tier-1 rule: {out_of_order:?}");
-    }
 }
 
 #[test]

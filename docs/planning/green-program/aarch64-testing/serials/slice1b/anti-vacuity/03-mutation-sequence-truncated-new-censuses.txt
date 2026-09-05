@@ -1,0 +1,55 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-1/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.64s
+     Running tests/ttbr0_shadow_reconciliation_structure.rs (target/debug/deps/ttbr0_shadow_reconciliation_structure-fe46c1b52eab6525)
+
+running 19 tests
+test the_nomem_check_reads_the_asm_block_and_not_the_prose ... ok
+test the_shadow_census_rejects_an_unreconciled_install ... ok
+test init_reaches_userspace_on_the_root_the_shadows_name ... ok
+test the_shadow_census_accepts_a_mechanism_primitive ... ok
+test the_primitive_exemption_rejects_a_fetched_root ... ok
+test settling_one_shadow_is_not_settling_the_shadows ... ok
+test the_ttbr0_discipline_publishes_both_shadows ... ok
+test the_primitive_exemption_rejects_a_shadow_touching_install ... ok
+test the_discipline_installs_in_order_and_orders_the_shadow_stores ... ok
+test the_caller_census_rejects_a_half_settled_caller ... ok
+test the_sequence_census_catches_an_install_outside_the_discipline_module ... ok
+test the_dispatch_ttbr0_switch_settles_both_shadows ... ok
+test the_caller_census_catches_a_wrapper_that_skips_the_discipline ... ok
+test the_kernel_root_caller_census_catches_a_caller_that_leaves_the_shadows_armed ... ok
+TTBR0 install census (7 functions): [
+    
+thread 'every_non_primitive_ttbr0_install_performs_the_install_sequence' panicked at tests/ttbr0_shadow_reconciliation_structure.rs:1195:5:
+these TTBR0 installs do not run ["dsb ishst", "msr ttbr0_el1", "isb", "tlbi vmalle1is", "dsb ish", "isb"] in order, so a stale translation can survive the install or the root can be taken before it is visible: ["kernel/src/syscall/time.rs::ensure_current_address_space"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+"
+thread 'no_ttbr0_installer_claims_it_touches_no_memory' panicked at tests/ttbr0_shadow_reconciliation_structure.rs:979:5:
+these TTBR0 installs are declared `nomem`, so the compiler may move the surrounding shadow and page-table stores across the barriers: ["kernel/src/syscall/time.rs::ensure_current_address_space"]
+kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed (reconciles inline)",
+    "kernel/src/arch_impl/aarch64/paging.rs::write_root (parameter-borne)",
+    "kernel/src/arch_impl/aarch64/syscall_entry.rs::restore_ttbr0_after_failed_exec (reconciles inline)",
+    "kernel/src/arch_impl/aarch64/ttbr0.rs::switch_ttbr0_to_kernel (the discipline)",
+    "kernel/src/arch_impl/aarch64/ttbr0.rs::adopt_process_ttbr0 (the discipline)",
+    "kernel/src/memory/arch_stub.rs::write (parameter-borne)",
+    "kernel/src/syscall/time.rs::ensure_current_address_space (unreconciled)",
+]
+
+thread 'every_ttbr0_install_settles_the_per_cpu_shadows' panicked at tests/ttbr0_shadow_reconciliation_structure.rs:578:5:
+these TTBR0 installs leave one or both per-CPU shadows naming another root: ["kernel/src/syscall/time.rs::ensure_current_address_space"]
+test no_ttbr0_installer_claims_it_touches_no_memory ... FAILED
+test every_ttbr0_install_settles_the_per_cpu_shadows ... FAILED
+test every_non_primitive_ttbr0_install_performs_the_install_sequence ... FAILED
+test every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows ... ok
+test every_caller_of_the_kernel_root_install_settles_the_shadows ... ok
+
+failures:
+
+failures:
+    every_non_primitive_ttbr0_install_performs_the_install_sequence
+    every_ttbr0_install_settles_the_per_cpu_shadows
+    no_ttbr0_installer_claims_it_touches_no_memory
+
+test result: FAILED. 16 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.48s
+
+error: test failed, to rerun pass `--test ttbr0_shadow_reconciliation_structure`
