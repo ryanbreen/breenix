@@ -236,12 +236,14 @@ A test that passes without testing what it claims to test is worse than a failin
 ### Claim Discipline - REQUIRED
 
 A round that touches markdown, Rust, Python, shell, or text-file prose runs
-`scripts/claim-lint.py` before requesting review and records the invocation and
-its exit status in the round's notes:
+`scripts/claim-lint.py` before requesting review, lints each commit message
+before making the commit, and records each invocation and its exit status in
+the round's notes:
 
 ```
-claim-lint: scripts/claim-lint.py                         -> exit 0
-claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md -> exit 0
+claim-lint: scripts/claim-lint.py                          -> exit 0
+claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md   -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg /tmp/msg.txt -> exit 0
 ```
 
 The review slot checks for those lines the way it checks gate serials. A round
