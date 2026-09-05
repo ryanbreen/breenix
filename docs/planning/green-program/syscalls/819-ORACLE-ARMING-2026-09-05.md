@@ -567,3 +567,86 @@ claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-te
 claim-lint: scripts/claim-lint.py --commit-msg <fixture-fix commit>                         -> exit 0
 claim-lint: scripts/claim-lint.py --files docs/planning/green-program/syscalls/819-ORACLE-ARMING-2026-09-05.md -> exit 0
 ```
+
+## Second landing merge and re-smoke (merged head `53523fb5`)
+
+`origin/main` advanced 19 more commits between the first R16 merge above and
+this branch's PR being opened (PR #837 `fix/627-futex-oracle-anchor`, PR
+#835 `gates/a64-host-qemu-lock`, and others), so the PR opened `CONFLICTING`
+against `main`. A second `git merge --no-ff origin/main` (merge commit
+`3d2a083d`) conflicted three-way on the same shared slice3d fixture: `#627`'s
+own landing had independently re-recorded it to add `arm_delay_us` to
+`FUTEX_HANDOFF_ORACLE_PATTERN`, and that capture reverts
+`FCNTL_PM_CONTENTION_ORACLE` to the pre-`#819` shape (it predates `#819`
+merging to `main`). A third re-record, at the second merge's head (`BUILD_ID
+006a9c7cb301c7`), carries all 3 of the shared scorer's required lines at
+once (`IRQ_HOLD_ORACLE`, the rendezvous-shape `FCNTL_PM_CONTENTION_ORACLE`,
+and `arm_delay_us`); commit `53523fb5`. Full derivation, byte-for-byte
+oracle lines and provenance in
+`docs/planning/green-program/aarch64-testing/serials/slice3d/README.md`
+(now recording four re-records of the same file across three different
+landings). No `kernel/` file conflicted in either merge; both auto-merged
+cleanly (`kernel/src/test_framework/registry.rs` in the first,
+`kernel/src/syscall/futex.rs` and `kernel/src/syscall/futex_oracle.rs` in
+the second).
+
+Full re-smoke ran again at `53523fb5` on the Mac and on beast
+(`/root/breenix-fcntlarm`, `git fetch`ed forward in place rather than
+re-cloned):
+
+### Host-side suites
+
+32 of 32 `tests/*_structure.rs` suites pass, **588 cases** (up 2 cases from
+the first landing's 586, from the new `tests/qemu_host_lock_structure.rs`
+PR #835 added in the same 19 commits). `python3 scripts/test_claim_lint.py`
+-> exit 0.
+
+### aarch64
+
+Build and `check-kernel-no-neon.sh` re-ran clean, matching the first
+landing's results.
+
+The strict gate ran as two more 20-boot batches (`run1b`, `run2b`), using
+PR #835's new `docker/qemu/lib/qemu-host-lock.sh` mechanism in place of the
+manual `pgrep` check the first landing's batches used by hand (the gate's
+own stdout confirms it: `QEMU HOST LOCK: host aarch64 QEMU count before
+acquire: 0`):
+
+| run | result | duration | note |
+|---|---|---|---|
+| run1b (20 boots) | `FAIL: Only 19/20 boots succeeded` | 281s | boot 14: `FCNTL_PM_CONTENTION_ORACLE` `FAIL:hold_safety_release`, `arm_wait_us=14:armed=0:acquired=1:...:hold_safety=1` -- an exact match to **#836**'s signature from the review round's own 25-boot table above, not a new defect |
+| run2b (20 boots) | `FAIL: Only 19/20 boots succeeded` | 285s | boot 14: `FCNTL_PM_CONTENTION_ORACLE` read `PASS`; the gate failed on an unrelated line, `[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=0:legB_recovered=0:stranded=0]` -- filed as **#840**, a subsystem this branch does not touch (`kernel/src/task/strand_oracle.rs`) |
+
+Across these 40 boots: 39 of 40 `FCNTL_PM_CONTENTION_ORACLE` lines read
+`PASS`, `arm_wait_us` ranging 76-8247 across the 39 PASS lines (widest
+observed to date, still inside the gate's accepted range); the 1 that did
+not is `#836`, disclosed above as a known, unrepaired-by-design ~1-in-130
+recurrence, not this branch's own target defect (`attempts=3:armed=0:calls=0`,
+the original false-verdict shape) -- that shape did not appear in any of
+these 40 boots, nor in the 40 from the first landing, nor in the 130 the
+review round measured: **0 of 210 total boots run across this PR's whole
+evidence trail** printed the original `#828` signature. The `#840` red is
+attributed and unrelated: `STRAND_INJECT_ORACLE`'s own leg B is a scheduler
+timing coincidence this branch's changes cannot reach, and the same battery's
+other 39 boots exercised it normally (`legB_exercised=1:legB_recovered=1`).
+Both failing serials are preserved: `scratchpad/fcntl-arm-serials/pre-adjudicated-836/run1b-boot14-hold_safety_release.txt`
+and `scratchpad/fcntl-arm-serials/unattributed-strand-inject/run2b-boot14-legB-not-exercised.txt`.
+
+Production profile x1 at this head: `PASS: production profile reached
+bsshd with the futex oracle seam absent`, fcntl and IRQ-hold marker counts
+both 0.
+
+### x86 (beast, `breenix-x86` container)
+
+`/root/breenix-fcntlarm` updated in place (`git fetch /root/breenix
+fix-819-import && git reset --hard FETCH_HEAD`, no re-clone). Build and both
+gates (`run-x86-boot-tests.sh 1`, `run-x86-prod-profile-boot-test.sh`) re-run
+against the new head; results recorded in the PR description alongside the
+final tally.
+
+```
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/serials/slice3d/README.md -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <second merge commit>                        -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <second fixture-fix commit>                  -> exit 0
+claim-lint: scripts/claim-lint.py                                                           -> exit 0
+```
