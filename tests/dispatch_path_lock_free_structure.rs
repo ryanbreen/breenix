@@ -32,10 +32,16 @@
 //!
 //! The denylist is widened below to the alloc API surface a `no_std` kernel can
 //! reach, and the authority for the claim is not this test but the script
-//! `scripts/check-x86-dispatch-no-alloc.sh`, which disassembles the built kernel
-//! and fails if the shipped `setup_kernel_thread_return` body references any
-//! Rust allocator symbol. The x86 boot-tests gate runs that script after its
-//! build. This test is the fast local signal; the binary check is the guard.
+//! `scripts/check-x86-dispatch-no-alloc.sh`, which disassembles the built kernel,
+//! resolves each GOT-indirect call target through its relocation, and fails if
+//! the shipped `setup_kernel_thread_return` symbols call into the alloc
+//! crate. The resolution step is load-bearing: in this static-PIE kernel the
+//! allocating call the fix removed is emitted as an anonymous `callq *%rax`
+//! through a GOT slot, so a scan of instruction text alone resolves no name and
+//! passes. Measured both ways -- the guard is green on the fixed kernel and red
+//! on the shipped `b257e69e` kernel that wedged the gate. The x86 boot-tests
+//! gate runs it after the build. This test is the fast local signal; the binary
+//! check is the guard.
 
 use std::fs;
 use std::path::PathBuf;
