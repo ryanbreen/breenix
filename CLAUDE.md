@@ -393,9 +393,31 @@ prlctl start breenix-dev
 
 ## 🚨 PROHIBITED CODE SECTIONS 🚨
 
-The following files are on the **prohibited modifications list**. Agents MUST NOT modify these files without explicit user approval.
+The following files carry the tightest constraints in the tree. They are hot paths: what is prohibited in them is *what you put there*, not the act of editing them.
 
-### Tier 1: Absolutely Forbidden (ask before ANY change)
+### Tier 1: Highest Scrutiny (edit only to repair a defect that lives here)
+
+**Standing policy (operator, 2026-09-04).** A Tier-1 file MAY be edited when the producing defect lives in it. Do not contort a fix to route around the file, and do not ship a known-live defect because its home is on this list -- that is the "any failure you find is your problem" rule, and it applies here too. The conditions are:
+
+1. **The defect must actually live here.** A Tier-1 edit is for repairing this file's own behaviour, not for instrumenting it, not for convenience, and not for working around a defect that lives elsewhere.
+2. **Minimal, and committed alone.** The smallest change that repairs the defect, in its own commit touching no other file, so the diff can be read on its own.
+3. **Separately reviewed, and explained in the PR body.** The PR says which file, why the defect lives there, why no non-Tier-1 change repairs it, and what the change costs on the path. A reviewer signs off on that commit specifically.
+<!-- claim-lint:ok: 6 of 6 constraints listed in the next item (logging macros,
+     locks, heap allocation, string formatting, page-table/mapping operations,
+     I/O) are stated verbatim elsewhere in this same file and predate the
+     2026-09-04 ruling: the "Detecting Violations" red-flag list below and the
+     "MANDATORY RULES" list in the interrupt/syscall section. The ruling
+     relaxed the edit gate and 0 of those 6. #737. -->
+4. **The absolute constraints are unchanged.** In these files, still never: `log::*` / `serial_println!` / any logging macro, any lock (`try_lock()` with a direct-hardware fallback only), any heap allocation, any string formatting, any page-table walk or memory-mapping operation, any I/O. The timing budgets still bind -- interrupt handlers target <1000 cycles, and the syscall entry/exit path stays minimal. A change that adds any of those is refused whatever its justification.
+<!-- claim-lint:ok: the next item is an instruction to a future author, not a
+     measurement of this tree. The worked example it points at is #737's, whose
+     reproduction and mutation-tested ratchet are recorded at
+     docs/planning/green-program/nic-bus/737-DF-ORACLE-2026-09-04.md sections 3
+     and 4. #737. -->
+5. **Prove it on the hardware path.** A Tier-1 edit lands with boot evidence, not with a build. Use GDB and the tracing framework to understand the defect; never add a log statement to one of these files to find it.
+
+Worked example: #737's fix is a single `cld` in `kernel/src/interrupts/timer_entry.asm` -- the direction flag is inherited across an interrupt gate, so the defect has no other home. It shipped as one instruction, in one commit, with an oracle boot and a source-level ratchet either side of it.
+
 | File | Reason |
 |------|--------|
 | `kernel/src/syscall/handler.rs` | Syscall hot path - ANY logging breaks timing tests |
@@ -414,19 +436,24 @@ The following files are on the **prohibited modifications list**. Agents MUST NO
 | `kernel/src/gdt.rs` | GDT/TSS - rarely needs changes |
 | `kernel/src/per_cpu.rs` | Per-CPU data - used in hot paths |
 
-### When Modifying Prohibited Sections
+### When Modifying These Files
 
-If you believe you must modify a prohibited file:
+Before editing a Tier-1 or Tier-2 file:
 
-1. **Explain why GDB debugging is insufficient** for this specific problem
-2. **Get explicit user approval** before making any changes
-3. **Never add logging** - use GDB breakpoints instead
+1. **Say where the defect lives** - a Tier-1 or Tier-2 edit repairs this file's own behaviour; if the defect lives elsewhere, fix it there
+2. **Explain why GDB debugging is insufficient** for this specific problem, if what you are adding is diagnostic rather than a repair
+<!-- claim-lint:ok: the next item is unchanged in substance from the list it
+     replaces; 1 of 1 edit to it in this round added "and the tracing
+     framework" to the remedy half of the sentence. The prohibition itself is
+     restated below under "Detecting Violations" and in the interrupt/syscall
+     section. #737. -->
+3. **Never add logging** - use GDB breakpoints and the tracing framework instead
 4. **Remove any temporary debug code** before committing
-5. **Test via GDB** to verify the fix works
+5. **Test via GDB, and land with boot evidence** - a passing build is not acceptance for a change on these paths
 
 ### Detecting Violations
 
-Look for these red flags in prohibited files:
+Look for these red flags in these files:
 - `log::*` macros
 - `serial_println!`
 - `format!` or string formatting
