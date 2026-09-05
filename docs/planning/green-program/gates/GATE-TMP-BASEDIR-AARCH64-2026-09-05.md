@@ -214,8 +214,22 @@ python3 scripts/test_claim_lint.py
 
 claim-lint: scripts/claim-lint.py -> exit 0
 claim-lint: scripts/claim-lint.py --files docs/planning/green-program/gates/GATE-TMP-BASEDIR-AARCH64-2026-09-05.md -> exit 0
-claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (x6, one per commit)
+claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (x7, one per commit)
 ```
+
+The no-argument, changed-hunks-vs-`origin/main` run of `scripts/claim-lint.py`
+first found 14 findings in this branch's own new comment text -- ten
+repeats of one over-broad phrase in the added `BREENIX_GATE_TMP` comment
+blocks, plus one each in `run-aarch64-refusal-drain-gate.sh` and
+`tests/teardown_structure.rs` -- findings the per-file/per-commit-message
+passes above had not caught, since those check the doc and the commit
+messages, not the source comments the same commits added. Reworded to a bounded
+phrasing describing the same behavior; the same no-argument run now reports
+zero findings in this branch's changed hunks (213 pre-existing findings
+outside them, unrelated to this branch, are not reported by that mode).
+claim-lint:ok: #825, the two `claim-lint: clean` / `0 findings` reads
+quoted in this doc are this same tool invoked twice on this same branch,
+before and after the rewording.
 
 ## What is NOT claimed
 
