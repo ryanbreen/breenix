@@ -20,7 +20,7 @@
 $ cargo test --test teardown_structure try_manager   (ordering predicate weakened)
    Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/kernel)
    Compiling breenix v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.15s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.09s
      Running tests/teardown_structure.rs (target/debug/deps/teardown_structure-67eb70246a628cbd)
 
 running 2 tests
@@ -46,7 +46,7 @@ error: test failed, to rerun pass `--test teardown_structure`
 $ cargo test --test teardown_structure try_manager   (predicate restored)
    Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/kernel)
    Compiling breenix v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.12s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.13s
      Running tests/teardown_structure.rs (target/debug/deps/teardown_structure-67eb70246a628cbd)
 
 running 2 tests
