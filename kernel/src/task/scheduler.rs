@@ -453,6 +453,15 @@ pub static PINNED_MIGRATION_REFUSED: core::sync::atomic::AtomicU64 =
 /// claim-lint:ok: 11 of 11 sites of the slice 3d census consult the pin at this
 /// head, counted by
 /// `tests/loopback_pump_structure.rs::pin_blind_migration_census_matches_the_slice_3e_table`
+///
+/// It has 2 writers, and they are the 2 places the two facts can disagree: arm
+/// 7 of `retain_cpu_affine_thread`, and `percpu_stack_home_cpu` -- the
+/// selection-side reroute in `schedule` and `schedule_deferred_requeue`, whose
+/// own `push_back` returns before the guard is reached. Both overrule the pin
+/// the same way and both report it here.
+/// claim-lint:ok: 2 of 2 `fetch_add` writers of this counter are named in this
+/// paragraph and pinned by
+/// `tests/loopback_pump_structure.rs::percpu_stack_reroute_counts_a_pin_conflict`
 pub static PINNED_STACK_HOME_CONFLICT: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
@@ -3035,15 +3044,32 @@ impl Scheduler {
     /// read. Idle threads are exempt by identity — each legitimately stands on
     /// its own CPU's slot — and the check runs only in the rare case where an
     /// address did name a slot.
+    ///
+    /// The reroute this answers happens at the caller's own `push_back`, which
+    /// returns before `retain_cpu_affine_thread` is reached -- so a pinned
+    /// thread whose saved SP names a slot its pin does not is a disagreement
+    /// this function is the last reader of. It overrules the pin, because the
+    /// stack slot is the hardware fact, and it counts the disagreement into the
+    /// same gate-failing `PINNED_STACK_HOME_CONFLICT` the guard's own arm 7
+    /// counts into, so the reroute is not the one arm where the two can
+    /// disagree in silence.
+    /// claim-lint:ok: 4 of 4 call sites of this function are the reroute in
+    /// `schedule` and `schedule_deferred_requeue`, counted by grep over
+    /// kernel/src in this round
     #[cfg(target_arch = "aarch64")]
     fn percpu_stack_home_cpu(&self, thread_id: u64, current_cpu: usize) -> Option<usize> {
-        let saved_sp = self.get_thread(thread_id)?.context.sp;
+        let thread = self.get_thread(thread_id)?;
+        let saved_sp = thread.context.sp;
+        let affinity = thread.cpu_affinity;
         let slot = crate::arch_impl::aarch64::constants::percpu_stack_slot_of(saved_sp)?;
         if slot == current_cpu {
             return None;
         }
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
             return None;
+        }
+        if affinity.is_some_and(|pin| pin.per_cpu_worker && pin.cpu != slot) {
+            PINNED_STACK_HOME_CONFLICT.fetch_add(1, Ordering::Relaxed);
         }
         Some(slot)
     }

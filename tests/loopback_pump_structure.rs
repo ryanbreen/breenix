@@ -3013,6 +3013,78 @@ fn pin_guard_call_validator_rejects_a_discarded_answer() {
     assert!(validate_pin_guard_calls_decide_the_placement(&mutated).is_err());
 }
 
+/// The selection-side per-CPU stack reroute reports the pin it overrules.
+///
+/// `percpu_stack_home_cpu` decides 4 of this file's pushes -- the steal-loop
+/// reroute in `schedule` and in `schedule_deferred_requeue` -- and each of
+/// those pushes `continue`s before `retain_cpu_affine_thread` is reached, so
+/// the guard's own arm 7 sees 0 of the 4. Overruling the pin there is correct:
+/// the per-CPU stack slot under a saved SP is a hardware fact and a pin is a
+/// software claim. Being the last reader of the disagreement is what obliges
+/// this function to count it into the same gate-failing counter arm 7 uses,
+/// rather than leaving 4 arms where a violated pin moves a thread in silence.
+fn validate_percpu_stack_reroute_counts_a_pin_conflict(source: &str) -> Result<(), String> {
+    let body = function_body(source, "percpu_stack_home_cpu")
+        .ok_or("kernel/src/task/scheduler.rs defines no percpu_stack_home_cpu reroute")?;
+    let compact = compact_code(body);
+    if !compact.contains("cpu_affinity") {
+        return Err(
+            "the per-CPU stack reroute never reads the pin it overrules, so the 4 pushes it \
+             decides cannot report a pin the reroute contradicts"
+                .into(),
+        );
+    }
+    if !compact.contains("PINNED_STACK_HOME_CONFLICT.fetch_add(1,Ordering::Relaxed)") {
+        return Err(
+            "the per-CPU stack reroute overrules a pin without counting it, so a per-CPU \
+             worker can be moved off the CPU its pin names with 0 counters moving"
+                .into(),
+        );
+    }
+    if !compact.contains("pin.per_cpu_worker&&pin.cpu!=slot") {
+        return Err(
+            "the per-CPU stack reroute counts something other than a per-CPU worker pin \
+             disagreeing with the slot its saved kernel SP stands in"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn percpu_stack_reroute_counts_a_pin_conflict() {
+    validate_percpu_stack_reroute_counts_a_pin_conflict(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("the per-CPU stack reroute counts the pin it overrules");
+}
+
+#[test]
+fn percpu_stack_reroute_validator_rejects_a_silent_override() {
+    // The state the rule exists for, and the one round 1 of this branch
+    // shipped: the reroute reads the pin, decides against it, and reports 0.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "percpu_stack_home_cpu").expect("find the reroute fixture");
+    let mutated_body = body.replace(
+        "PINNED_STACK_HOME_CONFLICT.fetch_add(1, Ordering::Relaxed);",
+        "let _ = slot;",
+    );
+    assert_ne!(mutated_body, body, "fixture mutation must apply");
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_percpu_stack_reroute_counts_a_pin_conflict(&mutated).is_err());
+}
+
+#[test]
+fn percpu_stack_reroute_validator_rejects_a_reroute_that_reads_no_pin() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "percpu_stack_home_cpu").expect("find the reroute fixture");
+    let mutated_body = body.replace(
+        "let affinity = thread.cpu_affinity;",
+        "let affinity: Option<super::thread::CpuPin> = None;",
+    );
+    assert_ne!(mutated_body, body, "fixture mutation must apply");
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_percpu_stack_reroute_counts_a_pin_conflict(&mutated).is_err());
+}
+
 #[test]
 fn thread_placement_honours_the_cpu_pin() {
     validate_thread_placement_honours_the_cpu_pin(&repo_text("kernel/src/task/scheduler.rs"))
