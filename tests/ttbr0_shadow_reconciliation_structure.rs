@@ -3,13 +3,29 @@
 //!
 //! The per-CPU words the syscall return corridor reads decide which page-table
 //! root the next return to EL0 runs on. These checks pin the shape that keeps
-//! every process-root install and the shadows describing it in agreement. They
+//! each process-root install and the shadows describing it in agreement. They
 //! are intentionally about behavior-bearing call shapes rather than line
 //! numbers.
-//! claim-lint:ok: 9 of the 10 censused process-root installs are routed
-//! through the discipline at this head; the 10th is the Tier-1 site
-//! `kernel/src/syscall/time.rs::ensure_current_address_space`, which
-//! `every_ttbr0_install_settles_the_per_cpu_shadows` prints on every run.
+//!
+//! Two different things are counted in this slice and they are not the same
+//! number, so both are stated here rather than left to be inferred:
+//!
+//!   * 10 process-root install DECISION sites existed on `main` -- the places
+//!     that chose a root and put it in TTBR0_EL1. 9 of the 10 are routed
+//!     through `ttbr0::adopt_process_ttbr0` by this slice; the 10th is the
+//!     Tier-1 site `kernel/src/syscall/time.rs::ensure_current_address_space`,
+//!     which this branch may not touch.
+//!   * 7 FUNCTIONS still write TTBR0_EL1 with a raw `msr` at this head, and
+//!     those 7 are what the census below walks: 2 discipline-module helpers,
+//!     2 that reconcile both shadows inline, 2 mechanism primitives that
+//!     install what a caller decided, and the 1 Tier-1 site.
+//!
+//! The 9 routed sites are absent from the 7 precisely because they no longer
+//! write the register themselves. Both accountings are enumerated in
+//! docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
+//! claim-lint:ok: 9 of 10 decision sites are routed at this head and the 10th
+//! is the Tier-1 site, which
+//! `every_ttbr0_install_settles_the_per_cpu_shadows` prints on each run.
 
 
 use std::collections::BTreeSet;
@@ -242,15 +258,13 @@ fn function_signature(source: &str, name: &str) -> String {
 }
 
 /// Every function under `kernel/src` whose body writes TTBR0_EL1.
-/// claim-lint:ok: 7 censused functions at this head, enumerated in
-/// docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
-///
 /// The walk is name-driven, so what it carries is a coverage FLOOR: the install
 /// occurrences inside censused bodies must be at least as many as the file
 /// holds. Nested functions can be double-counted, so the floor does not by
 /// itself exclude one hidden site paired with one double-count; what it does
 /// catch is a file whose installs the name walk missed outright.
-/// claim-lint:ok: 7 of 7 censused at this head, enumerated in
+/// claim-lint:ok: 7 of 7 install-writing functions are censused at this head,
+/// enumerated in
 /// docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
 fn ttbr0_install_census(sources: &[(String, String)]) -> Vec<TtbrInstall> {
     const INSTALL: &str = "msr ttbr0_el1";
@@ -408,7 +422,16 @@ fn function_attributes(source: &str, name: &str) -> String {
 ///
 /// Disclosed narrowing: shared code with no `cfg` at all is NOT in scope, so
 /// this census cannot speak for a primitive call added to a cfg-free shared
-/// helper. 7 of the 7 censused TTBR0 install sites follow one of the 2
+/// helper. `kernel/src/memory/kernel_page_table.rs::build_master_kernel_pml4`
+/// is exactly that shape at this head: cfg-free, in a cfg-free file, and it
+/// calls the `Cr3::write` primitive -- so neither this filter nor anything
+/// built on it reaches it. Nothing on aarch64 executes it today, because its
+/// only caller is the cfg-free `kernel/src/memory/mod.rs::init`, whose only
+/// caller is `kernel_main` in `kernel/src/main.rs` behind
+/// `#[cfg(target_arch = "x86_64")]`. That is a fact about the current call
+/// graph, not something this filter checks: a cfg-free caller added on the
+/// aarch64 side would sit outside each census in this file.
+/// claim-lint:ok: 7 of 7 censused TTBR0 install sites follow one of the 2
 /// conventions above (#786).
 fn aarch64_scoped_functions(sources: &[(String, String)]) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
@@ -751,13 +774,41 @@ fn the_caller_census_catches_a_wrapper_that_skips_the_discipline() {
     );
 }
 
-/// The first argument `body` passes to `call`, trimmed, if it calls it.
-fn call_argument(body: &str, call: &str) -> Option<String> {
+/// The first argument `body` passes to `call`, trimmed, once per call site, in
+/// source order.
+///
+/// R3-N-004: reading only the FIRST occurrence is what this replaced. A body
+/// that clears `next_cr3` and then arms it again a few lines later satisfied
+/// the old reader, because the old reader stopped at the first call.
+fn call_arguments(body: &str, call: &str) -> Vec<String> {
     let needle = format!("{call}(");
-    let at = body.find(&needle)? + needle.len();
-    let rest = &body[at..];
-    let end = rest.find(')')?;
-    Some(rest[..end].trim().to_string())
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(offset) = body[cursor..].find(&needle) {
+        let at = cursor + offset;
+        let open = at + needle.len();
+        let is_longer_identifier = body[..at]
+            .chars()
+            .last()
+            .map(|character| character.is_alphanumeric() || character == '_')
+            .unwrap_or(false);
+        let end = match body[open..].find(')') {
+            Some(end) => end,
+            None => break,
+        };
+        if !is_longer_identifier {
+            out.push(body[open..open + end].trim().to_string());
+        }
+        cursor = open + end;
+    }
+    out
+}
+
+/// The LAST argument `body` passes to `call`, trimmed, if it calls it. What the
+/// return corridor reads is whatever the final store to a shadow word left
+/// there, so that is the write the predicates below score.
+fn last_call_argument(body: &str, call: &str) -> Option<String> {
+    call_arguments(body, call).pop()
 }
 
 /// Whether `body` leaves BOTH per-CPU TTBR0 shadow words describing the root it
@@ -770,11 +821,35 @@ fn call_argument(body: &str, call: &str) -> Option<String> {
 /// because the corridor reads `next_cr3` FIRST and installs it when it holds a
 /// value other than 0, so a stale `next_cr3` outranks a correct
 /// `saved_process_cr3`.
+///
+/// R3-N-004: each accessor is scored on the LAST write the body makes, not the
+/// first. What the corridor reads once the body has run is whatever the final
+/// store left behind, so a body that clears `next_cr3` and then arms it again
+/// with a root has not retired it -- and under the previous first-occurrence
+/// reader that body passed.
 fn settles_both_shadows(body: &str) -> bool {
-    let publishes = call_argument(body, "set_saved_process_cr3")
+    let publishes = last_call_argument(body, "set_saved_process_cr3")
         .is_some_and(|root| !root.is_empty() && root != "0");
-    let retires = call_argument(body, "set_next_cr3").is_some_and(|pending| pending == "0");
+    let retires =
+        last_call_argument(body, "set_next_cr3").is_some_and(|pending| pending == "0");
     publishes && retires
+}
+
+/// Whether `body` leaves BOTH per-CPU TTBR0 shadow words holding a literal `0`.
+///
+/// This is the disposition a KERNEL-root install has to leave behind. There is
+/// no process root for either word to name, so the corridor has to be told it
+/// has no pending root to install and no saved root to fall back on.
+/// `settles_both_shadows` is the
+/// process-root disposition and deliberately rejects a `saved_process_cr3` of
+/// 0; this is its counterpart, and the two are not interchangeable. Scored on
+/// the LAST write to each word for the same reason.
+fn zeroes_both_shadows(body: &str) -> bool {
+    let cleared =
+        last_call_argument(body, "set_saved_process_cr3").is_some_and(|root| root == "0");
+    let retired =
+        last_call_argument(body, "set_next_cr3").is_some_and(|pending| pending == "0");
+    cleared && retired
 }
 
 /// The `asm!` invocation inside `body` that writes TTBR0_EL1, as the source
@@ -972,7 +1047,7 @@ fn the_dispatch_ttbr0_switch_settles_both_shadows() {
     );
     assert!(!operand.is_empty(), "find the value the dispatch switch installs");
     assert_eq!(
-        call_argument(switch, "set_saved_process_cr3").as_deref(),
+        last_call_argument(switch, "set_saved_process_cr3").as_deref(),
         Some(operand.as_str()),
         "the root the corridor restores must be the root this dispatch just installed"
     );
@@ -1065,5 +1140,321 @@ fn the_caller_census_rejects_a_half_settled_caller() {
     assert!(
         unsettled_primitive_callers(&repaired).is_empty(),
         "settling both words has to clear the caller"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// R3-N-003: the install sequence, applied kernel-wide
+// ---------------------------------------------------------------------------
+
+/// The censused installs the sequence requirement applies to, and those among
+/// them whose asm block does not perform `INSTALL_SEQUENCE` in order, each as
+/// `file::function`.
+///
+/// The requirement applies to each censused install that is NOT a mechanism
+/// primitive. A primitive installs a value its caller chose and is exempt here
+/// for the same reason it is exempt from owning the shadows: the caller decided
+/// what the register would hold and therefore owns what has to be invalidated
+/// around it. That exemption is a real narrowing -- 2 of 2 primitives at this
+/// head (`paging.rs::write_root` and `memory/arch_stub.rs::Cr3::write`) run
+/// `dsb ishst` / `msr` / `dsb ish` / `isb`, with no `isb` after the `msr` and
+/// no `tlbi vmalle1is`, so neither would pass this check if it were applied to
+/// them. Saying so is the point of writing it down; this test makes no claim
+/// that their callers compensate.
+fn install_sequence_census(sources: &[(String, String)]) -> (Vec<String>, Vec<String>) {
+    let census = ttbr0_install_census(sources);
+    let mut checked = Vec::new();
+    let mut out_of_order = Vec::new();
+    for install in &census {
+        let operand = install_operand(&install.body);
+        if is_mechanism_primitive(&install.signature, &install.body, &operand) {
+            continue;
+        }
+        let site = format!("{}::{}", install.file, install.function);
+        let ordered = ttbr0_install_asm_block(&install.body).is_some_and(performs_install_sequence);
+        checked.push(site.clone());
+        if !ordered {
+            out_of_order.push(site);
+        }
+    }
+    (checked, out_of_order)
+}
+
+#[test]
+fn every_non_primitive_ttbr0_install_performs_the_install_sequence() {
+    let sources = rust_sources_below("kernel/src");
+    let (checked, out_of_order) = install_sequence_census(&sources);
+
+    // Coverage, expressed as census shape rather than a name list: the check
+    // has to reach several installs, and it has to reach them in more than one
+    // file. `the_discipline_installs_in_order_and_orders_the_shadow_stores`
+    // already covers the discipline module on its own, so a version of this
+    // that collapsed back to that one file would say no more than that check
+    // already says.
+    assert!(
+        checked.len() >= 4,
+        "the sequence check reached only {} non-primitive installs, so it is not covering the \
+         code it claims to: {checked:?}",
+        checked.len()
+    );
+    let files: BTreeSet<&str> = checked
+        .iter()
+        .filter_map(|site| site.split("::").next())
+        .collect();
+    assert!(
+        files.len() >= 2,
+        "the sequence check reached installs in only one file, so it says nothing the \
+         discipline-module check did not already say: {checked:?}"
+    );
+
+    let escaped: Vec<&String> = out_of_order
+        .iter()
+        .filter(|entry| {
+            !TIER_ONE_PROHIBITED
+                .iter()
+                .any(|tier_one| entry.starts_with(tier_one))
+        })
+        .collect();
+    assert!(
+        escaped.is_empty(),
+        "these TTBR0 installs do not run {INSTALL_SEQUENCE:?} in order, so a stale translation \
+         can survive the install or the root can be taken before it is visible: {escaped:?}"
+    );
+
+    // Same disposition as the other kernel-wide censuses: print what the Tier-1
+    // rule holds back rather than pinning it.
+    if !out_of_order.is_empty() {
+        eprintln!("TTBR0 installs still out of sequence behind the Tier-1 rule: {out_of_order:?}");
+    }
+}
+
+#[test]
+fn the_sequence_census_catches_an_install_outside_the_discipline_module() {
+    let truncated = "fn install_a_process_root() {\n\
+        let root = page_table.level_4_frame().start_address().as_u64();\n\
+        unsafe {\n\
+            core::arch::asm!(\"dsb ishst\", \"msr ttbr0_el1, {0}\", \"isb\", in(reg) root);\n\
+            Aarch64PerCpu::set_saved_process_cr3(root);\n\
+            Aarch64PerCpu::set_next_cr3(0);\n\
+        }\n\
+    }\n";
+    let sources = vec![(
+        "kernel/src/arch_impl/aarch64/invented.rs".to_string(),
+        truncated.to_string(),
+    )];
+    assert_eq!(
+        install_sequence_census(&sources).1,
+        vec!["kernel/src/arch_impl/aarch64/invented.rs::install_a_process_root".to_string()],
+        "an install that stops after the `isb` leaves stale user translations behind and has to \
+         be caught outside the discipline module too"
+    );
+
+    let repaired = truncated.replace(
+        "\"isb\", in(reg) root",
+        "\"isb\", \"tlbi vmalle1is\", \"dsb ish\", \"isb\", in(reg) root",
+    );
+    let sources = vec![(
+        "kernel/src/arch_impl/aarch64/invented.rs".to_string(),
+        repaired,
+    )];
+    assert!(
+        install_sequence_census(&sources).1.is_empty(),
+        "running the whole sequence has to clear it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// R3-N-005: the callers of the kernel-root install
+// ---------------------------------------------------------------------------
+
+/// The text inside the `without_interrupts( ... )` call in `body` that
+/// lexically encloses the first call to `call`, if there is one.
+fn masked_window_around<'a>(body: &'a str, call: &str) -> Option<&'a str> {
+    const WINDOW: &str = "without_interrupts(";
+    let needle = format!("{call}(");
+    let target = body.find(&needle)?;
+    let mut cursor = 0usize;
+    while let Some(offset) = body[cursor..].find(WINDOW) {
+        let at = cursor + offset;
+        let open = at + WINDOW.len() - 1;
+        let mut depth = 0usize;
+        let mut close = None;
+        for (index, byte) in body.as_bytes()[open..].iter().enumerate() {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        if open < target && target < close {
+            return Some(&body[open + 1..close]);
+        }
+        cursor = at + WINDOW.len();
+    }
+    None
+}
+
+/// aarch64-scoped functions that install the KERNEL root and leave the per-CPU
+/// TTBR0 shadows naming something else. Returned as `file::function` strings.
+///
+/// `switch_ttbr0_to_kernel` settles neither shadow, by design: it is the
+/// mechanism, and the kernel root is not a value either corridor arm may
+/// install on a return to EL0. That makes the obligation the caller's, and
+/// before round 3 no check covered it -- the primitive-caller census next door
+/// skips the discipline module outright and does not reach this helper. A
+/// caller discharges the obligation one of two ways:
+///
+///   * it leaves both words settled itself -- zeroed, because no process root
+///     is live on this CPU any more (`quiesce_ttbr0_for_exit`,
+///     `sys_exit_aarch64`), or naming a process root it went on to install; or
+///   * the kernel-root install and the reinstall that ends it are one
+///     interrupt-masked window, and BOTH ways out of that window go through a
+///     helper that settles both words. `sys_exec_aarch64` is that shape:
+///     `adopt_process_ttbr0` on the success arm and
+///     `restore_ttbr0_after_failed_exec` on the failure arm, inside the
+///     `without_interrupts` closure that also holds the kernel-root install.
+///     That window is pinned by two other suites, not by this one:
+///     `tests/context_restore_structure.rs`'s
+///     `validate_aarch64_failed_exec_ttbr0_rollback` requires the capture, the
+///     kernel-root transition and the `exec_process_with_argv` call to appear
+///     exactly once in that order and the `Err` arm to roll back before any
+///     return, and `tests/exec_lock_order_structure.rs`'s
+///     `validate_sys_exec_releases_process_manager` requires exactly one
+///     `adopt_process_ttbr0(` after `commit.apply()` and no raw `msr
+///     ttbr0_el1` anywhere in the function.
+fn unsettled_kernel_root_callers(sources: &[(String, String)]) -> Vec<String> {
+    const KERNEL_ROOT_INSTALL: &str = "switch_ttbr0_to_kernel";
+    let mut out = Vec::new();
+    for (file, name, body) in aarch64_scoped_functions(sources) {
+        if name == KERNEL_ROOT_INSTALL || !calls_function(&body, KERNEL_ROOT_INSTALL) {
+            continue;
+        }
+        if zeroes_both_shadows(&body) || settles_both_shadows(&body) {
+            continue;
+        }
+        if masked_window_around(&body, KERNEL_ROOT_INSTALL).is_some_and(|window| {
+            window.contains("adopt_process_ttbr0(")
+                && window.contains("restore_ttbr0_after_failed_exec(")
+        }) {
+            continue;
+        }
+        out.push(format!("{file}::{name}"));
+    }
+    out
+}
+
+#[test]
+fn every_caller_of_the_kernel_root_install_settles_the_shadows() {
+    let sources = rust_sources_below("kernel/src");
+
+    let callers: Vec<String> = aarch64_scoped_functions(&sources)
+        .into_iter()
+        .filter(|(_, name, body)| {
+            name != "switch_ttbr0_to_kernel" && calls_function(body, "switch_ttbr0_to_kernel")
+        })
+        .map(|(file, name, _)| format!("{file}::{name}"))
+        .collect();
+    assert!(
+        callers.len() >= 2,
+        "the kernel-root install census reached {} callers, so it is checking nothing: \
+         {callers:?}",
+        callers.len()
+    );
+
+    let unsettled = unsettled_kernel_root_callers(&sources);
+    assert!(
+        unsettled.is_empty(),
+        "these aarch64 callers install the kernel root and leave the per-CPU TTBR0 shadows \
+         naming another one, so the next return to EL0 may reinstall a root this CPU has just \
+         left: {unsettled:?}"
+    );
+}
+
+#[test]
+fn the_kernel_root_caller_census_catches_a_caller_that_leaves_the_shadows_armed() {
+    let discipline = "pub fn switch_ttbr0_to_kernel() {\n\
+        let ttbr0 = kernel_ttbr0();\n\
+        unsafe {\n\
+            core::arch::asm!(\"msr ttbr0_el1, {ttbr0}\", ttbr0 = in(reg) ttbr0);\n\
+        }\n\
+    }\n";
+    let bare = "#[cfg(target_arch = \"aarch64\")]\n\
+        pub fn retire_the_address_space() {\n\
+            switch_ttbr0_to_kernel();\n\
+        }\n";
+    let with = |caller: &str| {
+        vec![
+            (
+                "kernel/src/arch_impl/aarch64/ttbr0.rs".to_string(),
+                discipline.to_string(),
+            ),
+            ("kernel/src/task/retire.rs".to_string(), caller.to_string()),
+        ]
+    };
+    let site = "kernel/src/task/retire.rs::retire_the_address_space".to_string();
+
+    assert_eq!(
+        unsettled_kernel_root_callers(&with(bare)),
+        vec![site.clone()],
+        "a caller that installs the kernel root and touches neither shadow leaves the corridor \
+         free to reinstall the root it just left"
+    );
+
+    let zeroed = bare.replace(
+        "switch_ttbr0_to_kernel();",
+        "switch_ttbr0_to_kernel();\n            \
+         Aarch64PerCpu::set_saved_process_cr3(0);\n            \
+         Aarch64PerCpu::set_next_cr3(0);",
+    );
+    assert!(
+        unsettled_kernel_root_callers(&with(&zeroed)).is_empty(),
+        "zeroing both words is one of the two ways to discharge the obligation"
+    );
+
+    let half = bare.replace(
+        "switch_ttbr0_to_kernel();",
+        "switch_ttbr0_to_kernel();\n            Aarch64PerCpu::set_saved_process_cr3(0);",
+    );
+    assert_eq!(
+        unsettled_kernel_root_callers(&with(&half)),
+        vec![site.clone()],
+        "zeroing one word and leaving the other armed is not settling the shadows"
+    );
+
+    let masked = bare.replace(
+        "switch_ttbr0_to_kernel();",
+        "let result = without_interrupts(|| {\n                \
+         switch_ttbr0_to_kernel();\n                \
+         let Ok(root) = replace_address_space() else {\n                    \
+         restore_ttbr0_after_failed_exec(previous);\n                    \
+         return -12;\n                };\n                \
+         adopt_process_ttbr0(root);\n                \
+         0\n            });",
+    );
+    assert!(
+        unsettled_kernel_root_callers(&with(&masked)).is_empty(),
+        "the exec shape -- one masked window whose every exit reinstalls through a helper that \
+         settles both words -- is the other way to discharge it"
+    );
+
+    let one_armed_window = masked.replace(
+        "restore_ttbr0_after_failed_exec(previous);\n                    ",
+        "",
+    );
+    assert_eq!(
+        unsettled_kernel_root_callers(&with(&one_armed_window)),
+        vec![site],
+        "a masked window whose failure arm returns with the kernel root still installed is not \
+         exempt"
     );
 }
