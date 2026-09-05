@@ -23,7 +23,16 @@ Usage:
     scripts/claim-lint.py --whole-file          # diff mode, but whole files
     scripts/claim-lint.py --files a.md b.rs     # explicit files, always whole
     scripts/claim-lint.py --all                 # every tracked text file (slow)
+    scripts/claim-lint.py --commit-msg <file>   # a commit message, as prose
     scripts/claim-lint.py --format json ...
+
+`--commit-msg <file>` is its own mode (see lint_commit_msg_text() below): it
+lints the named file as prose with every rule, and it additionally scans
+auto-close-keyword against the UNFENCED text, so the phrase cannot hide from
+this rule inside a ``` example the way it can inside a real doc's fenced
+code. `scripts/lint-commit-msg.sh <file>` wraps this for `git commit -F`
+workflows and for a `.git/hooks/commit-msg` hook; see
+docs/planning/green-program/claim-linting.md's `--commit-msg` section.
 
 Diff mode reports only findings whose paragraph overlaps a line this branch
 actually changed (`--changed-only`, the default; `--whole-file` restores the
@@ -264,17 +273,24 @@ HTML_COMMENT_START_RE = re.compile(r"^\s*<!--")
 COMMENT_ONLY_RE = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
 
 
-def extract_markdown_paragraphs(file: str, lines: list) -> list:
+def extract_markdown_paragraphs(file: str, lines: list,
+                                blank_fences: bool = True) -> list:
     # Blank out fenced code blocks (keep line count so numbers stay aligned).
+    # `blank_fences=False` is used by lint_commit_msg_text()'s auto-close-
+    # keyword pass ONLY: a commit message does not get markdown-rendered for
+    # GitHub's issue-closing parser, so a ``` fence does not shield an
+    # auto-close phrase from it the way it shields a real doc's code sample
+    # from the claim-quality rules.
     scrubbed = list(lines)
-    in_fence = False
-    for i, line in enumerate(lines):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            scrubbed[i] = ""
-            continue
-        if in_fence:
-            scrubbed[i] = ""
+    if blank_fences:
+        in_fence = False
+        for i, line in enumerate(lines):
+            if FENCE_RE.match(line):
+                in_fence = not in_fence
+                scrubbed[i] = ""
+                continue
+            if in_fence:
+                scrubbed[i] = ""
 
     paragraphs = []
     buf = []
@@ -697,6 +713,56 @@ def lint_file(path: str, repo_root: str = None,
     return lint_text(rel, content, repo_root, ext_override)
 
 
+def lint_commit_msg_text(content: str, repo_root: str = None,
+                          file: str = "<commit-msg>") -> list:
+    """Lint a git COMMIT MESSAGE, as prose, with every rule.
+
+    This exists because of a specific incident: commit `e6dd14a6` quoted
+    this tool's own auto-close-keyword vocabulary directly in front of three
+    real, open issue numbers inside its own commit message, describing a
+    rewording made in a different file -- and GitHub's merge-time parser
+    auto-closed all three the moment the commit landed on `main`. Neither of
+    the round checklist's two mandated runs would have caught it: diff mode
+    lints the tree the commit changes, not the message describing the
+    change, and a `--files` PR-body run does not read a commit message
+    either. See docs/planning/green-program/claim-linting.md's
+    `--commit-msg` section (R21) for the incident in full -- its text is not
+    reproduced here, on purpose: reproducing it would place the same
+    keyword-adjacent-to-a-real-issue-number shape in this file too.
+
+    Two passes over the same text, for one reason. A fenced ``` code block
+    is blanked by the normal paragraph extractor -- appropriate for a real
+    doc, where a fence usually IS code the five claim-quality rules should
+    not read as prose. A commit message does not get markdown-rendered for
+    GitHub's issue-closing parser, though: a ``` fence is three backtick
+    characters to that parser, not a boundary, so text inside one is exactly
+    as capable of auto-closing an issue as ordinary prose is. Pass 1 runs
+    the five claim-quality rules over the normal, fence-blanked extraction
+    (skipping auto-close-keyword). Pass 2 runs ONLY auto-close-keyword, over
+    the same lines extracted again with fences left unblanked, so a keyword
+    hiding inside a quoted example or a fenced block still fires. There is
+    no double-count: pass 1 never evaluates auto-close-keyword and pass 2
+    evaluates nothing else.
+    """
+    if repo_root is None:
+        repo_root = REPO_ROOT
+    lines = content.splitlines()
+    findings = []
+    for p in extract_markdown_paragraphs(file, lines):
+        for rule in RULES:
+            if rule is check_auto_close_keyword:
+                continue
+            f = rule(p, repo_root)
+            if f:
+                findings.append(f)
+    for p in extract_markdown_paragraphs(file, lines, blank_fences=False):
+        f = check_auto_close_keyword(p, repo_root)
+        if f:
+            findings.append(f)
+    findings.sort(key=lambda f: f.line)
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -815,11 +881,53 @@ def format_json(findings: list) -> str:
     return json.dumps([f.__dict__ for f in findings], indent=2)
 
 
+def run_commit_msg_mode(path: str, repo_root: str, fmt: str) -> int:
+    """The `--commit-msg` CLI mode: read `path`, lint it with
+    lint_commit_msg_text(), print, return the exit code. A separate code
+    path from the diff/`--files`/`--all` modes below -- there is no target
+    discovery, no changed-hunk intersection, and no extension allowlist, on
+    the same rationale `lint_file()`'s `assume_text` uses: a commit message
+    is exactly the kind of extensionless surface `TEXT_EXTENSIONS` would
+    otherwise skip.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except (FileNotFoundError, IsADirectoryError) as e:
+        print("claim-lint: cannot read commit-message file %s: %s" % (path, e))
+        return 2
+    rel = os.path.relpath(path, repo_root) if os.path.isabs(path) else path
+    findings = lint_commit_msg_text(content, repo_root, file=rel)
+    if fmt == "json":
+        print(format_json(findings))
+    elif findings:
+        print(format_text(findings))
+        print(
+            "\nclaim-lint: %d finding(s) in commit message %s. "
+            "auto-close-keyword cannot be discharged by a claim-lint:ok "
+            "annotation -- rewrite the reference so the keyword and the "
+            "issue number are not adjacent. Every other kind can be "
+            "discharged with a same-paragraph `claim-lint:ok: <citation>`. "
+            "See docs/planning/green-program/claim-linting.md."
+            % (len(findings), rel)
+        )
+    else:
+        print("claim-lint: clean commit message (%s)." % rel)
+    return 1 if findings else 0
+
+
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", help="git ref to diff against (default: origin/main, else main)")
     ap.add_argument("--files", nargs="*", help="explicit file list, bypasses git diff")
     ap.add_argument("--all", action="store_true", help="lint every tracked text file")
+    ap.add_argument(
+        "--commit-msg", metavar="FILE",
+        help="lint FILE as a git commit message: every rule, as prose, "
+             "regardless of extension, with auto-close-keyword additionally "
+             "checked unfenced. A separate mode -- ignores --base/--files/"
+             "--all/--whole-file. See lint_commit_msg_text().",
+    )
     ap.add_argument(
         "--whole-file", action="store_true",
         help="in diff mode, report findings anywhere in a changed file "
@@ -830,6 +938,10 @@ def main(argv: list) -> int:
     args = ap.parse_args(argv)
 
     repo_root = args.repo_root
+
+    if args.commit_msg:
+        return run_commit_msg_mode(args.commit_msg, repo_root, args.format)
+
     base = None
     untracked = set()
 

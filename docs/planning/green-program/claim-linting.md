@@ -19,6 +19,10 @@ live issue numbers with synthetic ones, corrects an unverifiable claim about
 PR #799, and documents the rewrite recipe for an honest-scoping negation.
 Detail is in the `auto-close-keyword` subsection below, not repeated here.
 
+**R21, 2026-09-05** adds a seventh mode, `--commit-msg`, its wrapper
+`scripts/lint-commit-msg.sh`, and its hook body `scripts/hooks/commit-msg` —
+see the "`--commit-msg` mode (R21)" section below, right after "Running it".
+
 The 2026-09-01 assessment found that 37 of 66 blocking review findings across
 twelve arcs (56%) were factually wrong, checkable *sentences* in EVIDENCE/PROVE
 docs, PR bodies, gate-script headers, or source comments — not code defects. Nine
@@ -52,6 +56,10 @@ scripts/claim-lint.py --format json
 
 # Lint every tracked text file (slow; for auditing an existing doc)
 scripts/claim-lint.py --all
+
+# Lint a git commit message as prose, every rule (R21; see its own section
+# below) -- REQUIRED before `git commit -F <file>`
+scripts/claim-lint.py --commit-msg <file>
 ```
 
 Diff mode reports **only findings whose paragraph overlaps a line this branch
@@ -124,6 +132,58 @@ count above now both use the plural-only pattern that matches the code's own
 `CAPTURE_DIR_RE`; the true count is **29**, and `command.rs` carries 0
 findings either way, so this did not move the 124.)
 
+## `--commit-msg` mode (R21)
+
+**R21, 2026-09-05** adds a seventh way to run this tool:
+`scripts/claim-lint.py --commit-msg <file>` lints a git commit message as
+prose, running the full six-rule set, and it treats `auto-close-keyword` as
+fatal even when the phrase sits inside a fenced example or a quoted aside.
+The five claim-quality rules read the same fence-blanked extraction the diff/`--files`
+modes above use; `auto-close-keyword` alone is additionally checked against
+the UNFENCED text, because a commit message does not get markdown-rendered for
+GitHub's issue-closing parser — a ` ``` ` fence there is three backtick
+characters to that parser, not a boundary, and cannot shield the phrase the
+way a real doc's fenced code sample is shielded from the claim-quality rules.
+See `lint_commit_msg_text()` in `scripts/claim-lint.py` for the two-pass
+implementation and `CommitMsgModeTests` in `scripts/test_claim_lint.py` for
+the fixtures, including the fenced-vs-`--files` contrast.
+
+```bash
+scripts/claim-lint.py --commit-msg /tmp/commit-msg.txt   # the mode itself
+scripts/lint-commit-msg.sh /tmp/commit-msg.txt           # thin wrapper, same thing
+```
+
+**The incident this closes a gap against.** Commit `e6dd14a6` (landed via PR
+#808's merge) put this rule's own trigger vocabulary directly in front of
+three real, open issue numbers inside its own commit message, while
+describing a rewording made in a *different* file — and GitHub's parser read
+the words, not the intent. `gh api repos/ryanbreen/breenix/issues/562/timeline`
+(and the same for `761`, `763`) each show a `closed` event whose `commit_id`
+is exactly `e6dd14a6de6653342f50c93fc0687397aaecf7b7`, within two seconds of
+PR #808's own `mergedAt` (`07:31:09Z`; the three `closed` events land at
+`07:31:10Z`/`07:31:11Z`/`07:31:11Z`) — and each was manually `reopened`
+roughly 49 minutes later. Neither of the round checklist's two mandated runs
+below would have caught it: diff mode lints the tree a commit *changes*, not
+the *message describing* the change, and the `--files` step covers a PR body
+and scratchpad evidence, not a commit message. The commit's own wording is
+not reproduced on this page — `git show -s --format=%B e6dd14a6` shows it —
+because reproducing it here would place the same
+keyword-adjacent-to-a-real-issue-number shape in this very document.
+
+**Installing it as a hook.** `scripts/hooks/commit-msg` is the hook *body*.
+This repo's own setup does not put it into anyone's `.git` for them — a
+`.git` directory is per-checkout, and installing a hook there is a step you
+take yourself. Opt in from the repo root:
+
+```bash
+ln -sf ../../scripts/hooks/commit-msg .git/hooks/commit-msg
+```
+
+Git invokes a `commit-msg` hook as `<hook> <path-to-msg-file>` and aborts the
+commit on a nonzero exit; the hook body delegates to
+`scripts/lint-commit-msg.sh`, the same entry point a `git commit -F <file>`
+workflow calls directly — one implementation, two call sites.
+
 ## The round checklist — the run is an artifact
 
 This repo has no CI and no pre-commit hook, so the run does not happen unless a
@@ -144,14 +204,21 @@ reference for what the tool reaches and what it does not.
    docs>` as a **separate step**. Diff mode only sees tracked repo files; PR
    bodies, GitHub issue comments and scratchpad evidence are exactly where the
    assessment found much of the false prose (see "surfaces it cannot see").
-3. Paste both invocations and their exit statuses into the round's notes:
+3. **(R21)** Lint each commit message before making the commit:
+   `scripts/claim-lint.py --commit-msg <file>` (or the installed
+   `scripts/hooks/commit-msg` hook) exits 0 before `git commit -F <file>`
+   runs. This is a third surface, not a restatement of steps 1–2: a commit
+   message is neither the tree diff nor a PR body — see the "`--commit-msg`
+   mode (R21)" section above for the incident this closes a gap against.
+4. Paste each invocation and its exit status into the round's notes:
 
    ```
-   claim-lint: scripts/claim-lint.py                       -> exit 0
-   claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md -> exit 0
+   claim-lint: scripts/claim-lint.py                          -> exit 0
+   claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md   -> exit 0
+   claim-lint: scripts/claim-lint.py --commit-msg /tmp/msg.txt -> exit 0
    ```
 
-4. The review slot checks for those lines the way it checks gate serials. A
+5. The review slot checks for those lines the way it checks gate serials. A
    round with no claim-lint line is a round where this control did not run, and
    that is itself a finding.
 
