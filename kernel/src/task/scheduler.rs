@@ -490,8 +490,13 @@ pub fn emit_pinned_placement_census() {
 }
 
 /// Where a probe thread ended up: a `per_cpu_queues` index, or this sentinel
-/// when it is on no queue at all -- the shape slice 3d's hold leaves.
-#[cfg(feature = "boot_tests")]
+/// when it is on 0 of the queues -- the shape slice 3d's hold leaves.
+///
+/// aarch64 only, like the probe that reads it: the x86_64 arm of
+/// `emit_pin_guard_oracle` prints a SKIP and drives 0 sites, so a
+/// `boot_tests`-wide gate here would leave the constant unused on that
+/// architecture and the build carries 0 warnings.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 const PIN_GUARD_ORACLE_HELD: usize = 255;
 
 /// What the pin-guard oracle observed, one field per migration site it drove.
