@@ -614,8 +614,20 @@ no x86 code path, and section 9's x86 result stands as the round-1 record of a
 tree whose x86 sources are byte-identical to this one's.
 
 ```
-claim-lint: scripts/claim-lint.py                                                    -> exit 0
-claim-lint: scripts/claim-lint.py --files <the 2 prose files this round touched>     -> exit 0
+claim-lint: scripts/claim-lint.py                                          -> exit 0
+claim-lint: scripts/claim-lint.py --files TTBR0-SHADOW-SLICE-2026-09-04.md -> exit 0
+claim-lint: scripts/claim-lint.py --files serials/slice1/diffs/mutation-and-probe.diff -> exit 0
+claim-lint: scripts/claim-lint.py --files serials/slice1/r2/{structure-suites,mutation-a-nomem-readded,mutation-b-next-cr3-deleted}.txt -> exit 0
 ```
+
+(The `--files` paths above are shown relative to
+`docs/planning/green-program/aarch64-testing/`; the tool was given the full
+repo-relative paths.) Whole-file `--files` runs over the 4 kernel and test
+sources this round edited return exit 1 on prose those files already carried;
+those findings sit outside this round's hunks, which is what the diff-mode run
+above scores, and it is clean.
+claim-lint:ok: diff mode reports "clean (56 file(s) checked, changed hunks vs
+d6b7a186e37b)" with 269 pre-existing findings outside those hunks not
+reported.
 
 claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md -> exit 0
