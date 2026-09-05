@@ -771,3 +771,76 @@ hunks are unchanged and unreported, as they were before this round.
 claim-lint:ok: 28 of 28 findings in the changed hunks are discharged by
 citation; the tool's own scope statement is in
 docs/planning/green-program/claim-linting.md
+
+## 19. Landing re-smoke
+
+`git merge --no-ff origin/main` (`main` at `814bc652`, PR #808) into this
+branch's R157 tip (`93a73db7`) produced merge commit `6e5fc3db`, pushed to
+`ratchet/786-asid-tag-census`. The merge was clean: no conflict on
+`.gitattributes`, no conflict anywhere else, `git status` reported a clean
+working tree immediately after, and a repo-wide grep for `^<<<<<<<` matched 0
+files.
+claim-lint:ok: 3 of 3 checks named in this sentence (merge-strategy output,
+post-merge `git status`, conflict-marker grep) are reproduced in this round's
+own session transcript; no serial file was written for a merge, which is not a
+boot.
+
+The full re-smoke was run at `6e5fc3db`, not at the pre-merge R157 head, so
+this table is evidence about the code `main` will carry, not about the branch
+in isolation.
+
+| check | profile | pgrep at launch | result | census lines | last census line |
+|---|---|---|---|---|---|
+| `boot_tests` build + no-NEON | `--features boot_tests` | n/a (build, not boot) | build exit 0, no-NEON PASS | n/a | n/a |
+| strict gate, boot 1 of 2 | `boot_tests`, cortex-a72 | 0 | PASS 1/1 | 15 | `untagged=0:tagged=20939:kernel=24838:cleared=45076` |
+| strict gate, boot 2 of 2 | `boot_tests`, cortex-a72 | 0 | PASS 1/1 | 15 | `untagged=0:tagged=20139:kernel=23548:cleared=43040` |
+| production gate ×1 | default, `-cpu max` | 0 | PASS | 15 | `untagged=0:tagged=24864:kernel=28094:cleared=52147` |
+| x86 build check, beast `breenix-x86` | `--features testing,external_test_bins --bin qemu-uefi` | n/a (build, not boot) | exit 0, 0 `^(warning\|error)` lines | n/a | n/a |
+
+claim-lint:ok: the 3 boots and 2 builds in this table each have their gate
+output and (for the boots) their serial preserved under
+`serials/asid-ratchet/14-landing-…` through `17-landing-…`, listed in this
+directory's `README.md`.
+
+The `boot_tests` build required rebuilding aarch64 userspace and the ext2 disk
+in the fresh worktree — unlike section 6's build, which reused artifacts
+copied from the main checkout at the same commit, this worktree's copy of
+`main` had advanced (userspace-touching commits as late as `221e1ac5`,
+2026-09-04 23:13) past what the main checkout's own `target/ext2-aarch64.img`
+on disk was built from, so that image was not reused. `userspace/programs/
+build.sh --arch aarch64` (149 binaries installed) and `scripts/
+create_ext2_disk.sh --arch aarch64` were run fresh in the worktree instead,
+against the merge commit's own userspace source.
+claim-lint:ok: the 149-binary count and the create_ext2_disk.sh completion are
+both in this round's own session transcript; no serial file exists for a
+userspace build, which is not a boot.
+
+The x86 build check ran in a scratch clone under `/root/breenix-asid786-land`
+inside the `breenix-x86` Incus container on `beast`, cloned from `/root/
+breenix` and re-pointed at `origin` to fetch `ratchet/786-asid-tag-census`
+directly, checked out at `6e5fc3db` (`git rev-parse HEAD` printed that SHA
+before the build ran). It was run because `git diff --stat` against this
+branch's merge-base showed 3 shared (non-`arch_impl/aarch64`,
+non-`main_aarch64.rs`) kernel files touched by the R157 commit —
+`kernel/src/fs/procfs/trace.rs`, `kernel/src/task/strand_oracle.rs` and
+`kernel/src/memory/process_memory.rs` — each change behind a
+`#[cfg(target_arch = "aarch64")]` guard (the third inside a function already
+gated at that level), the same shape section 9 already checked for the two
+older files. The scratch clone and its build artifacts were deleted from the
+container after the build log was pulled off it.
+claim-lint:ok: 3 of 3 shared files and their cfg guards are named here; the
+build's own SHA line and its clean-exit log are in
+`serials/asid-ratchet/17-landing-x86-build-beast.txt`.
+
+Every census line in both landing boots reports `untagged=0`.
+claim-lint:ok: 0 of 3 landing-boot serials match
+`TTBR0_ASID_CENSUS:untagged=[1-9]`; the 3 are
+`14-landing-strict-boot1-serial.txt`, `15-landing-strict-boot2-serial.txt` and
+`16-landing-prod-boot1-serial.txt`.
+
+Unattributed failures in this landing re-smoke: 0 of 5 checks (2 builds, 3
+boots) in the table above.
+claim-lint:ok: 5 of 5 checks in this section's table returned PASS/exit-0, so
+0 of them reached the classify-by-signature step this round's brief names
+(#555/#536/#576/#586/#690/#796/host-load); none needed classifying, and none
+reached the STOP condition.

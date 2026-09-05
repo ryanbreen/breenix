@@ -1,11 +1,11 @@
 # TTBR0 ASID ratchet — captured runs
 
-The 26 captured artifacts behind
+The 33 captured artifacts behind
 `docs/planning/green-program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md`.
 Files 01–07 are from the round as first written; 08–13 are from the R157 review
-round that closed five findings against it, and are taken at the head this
-branch now carries.
-claim-lint:ok: 26 of 26 files beside this README are covered by the 20 rows
+round that closed five findings against it; 14–17 are the landing re-smoke,
+taken at the merge commit that carries this branch onto `main`.
+claim-lint:ok: 33 of 33 files beside this README are covered by the 24 rows
 below; 3 rows use brace notation for the 3 boots they cover.
 
 | file | what it is |
@@ -30,3 +30,10 @@ below; 3 rows use brace notation for the 3 boots they cover.
 | `12-prod-boot-r157-serial.txt` | that boot's serial, ending `untagged=0:tagged=23871:kernel=26903:cleared=49986` |
 | `13-strict-boot-r157.txt` | the strict gate at the R157 head: PASS 1/1 |
 | `13-strict-boot-r157-serial.txt` | that boot's serial, 13 census lines, all `untagged=0` |
+| `14-landing-strict-boot1.txt` | landing re-smoke, strict gate boot 1 of 2 at the merge commit: PASS 1/1 |
+| `14-landing-strict-boot1-serial.txt` | that boot's serial, 15 census lines, all `untagged=0` |
+| `15-landing-strict-boot2.txt` | landing re-smoke, strict gate boot 2 of 2 at the merge commit: PASS 1/1 |
+| `15-landing-strict-boot2-serial.txt` | that boot's serial, 15 census lines, all `untagged=0` |
+| `16-landing-prod-boot1.txt` | landing re-smoke, production gate at the merge commit: PASS, 15 census lines |
+| `16-landing-prod-boot1-serial.txt` | that boot's serial, ending `untagged=0:tagged=24864:kernel=28094:cleared=52147` |
+| `17-landing-x86-build-beast.txt` | landing re-smoke, x86 build check on beast (`breenix-x86` container) at the merge commit: `cargo build --release --features testing,external_test_bins --bin qemu-uefi`, exit 0, 0 `^(warning\|error)` lines |
