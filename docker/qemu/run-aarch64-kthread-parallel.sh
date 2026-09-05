@@ -27,7 +27,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # duplication PR #801 found in its x86 twin run-kthread-parallel.sh for
 # #797), so one invocation's rm -rf/mkdir could delete and rewrite the serial
 # another invocation's poll loop was mid-boot scoring. Defaulting to /tmp
-# keeps every existing caller byte-identical; a concurrent-lane launcher sets
+# keeps a caller that leaves it unset byte-identical; a concurrent-lane launcher sets
 # this to a per-worktree directory instead.
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 # Must be absolute: a relative value would resolve against whatever

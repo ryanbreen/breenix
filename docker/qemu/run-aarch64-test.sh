@@ -12,7 +12,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # itself running inside Docker -- and this script shares the identical
 # literal /tmp/breenix_aarch64_1 path with run-aarch64-userspace.sh, so even
 # two DIFFERENT scripts running at once collide. Defaulting to /tmp keeps
-# every existing caller byte-identical; a concurrent-lane launcher sets this
+# a caller that leaves it unset byte-identical; a concurrent-lane launcher sets this
 # to a per-worktree directory instead.
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 case "$BREENIX_GATE_TMP" in

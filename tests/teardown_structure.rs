@@ -16053,8 +16053,8 @@ fn verdict_trap_no_preempting_exit_rule_catches_inline_exit_shapes() {
 /// per-iteration loop) does not hide the one actually deleted. A hit is a
 /// value starting with `/tmp/breenix` that carries no `$$` (the PID
 /// disambiguator three sibling scripts already use safely, and that this
-/// PR left alone for exactly that reason) in a script whose full text never
-/// mentions `BREENIX_GATE_TMP` at all -- a script that has adopted the
+/// PR left alone for exactly that reason) in a script whose full text does
+/// not mention `BREENIX_GATE_TMP` -- a script that has adopted the
 /// convention anywhere is not, by definition, missing it.
 fn shell_literal_assignment(line: &str) -> Option<(&str, String)> {
     let mut rest = line.trim_start();
@@ -16158,8 +16158,8 @@ fn gate_scripts_route_per_run_output_under_breenix_gate_tmp() {
 fn fixed_tmp_rm_rf_violation_rule_is_not_vacuous() {
     // The rule must actually find the shape it claims to, on a script this
     // branch fixed -- reconstructed as it read on origin/main before the
-    // fix, not the compliant text now in the tree, so this proves the
-    // PREDICATE, not just that today's tree happens to pass.
+    // fix, not the compliant text now in the tree, so this exercises the
+    // PREDICATE itself, not just today's already-compliant tree.
     let pre_fix = "#!/bin/bash\nset -e\nOUTPUT_DIR=\"/tmp/breenix_aarch64_stability\"\nrm -rf \"$OUTPUT_DIR\"\nmkdir -p \"$OUTPUT_DIR\"\n";
     let hit = fixed_tmp_rm_rf_violation(pre_fix);
     assert_eq!(
@@ -16197,7 +16197,7 @@ fn fixed_tmp_rm_rf_violation_rule_is_not_vacuous() {
         fixed_tmp_rm_rf_violation(&real_fixed).is_none(),
         "run-aarch64-stability-test.sh must be clean before mutation"
     );
-    let added_guard = "# #825: two concurrent runs of this gate on the same host each hardcoded the\n# identical /tmp/breenix_aarch64_stability path, so one run's rm -rf/mkdir\n# could delete and rewrite another run's in-flight boot output. Defaulting\n# to /tmp keeps every existing caller byte-identical; a concurrent-lane\n# launcher sets this to a per-worktree directory instead.\nBREENIX_GATE_TMP=\"${BREENIX_GATE_TMP:-/tmp}\"\n# Must be absolute: a relative value would resolve against whatever\n# directory happens to be current when it is read (the same F6 guard PR\n# #801 gave the x86 gate scripts for #797).\ncase \"$BREENIX_GATE_TMP\" in\n    /*) ;;\n    *) echo \"FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP\"; exit 1 ;;\nesac\n\n";
+    let added_guard = "# #825: two concurrent runs of this gate on the same host each hardcoded the\n# identical /tmp/breenix_aarch64_stability path, so one run's rm -rf/mkdir\n# could delete and rewrite another run's in-flight boot output. Defaulting\n# to /tmp keeps a caller that leaves it unset byte-identical; a concurrent-lane\n# launcher sets this to a per-worktree directory instead.\nBREENIX_GATE_TMP=\"${BREENIX_GATE_TMP:-/tmp}\"\n# Must be absolute: a relative value would resolve against whatever\n# directory happens to be current when it is read (the same F6 guard PR\n# #801 gave the x86 gate scripts for #797).\ncase \"$BREENIX_GATE_TMP\" in\n    /*) ;;\n    *) echo \"FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP\"; exit 1 ;;\nesac\n\n";
     assert!(
         real_fixed.contains(added_guard),
         "the reconstructed added-block text must match the real file, or this mutation proves nothing"

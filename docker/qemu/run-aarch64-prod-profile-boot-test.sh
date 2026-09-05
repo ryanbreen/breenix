@@ -15,7 +15,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
 # so one run's rm -rf/mkdir could delete and rewrite the serial another run
 # was mid-boot writing to, and both booted from the same ext2-writable.img
-# either could be rewriting. Defaulting to /tmp keeps every existing caller
+# either could be rewriting. Defaulting to /tmp keeps a caller that leaves it unset
 # byte-identical; a concurrent-lane launcher sets this to a per-worktree
 # directory instead.
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"

@@ -24,7 +24,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # #825: two concurrent runs of this gate on the same host each hardcoded the
 # identical /tmp/breenix_aarch64_full_test path, so one run's rm -rf/mkdir
 # could delete and rewrite another run's in-flight boot output. Defaulting
-# to /tmp keeps every existing caller byte-identical; a concurrent-lane
+# to /tmp keeps a caller that leaves it unset byte-identical; a concurrent-lane
 # launcher sets this to a per-worktree directory instead.
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 # Must be absolute: a relative value would resolve against whatever

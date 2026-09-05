@@ -12,7 +12,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 GATE_TARGET_DIR="$BREENIX_ROOT/target/refusal-drain-gate"
-# #825: fixed by default so the serial lands where every runbook expects it.
+# #825: fixed by default so the serial lands at the path a runbook expects it.
 # It is overridable because the directory is rm -rf'd on entry: a second copy
 # of this gate running on the same host (another worktree, a parallel soak)
 # otherwise deletes and rewrites the first one's serial mid-boot, and the

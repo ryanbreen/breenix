@@ -19,7 +19,7 @@ EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 # #825: two concurrent runs of this script on the same host each hardcoded
 # the identical /tmp/breenix_arm64_test_results path, so one run's rm
 # -rf/mkdir could delete and rewrite another run's in-flight results.
-# Defaulting to /tmp keeps every existing caller byte-identical; a
+# Defaulting to /tmp keeps a caller that leaves it unset byte-identical; a
 # concurrent-lane launcher sets this to a per-worktree directory instead.
 # NOTE: this script also mutates $KERNEL_SRC in place per test, a separate,
 # pre-existing concurrency hazard BREENIX_GATE_TMP does not address --
