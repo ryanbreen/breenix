@@ -510,6 +510,14 @@ including the widened `dispatch_path_lock_free_structure` at 4 of 4
 ### claim-lint
 
 ```
-claim-lint: python3 scripts/claim-lint.py                                  -> exit 0
-claim-lint: python3 scripts/claim-lint.py --files <this doc> <pr body>     -> exit 0
+claim-lint: python3 scripts/claim-lint.py                        -> exit 0
+claim-lint: python3 scripts/claim-lint.py --files <pr body .md>  -> exit 0
 ```
+
+Each of round 2's four content commits -- `ae924cdb`, `ea3451f4`, `cd17ff25`,
+`4c5fd2d6` -- ends with the first of those lines. The round's fifth commit, the
+`origin/main` merge `2bc6663d`, does NOT: it was written with `git commit -m`
+and carries no claim-lint line. It is pushed, so it is disclosed here rather
+than rewritten. It introduces no authored prose of its own -- `git show --stat`
+on it lists only what main brought in -- and the round's claim-lint record is
+this block plus the four commits that do carry it.
