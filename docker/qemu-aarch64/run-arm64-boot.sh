@@ -7,6 +7,17 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# #826/#834/R181: this script's qemu-system-aarch64 boot runs behind the
+# host-wide lock in docker/qemu/lib/qemu-host-lock.sh. This script is
+# Docker-wrapped -- see docker/qemu/run-aarch64-test.sh's identical comment
+# for why the host-side lock still applies (the `docker run` CLI blocks on
+# the host with the qemu-system-aarch64 token in its own argv). #834
+# extends this lock's coverage from docker/qemu/*.sh (its original
+# #826/R181 scope, which this sibling directory falls outside of) to the
+# rest of the tree that launches qemu-system-aarch64.
+# shellcheck source=../qemu/lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/../qemu/lib/qemu-host-lock.sh"
+
 # Find the ARM64 kernel binary
 KERNEL_BIN="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL_BIN" ]; then
@@ -32,6 +43,7 @@ docker build -q -t breenix-qemu-aarch64 "$SCRIPT_DIR" > /dev/null
 # - 1 CPU
 # - PL011 UART for serial output
 # - No graphics
+qemu_host_lock_acquire
 docker run --rm \
     -v "$KERNEL_BIN:/breenix/kernel.elf:ro" \
     -v "$OUTPUT_DIR:/output" \
@@ -48,6 +60,11 @@ docker run --rm \
         -no-reboot \
     &
 QEMU_PID=$!
+# F2: registers the docker run client with the lock's own EXIT trap (see
+# docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just
+# this process during the poll below still stops the container instead of
+# orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 # Wait for output or timeout
 echo "Waiting for kernel output (30s timeout)..."

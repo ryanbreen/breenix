@@ -33,6 +33,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
 cd "$BREENIX_ROOT"
 
+# #826/#834/R181: this script's native (non-Parallels, non-VMware)
+# qemu-system-aarch64 boot runs behind the host-wide lock in
+# docker/qemu/lib/qemu-host-lock.sh -- sourced unconditionally since arch is
+# runtime-selected, but only the arm64 leg below actually calls
+# qemu_host_lock_acquire (the lock serializes qemu-system-aarch64 boots
+# specifically; the x86_64 leg's qemu-system-x86_64 is outside its scope).
+# The Parallels and VMware code paths above this point boot a VM, not a
+# native qemu-system-aarch64 process, and exit before reaching here. #834
+# extends this lock's coverage from docker/qemu/*.sh (its original
+# #826/R181 scope) to run.sh as well.
+# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 # Defaults: ARM64 with graphics
 ARCH="arm64"
 HEADLESS=false
@@ -1062,6 +1075,13 @@ if [ "$ARCH" = "arm64" ]; then
     # MMIO addresses in reverse command-line order. The kernel discovers devices
     # by scanning MMIO addresses low-to-high, so the LAST device here gets the
     # lowest address and becomes device 0 (the system/root disk).
+    #
+    # #834: this is an interactive display session (Ctrl+C stops QEMU below),
+    # but it still takes the host-wide lock -- not exempt just because a
+    # human, not a gate, is driving it. qemu_host_lock_acquire prints its own
+    # one-line notice (host count, then a wait message if contended) before
+    # blocking.
+    qemu_host_lock_acquire
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -smp 4 \
         -m 512M \
@@ -1117,6 +1137,13 @@ else
 fi
 
 QEMU_PID=$!
+if [ "$ARCH" = "arm64" ]; then
+    # F2: registers QEMU with the lock's own EXIT trap (see
+    # docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to
+    # just this script's own PID still kills QEMU instead of orphaning it
+    # with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
+fi
 
 echo "Paste:     echo 'code' | ./scripts/paste.sh"
 echo "Monitor:   tcp://127.0.0.1:4444"
