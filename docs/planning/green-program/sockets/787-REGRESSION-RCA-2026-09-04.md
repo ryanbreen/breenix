@@ -6,23 +6,47 @@ Date: 2026-09-04. Branch: `fix/787-retire-cohort-freeze`, based on `d6b7a186`.
 
 `docker/qemu/run-x86-boot-tests.sh 1` reaches
 `[TEST:process:x86_retire_cohort:START]` and then stops producing serial output
-entirely, at a child index that differs run to run. The QEMU process stays at
-~101% CPU. The kernel serial file is byte-identical from the moment the wedge
-sets in until the harness kills the run 830-900 s later.
+entirely, at a child index that differs run to run. The kernel serial file is
+byte-identical from the moment the wedge sets in until the harness kills the run
+830-900 s later, and the QEMU process is not exiting or blocking during that
+window -- it is spinning, which is what the specimens below show directly.
 claim-lint:ok: the flat-size window is the last two columns of
-`serials/787-regression/ab-serials/main-{1,2,3}.sizehist`, 3 of 3.
+`serials/787-regression/ab-serials/main-{1,2,3}.sizehist`, 3 of 3; the spinning
+is the `spin_loop_hint` RIP in `spec{1,2}/gdb_sample_1.txt`, 2 of 2. Round 1
+also reported "the QEMU process stays at ~101% CPU"; that was a live `top`
+reading during the A/B session and no committed artifact carries it, so it is
+dropped rather than restated.
 
 ## The A/B that bisected it
 
 Recorded in the same session at
-`/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/p775/x86-boot-tests-ab.md`,
-with the four timed-out runs' serials copied into
-`docs/planning/green-program/sockets/serials/787-regression/ab-serials/`.
+`/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/p775/x86-boot-tests-ab.md`.
+All six runs' runlogs and user serials are now committed under
+`docs/planning/green-program/sockets/serials/787-regression/ab-serials/`; round 2
+added `pre-2` and `pre-3`, which round 1 cited but did not commit.
 
-| leg | commit | runs | cohort |
-|---|---|---|---|
-| pre | `ee6de882` (merge of PR #785) | 3 | cleared in 131 s, 131 s, 141 s |
-| main | `b257e69e` (merge of PR #787) | 3 | never reached `PASS`; wedged at children 49, 13, 14 of 64 |
+| leg | run | gate verdict | cohort `START`->`PASS` | 1-min load at launch |
+|---|---|---|---|---|
+| pre `ee6de882` (merge of PR #785) | pre-1 | FAIL | cleared, 80->221 s = 141 s | 1.89 |
+| | pre-2 | PASS | cleared, 65->196 s = 131 s | 1.15 |
+| | pre-3 | PASS | cleared, 65->196 s = 131 s | 1.55 |
+| main `b257e69e` (merge of PR #787) | main-1 | FAIL | never reached `PASS`; wedged at child 49 of 64 | 1.10 |
+| | main-2 | FAIL | never reached `PASS`; wedged at child 13 of 64 | 1.09 |
+| | main-3 | FAIL | never reached `PASS`; wedged at child 14 of 64 | 0.89 |
+
+claim-lint:ok: every cell is read back out of `ab-serials/<run>.runlog` --
+`cohort_start_elapsed_s`, `cohort_end_elapsed_s`, `load_before` and the
+`verdict_grep` line, 6 of 6.
+
+pre-1 is a FAIL, and round 1's table hid that by reporting only the cohort
+number. The failure is NOT the wedge: pre-1's cohort cleared normally at
+elapsed 221 s and the boot went on to `[TEST:userspace:loopback_recv_wake:PASS]`,
+the same last marker pre-2 and pre-3 reach. The gate then ran out of its
+900-iteration poll budget waiting for `RECLAIM_DRAIN` /`TOMBSTONE_QUIESCE` /
+`KSTACK_QUIESCE_LEAK`, which never appeared, and aborted at
+`run-x86-boot-tests.sh:682` with the boot still progressing. So the pre leg is
+2 of 3 green overall and 3 of 3 on the cohort specifically, and the honest
+statement of the A/B is about the cohort, not about the whole gate.
 
 Only PR #787 separates the two heads.
 
@@ -78,49 +102,96 @@ quoted verbatim above.
    claim-lint:ok: IF=0 is the `eflags 0x2` reading in both specimen registers
    dumps, `serials/787-regression/spec{1,2}/gdb_sample_1.txt`, 2 of 2.
 
-## Why the branch alone, and main before #787, mostly did not hit it
+## Which dispatch arm reaches the lock, and what the markers do and do not show
 
 The consumer in step 1 is only reached for dispatches that go through
 `setup_kernel_thread_return`. In `switch_to_thread` the idle thread reaches it
 only on the `<1>` arm (`context_switch.rs:881`, idle WITH a saved context); the
 `<I>` arm (`context_switch.rs:887`, `setup_idle_return`) does not touch the
-master PML4 at all.
+master PML4 at all. That much is structural and is what the specimens land on.
 
-Counting the single-character dispatch markers in the A/B serials over each
-whole boot:
+### The predicate, in full
 
-| leg | `<I>` | `<1>` | `<K>` |
-|---|---|---|---|
-| pre `ee6de882` (`ab-serials/pre-1/serial_user.txt`) | 461 | 23 | 54 |
-| main `b257e69e` (`ab-serials/main-1/serial_user.txt`) | 0 | 59 | 62 |
-| specimen 1 (`spec1/serial_user.txt`) | 0 | 70 | 73 |
-| specimen 2 (`spec2/serial_user.txt`) | 0 | 19 | 22 |
+`has_saved_context` is the conjunction of two terms, not one
+(`kernel/src/interrupts/context_switch.rs:864-876` at this head):
 
-`<I>` is taken when the idle thread's saved `context.rip` is still 0 or the
-`idle_loop` entry address -- the two values the predicate tests -- i.e. when no
-save has written it.
-claim-lint:ok: the predicate is the `has_saved_context` binding at `b257e69e`
-`kernel/src/interrupts/context_switch.rs:865-876`, consumed by the
-`if has_saved_context` branch at `:878`.
-On the pre leg that was the common case, because the boot/init thread (tid 1)
-had `blocked_in_syscall` left set by `Scheduler::block_current_for_io_publish`
-(`ee6de882` `kernel/src/task/scheduler.rs:3393`) during the ext2 root read, and
-that flag routes its later saves into `save_kernel_context_with_guard`
-(`context_switch.rs:474`), which writes into `process.main_thread` and stores
-nothing for a thread with no process. PR #787 fixed that producer --
-`thread.blocked_in_syscall = thread.owner_pid.is_some()` at `b257e69e`
-`scheduler.rs:3401` and `:3444` -- which is correct in itself, and its
-consequence is that tid 1's context is now really saved, so its dispatches take
-`<1>` instead of `<I>`. That moves the master-PML4 read from "rarely on the
-dispatch path" to "on essentially every idle dispatch", which is what turns a
-latent lock-context defect into a wedge the cohort hits within 15-65 s.
+1. `crate::syscall::handler::is_ring3_confirmed()`. Once userspace has started,
+   `has_saved_context` is set to `false` unconditionally and the second term is
+   not evaluated, so an idle dispatch after that latch takes `<I>`. The
+   comment above it gives the reason: idle's boot-time saved context can hold
+   RIPs in kernel init code that hang when restored during userspace operation.
+   claim-lint:ok: the short-circuit is the `if userspace_started { false }` arm,
+   1 of 1, at `context_switch.rs:866-868`.
+2. Only while ring 3 is NOT yet confirmed: `thread.context.rip != 0 &&
+   thread.context.rip != idle_loop`, i.e. some save has written a RIP that is
+   neither `0` nor the idle entry.
+   claim-lint:ok: the 2 of 2 tested values are `0` and
+   `idle_loop as *const () as u64` at `context_switch.rs:871-875`.
 
-What this section does NOT establish: the exact per-run probability on each leg,
-or why the branch head `18d35cac` measured 18/20 rather than 0/20 on this gate.
-The marker counts above are from one boot per leg on the A/B, plus the two
-specimens. The `<I>` -> `<1>` flip is measured; the attribution of that flip to
-the `blocked_in_syscall` producer change is read from the source and from the
-specimen's restored context (below), not from a mutation run.
+Round 1 described term 2 only. Term 1 dominates -- it is a boot-phase latch, and
+it is the term that decides the arm for the post-userspace part of a boot -- so
+omitting it made the arm look like a per-thread property when it is mostly a
+phase property.
+claim-lint:ok: both terms are the `has_saved_context` binding at
+`context_switch.rs:864-876`, consumed by `if has_saved_context` at `:878`;
+term 1 is evaluated first, 1 of 1.
+
+### The marker counts, and why they carry no frequency story
+
+Round 1 put a four-row table here contrasting 461 `<I>` on the pre leg with 0
+`<I>` on main, "over each whole boot", and read it as the mechanism by which
+#787 moved the master-PML4 read onto the dispatch path. That contrast is a
+truncation artifact, and this round retracts it.
+
+What the committed serials actually measure:
+
+| serial | bytes | whole boot `<I>`/`<1>`/`<K>` | before cohort `START` | in the cohort window |
+|---|---|---|---|---|
+| `ab-serials/pre-1` (`ee6de882`, PASS at cohort) | 68048 | 461 / 23 / 54 | 0 / 1 / 2 | 0 / 0 / 0 |
+| `ab-serials/pre-2` (`ee6de882`, PASS) | 67155 | 468 / 23 / 53 | 0 / 1 / 2 | 0 / 0 / 0 |
+| `ab-serials/pre-3` (`ee6de882`, PASS) | 56504 | **3** / 23 / 53 | 0 / 1 / 2 | 0 / 0 / 0 |
+| `ab-serials/main-1` (`b257e69e`, wedged) | 4296 | 0 / 59 / 62 | 0 / 12 / 14 | 0 / 47 / 48 |
+| `prove/single-1` (fixed, PASS) | 72239 | 402 / 320 / 391 | 0 / 12 / 14 | 0 / 97 / 97 |
+
+Three facts kill the causal reading:
+
+- **The 461-vs-0 gap is length, not leg.** A wedged run's user serial stops at
+  ~4 KB; a run that clears the cohort goes on to ~70 KB. pre-1's *first* `<I>`
+  is at byte 55917 of 68048 -- 52 KB after the cohort passed, in the
+  `[TEST:userspace:loopback_recv_wake]` phase. The wedged legs never reached
+  that phase, so they could not have printed an `<I>` whatever the dispatch
+  shape was. Both legs are 0 `<I>` everywhere the two are comparable.
+- **The pre leg disagrees with itself by 150x.** Same commit, same binary, same
+  131 s cohort, same last test marker reached: pre-1 461, pre-2 468, pre-3 3.
+  A count that varies that much across three runs of one binary is measuring
+  how long the boot sat in its trailing idle stream, not a property of the tree.
+- **The fixed, green head has 402 `<I>` whole-boot.** If a low `<I>` count were
+  the wedge condition, the fix's own passing runs would contradict it.
+
+What the serials DO support, stated no wider than that: in the cohort window
+the pre leg emitted **no traced dispatch at all** -- START and PASS are adjacent
+lines, 39 bytes apart -- while both the wedging `b257e69e` and the fixed head
+emit a dense alternating `<K>`/`<1>` stream there (47/48 and 97/97). The pre
+leg's window is silent, so it cannot be compared arm-for-arm with the other two
+at all, and the round-1 sentence that #787 "moves the master-PML4 read from
+rarely on the dispatch path to on essentially every idle dispatch" is not
+established by anything committed here.
+claim-lint:ok: every number in the table is re-derivable from the named file
+with `grep -o` and a byte offset; the window bounds are the byte offsets of
+`[TEST:process:x86_retire_cohort:START]` and `:PASS]` in the same file.
+
+**The frequency story is not established.** Neither the per-run probability on
+each leg, nor the attribution of any change in dispatch-arm mix to #787's
+`blocked_in_syscall = owner_pid.is_some()` producer fix, nor why the branch head
+`18d35cac` measured 18/20 rather than 0/20, is supported by the evidence in this
+record. Establishing it would take an instrumented A/B that counts arms inside
+the cohort window on both legs, which was not run.
+
+This retraction does not weaken the finding. The mechanism rests on the two GDB
+specimens below -- IF=0, spinning in the master-PML4 accessor, on the dispatch
+stack, with the lock byte read as 1 -- and on the source-level fact that ordinary
+thread context takes the same mutex with interrupts enabled. The fix rests on its
+own green battery. The dropped claim was decoration on both.
 
 ## The two specimens
 
@@ -190,10 +261,33 @@ Two changes, both removing work from the interrupt-context dispatch path.
    reconstruction, with no lock. `map_kernel_page` and `unmap_kernel_page` now
    call that accessor instead of locking the cell themselves, so the `if let`
    temporary they hold is a plain `Option<PhysFrame>`, and no guard outlives the
-   accessor call. That removes this deadlock at its source: the dispatch path
-   has no lock left to spin on.
+   accessor call. That removes this deadlock at its source: the master PML4 read
+   on the dispatch path is now a plain atomic load.
    claim-lint:ok: the 3 code lines that name the cell are pinned by
    `tests/dispatch_path_lock_free_structure.rs`.
+
+   The dispatch path is NOT lock-free after this change, and round 1 said it was
+   ("the dispatch path has no lock left to spin on", in this document and in
+   commit `6d17b83a`'s message; corrected in the PR body, since the message is
+   pushed). `setup_kernel_thread_return` still calls
+   `scheduler::with_thread_mut` (`context_switch.rs:1279`), which takes
+   `SCHEDULER.lock()` -- also a `spin::Mutex` -- via `lock_scheduler`
+   (`scheduler.rs:4719-4728` -> `:330-334`). What keeps that acquisition out of
+   the failure class of step 6 is not its absence but the interrupt state of its
+   holders: `with_thread_mut` wraps the acquire and the whole critical section in
+   `without_interrupts` (`scheduler.rs:4723`), so a holder cannot be preempted
+   while holding it, and the byte the dispatch spins on is owned by a holder that
+   is still on CPU. The master-PML4 readers had the opposite property --
+   `map_kernel_page` took its mutex from ordinary thread context with interrupts
+   ENABLED -- and that is the whole difference.
+   Narrowed deliberately: this round checked `with_thread_mut`, the one
+   acquisition the dispatch path uses. `SCHEDULER` has 30 acquisition sites in
+   `scheduler.rs`; 1 of those 30 was audited for the masked-holder property here,
+   so this is a statement about the dispatch path's own call, not a
+   whole-lock invariant.
+   claim-lint:ok: the site count is `grep -c "lock_scheduler()"
+   kernel/src/task/scheduler.rs` at this head; the audited site is
+   `scheduler.rs:4723`, 1 of 30.
 2. `kernel/src/interrupts/context_switch.rs`: `setup_kernel_thread_return` no
    longer clones the thread's `name`. That clone allocated a `String` -- taking
    the heap allocator's lock from interrupt context, the same hazard class -- on
@@ -220,52 +314,65 @@ tests fail; with the fix in place, 4 of 4 pass. The fourth,
 already routed through the accessor at `b257e69e`, so it is a forward guard, not
 a mutation-proven one.
 
-## Proof: 6 of 6 single gate runs, 8 of 8 four-boot runs, 3 of 3 production runs, 80 of 80 aarch64 strict boots
+## Proof, round 1: 6 of 6 single gate runs, 8 of 8 four-boot runs, 3 of 3 production runs
 
-Plus the ratchet mutation at the end of this section.
+Plus the ratchet mutation at the end of this section. Round 2's re-smoke at the
+merged head, including the aarch64 leg, is in its own section below.
 
 The runs are on beast, in the `breenix-x86` Incus container, sharing the machine
 with the `/root/breenix-737-oracle` tenant throughout. Gate stdout is committed
 under `docs/planning/green-program/sockets/serials/787-regression/prove/`.
 
 x86, `docker/qemu/run-x86-boot-tests.sh 1`, six sequential runs -- the gate that
-was red 3 of 3 on `b257e69e` and 5 of 5 across the two specimens:
+was red 3 of 3 on `b257e69e` and 5 of 5 across the two specimens: 6 of 6 print
+`x86 frame-custody gate run 1: PASS`, one `single-N.stdout` per run under
+`docs/planning/green-program/sockets/serials/787-regression/prove/`.
+`prove/single-1/` carries that run's full serial pair, and its
+`[TEST:process:x86_retire_cohort:PASS]` is the marker the wedging legs never
+reached.
 
-| run | cohort START->PASS | total | verdict |
-|---|---|---|---|
-| 1 | 128 s | 478 s | `x86 frame-custody gate run 1: PASS` |
-| 2 | 133 s | 497 s | PASS |
-| 3 | 133 s | 486 s | PASS |
-| 4 | 131 s | 483 s | PASS |
-| 5 | 127 s | 483 s | PASS |
-| 6 | 127 s | 476 s | PASS |
+Round 1 also printed a per-run wall-clock table here -- six `START`->`PASS`
+durations and six totals -- and a "127-133 s band that sits inside the pre-#787
+leg's own 131-141 s". Both are withdrawn:
 
-6 of 6 cleared `x86_retire_cohort`, in a 127-133 s band that sits inside the
-pre-#787 leg's own 131-141 s. The verdict lines are in
-`docs/planning/green-program/sockets/serials/787-regression/prove/`, one
-`single-N.stdout` per run, and
-`docs/planning/green-program/sockets/serials/787-regression/prove/single-1/`
-carries that run's full serial pair.
+- The seconds came from a wrapper (`battery1.sh`) that printed them to a
+  terminal only; the committed `single-N.stdout` files carry no timestamps, so
+  no committed artifact backs those twelve numbers. They are deleted rather than
+  restated.
+- The band sentence was arithmetically false in any case: 127-133 does not sit
+  inside 131-141, it sits below it at the low end. And the comparison was never
+  like-for-like -- the pre leg ran at 1-min loads of 1.89 / 1.15 / 1.55 with the
+  `/root/breenix-737` tenant active, and the fix battery ran alongside
+  `/root/breenix-737-oracle`, on a host whose load moved run to run. On this
+  machine a cohort duration is a load reading as much as a code reading.
+
+What the committed stdouts do support is the verdict and the counts, which is
+what this section now claims.
 
 x86, `docker/qemu/run-x86-boot-tests.sh 4`, two batches: 4 of 4 PASS in each,
 8 of 8 overall, in
 `docs/planning/green-program/sockets/serials/787-regression/prove/gate4-1.stdout`
-and `gate4-2.stdout`. Batch 1 took 1837 s wall.
+and `gate4-2.stdout`. (Round 1's "batch 1 took 1837 s wall" came from the same
+unsaved wrapper output and is deleted.)
 
 x86 production profile, `docker/qemu/run-x86-prod-profile-boot-test.sh`, 3 of 3
 runs exit 0, at 107 s / 109 s / 108 s, in
 `docs/planning/green-program/sockets/serials/787-regression/prove/prod-1.stdout`
-and its two siblings. That script builds with no `--features` at all, so it is
+and its two siblings.
+claim-lint:ok: the three `rc=0` lines and the three `total_s` values are the
+committed `prove/prod-summary.txt`, which round 2 copied off beast for exactly
+this reason; 3 of 3.
+That script builds with no `--features` at all, so it is
 also the zero-feature build check; the
 `boot_tests,testing,external_test_bins` build printed no `warning`/`error`
-line when re-run in this slot (`grep -E "^(warning|error)"` -> no output).
+line when re-run in that slot (`grep -E "^(warning|error)"` -> no output).
 
-aarch64: `cargo build --release --features boot_tests --target
-aarch64-breenix-kernel.json -Z build-std=core,alloc -Z
-build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` is
-clean, and `docker/qemu/run-aarch64-boot-test-strict.sh` was run 4 times at 20
-boots each: 20/20, 20/20, 20/20, 20/20 = 80 of 80. The fourth invocation ran
-against a kernel rebuilt from the committed tree.
+aarch64: round 1 claimed "80 of 80 aarch64 strict boots" from four 20-boot
+invocations. No log of those runs was committed and none was found on this Mac
+when round 2 went looking, so the claim is withdrawn and replaced by the
+three committed strict boots in the round-2 section below. The soft-float
+`--features boot_tests` build being clean is likewise re-measured there rather
+than asserted from round 1.
 
 Anti-vacuity for the fix itself -- the fix must not work by avoiding the code
 path. On the fixed build's run 1, the `x86_retire_cohort` window still contains
