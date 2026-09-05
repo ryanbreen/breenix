@@ -450,3 +450,55 @@ many-iteration soak of the signal-delivery path.
   harness mirroring the real chain shape); neither is a many-iteration
   statistical claim about the signal-delivery path the way the boot proofs
   section's 49-sample concurrent-run check is for the no-signal path.
+
+## Landing re-smoke
+
+Merged `origin/main`'s 16 commits (merge base fdc65c8a, main head 7a19f550)
+onto this branch's review-r1 head 22cd3665 at merge commit 6289a026, in a
+fresh worktree. Two files overlapped -- `run-aarch64-boot-test-strict.sh`
+and `run-aarch64-prod-profile-boot-test.sh` -- and git's auto-merge combined
+both sides' hunks in each with no conflict markers and no manual resolution:
+this branch's `qemu_host_lock_acquire`/`qemu_host_lock_track_pid`/
+`qemu_host_lock_release` calls sit alongside main's #812
+`IRQ_HOLD_ORACLE` additions in both files, confirmed hunk-by-hunk against
+each parent. The three touched `kernel/` files and `tests/teardown_structure.rs`
+were changed only by main, not by this branch, and came through as exact
+copies of main's versions.
+
+Re-ran the full suite at the merged head:
+
+- **32 of 32 `tests/*_structure.rs` suites** (31 pre-existing plus this
+  branch's own `qemu_host_lock_structure.rs`): `cargo test -p breenix --test
+  <name>` for each, one `cargo test` invocation covering all 32 targets --
+  `test result: ok` for 32 of 32, 586 tests passed, 0 failed, 0 filtered
+  out (main's #812 work added tests to `teardown_structure.rs`, so the count
+  moved from the pre-merge branch's own 584 to 586).
+- **`scripts/test_claim_lint.py`**: exit 0.
+- **One strict gate run** (`./docker/qemu/run-aarch64-boot-test-strict.sh`,
+  script default of 20 iterations), aarch64 kernel built with `--features
+  boot_tests`: `PASS: 20/20 boots succeeded` (`Successes: 20  Failures: 0
+  Success rate: 100%`).
+- **One production-profile gate run**
+  (`./docker/qemu/run-aarch64-prod-profile-boot-test.sh`, which builds its
+  own no-features kernel): `PASS: production profile reached bsshd with the
+  futex oracle seam absent`, exit 0.
+
+0 of the 4 checks above went red at the merged head, so no attribution to a
+pre-adjudicated signature was needed. `pgrep -fl qemu-system-aarch64` read 0
+before each of the 2 gate-run launches in this re-smoke, and 0 again after
+both completed: 0 orphaned QEMU processes across the 4 samples.
+
+Two worktree-local setup gaps surfaced and were resolved before the above
+runs, neither a defect in this branch's own changes: the fresh worktree had
+no `rust-fork` symlink (needed a `rust-fork -> .../rust-fork` symlink
+matching the main checkout's own setup, since `libs/libbreenix-libc`'s
+build-dependency chain resolves `rust-fork/library`'s own `libc` path
+dependency relative to that symlink's logical location, not a `$PROJECT_ROOT`-relative
+override) and no prebuilt `userspace/programs/aarch64/*.elf` files or
+`target/ext2-aarch64.img` (neither is git-tracked; the ELFs were copied from
+the main checkout since neither branch's diff touches `userspace/` sources,
+and the ext2 image was rebuilt fresh via `scripts/create_ext2_disk.sh --arch
+aarch64`).
+
+claim-lint: scripts/claim-lint.py -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/gates/HOST-QEMU-LOCK-2026-09-05.md -> exit 0
