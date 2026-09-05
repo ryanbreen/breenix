@@ -21,6 +21,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 GATE_TARGET_DIR="$BREENIX_ROOT/target/percpu-stack-custody-gate"
 # #825: two concurrent runs of this gate on the same host each hardcoded the
 # identical /tmp/breenix_aarch64_percpu_stack_custody_gate path, so one run's
@@ -108,6 +113,7 @@ mkdir -p "$OUTPUT_DIR"
 EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
 cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
+qemu_host_lock_acquire
 timeout 200 qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \

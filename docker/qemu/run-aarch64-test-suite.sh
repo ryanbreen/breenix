@@ -14,6 +14,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 KERNEL_SRC="$BREENIX_ROOT/kernel/src/main_aarch64.rs"
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 # #825: two concurrent runs of this script on the same host each hardcoded
@@ -153,6 +158,7 @@ PYTHON
     
     # Run QEMU with timeout (using writable ext2 copy to allow write tests)
     echo "Running test..."
+    qemu_host_lock_acquire
     timeout 30 qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
         -kernel "$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" \
@@ -166,7 +172,11 @@ PYTHON
         -netdev user,id=net0 \
         -serial file:"$output_file" 2>&1 &
     QEMU_PID=$!
-    
+    # F2: registers this PID with the lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this process during the poll below
+    # still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
+
     # Wait for test to complete (look for exit marker)
     for i in $(seq 1 25); do
         if grep -qE "exit\([0-9]+\)|Userspace Test Complete|Test Summary|RESULT:" "$output_file" 2>/dev/null; then
@@ -178,7 +188,8 @@ PYTHON
     
     kill $QEMU_PID 2>/dev/null || true
     wait $QEMU_PID 2>/dev/null || true
-    
+    qemu_host_lock_release
+
     # Check result
     local exit_code=""
     if grep -qE "exit\(0\)" "$output_file" 2>/dev/null; then

@@ -19,6 +19,11 @@ set -e
 ITERATIONS=${1:-20}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same host,
 # both native QEMU rather than the shared beast container #797/#801 covered)
 # each hardcoded the identical /tmp/breenix_aarch64_strict_$iteration and
@@ -40,11 +45,19 @@ esac
 INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
 # driven=2 proves both handoff seams ran; stage1/2 return, wake, and park fields
-# expose D1/D2. stage3_elapsed_ok=1 proves no early timeout return, while
+# expose D1/D2. stage3_elapsed_ok=1 proves the interval the oracle measured
+# reached the full requested duration -- since #627 that interval is anchored
+# to the same clock read the kernel used to compute the deadline, not to a
+# later oracle-internal read, so this bit can no longer read 0 on a wait that
+# was never actually short. arm_delay_us is that retired gap, kept visible.
 # stage3_ret=ETIMEDOUT plus rescues=0 proves the backstop did not end this wait.
 # stage3_elapsed_ms is the measured duration; residual/balance prove cleanup.
+# claim-lint:ok: #627 -- provable by construction from program order (futex.rs
+# reads base_ns before its deadline check; record_arm's own clock read comes
+# after), not by boot sampling: see kernel/src/syscall/futex_oracle.rs::record_arm
+# and validate_futex_oracle_record_arm_anchor in tests/teardown_structure.rs.
 # This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
-FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
+FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:arm_delay_us=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
 # resolved_production may be zero once #605's early-slot-consumption defect is fixed; deterministic resolved_exercised proves the resolver ran.
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:aarch64:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[1-9][0-9]*:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0\]'
@@ -526,6 +539,7 @@ run_single_test() {
     # Breenix ARM64 expects a GICv3 CPU interface, matching Parallels.
     # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
     # Use writable disk copy (no readonly=on) to allow filesystem writes
+    qemu_host_lock_acquire
     timeout 20 qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -539,6 +553,10 @@ run_single_test() {
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
+    # F2: registers this PID with the lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this process during the poll below
+    # still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
 
     # Wait for userspace liveness AND exec smoke completion (18s max, checking every 1.5s)
     # Accept any of these as the liveness condition:
@@ -586,6 +604,7 @@ run_single_test() {
 
     kill $QEMU_PID 2>/dev/null || true
     wait $QEMU_PID 2>/dev/null || true
+    qemu_host_lock_release
 
     # The poll booleans above are a stop condition, not a verdict. Score the boot
     # from the serial file QEMU actually left behind.

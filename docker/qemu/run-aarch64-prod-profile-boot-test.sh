@@ -11,6 +11,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same
 # host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
 # so one run's rm -rf/mkdir could delete and rewrite the serial another run
@@ -220,6 +226,20 @@ cleanup() {
         kill "$QEMU_PID" 2>/dev/null || true
         wait "$QEMU_PID" 2>/dev/null || true
     fi
+    # F1: this function ends in `exit "$status"` below, which terminates the
+    # shell immediately -- when this cleanup runs because
+    # qemu-host-lock.sh's own chained EXIT trap invoked it (a SIGTERM/SIGINT
+    # delivered during the boot-poll window, or any set -e/ERR abort in that
+    # same window, while the lock is held), the rest of that chained trap
+    # string (`qemu_host_lock_release; _qhl_verdict_banner`) sits AFTER this
+    # call in the composed trap and would not run. Releasing here,
+    # immediately after the kill+wait above has confirmed QEMU_PID is gone,
+    # closes that gap without racing a concurrent acquirer against a still-
+    # dying QEMU: both calls are idempotent no-ops on the normal path, where
+    # the outer script already released the lock at line ~334 before this
+    # trap ever fires.
+    qemu_host_lock_release
+    _qhl_verdict_banner
 
     if [ "$status" -ne 0 ]; then
         timestamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -297,6 +317,7 @@ EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
 cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
 echo "Booting the ARM64 production profile..."
+qemu_host_lock_acquire
 timeout 120 qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
@@ -331,6 +352,7 @@ done
 kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
 QEMU_PID=""
+qemu_host_lock_release
 fi
 
 PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")

@@ -6,6 +6,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: serializes qemu-system-aarch64 boots host-wide. This script is
+# Docker-wrapped -- see run-aarch64-test.sh's identical comment for why the
+# host-side lock still applies (the `docker run` CLI blocks on the host
+# with the qemu-system-aarch64 token in its own argv).
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #825: this script's OUTPUT_DIR is a HOST path that is rm -rf'd, mkdir'd and
 # then bind-mounted into the container, so the same-host collision #825
 # reports applies here despite the QEMU process itself running inside
@@ -82,6 +88,7 @@ cp "$EXT2_DISK" "$EXT2_WRITABLE"
 #   0x0a000000 + n*0x200  for n=0..31
 # Devices are assigned from slot 31 downward.
 # Use writable disk copy (no readonly=on) to allow filesystem writes
+qemu_host_lock_acquire
 docker run --rm \
     -v "$KERNEL:/breenix/kernel:ro" \
     -v "$EXT2_WRITABLE:/breenix/ext2.img" \
@@ -105,6 +112,10 @@ docker run --rm \
         &
 
 QEMU_PID=$!
+# F2: registers the docker run client with the lock's own EXIT trap (see
+# lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just this process
+# still stops the container instead of orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 # Wait for output (60 second timeout)
 echo "Waiting for kernel output (60s timeout)..."
@@ -137,6 +148,7 @@ echo "========================================="
 
 # Cleanup
 docker kill $(docker ps -q --filter ancestor=breenix-qemu-aarch64) 2>/dev/null || true
+qemu_host_lock_release
 
 if $FOUND; then
     echo "ARM64 kernel produced output!"

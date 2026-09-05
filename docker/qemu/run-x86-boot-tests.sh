@@ -114,11 +114,19 @@ CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2
 INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
 # driven=2 proves both handoff seams ran; stage1/2 return, wake, and park fields
-# expose D1/D2. stage3_elapsed_ok=1 proves no early timeout return, while
+# expose D1/D2. stage3_elapsed_ok=1 proves the interval the oracle measured
+# reached the full requested duration -- since #627 that interval is anchored
+# to the same clock read the kernel used to compute the deadline, not to a
+# later oracle-internal read, so this bit can no longer read 0 on a wait that
+# was never actually short. arm_delay_us is that retired gap, kept visible.
 # stage3_ret=ETIMEDOUT plus rescues=0 proves the backstop did not end this wait.
 # stage3_elapsed_ms is the measured duration; residual/balance prove cleanup.
+# claim-lint:ok: #627 -- provable by construction from program order (futex.rs
+# reads base_ns before its deadline check; record_arm's own clock read comes
+# after), not by boot sampling: see kernel/src/syscall/futex_oracle.rs::record_arm
+# and validate_futex_oracle_record_arm_anchor in tests/teardown_structure.rs.
 # This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
-FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
+FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:arm_delay_us=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
 # Absolute frame counts are boot-state dependent, so pin every delta exactly,
 # including the three-table recorded_pre hierarchy cost and computed tables_returned=4;
 # the in-kernel oracle asserts used_after == used_before, and a skipped/cfg'd-out block fails this gate.

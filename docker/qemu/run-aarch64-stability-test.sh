@@ -17,6 +17,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #825: two concurrent runs of this gate on the same host each hardcoded the
 # identical /tmp/breenix_aarch64_stability path, so one run's rm -rf/mkdir
 # could delete and rewrite another run's in-flight boot output. Defaulting
@@ -70,6 +75,7 @@ echo "ext2 disk: $EXT2_DISK"
 echo ""
 
 # Start QEMU in background (60s total timeout)
+qemu_host_lock_acquire
 timeout 60 qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512 -smp 4 \
     -kernel "$KERNEL" \
@@ -211,6 +217,7 @@ fi
 kill $QEMU_PID 2>/dev/null || true
 wait $QEMU_PID 2>/dev/null || true
 unset QEMU_PID  # Prevent trap from trying to kill again
+qemu_host_lock_release
 
 # --- Phase 4: Report ---
 echo ""

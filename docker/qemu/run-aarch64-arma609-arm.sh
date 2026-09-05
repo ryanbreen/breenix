@@ -115,6 +115,13 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh. Scope note: the lock covers only
+# the qemu-system-aarch64 process -- the nice(1) CPU-hog processes
+# start_cpu_hogs() spawns to induce host starvation are plain shell
+# busy-loops, not QEMU, and sit outside this lock's scope.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 
 if [ ! -f "$KERNEL" ]; then
@@ -482,6 +489,7 @@ for boot in $(seq 1 "$BOOTS"); do
         DRIVE_OPTS="$DRIVE_OPTS,throttling.iops-total=$IOPS"
     fi
 
+    qemu_host_lock_acquire
     launch_qemu "$SERIAL_FILE" "$DRIVE_OPTS"
     BOOT_END="timeout"
     BOOT_START=$SECONDS
@@ -536,6 +544,7 @@ for boot in $(seq 1 "$BOOTS"); do
     QEMU_STATUS=$?
     set -e
     QEMU_PID=""
+    qemu_host_lock_release
     rm -f "$WRITABLE_DISK"
     CURRENT_DISK=""
 

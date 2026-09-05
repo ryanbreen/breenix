@@ -55,6 +55,11 @@ set -E
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 COMPONENT="A"
 SEEDS=25
@@ -263,6 +268,7 @@ boot_once() {
     local ext2="$dir/ext2-writable.img"
     cp "$EXT2_DISK" "$ext2"
 
+    qemu_host_lock_acquire
     timeout 40 qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu "$profile" -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -292,6 +298,7 @@ boot_once() {
     kill "$QEMU_PID" 2>/dev/null || true
     wait "$QEMU_PID" 2>/dev/null || true
     QEMU_PID=""
+    qemu_host_lock_release
 }
 
 adjudicate() {

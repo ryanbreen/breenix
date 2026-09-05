@@ -30,6 +30,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 BOOT_SECONDS="${BREENIX_TESTING_PROFILE_BOOT_SECONDS:-45}"
 # R18 / #797 scratch-dir convention, landed on main by PR #801 after this
@@ -220,6 +225,14 @@ for i in $(seq 1 "$ITERATIONS"); do
     : > "$SERIAL"
     cp "$EXT2_DISK" "$OUTPUT_DIR/ext2-writable.img"
 
+    qemu_host_lock_acquire
+    # F2: this used to run in the foreground (no `&`), which left no PID a
+    # SIGTERM/SIGINT delivered to just this script's own process could
+    # reach -- a foreground child does not receive a signal targeted only
+    # at its parent's PID, so it survived orphaned with the lock already
+    # freed by the trap below. Backgrounding it and waiting on the captured
+    # PID makes it trackable the same way each other native launch in this
+    # lock's family already is.
     timeout "$BOOT_SECONDS" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -231,7 +244,11 @@ for i in $(seq 1 "$ITERATIONS"); do
         -drive if=none,id=ext2,format=raw,file="$OUTPUT_DIR/ext2-writable.img" \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
-        -serial file:"$SERIAL" > "$OUTPUT_DIR/qemu-stdout.log" 2>&1 || true
+        -serial file:"$SERIAL" > "$OUTPUT_DIR/qemu-stdout.log" 2>&1 &
+    QEMU_PID=$!
+    qemu_host_lock_track_pid "$QEMU_PID"
+    wait "$QEMU_PID" 2>/dev/null || true
+    qemu_host_lock_release
 
     if ! classify_serial "$SERIAL" "Testing boot $i"; then
         mkdir -p "$FAILURE_ROOT"
