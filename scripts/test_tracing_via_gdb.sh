@@ -42,6 +42,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# #825: without --out, two concurrent invocations of this harness for the
+# same --arch hardcoded the identical /tmp/breenix_trace_test_$ARCH path, so
+# one invocation's rm -rf/mkdir could delete and rewrite another's in-flight
+# capture. --out remains the per-invocation override; BREENIX_GATE_TMP is
+# now the base its default is built under (default /tmp, so an unset caller
+# is byte-identical to before).
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2; exit 2 ;;
+esac
+
 case "$(uname -m)" in
     arm64 | aarch64) DEFAULT_ARCH=aarch64 ;;
     *) DEFAULT_ARCH=x86_64 ;;
@@ -69,7 +81,7 @@ case "$ARCH" in
 esac
 
 if [ -z "$OUTPUT_DIR" ]; then
-    OUTPUT_DIR="/tmp/breenix_trace_test_$ARCH"
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_trace_test_$ARCH"
 fi
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,19 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #825: this script's OUTPUT_DIR is a HOST path that is rm -rf'd, mkdir'd and
+# then bind-mounted into the container, so the same-host collision #825
+# reports applies here despite the QEMU process itself running inside
+# Docker -- and this script shares the identical literal
+# /tmp/breenix_aarch64_1 path with run-aarch64-test.sh, so even two
+# DIFFERENT scripts running at once collide. Defaulting to /tmp keeps every
+# existing caller byte-identical; a concurrent-lane launcher sets this to a
+# per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+esac
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -48,7 +61,7 @@ echo "Kernel: $KERNEL"
 echo "Ext2 disk: $EXT2_DISK"
 
 # Create output directory
-OUTPUT_DIR="/tmp/breenix_aarch64_1"
+OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_1"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
