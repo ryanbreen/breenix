@@ -6897,6 +6897,12 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
 // =============================================================================
 
 /// Switch TTBR0_EL1 if the thread requires a different address space.
+///
+/// The install block below carries `nostack` and deliberately not `nomem`: the
+/// `saved_process_cr3` publication and the `next_cr3` clear that follow it have
+/// to stay on this side of the barriers, and `nomem` would tell the compiler the
+/// block touches no memory and leave it free to move them across. Compiler
+/// ordering only -- no instruction added.
 fn switch_ttbr0_if_needed(_thread_id: u64) {
     let next_ttbr0 = Aarch64PerCpu::next_cr3();
 
@@ -6919,7 +6925,7 @@ fn switch_ttbr0_if_needed(_thread_id: u64) {
                 "dsb ish",
                 "isb",
                 in(reg) next_ttbr0,
-                options(nomem, nostack)
+                options(nostack)
             );
         }
 
@@ -7233,18 +7239,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                 // Switch to process's page table for signal delivery
                 if let Some(ref page_table) = process.page_table {
                     let raw_ttbr0 = page_table.level_4_frame().start_address().as_u64();
-                    unsafe {
-                        core::arch::asm!(
-                            "dsb ishst",
-                            "msr ttbr0_el1, {}",
-                            "isb",
-                            "tlbi vmalle1is",
-                            "dsb ish",
-                            "isb",
-                            in(reg) raw_ttbr0,
-                            options(nomem, nostack)
-                        );
-                    }
+                    crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(raw_ttbr0);
                 }
 
                 // Create SavedRegisters from exception frame for signal delivery
