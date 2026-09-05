@@ -9,6 +9,20 @@ ports that repair, and only that repair, onto `main`.
 claim-lint:ok: 10 of 10 process-root install decision sites on `main` carried
 that shape; 9 of 10 are listed in section 2 and the 10th in section 6.
 
+> **Superseded in one respect, 2026-09-04, by slice 1b** (branch
+> `fix/786-slice1b-time-rs-ttbr0`, document
+> `TTBR0-SLICE1B-2026-09-04.md`). Everything this document says about the nine
+> sites it routed still holds. What no longer describes the tree is the Tier-1
+> disclosure: operator ruling R156 authorised the Tier-1 edit, slice 1b routed
+> `kernel/src/syscall/time.rs::ensure_current_address_space` through
+> `adopt_process_ttbr0` as well, and the three censuses that printed rather
+> than pinned that site now require zero unreconciled, zero `nomem` and zero
+> out-of-order installs kernel-wide, with no file-scoped exemption. 10 of 10
+> decision sites are routed after slice 1b and the install census reaches 6
+> functions rather than 7. Section 6 and the print-not-pin sentences in section
+> 7 are kept as the record of what slice 1 shipped and are marked where they
+> stopped being current.
+
 Two counts run through this document and they are not the same number, so both
 are stated here and neither is left to be inferred:
 
@@ -297,6 +311,16 @@ claim-lint:ok: 1 of the commits after `9e9131d0` touches `kernel/` — commit
 
 ## 6. The Tier-1 site, disclosed
 
+**Superseded by slice 1b (2026-09-04).** This section records slice 1's
+disposition of the site and is true of slice 1's head, not of the tree after
+slice 1b: the site is now routed through `adopt_process_ttbr0`, the census
+prints no unreconciled list because there is none, and the reproduction command
+below returns a green run with a 6-function census. See
+`TTBR0-SLICE1B-2026-09-04.md`.
+claim-lint:ok: 0 of 6 censused functions are unreconciled after slice 1b; the run
+is
+docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
+
 `kernel/src/syscall/time.rs::ensure_current_address_space` installs a process
 root with a raw `msr` and reconciles neither shadow. It is the same defect
 shape as the nine sites this slice repaired, and it is **not repaired here**,
@@ -344,7 +368,7 @@ claim-lint:ok: both ends redden under the round-2 mutations recorded at
 `serials/slice1/r2/mutation-b-next-cr3-deleted.txt`, each exit 101.
 
 The census reaches 7 functions at this head, the same 7 the parked branch
-reported:
+reported (slice 1b routed the seventh, so the census reaches 6 after it):
 
 ```
 kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed        (reconciles inline)
@@ -374,7 +398,8 @@ occurrences reached by the walk must equal the occurrences the file holds — so
 helper added later cannot slip past it.
 `no_ttbr0_installer_claims_it_touches_no_memory` applies the `nomem` half to
 the censused installers kernel-wide, with the same Tier-1 disposition as the
-shadow census: print, do not pin.
+shadow census: print, do not pin. (Slice 1b retired that disposition in all
+three censuses; at this slice's head it is what the sentence says.)
 claim-lint:ok: 7 of 7 censused installs are checked and 1 of 7 is the Tier-1
 site it prints; the run is `serials/slice1/r3/structure-suites.txt`.
 `the_dispatch_ttbr0_switch_settles_both_shadows` pins
