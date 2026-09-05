@@ -293,6 +293,121 @@ fn compact_code(fragment: &str) -> String {
         .collect()
 }
 
+/// The balanced argument text of each `.method(...)` call in compacted code.
+///
+/// Used instead of matching an exact call literal so that a caller may
+/// STRENGTHEN a predicate -- add a conjunct, add a second adapter -- without
+/// the rule reading that as the predicate having been removed.
+fn compact_call_arguments(compact: &str, method: &str) -> Vec<String> {
+    let needle = format!(".{method}(");
+    let bytes = compact.as_bytes();
+    let mut arguments = Vec::new();
+    let mut search = 0usize;
+    while let Some(relative) = compact[search..].find(&needle) {
+        let open = search + relative + needle.len() - 1;
+        let mut depth = 0usize;
+        let mut close = None;
+        for index in open..bytes.len() {
+            match bytes[index] {
+                b'(' => depth += 1,
+                b')' => {
+                    let Some(next) = depth.checked_sub(1) else {
+                        break;
+                    };
+                    depth = next;
+                    if depth == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else {
+            break;
+        };
+        arguments.push(compact[open + 1..close].to_string());
+        search = close;
+    }
+    arguments
+}
+
+/// Whether compacted code reads the field `.field` off some receiver other
+/// than `self` -- that is, off a value, which for a pin is the pin itself.
+///
+/// Shape rather than literal, so the closure parameter may be named anything
+/// and the read may sit anywhere in the chain.
+fn compact_field_access(compact: &str, field: &str) -> bool {
+    let needle = format!(".{field}");
+    let bytes = compact.as_bytes();
+    compact.match_indices(&needle).any(|(offset, _)| {
+        let after = offset + needle.len();
+        if bytes.get(after).is_some_and(|byte| identifier_byte(*byte)) {
+            return false;
+        }
+        !compact[..offset].ends_with("self")
+    })
+}
+
+/// The text with the first `.method(...)` call whose argument names `needle`
+/// removed, parentheses balanced.
+///
+/// Fixture surgery by shape rather than by literal, so a mutation leg keeps
+/// deleting the adapter it is about after that adapter's predicate has been
+/// strengthened, and keeps picking the right one after a second adapter of the
+/// same name is added ahead of it.
+fn without_call_matching(text: &str, method: &str, needle: &str) -> Option<String> {
+    let mask = code_mask(text);
+    let bytes = text.as_bytes();
+    let opener = format!(".{method}(");
+    let mut search = 0usize;
+    while let Some(relative) = text[search..].find(&opener) {
+        let start = search + relative;
+        if !mask[start] {
+            search = start + opener.len();
+            continue;
+        }
+        let open = start + method.len() + 1;
+        let mut depth = 0usize;
+        let mut close = None;
+        for index in open..bytes.len() {
+            if !mask[index] {
+                continue;
+            }
+            match bytes[index] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        if text[open..close].contains(needle) {
+            return Some(format!("{}{}", &text[..start], &text[close + 1..]));
+        }
+        search = close;
+    }
+    None
+}
+
+/// The text running from `from` through the end of the statement that
+/// contains `through`.
+fn statement_region<'a>(
+    source: &'a str,
+    mask: &[bool],
+    from: usize,
+    through: usize,
+) -> Option<&'a str> {
+    let bytes = source.as_bytes();
+    let end = (through..bytes.len()).find(|index| mask[*index] && bytes[*index] == b';')?;
+    Some(&source[from..=end])
+}
+
 fn compact_whitespace(fragment: &str) -> String {
     fragment
         .chars()
@@ -1085,6 +1200,167 @@ fn validate_scheduling_paths_reclaim_unschedulable_cpu_queues(source: &str) -> R
     Ok(())
 }
 
+/// A thread that carries a CPU pin is queued to the CPU that pin names.
+///
+/// The placement functions are DERIVED, not listed: a scheduler function that
+/// resolves a ready-queue target through `least_loaded_cpu()` is one, which is
+/// 1 of 1 today (`add_thread_inner`), so a second cannot appear without this
+/// rule seeing it and renaming the current one does not silence it. Each must
+/// read the thread's own `cpu_affinity` pin BEFORE the least-loaded choice,
+/// resolve that pin to the CPU it names, reject a pin outside the online
+/// range, and fall through to `least_loaded_cpu()` when there is no pin --
+/// which is the path taken today, `spawn_on_cpu` having 0 callers.
+///
+/// Each of those 4 is checked by SHAPE, not against the exact expression this
+/// tree carries today, because the neighbourhood is scheduled to change: the
+/// bound has to gain the scheduling-liveness conjunct the fall-through already
+/// applies, and the arm has to learn to tell a per-CPU-worker pin from a hold
+/// pen. A rule that matched today's literal would redden on both -- it would
+/// forbid its own repair, with a message saying the opposite of what the code
+/// did. What is required is that the pin's CPU be REJECTED when it fails the
+/// bound (a `filter` adapter) rather than rewritten, and 3 tests below assert
+/// that a strictly stronger bound and a pin-kind pre-filter both pass.
+fn validate_thread_placement_honours_the_cpu_pin(source: &str) -> Result<(), String> {
+    let mut placements: Vec<(String, String)> = Vec::new();
+    for span in function_spans(source) {
+        let body = source[span.open..=span.close].to_string();
+        if !has_identifier(&body, "least_loaded_cpu") {
+            continue;
+        }
+        // Skip an enclosing scope that merely contains a placement function.
+        let nested = function_spans(&body)
+            .into_iter()
+            .any(|inner| has_identifier(&body[inner.open..=inner.close], "least_loaded_cpu"));
+        if nested {
+            continue;
+        }
+        placements.push((span.name.clone(), body));
+    }
+
+    if placements.is_empty() {
+        return Err(
+            "no scheduler function resolves a queue target through least_loaded_cpu(): the placement census is empty"
+                .to_string(),
+        );
+    }
+
+    for (name, body) in placements {
+        let mask = code_mask(&body);
+        let Some(pin_read) = identifier_offsets(&body, &mask, "cpu_affinity")
+            .into_iter()
+            .next()
+        else {
+            return Err(format!(
+                "{name} chooses a queue without reading the thread's cpu_affinity pin"
+            ));
+        };
+        let Some(least_loaded) = identifier_offsets(&body, &mask, "least_loaded_cpu")
+            .into_iter()
+            .next()
+        else {
+            return Err(format!("{name} lost its least_loaded_cpu() fall-through"));
+        };
+        if pin_read > least_loaded {
+            return Err(format!(
+                "{name} consults least_loaded_cpu() before the thread's own pin"
+            ));
+        }
+        // The statement that resolves the target, from the pin read through the
+        // fall-through, so a `filter` elsewhere in the function cannot stand in
+        // for the one that bounds the pin.
+        let Some(region) = statement_region(&body, &mask, pin_read, least_loaded) else {
+            return Err(format!(
+                "{name} has no statement that resolves the queue target"
+            ));
+        };
+        let compact = compact_code(region);
+        if !compact_field_access(&compact, "cpu") {
+            return Err(format!(
+                "{name} does not resolve the thread's pin to the CPU it names"
+            ));
+        }
+        if !compact_call_arguments(&compact, "filter")
+            .iter()
+            .any(|argument| argument.contains("online_cpu_count"))
+        {
+            return Err(format!(
+                "{name} does not reject a pinned CPU outside the online range"
+            ));
+        }
+        if !compact_call_arguments(&compact, "unwrap_or_else")
+            .iter()
+            .any(|argument| argument.contains("least_loaded_cpu"))
+        {
+            return Err(format!(
+                "{name} does not fall through to least_loaded_cpu() for an unpinned thread"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A pin records WHY it exists, and each of the 2 ways of building one says so.
+///
+/// Censused over the constructors of `CpuPin` rather than named one by one: a
+/// constructor added later that leaves the reason implicit reddens this. The
+/// reason is not decoration -- the two kinds need opposite treatment when the
+/// home CPU stops dispatching, and a bare CPU index on `Thread` cannot carry
+/// the distinction at all.
+///
+/// A CONSTRUCTOR is a function whose body builds a pin, which is 2 of the 2
+/// functions `impl CpuPin` holds today. A function that builds no pin -- an
+/// accessor or a predicate, which is how slice 3e's reclaim disposition will
+/// read the kind -- has no reason to name, and demanding one of it would
+/// redden this rule on a change that cannot weaken it.
+fn validate_cpu_pin_records_its_reason(source: &str) -> Result<(), String> {
+    let mask = code_mask(source);
+    if !compact_code(source).contains("pubcpu_affinity:Option<CpuPin>") {
+        return Err("Thread::cpu_affinity does not carry a CpuPin".to_string());
+    }
+
+    let struct_offset = code_text_offset(source, "struct CpuPin")
+        .ok_or_else(|| "CpuPin is not defined".to_string())?;
+    let fields = braced_block(source, &mask, struct_offset)
+        .ok_or_else(|| "CpuPin has no field block".to_string())?;
+    for field in ["cpu", "per_cpu_worker"] {
+        if !has_identifier(fields, field) {
+            return Err(format!("CpuPin does not carry the {field} field"));
+        }
+    }
+
+    let impl_offset = code_text_offset(source, "impl CpuPin")
+        .ok_or_else(|| "CpuPin has no constructors".to_string())?;
+    let constructors = braced_block(source, &mask, impl_offset)
+        .ok_or_else(|| "impl CpuPin has no block".to_string())?;
+    let mut kinds: Vec<bool> = Vec::new();
+    for span in function_spans(constructors) {
+        let body = compact_code(&constructors[span.open..=span.close]);
+        if !body.contains("Self{") && !body.contains("CpuPin{") {
+            continue;
+        }
+        if body.contains("per_cpu_worker:true") {
+            kinds.push(true);
+        } else if body.contains("per_cpu_worker:false") {
+            kinds.push(false);
+        } else {
+            return Err(format!(
+                "CpuPin::{} builds a pin without naming the reason it exists",
+                span.name
+            ));
+        }
+    }
+    if kinds.is_empty() {
+        return Err("CpuPin has no constructor to census".to_string());
+    }
+    if !kinds.contains(&true) || !kinds.contains(&false) {
+        return Err(
+            "CpuPin cannot express both reasons: a per-CPU worker and a hold pen are the two a later reclaim disposition has to tell apart"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn pump_producer_seam_is_single() {
     validate_pump_producer_seam_is_single(&net_source_text()).expect("single producer seam");
@@ -1708,6 +1984,125 @@ fn unschedulable_reclaim_validator_rejects_missing_deferred_reclaim() {
     assert_ne!(mutated_deferred, deferred, "fixture mutation must apply");
     let mutated = source.replacen(deferred, &mutated_deferred, 1);
     assert!(validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&mutated).is_err());
+}
+
+#[test]
+fn thread_placement_honours_the_cpu_pin() {
+    validate_thread_placement_honours_the_cpu_pin(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("a pinned thread is queued to the CPU its pin names");
+}
+
+#[test]
+fn thread_placement_validator_rejects_a_deleted_pin_arm() {
+    // The mutation this rule exists to catch: the placement arm reverts to the
+    // unconditional least-loaded choice, so a thread that names a CPU is queued
+    // wherever load balancing puts it instead.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let placement = function_body(&source, "add_thread_inner").expect("find placement fixture");
+    let arm_start = placement
+        .find("let target = cpu_affinity")
+        .expect("find the pin arm");
+    let arm_end = arm_start
+        + placement[arm_start..]
+            .find(';')
+            .expect("the pin arm terminates")
+        + 1;
+    let mutated_placement = format!(
+        "{}let target = self.least_loaded_cpu();{}",
+        &placement[..arm_start],
+        &placement[arm_end..]
+    );
+    assert_ne!(mutated_placement, placement, "fixture mutation must apply");
+    let mutated = source.replacen(placement, &mutated_placement, 1);
+    assert!(validate_thread_placement_honours_the_cpu_pin(&mutated).is_err());
+}
+
+#[test]
+fn thread_placement_validator_rejects_an_unbounded_pin() {
+    // A pin that names a queue above the online count starves, in the words of
+    // the comment on `online_cpu_count` itself: no thread runs there and the
+    // reschedule IPI helpers refuse the target.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let placement = function_body(&source, "add_thread_inner").expect("find placement fixture");
+    let mutated_placement = without_call_matching(placement, "filter", "online_cpu_count")
+        .expect("the pin arm bounds by the online range");
+    assert_ne!(mutated_placement, placement, "fixture mutation must apply");
+    let mutated = source.replacen(placement, &mutated_placement, 1);
+    assert!(validate_thread_placement_honours_the_cpu_pin(&mutated).is_err());
+}
+
+#[test]
+fn cpu_pin_records_its_reason() {
+    validate_cpu_pin_records_its_reason(&repo_text("kernel/src/task/thread.rs"))
+        .expect("every CpuPin constructor names the reason the pin exists");
+}
+
+#[test]
+fn cpu_pin_reason_validator_rejects_a_kindless_constructor() {
+    let source = repo_text("kernel/src/task/thread.rs");
+    let mutated = source.replacen("            per_cpu_worker: false,\n", "", 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_cpu_pin_records_its_reason(&mutated).is_err());
+}
+
+#[test]
+fn cpu_pin_reason_validator_rejects_a_bare_cpu_index() {
+    let source = repo_text("kernel/src/task/thread.rs");
+    let mutated = source.replacen(
+        "pub cpu_affinity: Option<CpuPin>",
+        "pub cpu_affinity: Option<usize>",
+        1,
+    );
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_cpu_pin_records_its_reason(&mutated).is_err());
+}
+
+#[test]
+fn thread_placement_validator_accepts_a_stronger_bound() {
+    // The repair slice 3d owes this arm: bound the pinned CPU by the
+    // scheduling-liveness test the fall-through already applies, instead of by
+    // the online range alone. The rule must not forbid its own repair.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let placement = function_body(&source, "add_thread_inner").expect("find placement fixture");
+    let strengthened = placement.replacen(
+        "*cpu < self.online_cpu_count()",
+        "*cpu < self.online_cpu_count() && self.cpu_accepts_wakeups(*cpu)",
+        1,
+    );
+    assert_ne!(strengthened, placement, "fixture mutation must apply");
+    let mutated = source.replacen(placement, &strengthened, 1);
+    validate_thread_placement_honours_the_cpu_pin(&mutated)
+        .expect("a strictly stronger placement bound satisfies the rule");
+}
+
+#[test]
+fn thread_placement_validator_accepts_a_pin_kind_prefilter() {
+    // The other repair the neighbourhood is heading for: a per-CPU-worker pin
+    // and a hold pen need different dispositions, so the arm may filter on the
+    // pin's kind before resolving it to a CPU.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let placement = function_body(&source, "add_thread_inner").expect("find placement fixture");
+    let prefiltered = placement.replacen(
+        ".map(|pin| pin.cpu)",
+        ".filter(|pin| pin.per_cpu_worker)\n            .map(|pin| pin.cpu)",
+        1,
+    );
+    assert_ne!(prefiltered, placement, "fixture mutation must apply");
+    let mutated = source.replacen(placement, &prefiltered, 1);
+    validate_thread_placement_honours_the_cpu_pin(&mutated)
+        .expect("a pin-kind pre-filter satisfies the rule");
+}
+
+#[test]
+fn cpu_pin_reason_validator_accepts_a_non_constructor_method() {
+    // An accessor builds no pin, so it has no reason to name. It is the shape
+    // slice 3e's reclaim disposition reads the kind through.
+    let source = repo_text("kernel/src/task/thread.rs");
+    let accessor = "impl CpuPin {\n    pub const fn is_per_cpu_worker(&self) -> bool {\n        self.per_cpu_worker\n    }\n";
+    let mutated = source.replacen("impl CpuPin {\n", accessor, 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    validate_cpu_pin_records_its_reason(&mutated)
+        .expect("a method that builds no pin is not a constructor");
 }
 
 /// Every loopback enqueue must schedule its own delivery.

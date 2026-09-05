@@ -61,6 +61,25 @@ where
     kthread_run_with(func, name, scheduler::spawn)
 }
 
+/// Create a kernel thread whose per-CPU work requires it to stay on `cpu`.
+///
+/// Unreached on this branch: the per-CPU daemons that need it are a separate
+/// change. It is the production counterpart of `kthread_run_on_cpu_for_test`,
+/// which places a thread for a boot-test gate through a test-only table rather
+/// than through the thread's own pin.
+pub fn kthread_run_on_cpu<F>(
+    func: F,
+    name: &str,
+    cpu: usize,
+) -> Result<KthreadHandle, KthreadError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    kthread_run_with(func, name, move |thread| {
+        scheduler::spawn_on_cpu(thread, cpu)
+    })
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn kthread_run_on_cpu_for_test<F>(
     func: F,

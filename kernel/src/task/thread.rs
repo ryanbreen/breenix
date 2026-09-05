@@ -588,6 +588,75 @@ pub struct Thread {
     /// CPU, so it is an atomic rather than a plain `u64`. Relaxed ordering is
     /// enough: the value is only ever compared against a stamp of itself.
     pub wait_loop_iters: AtomicU64,
+
+    /// Optional CPU target: `Some(pin)` pins the thread; the empty state permits
+    /// migration.
+    ///
+    /// The pin carries *why* it exists, because the two reasons need opposite
+    /// treatment when the home CPU stops dispatching. See `CpuPin`.
+    ///
+    /// Nothing in this tree stamps a pin yet: `spawn_on_cpu` is the only
+    /// function that writes this field and it has 0 callers, as does the
+    /// `kthread_run_on_cpu` that wraps it. 13 of 15 sites that build a
+    /// `Thread` set this to `None` outright; the other 2 -- the `Clone` impl
+    /// and the fork copy -- carry whatever their source held, which is the
+    /// empty state on each of them for the same reason.
+    // claim-lint:ok: 13 of 15 `Thread` build sites in kernel/src carry
+    // `cpu_affinity: None`, and `spawn_on_cpu` has 1 call site
+    // (`kthread::kthread_run_on_cpu`) which itself has 0 -- all counted by grep
+    // over kernel/src in this round.
+    pub cpu_affinity: Option<CpuPin>,
+}
+
+/// Why a thread is pinned to one CPU, alongside which CPU that is.
+///
+/// The kind is not decoration: it decides what happens when the home CPU stops
+/// accepting wakeups.
+///
+/// * `per_cpu_worker` -- the thread services state that lives in that CPU's
+///   per-CPU block (`ksoftirqd/N` and its pending-softirq bitmap). Running it
+///   anywhere else reads the wrong bitmap, so migrating it is not a legal
+///   disposition; if its home CPU is offline or stalled it stays parked until
+///   the home CPU comes back. Linux parks per-CPU kthreads on CPU-down for the
+///   same reason.
+/// * not a worker -- a temporary hold pen: placement only, released by whoever
+///   set it. Parking one of those would strand whatever the pen is holding, so
+///   a hold-pen pin is retained on its queue rather than parked.
+///
+/// The dispositions those two kinds imply are not implemented here. This branch
+/// lands the representation and the one placement arm that reads it; the wake
+/// filter, the park protocol and the steal/reclaim dispositions are separate
+/// changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuPin {
+    /// The CPU this thread must run on.
+    pub cpu: usize,
+    /// Whether the pin exists because the work itself is CPU-local.
+    pub per_cpu_worker: bool,
+}
+
+impl CpuPin {
+    /// A pin whose work lives in `cpu`'s per-CPU state.
+    pub const fn per_cpu_worker(cpu: usize) -> Self {
+        Self {
+            cpu,
+            per_cpu_worker: true,
+        }
+    }
+
+    /// A hold-pen pin: placement only, released by whoever set it.
+    ///
+    /// No caller yet -- the aarch64 testing-profile loader that stages user
+    /// threads on the boot CPU is a separate change. It is defined here because
+    /// the kind is what makes the two pins distinguishable at all, and a pin
+    /// type with only one kind cannot carry the distinction the reclaim
+    /// disposition will read.
+    pub const fn hold_pen(cpu: usize) -> Self {
+        Self {
+            cpu,
+            per_cpu_worker: false,
+        }
+    }
 }
 
 impl Clone for Thread {
@@ -628,6 +697,7 @@ impl Clone for Thread {
             // it. Resetting here would make the next identical-frame save read
             // as a backwards jump.
             wait_loop_iters: AtomicU64::new(self.wait_loop_iters.load(Ordering::Relaxed)),
+            cpu_affinity: self.cpu_affinity,
         }
     }
 }
@@ -739,6 +809,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            cpu_affinity: None,
         })
     }
 
@@ -804,6 +875,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            cpu_affinity: None,
         })
     }
 
@@ -856,6 +928,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            cpu_affinity: None,
         }
     }
 
@@ -907,6 +980,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            cpu_affinity: None,
         }
     }
 
@@ -971,6 +1045,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            cpu_affinity: None,
         }
     }
 
@@ -1030,6 +1105,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            cpu_affinity: None,
         }
     }
 
@@ -1108,6 +1184,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            cpu_affinity: None,
         }
     }
 
@@ -1155,6 +1232,7 @@ impl Thread {
             owner_pid: None,
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
+            cpu_affinity: None,
         }
     }
 }
