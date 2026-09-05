@@ -1,0 +1,526 @@
+tooling(claim-lint): add --commit-msg mode, wrapper, and hook (R21)
+
+Commit e6dd14a6 (landed via PR #808's merge) put this tool's own
+close/fix/resolve vocabulary directly in front of three real, open issue
+numbers inside its own commit message, describing a rewording made in a
+different file. GitHub's parser read the words, not the intent.
+
+claim-lint: scripts/claim-lint.py -> exit 0
+
+Co-Authored-By: Ryan Breen <ryan.breen@gmail.com>
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# On branch tooling/claim-lint-commit-msg-mode
+# Changes to be committed:
+#	modified:   scripts/claim-lint.py
+#
+# ------------------------ >8 ------------------------
+# Do not modify or remove the line above.
+# Everything below it will be ignored.
+diff --git a/docs/planning/green-program/claim-linting.md b/docs/planning/green-program/claim-linting.md
+index 7b967c55..2026d2a8 100644
+--- a/docs/planning/green-program/claim-linting.md
++++ b/docs/planning/green-program/claim-linting.md
+@@ -19,6 +19,10 @@ live issue numbers with synthetic ones, corrects an unverifiable claim about
+ PR #799, and documents the rewrite recipe for an honest-scoping negation.
+ Detail is in the `auto-close-keyword` subsection below, not repeated here.
+ 
++**R21, 2026-09-05** adds a seventh mode, `--commit-msg`, its wrapper
++`scripts/lint-commit-msg.sh`, and its hook body `scripts/hooks/commit-msg` —
++see the "`--commit-msg` mode (R21)" section below, right after "Running it".
++
+ The 2026-09-01 assessment found that 37 of 66 blocking review findings across
+ twelve arcs (56%) were factually wrong, checkable *sentences* in EVIDENCE/PROVE
+ docs, PR bodies, gate-script headers, or source comments — not code defects. Nine
+@@ -52,6 +56,10 @@ scripts/claim-lint.py --format json
+ 
+ # Lint every tracked text file (slow; for auditing an existing doc)
+ scripts/claim-lint.py --all
++
++# Lint a git commit message as prose, every rule (R21; see its own section
++# below) -- REQUIRED before `git commit -F <file>`
++scripts/claim-lint.py --commit-msg <file>
+ ```
+ 
+ Diff mode reports **only findings whose paragraph overlaps a line this branch
+@@ -124,6 +132,58 @@ count above now both use the plural-only pattern that matches the code's own
+ `CAPTURE_DIR_RE`; the true count is **29**, and `command.rs` carries 0
+ findings either way, so this did not move the 124.)
+ 
++## `--commit-msg` mode (R21)
++
++**R21, 2026-09-05** adds a seventh way to run this tool:
++`scripts/claim-lint.py --commit-msg <file>` lints a git commit message as
++prose, running the full six-rule set, and it treats `auto-close-keyword` as
++fatal even when the phrase sits inside a fenced example or a quoted aside.
++The five claim-quality rules read the same fence-blanked extraction the diff/`--files`
++modes above use; `auto-close-keyword` alone is additionally checked against
++the UNFENCED text, because a commit message does not get markdown-rendered for
++GitHub's issue-closing parser — a ` ``` ` fence there is three backtick
++characters to that parser, not a boundary, and cannot shield the phrase the
++way a real doc's fenced code sample is shielded from the claim-quality rules.
++See `lint_commit_msg_text()` in `scripts/claim-lint.py` for the two-pass
++implementation and `CommitMsgModeTests` in `scripts/test_claim_lint.py` for
++the fixtures, including the fenced-vs-`--files` contrast.
++
++```bash
++scripts/claim-lint.py --commit-msg /tmp/commit-msg.txt   # the mode itself
++scripts/lint-commit-msg.sh /tmp/commit-msg.txt           # thin wrapper, same thing
++```
++
++**The incident this closes a gap against.** Commit `e6dd14a6` (landed via PR
++#808's merge) put this rule's own trigger vocabulary directly in front of
++three real, open issue numbers inside its own commit message, while
++describing a rewording made in a *different* file — and GitHub's parser read
++the words, not the intent. `gh api repos/ryanbreen/breenix/issues/562/timeline`
++(and the same for `761`, `763`) each show a `closed` event whose `commit_id`
++is exactly `e6dd14a6de6653342f50c93fc0687397aaecf7b7`, within two seconds of
++PR #808's own `mergedAt` (`07:31:09Z`; the three `closed` events land at
++`07:31:10Z`/`07:31:11Z`/`07:31:11Z`) — and each was manually `reopened`
++roughly 49 minutes later. Neither of the round checklist's two mandated runs
++below would have caught it: diff mode lints the tree a commit *changes*, not
++the *message describing* the change, and the `--files` step covers a PR body
++and scratchpad evidence, not a commit message. The commit's own wording is
++not reproduced on this page — `git show -s --format=%B e6dd14a6` shows it —
++because reproducing it here would place the same
++keyword-adjacent-to-a-real-issue-number shape in this very document.
++
++**Installing it as a hook.** `scripts/hooks/commit-msg` is the hook *body*.
++This repo's own setup does not put it into anyone's `.git` for them — a
++`.git` directory is per-checkout, and installing a hook there is a step you
++take yourself. Opt in from the repo root:
++
++```bash
++ln -sf ../../scripts/hooks/commit-msg .git/hooks/commit-msg
++```
++
++Git invokes a `commit-msg` hook as `<hook> <path-to-msg-file>` and aborts the
++commit on a nonzero exit; the hook body delegates to
++`scripts/lint-commit-msg.sh`, the same entry point a `git commit -F <file>`
++workflow calls directly — one implementation, two call sites.
++
+ ## The round checklist — the run is an artifact
+ 
+ This repo has no CI and no pre-commit hook, so the run does not happen unless a
+@@ -144,14 +204,21 @@ reference for what the tool reaches and what it does not.
+    docs>` as a **separate step**. Diff mode only sees tracked repo files; PR
+    bodies, GitHub issue comments and scratchpad evidence are exactly where the
+    assessment found much of the false prose (see "surfaces it cannot see").
+-3. Paste both invocations and their exit statuses into the round's notes:
++3. **(R21)** Lint each commit message before making the commit:
++   `scripts/claim-lint.py --commit-msg <file>` (or the installed
++   `scripts/hooks/commit-msg` hook) exits 0 before `git commit -F <file>`
++   runs. This is a third surface, not a restatement of steps 1–2: a commit
++   message is neither the tree diff nor a PR body — see the "`--commit-msg`
++   mode (R21)" section above for the incident this closes a gap against.
++4. Paste each invocation and its exit status into the round's notes:
+ 
+    ```
+-   claim-lint: scripts/claim-lint.py                       -> exit 0
+-   claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md -> exit 0
++   claim-lint: scripts/claim-lint.py                          -> exit 0
++   claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md   -> exit 0
++   claim-lint: scripts/claim-lint.py --commit-msg /tmp/msg.txt -> exit 0
+    ```
+ 
+-4. The review slot checks for those lines the way it checks gate serials. A
++5. The review slot checks for those lines the way it checks gate serials. A
+    round with no claim-lint line is a round where this control did not run, and
+    that is itself a finding.
+ 
+diff --git a/scripts/claim-lint.py b/scripts/claim-lint.py
+index 5521cd71..a3b874c3 100755
+--- a/scripts/claim-lint.py
++++ b/scripts/claim-lint.py
+@@ -23,8 +23,17 @@ Usage:
+     scripts/claim-lint.py --whole-file          # diff mode, but whole files
+     scripts/claim-lint.py --files a.md b.rs     # explicit files, always whole
+     scripts/claim-lint.py --all                 # every tracked text file (slow)
++    scripts/claim-lint.py --commit-msg <file>   # a commit message, as prose
+     scripts/claim-lint.py --format json ...
+ 
++`--commit-msg <file>` is its own mode (see lint_commit_msg_text() below): it
++lints the named file as prose with every rule, and it additionally scans
++auto-close-keyword against the UNFENCED text, so the phrase cannot hide from
++this rule inside a ``` example the way it can inside a real doc's fenced
++code. `scripts/lint-commit-msg.sh <file>` wraps this for `git commit -F`
++workflows and for a `.git/hooks/commit-msg` hook; see
++docs/planning/green-program/claim-linting.md's `--commit-msg` section.
++
+ Diff mode reports only findings whose paragraph overlaps a line this branch
+ actually changed (`--changed-only`, the default; `--whole-file` restores the
+ old behaviour). The base is resolved to `git merge-base <ref> HEAD`, so a stale
+@@ -264,17 +273,24 @@ HTML_COMMENT_START_RE = re.compile(r"^\s*<!--")
+ COMMENT_ONLY_RE = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
+ 
+ 
+-def extract_markdown_paragraphs(file: str, lines: list) -> list:
++def extract_markdown_paragraphs(file: str, lines: list,
++                                blank_fences: bool = True) -> list:
+     # Blank out fenced code blocks (keep line count so numbers stay aligned).
++    # `blank_fences=False` is used by lint_commit_msg_text()'s auto-close-
++    # keyword pass ONLY: a commit message does not get markdown-rendered for
++    # GitHub's issue-closing parser, so a ``` fence does not shield an
++    # auto-close phrase from it the way it shields a real doc's code sample
++    # from the claim-quality rules.
+     scrubbed = list(lines)
+-    in_fence = False
+-    for i, line in enumerate(lines):
+-        if FENCE_RE.match(line):
+-            in_fence = not in_fence
+-            scrubbed[i] = ""
+-            continue
+-        if in_fence:
+-            scrubbed[i] = ""
++    if blank_fences:
++        in_fence = False
++        for i, line in enumerate(lines):
++            if FENCE_RE.match(line):
++                in_fence = not in_fence
++                scrubbed[i] = ""
++                continue
++            if in_fence:
++                scrubbed[i] = ""
+ 
+     paragraphs = []
+     buf = []
+@@ -697,6 +713,56 @@ def lint_file(path: str, repo_root: str = None,
+     return lint_text(rel, content, repo_root, ext_override)
+ 
+ 
++def lint_commit_msg_text(content: str, repo_root: str = None,
++                          file: str = "<commit-msg>") -> list:
++    """Lint a git COMMIT MESSAGE, as prose, with every rule.
++
++    This exists because of a specific incident: commit `e6dd14a6` quoted
++    this tool's own auto-close-keyword vocabulary directly in front of three
++    real, open issue numbers inside its own commit message, describing a
++    rewording made in a different file -- and GitHub's merge-time parser
++    auto-closed all three the moment the commit landed on `main`. Neither of
++    the round checklist's two mandated runs would have caught it: diff mode
++    lints the tree the commit changes, not the message describing the
++    change, and a `--files` PR-body run does not read a commit message
++    either. See docs/planning/green-program/claim-linting.md's
++    `--commit-msg` section (R21) for the incident in full -- its text is not
++    reproduced here, on purpose: reproducing it would place the same
++    keyword-adjacent-to-a-real-issue-number shape in this file too.
++
++    Two passes over the same text, for one reason. A fenced ``` code block
++    is blanked by the normal paragraph extractor -- appropriate for a real
++    doc, where a fence usually IS code the five claim-quality rules should
++    not read as prose. A commit message does not get markdown-rendered for
++    GitHub's issue-closing parser, though: a ``` fence is three backtick
++    characters to that parser, not a boundary, so text inside one is exactly
++    as capable of auto-closing an issue as ordinary prose is. Pass 1 runs
++    the five claim-quality rules over the normal, fence-blanked extraction
++    (skipping auto-close-keyword). Pass 2 runs ONLY auto-close-keyword, over
++    the same lines extracted again with fences left unblanked, so a keyword
++    hiding inside a quoted example or a fenced block still fires. There is
++    no double-count: pass 1 never evaluates auto-close-keyword and pass 2
++    evaluates nothing else.
++    """
++    if repo_root is None:
++        repo_root = REPO_ROOT
++    lines = content.splitlines()
++    findings = []
++    for p in extract_markdown_paragraphs(file, lines):
++        for rule in RULES:
++            if rule is check_auto_close_keyword:
++                continue
++            f = rule(p, repo_root)
++            if f:
++                findings.append(f)
++    for p in extract_markdown_paragraphs(file, lines, blank_fences=False):
++        f = check_auto_close_keyword(p, repo_root)
++        if f:
++            findings.append(f)
++    findings.sort(key=lambda f: f.line)
++    return findings
++
++
+ # ---------------------------------------------------------------------------
+ # CLI
+ # ---------------------------------------------------------------------------
+@@ -815,11 +881,53 @@ def format_json(findings: list) -> str:
+     return json.dumps([f.__dict__ for f in findings], indent=2)
+ 
+ 
++def run_commit_msg_mode(path: str, repo_root: str, fmt: str) -> int:
++    """The `--commit-msg` CLI mode: read `path`, lint it with
++    lint_commit_msg_text(), print, return the exit code. A separate code
++    path from the diff/`--files`/`--all` modes below -- there is no target
++    discovery, no changed-hunk intersection, and no extension allowlist, on
++    the same rationale `lint_file()`'s `assume_text` uses: a commit message
++    is exactly the kind of extensionless surface `TEXT_EXTENSIONS` would
++    otherwise skip.
++    """
++    try:
++        with open(path, "r", encoding="utf-8", errors="replace") as fh:
++            content = fh.read()
++    except (FileNotFoundError, IsADirectoryError) as e:
++        print("claim-lint: cannot read commit-message file %s: %s" % (path, e))
++        return 2
++    rel = os.path.relpath(path, repo_root) if os.path.isabs(path) else path
++    findings = lint_commit_msg_text(content, repo_root, file=rel)
++    if fmt == "json":
++        print(format_json(findings))
++    elif findings:
++        print(format_text(findings))
++        print(
++            "\nclaim-lint: %d finding(s) in commit message %s. "
++            "auto-close-keyword cannot be discharged by a claim-lint:ok "
++            "annotation -- rewrite the reference so the keyword and the "
++            "issue number are not adjacent. Every other kind can be "
++            "discharged with a same-paragraph `claim-lint:ok: <citation>`. "
++            "See docs/planning/green-program/claim-linting.md."
++            % (len(findings), rel)
++        )
++    else:
++        print("claim-lint: clean commit message (%s)." % rel)
++    return 1 if findings else 0
++
++
+ def main(argv: list) -> int:
+     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+     ap.add_argument("--base", help="git ref to diff against (default: origin/main, else main)")
+     ap.add_argument("--files", nargs="*", help="explicit file list, bypasses git diff")
+     ap.add_argument("--all", action="store_true", help="lint every tracked text file")
++    ap.add_argument(
++        "--commit-msg", metavar="FILE",
++        help="lint FILE as a git commit message: every rule, as prose, "
++             "regardless of extension, with auto-close-keyword additionally "
++             "checked unfenced. A separate mode -- ignores --base/--files/"
++             "--all/--whole-file. See lint_commit_msg_text().",
++    )
+     ap.add_argument(
+         "--whole-file", action="store_true",
+         help="in diff mode, report findings anywhere in a changed file "
+@@ -830,6 +938,10 @@ def main(argv: list) -> int:
+     args = ap.parse_args(argv)
+ 
+     repo_root = args.repo_root
++
++    if args.commit_msg:
++        return run_commit_msg_mode(args.commit_msg, repo_root, args.format)
++
+     base = None
+     untracked = set()
+ 
+diff --git a/scripts/hooks/commit-msg b/scripts/hooks/commit-msg
+new file mode 100755
+index 00000000..c617d6f3
+--- /dev/null
++++ b/scripts/hooks/commit-msg
+@@ -0,0 +1,24 @@
++#!/bin/bash
++#
++# commit-msg — the BODY of a git commit-msg hook. This file is NOT installed
++# into anyone's `.git/hooks/` automatically by anything in this repo; a
++# `.git` directory is per-checkout and per-person, and no script here writes
++# into it uninvited. To opt in, symlink it from the repo root:
++#
++#   ln -sf ../../scripts/hooks/commit-msg .git/hooks/commit-msg
++#
++# (the relative target is `../../scripts/hooks/commit-msg` because
++# `.git/hooks/` sits two directories below the repo root).
++#
++# Git invokes a commit-msg hook as `<hook> <path-to-msg-file>` and aborts the
++# commit if it exits nonzero. This body delegates to
++# scripts/lint-commit-msg.sh, which is also the standalone entry point for a
++# `git commit -F <file>` workflow — one implementation, two call sites. See
++# docs/planning/green-program/claim-linting.md's "`--commit-msg` mode (R21)"
++# section for what it checks and the incident (commit `e6dd14a6`) it exists
++# to catch on the next occurrence.
++
++set -euo pipefail
++
++REPO_ROOT="$(git rev-parse --show-toplevel)"
++exec "${REPO_ROOT}/scripts/lint-commit-msg.sh" "$1"
+diff --git a/scripts/lint-commit-msg.sh b/scripts/lint-commit-msg.sh
+new file mode 100755
+index 00000000..d1f84b57
+--- /dev/null
++++ b/scripts/lint-commit-msg.sh
+@@ -0,0 +1,30 @@
++#!/bin/bash
++#
++# lint-commit-msg.sh — thin wrapper around `claim-lint.py --commit-msg` for
++# the two calling conventions a commit message actually needs it in:
++#
++#   1. `git commit -F <file>` workflows: lint the file before you hand it to
++#      `-F`, exactly like the round checklist's `--files <pr-body.md>` step
++#      lints a PR body before it ships.
++#   2. A `.git/hooks/commit-msg` hook: git invokes a commit-msg hook as
++#      `<hook> <path-to-msg-file>` and aborts the commit if the hook exits
++#      nonzero — this script's exit code IS the hook's exit code. See
++#      scripts/hooks/commit-msg for the hook BODY to symlink; this script
++#      does not install anything into anyone's .git on its own.
++#
++# See docs/planning/green-program/claim-linting.md's "`--commit-msg` mode
++# (R21)" section for what this catches, why auto-close-keyword is checked
++# even inside a fenced/quoted example here, and the incident (commit
++# `e6dd14a6`) it exists to catch on the next occurrence.
++#
++# Usage: scripts/lint-commit-msg.sh <commit-message-file>
++
++set -euo pipefail
++
++if [ "$#" -ne 1 ]; then
++    echo "usage: $(basename "$0") <commit-message-file>" >&2
++    exit 2
++fi
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++exec python3 "${SCRIPT_DIR}/claim-lint.py" --commit-msg "$1"
+diff --git a/scripts/test_claim_lint.py b/scripts/test_claim_lint.py
+index ec768e9b..de60bc86 100644
+--- a/scripts/test_claim_lint.py
++++ b/scripts/test_claim_lint.py
+@@ -693,6 +693,146 @@ class AutoCloseKeywordTests(unittest.TestCase):
+                     self.assertNotIn("auto-close-keyword", out.stdout)
+ 
+ 
++class CommitMsgModeTests(unittest.TestCase):
++    """`--commit-msg <file>` (R21): lints a git commit message as prose,
++    with every rule, regardless of the file's extension -- a commit message
++    saved to a temp file for `git commit -F` typically has none. The
++    fixture set below is the round's own anti-vacuity leg for this mode; see
++    docs/planning/green-program/claim-linting.md's `--commit-msg` section
++    for the incident it exists to catch: commit `e6dd14a6` quoted this
++    rule's own trigger vocabulary immediately in front of three real, open
++    issue numbers inside its own commit message while describing a
++    rewording made in a DIFFERENT file, and GitHub auto-closed all three the
++    moment the commit landed on `main` -- a shape neither of the round
++    checklist's two mandated runs (the tree diff, the PR body) reads.
++
++    Every issue number below is synthetic and out of this repo's real range
++    (`AutoCloseKeywordTests.FAKE*` explains why: pasting a fixture's own
++    bytes into a real commit message must not be able to reproduce the
++    incident these tests exist to prevent).
++    """
++
++    FAKE = "99999562"    # stands in for #562
++    FAKE2 = "99999761"   # stands in for #761
++    FAKE3 = "99999763"   # stands in for #763
++
++    def _run_cli(self, text):
++        with tempfile.TemporaryDirectory() as tmp:
++            path = os.path.join(tmp, "COMMIT_EDITMSG")
++            with open(path, "w") as fh:
++                fh.write(text)
++            return subprocess.run(
++                [sys.executable, CLAIM_LINT_PATH, "--commit-msg", path],
++                capture_output=True, text=True,
++            )
++
++    # ------------------------------------------------------------------
++    # The four required fixtures, run through the real CLI.
++    # ------------------------------------------------------------------
++
++    def test_quoted_close_keyword_inside_double_quotes_is_fatal(self):
++        # This is the e6dd14a6 shape itself: the keyword-adjacent-to-#N text
++        # sits inside a quoted, past-tense description of a rewording made
++        # elsewhere -- not a live directive the author intended -- and
++        # GitHub's parser does not care about the quotes or the intent.
++        text = ('docs: reword an example that used to read "closes #%s" '
++                'next to an issue number.\n' % self.FAKE)
++        out = self._run_cli(text)
++        self.assertEqual(out.returncode, 1, out.stdout)
++        self.assertIn("auto-close-keyword", out.stdout)
++
++    def test_broken_spelling_is_clean(self):
++        # The documented way to describe the shape without triggering it
++        # (claim-linting.md's own `Clos<ed> #N` convention): syntactically
++        # unable to match AUTO_CLOSE_KEYWORD_RE or GitHub's own parser.
++        text = "docs: rewrite the example so it reads clos<es> #%s.\n" % self.FAKE2
++        out = self._run_cli(text)
++        self.assertEqual(out.returncode, 0, out.stdout)
++
++    def test_plain_issue_reference_is_clean(self):
++        text = "fix(786): repair the census scan (#%s).\n" % self.FAKE3
++        out = self._run_cli(text)
++        self.assertEqual(out.returncode, 0, out.stdout)
++
++    def test_unquantified_universal_still_fires(self):
++        # The other five rules apply in --commit-msg mode too -- this is not
++        # an auto-close-keyword-only mode.
++        text = "fix: every close path now decrements the refcount.\n"
++        out = self._run_cli(text)
++        self.assertEqual(out.returncode, 1, out.stdout)
++        self.assertIn("universal-claim", out.stdout)
++
++    # ------------------------------------------------------------------
++    # The "even inside quotes/backticks" behaviour this mode adds over the
++    # normal (--files) path: a fenced example does not shield the keyword.
++    # ------------------------------------------------------------------
++
++    def test_fenced_example_is_fatal_in_commit_msg_mode_but_not_in_files_mode(self):
++        text = "docs: quote the bad example.\n\n```\ncloses #%s\n```\n" % self.FAKE
++        with tempfile.TemporaryDirectory() as tmp:
++            path = os.path.join(tmp, "msg.md")
++            with open(path, "w") as fh:
++                fh.write(text)
++            commit_msg_out = subprocess.run(
++                [sys.executable, CLAIM_LINT_PATH, "--commit-msg", path],
++                capture_output=True, text=True,
++            )
++            files_out = subprocess.run(
++                [sys.executable, CLAIM_LINT_PATH, "--files", path],
++                capture_output=True, text=True,
++            )
++        self.assertEqual(
++            commit_msg_out.returncode, 1,
++            "a fenced auto-close phrase must still fire in --commit-msg "
++            "mode: %s" % commit_msg_out.stdout,
++        )
++        self.assertIn("auto-close-keyword", commit_msg_out.stdout)
++        self.assertEqual(
++            files_out.returncode, 0,
++            "baseline contrast: the normal doc-linting path blanks fenced "
++            "code and must NOT fire here -- if it does, this is no longer "
++            "demonstrating what --commit-msg mode adds: %s" % files_out.stdout,
++        )
++
++    # ------------------------------------------------------------------
++    # In-process unit checks against lint_commit_msg_text() directly.
++    # ------------------------------------------------------------------
++
++    def test_lint_commit_msg_text_runs_all_six_rules(self):
++        findings = cl.lint_commit_msg_text(
++            "Every close path is airtight, was proven, and was observed live.\n",
++            REPO_ROOT)
++        fired = {f.rule for f in findings}
++        self.assertEqual(
++            fired,
++            {"universal-claim", "absolute-guarantee", "unproven-claim",
++             "live-no-artifact"},
++        )
++
++    def test_lint_commit_msg_text_no_duplicate_auto_close_finding(self):
++        # Pass 1 skips auto-close-keyword and pass 2 runs ONLY it, unfenced --
++        # an ordinary (unfenced) occurrence must be reported exactly once, not
++        # twice (1 of 1, not 2 of 1).
++        findings = cl.lint_commit_msg_text(
++            "Fixes #%s\n" % self.FAKE, REPO_ROOT)
++        auto_close = [f for f in findings if f.rule == "auto-close-keyword"]
++        self.assertEqual(len(auto_close), 1, auto_close)
++
++    def test_extensionless_file_is_linted_as_prose(self):
++        # A `git commit -F`-style temp file, and .git/COMMIT_EDITMSG itself,
++        # carry no extension.
++        with tempfile.TemporaryDirectory() as tmp:
++            path = os.path.join(tmp, "COMMIT_EDITMSG")
++            with open(path, "w") as fh:
++                fh.write("Fixes #%s\n" % self.FAKE)
++            out = subprocess.run(
++                [sys.executable, CLAIM_LINT_PATH, "--commit-msg", path],
++                capture_output=True, text=True,
++            )
++            self.assertEqual(out.returncode, 1, out.stdout)
++            self.assertNotIn("SKIPPED", out.stdout)
++
++
+ class HistoricalCorpusInContextTests(unittest.TestCase):
+     """Layer 2a (HEADLINE): the linter run over the whole file as it shipped.
+ 
