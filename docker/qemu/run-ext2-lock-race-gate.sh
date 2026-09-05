@@ -237,11 +237,11 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # its real value (review finding F6 on #797).
 # claim-lint:ok: #797, diff-empty against origin/main once substituted -- see
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+# The VALUE is not judged here -- that check is spent in the BASE-DIR
+# PREFLIGHT block right after the ERR trap is installed below (#802/#805
+# idiom, widened to this gate: a bare `exit` here would run before the trap
+# exists and could end the gate with no verdict line at all).
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
-case "$BREENIX_GATE_TMP" in
-    /*) ;;
-    *) echo "ext2 lock-race gate: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
-esac
 
 OUTPUT_DIR=""
 report_gate_failure() {
@@ -258,6 +258,29 @@ report_gate_failure() {
 }
 trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 
+# --- BASE-DIR PREFLIGHT (#797 F6, routed through the verdict path by the
+# #802/#805 idiom widened to this gate) ---
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "ext2 lock-race gate preflight: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2
+       false ;;
+esac
+
+# #748 F10: --park-only's own verdict carries three distinct process exit
+# codes (0 PARK OBSERVED, 1 SPIN/NO PARK, 2 INCONCLUSIVE), deliberately kept
+# apart from a plain gate FAIL and from each other so a caller that ever
+# checks $? cannot collide two different facts onto the same code. `redden`
+# is how a non-1 code still routes through the ERR trap above instead of a
+# bare `exit`: a `return` inside a function is an ordinary command as far as
+# `set -e`/`errtrace` are concerned (verified: it fires the trap with $?
+# equal to the returned code, the same way a failing built-in would), so
+# report_gate_failure's `exit "$exit_code"` re-raise still ends up carrying
+# the intended code, and the trap's own re-raise stays the only literal
+# `exit` statement in this script.
+redden() {
+    return "$1"
+}
+
 ARCH="aarch64"
 BUILD=1
 PARK_ONLY=0
@@ -271,7 +294,7 @@ while [ $# -gt 0 ]; do
         # (2) -- nothing parses either today, but if this script is ever
         # wired into a caller that checks $?, a usage error and an honest
         # "proves nothing" verdict must never collide on the same code.
-        *) echo "unknown argument: $1" >&2; exit 64 ;;
+        *) echo "unknown argument: $1" >&2; redden 64 ;;
     esac
 done
 
@@ -342,7 +365,7 @@ if [ "$BUILD" -eq 1 ] && [ -f "$BUILD_LOG" ]; then
         echo "ext2 lock-race gate: FAIL (build produced warnings/errors, see $BUILD_LOG)"
         grep -E "^(warning|error)" "$BUILD_LOG" \
             | grep -vF "contain code that will be rejected by a future version of Rust" | head -20
-        exit 1
+        false
     fi
 fi
 
@@ -623,7 +646,7 @@ fail() {
     echo "ext2 lock-race gate ($ARCH): FAIL - $1"
     echo "--- LOCKRACE / stall lines ---"
     grep -a "LOCKRACE\|EXT2_LOCK_SPIN_STALL\|soft lockup\|SOFT LOCKUP" "$SERIAL_ALL" || echo "(none)"
-    exit 1
+    false
 }
 
 if grep -qa "KERNEL PANIC" "$SERIAL_ALL"; then
@@ -633,6 +656,22 @@ if grep -qaE "(DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception)" "$SERIAL_
     fail "CPU exception during or after the race leg"
 fi
 
+# The two verdict shapes below (--park-only's own three-outcome probe, and
+# the ordinary full-leg verdict) are now one if/else rather than each ending
+# in its own early `exit`: this gate's own widened verdict-discipline rule
+# (tests/teardown_structure.rs's verdict_trap_has_no_preempting_exit) scans
+# the whole script for an `exit` statement other than the trap's own
+# re-raise above, so PARK_ONLY's branch runs as an if/elif cascade (first
+# match wins, matching the original sequential early-returns) and the
+# ordinary verdict moves into the `else`, unreachable while PARK_ONLY=1 --
+# the same effect the old unconditional exits had, expressed as control
+# flow instead of early termination. `redden N` (defined above) is how the
+# two FAIL-shaped outcomes (SPIN/NO PARK = 1, INCONCLUSIVE = 2) still reach
+# the trap with their own distinct code; PARK OBSERVED is a genuine
+# success, so it takes no further action beyond its own echo, and the
+# cascade falls out to the end of the script, matching
+# run-x86-prod-profile-boot-test.sh's PASS path (implicit status 0 from the
+# last command run).
 if [ "$PARK_ONLY" -eq 1 ]; then
     # #748: report exactly one of the three outcomes the header comment
     # names, distinctly -- "no observation yet" must never read as either
@@ -663,22 +702,18 @@ if [ "$PARK_ONLY" -eq 1 ]; then
         else
             echo "ext2 lock-race park-probe ($ARCH): SPIN, NO PARK - this leg's own construction spun (or a soft-lockup fired) before recording a park of its own"
         fi
-        exit 1
-    fi
-    if [ "$LEG_PARK_SEEN" -eq 1 ]; then
+        redden 1
+    elif [ "$LEG_PARK_SEEN" -eq 1 ]; then
         echo "ext2 lock-race park-probe ($ARCH): PARK OBSERVED - a park recorded strictly after this leg's own holder/contender spawn (EXT2_LOCK_PARK_FIRST count rose from $PARK_BASELINE); polled ${POST_PARK_GRACE}x2s past the park with no stall following in that window, but this probe stops there and therefore cannot exclude a later spin stall in the same leg beyond that bounded window -- it is not equivalent to the leg's own in-kernel PASS verdict"
-        exit 0
-    fi
-    if [ "$COMPLETE_SEEN" -eq 1 ] && [ "$LEG_ENTRY_SEEN" -eq 1 ]; then
+    elif [ "$COMPLETE_SEEN" -eq 1 ] && [ "$LEG_ENTRY_SEEN" -eq 1 ]; then
         # The leg reached COMPLETE without this leg-scoped window ever
         # recording a park; the in-kernel no-park-observed=FAIL
         # classification (ext2_lock_race.rs) already covers this shape from
         # the leg's own side -- report it in the same bucket rather than
         # inventing a fourth one.
         echo "ext2 lock-race park-probe ($ARCH): SPIN, NO PARK - the leg reached COMPLETE without this leg-scoped window ever recording a park"
-        exit 1
-    fi
-    if [ "$LEG_ENTRY_SEEN" -eq 0 ] && [ "$COMPLETE_SEEN" -eq 1 ]; then
+        redden 1
+    elif [ "$LEG_ENTRY_SEEN" -eq 0 ] && [ "$COMPLETE_SEEN" -eq 1 ]; then
         # Reached the ARCH0 case caught live in local testing: the leg-entry
         # signal ("Added thread ... 'lockrace_holder' to scheduler") is
         # itself x86_64-only by construction (scheduler.rs gates it out on
@@ -691,65 +726,64 @@ if [ "$PARK_ONLY" -eq 1 ]; then
         # reason named is the honest call. --park-only's leg-scoping is
         # validated for --x86 only; use the full gate on other arches.
         echo "ext2 lock-race park-probe ($ARCH): INCONCLUSIVE - the leg's own entry signal never appeared on this arch (it is x86_64-only by construction; see the header comment), so leg-scoped tracking could not engage even though the leg reached COMPLETE -- this arch's --park-only result proves nothing either way; use the full gate (no --park-only) here instead"
-        exit 2
-    fi
-    if [ "$LEG_ENTRY_SEEN" -eq 0 ]; then
+        redden 2
+    elif [ "$LEG_ENTRY_SEEN" -eq 0 ]; then
         echo "ext2 lock-race park-probe ($ARCH): INCONCLUSIVE - the leg's own 'Added thread ... lockrace_holder' spawn line never appeared within the probe's ${POLL_BOUND}x2s budget (unscoped EXT2_LOCK_PARK_FIRST seen so far: $PARK_FIRST_SEEN) -- this proves nothing either way, only that the budget wasn't enough to reach the leg"
+        redden 2
     else
         echo "ext2 lock-race park-probe ($ARCH): INCONCLUSIVE - the leg was reached but neither a leg-scoped park nor a leg-scoped stall was observed within the probe's ${POLL_BOUND}x2s budget -- this proves nothing either way, only that the budget wasn't enough"
+        redden 2
     fi
-    exit 2
-fi
+else
+    if [ "$STALL_SEEN" -eq 1 ]; then
+        fail "EXT2_LOCK_SPIN_STALL observed — a contended acquisition spun instead of parking (#728 live)"
+    fi
+    if [ "$LOCKUP_SEEN" -eq 1 ]; then
+        fail "kernel soft-lockup detector fired during the race leg"
+    fi
+    if [ "$COMPLETE_SEEN" -ne 1 ]; then
+        fail "the leg never reached its COMPLETE marker (hang with no stall/lockup signal caught, or it never ran)"
+    fi
 
-if [ "$STALL_SEEN" -eq 1 ]; then
-    fail "EXT2_LOCK_SPIN_STALL observed — a contended acquisition spun instead of parking (#728 live)"
-fi
-if [ "$LOCKUP_SEEN" -eq 1 ]; then
-    fail "kernel soft-lockup detector fired during the race leg"
-fi
-if [ "$COMPLETE_SEEN" -ne 1 ]; then
-    fail "the leg never reached its COMPLETE marker (hang with no stall/lockup signal caught, or it never ran)"
-fi
+    COMPLETE_LINE="$(grep -a "\[LOCKRACE:COMPLETE:" "$SERIAL_ALL" | head -1)"
+    LEG_PASS="$(echo "$COMPLETE_LINE" | sed -n 's/.*pass=\([0-9]*\):fail=\([0-9]*\)\].*/\1/p')"
+    LEG_FAIL="$(echo "$COMPLETE_LINE" | sed -n 's/.*pass=\([0-9]*\):fail=\([0-9]*\)\].*/\2/p')"
+    echo "[gate] $COMPLETE_LINE"
+    RACE_VERDICT_LINES="$(grep -a "\[LOCKRACE:.*:race:verdict=" "$SERIAL_ALL" || true)"
+    echo "$RACE_VERDICT_LINES" | sed 's/^/[gate]   /'
 
-COMPLETE_LINE="$(grep -a "\[LOCKRACE:COMPLETE:" "$SERIAL_ALL" | head -1)"
-LEG_PASS="$(echo "$COMPLETE_LINE" | sed -n 's/.*pass=\([0-9]*\):fail=\([0-9]*\)\].*/\1/p')"
-LEG_FAIL="$(echo "$COMPLETE_LINE" | sed -n 's/.*pass=\([0-9]*\):fail=\([0-9]*\)\].*/\2/p')"
-echo "[gate] $COMPLETE_LINE"
-RACE_VERDICT_LINES="$(grep -a "\[LOCKRACE:.*:race:verdict=" "$SERIAL_ALL" || true)"
-echo "$RACE_VERDICT_LINES" | sed 's/^/[gate]   /'
+    # B4d: pass=0:fail=0 (no filesystem raced -- e.g. a construction that did
+    # not reach run_one()) must not read as a pass, so LEG_PASS is
+    # floor-checked rather than only requiring LEG_FAIL == 0.
+    if [ -z "$LEG_PASS" ] || [ "$LEG_FAIL" != "0" ] || [ "$LEG_PASS" -lt 1 ]; then
+        fail "the leg reported $LEG_FAIL failing filesystem(s) and $LEG_PASS passing (need >=1 pass, 0 fail)"
+    fi
 
-# B4d: pass=0:fail=0 (nothing raced at all -- e.g. a construction that never
-# reached run_one()) must not read as a pass, so LEG_PASS is floor-checked
-# rather than only requiring LEG_FAIL == 0.
-if [ -z "$LEG_PASS" ] || [ "$LEG_FAIL" != "0" ] || [ "$LEG_PASS" -lt 1 ]; then
-    fail "the leg reported $LEG_FAIL failing filesystem(s) and $LEG_PASS passing (need >=1 pass, 0 fail)"
+    # B4d ("require a per-race verdict line to exist"): the COMPLETE tally must
+    # be backed by exactly that many printed :race:verdict= lines, not merely
+    # asserted by the tally itself (run_one() in ext2_lock_race.rs prints
+    # exactly one per attempted race, including each failure path -- setup
+    # failure included -- so this can only diverge from LEG_PASS+LEG_FAIL if the
+    # harness itself regresses).
+    RACE_VERDICT_COUNT="$(echo "$RACE_VERDICT_LINES" | grep -c . || true)"
+    EXPECTED_VERDICTS=$((LEG_PASS + LEG_FAIL))
+    if [ "$RACE_VERDICT_COUNT" -ne "$EXPECTED_VERDICTS" ]; then
+        fail "COMPLETE reported pass=$LEG_PASS:fail=$LEG_FAIL ($EXPECTED_VERDICTS total) but $RACE_VERDICT_COUNT :race:verdict= line(s) were printed"
+    fi
+
+    # B4b: a green run should confirm the fix's new park path was actually
+    # entered. ext2_acquire()/ext2_acquire_write() already score a
+    # construction that skipped parking as FAIL (see ext2_lock_race.rs's
+    # no-park-observed detail), so LEG_FAIL==0 above already implies this --
+    # this is a second, independent assertion straight off the printed
+    # parks= fields, in case that in-kernel classification itself regresses.
+    TOTAL_PARKS="$(echo "$RACE_VERDICT_LINES" | sed -n 's/.*parks=\([0-9]*\)\].*/\1/p' | awk '{s+=$1} END {print s+0}')"
+    if [ "$TOTAL_PARKS" -lt 1 ]; then
+        fail "pass=$LEG_PASS but no parks were observed across the passing race(s) -- a green that skipped the park path is not meaningful evidence (#728 review B4)"
+    fi
+    echo "[gate] total parks observed: $TOTAL_PARKS"
+
+    [ "$LIVE" -eq 1 ] || fail "the boot did not reach a liveness marker on a line after the race leg's own COMPLETE line in $PRIMARY_LOG"
+
+    echo "ext2 lock-race gate ($ARCH): PASSED - $LEG_PASS filesystem(s) raced clean ($TOTAL_PARKS total parks), kernel live after"
 fi
-
-# B4d ("require a per-race verdict line to exist"): the COMPLETE tally must
-# be backed by exactly that many printed :race:verdict= lines, not merely
-# asserted by the tally itself (run_one() in ext2_lock_race.rs prints
-# exactly one per attempted race, including every failure path -- setup
-# failure included -- so this can only diverge from LEG_PASS+LEG_FAIL if the
-# harness itself regresses).
-RACE_VERDICT_COUNT="$(echo "$RACE_VERDICT_LINES" | grep -c . || true)"
-EXPECTED_VERDICTS=$((LEG_PASS + LEG_FAIL))
-if [ "$RACE_VERDICT_COUNT" -ne "$EXPECTED_VERDICTS" ]; then
-    fail "COMPLETE reported pass=$LEG_PASS:fail=$LEG_FAIL ($EXPECTED_VERDICTS total) but $RACE_VERDICT_COUNT :race:verdict= line(s) were printed"
-fi
-
-# B4b: a green run must prove the fix's new park path was actually entered.
-# ext2_acquire()/ext2_acquire_write() already score a construction that
-# never parked as FAIL (see ext2_lock_race.rs's no-park-observed detail),
-# so LEG_FAIL==0 above already implies this -- this is a second, independent
-# assertion straight off the printed parks= fields, in case that in-kernel
-# classification itself ever regresses.
-TOTAL_PARKS="$(echo "$RACE_VERDICT_LINES" | sed -n 's/.*parks=\([0-9]*\)\].*/\1/p' | awk '{s+=$1} END {print s+0}')"
-if [ "$TOTAL_PARKS" -lt 1 ]; then
-    fail "pass=$LEG_PASS but zero parks were observed across the passing race(s) -- a green that never entered the park path proves nothing (#728 review B4)"
-fi
-echo "[gate] total parks observed: $TOTAL_PARKS"
-
-[ "$LIVE" -eq 1 ] || fail "the boot did not reach a liveness marker on a line after the race leg's own COMPLETE line in $PRIMARY_LOG"
-
-echo "ext2 lock-race gate ($ARCH): PASSED - $LEG_PASS filesystem(s) raced clean ($TOTAL_PARKS total parks), kernel live after"
-exit 0
