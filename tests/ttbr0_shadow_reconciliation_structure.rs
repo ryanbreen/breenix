@@ -479,11 +479,15 @@ fn unsettled_primitive_callers(sources: &[(String, String)]) -> Vec<String> {
         {
             continue;
         }
-        // The caller settles the shadows itself, or hands the whole install to
-        // the discipline that does.
+        // The caller settles BOTH shadows itself, or hands the whole install to
+        // the discipline that does. Publishing `saved_process_cr3` alone is not
+        // enough: the corridor reads `next_cr3` first and installs it when it
+        // holds a value other than 0, so a caller that leaves that word armed
+        // has decided which root the next return to EL0 runs on just as surely
+        // as a raw `msr`.
         if body.contains("adopt_process_ttbr0")
             || body.contains("quiesce_ttbr0_for_exit")
-            || body.contains("set_saved_process_cr3")
+            || settles_both_shadows(&body)
         {
             continue;
         }
@@ -514,7 +518,7 @@ fn every_ttbr0_install_settles_the_per_cpu_shadows() {
         if install.file == "kernel/src/arch_impl/aarch64/ttbr0.rs" {
             continue;
         }
-        if install.body.contains("set_saved_process_cr3") {
+        if settles_both_shadows(&install.body) {
             continue;
         }
         let operand = install_operand(&install.body);
@@ -534,7 +538,8 @@ fn every_ttbr0_install_settles_the_per_cpu_shadows() {
         .collect();
     assert!(
         escaped.is_empty(),
-        "these TTBR0 installs leave the per-CPU shadows naming another root: {escaped:?}"
+        "these TTBR0 installs leave one or both per-CPU shadows naming another root: \
+         {escaped:?}"
     );
 
     // Print, rather than pin, what the Tier-1 rule is holding back: these are
@@ -743,5 +748,322 @@ fn the_caller_census_catches_a_wrapper_that_skips_the_discipline() {
     assert!(
         unsettled_primitive_callers(&repaired).is_empty(),
         "routing the same switch through the discipline has to clear it"
+    );
+}
+
+/// The first argument `body` passes to `call`, trimmed, if it calls it.
+fn call_argument(body: &str, call: &str) -> Option<String> {
+    let needle = format!("{call}(");
+    let at = body.find(&needle)? + needle.len();
+    let rest = &body[at..];
+    let end = rest.find(')')?;
+    Some(rest[..end].trim().to_string())
+}
+
+/// Whether `body` leaves BOTH per-CPU TTBR0 shadow words describing the root it
+/// just installed: it publishes a root into `saved_process_cr3`, and it retires
+/// the pending switch by clearing `next_cr3`.
+///
+/// This is a shape rather than a list of blessed function names: any site that
+/// keeps the corridor's two words in agreement with the register satisfies it,
+/// and a site that settles only one of them does not. The asymmetry matters
+/// because the corridor reads `next_cr3` FIRST and installs it when it holds a
+/// value other than 0, so a stale `next_cr3` outranks a correct
+/// `saved_process_cr3`.
+fn settles_both_shadows(body: &str) -> bool {
+    let publishes = call_argument(body, "set_saved_process_cr3")
+        .is_some_and(|root| !root.is_empty() && root != "0");
+    let retires = call_argument(body, "set_next_cr3").is_some_and(|pending| pending == "0");
+    publishes && retires
+}
+
+/// The `asm!` invocation inside `body` that writes TTBR0_EL1, as the source
+/// text between its outermost parentheses. A body that installs no root has no
+/// such block, and the callers below treat that case as "not an installer".
+fn ttbr0_install_asm_block(body: &str) -> Option<&str> {
+    let install = body.find("msr ttbr0_el1")?;
+    let macro_at = body[..install].rfind("asm!")? + "asm!".len();
+    let open = macro_at + body[macro_at..].find('(')?;
+    let mut depth = 0usize;
+    for (offset, byte) in body.as_bytes()[open..].iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&body[open + 1..open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether the install block in `body` tells the compiler it touches no memory.
+///
+/// `nomem` is a licence to move memory accesses across the block. At a TTBR0
+/// install that licence covers the per-CPU shadow stores that have to follow
+/// the install and the page-table stores that have to precede it, so an
+/// installer must not carry it. Read off the extracted block rather than the
+/// whole function body, so a comment that names the option cannot decide the
+/// answer.
+fn install_block_is_nomem(body: &str) -> bool {
+    ttbr0_install_asm_block(body).is_some_and(|block| block.contains("nomem"))
+}
+
+/// The six steps a TTBR0 install performs in this kernel, in order.
+const INSTALL_SEQUENCE: [&str; 6] = [
+    "dsb ishst",
+    "msr ttbr0_el1",
+    "isb",
+    "tlbi vmalle1is",
+    "dsb ish",
+    "isb",
+];
+
+/// Whether `block` performs `INSTALL_SEQUENCE` in order.
+fn performs_install_sequence(block: &str) -> bool {
+    let mut cursor = 0usize;
+    for step in INSTALL_SEQUENCE {
+        match block[cursor..].find(step) {
+            Some(offset) => cursor += offset + step.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The functions in the discipline module that write TTBR0_EL1, as
+/// (name, body). Discovered by shape, so a helper added to the module later is
+/// covered without editing this test.
+/// claim-lint:ok: the caller asserts equality against the module's own install
+/// count, so the 2 helpers reached at this head are 2 of 2.
+fn discipline_installers(source: &str) -> Vec<(String, String)> {
+    declared_function_names(source)
+        .into_iter()
+        .filter_map(|name| {
+            let body = function_body(source, &name).to_string();
+            body.contains("msr ttbr0_el1").then_some((name, body))
+        })
+        .collect()
+}
+
+#[test]
+fn the_discipline_installs_in_order_and_orders_the_shadow_stores() {
+    let ttbr0 = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    let installers = discipline_installers(&ttbr0);
+
+    // Coverage, not a name list: the install occurrences the walk reaches must
+    // equal the occurrences the module holds, so a new helper cannot be added
+    // past this test.
+    // claim-lint:ok: the assertion below is that equality, 2 of 2 at this head.
+    let reached: usize = installers
+        .iter()
+        .map(|(_, body)| body.matches("msr ttbr0_el1").count())
+        .sum();
+    let total = ttbr0.matches("msr ttbr0_el1").count();
+    assert_eq!(
+        reached, total,
+        "the discipline module holds {total} TTBR0 installs but this check reached {reached}"
+    );
+    assert!(
+        total >= 1,
+        "the discipline module installs nothing, so this test is checking nothing"
+    );
+
+    for (name, body) in &installers {
+        let block = ttbr0_install_asm_block(body)
+            .unwrap_or_else(|| panic!("{name}: find the asm block that installs TTBR0"));
+        assert!(
+            performs_install_sequence(block),
+            "{name}: the install must run {INSTALL_SEQUENCE:?} in order, so the root is visible \
+             before the register takes it and no stale translation survives it"
+        );
+        assert!(
+            !install_block_is_nomem(body),
+            "{name}: the install block carries `nomem`, which tells the compiler it reads and \
+             writes no memory -- a licence to move the per-CPU shadow stores and the caller's \
+             page-table stores across the barriers"
+        );
+    }
+}
+
+#[test]
+fn no_ttbr0_installer_claims_it_touches_no_memory() {
+    let sources = rust_sources_below("kernel/src");
+    let census = ttbr0_install_census(&sources);
+    assert!(
+        census.len() >= 5,
+        "the TTBR0 install census reached only {} functions, so it is not covering the code it \
+         claims to",
+        census.len()
+    );
+
+    let mut nomem: Vec<String> = Vec::new();
+    for install in &census {
+        if install_block_is_nomem(&install.body) {
+            nomem.push(format!("{}::{}", install.file, install.function));
+        }
+    }
+
+    let escaped: Vec<&String> = nomem
+        .iter()
+        .filter(|entry| {
+            !TIER_ONE_PROHIBITED
+                .iter()
+                .any(|tier_one| entry.starts_with(tier_one))
+        })
+        .collect();
+    assert!(
+        escaped.is_empty(),
+        "these TTBR0 installs are declared `nomem`, so the compiler may move the surrounding \
+         shadow and page-table stores across the barriers: {escaped:?}"
+    );
+
+    // Same disposition as the shadow census: print what the Tier-1 rule holds
+    // back rather than pinning it, so a repair there cannot redden this test
+    // and a coverage regression is still caught by the floor above.
+    if !nomem.is_empty() {
+        eprintln!("TTBR0 installs still `nomem` behind the Tier-1 rule: {nomem:?}");
+    }
+}
+
+#[test]
+fn the_nomem_check_reads_the_asm_block_and_not_the_prose() {
+    let carrying = "unsafe {\n\
+        core::arch::asm!(\"dsb ishst\", \"msr ttbr0_el1, {0}\", in(reg) root, \
+        options(nomem, nostack));\n\
+    }";
+    assert!(
+        install_block_is_nomem(carrying),
+        "an install block that carries the option has to be caught"
+    );
+
+    let repaired = carrying.replace("options(nomem, nostack)", "options(nostack)");
+    assert!(
+        !install_block_is_nomem(&repaired),
+        "dropping the option has to clear the check"
+    );
+
+    let commented = format!("// nomem would be wrong here\n{repaired}");
+    assert!(
+        !install_block_is_nomem(&commented),
+        "prose naming the option must not decide the answer"
+    );
+
+    assert!(
+        !performs_install_sequence("core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) root)"),
+        "a bare install with no barriers must not pass the sequence check"
+    );
+}
+
+#[test]
+fn the_dispatch_ttbr0_switch_settles_both_shadows() {
+    // The scheduler's own install is the one a userspace thread takes on each
+    // dispatch that changes address space, so it is pinned here rather than
+    // only through the census.
+    let context_switch = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
+    let switch = function_body(&context_switch, "switch_ttbr0_if_needed");
+    let operand = install_operand(switch);
+    assert!(
+        switch.contains("msr ttbr0_el1"),
+        "the dispatch switch must be the site that installs the register"
+    );
+    assert!(!operand.is_empty(), "find the value the dispatch switch installs");
+    assert_eq!(
+        call_argument(switch, "set_saved_process_cr3").as_deref(),
+        Some(operand.as_str()),
+        "the root the corridor restores must be the root this dispatch just installed"
+    );
+    assert!(
+        settles_both_shadows(switch),
+        "the dispatch switch must also retire the pending switch it consumed: a `next_cr3` left \
+         armed is installed FIRST on the next return to EL0"
+    );
+    assert!(
+        !install_block_is_nomem(switch),
+        "the dispatch install must not tell the compiler it touches no memory"
+    );
+}
+
+#[test]
+fn settling_one_shadow_is_not_settling_the_shadows() {
+    let both = "core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) root); \
+                Aarch64PerCpu::set_saved_process_cr3(root); \
+                Aarch64PerCpu::set_next_cr3(0);";
+    assert!(
+        settles_both_shadows(both),
+        "an install that settles both words is what the discipline looks like"
+    );
+
+    let saved_only = "core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) root); \
+                      Aarch64PerCpu::set_saved_process_cr3(root);";
+    assert!(
+        !settles_both_shadows(saved_only),
+        "publishing `saved_process_cr3` alone leaves the word the corridor reads first armed"
+    );
+
+    let pending_only = "core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) root); \
+                        Aarch64PerCpu::set_next_cr3(0);";
+    assert!(
+        !settles_both_shadows(pending_only),
+        "clearing `next_cr3` alone leaves the fallback root naming someone else"
+    );
+
+    let armed = "core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) root); \
+                 Aarch64PerCpu::set_saved_process_cr3(root); \
+                 Aarch64PerCpu::set_next_cr3(other_root);";
+    assert!(
+        !settles_both_shadows(armed),
+        "leaving a non-zero pending switch behind is not retiring it"
+    );
+}
+
+#[test]
+fn the_caller_census_rejects_a_half_settled_caller() {
+    // The same asymmetry one level out: a caller that hands a process root to a
+    // mechanism primitive and publishes only `saved_process_cr3`.
+    let primitive = "unsafe fn write_root(addr: u64) {\n\
+        let aligned = addr & 0x0000_FFFF_FFFF_F000;\n\
+        core::arch::asm!(\"msr ttbr0_el1, {0}\", in(reg) aligned);\n\
+    }\n";
+    let half = "#[cfg(target_arch = \"aarch64\")]\n\
+        pub unsafe fn switch_to_root(page_table: &ProcessPageTable) {\n\
+            let root = page_table.level_4_frame().start_address().as_u64();\n\
+            Aarch64PageTableOps::write_root(root);\n\
+            Aarch64PerCpu::set_saved_process_cr3(root);\n\
+        }\n";
+    let sources = vec![
+        (
+            "kernel/src/arch_impl/aarch64/paging.rs".to_string(),
+            primitive.to_string(),
+        ),
+        (
+            "kernel/src/memory/process_memory.rs".to_string(),
+            half.to_string(),
+        ),
+    ];
+    assert_eq!(
+        unsettled_primitive_callers(&sources),
+        vec!["kernel/src/memory/process_memory.rs::switch_to_root".to_string()],
+        "a caller that publishes one shadow word and leaves the other armed has to be caught"
+    );
+
+    let settled = half.replace(
+        "Aarch64PerCpu::set_saved_process_cr3(root);",
+        "Aarch64PerCpu::set_saved_process_cr3(root);\n            \
+         Aarch64PerCpu::set_next_cr3(0);",
+    );
+    let repaired = vec![
+        (
+            "kernel/src/arch_impl/aarch64/paging.rs".to_string(),
+            primitive.to_string(),
+        ),
+        ("kernel/src/memory/process_memory.rs".to_string(), settled),
+    ];
+    assert!(
+        unsettled_primitive_callers(&repaired).is_empty(),
+        "settling both words has to clear the caller"
     );
 }
