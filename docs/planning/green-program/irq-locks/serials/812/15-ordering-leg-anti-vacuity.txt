@@ -1,0 +1,57 @@
+# Anti-vacuity for the ordering leg added to try_manager_mask_ratchet_is_not_vacuous.
+# Captured 2026-09-05 on branch fix/812-try-manager-masked.
+#
+# The detector's ordering predicate in try_manager_irq_shape() was weakened in
+# the working tree from
+#
+#     let restored_on_drop = drop_body
+#         .find(restore)
+#         .is_some_and(|at| release.is_some_and(|released| released < at));
+#
+# to
+#
+#     let restored_on_drop = drop_body.find(restore).is_some();
+#
+# which keeps "the drop restores" and drops "after the release". The suite then
+# fails on the reorder leg and on 0 of the other 5, and that leg's census is
+# empty: before this leg, moving the release below both restores reddened
+# nothing.
+
+$ cargo test --test teardown_structure try_manager   (ordering predicate weakened)
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/kernel)
+   Compiling breenix v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.09s
+     Running tests/teardown_structure.rs (target/debug/deps/teardown_structure-67eb70246a628cbd)
+
+running 2 tests
+test try_manager_is_a_masked_acquisition_on_every_arch ... ok
+test try_manager_mask_ratchet_is_not_vacuous ... FAILED
+
+failures:
+
+---- try_manager_mask_ratchet_is_not_vacuous stdout ----
+
+thread 'try_manager_mask_ratchet_is_not_vacuous' panicked at tests/teardown_structure.rs:16638:9:
+leg `the release moved below both restores in the guard drop` did not redden the census; failures were []
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    try_manager_mask_ratchet_is_not_vacuous
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--test teardown_structure`
+
+$ cargo test --test teardown_structure try_manager   (predicate restored)
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/kernel)
+   Compiling breenix v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.13s
+     Running tests/teardown_structure.rs (target/debug/deps/teardown_structure-67eb70246a628cbd)
+
+running 2 tests
+test try_manager_is_a_masked_acquisition_on_every_arch ... ok
+test try_manager_mask_ratchet_is_not_vacuous ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.01s
+

@@ -1,0 +1,142 @@
+test_cli_exit_codes_for_the_three_anti_vacuity_cases (__main__.AutoCloseKeywordTests.test_cli_exit_codes_for_the_three_anti_vacuity_cases) ... ok
+test_extensionless_files_target_is_linted_not_skipped (__main__.AutoCloseKeywordTests.test_extensionless_files_target_is_linted_not_skipped) ... ok
+test_fires_in_rust_and_shell_comments_too (__main__.AutoCloseKeywordTests.test_fires_in_rust_and_shell_comments_too) ... ok
+test_lint_file_distinguishes_skipped_from_clean (__main__.AutoCloseKeywordTests.test_lint_file_distinguishes_skipped_from_clean) ... ok
+test_negation_still_fires_and_the_documented_rewrite_does_not (__main__.AutoCloseKeywordTests.test_negation_still_fires_and_the_documented_rewrite_does_not) ... ok
+test_not_dischargeable_by_claim_lint_ok (__main__.AutoCloseKeywordTests.test_not_dischargeable_by_claim_lint_ok) ... ok
+test_not_exempted_by_nm_count_or_evidence_path (__main__.AutoCloseKeywordTests.test_not_exempted_by_nm_count_or_evidence_path) ... ok
+test_reference_forms_github_also_parses (__main__.AutoCloseKeywordTests.test_reference_forms_github_also_parses) ... ok
+test_skipped_targets_reported_separately_from_checked (__main__.AutoCloseKeywordTests.test_skipped_targets_reported_separately_from_checked) ... ok
+test_vocabulary_and_shape (__main__.AutoCloseKeywordTests.test_vocabulary_and_shape) ... ok
+test_auto_close_sentence_omitted_when_no_auto_close_finding (__main__.CommitMsgModeTests.test_auto_close_sentence_omitted_when_no_auto_close_finding) ... ok
+test_auto_close_sentence_present_when_auto_close_finding_fires (__main__.CommitMsgModeTests.test_auto_close_sentence_present_when_auto_close_finding_fires) ... ok
+test_broken_spelling_is_clean (__main__.CommitMsgModeTests.test_broken_spelling_is_clean) ... ok
+test_comment_prefixed_lines_above_the_scissors_are_stripped (__main__.CommitMsgModeTests.test_comment_prefixed_lines_above_the_scissors_are_stripped) ... ok
+test_extensionless_file_is_linted_as_prose (__main__.CommitMsgModeTests.test_extensionless_file_is_linted_as_prose) ... ok
+test_fenced_example_is_fatal_in_commit_msg_mode_but_not_in_files_mode (__main__.CommitMsgModeTests.test_fenced_example_is_fatal_in_commit_msg_mode_but_not_in_files_mode) ... ok
+test_lint_commit_msg_text_no_duplicate_auto_close_finding (__main__.CommitMsgModeTests.test_lint_commit_msg_text_no_duplicate_auto_close_finding) ... ok
+test_lint_commit_msg_text_runs_all_six_rules (__main__.CommitMsgModeTests.test_lint_commit_msg_text_runs_all_six_rules) ... ok
+test_plain_issue_reference_is_clean (__main__.CommitMsgModeTests.test_plain_issue_reference_is_clean) ... ok
+test_prove_inside_a_bare_directory_path_does_not_fire (__main__.CommitMsgModeTests.test_prove_inside_a_bare_directory_path_does_not_fire) ... ok
+test_prove_inside_a_filename_does_not_fire (__main__.CommitMsgModeTests.test_prove_inside_a_filename_does_not_fire) ... ok
+test_quoted_close_keyword_inside_double_quotes_is_fatal (__main__.CommitMsgModeTests.test_quoted_close_keyword_inside_double_quotes_is_fatal) ... ok
+test_real_claim_above_the_scissors_still_fires (__main__.CommitMsgModeTests.test_real_claim_above_the_scissors_still_fires) ... ok
+test_real_proven_claim_beside_a_path_token_still_fires (__main__.CommitMsgModeTests.test_real_proven_claim_beside_a_path_token_still_fires) ... ok
+test_scissors_line_and_diff_region_are_stripped (__main__.CommitMsgModeTests.test_scissors_line_and_diff_region_are_stripped) ... ok
+test_universal_claim_inside_a_fence_still_fires_in_commit_msg_mode (__main__.CommitMsgModeTests.test_universal_claim_inside_a_fence_still_fires_in_commit_msg_mode) ... ok
+test_unquantified_universal_still_fires (__main__.CommitMsgModeTests.test_unquantified_universal_still_fires) ... ok
+test_unreadable_commit_msg_file_exits_2_not_a_traceback (__main__.CommitMsgModeTests.test_unreadable_commit_msg_file_exits_2_not_a_traceback) ... ok
+test_in_context_catch_rate_and_report (__main__.HistoricalCorpusInContextTests.test_in_context_catch_rate_and_report) ... ok
+test_isolated_quote_catch_rate_and_report (__main__.HistoricalCorpusIsolatedQuoteTests.test_isolated_quote_catch_rate_and_report) ... ok
+test_a_source_dir_named_serial_is_not_a_capture_tree (__main__.MechanicsTests.test_a_source_dir_named_serial_is_not_a_capture_tree) ... ok
+test_airtight_is_flagged (__main__.MechanicsTests.test_airtight_is_flagged) ... ok
+test_annotation_does_not_discharge_the_paragraph_above_it (__main__.MechanicsTests.test_annotation_does_not_discharge_the_paragraph_above_it) ... ok
+test_archived_at_a_missing_path_is_flagged (__main__.MechanicsTests.test_archived_at_a_missing_path_is_flagged) ... ok
+test_artifact_path_missing_is_flagged (__main__.MechanicsTests.test_artifact_path_missing_is_flagged) ... ok
+test_artifact_path_present_relative_to_doc_dir_clears (__main__.MechanicsTests.test_artifact_path_present_relative_to_doc_dir_clears) ... ok
+test_bare_discharge_annotation_does_not_clear (__main__.MechanicsTests.test_bare_discharge_annotation_does_not_clear) ... ok
+test_bare_prove_conjugations_are_flagged (__main__.MechanicsTests.test_bare_prove_conjugations_are_flagged) ... ok
+test_bare_proven_is_flagged (__main__.MechanicsTests.test_bare_proven_is_flagged) ... ok
+test_bare_universal_is_flagged (__main__.MechanicsTests.test_bare_universal_is_flagged) ... ok
+test_bare_word_review_does_not_discharge (__main__.MechanicsTests.test_bare_word_review_does_not_discharge) ... ok
+test_captured_serial_txt_is_skipped (__main__.MechanicsTests.test_captured_serial_txt_is_skipped) ... ok
+test_changed_hunk_intersection (__main__.MechanicsTests.test_changed_hunk_intersection) ... ok
+test_cited_directory_does_not_clear_a_universal (__main__.MechanicsTests.test_cited_directory_does_not_clear_a_universal) ... ok
+test_code_fence_is_not_scanned (__main__.MechanicsTests.test_code_fence_is_not_scanned) ... ok
+test_discharge_annotation_with_citation_clears_a_universal (__main__.MechanicsTests.test_discharge_annotation_with_citation_clears_a_universal) ... ok
+test_discharge_annotation_with_dangling_path_does_not_clear (__main__.MechanicsTests.test_discharge_annotation_with_dangling_path_does_not_clear) ... ok
+test_discharge_annotation_with_issue_number_clears (__main__.MechanicsTests.test_discharge_annotation_with_issue_number_clears) ... ok
+test_discharge_annotation_with_junk_does_not_clear (__main__.MechanicsTests.test_discharge_annotation_with_junk_does_not_clear) ... ok
+test_discharge_annotation_with_resolving_path_clears (__main__.MechanicsTests.test_discharge_annotation_with_resolving_path_clears) ... ok
+test_evidence_log_path_clears_a_universal (__main__.MechanicsTests.test_evidence_log_path_clears_a_universal) ... ok
+test_hand_authored_prose_under_a_serials_dir_is_linted (__main__.MechanicsTests.test_hand_authored_prose_under_a_serials_dir_is_linted) ... ok
+test_idiom_at_all_is_not_flagged (__main__.MechanicsTests.test_idiom_at_all_is_not_flagged) ... ok
+test_list_items_do_not_share_an_exemption (__main__.MechanicsTests.test_list_items_do_not_share_an_exemption) ... ok
+test_named_review_file_discharges (__main__.MechanicsTests.test_named_review_file_discharges) ... ok
+test_named_test_function_discharges (__main__.MechanicsTests.test_named_test_function_discharges) ... ok
+test_nm_count_clears_a_universal (__main__.MechanicsTests.test_nm_count_clears_a_universal) ... ok
+test_nonexistent_evidence_path_does_not_clear_a_live_claim (__main__.MechanicsTests.test_nonexistent_evidence_path_does_not_clear_a_live_claim) ... ok
+test_nonexistent_evidence_path_does_not_clear_a_universal (__main__.MechanicsTests.test_nonexistent_evidence_path_does_not_clear_a_universal) ... ok
+test_observed_live_with_resolving_serial_path_clears (__main__.MechanicsTests.test_observed_live_with_resolving_serial_path_clears) ... ok
+test_observed_live_without_path_is_flagged (__main__.MechanicsTests.test_observed_live_without_path_is_flagged) ... ok
+test_proven_with_mutation_keyword_clears (__main__.MechanicsTests.test_proven_with_mutation_keyword_clears) ... ok
+test_rust_code_line_is_not_scanned (__main__.MechanicsTests.test_rust_code_line_is_not_scanned) ... ok
+test_rust_doc_comment_is_scanned (__main__.MechanicsTests.test_rust_doc_comment_is_scanned) ... ok
+test_shell_comment_is_scanned (__main__.MechanicsTests.test_shell_comment_is_scanned) ... ok
+test_source_path_does_not_clear_a_universal (__main__.MechanicsTests.test_source_path_does_not_clear_a_universal) ... ok
+test_untracked_new_file_is_linted_in_diff_mode (__main__.MechanicsTests.test_untracked_new_file_is_linted_in_diff_mode) ... ok
+test_zero_feature_compound_is_not_flagged (__main__.MechanicsTests.test_zero_feature_compound_is_not_flagged) ... ok
+test_per_round_load (__main__.PerRoundLoadReportTests.test_per_round_load) ... ok
+test_tty_evidence (__main__.RealDocumentReportTests.test_tty_evidence) ... ok
+test_workload_envelopes (__main__.RealDocumentReportTests.test_workload_envelopes) ... ok
+test_report_false_positive_shape (__main__.VerifiedTrueClaimsTests.test_report_false_positive_shape) ... ok
+
+----------------------------------------------------------------------
+Ran 72 tests in 1.635s
+
+OK
+
+[historical corpus, IN CONTEXT -- whole file as shipped] caught 9 of 12 recoverable specimens; 9 of those 9 catches fire on a rule whose trigger is inside the false sentence itself, the rest only on a neighbouring sentence of the same paragraph:
+  CAUGHT F1   on-claim  EVIDENCE-2026-08-30.md@68fa457b
+  CAUGHT F3   on-claim  EVIDENCE-2026-08-30.md@02fe4051
+  CAUGHT F8   on-claim  mod.rs@c6ef13bc
+  CAUGHT F9   on-claim  run-ext2-lock-race-gate.sh@b7fe5766
+  CAUGHT F10  on-claim  run-ext2-lock-race-gate.sh@b7fe5766
+  CAUGHT F11  on-claim  EVIDENCE-x86-confirm-2026-08-31.md@66dd9b9f
+  CAUGHT F12  on-claim  EVIDENCE-x86-fix-round-2026-08-31.md@8c848bc0
+  CAUGHT F13  on-claim  WORKLOAD-ENVELOPES.md@4951fba9
+  CAUGHT F15  on-claim  layout.rs@3c51dbed
+  MISS   F4   EVIDENCE-2026-08-30.md@cd77e41c
+         reason: In situ this quote sits inside one 1,200-character bullet in EVIDENCE-2026-08-30.md §7 whose next sentence carries a real `1/1 boot tests passed` count. One N-of-M anywhere in a paragraph exempts every claim in it, so the true count inoculates the false 'PROVEN, PASS'. R2's list-item paragraph break does not separate them -- they are in the SAME bullet. Fixing this needs a rule that pairs one citation to one claim, which was measured and not shipped; see claim-linting.md.
+  MISS   F16  PROVE-2026-08-30.md@28263b11
+         reason: In situ the quote sits in a bullet that also says 'The mutation was reverted', which satisfies PROVEN_EVIDENCE_RE and exempts unproven-claim for the whole paragraph. Same one-citation-inoculates-the-paragraph mechanism as F4, via the mutation-keyword exemption rather than an N-of-M (review minor m2).
+  MISS   F18  PROVE-2026-08-30.md@28263b11
+         reason: A negated-change claim ('no fix-round change touched its inputs') rather than a universal/proof/live/guarantee word from this tool's vocabulary. Would need a dedicated 'unchanged-since' rule cross-checked against the actual diff -- out of scope for a text-shape linter.
+  (6 further specimen(s) shipped on a surface this repo does not contain: ['F2', 'F5', 'F6', 'F7', 'F14', 'F17'] -- isolated-quote layer only)
+
+[historical corpus, ISOLATED QUOTES -- secondary, over-reports] caught 15 of 18:
+  CAUGHT F1   docs/planning/green-program/tty/EVIDENCE-2026-08-30.md §9 (round-1 landed bytes)
+  CAUGHT F2   GitHub issue #706, closing comment
+  CAUGHT F3   docs/planning/green-program/tty/EVIDENCE-2026-08-30.md §3b, mirrored into kernel/src/syscall/fs.rs:2486-2496
+  CAUGHT F4   docs/planning/green-program/tty/EVIDENCE-2026-08-30.md §7/§9
+  CAUGHT F5   scratchpad/gbus/CONFIRM-2026-08-31.md §5
+  CAUGHT F7   scratchpad/gbus/EVIDENCE-2026-08-31.md:340
+  CAUGHT F8   kernel/src/fs/ext2/mod.rs:1749
+  CAUGHT F9   docker/qemu/run-ext2-lock-race-gate.sh:566
+  CAUGHT F10  docker/qemu/run-ext2-lock-race-gate.sh:159
+  CAUGHT F11  docs/planning/green-program/tty/EVIDENCE-x86-confirm-2026-08-31.md:29
+  CAUGHT F12  docs/planning/green-program/tty/EVIDENCE-x86-fix-round-2026-08-31.md:80 (round-2 replacement text)
+  CAUGHT F13  docs/planning/green-program/WORKLOAD-ENVELOPES.md §2 (pre-fix draft)
+  CAUGHT F14  kernel/src/fs/ext2/mod.rs, comment near #728's mitigation
+  CAUGHT F15  kernel/src/memory/layout.rs, MMAP_REGION_START doc comment (commit 3c51dbed)
+  CAUGHT F16  docs/planning/coreproof/rung2/PROVE-2026-08-30.md §1 [FIX-ROUND-2]
+  MISS   F6   scratchpad/gbus/EVIDENCE-2026-08-31.md §4
+         reason: The universal here is 'each', not one of this tool's trigger words, and the sentence also names a real mutation technique ('kernel-log mutation ... reverted'), which exempts the unproven-claim rule too -- the falseness is that ONE of four gates was never mutated at all, not that no mutation occurred anywhere. 'each' was deliberately left out of UNIVERSAL_WORDS: adding it was tried and it raised ~20 new raw trigger sites in WORKLOAD-ENVELOPES.md alone (most legitimate uses like 'each cell', 'each gate script'), for this one additional historical catch -- not a good trade at this tool's current exemption precision.
+  MISS   F17  scratchpad/gbus/CONFIRM-2026-08-31.md §6
+         reason: Correct N-of-M form on both counts -- the claim is well-shaped and false anyway (fabricated execution, not an unquantified universal). No mechanical rule in this tool checks that a cited count was actually produced by the log it names; that would need to parse and cross-check the log, not just the sentence.
+  MISS   F18  docs/planning/coreproof/rung2/PROVE-2026-08-30.md [FIX-ROUND-2] Summary, Leg 4
+         reason: A negated-change claim ('no fix-round change touched its inputs') rather than a universal/proof/live/guarantee word from this tool's vocabulary. Would need a dedicated 'unchanged-since' rule cross-checked against the actual diff -- out of scope for a text-shape linter.
+
+[per-round load]
+  aa5f0fd8 (#721 fix round        ) files= 7  whole-file=282  changed-hunks=  8
+  a6679e7c (sweep-3 fix round     ) files= 8  whole-file= 91  changed-hunks= 25
+  9a77c3dc (#748 fix round        ) files= 3  whole-file= 85  changed-hunks= 13
+  6ba3bcc4 (R4 doc fix round      ) files= 2  whole-file= 66  changed-hunks= 36
+  2a2328aa (coreproof rung-2 prove) files=15  whole-file= 29  changed-hunks= 29
+  73c58fda (#540 x86 prod gate    ) files= 2  whole-file=141  changed-hunks= 24
+  16d6ff5b (x86 TTY oracle gate   ) files= 2  whole-file= 64  changed-hunks= 12
+  cbc6873b (nic-bus doc-truth     ) files=10  whole-file= 57  changed-hunks= 16
+  1f098d11 (tracing x86 evidence  ) files= 1  whole-file=  7  changed-hunks=  2
+  06a1c1a6 (TTY x86 fix-round     ) files= 1  whole-file= 22  changed-hunks=  2
+  5777bb7b (#717 trap guard       ) files= 1  whole-file= 31  changed-hunks=  1
+  RANGE over 11 rounds: whole-file 7-282, changed-hunks 1-36; hunk scoping suppressed 0%-97% per round
+
+[real doc] docs/planning/green-program/tty/EVIDENCE-2026-08-30.md: 129 paragraph(s), 37 flagged, 47 finding(s) {'universal-claim': 35, 'unproven-claim': 9, 'absolute-guarantee': 2, 'auto-close-keyword': 1}
+
+[real doc] docs/planning/green-program/WORKLOAD-ENVELOPES.md: 84 paragraph(s), 36 flagged, 39 finding(s) {'universal-claim': 34, 'absolute-guarantee': 4, 'unproven-claim': 1}
+
+[verified-true corpus]
+  T1   FLAGGED (needs claim-lint:ok)  kernel/src/init.rs:478 comment (round 3 landed bytes)
+  T2   FLAGGED (needs claim-lint:ok)  kernel/src/proof/mod.rs, fire() doc comment reasoning (round-2 review, reviewer's own verified finding)
+  T3   clean                          gtty fix2-review.md, reviewer's own verified check
+  T4   clean                          gtty fix2-review.md B1, reviewer's own re-derivation
