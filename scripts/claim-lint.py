@@ -23,7 +23,16 @@ Usage:
     scripts/claim-lint.py --whole-file          # diff mode, but whole files
     scripts/claim-lint.py --files a.md b.rs     # explicit files, always whole
     scripts/claim-lint.py --all                 # every tracked text file (slow)
+    scripts/claim-lint.py --commit-msg <file>   # a commit message, as prose
     scripts/claim-lint.py --format json ...
+
+`--commit-msg <file>` is its own mode (see lint_commit_msg_text() below): it
+lints the named file as prose with every rule, and it additionally scans
+auto-close-keyword against the UNFENCED text, so the phrase cannot hide from
+this rule inside a ``` example the way it can inside a real doc's fenced
+code. `scripts/lint-commit-msg.sh <file>` wraps this for `git commit -F`
+workflows and for a `.git/hooks/commit-msg` hook; see
+docs/planning/green-program/claim-linting.md's `--commit-msg` section.
 
 Diff mode reports only findings whose paragraph overlaps a line this branch
 actually changed (`--changed-only`, the default; `--whole-file` restores the
@@ -264,17 +273,24 @@ HTML_COMMENT_START_RE = re.compile(r"^\s*<!--")
 COMMENT_ONLY_RE = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
 
 
-def extract_markdown_paragraphs(file: str, lines: list) -> list:
+def extract_markdown_paragraphs(file: str, lines: list,
+                                blank_fences: bool = True) -> list:
     # Blank out fenced code blocks (keep line count so numbers stay aligned).
+    # `blank_fences=False` is used by lint_commit_msg_text()'s auto-close-
+    # keyword pass ONLY: a commit message does not get markdown-rendered for
+    # GitHub's issue-closing parser, so a ``` fence does not shield an
+    # auto-close phrase from it the way it shields a real doc's code sample
+    # from the claim-quality rules.
     scrubbed = list(lines)
-    in_fence = False
-    for i, line in enumerate(lines):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            scrubbed[i] = ""
-            continue
-        if in_fence:
-            scrubbed[i] = ""
+    if blank_fences:
+        in_fence = False
+        for i, line in enumerate(lines):
+            if FENCE_RE.match(line):
+                in_fence = not in_fence
+                scrubbed[i] = ""
+                continue
+            if in_fence:
+                scrubbed[i] = ""
 
     paragraphs = []
     buf = []
@@ -525,8 +541,38 @@ def check_universal(p: Paragraph, repo_root: str) -> Optional[Finding]:
     )
 
 
+PATH_EXTENSION_RE = re.compile(
+    r"\.(?:md|txt|log|json|rs|py|sh|toml|S)$", re.IGNORECASE
+)
+
+
+def _is_path_or_filename_token(text: str, match: "re.Match") -> bool:
+    """True if `match` sits inside a filesystem path or filename, where `-`
+    and `/` are regex word boundaries but not English ones (review M2:
+    `789-SLICE2-PROVE-2026-09-04.md` and `serials/slice1b/prove/` both
+    matched `\bprove\b` even though neither is the English word "prove").
+    Expands to the surrounding run of non-whitespace characters and checks
+    whether THAT token (not the whole paragraph) is a path -- contains a
+    `/` -- or a bare filename -- ends in a recognized extension."""
+    start, end = match.span()
+    tok_start = start
+    while tok_start > 0 and not text[tok_start - 1].isspace():
+        tok_start -= 1
+    tok_end = end
+    while tok_end < len(text) and not text[tok_end].isspace():
+        tok_end += 1
+    token = text[tok_start:tok_end].strip("`\"'(),;:")
+    if "/" in token:
+        return True
+    return bool(PATH_EXTENSION_RE.search(token))
+
+
 def check_proven(p: Paragraph, repo_root: str) -> Optional[Finding]:
-    m = PROVEN_RE.search(p.text)
+    m = None
+    for cand in PROVEN_RE.finditer(p.text):
+        if not _is_path_or_filename_token(p.text, cand):
+            m = cand
+            break
     if not m:
         return None
     if has_discharge(p, repo_root):
@@ -697,6 +743,93 @@ def lint_file(path: str, repo_root: str = None,
     return lint_text(rel, content, repo_root, ext_override)
 
 
+def _git_comment_char(repo_root: str) -> str:
+    """The character `git commit`'s own cleanup treats as a comment marker
+    (`core.commentChar`; unset, empty, or `auto` all fall back to git's
+    actual default, `#`) -- see _strip_git_cleanup_noise()."""
+    out = subprocess.run(
+        ["git", "config", "--get", "core.commentChar"],
+        capture_output=True, text=True, cwd=repo_root,
+    )
+    char = out.stdout.strip()
+    if out.returncode != 0 or not char or char == "auto":
+        return "#"
+    return char[0]
+
+
+def _strip_git_cleanup_noise(lines: list, repo_root: str) -> list:
+    """Blank out (never delete -- callers index by line number) the parts of
+    a COMMIT_EDITMSG that git's own cleanup removes before the text becomes
+    the actual commit message, so linting does not fail a commit over bytes
+    git itself discards (review M1): the scissors cut line a `git commit -v`
+    template inserts (`<comment-char> ---...--- >8 ---...---`) and everything
+    from it to the end of the file -- the diffstat/diff `-v` appends -- plus
+    any comment-prefixed line (`# On branch ...`, git's status hints) above
+    it. A `commit-msg` hook runs on COMMIT_EDITMSG BEFORE this cleanup
+    (githooks(5)), so without stripping it here too, a real `git commit -v`
+    on this very branch tripped `universal-claim` on the appended diff's OWN
+    added prose -- reproduced at scratchpad/cm/serials/h2_verbose.txt (526
+    lines), `--commit-msg` exit 1 on the diff body; the same file with the
+    `-v` region removed is clean."""
+    char = _git_comment_char(repo_root)
+    scissors_re = re.compile(r"^\s*" + re.escape(char) + r"\s*-+\s*>8\s*-+\s*$")
+    comment_re = re.compile(r"^\s*" + re.escape(char))
+    out = list(lines)
+    past_scissors = False
+    for i, line in enumerate(lines):
+        if past_scissors:
+            out[i] = ""
+        elif scissors_re.match(line):
+            past_scissors = True
+            out[i] = ""
+        elif comment_re.match(line):
+            out[i] = ""
+    return out
+
+
+def lint_commit_msg_text(content: str, repo_root: str = None,
+                          file: str = "<commit-msg>") -> list:
+    """Lint a git COMMIT MESSAGE, as prose, with every rule.
+
+    This exists because of a specific incident: commit `e6dd14a6` quoted
+    this tool's own auto-close-keyword vocabulary directly in front of three
+    real, open issue numbers inside its own commit message, describing a
+    rewording made in a different file -- and GitHub's merge-time parser
+    auto-closed all three the moment the commit landed on `main`. Neither of
+    the round checklist's two mandated runs would have caught it: diff mode
+    lints the tree the commit changes, not the message describing the
+    change, and a `--files` PR-body run does not read a commit message
+    either. See docs/planning/green-program/claim-linting.md's
+    `--commit-msg` section (R21) for the incident in full -- its text is not
+    reproduced here, on purpose: reproducing it would place the same
+    keyword-adjacent-to-a-real-issue-number shape in this file too.
+
+    Git's own comment lines and scissors/diff region are stripped first
+    (`_strip_git_cleanup_noise()`, review M1) -- a `commit-msg` hook sees
+    that text raw, before git's cleanup ever removes it.
+
+    A SINGLE pass, fences left unblanked, over every one of the six rules
+    (review m3, correcting R21's original two-pass split). A fenced ```
+    code block is blanked for the diff/`--files` modes because a fence
+    there usually IS code a real, markdown-rendered doc should not read as
+    prose -- but a commit message is never markdown-rendered, by GitHub's
+    issue-closing parser or by anything else that displays one (`git log`
+    shows the backticks literally), so that rationale does not hold for
+    ANY of the six rules here, not only auto-close-keyword: a universal or
+    unproven claim hidden inside a ``` block in a commit message used to
+    read as clean (see test_universal_claim_inside_a_fence_still_fires_in_
+    commit_msg_mode in scripts/test_claim_lint.py).
+    """
+    if repo_root is None:
+        repo_root = REPO_ROOT
+    lines = _strip_git_cleanup_noise(content.splitlines(), repo_root)
+    findings = []
+    for p in extract_markdown_paragraphs(file, lines, blank_fences=False):
+        findings.extend(lint_paragraph(p, repo_root))
+    findings.sort(key=lambda f: f.line)
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -815,11 +948,60 @@ def format_json(findings: list) -> str:
     return json.dumps([f.__dict__ for f in findings], indent=2)
 
 
+def run_commit_msg_mode(path: str, repo_root: str, fmt: str) -> int:
+    """The `--commit-msg` CLI mode: read `path`, lint it with
+    lint_commit_msg_text(), print, return the exit code. A separate code
+    path from the diff/`--files`/`--all` modes below -- there is no target
+    discovery, no changed-hunk intersection, and no extension allowlist, on
+    the same rationale `lint_file()`'s `assume_text` uses: a commit message
+    is exactly the kind of extensionless surface `TEXT_EXTENSIONS` would
+    otherwise skip.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
+        print("claim-lint: cannot read commit-message file %s: %s" % (path, e))
+        return 2
+    rel = os.path.relpath(path, repo_root) if os.path.isabs(path) else path
+    findings = lint_commit_msg_text(content, repo_root, file=rel)
+    if fmt == "json":
+        print(format_json(findings))
+    elif findings:
+        print(format_text(findings))
+        print(
+            "\nclaim-lint: %d finding(s) in commit message %s. Discharge a "
+            "legitimate claim with a same-paragraph "
+            "`claim-lint:ok: <citation>` annotation naming an N-of-M count, "
+            "a resolving path, an issue, or a review. See "
+            "docs/planning/green-program/claim-linting.md."
+            % (len(findings), rel)
+        )
+        if any(f.rule == "auto-close-keyword" for f in findings):
+            print(
+                "claim-lint: auto-close-keyword finding(s) above cannot be "
+                "discharged by a claim-lint:ok annotation -- the phrase "
+                "acts on GitHub at merge/commit time regardless of any "
+                "annotation. Rewrite the reference as a plain '#N' with no "
+                "close/fix/resolve keyword directly in front of it."
+            )
+    else:
+        print("claim-lint: clean commit message (%s)." % rel)
+    return 1 if findings else 0
+
+
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", help="git ref to diff against (default: origin/main, else main)")
     ap.add_argument("--files", nargs="*", help="explicit file list, bypasses git diff")
     ap.add_argument("--all", action="store_true", help="lint every tracked text file")
+    ap.add_argument(
+        "--commit-msg", metavar="FILE",
+        help="lint FILE as a git commit message: every rule, as prose, "
+             "regardless of extension, with auto-close-keyword additionally "
+             "checked unfenced. A separate mode -- ignores --base/--files/"
+             "--all/--whole-file. See lint_commit_msg_text().",
+    )
     ap.add_argument(
         "--whole-file", action="store_true",
         help="in diff mode, report findings anywhere in a changed file "
@@ -830,6 +1012,10 @@ def main(argv: list) -> int:
     args = ap.parse_args(argv)
 
     repo_root = args.repo_root
+
+    if args.commit_msg:
+        return run_commit_msg_mode(args.commit_msg, repo_root, args.format)
+
     base = None
     untracked = set()
 

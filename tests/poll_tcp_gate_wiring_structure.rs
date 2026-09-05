@@ -89,27 +89,6 @@ fn discover_files(root: &Path) -> Vec<PathBuf> {
 
 /// The derived set: each file under `docker/qemu/` or `scripts/` that
 /// contains the oracle's gate-failing FAIL literal. No name list -- this is
-/// The text of `path`, absent when the file is not UTF-8 text.
-///
-/// R157: both readers below used `read_to_string(...).unwrap_or_else(panic!)`,
-/// which made this suite fail on any non-text file that happened to sit under
-/// `docker/qemu/` or `scripts/`. That is reachable through this project's own
-/// mandated workflow: `python3 scripts/claim-lint.py` writes
-/// `scripts/__pycache__/claim-lint.cpython-*.pyc` (git-ignored, so it never
-/// shows in `git status`), and the next run of this suite panicked on
-/// `read script .../claim-lint.cpython-314.pyc`. A gate script is text by
-/// construction, so a file that is not text is not a member of the census and
-/// is skipped rather than fatal. The census shape is unchanged: every file is
-/// still visited, and every text file is still classified.
-/// claim-lint:ok: reproduced in R157 -- with the .pyc present this suite was
-/// 2 passed / 1 failed on that exact panic, and green with it removed; the
-/// round's record is in
-/// docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
-fn script_text(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    String::from_utf8(bytes).ok()
-}
-
 /// the computed census the R96 ratchet requires.
 fn scripts_asserting_oracle_fail() -> Vec<PathBuf> {
     let mut candidates = discover_files(&repo_root().join("docker/qemu"));
@@ -119,10 +98,17 @@ fn scripts_asserting_oracle_fail() -> Vec<PathBuf> {
     candidates
         .into_iter()
         .filter(|path| {
-            let Some(text) = script_text(path) else {
-                return false;
-            };
-            text.contains(ORACLE_FAIL_LITERAL)
+            // A file that is not valid UTF-8 cannot carry the literal, so it is
+            // not a member of this census and reading it is not an error. The
+            // specimen: `python3 scripts/test_claim_lint.py` -- 1 of the 2
+            // claim-discipline commands a round runs -- imports
+            // `scripts/claim-lint.py` and leaves
+            // `scripts/__pycache__/claim-lint.cpython-*.pyc` behind, and the
+            // panic this replaces then reddened this ratchet on a tree
+            // whose 8 of 8 censused scripts were correctly wired.
+            fs::read_to_string(path)
+                .map(|text| text.contains(ORACLE_FAIL_LITERAL))
+                .unwrap_or(false)
         })
         .collect()
 }
@@ -130,11 +116,19 @@ fn scripts_asserting_oracle_fail() -> Vec<PathBuf> {
 /// Each member of `scripts` that does NOT also carry the kernel's
 /// READY_LOST marker -- i.e. this call's own `comm -23` result, computed
 /// in-process rather than shelled out.
+///
+/// R157: this reader used `read_to_string(...).unwrap_or_else(panic!)`,
+/// which panicked on any non-UTF8 file reaching this filter (e.g. a stray
+/// `scripts/__pycache__/*.pyc` left by `python3 scripts/claim-lint.py`). A
+/// gate script is text by construction, so a file that fails to decode as
+/// UTF-8 is not a member of this census and is skipped rather than fatal.
 fn missing_ready_lost_wiring(scripts: &[PathBuf]) -> Vec<PathBuf> {
     scripts
         .iter()
         .filter(|path| {
-            let Some(text) = script_text(path) else {
+            let bytes =
+                fs::read(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+            let Ok(text) = String::from_utf8(bytes) else {
                 return false;
             };
             !text.contains(READY_LOST_LITERAL)

@@ -565,8 +565,18 @@ impl Aarch64PerCpu {
     }
 
     /// Set the next TTBR0 value.
+    ///
+    /// Every Rust-side write of this word goes through here, so this is where
+    /// the #786 follow-on ASID census counts what the corridor is handed. The
+    /// count is lock-free and allocation-free -- see `note_shadow_publish`.
+    /// claim-lint:ok: 17 of 17 Rust-side publishes of either shadow word are
+    /// printed by `every_shadow_publish_has_an_accounted_asid -- --nocapture`,
+    /// recorded in
+    /// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/05-suite-green-with-census.txt;
+    /// the 2 stores this cannot see are the assembly ones in `syscall_entry.S`.
     #[inline(always)]
     pub unsafe fn set_next_cr3(val: u64) {
+        super::ttbr0::note_shadow_publish(val);
         percpu_write_u64(PERCPU_NEXT_CR3_OFFSET, val);
     }
 
@@ -577,8 +587,13 @@ impl Aarch64PerCpu {
     }
 
     /// Set the saved process TTBR0.
+    ///
+    /// The other half of the census hook on `set_next_cr3`: this is the word
+    /// the `.Lrestore_saved_ttbr` arm of `syscall_entry.S` installs verbatim,
+    /// ASID field included.
     #[inline(always)]
     pub unsafe fn set_saved_process_cr3(val: u64) {
+        super::ttbr0::note_shadow_publish(val);
         percpu_write_u64(PERCPU_SAVED_PROCESS_CR3_OFFSET, val);
     }
 

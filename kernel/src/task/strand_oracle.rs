@@ -462,6 +462,14 @@ fn report_strand(
     // children are being reaped, back to zero once the drain has retired them.
     // Same context as the line above — a sampling kthread, never a hot path.
     crate::tracing::providers::teardown::emit_tombstone_census();
+    // #786 follow-on. The strict gate's profile kills QEMU shortly after exec
+    // smoke, before the userspace heartbeat's procfs read has necessarily
+    // happened, so the ASID census rides this period too: the same sampling
+    // kthread context rather than a hot path.
+    // claim-lint:ok: 13 census lines in the first of 3 strict boots, in
+    // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/03-strict-boot1-serial.txt
+    #[cfg(target_arch = "aarch64")]
+    crate::arch_impl::aarch64::ttbr0::emit_asid_census();
 }
 
 #[cfg(target_arch = "aarch64")]

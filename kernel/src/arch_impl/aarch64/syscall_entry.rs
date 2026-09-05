@@ -361,6 +361,30 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
             Aarch64PerCpu::set_next_cr3(0);
         }
 
+        // #786 follow-on: the ASID census sample the gates read.
+        //
+        // The boot-path emission in `main_aarch64.rs` fires before any process
+        // root has been published -- measured on a production-profile boot, it
+        // prints all four counters at 0 -- and the userspace heartbeat's cold
+        // `/proc/trace/counters` read, which is the other emission site, first
+        // happens at 20 s of uptime, past the window either gate keeps QEMU
+        // alive for. A process exit is the point that is reached in every
+        // profile after real dispatch has happened, so the census is sampled
+        // here, unconditionally: a census that prints only when it likes the
+        // answer feeds a self-fulfilling gate literal.
+        // claim-lint:ok: the boot-path line reading
+        // `[TTBR0_ASID_CENSUS:untagged=0:tagged=0:kernel=0:cleared=0]` and the
+        // 1 of 1 `[PT_ROOT_CUSTODY:` line in a whole production boot are both in
+        // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
+        //
+        // This is the ordinary syscall exit path in normal context, not the
+        // ERET corridor, and it already prints twice above; the emission adds
+        // one `serial_println!` per process exit and no work to a hot path.
+        // claim-lint:ok: 1 of 1 emission is this call; the 15 census lines a
+        // production boot prints are in
+        // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
+        crate::arch_impl::aarch64::ttbr0::emit_asid_census();
+
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
         let has_other_userspace_threads =

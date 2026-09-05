@@ -46,8 +46,9 @@ Test scripts are located in `docker/qemu/`:
 - `./docker/qemu/run-interactive.sh` - Interactive session with VNC display
 
 **ARM64:**
-- `./docker/qemu/run-aarch64-boot-test-native.sh` - Native ARM64 boot test
-- `./docker/qemu/run-aarch64-boot-test-strict.sh` - Strict ARM64 boot test
+- `./docker/qemu/run-aarch64-boot-test-native.sh` - Native ARM64 boot test (needs a kernel built with `--features boot_tests`)
+- `./docker/qemu/run-aarch64-boot-test-strict.sh` - Strict ARM64 boot test (needs a kernel built with `--features boot_tests`)
+- `./docker/qemu/run-aarch64-prod-profile-boot-test.sh` - Production-profile ARM64 boot test (builds and boots the shipped no-features kernel itself)
 
 **Parallels (ARM64 hardware testing):**
 - `./run.sh --parallels` - Build and boot on Parallels Desktop VM (recommended)
@@ -105,9 +106,12 @@ cargo build --release --features testing,external_test_bins --bin qemu-uefi
 # Run multiple parallel tests for stress testing
 ./docker/qemu/run-boot-parallel.sh 5
 
-# Build ARM64 kernel
+# Build ARM64 kernel for the native/strict boot-test gates below
 # Kernel code must use the soft-float target; userspace keeps aarch64-breenix.json.
-cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+# run-aarch64-boot-test-native.sh and -strict.sh pin boot_tests-only markers, so
+# build with --features boot_tests for them (omit it only for
+# run-aarch64-prod-profile-boot-test.sh, which builds its own no-features kernel).
+cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
 
 # Run ARM64 boot test
 ./docker/qemu/run-aarch64-boot-test-native.sh
@@ -236,12 +240,14 @@ A test that passes without testing what it claims to test is worse than a failin
 ### Claim Discipline - REQUIRED
 
 A round that touches markdown, Rust, Python, shell, or text-file prose runs
-`scripts/claim-lint.py` before requesting review and records the invocation and
-its exit status in the round's notes:
+`scripts/claim-lint.py` before requesting review, lints each commit message
+before making the commit, and records each invocation and its exit status in
+the round's notes:
 
 ```
-claim-lint: scripts/claim-lint.py                         -> exit 0
-claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md -> exit 0
+claim-lint: scripts/claim-lint.py                          -> exit 0
+claim-lint: scripts/claim-lint.py --files /tmp/pr-body.md   -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg /tmp/msg.txt -> exit 0
 ```
 
 The review slot checks for those lines the way it checks gate serials. A round

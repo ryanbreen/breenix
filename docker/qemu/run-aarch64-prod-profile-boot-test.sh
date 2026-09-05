@@ -53,11 +53,52 @@ TTY_ORACLE_FAIL_LITERAL='[TTY_ORACLE:FAIL'
 # This proves init progressed through to the production SSH service.
 BSSHD_LITERAL='bsshd: listening'
 # Any one of these literals means the production boot crashed or locked up.
+# claim-lint:ok: 0 of 3 boots at this head match any of them --
+# docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1.txt
+# and its 2 siblings
+# #786 follow-on: the TTBR0 ASID census, emitted before userspace and at every
+# process exit. `untagged` counts publishes into `saved_process_cr3`/`next_cr3`
+# of a process root whose ASID field is not the userspace ASID -- the value the
+# `.Lrestore_saved_ttbr` arm of `syscall_entry.S` would install verbatim, which
+# is what put returns to EL0 on ASID 0 for five hours of `main`. Three
+# assertions, not one: the line must be present, no line may report a non-zero
+# `untagged`, and at least one line must report a non-zero `tagged`, because a
+# census that counted no process-root publish at all would report `untagged=0`
+# for the same reason a dead counter does.
+# claim-lint:ok: this gate goes red on the raw-operand mutation with
+# 12 of 14 census lines reporting untagged>0 --
+# docs/planning/green-program/aarch64-testing/serials/asid-ratchet/02-runtime-anti-vacuity-prod-gate.txt
+ASID_CENSUS_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[0-9]+:kernel=[0-9]+:cleared=[0-9]+\]'
+ASID_CENSUS_UNTAGGED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[1-9][0-9]*:'
+ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][0-9]*:'
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected'
 
 OUTPUT_DIR="/tmp/breenix_aarch64_prod_profile"
 SERIAL_FILE="$OUTPUT_DIR/serial.txt"
 QEMU_PID=""
+
+# Scoring-only entry point, the same shape run-aarch64-boot-test-strict.sh has
+# carried as BREENIX_STRICT_SCORE_ONLY. R157/ASID-01: without it the only thing
+# a test could say about this gate's verdict rules was that the script CONTAINS
+# some pattern strings, which stays true after every assertion using them is
+# deleted. With it, the verdict block below is what runs -- unchanged, on the
+# serial named here -- so deleting an assertion changes the exit status a test
+# can read.
+# claim-lint:ok: 3 of 3 assertions in this gate were deleted as a mutation and the test
+# caught it; the leg is section 12 of docs/planning/green-
+# program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md
+#
+# The boot is skipped, not the scoring: everything between here and the verdict
+# is guarded on this variable being empty, and the verdict block itself is not
+# guarded at all.
+SCORE_ONLY_SERIAL="${BREENIX_PROD_SCORE_ONLY:-}"
+if [ -n "$SCORE_ONLY_SERIAL" ]; then
+    SERIAL_FILE="$SCORE_ONLY_SERIAL"
+    if [ ! -f "$SERIAL_FILE" ]; then
+        echo "FAIL: BREENIX_PROD_SCORE_ONLY names no readable serial: $SERIAL_FILE"
+        exit 1
+    fi
+fi
 
 marker_count() {
     local serial_file="$1"
@@ -67,6 +108,16 @@ marker_count() {
         return
     fi
     grep -F -c "$literal" "$serial_file" 2>/dev/null || true
+}
+
+pattern_count() {
+    local serial_file="$1"
+    local pattern="$2"
+    if [ ! -f "$serial_file" ]; then
+        echo 0
+        return
+    fi
+    grep -aE -c "$pattern" "$serial_file" 2>/dev/null || true
 }
 
 crash_count() {
@@ -95,6 +146,8 @@ print_observed_values() {
     echo "Observed TTY oracle marker count: $(marker_count "$serial_file" "$TTY_ORACLE_LITERAL")"
     echo "Observed TTY oracle failure count: $(marker_count "$serial_file" "$TTY_ORACLE_FAIL_LITERAL")"
     echo "Observed bsshd marker count: $(marker_count "$serial_file" "$BSSHD_LITERAL")"
+    echo "Observed TTBR0 ASID census marker count: $(pattern_count "$serial_file" "$ASID_CENSUS_PATTERN")"
+    echo "Observed TTBR0 ASID census untagged-publish line count: $(pattern_count "$serial_file" "$ASID_CENSUS_UNTAGGED_PATTERN")"
     echo "Observed crash marker count: $(crash_count "$serial_file")"
     if [ -f "$serial_file" ]; then
         grep -iE "$CRASH_MARKERS_PATTERN" "$serial_file" 2>/dev/null || true
@@ -132,6 +185,7 @@ cleanup() {
     fi
     exit "$status"
 }
+if [ -z "$SCORE_ONLY_SERIAL" ]; then
 trap 'cleanup $?' EXIT
 
 rm -rf "$OUTPUT_DIR"
@@ -222,6 +276,7 @@ done
 kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
 QEMU_PID=""
+fi
 
 PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")
 KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
@@ -238,6 +293,9 @@ POLL_TCP_TIMEOUT_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_TIMEOUT_LITERAL"
 TTY_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$TTY_ORACLE_LITERAL")
 TTY_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$TTY_ORACLE_FAIL_LITERAL")
 BSSHD_COUNT=$(marker_count "$SERIAL_FILE" "$BSSHD_LITERAL")
+ASID_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PATTERN")
+ASID_CENSUS_UNTAGGED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_UNTAGGED_PATTERN")
+ASID_CENSUS_PUBLISHED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PUBLISHED_PATTERN")
 CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 
 if grep -qF '[BOOT_TESTS:FAIL' "$SERIAL_FILE" 2>/dev/null; then
@@ -307,6 +365,18 @@ fi
     echo "FAIL: bsshd never reached its listening state"
     exit 1
 }
+[ "$ASID_CENSUS_COUNT" -ge 1 ] || {
+    echo "FAIL: TTBR0 ASID census marker missing"
+    exit 1
+}
+[ "$ASID_CENSUS_UNTAGGED_COUNT" -eq 0 ] || {
+    echo "FAIL: TTBR0 ASID census reported an untagged process-root publish: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | grep -E ':untagged=[1-9]' | tail -1)"
+    exit 1
+}
+[ "$ASID_CENSUS_PUBLISHED_COUNT" -ge 1 ] || {
+    echo "FAIL: TTBR0 ASID census never counted a process-root publish, so untagged=0 says nothing"
+    exit 1
+}
 [ "$CRASH_COUNT" -eq 0 ] || {
     echo "FAIL: crash marker detected"
     exit 1
@@ -326,5 +396,8 @@ echo "Observed kernel poll timeout report count: $POLL_TCP_TIMEOUT_COUNT"
 echo "Observed kernel lost-readiness report count: $POLL_TCP_READY_LOST_COUNT"
 echo "Observed TTY oracle marker count: $TTY_ORACLE_COUNT"
 echo "Observed TTY oracle failure count: $TTY_ORACLE_FAIL_COUNT"
+echo "Observed TTBR0 ASID census marker count: $ASID_CENSUS_COUNT"
+echo "Observed TTBR0 ASID census untagged-publish line count: $ASID_CENSUS_UNTAGGED_COUNT"
+echo "Observed: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0

@@ -1668,9 +1668,22 @@ impl Scheduler {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
+        let cpu_affinity = thread.cpu_affinity;
         self.threads.push(thread);
-        // Route to least-loaded CPU queue (or current CPU if tied).
-        let target = self.least_loaded_cpu();
+        // A thread that carries a CPU pin is queued to the CPU that pin names.
+        // A thread without one routes to the least-loaded CPU queue (or the
+        // current CPU if tied), which is the path taken today: `spawn_on_cpu`
+        // is the 1 function that stamps a pin and it has 0 callers, so
+        // `cpu_affinity` reads `None` here and the fall-through is the whole
+        // behaviour.
+        // claim-lint:ok: 1 of 1 call sites of `spawn_on_cpu` is
+        // `kthread::kthread_run_on_cpu`, which has 0 callers of its own -- both
+        // counted by grep over kernel/src in this round. `None` is the Rust
+        // value the field holds, not an absolute.
+        let target = cpu_affinity
+            .map(|pin| pin.cpu)
+            .filter(|cpu| *cpu < self.online_cpu_count())
+            .unwrap_or_else(|| self.least_loaded_cpu());
         if front {
             self.per_cpu_queues[target].push_front(thread_id);
         } else {
@@ -4408,6 +4421,37 @@ pub fn spawn(thread: Box<Thread>) {
             }
         } else {
             panic!("Scheduler not initialized");
+        }
+    });
+}
+
+/// Add a production thread that must remain on `cpu`.
+///
+/// The pin it stamps is a `per_cpu_worker` pin: the caller is publishing a
+/// thread whose work lives in that CPU's per-CPU state. It has 0 callers in
+/// this tree -- the per-CPU softirq daemons that will use it are a separate
+/// change -- so no thread the kernel builds carries a pin today.
+pub fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
+    note_scheduler_publication();
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        let scheduler = scheduler_lock
+            .as_mut()
+            .expect("scheduler not initialized for CPU-affine spawn");
+        assert!(
+            cpu < scheduler.online_cpu_count(),
+            "CPU-affine spawn target {} is offline",
+            cpu
+        );
+        thread.cpu_affinity = Some(super::thread::CpuPin::per_cpu_worker(cpu));
+        scheduler.add_thread(thread);
+        NEED_RESCHED.store(true, Ordering::Relaxed);
+        #[cfg(target_arch = "x86_64")]
+        crate::per_cpu::set_need_resched(true);
+        #[cfg(target_arch = "aarch64")]
+        {
+            crate::per_cpu_aarch64::set_need_resched(true);
+            scheduler.send_resched_ipi_to_cpu(cpu);
         }
     });
 }
