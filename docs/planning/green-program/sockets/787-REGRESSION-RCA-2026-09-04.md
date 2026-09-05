@@ -97,8 +97,8 @@ quoted verbatim above.
 6. A timer preemption inside that window leaves the mutex held by a thread that
    is no longer running. The dispatch performed by that same interrupt, or by a
    later one, reaches step 1, spins on the held byte with IF=0, and no interrupt
-   can run again to resume the holder. The CPU spins; no further byte is
-   printed; QEMU shows 101%.
+   can run again to resume the holder. The CPU spins in the accessor; no further
+   byte is printed.
    claim-lint:ok: IF=0 is the `eflags 0x2` reading in both specimen registers
    dumps, `serials/787-regression/spec{1,2}/gdb_sample_1.txt`, 2 of 2.
 
@@ -408,3 +408,108 @@ runs ran after `git checkout -f FETCH_HEAD` in that clone, i.e. on commit
 - `KERNEL_PDPT_FRAME` remains a `spin::Mutex`. It is not read from the dispatch
   path in this tree, so it is not part of this deadlock; it is left alone here
   and noted in the filed issue.
+
+## Round 2 (R161)
+
+Round 2 was a review round. It corrected six claims this record made that the
+committed serials do not support -- the marker table (F1), the `<I>` predicate
+(F2), the cohort-duration band (F3), the wall-clock numbers (F4), the A/B pre
+row (F5) and "no lock left to spin on" (F7) -- and it rebuilt the allocation
+ratchet (F9). Each correction is written into the section it belongs to above
+rather than collected here; this section carries only what round 2 MEASURED.
+
+The branch was merged with `origin/main` at `bdb5be90` (PR #795) with no
+conflict before any of it ran, so the numbers below are from the merged head.
+claim-lint:ok: the merge commit is on this branch and `git merge-base
+--is-ancestor origin/main HEAD` succeeds, 1 of 1.
+
+### The allocation ratchet, and the vacuous guard round 2 shipped first
+
+Round 2's first attempt at a binary-level allocation guard read instruction text
+only. Run against a kernel with `thread.name.clone()` restored, it PASSED. The
+reason is structural: this kernel is a static PIE and rustc emits the call as
+`movq <slot>(%rip), %rax; callq *%rax` through a GOT slot, so the callee's name
+is in the relocation, not at the call site. Measured: the restored clone reaches
+`<alloc::string::String as Clone>::clone` at `0x3cae80` through slot
+`0x4161d0`, whose `R_X86_64_RELATIVE` entry carries exactly that address.
+
+The shipped guard resolves that. It builds three tables -- `.text` function
+symbols, `R_X86_64_RELATIVE` relocations, the disassembly -- and resolves each
+in-scope instruction's target directly (`callq ... <SYM>`) or through the
+relocation. Four legs, each committed under
+`docs/planning/green-program/sockets/serials/787-regression/round2/alloc-guard/`:
+
+| leg | ELF sha256 (first 8) | result |
+|---|---|---|
+| fixed kernel, `boot_tests` profile | `bd255118` | PASS, 3 symbols, 19 edges, 0 violations |
+| fixed kernel, production profile | `c2920c61` | PASS, 3 symbols, 19 edges, 0 violations |
+| `name.clone()` restored to its `b257e69e` form | `a4929756` | FAIL, 3 violations |
+| the SHIPPED `b257e69e` kernel that wedged the gate | `d3e2fa94` | FAIL, 3 violations |
+
+The three violations are the same in both red legs: the closure's
+`String::clone` and two `String` drop-glue calls. The fourth leg is the one
+worth reading -- it is not a synthetic mutation but the binary that actually
+wedged, so the allocation this fix removed is now confirmed present in the
+shipped artifact and not only in the source.
+
+Two anti-vacuity arms: the guard fails when it finds no in-scope symbol, and
+when it resolves no call edge. Depth is 1, deliberately: a transitive walk from
+this function reaches `log::error!`'s formatting machinery on the else arm and
+would redden a clean tree. The disclosed blind spot is an allocation two frames
+down behind a callee that is not itself an alloc-crate symbol.
+
+The source-level assertion is now described as what it is -- a denylist, widened
+from 3 spellings to 13 -- in its own module header, in the fix section above, and
+in the PR body.
+
+### x86, at the merged head, on beast
+
+`/root/breenix-787fix` at `cd17ff25`, in the `breenix-x86` Incus container,
+sharing the machine with other tenants. `pgrep -fl qemu-system-x86_64 | wc -l`
+was recorded immediately before each boot: 0, 0, 0.
+
+- `cargo build --release --features testing,external_test_bins --bin qemu-uefi`
+  piped through `grep -E "^(warning|error)"` produced a 0-byte file
+  (`round2/x86/build-grep.txt`).
+- `docker/qemu/run-x86-boot-tests.sh 1`, twice: `x86 frame-custody gate run 1:
+  PASS` both times, `rc=0`, and one `[TEST:process:x86_retire_cohort:PASS]` in
+  each run's user serial -- the marker absent from 3 of 3 wedging main legs. The
+  allocation guard ran inline in both, after the build, reporting 3 symbols and
+  19 edges with 0 violations.
+- `docker/qemu/run-x86-prod-profile-boot-test.sh`, once: `rc=0`.
+
+Both boot-tests runs booted the same kernel ELF, sha256
+`bd255118bd5948d4451a6405c6ad1dff8a025960f5345b18c2a47617e8708e50`; the
+per-run UEFI image, test-binary and ext2 hashes are in
+`round2/x86/boot-{1,2}.hashes` and `round2/x86/prod-1.hashes`. Full stdout,
+both user serials and run 1's kernel serial are under `round2/x86/`.
+
+### aarch64, at the merged head, on this Mac
+
+`pgrep -fl qemu-system-aarch64 | wc -l` was 0 before each of the three launches.
+
+- The soft-float `boot_tests` build completes. It is not silent: it prints one
+  `warning:` line, the future-incompatibility notice for the toolchain's own
+  vendored `core v0.0.0`, which names no Breenix crate. Round 1 called this
+  build "clean" without that qualification.
+  claim-lint:ok: the line is the last of `round2/a64/build-tail.txt`, 1 of 1.
+- `scripts/check-kernel-no-neon.sh`: PASS, 0 FP/SIMD load/store instructions in
+  kernel `.text` (`round2/a64/no-neon.txt`).
+- `docker/qemu/run-aarch64-boot-test-strict.sh 1`, three times, one at a time:
+  `PASS: 1/1 boots succeeded` each (`round2/a64/strict-{1,2,3}.txt`), 3 of 3.
+
+This replaces round 1's withdrawn "80 of 80". Three boots is what round 2 ran and
+three is what it claims.
+
+### Structure suites
+
+All 28 `tests/*_structure.rs` suites were run once at this head: 28 green of 28,
+including the widened `dispatch_path_lock_free_structure` at 4 of 4
+(`round2/structure-suites.txt`).
+
+### claim-lint
+
+```
+claim-lint: python3 scripts/claim-lint.py                                  -> exit 0
+claim-lint: python3 scripts/claim-lint.py --files <this doc> <pr body>     -> exit 0
+```
