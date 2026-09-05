@@ -1,0 +1,5 @@
+   Compiling kernel v0.1.0 (/root/breenix-ttbr0/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-ttbr0)
+    Finished `release` profile [optimized] target(s) in 14.16s
+BUILD_EXIT=0
+e6b499f200729aae632f9d763cb38999359a14b8

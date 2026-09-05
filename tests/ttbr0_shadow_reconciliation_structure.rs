@@ -7,25 +7,28 @@
 //! are intentionally about behavior-bearing call shapes rather than line
 //! numbers.
 //!
-//! Two different things are counted in this slice and they are not the same
-//! number, so both are stated here rather than left to be inferred:
+//! Two different things are counted here and they are not the same number, so
+//! both are stated rather than left to be inferred:
 //!
-//!   * 10 process-root install DECISION sites existed on `main` -- the places
-//!     that chose a root and put it in TTBR0_EL1. 9 of the 10 are routed
-//!     through `ttbr0::adopt_process_ttbr0` by this slice; the 10th is the
-//!     Tier-1 site `kernel/src/syscall/time.rs::ensure_current_address_space`,
-//!     which this branch may not touch.
-//!   * 7 FUNCTIONS still write TTBR0_EL1 with a raw `msr` at this head, and
-//!     those 7 are what the census below walks: 2 discipline-module helpers,
-//!     2 that reconcile both shadows inline, 2 mechanism primitives that
-//!     install what a caller decided, and the 1 Tier-1 site.
+//!   * 10 process-root install DECISION sites existed on `main` before this
+//!     work -- the places that chose a root and put it in TTBR0_EL1. Slice 1
+//!     routed 9 of the 10 through `ttbr0::adopt_process_ttbr0`; slice 1b
+//!     routed the 10th,
+//!     `kernel/src/syscall/time.rs::ensure_current_address_space`, under the
+//!     Tier-1 approval slice 1 did not have (operator ruling R156). 10 of 10
+//!     are routed at this head.
+//!   * 6 FUNCTIONS still write TTBR0_EL1 with a raw `msr` at this head, and
+//!     those 6 are what the census below walks: 2 discipline-module helpers,
+//!     2 that reconcile both shadows inline, and 2 mechanism primitives that
+//!     install what a caller decided.
 //!
-//! The 9 routed sites are absent from the 7 precisely because they no longer
+//! The 10 routed sites are absent from the 6 precisely because they no longer
 //! write the register themselves. Both accountings are enumerated in
-//! docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
-//! claim-lint:ok: 9 of 10 decision sites are routed at this head and the 10th
-//! is the Tier-1 site, which
-//! `every_ttbr0_install_settles_the_per_cpu_shadows` prints on each run.
+//! docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
+//! claim-lint:ok: the 6 censused functions and their dispositions are printed
+//! by `every_ttbr0_install_settles_the_per_cpu_shadows -- --nocapture`, which
+//! is recorded verbatim under
+//! docs/planning/green-program/aarch64-testing/serials/slice1b/
 
 
 use std::collections::BTreeSet;
@@ -115,19 +118,12 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
 //   * mechanism primitives, whose installed value traces back to one of their
 //     own parameters -- they install what a caller decided, so the caller owns
 //     the shadows;
-//   * everything else, which must be empty outside the files CLAUDE.md lists
-//     as Tier-1 prohibited.
-// claim-lint:ok: 7 censused functions at this head, enumerated in
-// docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
-
-/// Files CLAUDE.md forbids modifying without explicit user approval. Checked
-/// back against CLAUDE.md by `the_tier_one_exemption_matches_the_project_rule`
-/// so this stays the project's rule rather than this test's opinion.
-const TIER_ONE_PROHIBITED: [&str; 3] = [
-    "kernel/src/syscall/handler.rs",
-    "kernel/src/syscall/time.rs",
-    "kernel/src/interrupts/timer.rs",
-];
+//   * everything else, which must be empty. There is no file-scoped exemption:
+//     slice 1b routed the last unreconciled install, which lived in a Tier-1
+//     file, so this census requires zero unreconciled installs kernel-wide.
+// claim-lint:ok: the censused functions and their dispositions are printed by
+// `every_ttbr0_install_settles_the_per_cpu_shadows -- --nocapture` and recorded
+// in docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
 
 fn identifiers(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -537,44 +533,53 @@ fn every_ttbr0_install_settles_the_per_cpu_shadows() {
     );
 
     let mut unreconciled = Vec::new();
+    let mut disposition = Vec::new();
     for install in &census {
+        let site = format!("{}::{}", install.file, install.function);
         if install.file == "kernel/src/arch_impl/aarch64/ttbr0.rs" {
+            disposition.push(format!("{site} (the discipline)"));
             continue;
         }
         if settles_both_shadows(&install.body) {
+            disposition.push(format!("{site} (reconciles inline)"));
             continue;
         }
         let operand = install_operand(&install.body);
         if is_mechanism_primitive(&install.signature, &install.body, &operand) {
+            disposition.push(format!("{site} (parameter-borne)"));
             continue;
         }
-        unreconciled.push(format!("{}::{}", install.file, install.function));
+        disposition.push(format!("{site} (unreconciled)"));
+        unreconciled.push(site);
     }
 
-    let escaped: Vec<&String> = unreconciled
-        .iter()
-        .filter(|entry| {
-            !TIER_ONE_PROHIBITED
-                .iter()
-                .any(|tier_one| entry.starts_with(tier_one))
-        })
-        .collect();
-    assert!(
-        escaped.is_empty(),
-        "these TTBR0 installs leave one or both per-CPU shadows naming another root: \
-         {escaped:?}"
+    // The census, disclosed rather than summarised: a `--nocapture` run prints
+    // every function the walk reached and how each was classified, so the
+    // counts in the slice documents are reproducible from the tree instead of
+    // being asserted about it. This is disclosure, not exemption -- the
+    // assertion below is on the whole list.
+    // claim-lint:ok: 6 of 6 censused functions are printed by this run at the
+    // slice-1b head; recorded in
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
+    eprintln!(
+        "TTBR0 install census ({} functions): {disposition:#?}",
+        disposition.len()
     );
 
-    // Print, rather than pin, what the Tier-1 rule is holding back: these are
-    // real members of the same defect class that this branch was not allowed to
-    // touch. If the list empties because someone repaired them, the test still
-    // passes; if it empties because the census stopped reaching them, the
-    // coverage floor above is what notices.
-    if !unreconciled.is_empty() {
-        eprintln!(
-            "TTBR0 installs still unreconciled behind the Tier-1 rule: {unreconciled:?}"
-        );
-    }
+    // No file-scoped exemption. Slice 1b routed the last raw process-root
+    // install, `kernel/src/syscall/time.rs::ensure_current_address_space`,
+    // through the discipline under operator ruling R156, so this census
+    // requires zero unreconciled installs kernel-wide rather than printing a
+    // list it declines to pin. Mechanism primitives keep the disposition
+    // documented on `ttbr0_install_census`: they install a value their caller
+    // chose, so the caller owns the shadows.
+    // claim-lint:ok: 0 of 6 censused installs are unreconciled at this head;
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
+    assert!(
+        unreconciled.is_empty(),
+        "these TTBR0 installs leave one or both per-CPU shadows naming another root: \
+         {unreconciled:?}"
+    );
 }
 
 #[test]
@@ -613,21 +618,6 @@ fn the_shadow_census_accepts_a_mechanism_primitive() {
         traces_to_a_parameter(signature, body, &install_operand(body)),
         "a primitive that installs what its caller handed it must not be asked to own the shadows"
     );
-}
-
-#[test]
-fn the_tier_one_exemption_matches_the_project_rule() {
-    let claude_md = repo_text("CLAUDE.md");
-    let prohibited = claude_md
-        .split("PROHIBITED CODE SECTIONS")
-        .nth(1)
-        .expect("CLAUDE.md must carry its prohibited-sections table");
-    for path in TIER_ONE_PROHIBITED {
-        assert!(
-            prohibited.contains(path),
-            "{path} is exempted as Tier-1, but CLAUDE.md does not list it as prohibited"
-        );
-    }
 }
 
 #[test]
@@ -982,26 +972,15 @@ fn no_ttbr0_installer_claims_it_touches_no_memory() {
         }
     }
 
-    let escaped: Vec<&String> = nomem
-        .iter()
-        .filter(|entry| {
-            !TIER_ONE_PROHIBITED
-                .iter()
-                .any(|tier_one| entry.starts_with(tier_one))
-        })
-        .collect();
+    // Same disposition as the shadow census, and no file-scoped exemption
+    // beside it: every censused install kernel-wide must be free of `nomem`.
+    // claim-lint:ok: 0 of 6 censused installs carry `nomem` at this head;
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
     assert!(
-        escaped.is_empty(),
+        nomem.is_empty(),
         "these TTBR0 installs are declared `nomem`, so the compiler may move the surrounding \
-         shadow and page-table stores across the barriers: {escaped:?}"
+         shadow and page-table stores across the barriers: {nomem:?}"
     );
-
-    // Same disposition as the shadow census: print what the Tier-1 rule holds
-    // back rather than pinning it, so a repair there cannot redden this test
-    // and a coverage regression is still caught by the floor above.
-    if !nomem.is_empty() {
-        eprintln!("TTBR0 installs still `nomem` behind the Tier-1 rule: {nomem:?}");
-    }
 }
 
 #[test]
@@ -1207,25 +1186,17 @@ fn every_non_primitive_ttbr0_install_performs_the_install_sequence() {
          discipline-module check did not already say: {checked:?}"
     );
 
-    let escaped: Vec<&String> = out_of_order
-        .iter()
-        .filter(|entry| {
-            !TIER_ONE_PROHIBITED
-                .iter()
-                .any(|tier_one| entry.starts_with(tier_one))
-        })
-        .collect();
+    // Same disposition as the other kernel-wide censuses, and no file-scoped
+    // exemption beside it: every non-primitive censused install must run the
+    // sequence in order.
+    // claim-lint:ok: 0 of 4 non-primitive censused installs are out of order at
+    // this head;
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
     assert!(
-        escaped.is_empty(),
+        out_of_order.is_empty(),
         "these TTBR0 installs do not run {INSTALL_SEQUENCE:?} in order, so a stale translation \
-         can survive the install or the root can be taken before it is visible: {escaped:?}"
+         can survive the install or the root can be taken before it is visible: {out_of_order:?}"
     );
-
-    // Same disposition as the other kernel-wide censuses: print what the Tier-1
-    // rule holds back rather than pinning it.
-    if !out_of_order.is_empty() {
-        eprintln!("TTBR0 installs still out of sequence behind the Tier-1 rule: {out_of_order:?}");
-    }
 }
 
 #[test]
@@ -1456,5 +1427,291 @@ fn the_kernel_root_caller_census_catches_a_caller_that_leaves_the_shadows_armed(
         vec![site],
         "a masked window whose failure arm returns with the kernel root still installed is not \
          exempt"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The ASID the corridor carries back to EL0 (R157 / S1B-01)
+// ---------------------------------------------------------------------------
+//
+// A process root is not just a physical address. The dispatch path tags the
+// root it publishes with ASID 1, and the `.Lrestore_saved_ttbr` arm of
+// `syscall_entry.S` installs the shadow word VERBATIM, ASID bits included. So a
+// site that publishes an untagged root does not merely disagree with the
+// dispatch path in a cosmetic field -- it decides that the next return to EL0
+// runs on ASID 0, which is the ASID the boot identity map's TLB entries carry.
+// claim-lint:ok: 1 of 1 dispatch tag (`set_next_ttbr0_for_thread`) and 1 of 1
+// corridor arm (`.Lrestore_saved_ttbr`) are the two sites this paragraph is
+// about; both are cited by path in
+// docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
+// The checks below pin the tag as a property of the discipline: one constant,
+// equal to the dispatch path's own tag, applied to the value that is both
+// installed and published.
+
+/// The `<mantissa> << <shift>` ASID tag in `expression`, parsed rather than
+/// string-matched so a type suffix or a spacing difference cannot make two
+/// identical tags compare unequal, and so a changed ASID cannot pass as one.
+fn asid_tag(expression: &str) -> Option<(u64, u32)> {
+    let (left, right) = expression.split_once("<<")?;
+    let mantissa: String = left
+        .trim_end()
+        .chars()
+        .rev()
+        .take_while(|character| character.is_alphanumeric() || *character == '_')
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let mantissa = mantissa
+        .trim_end_matches("u64")
+        .trim_end_matches("u32")
+        .trim_end_matches("usize");
+    let shift: String = right
+        .trim_start()
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    Some((mantissa.parse().ok()?, shift.parse().ok()?))
+}
+
+#[test]
+fn the_discipline_publishes_the_dispatch_asid() {
+    let ttbr0 = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    let context_switch = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
+
+    // The dispatch tag, read out of the function that applies it rather than
+    // restated here, so changing the ASID on one side of the kernel and not the
+    // other is what this fails on.
+    let dispatch_body = function_body(&context_switch, "set_next_ttbr0_for_thread");
+    let dispatch_rhs = let_binding_rhs(dispatch_body, "tagged_ttbr0")
+        .expect("the dispatch path must tag the root it publishes into next_cr3");
+    let dispatch = asid_tag(&dispatch_rhs)
+        .unwrap_or_else(|| panic!("parse the dispatch ASID tag from {dispatch_rhs:?}"));
+
+    let discipline_line = ttbr0
+        .lines()
+        .find(|line| line.contains("const USER_ASID_TTBR0"))
+        .expect("the discipline must name the userspace ASID as a constant");
+    let discipline = asid_tag(discipline_line)
+        .unwrap_or_else(|| panic!("parse the discipline ASID tag from {discipline_line:?}"));
+
+    assert_eq!(
+        dispatch, discipline,
+        "the dispatch path publishes ASID tag {dispatch:?} and the install discipline publishes {discipline:?}, so a blocking-resume return and a dispatch return would put EL0 on different ASIDs"
+    );
+
+    // The normalisation REPLACES the field. An or-only tag leaves a foreign
+    // ASID a caller happened to hand over in place, which is the shape this
+    // check exists to reject.
+    let normalise = function_body(&ttbr0, "process_root_ttbr0");
+    assert!(
+        normalise.contains("& TTBR0_ROOT_MASK"),
+        "normalising a process root must mask the ASID field before setting it, or a caller's own ASID bits survive"
+    );
+    assert!(
+        normalise.contains("| USER_ASID_TTBR0"),
+        "normalising a process root must set the userspace ASID"
+    );
+
+    // The value the register takes and the value the corridor is handed are the
+    // same normalised binding -- not two expressions that happen to agree today.
+    let adopt = function_body(&ttbr0, "adopt_process_ttbr0");
+    let operand = install_operand(adopt);
+    assert!(
+        !operand.is_empty(),
+        "the discipline must hand a named value to the install block"
+    );
+    let normalised = let_binding_rhs(adopt, &operand).unwrap_or_else(|| {
+        panic!("the installed value {operand:?} must be bound in the discipline body")
+    });
+    assert!(
+        normalised.contains("process_root_ttbr0("),
+        "the discipline installs {operand:?} without normalising the ASID, so an untagged root reaches both the register and the corridor: {normalised:?}"
+    );
+    assert_eq!(
+        last_call_argument(adopt, "set_saved_process_cr3").as_deref(),
+        Some(operand.as_str()),
+        "the corridor must be handed the same normalised value the register took"
+    );
+}
+
+#[test]
+fn the_asid_check_rejects_a_disagreeing_tag() {
+    // Anti-vacuity for the comparison above: the parse is what carries it, so
+    // it has to see a difference in the ASID where there is one, and no
+    // difference where only the spelling differs.
+    // claim-lint:ok: 5 of 5 cases below are the parse's whole contract -- 1
+    // spelling-equivalence, 2 disagreements, 1 embedded tag, 1 non-tag.
+    assert_eq!(asid_tag("1u64 << 48"), asid_tag("1 << 48"));
+    assert_ne!(asid_tag("2u64 << 48"), asid_tag("1 << 48"));
+    assert_ne!(asid_tag("1u64 << 49"), asid_tag("1 << 48"));
+    assert_eq!(asid_tag("ttbr0 | (1u64 << 48)"), Some((1, 48)));
+    assert_eq!(asid_tag("no shift here"), None);
+}
+
+// ---------------------------------------------------------------------------
+// The blocking-resume restore (R157 / S1B-06)
+// ---------------------------------------------------------------------------
+//
+// A function that resolves the CURRENT thread's own process root and installs
+// it is not choosing an address space; it is recovering the one it already had
+// after blocking. `ttbr0::restore_process_ttbr0` is that disposition: it
+// publishes both corridor words unconditionally and skips the register write,
+// and with it the inner-shareable broadcast invalidation, when TTBR0 already
+// holds exactly that root under that ASID. Calling the adopt path from one of
+// these sites instead issues a broadcast TLBI on a blocking return whose root
+// has not changed. The census is by shape, so a sixth copy of the helper cannot
+// be added past it.
+// claim-lint:ok: 5 of 5 copies of the helper are the census this check prints;
+// the run is recorded in
+// docs/planning/green-program/aarch64-testing/serials/slice1b/r157/anti-vacuity/00-branch-green.txt
+
+/// aarch64-scoped functions that resolve the current thread's own process root
+/// and install it. Returns (the sites reached, the sites not using the guarded
+/// restore), each as `file::function`.
+///
+/// Three conjuncts, and the third is what narrows this to the RESUME family
+/// rather than any function that installs a root near a thread lookup:
+///
+///   * it looks the row up by the CURRENT thread -- `find_process_by_thread(`
+///     matched with a plain `contains` rather than `calls_function`, which
+///     rejects method calls, because on this shape the lookup is a method on
+///     the process-manager guard. The `_mut` variant is a different shape (the
+///     signal-delivery sites, which mutate the row they find) and does not
+///     match this needle;
+///   * it installs a process root through the discipline;
+///   * and the value it installs is derived from THAT ROW'S page table. This is
+///     the conjunct `sys_exec_aarch64` fails, correctly: it reaches the first
+///     two, but the root it installs comes from its exec receipt
+///     (`commit.new_page_table_root()`) -- a new address space it chose rather
+///     than the one its own thread already owns -- so its install is an adopt
+///     and must stay one.
+/// claim-lint:ok: 5 of 5 sites satisfy all three conjuncts at this head and 1
+/// (`sys_exec_aarch64`) satisfies the first two and is asserted excluded; the
+/// census is printed by the test below and recorded in
+/// docs/planning/green-program/aarch64-testing/serials/slice1b/r157/anti-vacuity/00-branch-green.txt
+fn blocking_resume_restore_census(sources: &[(String, String)]) -> (Vec<String>, Vec<String>) {
+    const INSTALLS: [&str; 2] = ["restore_process_ttbr0", "adopt_process_ttbr0"];
+
+    let mut reached = Vec::new();
+    let mut unguarded = Vec::new();
+    for (file, name, body) in aarch64_scoped_functions(sources) {
+        if file.ends_with("arch_impl/aarch64/ttbr0.rs") {
+            continue;
+        }
+        if !calls_function(&body, "current_thread_id") || !body.contains("find_process_by_thread(")
+        {
+            continue;
+        }
+        let guarded = calls_function(&body, "restore_process_ttbr0");
+        let adopts = calls_function(&body, "adopt_process_ttbr0");
+        if !guarded && !adopts {
+            continue;
+        }
+        let installs_the_found_row = INSTALLS.iter().any(|call| {
+            calls_function(&body, call)
+                && last_call_argument(&body, call)
+                    .and_then(|argument| let_binding_rhs(&body, &argument))
+                    .is_some_and(|derivation| derivation.contains("level_4_frame()"))
+        });
+        if !installs_the_found_row {
+            continue;
+        }
+        let site = format!("{file}::{name}");
+        reached.push(site.clone());
+        if adopts || !guarded {
+            unguarded.push(site);
+        }
+    }
+    (reached, unguarded)
+}
+
+#[test]
+fn every_blocking_resume_restore_uses_the_guarded_helper() {
+    let sources = rust_sources_below("kernel/src");
+    let (reached, unguarded) = blocking_resume_restore_census(&sources);
+
+    // Disclosure, not exemption: a `--nocapture` run prints the family, so the
+    // count in the slice document is read out of the tree.
+    eprintln!(
+        "blocking-resume restore census ({} functions): {reached:#?}",
+        reached.len()
+    );
+
+    // Coverage floor as census shape, not a name list. The family is the
+    // per-syscall copies of one helper; a walk that stopped reaching them would
+    // leave this check passing on an empty list, which is what the floor
+    // rejects.
+    // claim-lint:ok: 5 of 5 copies are reached at this head, in 5 of 5 distinct
+    // files, and the mutation that reddens this check is run 03 in
+    // docs/planning/green-program/aarch64-testing/serials/slice1b/r157/anti-vacuity/
+    assert!(
+        reached.len() >= 5,
+        "the blocking-resume census reached only {} sites, so it is not covering the code it claims to: {reached:?}",
+        reached.len()
+    );
+    let files: BTreeSet<&str> = reached
+        .iter()
+        .filter_map(|site| site.split("::").next())
+        .collect();
+    assert!(
+        files.len() >= 5,
+        "the blocking-resume census reached {} files, so it is not seeing the whole family: {reached:?}",
+        files.len()
+    );
+
+    // `sys_exec_aarch64` reaches two of the three conjuncts and must not be a
+    // member: it installs a root it chose, so its unconditional install and its
+    // invalidation are both required. Pinned here so a future loosening of the
+    // census shows up as a failure rather than as a silently widened family.
+    assert!(
+        !reached
+            .iter()
+            .any(|site| site.ends_with("::sys_exec_aarch64")),
+        "exec installs a NEW address space, so it is not a blocking-resume restore: {reached:?}"
+    );
+
+    assert!(
+        unguarded.is_empty(),
+        "these sites re-install the root their own blocked thread already owns through the adopt path, so every blocking return issues a broadcast TLB invalidation whether or not the register moved: {unguarded:?}"
+    );
+}
+
+#[test]
+fn the_blocking_resume_census_catches_an_unguarded_restore() {
+    // The same shape, installing through the adopt path: the census must name
+    // it. Without this the check above would pass on an empty census.
+    let invented = "#[cfg(target_arch = \"aarch64\")]\n\
+        fn ensure_current_address_space() {\n\
+            let thread_id = crate::task::scheduler::current_thread_id();\n\
+            if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {\n\
+                let ttbr0_value = page_table.level_4_frame().start_address().as_u64();\n\
+                crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0_value);\n\
+            }\n\
+        }\n";
+    let sources = vec![(
+        "kernel/src/syscall/invented.rs".to_string(),
+        invented.to_string(),
+    )];
+    let (reached, unguarded) = blocking_resume_restore_census(&sources);
+    assert_eq!(
+        reached,
+        vec!["kernel/src/syscall/invented.rs::ensure_current_address_space".to_string()],
+        "the census must see a newly added blocking-resume restore"
+    );
+    assert_eq!(
+        unguarded, reached,
+        "a blocking-resume restore that installs through the adopt path must be named"
+    );
+
+    // And the guarded spelling of the same function must not be named, so the
+    // census is not simply flagging everything it reaches.
+    let guarded = invented.replace("adopt_process_ttbr0", "restore_process_ttbr0");
+    let sources = vec![("kernel/src/syscall/invented.rs".to_string(), guarded)];
+    let (reached, unguarded) = blocking_resume_restore_census(&sources);
+    assert_eq!(reached.len(), 1);
+    assert!(
+        unguarded.is_empty(),
+        "the guarded spelling must pass: {unguarded:?}"
     );
 }

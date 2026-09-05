@@ -4385,7 +4385,7 @@ fn poll_ensure_address_space() {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
             if let Some(ref page_table) = process.page_table {
                 let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
-                crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0_value);
+                crate::arch_impl::aarch64::ttbr0::restore_process_ttbr0(ttbr0_value);
             }
         }
     }

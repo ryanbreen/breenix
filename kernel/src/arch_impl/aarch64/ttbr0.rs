@@ -2,20 +2,62 @@
 
 const TTBR0_ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
 
+/// The ASID userspace runs under, positioned in TTBR0 bits [63:48].
+///
+/// `set_next_ttbr0_for_thread` in
+/// `kernel/src/arch_impl/aarch64/context_switch.rs` tags the root it hands the
+/// dispatch path with ASID 1, for the reason stated there: the boot identity
+/// map's TLB entries are ASID 0, and combined with the nG bits on process
+/// page-table entries a non-zero ASID is what keeps a user VA from matching one
+/// of them.
+/// claim-lint:ok: 1 of 1 site in the kernel tags a root before publishing it
+/// into `next_cr3` -- `set_next_ttbr0_for_thread`, whose tag is pinned against
+/// this constant by `the_discipline_publishes_the_dispatch_asid` in
+/// `tests/ttbr0_shadow_reconciliation_structure.rs`.
+///
+/// It is not only the register that has to carry it. `switch_ttbr0_if_needed`
+/// publishes the tagged value into `saved_process_cr3`, and the
+/// `.Lrestore_saved_ttbr` arm of `syscall_entry.S` installs that word verbatim,
+/// ASID bits included -- so a site that publishes an untagged root decides that
+/// the next return to EL0 runs on ASID 0.
+/// claim-lint:ok: the dispatch tag is `context_switch.rs`'s `1u64 << 48` and the
+/// corridor install is `syscall_entry.S`'s `.Lrestore_saved_ttbr`; both are
+/// pinned against this constant by
+/// `the_discipline_publishes_the_dispatch_asid` in
+/// `tests/ttbr0_shadow_reconciliation_structure.rs`.
+pub(crate) const USER_ASID_TTBR0: u64 = 1 << 48;
+
+/// Normalise a process page-table root to the ASID userspace runs under.
+///
+/// The ASID field is REPLACED rather than or-ed into: an or-only tag would
+/// preserve a foreign ASID a caller happened to hand over, and this kernel has
+/// exactly one userspace ASID. `TTBR0_ROOT_MASK` clears bits [63:48] and
+/// [11:0], so what survives is the root physical address the caller chose.
+#[inline(always)]
+pub(crate) fn process_root_ttbr0(root: u64) -> u64 {
+    (root & TTBR0_ROOT_MASK) | USER_ASID_TTBR0
+}
+
 #[inline(always)]
 pub(crate) fn roots_match(left: u64, right: u64) -> bool {
     let left = left & TTBR0_ROOT_MASK;
     left != 0 && left == right & TTBR0_ROOT_MASK
 }
 
-/// Read the proving CPU's architectural TTBR0 root.
+/// Read this CPU's architectural TTBR0 whole, ASID field included.
 #[inline(always)]
-pub(crate) fn local_ttbr0_root() -> u64 {
+fn local_ttbr0() -> u64 {
     let ttbr0: u64;
     unsafe {
         core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
     }
-    ttbr0 & TTBR0_ROOT_MASK
+    ttbr0
+}
+
+/// Read this CPU's architectural TTBR0 root, with the ASID field masked off.
+#[inline(always)]
+pub(crate) fn local_ttbr0_root() -> u64 {
+    local_ttbr0() & TTBR0_ROOT_MASK
 }
 
 /// Return the kernel TTBR0 root, falling back to the boot identity table before
@@ -104,6 +146,19 @@ pub fn switch_ttbr0_to_kernel() {
 /// after.
 #[inline(always)]
 pub fn adopt_process_ttbr0(ttbr0_value: u64) {
+    // Both the register and the shadow published below carry the ASID
+    // userspace is dispatched under. Normalising here rather than at each
+    // routed call site makes the ASID a property of the discipline instead of
+    // one each caller has to remember, and the field is not the caller's to
+    // choose in any case.
+    // claim-lint:ok: of the 10 routed process-root install decision sites, 8
+    // hand over a bare `level_4_frame().start_address().as_u64()` with an empty
+    // ASID field, 1 (`launch_init_from_elf`) already tags ASID 1, and 1
+    // (`switch_to_process_page_table`) ors back whatever ASID the register
+    // held; the sites are enumerated in
+    // docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
+    let ttbr0_value = process_root_ttbr0(ttbr0_value);
+
     unsafe {
         core::arch::asm!(
             "dsb ishst",
@@ -118,6 +173,54 @@ pub fn adopt_process_ttbr0(ttbr0_value: u64) {
         super::percpu::Aarch64PerCpu::set_saved_process_cr3(ttbr0_value);
         super::percpu::Aarch64PerCpu::set_next_cr3(0);
     }
+}
+
+/// Re-install the root the CALLING thread's own process already owns, on the
+/// way out of a blocking syscall, and leave the corridor words naming it.
+///
+/// This is the blocking-resume disposition and it is not the same decision as
+/// adopting a root. The caller has changed no mapping and chosen no new
+/// address space: it blocked, something else may have run on this CPU, and it
+/// needs the register and the two shadow words to name its own root again
+/// before the return to EL0. So the register write -- and with it the
+/// inner-shareable broadcast invalidation -- is skipped when TTBR0 already
+/// holds exactly this root under this ASID, the same guard the dispatch path's
+/// `switch_ttbr0_if_needed` and `switch_to_process_page_table` already apply.
+///
+/// The shadow publication is NOT guarded, and that asymmetry is the point.
+/// The register can be right while `next_cr3` still holds a pending redirect
+/// the corridor would apply first, which is #786 exactly; the words are the
+/// only thing that can be stale on the skip arm, so both are written on both
+/// arms.
+///
+/// Why skipping the invalidation is safe HERE and is not offered to the adopt
+/// path: a root can only be reclaimed once no CPU shadow names it
+/// (`is_ttbr0_root_live_in_mask`), and every transition off a root on any CPU
+/// runs a broadcast `tlbi vmalle1is`. For this CPU's register to still hold
+/// the resuming thread's root, this CPU installed it and installed nothing
+/// since, so its shadow still names it and the frame cannot have been
+/// reclaimed and re-issued underneath. That argument is about root REUSE. It
+/// is not an argument that a concurrent unmap under the same root is covered
+/// -- TLB maintenance for a mapping change belongs to the code that changes
+/// the mapping -- and the corridor's own unconditional invalidation on every
+/// syscall return is unaffected by this guard either way.
+/// claim-lint:ok: 2 of 2 sibling guards are cited by path --
+/// `switch_ttbr0_if_needed` in
+/// `kernel/src/arch_impl/aarch64/context_switch.rs` and
+/// `switch_to_process_page_table` in `kernel/src/memory/process_memory.rs`.
+#[inline(always)]
+pub fn restore_process_ttbr0(root: u64) {
+    let root = process_root_ttbr0(root);
+
+    if local_ttbr0() == root {
+        unsafe {
+            super::percpu::Aarch64PerCpu::set_saved_process_cr3(root);
+            super::percpu::Aarch64PerCpu::set_next_cr3(0);
+        }
+        return;
+    }
+
+    adopt_process_ttbr0(root);
 }
 
 /// Leave the current userspace root and prevent an exception-return path from

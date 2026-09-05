@@ -1,0 +1,32 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-1/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.66s
+     Running tests/ttbr0_shadow_reconciliation_structure.rs (target/debug/deps/ttbr0_shadow_reconciliation_structure-fe46c1b52eab6525)
+
+running 20 tests
+test settling_one_shadow_is_not_settling_the_shadows ... ok
+test the_nomem_check_reads_the_asm_block_and_not_the_prose ... ok
+test init_reaches_userspace_on_the_root_the_shadows_name ... ok
+test the_shadow_census_accepts_a_mechanism_primitive ... ok
+test the_primitive_exemption_rejects_a_fetched_root ... ok
+test the_shadow_census_rejects_an_unreconciled_install ... ok
+test the_primitive_exemption_rejects_a_shadow_touching_install ... ok
+test the_tier_one_exemption_matches_the_project_rule ... ok
+test the_discipline_installs_in_order_and_orders_the_shadow_stores ... ok
+test the_ttbr0_discipline_publishes_both_shadows ... ok
+test the_caller_census_catches_a_wrapper_that_skips_the_discipline ... ok
+test the_sequence_census_catches_an_install_outside_the_discipline_module ... ok
+test the_caller_census_rejects_a_half_settled_caller ... ok
+test the_dispatch_ttbr0_switch_settles_both_shadows ... ok
+test the_kernel_root_caller_census_catches_a_caller_that_leaves_the_shadows_armed ... ok
+TTBR0 installs still out of sequence behind the Tier-1 rule: ["kernel/src/syscall/time.rs::ensure_current_address_space"]
+TTBR0 installs still unreconciled behind the Tier-1 rule: ["kernel/src/syscall/time.rs::ensure_current_address_space"]
+test every_non_primitive_ttbr0_install_performs_the_install_sequence ... ok
+test every_ttbr0_install_settles_the_per_cpu_shadows ... ok
+TTBR0 installs still `nomem` behind the Tier-1 rule: ["kernel/src/syscall/time.rs::ensure_current_address_space"]
+test no_ttbr0_installer_claims_it_touches_no_memory ... ok
+test every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows ... ok
+test every_caller_of_the_kernel_root_install_settles_the_shadows ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.53s
+

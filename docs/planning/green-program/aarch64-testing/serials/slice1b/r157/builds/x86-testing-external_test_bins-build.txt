@@ -1,0 +1,4 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-5/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-5)
+    Finished `release` profile [optimized] target(s) in 3.23s
+BUILD_EXIT=0
