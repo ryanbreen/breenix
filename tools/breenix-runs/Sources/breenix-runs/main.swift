@@ -20,10 +20,16 @@ struct FactsJSONEnvelope: Codable {
     var host: HostFactsTrace?
 }
 
+struct ShowArguments {
+    var selector: String
+    var options: RunShowOptions
+}
+
 func usage() -> String {
     """
     Usage:
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
+      breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs facts <run-id|latest> [--json]
     """
 }
@@ -92,6 +98,35 @@ func parseFacts(_ args: ArraySlice<String>) throws -> (selector: String, json: B
     return (selector, json)
 }
 
+func parseShow(_ args: ArraySlice<String>) throws -> ShowArguments {
+    var selector: String?
+    var options = RunShowOptions()
+
+    for arg in args {
+        switch arg {
+        case "--subsystems":
+            options.subsystems = true
+        case "--messages":
+            options.messages = true
+        case "--traces":
+            options.traces = true
+        default:
+            guard !arg.hasPrefix("--") else {
+                throw CLIError(description: "unknown show flag \(arg)")
+            }
+            guard selector == nil else {
+                throw CLIError(description: "show accepts exactly one run id, latest, or latest-fail")
+            }
+            selector = arg
+        }
+    }
+
+    guard let selector else {
+        throw CLIError(description: "show requires <run-id|latest|latest-fail>")
+    }
+    return ShowArguments(selector: selector, options: options)
+}
+
 func repoRoot(startingAt start: URL) throws -> URL {
     var current = start.standardizedFileURL
     while true {
@@ -111,6 +146,9 @@ func repoRoot(startingAt start: URL) throws -> URL {
 func loadManifest(selector: String, store: RunStore) throws -> RunManifest {
     if selector == "latest" {
         return try store.latestManifest()
+    }
+    if selector == "latest-fail" {
+        return try store.latestFailureManifest()
     }
     return try store.readManifest(id: selector)
 }
@@ -265,6 +303,12 @@ func main() -> Int32 {
             } else {
                 printFactsBlock(manifest: manifest, manifestPath: store.manifestURL(id: manifest.id), includeBootFactsNotice: true)
             }
+            return 0
+
+        case "show":
+            let parsed = try parseShow(args.dropFirst())
+            let manifest = try loadManifest(selector: parsed.selector, store: store)
+            print(try RunShow.render(manifest: manifest, store: store, options: parsed.options))
             return 0
 
         default:
