@@ -1,0 +1,37 @@
+n5 history check -- does any pushed commit body carry "Scheduler::is_current_idle_thread"?
+
+Run 2026-09-04 in worktree .claude/worktrees/wf_9dc767f7-009-4, on a local branch
+cut from origin/fix/789-sched-lock-irq-shape at 5e47cb82.
+
+The range below is pinned to two fixed SHAs, deliberately: a range written as
+origin/main..HEAD re-measures to a different number every time either end moves,
+which is how the round-3 n5 paragraph came to state a count that no longer held.
+  d6b7a186 = git merge-base origin/main <branch>
+  5e47cb82 = branch tip when this check was run
+
+$ git merge-base origin/main HEAD
+d6b7a186e37b67ee53f9c233442cdc54565874df
+
+$ git log --oneline d6b7a186..5e47cb82 | wc -l
+      16
+
+$ git log --format=%H%n%B d6b7a186..5e47cb82 | grep -c "Scheduler::is_current_idle_thread"
+1
+
+$ git log --oneline d6b7a186..16dca1b7 | wc -l   # commits present when 16dca1b7 was written
+      15
+
+$ git log -1 --format=%B 16dca1b7 | grep -n "Scheduler::is_current_idle_thread"
+17:n5 -- `Scheduler::is_current_idle_thread` was the wrong spelling: it is the
+
+The single hit is in the body of 16dca1b7 -- the commit that RECORDED the n5
+correction. It names the wrong method spelling in order to correct it, exactly as
+the n5 paragraph of 789-SLICE2-2026-09-04.md does; it does not assert that the
+method spelling is right. So no history correction is called for. But the count is
+1, not 0; the range holds 16 commits, not 13; and this document was not the sole
+carrier of the string.
+
+Captured before origin/main was merged into this branch, which is why
+`git merge-base origin/main HEAD` printed d6b7a186 above. After that merge the
+merge base becomes origin/main's tip; the two SHAs in the ranges above do not
+move, which is the whole reason they are written as SHAs.
