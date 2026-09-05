@@ -1,9 +1,27 @@
 #!/bin/bash
-# Run N parallel native ARM64 kthread tests
+# Run N native ARM64 kthread boots, one host aarch64 QEMU at a time.
 #
 # This script stress tests the ARM64 threading subsystem by running multiple
-# QEMU instances in parallel. It validates scheduler, context switching, and
+# QEMU instances back to back. It validates scheduler, context switching, and
 # locks under load.
+#
+# #826/R181: this script used to launch its N qemu-system-aarch64 processes
+# CONCURRENTLY (a launch loop backgrounding them together, then a separate
+# wait/verdict loop polling each one's output for up to 60s) -- exactly the
+# shape #826 measured driving the guest clock down to 37-53% of wall-clock
+# on this host. The two loops are merged into one: each boot is launched,
+# polled, killed and verified before the next one starts, serialized through
+# qemu_host_lock_acquire/qemu_host_lock_release the same way the other
+# aarch64 gate scripts under docker/qemu/ do. This is a real behavior change, not just a wording one: with
+# N processes down to 1 at a time, total wall-clock for COUNT boots is now
+# roughly COUNT times one boot's duration rather than bounded by the
+# slowest of N run together, and each boot's 60-poll search window now
+# starts at THAT boot's own launch instant rather than at a fixed offset
+# from when the (formerly parallel) batch began -- the previous two-loop
+# shape would have falsely TIMEOUT'd boots that simply had not been
+# launched yet once launches were serialized behind a lock, since a boot's
+# 60-sample window used to run concurrently with the other boots' windows in
+# the same batch, not starting from its own launch.
 #
 # Note: ARM64 kthread_test_only feature is not yet implemented in main_aarch64.rs.
 # This script tests the boot+userspace path which exercises kthreads, scheduler,
@@ -13,14 +31,16 @@
 # Usage: ./run-aarch64-kthread-parallel.sh [count]
 #
 # Examples:
-#   ./run-aarch64-kthread-parallel.sh      # Run 10 parallel tests (default)
-#   ./run-aarch64-kthread-parallel.sh 5    # Run 5 parallel tests
+#   ./run-aarch64-kthread-parallel.sh      # Run 10 sequential tests (default)
+#   ./run-aarch64-kthread-parallel.sh 5    # Run 5 sequential tests
 
 set -e
 
 COUNT=${1:-10}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #825: two concurrent invocations of this script on the same host each
 # hardcoded the identical /tmp/breenix_aarch64_kthread_$i paths (reconstructed
 # independently in the launch loop and the wait/verdict loop below, the same
@@ -53,15 +73,18 @@ if [ ! -f "$EXT2_DISK" ]; then
     exit 1
 fi
 
-echo "Running $COUNT parallel ARM64 kthread tests..."
+echo "Running $COUNT sequential ARM64 kthread tests (one host aarch64 QEMU at a time)..."
 echo "Kernel: $KERNEL"
 echo "ext2 disk: $EXT2_DISK"
 echo ""
 
-# Array to track QEMU PIDs
+# Array to track QEMU PIDs (kept for the closing "Output logs" message's
+# shape parity with the rest of this file's history; each entry is set and
+# consumed within the same iteration below, not read back in a later one).
 declare -a QEMU_PIDS
+PASSED=0
+FAILED=0
 
-# Create output directories and launch QEMU instances
 for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_kthread_$i"
     rm -rf "$OUTPUT_DIR"
@@ -73,6 +96,7 @@ for i in $(seq 1 $COUNT); do
 
     # Run QEMU natively (ARM64 runs natively on macOS ARM64)
     # No Docker needed - much faster than x86-64 emulation
+    qemu_host_lock_acquire
     timeout 60 qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
         -kernel "$KERNEL" \
@@ -87,18 +111,8 @@ for i in $(seq 1 $COUNT); do
         -serial file:"$OUTPUT_DIR/serial.txt" &>/dev/null &
     QEMU_PIDS[$i]=$!
     echo "  Started test $i (PID ${QEMU_PIDS[$i]})"
-done
 
-# Wait for all to complete (with timeout)
-echo ""
-echo "Waiting for tests to complete (60s timeout)..."
-PASSED=0
-FAILED=0
-
-for i in $(seq 1 $COUNT); do
-    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_kthread_$i"
-
-    # Wait up to 60 seconds for this test
+    # Wait up to 60 seconds for this test, starting from ITS OWN launch above.
     # Look for userspace shell prompt ("breenix>" or "bsh ") which indicates:
     # - Scheduler initialized successfully
     # - Context switching works (idle thread -> shell)
@@ -125,6 +139,7 @@ for i in $(seq 1 $COUNT); do
     # Kill the QEMU instance if still running
     kill ${QEMU_PIDS[$i]} 2>/dev/null || true
     wait ${QEMU_PIDS[$i]} 2>/dev/null || true
+    qemu_host_lock_release
 
     if $FOUND; then
         # Verify no excessive shell spawning (would indicate scheduler bugs)
