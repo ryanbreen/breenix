@@ -330,13 +330,15 @@ claim-lint:ok: 6 of 6 boots passed their gate; the gate outputs are
 
 ## 9. x86
 
-`git diff --name-only origin/main..HEAD` at this head:
+`git diff --name-only 4f664c99..HEAD` at this head -- against the commit this
+branch was cut from, because `origin/main` advanced to `2a444455` (PR #801)
+while this round was running, and `origin/main..HEAD` would fold that in:
 
 ```
 docker/qemu/run-aarch64-boot-test-strict.sh
 docker/qemu/run-aarch64-prod-profile-boot-test.sh
 docs/planning/green-program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md
-docs/planning/green-program/aarch64-testing/serials/asid-ratchet/…
+docs/planning/green-program/aarch64-testing/serials/asid-ratchet/  (17 files)
 kernel/src/arch_impl/aarch64/percpu.rs
 kernel/src/arch_impl/aarch64/syscall_entry.rs
 kernel/src/arch_impl/aarch64/ttbr0.rs
