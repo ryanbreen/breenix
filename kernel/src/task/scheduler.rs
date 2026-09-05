@@ -4604,7 +4604,24 @@ impl Scheduler {
     /// 0 locks are taken and 0 allocations are made beyond the `VecDeque`
     /// growth the caller's own `push_back` would have caused on the queue it
     /// chose: this runs under the scheduler lock the caller already holds.
+    ///
+    /// The cost at a site on a kernel that has stamped no pin is 1 relaxed load
+    /// and 1 compare, not a thread lookup. `CPU_PINS_STAMPED` counts the
+    /// `CpuPin` values both constructors have built, so a 0 reading says 0
+    /// threads carry a pin and the guard has nothing to decide -- the same
+    /// shape `deliver_pinned_wakes_for_this_cpu` uses to skip its own scan.
+    /// claim-lint:ok: 2 of 2 `CpuPin` constructors increment that counter,
+    /// pinned by
+    /// `tests/loopback_pump_structure.rs::every_cpu_pin_is_minted_by_a_counting_constructor`
     fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool {
+        // The constant-cost arm. It is not an approximation of the arms below:
+        // each of those answers `false` for a thread with no pin, and on a 0
+        // reading no thread can hold one, so this returns the answer the full
+        // path would return -- without the linear search of `self.threads`
+        // that reaching it site by site would cost.
+        if super::thread::CPU_PINS_STAMPED.load(Ordering::Relaxed) == 0 {
+            return false;
+        }
         let Some(thread) = self.get_thread(thread_id) else {
             return false;
         };

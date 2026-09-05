@@ -1332,6 +1332,13 @@ fn validate_pin_guard_refuses_a_foreign_placement(source: &str) -> Result<(), St
         .ok_or("kernel/src/task/scheduler.rs defines no retain_cpu_affine_thread guard")?;
     let compact = compact_code(body);
 
+    if !compact.contains("CPU_PINS_STAMPED.load(Ordering::Relaxed)==0") {
+        return Err(
+            "the migration guard's constant-cost arm is not conditioned on 0 pins having been \
+             minted, so its early return is not the answer the full path would give"
+                .into(),
+        );
+    }
     if !body.contains("cpu_affinity") {
         return Err("the migration guard does not read Thread::cpu_affinity".into());
     }
@@ -2994,6 +3001,21 @@ fn pin_guard_validator_rejects_an_unbounded_pinned_index() {
 }
 
 #[test]
+fn pin_guard_validator_rejects_a_fast_path_that_reads_no_pin_count() {
+    // The mutation that would turn the constant-cost arm into a plain early
+    // return: the guard keeps its 9 later arms and reaches 0 of them.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+    let mutated_body = body.replace(
+        "super::thread::CPU_PINS_STAMPED.load(Ordering::Relaxed) == 0",
+        "taking_cpu == usize::MAX",
+    );
+    assert_ne!(mutated_body, body, "fixture mutation must apply");
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_pin_guard_refuses_a_foreign_placement(&mutated).is_err());
+}
+
+#[test]
 fn pin_guard_calls_decide_the_placement() {
     validate_pin_guard_calls_decide_the_placement(&repo_text("kernel/src/task/scheduler.rs"))
         .expect("every migration site acts on the guard's answer");
@@ -3083,6 +3105,104 @@ fn percpu_stack_reroute_validator_rejects_a_reroute_that_reads_no_pin() {
     assert_ne!(mutated_body, body, "fixture mutation must apply");
     let mutated = source.replacen(body, &mutated_body, 1);
     assert!(validate_percpu_stack_reroute_counts_a_pin_conflict(&mutated).is_err());
+}
+
+/// A `CpuPin` value in the kernel is built by a constructor that counts it.
+///
+/// `retain_cpu_affine_thread` answers "no constraint" from
+/// `CPU_PINS_STAMPED == 0` without reading a thread row, so that counter is
+/// what makes the guard cost 1 load and 1 compare at each of its 11 sites in a
+/// profile that stamps no pin. A pin that reached a thread without passing
+/// through a counting constructor would switch the guard off at 11 of 11 sites
+/// and move 0 counters doing it. Two shapes hold it down: both constructors
+/// count, and kernel/src holds 0 `CpuPin { .. }` literals outside the type's
+/// own definition -- a struct literal being the 1 way to build one without a
+/// constructor.
+fn validate_every_cpu_pin_is_minted(sources: &[(String, String)]) -> Result<(), String> {
+    let thread_rs = sources
+        .iter()
+        .find(|(path, _)| path == "kernel/src/task/thread.rs")
+        .map(|(_, text)| text.as_str())
+        .ok_or("kernel/src/task/thread.rs is not among the kernel sources")?;
+
+    for constructor in ["per_cpu_worker", "hold_pen"] {
+        let body = function_body(thread_rs, constructor)
+            .ok_or_else(|| format!("kernel/src/task/thread.rs defines no CpuPin::{constructor}"))?;
+        if !compact_code(body).contains("CPU_PINS_STAMPED.fetch_add(1,Ordering::Relaxed)") {
+            return Err(format!(
+                "CpuPin::{constructor} builds a pin without counting it, so a thread can carry \
+                 a pin while CPU_PINS_STAMPED reads 0 and the migration guard skips its arms"
+            ));
+        }
+    }
+
+    let mut literals = Vec::new();
+    for (path, text) in sources {
+        let mask = code_mask(text);
+        let masked: String = text
+            .bytes()
+            .zip(mask.iter().copied())
+            .map(|(byte, code)| if code { byte as char } else { ' ' })
+            .collect();
+        let mut searched = 0usize;
+        while let Some(relative) = masked[searched..].find("CpuPin") {
+            let offset = searched + relative;
+            searched = offset + "CpuPin".len();
+            if !masked[searched..].trim_start().starts_with('{') {
+                continue;
+            }
+            // Two `CpuPin {` openings are not literals: the type's own
+            // definition, and the `impl` block that holds the 2 constructors.
+            let before = masked[..offset].trim_end();
+            if before.ends_with("struct") || before.ends_with("impl") {
+                continue;
+            }
+            let line = text[..offset].matches('\n').count() + 1;
+            literals.push(format!("{path}:{line}"));
+        }
+    }
+    if !literals.is_empty() {
+        return Err(format!(
+            "kernel/src builds a CpuPin by struct literal at {literals:?}, bypassing the \
+             constructors that count into CPU_PINS_STAMPED"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn every_cpu_pin_is_minted_by_a_counting_constructor() {
+    validate_every_cpu_pin_is_minted(&kernel_sources())
+        .expect("every CpuPin is built by a constructor that counts it");
+}
+
+#[test]
+fn cpu_pin_mint_validator_rejects_an_uncounted_constructor() {
+    let mut sources = kernel_sources();
+    let thread_rs = sources
+        .iter_mut()
+        .find(|(path, _)| path == "kernel/src/task/thread.rs")
+        .expect("find the thread source fixture");
+    let mutated = thread_rs
+        .1
+        .replacen("CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);", "", 1);
+    assert_ne!(mutated, thread_rs.1, "fixture mutation must apply");
+    thread_rs.1 = mutated;
+    assert!(validate_every_cpu_pin_is_minted(&sources).is_err());
+}
+
+#[test]
+fn cpu_pin_mint_validator_rejects_a_struct_literal() {
+    let mut sources = kernel_sources();
+    let scheduler = sources
+        .iter_mut()
+        .find(|(path, _)| path == "kernel/src/task/scheduler.rs")
+        .expect("find the scheduler source fixture");
+    scheduler.1.push_str(
+        "\nfn spare_pin_probe(cpu: usize) -> super::thread::CpuPin {\n    \
+         super::thread::CpuPin { cpu, per_cpu_worker: true }\n}\n",
+    );
+    assert!(validate_every_cpu_pin_is_minted(&sources).is_err());
 }
 
 #[test]
