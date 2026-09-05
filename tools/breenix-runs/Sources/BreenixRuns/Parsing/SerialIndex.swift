@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SerialByteRange: Codable, Equatable, Sendable {
+public struct SerialByteRange: Codable, Equatable, Hashable, Sendable {
     public var offset: Int
     public var length: Int
 

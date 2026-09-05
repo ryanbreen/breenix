@@ -126,6 +126,51 @@ final class MarkerScannerTests: XCTestCase {
         XCTAssertEqual(hits.first?.fields["disposition"]?.stringValue, "SKIP")
     }
 
+    func testGenericOracleDoesNotDuplicateSpecificFamilyRanges() throws {
+        let hits = try scanFixture().hits
+        let specificRanges = Set(hits.compactMap { hit in
+            hit.family == .oracleGeneric ? nil : hit.range
+        })
+        let duplicateGenericHits = hits.filter { hit in
+            hit.family == .oracleGeneric && specificRanges.contains(hit.range)
+        }
+
+        XCTAssertTrue(duplicateGenericHits.isEmpty)
+        XCTAssertEqual(hits.filter { $0.family == .censusTTBR0ASID }.count, 19)
+    }
+
+    func testTraceNoiseMatchesBreadcrumbRunsAndRejectsUART0() throws {
+        let index = try scanFixture()
+        let expectedTraceTextByLine = [
+            175: "T2T3",
+            181: "T4T5T6T7T8",
+            183: "T9",
+            184: "T0"
+        ]
+
+        for (lineNumber, expectedText) in expectedTraceTextByLine {
+            let line = try XCTUnwrap(index.lines.first { $0.lineNumber == lineNumber })
+            let traceHit = try XCTUnwrap(line.hits.first { $0.family == .traceNoise })
+            XCTAssertEqual(traceHit.fields["text"]?.stringValue, expectedText)
+        }
+
+        let uartLine = try XCTUnwrap(index.lines.first { $0.lineNumber == 29 })
+        XCTAssertEqual(uartLine.text, "[boot] Enabling GIC IRQ 33 (UART0)...")
+        XCTAssertFalse(uartLine.hits.contains { $0.family == .traceNoise })
+    }
+
+    func testGenericOracleRelabelsLeadingArchPayloadField() throws {
+        let data = Data("[SOME_TEST_ORACLE:aarch64:samples=3]\n".utf8)
+        let hit = try XCTUnwrap(try MarkerScanner().scan(data: data).hits.first {
+            $0.family == .oracleGeneric
+        })
+
+        XCTAssertEqual(hit.fields["name"]?.stringValue, "SOME_TEST_ORACLE")
+        XCTAssertEqual(hit.fields["arch"]?.stringValue, "aarch64")
+        XCTAssertNil(hit.fields["state"])
+        XCTAssertEqual(hit.fields["samples"]?.intValue, 3)
+    }
+
     private func scanFixture() throws -> SerialIndex {
         try MarkerScanner().scan(data: fixtureData())
     }

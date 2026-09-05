@@ -1,5 +1,6 @@
 import Foundation
 
+/// Marker families mirror the table in DESIGN.md §4.2; per-pattern source citations live in MarkerScanner.
 public enum MarkerFamily: String, Codable, CaseIterable, Equatable, Sendable {
     case bootStageAarch64 = "bootStage.aarch64"
     case bootBannerAarch64 = "bootBanner.aarch64"
