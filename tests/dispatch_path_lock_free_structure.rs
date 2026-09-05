@@ -12,9 +12,30 @@
 //! specimens are in
 //! docs/planning/green-program/sockets/787-REGRESSION-RCA-2026-09-04.md.
 //!
-//! These assertions are census-anchored rather than line-pinned: they name the
-//! accessor and its readers by shape, so a rename is still covered and a new
-//! locking reader fails loudly.
+//! Note what this suite does NOT assert: that the dispatch path takes no lock
+//! at all. It still takes `SCHEDULER.lock()` through
+//! `scheduler::with_thread_mut`. That acquisition is safe against this failure
+//! class because `with_thread_mut` holds it inside `without_interrupts`, so no
+//! holder can be preempted while holding it -- the property the master-PML4
+//! readers lacked.
+//!
+//! Three of the assertions below are shape-anchored rather than line-pinned:
+//! they name the accessor and its readers by shape, so a rename is still
+//! covered and a new locking reader fails loudly.
+//!
+//! The fourth, `setup_kernel_thread_return_allocates_nothing`, is NOT
+//! census-anchored, and round 1 of the #791 review described this suite as
+//! census-anchored without excepting it. It is a DENYLIST: a fixed list of
+//! allocating spellings that must not appear in the function body. A denylist
+//! cannot see a spelling it does not list, and no source-level check of one
+//! function body can see an allocation reached through a callee.
+//!
+//! The denylist is widened below to the alloc API surface a `no_std` kernel can
+//! reach, and the authority for the claim is not this test but the script
+//! `scripts/check-x86-dispatch-no-alloc.sh`, which disassembles the built kernel
+//! and fails if the shipped `setup_kernel_thread_return` body references any
+//! Rust allocator symbol. The x86 boot-tests gate runs that script after its
+//! build. This test is the fast local signal; the binary check is the guard.
 
 use std::fs;
 use std::path::PathBuf;
@@ -134,18 +155,46 @@ fn switch_to_kernel_page_table_takes_no_lock() {
     );
 }
 
+/// A DENYLIST, not a census: it names the allocating spellings this suite knows
+/// how to see in one function body. The claim "setup_kernel_thread_return
+/// performs no allocation" is carried by the binary-level guard named in this
+/// module's header, which reads the built kernel; this test does not substitute
+/// for it. Comment lines are excluded from the scan because this tree's
+/// comments name the very spellings being denied -- that is what makes the
+/// hazard legible -- and a denylist that trips on its own documentation is one
+/// nobody can document.
 #[test]
 fn setup_kernel_thread_return_allocates_nothing() {
     let context_switch = read("kernel/src/interrupts/context_switch.rs");
     let body = function_body(&context_switch, "setup_kernel_thread_return");
-    for allocating in ["name.clone()", "to_string()", "format!"] {
+    let code = body
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    for allocating in [
+        "name.clone()",
+        "String::from",
+        "String::new",
+        ".to_owned()",
+        ".to_string()",
+        "format!",
+        "alloc::format!",
+        "vec!",
+        "Vec::new",
+        "Vec::with_capacity",
+        "Box::new",
+        "alloc::",
+        ".collect::<",
+    ] {
         assert!(
-            !body.contains(allocating),
+            !code.contains(allocating),
             "setup_kernel_thread_return runs with IF=0 on every kernel-thread dispatch and must not allocate; found `{allocating}`"
         );
     }
     assert!(
-        body.contains("thread.context.clone()"),
+        code.contains("thread.context.clone()"),
         "the register context is still what this function restores"
     );
 }
