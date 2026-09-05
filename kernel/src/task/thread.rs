@@ -597,11 +597,22 @@ pub struct Thread {
     ///
     /// Nothing in this tree stamps a pin yet: `spawn_on_cpu` is the only
     /// function that writes this field and it has 0 callers, as does the
-    /// `kthread_run_on_cpu` that wraps it. 13 of 15 sites that build a
-    /// `Thread` set this to `None` outright; the other 2 -- the `Clone` impl
-    /// and the fork copy -- carry whatever their source held, which is the
-    /// empty state on each of them for the same reason.
-    // claim-lint:ok: 13 of 15 `Thread` build sites in kernel/src carry
+    /// `kthread_run_on_cpu` that wraps it. 14 of 15 sites that build a
+    /// `Thread` set this to `None` outright -- both child-creation paths
+    /// included, because a pin is not inherited -- and the 15th, the `Clone`
+    /// impl, carries whatever its source held, which is the empty state today.
+    ///
+    /// The field lives in two copies -- this process-table row and the
+    /// publication clone `publish_to_scheduler` hands the scheduler -- and the
+    /// scheduler's copy is the one every placement decision reads:
+    /// `find_target_cpu_for_wakeup`, the park, and `add_thread_inner`'s
+    /// publication discard all reach it through `self.get_thread*`, never
+    /// through the process table. Nothing clears a live pin, so the two cannot
+    /// drift while a thread runs; the one write that corrects a pin
+    /// (`add_thread_inner`, on a pin the online bound rejected) happens after
+    /// the publication clone has been pushed, so it corrects the copy the
+    /// scheduler reads.
+    // claim-lint:ok: 14 of 15 `Thread` build sites in kernel/src carry
     // `cpu_affinity: None`, and `spawn_on_cpu` has 1 call site
     // (`kthread::kthread_run_on_cpu`) which itself has 0 -- all counted by grep
     // over kernel/src in this round.
