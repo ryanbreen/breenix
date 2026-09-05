@@ -1,0 +1,53 @@
+
+running 1 test
+site kernel/src/task/scheduler.rs::apply local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::collect_idle_thread_ids local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::current_thread_id local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::get_process_cpu_ticks local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::get_process_display_state local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::init local_mask=false caller_derived=false
+site kernel/src/task/scheduler.rs::init_with_current local_mask=false caller_derived=false
+site kernel/src/task/scheduler.rs::is_current_idle_thread local_mask=false caller_derived=false
+site kernel/src/task/scheduler.rs::lock_for_context_switch local_mask=false caller_derived=true
+site kernel/src/task/scheduler.rs::lock_scheduler local_mask=false caller_derived=false
+site kernel/src/task/scheduler.rs::reclaim_terminated_threads local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::register_cpu_idle_thread local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::release_cpu_affine_thread_for_test local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::schedule local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::schedule local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::set_current_thread local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::spawn local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::spawn_as_current local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::spawn_front local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::spawn_on_cpu_for_test local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::spawn_pinned_where_placed_for_test local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::switch_to_idle_best_effort local_mask=false caller_derived=true
+site kernel/src/task/scheduler.rs::terminate_thread_best_effort local_mask=false caller_derived=true
+site kernel/src/task/scheduler.rs::try_dump_state local_mask=false caller_derived=true
+site kernel/src/task/scheduler.rs::try_liveness_snapshot local_mask=false caller_derived=false
+site kernel/src/task/scheduler.rs::try_lock_scheduler local_mask=false caller_derived=false
+site kernel/src/task/scheduler.rs::try_schedule local_mask=false caller_derived=false
+site kernel/src/task/scheduler.rs::with_scheduler local_mask=true caller_derived=false
+site kernel/src/task/scheduler.rs::with_thread_mut local_mask=true caller_derived=false
+derived primitive spellings: lock_scheduler, try_lock_scheduler
+totals: 29 acquisition sites in 28 functions; 18 admitted by a local mask shape, 4 by caller derivation, 7 unadmitted
+scheduler lock acquired with interrupts enabled: kernel/src/task/scheduler.rs::init
+scheduler lock acquired with interrupts enabled: kernel/src/task/scheduler.rs::init_with_current
+scheduler lock acquired with interrupts enabled: kernel/src/task/scheduler.rs::is_current_idle_thread
+scheduler lock acquired with interrupts enabled: kernel/src/task/scheduler.rs::lock_scheduler
+scheduler lock acquired with interrupts enabled: kernel/src/task/scheduler.rs::try_liveness_snapshot
+scheduler lock acquired with interrupts enabled: kernel/src/task/scheduler.rs::try_lock_scheduler
+scheduler lock acquired with interrupts enabled: kernel/src/task/scheduler.rs::try_schedule
+
+thread 'scheduler_lock_acquisitions_are_irq_safe_by_shape' panicked at /tmp/breenix-789-prefix/tests/teardown_structure.rs:1129:5:
+7 scheduler-lock acquisition function(s) lack structural IRQ masking
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scheduler_lock_acquisitions_are_irq_safe_by_shape ... FAILED
+
+failures:
+
+failures:
+    scheduler_lock_acquisitions_are_irq_safe_by_shape
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.21s
+

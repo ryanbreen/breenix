@@ -4690,6 +4690,16 @@ pub fn preempt_schedule_irq() {
 /// which arrives in slice 3; landing the repair first means that caller arrives
 /// onto a masked function instead of re-deriving R153.
 ///
+/// Review round 3. The mask delivers a SECOND repair beyond the self-deadlock
+/// R153 named. The comparison below reads the CPU index twice --
+/// `current_thread_id_inner()` and `idle_thread_id()` each index
+/// `cpu_state[Self::current_cpu_id()]` independently -- so with interrupts
+/// enabled a preemption and migration between the two reads could compare one
+/// CPU's current thread against another CPU's idle thread and answer about a
+/// pair that did not coexist. Masked, that window does not exist. No such
+/// mis-answer has been observed; this is a window closed by construction, not
+/// a bug reproduced and fixed.
+///
 /// Review round 2, finding m5. `try_schedule` was deleted outright for having
 /// no caller on `origin/main` and no named future one. This function differs
 /// in the one fact that matters: it has a named future caller already,
