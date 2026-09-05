@@ -239,18 +239,7 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             // Switch to process's page table for signal delivery
             if let Some(ref page_table) = process.page_table {
                 let ttbr0 = page_table.level_4_frame().start_address().as_u64();
-                unsafe {
-                    core::arch::asm!(
-                        "dsb ishst",
-                        "msr ttbr0_el1, {}",
-                        "isb",
-                        "tlbi vmalle1is",
-                        "dsb ish",
-                        "isb",
-                        in(reg) ttbr0,
-                        options(nostack)
-                    );
-                }
+                crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0);
             }
 
             // Read current SP_EL0
@@ -1019,6 +1008,10 @@ fn restore_ttbr0_after_failed_exec(ttbr0: u64) {
         return;
     }
 
+    // The install block carries `nostack` and deliberately not `nomem`: the two
+    // shadow stores below have to stay on this side of the barriers, and
+    // `nomem` would tell the compiler the block touches no memory and leave it
+    // free to move them across. Compiler ordering only -- no instruction added.
     unsafe {
         core::arch::asm!(
             "dsb ishst",
@@ -1028,7 +1021,7 @@ fn restore_ttbr0_after_failed_exec(ttbr0: u64) {
             "dsb ish",
             "isb",
             in(reg) ttbr0,
-            options(nomem, nostack)
+            options(nostack)
         );
         Aarch64PerCpu::set_saved_process_cr3(ttbr0);
         Aarch64PerCpu::set_next_cr3(0);
@@ -1264,29 +1257,16 @@ fn sys_exec_aarch64(
         commit.apply();
 
         log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
-        unsafe {
-            core::arch::asm!(
-                "dsb ishst",
-                "msr ttbr0_el1, {}",
-                "isb",
-                "tlbi vmalle1is",
-                "dsb ish",
-                "isb",
-                in(reg) new_ttbr0,
-                options(nostack)
-            );
-        }
+        // Installing through the shared discipline publishes `saved_process_cr3`,
+        // which the `.Lrestore_saved_ttbr` arm of `syscall_entry.S` would
+        // otherwise use to switch TTBR0 back to the pre-exec page table that
+        // `exec_process_with_argv` has already freed. It also clears
+        // `next_cr3`, whose arm in that corridor runs FIRST and which this site
+        // previously left holding whatever the last dispatch or idle redirect
+        // published there.
+        crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(new_ttbr0);
         // Trace: TTBR0 page table switched
         super::trace::trace_exec(b'P');
-
-        // CRITICAL: Update saved_process_cr3 so the assembly ERET
-        // path doesn't restore the OLD (now-freed) page table.
-        // Without this, the .Lrestore_saved_ttbr path in syscall_entry.S
-        // switches TTBR0 back to the pre-exec page table, which has
-        // been deallocated by exec_process_with_argv.
-        unsafe {
-            Aarch64PerCpu::set_saved_process_cr3(new_ttbr0);
-        }
 
         frame.elr = new_entry_point;
 

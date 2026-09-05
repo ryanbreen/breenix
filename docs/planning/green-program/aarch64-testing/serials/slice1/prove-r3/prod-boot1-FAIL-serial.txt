@@ -1,0 +1,720 @@
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a9b68b73413
+========================================
+
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 1000000000 Hz (1000 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 7569000
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 524288 sectors (256 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x4113f
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1
+[virtio-net] MAC address: 52:54:00:12:34:56
+[virtio-net] RX queue max size: 1024
+[virtio-net] TX queue max size: 1024
+[virtio-net] Network device initialized successfully
+[virtio-net] Network device IRQ 75 (will enable after net init)
+[drivers] VirtIO network driver initialized
+[virtio-net] Device test - MAC: 52:54:00:12:34:56
+[virtio-net] Test passed!
+[virtio-gpu] Searching for GPU device...
+[virtio-gpu] Found GPU device at 0xa003e00
+[virtio-gpu] Device version: 1
+[virtio-gpu] Control queue max size: 1024
+[virtio-gpu] Display: 1280x800
+[virtio-gpu] GPU device initialized successfully
+[drivers] VirtIO GPU driver initialized
+[virtio-gpu] Device test - Display: 1280x800
+[virtio-gpu] Test passed!
+[virtio-sound] Searching for sound device...
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...
+[virtio-blk] Sector 0 data: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+[virtio-blk] Read test passed!
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] MAC address: 52:54:00:12:34:56
+NET: IP address: 10.0.2.15
+NET: Gateway: 10.0.2.2
+Network stack initialized
+NET: Sending ARP request for gateway 10.0.2.2
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.0.2.2
+NET: ARP cache miss for 10.0.2.2, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net] Enabling IRQ 75 for network device
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+[boot] Initializing filesystem...
+[ext2] Using VirtIO block device (524288 sectors)
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: Unknown Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[virtio-gpu] GPU device already initialized
+[arm64-fb] Shell framebuffer initialized: 1280x800
+[graphics] Framebuffer: 1280x800
+[graphics] Particle system initialized
+[render_queue] Initialized (64KB buffer)
+[graphics] Split-screen terminal UI initialized
+[boot] Initializing VirtIO keyboard...
+[virtio-input] Searching for input devices (ID=18)...
+[virtio-input] Slot 27 at 0xa003600: device_id=1
+[virtio-input] Slot 28 at 0xa003800: device_id=2
+[virtio-input] Slot 29 at 0xa003a00: device_id=18
+[virtio-input] Found tablet at 0xa003a00 (slot 29, supports EV_ABS)
+[virtio-input] Tablet device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 77 for tablet
+[virtio-input] Tablet initialized (16 buffers)
+[virtio-input] Slot 30 at 0xa003c00: device_id=18
+[virtio-input] Found keyboard at 0xa003c00 (slot 30, no EV_ABS)
+[virtio-input] Keyboard device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 78 for keyboard
+[virtio-input] Keyboard initialized (64 buffers)
+[virtio-input] Slot 31 at 0xa003e00: device_id=16
+[boot] VirtIO keyboard initialized
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread spawned (tid=4)
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[net] ICMP echo reply received from 10.0.2.2 seq=1
+[boot] Init binary pre-loaded: 298664 bytes
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=false
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (1000000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] Probing secondary CPUs via PSCI...
+[smp] C1PU 1: PSCI CPU_@ON s1uccesAs (raw_status=BC0)
+[smpD] CPU 2E:2e@1AFBCDE PSCeFGGI CPU_ON suc21cess (raw_status=0)
+[smp3@1] CPU A3: PSBCCI CPDEeFGU_ON su3ccess (raw_status=0)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)T
+[gi1c] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+[smp] 4 CPUs online
+[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=298664, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f5d0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]
+[boot] Reset 4 idle thread contexts (CPUs online: 4)
+T2T3T4T5T6T7T8T9T0EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[init] Breenix init starting (PID 1)
+[spawn] path='/bin/heartbeat'
+manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=303616, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 2
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f85c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 2
+[spawn] Created child PID 2 for parent PID 1
+[spawn] Success: child PID 2 scheduled
+[init] heartbeat started (PID 2)
+[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]
+[spawn] path='/bin/block_eintr_oracle'
+[heartbeat] tid=9 uptime_ms=669 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='block_eintr_oracle', elf_size=304752, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 3
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f938
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 3
+[spawn] Created child PID 3 for parent PID 1
+[spawn] Success: child PID 3 scheduled
+F123456789SC[syscall] exit(0) pid=4 name=block_eintr_oracle_child_4
+[heartbeat] tid=9 uptime_ms=1673 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=2681 kbd_nonzero=0
+F123456789SC[syscall] exit(0) pid=5 name=block_eintr_oracle_child_5
+[heartbeat] tid=9 uptime_ms=3684 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=4687 kbd_nonzero=0
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[syscall] exit(0) pid=3 name=block_eintr_oracle
+[init] block_eintr_oracle exited pid=3 code=0
+[spawn] path='/bin/futex_handoff_oracle'
+[heartbeat] tid=9 uptime_ms=5691 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='futex_handoff_oracle', elf_size=291984, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 6
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000ef08
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 6
+[spawn] Created child PID 6 for parent PID 1
+[spawn] Success: child PID 6 scheduled
+[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+[syscall] exit(0) pid=6 name=futex_handoff_oracle
+[init] futex_handoff_oracle exited pid=6 code=0
+[spawn] path='/bin/poll_tcp_oracle'
+manager.create_process_with_argv [ARM64]: ENTRY - name='poll_tcp_oracle', elf_size=307952, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 7
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001050c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 7
+[spawn] Created child PID 7 for parent PID 1
+[spawn] Success: child PID 7 scheduled
+[POLL_TCP_TIMEOUT] fd=4 timeout_ms=120 publish=none_in_window rx_len=0 revents=0x0000
+F123456789SC[syscall] exit(0) pid=8 name=poll_tcp_oracle_child_8
+[POLL_TCP_ORACLE:PASS:stages=3:idle_ms=124:late_ms=86:park_ms=83:attempts=1]
+[POLL_TCP_ORACLE:PASS:stages=3:idle_ms=124:late_ms=86:park_ms=83:attempts=1]
+[syscall] exit(0) pid=7 name=poll_tcp_oracle
+[init] poll_tcp_oracle exited pid=7 code=0
+[spawn] path='/bin/tty_oracle'
+[heartbeat] tid=9 uptime_ms=6694 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='tty_oracle', elf_size=338264, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 9
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40012b34
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 9
+[spawn] Created child PID 9 for parent PID 1
+[spawn] Success: child PID 9 scheduled
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=3 (pty 0)
+[pty] Unlocked PTY 0 (fd 3)
+[TTY_ORACLE:openpt:verdict=PASS:slave=/dev/pts/0:locked_open_refused=1]
+[TTY_ORACLE:openpt:verdict=PASS:slave=/dev/pts/0:locked_open_refused=1]
+[TTY_ORACLE:nonblock_open:verdict=PASS:master_fl=0x800:slave_fl=0x800:both_eagain=1]
+[TTY_ORACLE:nonblock_open:verdict=PASS:master_fl=0x800:slave_fl=0x800:both_eagain=1]
+[TTY_ORACLE:isatty:verdict=PASS:master=1:slave=1:regular_file=0]
+[TTY_ORACLE:isatty:verdict=PASS:master=1:slave=1:regular_file=0]
+[TTY_ORACLE:termios_roundtrip:verdict=PASS:default_lflag=0x803b:modified_lflag=0x8023:restored=1]
+[TTY_ORACLE:termios_roundtrip:verdict=PASS:default_lflag=0x803b:modified_lflag=0x8023:restored=1]
+[TTY_ORACLE:canonical_line:verdict=PASS:withheld_unterminated=1:delivered_on_newline=6]
+[TTY_ORACLE:canonical_line:verdict=PASS:withheld_unterminated=1:delivered_on_newline=6]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=9:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=9:crossed_ends=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+F123456789SC[EXEC_LOCK_ORDER:FIRST_COMMIT]
+[syscall] exit(0) pid=10 name=/bin/tty_oracle
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[syscall] exit(0) pid=9 name=tty_oracle
+[init] tty_oracle exited pid=9 code=0
+[spawn] path='/bin/exec_smoke'
+[heartbeat] tid=9 uptime_ms=7696 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='exec_smoke', elf_size=290928, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 11
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eb40
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 11
+[spawn] Created child PID 11 for parent PID 1
+[spawn] Success: child PID 11 scheduled
+[EXEC_SMOKE:LAUNCH]
+[EXEC_SMOKE:TARGET_ENTER argc=2]
+[EXEC_SMOKE:TARGET_OK]
+[syscall] exit(0) pid=11 name=/bin/exec_smoke_target
+[EXEC_SMOKE:LAUNCHER_EXIT code=0]
+[spawn] path='/usr/local/test/bin/clonevm_exec_test'
+[heartbeat] tid=9 uptime_ms=8705 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='clonevm_exec_test', elf_size=289672, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 12
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f63c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 12
+[spawn] Created child PID 12 for parent PID 1
+[spawn] Success: child PID 12 scheduled
+CLONEVM_EXEC_TEST: start
+CLONEVM_EXEC_TEST: child live
+CLONEVM_EXEC_TEST: live sibling refused exec
+[syscall] exit(0) pid=13 name=thread-13
+CLONEVM_EXEC_TEST: child exited
+[heartbeat] tid=9 uptime_ms=9706 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=4876:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=322:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=11487:kstack=0:uva=90:smallint=234:other=0]
+CLONEVM_EXEC_TEST: second stage
+[heartbeat] tid=9 uptime_ms=10715 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=11725 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=12727 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=13732 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=14735 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=15742 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=16749 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=17750 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=18753 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=19755 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=6325:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=2281:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=12966:kstack=0:uva=2049:smallint=234:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=12968:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=6397:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=6325:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=2068:smallint=235:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=2047:smallint=234:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=5052:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=2347:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=6556:kstack=0:uva=2119:smallint=229:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=6557:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=4984:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=5051:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=2109:smallint=227:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=2118:smallint=229:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=5148:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=2279:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=6643:kstack=0:uva=2066:smallint=214:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=6644:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=5121:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=5147:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=2054:smallint=208:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=2065:smallint=214:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=4844:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=2135:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=6620:kstack=0:uva=1914:smallint=222:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=6621:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=4866:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=4843:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=1905:smallint=220:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=1914:smallint=222:other=0]
+[heartbeat] tid=9 uptime_ms=20759 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=1 begin
+[net-rx-counters] sample=1 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=1 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=1 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=1 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=1 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=1 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=1 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=1 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=1 end
+[heartbeat] tid=9 uptime_ms=21778 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=22788 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=23791 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=24799 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=25802 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=26813 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=27826 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=28835 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=29843 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=7637:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=4118:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=14277:kstack=0:uva=3886:smallint=234:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=14279:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=7708:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=7635:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=3905:smallint=235:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=3884:smallint=234:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=6688:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=4400:smallint=0:other=0]
+[heartbeat] tid=9 uptime_ms=30851 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=2 begin
+[net-rx-counters] sample=2 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=2 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=2 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=2 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=2 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=2 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=2 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=2 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=2 end
+[heartbeat] tid=9 uptime_ms=31859 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=32861 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=33871 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=34873 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=35885 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=36888 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=37894 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=38906 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=39915 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=8947:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=5869:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=15586:kstack=0:uva=5639:smallint=234:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=15589:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=9018:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=8944:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=5656:smallint=235:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=5636:smallint=234:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=8401:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=6325:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=9901:kstack=0:uva=6101:smallint=229:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=9907:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=8330:kstack=0:uva=5:smallint=0:other=0]
+[heartbeat] tid=9 uptime_ms=40923 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=3 begin
+[net-rx-counters] sample=3 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=3 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=3 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=3 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=3 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=3 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=3 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=3 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=3 end
+[heartbeat] tid=9 uptime_ms=41938 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=42942 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=43945 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=44953 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=45955 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=46958 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=47962 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=48963 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=49966 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=10401:kstack=0:uva=0:smallint=0:other=0]
+[heartbeat] tid=9 uptime_ms=50969 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=4 begin
+[net-rx-counters] sample=4 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=4 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=4 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=4 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=4 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=4 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=4 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=4 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=4 end
+[heartbeat] tid=9 uptime_ms=51983 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=52987 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=54001 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=55008 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=56014 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=57023 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=58029 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=59041 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=11820:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=9607:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=18457:kstack=0:uva=9378:smallint=234:other=0]
+[heartbeat] tid=9 uptime_ms=60046 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=5 begin
+[net-rx-counters] sample=5 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=5 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=5 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=5 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=5 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=5 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=5 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=5 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=5 end
+[heartbeat] tid=9 uptime_ms=61073 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=62079 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=63083 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=64086 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=65089 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=66093 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=67097 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=68100 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=69102 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=70104 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=6 begin
+[net-rx-counters] sample=6 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=6 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=6 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=6 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=6 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=6 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=6 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=6 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=6 end
+[heartbeat] tid=9 uptime_ms=71127 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=72129 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=73138 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=74140 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=75144 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=76146 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=77148 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=78154 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=79158 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=80159 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=7 begin
+[net-rx-counters] sample=7 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=7 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=7 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=7 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=7 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=7 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=7 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=7 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=7 end
+[heartbeat] tid=9 uptime_ms=81184 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=82188 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=83195 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=84203 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=85208 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=86212 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=87217 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=88220 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=89223 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=90226 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=8 begin
+[net-rx-counters] sample=8 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=8 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=8 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=8 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=8 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=8 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=8 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=8 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=8 end
+[heartbeat] tid=9 uptime_ms=91243 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=92247 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=93250 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=94266 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=95269 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=96273 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=97275 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=98281 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=99284 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=100288 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=9 begin
+[net-rx-counters] sample=9 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=9 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=9 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=9 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=9 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=9 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=9 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=9 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=9 end
+[heartbeat] tid=9 uptime_ms=101303 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=102314 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=103316 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=104319 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=105321 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=106326 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=107341 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=108345 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=109358 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=110362 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=9:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=2]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=7:retire_second=0:abandoned_unqueued=0]
+[net-rx-counters] sample=10 begin
+[net-rx-counters] sample=10 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=10 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=10 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_SOFTIRQ_ENTRY_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=10 NET_RX_SOFTIRQ_EXIT_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=10 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_GUARD_RELEASE_TOTAL: 10 (cpu0=4, cpu1=1, cpu2=3, cpu3=2)
+[net-rx-counters] sample=10 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=10 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=10 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=10 end
+[heartbeat] tid=9 uptime_ms=111384 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=112386 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=113390 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=114394 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=115406 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=116407 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=117410 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=118412 kbd_nonzero=0
+[heartbeat] tid=9 uptime_ms=119415 kbd_nonzero=0
