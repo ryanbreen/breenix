@@ -16035,6 +16035,190 @@ fn verdict_trap_no_preempting_exit_rule_catches_inline_exit_shapes() {
     );
 }
 
+/// #825: a script under `docker/qemu/` or `scripts/` writes its per-run
+/// evidence (serial captures, ext2 copies, results) to a fixed `/tmp/breenix*`
+/// path and then `rm -rf`s that same path on entry, two concurrent
+/// invocations on one host -- two worktrees, two agents -- delete and
+/// rewrite each other's in-flight output. #825's own report reads a false
+/// 18/20 red produced exactly this way. `BREENIX_GATE_TMP` (default `/tmp`,
+/// validated absolute) is the fix PR #801 gave eight x86 gate scripts for
+/// #797 and this branch gives the aarch64 family for #825: every per-run
+/// path is built under it instead of a bare `/tmp` literal.
+///
+/// This finds the LAST literal assignment (`VAR="literal"`, an optional
+/// leading `local ` stripped, no `$(...)` or other `$` substitution in the
+/// value) textually BEFORE each `rm -rf "$VAR..."` line, in script order --
+/// not the script's last assignment of that name overall, so a value
+/// reassigned after the `rm -rf` (as several of these scripts do inside a
+/// per-iteration loop) does not hide the one actually deleted. A hit is a
+/// value starting with `/tmp/breenix` that carries no `$$` (the PID
+/// disambiguator three sibling scripts already use safely, and that this
+/// PR left alone for exactly that reason) in a script whose full text never
+/// mentions `BREENIX_GATE_TMP` at all -- a script that has adopted the
+/// convention anywhere is not, by definition, missing it.
+fn shell_literal_assignment(line: &str) -> Option<(&str, String)> {
+    let mut rest = line.trim_start();
+    if rest.starts_with('#') {
+        return None;
+    }
+    if let Some(stripped) = rest.strip_prefix("local ") {
+        rest = stripped.trim_start();
+    }
+    let eq = rest.find('=')?;
+    let name = &rest[..eq];
+    let mut chars = name.chars();
+    let first_ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if !first_ok || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let value_part = &rest[eq + 1..];
+    let value = if let Some(after_quote) = value_part.strip_prefix('"') {
+        let end = after_quote.find('"')?;
+        &after_quote[..end]
+    } else {
+        value_part
+            .split_whitespace()
+            .next()
+            .unwrap_or(value_part)
+    };
+    Some((name, value.to_string()))
+}
+
+fn rm_rf_target_var(line: &str) -> Option<&str> {
+    let after = line.trim_start().strip_prefix("rm -rf \"$")?;
+    let end = after
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(after.len());
+    if end == 0 {
+        None
+    } else {
+        Some(&after[..end])
+    }
+}
+
+/// Returns the offending `(variable, literal value)` if `script` `rm -rf`s a
+/// variable whose most recent prior literal assignment is a fixed
+/// `/tmp/breenix*` path, in a script that carries no `BREENIX_GATE_TMP`
+/// support anywhere.
+fn fixed_tmp_rm_rf_violation(script: &str) -> Option<(String, String)> {
+    if script.contains("BREENIX_GATE_TMP") {
+        return None;
+    }
+    let mut assigns: BTreeMap<&str, String> = BTreeMap::new();
+    for line in script.lines() {
+        if let Some((name, value)) = shell_literal_assignment(line) {
+            assigns.insert(name, value);
+        }
+        if let Some(var) = rm_rf_target_var(line) {
+            if let Some(value) = assigns.get(var) {
+                if value.starts_with("/tmp/breenix") && !value.contains("$$") {
+                    return Some((var.to_string(), value.clone()));
+                }
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn gate_scripts_route_per_run_output_under_breenix_gate_tmp() {
+    let scripts = gate_and_utility_shell_scripts();
+
+    // Anti-vacuity floor: a census of scripts under docker/qemu/ and
+    // scripts/ that already carry BREENIX_GATE_TMP support, measured at 22
+    // when this ratchet shipped (5 from #797's original commit, 4 more
+    // R157/F1 added the same PR, and 13 this branch gave #825's aarch64
+    // family) -- not a closed name list, free to grow as more scripts adopt
+    // the convention.
+    let compliant = scripts
+        .iter()
+        .filter(|(_, text)| text.contains("BREENIX_GATE_TMP"))
+        .count();
+    assert!(
+        compliant >= 22,
+        "only {compliant} script(s) under docker/qemu/ or scripts/ carry BREENIX_GATE_TMP support; expected at least 22"
+    );
+
+    let mut violations = Vec::new();
+    for (path, text) in &scripts {
+        if let Some((var, value)) = fixed_tmp_rm_rf_violation(text) {
+            violations.push(format!(
+                "{path}: rm -rf \"${var}\" deletes and recreates the fixed path {value}, with no BREENIX_GATE_TMP support anywhere in the script"
+            ));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "gate script(s) still write per-run evidence under a private-collision fixed /tmp path (#825):\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn fixed_tmp_rm_rf_violation_rule_is_not_vacuous() {
+    // The rule must actually find the shape it claims to, on a script this
+    // branch fixed -- reconstructed as it read on origin/main before the
+    // fix, not the compliant text now in the tree, so this proves the
+    // PREDICATE, not just that today's tree happens to pass.
+    let pre_fix = "#!/bin/bash\nset -e\nOUTPUT_DIR=\"/tmp/breenix_aarch64_stability\"\nrm -rf \"$OUTPUT_DIR\"\nmkdir -p \"$OUTPUT_DIR\"\n";
+    let hit = fixed_tmp_rm_rf_violation(pre_fix);
+    assert_eq!(
+        hit,
+        Some(("OUTPUT_DIR".to_string(), "/tmp/breenix_aarch64_stability".to_string())),
+        "the predicate must name the fixed path a bare-/tmp script rm -rf's"
+    );
+
+    // The fixed shape (this PR's own pattern) must NOT be flagged.
+    let fixed = "#!/bin/bash\nset -e\nBREENIX_GATE_TMP=\"${BREENIX_GATE_TMP:-/tmp}\"\nOUTPUT_DIR=\"$BREENIX_GATE_TMP/breenix_aarch64_stability\"\nrm -rf \"$OUTPUT_DIR\"\nmkdir -p \"$OUTPUT_DIR\"\n";
+    assert_eq!(
+        fixed_tmp_rm_rf_violation(fixed),
+        None,
+        "a script whose OUTPUT_DIR is built from BREENIX_GATE_TMP must not be flagged"
+    );
+
+    // The $$-disambiguated shape (the three sibling scripts this PR left
+    // alone) must also NOT be flagged, even without BREENIX_GATE_TMP.
+    let pid_disambiguated = "#!/bin/bash\nset -e\nOUTPUT_DIR=\"/tmp/breenix_aarch64_test_$$\"\nrm -rf \"$OUTPUT_DIR\"\nmkdir -p \"$OUTPUT_DIR\"\n";
+    assert_eq!(
+        fixed_tmp_rm_rf_violation(pid_disambiguated),
+        None,
+        "a $$-disambiguated OUTPUT_DIR must not be flagged -- it cannot collide"
+    );
+
+    // ANTI-VACUITY: reintroduce exactly the fixed /tmp write this PR removed
+    // from the real gate script's real text -- the WHOLE added block, not
+    // just the OUTPUT_DIR line, since a script that still declares
+    // BREENIX_GATE_TMP anywhere is exempt by this rule's own definition
+    // (a script that has adopted the convention anywhere is not missing
+    // it) -- and confirm the whole-suite rule reddens by name, not a
+    // synthetic string, the actual file this branch changed.
+    let real_fixed = repo_text("docker/qemu/run-aarch64-stability-test.sh");
+    assert!(
+        fixed_tmp_rm_rf_violation(&real_fixed).is_none(),
+        "run-aarch64-stability-test.sh must be clean before mutation"
+    );
+    let added_guard = "# #825: two concurrent runs of this gate on the same host each hardcoded the\n# identical /tmp/breenix_aarch64_stability path, so one run's rm -rf/mkdir\n# could delete and rewrite another run's in-flight boot output. Defaulting\n# to /tmp keeps every existing caller byte-identical; a concurrent-lane\n# launcher sets this to a per-worktree directory instead.\nBREENIX_GATE_TMP=\"${BREENIX_GATE_TMP:-/tmp}\"\n# Must be absolute: a relative value would resolve against whatever\n# directory happens to be current when it is read (the same F6 guard PR\n# #801 gave the x86 gate scripts for #797).\ncase \"$BREENIX_GATE_TMP\" in\n    /*) ;;\n    *) echo \"FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP\"; exit 1 ;;\nesac\n\n";
+    assert!(
+        real_fixed.contains(added_guard),
+        "the reconstructed added-block text must match the real file, or this mutation proves nothing"
+    );
+    let mutated = real_fixed.replacen(added_guard, "", 1).replacen(
+        "OUTPUT_DIR=\"$BREENIX_GATE_TMP/breenix_aarch64_stability\"",
+        "OUTPUT_DIR=\"/tmp/breenix_aarch64_stability\"",
+        1,
+    );
+    assert_ne!(mutated, real_fixed, "mutation must apply");
+    let reddened = fixed_tmp_rm_rf_violation(&mutated);
+    assert_eq!(
+        reddened,
+        Some((
+            "OUTPUT_DIR".to_string(),
+            "/tmp/breenix_aarch64_stability".to_string()
+        )),
+        "reintroducing the fixed /tmp write must redden the rule by the exact variable and path"
+    );
+}
+
 /// ANTI-VACUITY — the `coreproof_mut_*` exemption cannot hide a real regression.
 ///
 /// `code_mask` in this file masks out the core-proof harness's compiled-out
