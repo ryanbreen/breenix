@@ -666,6 +666,13 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // frame or page-table custody counts.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     {
+        // #767 first: it makes 3 relaxed loads of the tick counter, 1
+        // AtomicBool swap and 1 serial line, so it cannot move the frame,
+        // page-table or kernel-stack counts the gates below pin, while the
+        // gates below churn state this sample does not care about. It needs
+        // only a tick counter that is already advancing, which
+        // interrupts::enable() above gives it.
+        kernel::time_test::run_x86_timer_scale_gate();
         kernel::task::process_task::run_x86_retirement_fence_gate();
         kernel::task::process_task::run_x86_reclaim_progress_gate();
         kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
@@ -2542,8 +2549,10 @@ fn test_syscalls() {
         // Test sys_get_time
         let time_result = syscall::handlers::sys_get_time();
         match time_result {
-            SyscallResult::Ok(ticks) => {
-                log::info!("✓ sys_get_time: {} ticks", ticks);
+            SyscallResult::Ok(millis) => {
+                // #767: milliseconds, which is what handlers::sys_get_time is
+                // documented to return and what it now actually returns.
+                log::info!("✓ sys_get_time: {} ms", millis);
                 // Note: Timer may be 0 if very early in boot process
             }
             SyscallResult::Err(e) => log::error!("✗ sys_get_time failed: {:?}", e),

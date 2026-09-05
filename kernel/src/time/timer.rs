@@ -1,4 +1,9 @@
-//! Core PIT-backed timer facilities (1000 Hz, 1 ms resolution).
+//! Core tick-backed timer facilities.
+//!
+//! One tick is `MS_PER_TICK` milliseconds: on x86_64 the PIT below is
+//! programmed at `PIT_HZ` = 200, so 5 ms; on aarch64 the interrupt that writes
+//! `TICKS` is programmed at 1000 Hz, so 1 ms. Millisecond resolution is
+//! therefore the tick period, not 1 ms on both.
 //!
 //! The PIT provides a fallback timer for systems where TSC is unavailable
 //! or as a reference during TSC calibration. For high-precision timing,
@@ -17,7 +22,40 @@ const PIT_COMMAND_PORT: u16 = 0x43;
 #[cfg(target_arch = "x86_64")]
 const PIT_CHANNEL0_PORT: u16 = 0x40;
 
-/// Global monotonic tick counter (1 tick == 1 ms at 1000 Hz).
+/// Milliseconds of elapsed time represented by one `TICKS` increment.
+///
+/// x86_64 programs the PIT at `PIT_HZ` above, so one tick is `1000 / PIT_HZ`
+/// milliseconds there. On aarch64 the only writer of `TICKS` is CPU 0's arm of
+/// `arch_impl::aarch64::timer_interrupt::timer_interrupt_handler`, whose timer
+/// is programmed at `TARGET_TIMER_HZ` = 1000 Hz, so one tick is 1 ms there.
+///
+/// Public because the tick-to-millisecond relationship is what
+/// `time_test::test_timer_resolution()` scores, and that check has to read the
+/// same number the conversion uses rather than restating it.
+#[cfg(target_arch = "x86_64")]
+pub const MS_PER_TICK: u64 = 1_000 / PIT_HZ as u64;
+#[cfg(not(target_arch = "x86_64"))]
+pub const MS_PER_TICK: u64 = 1;
+
+// A PIT_HZ that does not divide 1000 exactly would make MS_PER_TICK a
+// truncated integer and put a rounding error into the milliseconds this
+// module reports. Refuse to build in that case rather than round.
+//
+// Scope, so this is not read as more than it is: the assert covers the
+// nominal 1000 / PIT_HZ division only. The divisor programmed into the PIT
+// below truncates too -- 1_193_182 / 200 = 5965, so the hardware rate is
+// 200.0305 Hz and one tick is 4.99924 ms, not 5 -- and that ~0.015% residual
+// is outside what this assert can see. It also makes MS_PER_TICK == 0
+// unrepresentable: `a % b == 0` with `b > a` requires `a == 0`, so a rate
+// above 1000 Hz is rejected here rather than silently flooring to 0.
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    1_000 % PIT_HZ as u64 == 0,
+    "PIT_HZ must divide 1000 exactly for MS_PER_TICK to be an exact factor"
+);
+
+/// Global monotonic tick counter: one increment per timer interrupt, worth
+/// `MS_PER_TICK` milliseconds of elapsed time.
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Counter for cursor blink timing (toggles every ~100 ticks = 500ms at 200Hz)
@@ -84,19 +122,24 @@ pub fn get_ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
-/// Milliseconds since the kernel was initialized (PIT-based, 1ms resolution).
+/// Milliseconds since the kernel was initialized, at `MS_PER_TICK` resolution.
 ///
-/// For nanosecond precision, use `get_monotonic_time_ns()` instead.
-/// Guaranteed monotonic and never wraps earlier than ~584 million years.
+/// For finer resolution, use `get_monotonic_time_ns()`, which reads the TSC
+/// when it is calibrated. Monotonic, and does not wrap earlier than ~584
+/// million years.
+///
+/// #767: the returned value used to be the raw tick count, which is
+/// milliseconds only where a tick is 1 ms. It is scaled here, at the one
+/// producer, rather than at the call sites that read it as milliseconds.
 #[inline]
 pub fn get_monotonic_time() -> u64 {
-    // At 1000 Hz, ticks == milliseconds
-    get_ticks()
+    get_ticks().saturating_mul(MS_PER_TICK)
 }
 
 /// Nanoseconds since the kernel was initialized (TSC-based, nanosecond resolution).
 ///
-/// Falls back to PIT-based millisecond timing if TSC is not calibrated.
+/// Falls back to the tick counter if the TSC is not calibrated, in which case
+/// the resolution is `MS_PER_TICK` milliseconds rather than nanoseconds.
 /// Returns (seconds, nanoseconds) tuple for POSIX timespec compatibility.
 #[inline]
 pub fn get_monotonic_time_ns() -> (u64, u64) {
@@ -105,7 +148,7 @@ pub fn get_monotonic_time_ns() -> (u64, u64) {
         return (secs, nanos);
     }
 
-    // Fallback to PIT (millisecond precision)
+    // Fallback to the tick counter (MS_PER_TICK resolution)
     let ms = get_monotonic_time();
     (ms / 1000, (ms % 1000) * 1_000_000)
 }

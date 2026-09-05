@@ -275,7 +275,22 @@ const MAX_LOOPBACK_QUEUE_SIZE: usize = 32;
 const MAX_DRAIN_ROUNDS: usize = 16;
 const LOOPBACK_TAKE_ATTEMPTS: usize = 64;
 const MAX_ARP_PENDING_QUEUE_SIZE: usize = 16;
-const ARP_PENDING_TTL_MS: u64 = 5_000;
+/// How long an IP packet may sit on the pending-ARP queue before
+/// `enqueue_arp_pending_packet` retains it away.
+///
+/// #767 (ruling R176). This was written as a flat `5_000` and compared against
+/// `get_monotonic_time()` while that function returned the raw tick counter, so
+/// the retention window it has actually enforced since it was introduced
+/// (efc2af57, 2026-05-31, long after PIT_HZ became 200 at c16faca1) is 5000
+/// ticks: 25 s on x86_64 and 5 s on aarch64. #767 made the producer return real
+/// milliseconds; keeping the bare literal would have cut the x86 window to a
+/// fifth of the one the 2 green x86 networking runs in the #767 round were
+/// measured with (docs/planning/green-program/timekeeping/767-FIX-2026-09-05.md).
+/// Scaling by `MS_PER_TICK` holds each arch at its measured window. Shortening
+/// it to the 5 s the name suggests is a defensible change, but it is a
+/// behaviour change with its own evidence to produce, not a side effect of a
+/// units repair.
+const ARP_PENDING_TTL_MS: u64 = 5_000 * crate::time::timer::MS_PER_TICK;
 
 /// Loopback packet queue for deferred delivery
 /// Packets sent to our own IP are queued here and delivered after the sender releases locks
@@ -287,11 +302,14 @@ struct LoopbackPacket {
     /// Delivery latency is the quantity #636 is about, so the queue carries the
     /// only timestamp from which it can be computed without a test harness.
     ///
-    /// Ticks, not milliseconds: `crate::time::get_monotonic_time()` returns the
-    /// raw tick counter, and on x86_64 the PIT runs at 200 Hz, so one tick is
-    /// five milliseconds there and one millisecond on aarch64. Residency is
-    /// therefore reported in ticks and converted by the reader, rather than
-    /// carrying a unit this kernel does not actually keep.
+    /// Ticks, not milliseconds, and read from `crate::time::get_ticks()` for
+    /// that reason: on x86_64 the PIT runs at 200 Hz, so one tick is five
+    /// milliseconds there and one millisecond on aarch64. Residency is
+    /// reported in ticks and converted by the reader.
+    ///
+    /// #767 scaled `get_monotonic_time()` to real milliseconds. This field and
+    /// its threshold are named in ticks and are read against the raw counter
+    /// so that the number this queue reports keeps the meaning it had.
     queued_at_tick: u64,
 }
 
@@ -377,7 +395,7 @@ pub fn loopback_slow_deliveries() -> u64 {
 
 /// Record one packet's queue-to-delivery latency and report the outliers.
 fn note_loopback_residency(queued_at_tick: u64, source: LoopbackDrainSource) {
-    let now_tick = crate::time::get_monotonic_time();
+    let now_tick = crate::time::get_ticks();
     let residency_ticks = now_tick.saturating_sub(queued_at_tick);
 
     LOOPBACK_MAX_RESIDENCY_TICKS.fetch_max(residency_ticks, Ordering::Relaxed);
@@ -1220,7 +1238,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
 
             queue.push(LoopbackPacket {
                 data: ip_packet,
-                queued_at_tick: crate::time::get_monotonic_time(),
+                queued_at_tick: crate::time::get_ticks(),
             });
             let queue_len = queue.len();
             LOOPBACK_QUEUE_DEPTH.store(queue_len, Ordering::Release);
