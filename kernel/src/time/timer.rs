@@ -17,7 +17,32 @@ const PIT_COMMAND_PORT: u16 = 0x43;
 #[cfg(target_arch = "x86_64")]
 const PIT_CHANNEL0_PORT: u16 = 0x40;
 
-/// Global monotonic tick counter (1 tick == 1 ms at 1000 Hz).
+/// Milliseconds of elapsed time represented by one `TICKS` increment.
+///
+/// x86_64 programs the PIT at `PIT_HZ` above, so one tick is `1000 / PIT_HZ`
+/// milliseconds there. On aarch64 the only writer of `TICKS` is CPU 0's arm of
+/// `arch_impl::aarch64::timer_interrupt::timer_interrupt_handler`, whose timer
+/// is programmed at `TARGET_TIMER_HZ` = 1000 Hz, so one tick is 1 ms there.
+///
+/// Public because the tick-to-millisecond relationship is what
+/// `time_test::test_timer_resolution()` scores, and that check has to read the
+/// same number the conversion uses rather than restating it.
+#[cfg(target_arch = "x86_64")]
+pub const MS_PER_TICK: u64 = 1_000 / PIT_HZ as u64;
+#[cfg(not(target_arch = "x86_64"))]
+pub const MS_PER_TICK: u64 = 1;
+
+// A PIT_HZ that does not divide 1000 exactly would make MS_PER_TICK a
+// truncated integer and put a rounding error into the milliseconds this
+// module reports. Refuse to build in that case rather than round.
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    1_000 % PIT_HZ as u64 == 0,
+    "PIT_HZ must divide 1000 exactly for MS_PER_TICK to be an exact factor"
+);
+
+/// Global monotonic tick counter: one increment per timer interrupt, worth
+/// `MS_PER_TICK` milliseconds of elapsed time.
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Counter for cursor blink timing (toggles every ~100 ticks = 500ms at 200Hz)

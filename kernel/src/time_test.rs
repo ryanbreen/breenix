@@ -2,8 +2,9 @@
 //!
 //! ## What This Test Validates
 //!
-//! ✓ get_monotonic_time() correctly returns ticks as milliseconds
-//! ✓ At 1000 Hz PIT, ticks == milliseconds (1 tick per ms)
+//! ✓ get_monotonic_time() converts the tick counter to milliseconds by the
+//!   `MS_PER_TICK` factor `time::timer` derives from the arch's own timer
+//!   programming (x86_64: 1000 / PIT_HZ; aarch64: 1)
 //!
 //! ## What This Test Does NOT Validate
 //!
@@ -21,10 +22,22 @@
 //! #673 review R4-B1 corrected this module doc, which R3-m1's repair had
 //! inverted).
 
+/// Architecture tag carried by the `[TIMER_SCALE_ORACLE:...]` marker, so a
+/// marker asserted by an x86 gate cannot be satisfied by an aarch64 emission.
+const ARCH_TAG: &str = if cfg!(target_arch = "x86_64") {
+    "x86"
+} else {
+    "aarch64"
+};
+
 /// Validates timer resolution and correctness
 ///
-/// This test ensures that get_monotonic_time() returns actual milliseconds.
-/// At 1000 Hz PIT, ticks == milliseconds (1 tick = 1 ms).
+/// This test ensures that get_monotonic_time() returns milliseconds, scored
+/// against `time::timer::MS_PER_TICK` -- the factor derived from the timer
+/// programming of the architecture being built, not a number restated here.
+/// It is the #767 oracle: it emits `[TIMER_SCALE_ORACLE:...]` carrying the
+/// observed tick and millisecond reads and the verdict, which the x86 gates
+/// assert.
 ///
 /// This test used to run only in profiles where interrupts were still
 /// disabled at this point, so it could compare two live reads for exact
@@ -41,18 +54,50 @@ pub fn test_timer_resolution() {
     // Bracket the read rather than comparing two independent live reads for
     // exact equality. This test used to assume interrupts could not possibly
     // be enabled yet, so ticks_before and get_monotonic_time()'s own internal
-    // tick read could never diverge -- that assumption was already false in
+    // tick read could not diverge -- that assumption was already false in
     // the testing profile before #673 existed (since `62af9d13`/#554) and in
     // interactive (main.rs:1102); #673 made it false in production too
     // (main.rs:1586), the one profile where it had still held. A genuine
     // timer tick landing between the two reads is not a bug; comparing them
     // for exact equality treated it as one and panicked on its own race. The
-    // bracket still proves the 1-tick=1-ms conversion has no scaling or
-    // drift -- ms must fall within the observed tick range -- without
-    // requiring the impossible "nothing happened in between."
+    // bracket still scores the tick-to-millisecond conversion for scaling and
+    // drift -- ms must fall within the SCALED tick range -- without
+    // requiring the impossible assumption that no tick landed in between.
+    //
+    // #767: the range is scaled by MS_PER_TICK. Comparing ms against the raw
+    // tick range asserted a 1 tick == 1 ms identity that holds on aarch64 and
+    // does not hold on x86_64, where the PIT is programmed at PIT_HZ = 200.
     let ticks_before = crate::time::get_ticks();
     let ms = crate::time::get_monotonic_time();
     let ticks_after = crate::time::get_ticks();
+
+    // #767 oracle. `low_ms`/`high_ms` are what the two live tick reads that
+    // bracket the millisecond read are worth in milliseconds. `ticks_nonzero`
+    // is the anti-vacuity term: with a tick counter still at 0, any scale
+    // factor produces 0 ms and the range check cannot discriminate, so such
+    // a sample is reported as a non-verdict rather than a pass. The
+    // marker is emitted before the verdict below so the serial carries the
+    // observed numbers even on the arm that panics.
+    let ms_per_tick = crate::time::timer::MS_PER_TICK;
+    let low_ms = ticks_before.saturating_mul(ms_per_tick);
+    let high_ms = ticks_after.saturating_mul(ms_per_tick);
+    let in_range = ms >= low_ms && ms <= high_ms;
+    let ticks_nonzero = ticks_before > 0;
+    crate::serial_println!(
+        "[TIMER_SCALE_ORACLE:{}:ms_per_tick={}:ticks_before={}:ms={}:ticks_after={}:ticks_nonzero={}:in_range={}:{}]",
+        ARCH_TAG,
+        ms_per_tick,
+        ticks_before,
+        ms,
+        ticks_after,
+        u8::from(ticks_nonzero),
+        u8::from(in_range),
+        if in_range && ticks_nonzero {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    );
 
     log::info!(
         "Current state: {} ticks (before), {} ms, {} ticks (after)",
@@ -73,11 +118,11 @@ pub fn test_timer_resolution() {
     // window is rare-but-possible timing variance under host scheduling
     // contention (a TCG-emulated PIT, a loaded CI runner) now that this
     // function runs unconditionally in shipped x86 production with
-    // interrupts genuinely enabled (m1) -- not proof of a kernel defect, so
+    // interrupts genuinely enabled (m1) -- not by itself a kernel defect, so
     // it is logged and counted rather than panicking the shipped kernel over
     // it. The range check below (ms actually outside
-    // [ticks_before, ticks_after]) is what would indicate a real
-    // scaling/offset bug, and that keeps the panic.
+    // [ticks_before * MS_PER_TICK, ticks_after * MS_PER_TICK]) is what would
+    // indicate a real scaling/offset bug, and that keeps the panic.
     let window = ticks_after - ticks_before;
     if window > 1 {
         static TIMER_RESOLUTION_WINDOW_EXCEEDED_COUNT: core::sync::atomic::AtomicU32 =
@@ -93,20 +138,29 @@ pub fn test_timer_resolution() {
             window
         );
     }
-    if ms >= ticks_before && ms <= ticks_after {
+    // The panic stays scoped to the scale relationship, which is what it
+    // covered before #767 too. A tick counter still at 0 is a liveness fact,
+    // not a conversion defect: it is carried by the marker above and refused
+    // by the gates, rather than killing a boot here over something this
+    // check cannot judge.
+    if in_range {
         log::info!(
-            "✓ Timer conversion correct: {} ms within observed tick range [{}, {}]",
+            "✓ Timer conversion correct: {} ms within scaled tick range [{}, {}]",
             ms,
-            ticks_before,
-            ticks_after
+            low_ms,
+            high_ms
         );
-        log::info!("✓ Timer resolution: 1 ms per tick (1000 Hz PIT)");
+        log::info!("✓ Timer resolution: {} ms per tick", ms_per_tick);
     } else {
         log::error!(
-            "✗ Timer conversion INCORRECT: {} ms outside observed tick range [{}, {}] (window={})",
+            "✗ Timer conversion INCORRECT: {} ms outside scaled tick range [{}, {}] \
+             (ticks [{}, {}], {} ms per tick, window={})",
             ms,
+            low_ms,
+            high_ms,
             ticks_before,
             ticks_after,
+            ms_per_tick,
             window
         );
         panic!("Timer resolution validation failed");
