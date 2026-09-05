@@ -200,31 +200,29 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # (BUILD_LOG) that only gained quotes -- see
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Both values derived from it are computed here because report_gate_failure
+# below reads them, but neither is JUDGED here: the two preflight checks that
+# reject a bad value are spent in the "BASE-DIR PREFLIGHT" block immediately
+# after the ERR trap is installed (#802), so a rejection leaves the gate's own
+# FAIL verdict line behind instead of a bare `exit`.
+#
 # Must be absolute: OUTPUT_DIR below is computed before `cd "$BREENIX_ROOT"`
 # (unlike run-x86-boot-tests.sh, which computes its OUTPUT_DIR after its own
 # cd) and the ERR trap installed further down can fire before that cd too --
 # a relative value would resolve inconsistently depending on which of those
 # points read it (review finding F6 on #797).
-case "$BREENIX_GATE_TMP" in
-    /*) ;;
-    *) echo "x86 production-profile gate: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)" >&2; exit 1 ;;
-esac
 OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_prod_profile"
 # AF_UNIX sun_path is 108 bytes on Linux including the terminating NUL, so a
-# constructed console-socket path over 107 characters cannot be bound -- fail
-# loudly here rather than a cryptic error from qemu or the python liveness
-# stimulus later, both of which use "$OUTPUT_DIR/console.sock" (review
-# finding F7 on #797; the default and the custom value this change was
-# tested with are both far under this, but the variable is now
-# operator-controlled).
+# constructed console-socket path over 107 characters cannot be bound -- the
+# preflight below fails on it rather than letting a cryptic error come from
+# qemu or the python liveness stimulus later, both of which use
+# "$OUTPUT_DIR/console.sock" (review finding F7 on #797; the default and the
+# custom value this change was tested with are both far under this, but the
+# variable is now operator-controlled).
 # claim-lint:ok: #797 F7 -- 42/56-char measurements and the beast rejection
 # test for a deliberately oversized value are in
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
 CONSOLE_SOCK_PATH="$OUTPUT_DIR/console.sock"
-if [ "${#CONSOLE_SOCK_PATH}" -gt 107 ]; then
-    echo "x86 production-profile gate: FAIL (console socket path exceeds the AF_UNIX sun_path limit of 107 chars: \"$CONSOLE_SOCK_PATH\" is ${#CONSOLE_SOCK_PATH} chars -- shorten BREENIX_GATE_TMP)" >&2
-    exit 1
-fi
 QEMU_PID=""
 # #673 anti-vacuity knob. Empty (default) builds the real shipped profile;
 # set to "disable_x86_prod_init" to build the pre-fix, zero-userspace kernel
@@ -797,6 +795,40 @@ report_gate_failure() {
     exit "$exit_code"
 }
 trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
+
+# --- BASE-DIR PREFLIGHT (#797 F6/F7, routed through the verdict path by #802) -
+#
+# These are the checks on the operator-controlled BREENIX_GATE_TMP, and they run
+# HERE -- immediately after the ERR trap is installed, as the first commands to
+# run under it -- rather than beside the assignments that derive their subjects.
+# #801 put them beside those assignments, where the only way to stop was a bare
+# `exit 1`, and a bare `exit` can end this gate with no verdict line at all:
+# exactly the shape
+# tests/teardown_structure.rs::x86_production_profile_gate_verdict_discipline_holds
+# forbids ("No exit may pre-empt the verdict. The trap's re-raise is the only one
+# this gate needs, and it runs after a verdict has already been found false").
+# Failing here instead spends the rejection through report_gate_failure: the gate
+# prints its `x86 production-profile gate: FAIL (...)` verdict line, names the
+# failing command, and re-raises the nonzero status. The `echo` + bare `false`
+# shape is the one this script already uses for its missing-userspace-artifact
+# preflight further down.
+#
+# The checks keep the fail-early purpose they were added for: this block runs
+# ahead of `cd "$BREENIX_ROOT"` (the point F6 is about) and ahead of the `rm -f`
+# of the stale UEFI image that opens the build step further down. And because
+# the trap is installed on the line immediately above, this block is the first
+# command to run under the handler, so the one path on which the handler can
+# read an unvalidated relative OUTPUT_DIR is this block's own rejection -- where
+# its use of OUTPUT_DIR is a serial-glob lookup that matches no file.
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "x86 production-profile gate preflight: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2
+       false ;;
+esac
+if [ "${#CONSOLE_SOCK_PATH}" -gt 107 ]; then
+    echo "x86 production-profile gate preflight: console socket path \"$CONSOLE_SOCK_PATH\" is ${#CONSOLE_SOCK_PATH} chars, over the AF_UNIX sun_path limit of 107 -- shorten BREENIX_GATE_TMP" >&2
+    false
+fi
 
 # Matching-LINE count across both serial files (#673 review, mi7 -- grep -c
 # counts lines, not substring occurrences, so two matches on one line would
