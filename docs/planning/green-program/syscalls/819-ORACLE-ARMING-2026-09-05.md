@@ -426,3 +426,144 @@ claim-lint: scripts/claim-lint.py --files <this doc>               -> exit 0
   reason 2 of 105 boots were gate-red.
 * **The x86 arm is still a SKIP.** A uniprocessor boot has no peer to contend
   with; that limitation is unchanged and is deliberately not a passing result.
+
+## Landing — re-recording the slice3d strict fixture
+
+`tests/loopback_pump_structure.rs::both_aarch64_gates_fail_on_a_pinned_placement_refusal`
+and `tests/ttbr0_shadow_reconciliation_structure.rs::both_aarch64_gates_fail_on_an_untagged_publish`
+each replay `docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt`
+through `docker/qemu/run-aarch64-boot-test-strict.sh`'s scoring-only mode.
+`origin/main` advanced 45 commits past this branch's fork point by landing
+time, including PR #833 (`fix/812-try-manager-masked`), whose own landing had
+already re-recorded that fixture once to add a required `IRQ_HOLD_ORACLE`
+line to the strict scorer -- but that re-record predates this branch's own
+rewrite of the `FCNTL_PM_CONTENTION_ORACLE` marker, from a boolean-attempt
+shape (`attempts=1:armed=1:...`) to the 7-named-arm rendezvous shape
+described above (`arm_wait_us=...:armed=1:acquired=1:...:hold_safety=0:...`),
+and this branch's own pre-merge copy of the fixture carried the new marker
+shape but no `IRQ_HOLD_ORACLE` line at all (it branched before #812). Neither
+side's copy alone satisfies both scorer requirements: `git merge --no-ff
+origin/main` conflicted on the fixture file, and resolving that conflict by
+taking `origin/main`'s copy outright (the merge commit, `0df78b55`) scored
+`SCORE: FAIL - fcntl process-manager contention oracle marker missing or
+failed` in both replay tests -- the strict gate did not regress; the scorer
+it is replayed against grew a new required line on each side, the same class
+of break the #812 landing hit for the same file one merge earlier.
+
+Landing re-records `01-strict-boot1-serial.txt` a second time, from a single
+strict-gate boot at the merged head (BUILD_ID `006a9c732f0d64`), which
+carries `[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=93:armed=1:acquired=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=8107:hold_safety=0:hold_done=1:joined=1:PASS]`
+alongside an `IRQ_HOLD_ORACLE` PASS line, 4 of 4 `PINNED_HOME_CPU_UNAVAILABLE`
+census lines reading `count=0`, and 14 of 14 `TTBR0_ASID_CENSUS` lines
+reading `untagged=0`; the strict scorer accepts the re-recorded file
+(`SCORE: PASS`), and both replay tests pass against it (85 and 32 cases
+respectively, both suites otherwise unchanged). `02-prod-boot1-serial.txt`
+needed no re-record: the production scorer only asserts the
+`FCNTL_PM_CONTENTION_ORACLE` and `IRQ_HOLD_ORACLE` markers' literal presence
+count, not either one's field shape, and this branch does not change that
+gate. The finding and the re-record are recorded in
+`docs/planning/green-program/aarch64-testing/serials/slice3d/README.md`,
+which already carried the #812 landing's own re-record note and now carries
+both.
+
+The capture used the fixed `docker/qemu/run-aarch64-boot-test-strict.sh`
+`BREENIX_GATE_TMP` support #812's own landing added (`GATE-TMP-BASEDIR-AARCH64-2026-09-05.md`,
+merged in the same 45 commits), so it did not need the discard-and-retake
+step the #812 landing's own re-record required against the fixed `/tmp`
+path; the capture ran with the host's aarch64 QEMU count read at 0
+immediately before launch regardless, and the resulting serial's oracle-line
+shape was checked against the built kernel's own `strings` output
+(`arm_wait_us=` present, `attempts=` absent) before being adopted.
+
+claim-lint:ok: the re-recorded file, its BUILD_ID, both oracle lines, the 4
+PINNED_HOME_CPU_UNAVAILABLE and 14 TTBR0_ASID_CENSUS line counts, and both
+replay tests' pass are STEP 1/STEP 2 results committed alongside this doc
+update (commit `165f49c0`).
+
+**Standing landing step, reaffirmed.** The #812 doc above already names this
+as a standing landing step for any branch adding a required line to either
+aarch64 gate scorer; this landing is a second, independent instance of the
+same step, this time triggered by a branch that *changes* an existing
+required line's shape rather than adding a new one, and hitting a fixture
+that a different branch (#812) had already re-recorded once for the
+unrelated reason described there. The lesson generalizes: a shared replay
+fixture can go stale against either side of a merge, not just the side doing
+the landing, and `git merge`'s own conflict markers on the fixture file
+(rather than a silent auto-merge) were what surfaced it here before the
+structure suites did.
+
+## Landing re-smoke (merged head `165f49c0`)
+
+Re-smoke ran at `165f49c0362e04c406cd007a3d3c7b21fbc59f79` (the fixture
+re-record commit above, pushed to `fix/819-fcntl-oracle-arming-rendezvous`)
+on the Mac at
+`/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ld-fcntl-arm`
+and on beast at `/root/breenix-fcntlarm` (`BREENIX_GATE_TMP=/root/breenix-fcntlarm-tmp`).
+
+### Host-side suites
+
+31 of 31 `tests/*_structure.rs` suites pass, **586 cases** total (up from 469
+live cases before the fixture re-record, because the two replay tests above
+now run their full bodies instead of panicking partway through).
+`python3 scripts/test_claim_lint.py` -> exit 0.
+
+### aarch64
+
+`cargo build --release --features boot_tests --target aarch64-breenix-kernel.json
+-Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel
+--bin kernel-aarch64` piped through `grep -E "^(warning|error)"` (excluding
+the toolchain's own `core` future-incompatibility notice): empty output.
+`scripts/check-kernel-no-neon.sh` against the resulting ELF: `PASS: 0 FP/SIMD
+load/store instructions in kernel .text (allowlisted & suppressed: 0)`.
+
+The strict gate ran as two 20-boot batches, one boot at a time, each launched
+only after `ps aux | grep "qemu-system-aarch64 -M"` read 0 (a concurrent
+lane on this same host, `ld-627`, was mid-batch at the first check and was
+let finish rather than interleaved with):
+
+| run | result | duration |
+|---|---|---|
+| 1 (`docker/qemu/run-aarch64-boot-test-strict.sh 20`) | `PASS: 20/20 boots succeeded` | 217s |
+| 2 (`docker/qemu/run-aarch64-boot-test-strict.sh 20`) | `PASS: 20/20 boots succeeded` | 225s |
+
+All 40 of 40 boots' `FCNTL_PM_CONTENTION_ORACLE` lines read `:PASS]`, with
+`arm_wait_us` ranging 72-8247 (µs) across the 40 -- inside the pattern's
+accepted range and consistent with the review round's own 25-boot table
+above. `grep -anE '(:FAIL[]:]|SCORE: FAIL|^FAIL:| FAIL:)'` over all 40
+serials matched 0 lines: zero fcntl-oracle reds, zero other reds, of 40.
+
+Production profile (`docker/qemu/run-aarch64-prod-profile-boot-test.sh`) x1:
+`PASS: production profile reached bsshd with the futex oracle seam absent`,
+`Observed fcntl contention oracle marker count: 0`, `Observed IRQ-hold
+oracle marker count: 0`.
+
+### x86 (beast, `breenix-x86` container)
+
+Own clone at `/root/breenix-fcntlarm`, checked out from a local branch
+(`fix-819-import`) in `/root/breenix` that was force-updated to `FETCH_HEAD`
+after `git -C /root/breenix fetch origin fix/819-fcntl-oracle-arming-rendezvous`
+-- the container's no-outbound-GitHub rule means a fresh `git clone
+/root/breenix /root/breenix-fcntlarm` does not itself carry a same-repo
+`fetch`'s dangling `FETCH_HEAD` as a ref the clone can see, so the
+intermediate named branch was needed. `rust-fork` symlinked to
+`/root/breenix/rust-fork-real`. `cargo build --release --features
+testing,external_test_bins --bin qemu-uefi` piped through `grep -E
+"^(warning|error)"`: empty output (grep exit 1).
+
+| gate | result |
+|---|---|
+| `docker/qemu/run-x86-boot-tests.sh 1` | `x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0`; `x86 frame-custody gate run 1: PASS`; both oracle SKIP literals echoed, `[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]` and `[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]` among them -- the merge's own conflict-resolution in `docker/qemu/run-x86-boot-tests.sh` (keeping both sides' `FCNTL_PM_CONTENTION_ORACLE_LINE` and `IRQ_HOLD_ORACLE_LINE` echoes) is what put the second literal in this gate's own stdout at all <!-- claim-lint:ok: verbatim quotes of the kernel's own marker literals at kernel/src/test_framework/registry.rs:4744 and :5200 -- "arm=none" is the oracle's field value, not a claim of this doc's --> |
+| `docker/qemu/run-x86-prod-profile-boot-test.sh` | `PASS: x86 production profile reached steady state with the teardown census at rest`, exit 0 |
+
+**Unattributed reds: 0 of 6** re-smoke checks this round (2 aarch64 gate
+batches -- counting the 40-boot strict campaign as one check and the
+production boot as a second -- 2 x86 gates, the structure-suite sweep, and
+the aarch64 build/no-neon check) matched their expected verdict; none needed
+separate triage.
+
+```
+claim-lint: scripts/claim-lint.py                                                          -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/serials/slice3d/README.md -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <fixture-fix commit>                         -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/syscalls/819-ORACLE-ARMING-2026-09-05.md -> exit 0
+```
