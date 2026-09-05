@@ -234,7 +234,8 @@ One sample line, verbatim:
 ### The wider sample
 
 The shipped design ran 105 boots of this gate in 6 runs (5 + 20 + 20 + 20 + 20 +
-20). 105 of 105 printed a `PASS` oracle line -- 0 arming failures of any arm.
+20). 105 of 105 printed a `PASS` oracle line. The review round's 25 further
+boots, below, found 1 that did not, so read this paragraph with that section.
 Across those runs `arm_wait_us` read 6 us to 60900 us and `first_wait_us` read
 8094 us to 24089 us; both outliers come from the same boot, one the strict gate
 failed for an unrelated reason (below), where the guest was running slowly
@@ -250,6 +251,61 @@ strict gate: 'Exec smoke did not complete' with no fault marker and a healthy
 guest -- 2/40 at be412ee9"), which main's own 40-boot health run of the same day
 hit at the same rate. One is preserved at
 `serials/819-oracle-arming/07-branch-826-exec-smoke-boot4.txt`.
+
+### The review round's 25 further boots, and the arming failure in them
+
+Re-run for the 2026-09-05 review round on the same kernel bytes plus this
+round's doc comments, on the shared Mac, at a host load average of 5.39 / 7.45 /
+6.84 measured immediately after the second run:
+
+| run | gate verdict | oracle lines | reds |
+|---|---|---|---|
+| `run-aarch64-boot-test-strict.sh 5` | 4/5, exit 1 | 4 `PASS`, 1 `FAIL:hold_safety_release` | the arming failure below |
+| `run-aarch64-boot-test-strict.sh 20` | 16/20, exit 1 | 20 `PASS` | 4 `Exec smoke did not complete`, #826, each with a `PASS` oracle line in its own serial |
+
+So 24 of these 25 boots printed a `PASS` oracle line, and the running total for
+the shipped design is 129 of 130. The 1 that did not is **#836**, filed from this
+round:
+
+```
+[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=17:armed=0:acquired=1:holder_cpu=1:pm_busy_probe=0:calls=0:eagain=0:first_errno=18446744073709551615:first_wait_us=0:hold_safety=1:hold_done=1:joined=1:FAIL:hold_safety_release]
+```
+
+The fields decode it without a second run. `hold_safety=1` says the holder
+waited its whole 250 ms without seeing `FCNTL_PM_RELEASE_REQ`. `armed=0` with
+`arm_wait_us=17` says the driver's rendezvous loop exited on
+`FCNTL_PM_HOLD_DONE` rather than on `FCNTL_PM_HOLD_ACTIVE`, 17 us after it
+started: by the time the driver reached the loop, the holder had acquired, held
+out its safety deadline and finished. The driver's first `RELEASE_REQ` store on
+that path is after the loop, so at least 250 ms separated the holder's acquire
+from the driver reaching `arm_start`.
+
+The interval that admits it is the one between the spawn and the pin. The driver
+calls `kthread_run_on_cpu_for_test(...)` and only then `preempt_disable()`, so
+the holder can start holding while the driver is still preemptible. The pin
+closes the window from that call onward, which is what the falsified
+unpinned-driver design needed; it does not cover the call before it. The same
+serial carries the corroboration: `process_list_populated` starts and passes
+between the oracle's `START` and its marker, and that test takes the blocking
+`manager()`, so it can only have passed after the holder released -- it was
+masked and spinning for the hold's duration, and whichever CPU it was on could
+not dispatch while it was. That is root cause (a)(2) again, arriving in the
+interval the pin leaves open.
+
+Not repaired here. The candidate is to take the pin before the spawn, which
+moves `preempt_disable()` across `Thread::new_kernel()` and
+`spawn_on_cpu_for_test()` -- kernel-stack allocation and scheduler publication,
+a path with its own history -- and a 1-in-25 liveness signature is not something
+a 5- or 20-boot run can accept anyway. #836 carries the decode, the candidate
+and the serial:
+`serials/819-oracle-arming/11-branch-strict-hold-safety-release.txt`.
+
+What this round's second deliverable did do is on the same line. The arm named
+itself: `hold_safety_release`, with `arm_wait_us`, `acquired` and `hold_safety`
+saying which rendezvous step failed, and the verdict text is the arming one
+rather than the syscall one. On `origin/main` this same boot would have printed
+`attempts=3:armed=0` and "fcntl reported a contended process-manager lock to
+userspace" for a run whose own line reads `calls=0`.
 
 ### aarch64 production profile
 
@@ -326,11 +382,14 @@ claim-lint: scripts/claim-lint.py --files <this doc>               -> exit 0
 
 ## What is NOT claimed
 
-* **The oracle's arming is not shown immune to starvation.** 105 of 105 boots
-  without an arming failure bounds the rate loosely; it does not establish that
-  the rate is 0. The pin and the mask remove the two starvation paths this round
-  *measured*; a third would surface as `arming_timeout` or `hold_safety_release`,
-  which are gate-red and named.
+* **The oracle's arming is not immune to starvation, and this round measured
+  that rather than leaving it a possibility.** 1 boot of 130 printed
+  `FAIL:hold_safety_release`; it is #836, its mechanism is the spawn-to-pin
+  interval, and it is written up in the review-round section above. The pin and
+  the mask remove the two starvation paths this round *measured* on the way in;
+  they do not remove that one. The 7 failing arms in the verdict table above are
+  gate-red and each carries its own tag, so a recurrence is a failing boot with
+  its cause on the line rather than a silent one.
 * **No change here touches `sys_fcntl`.** The #796 repair -- the process-lookup
   preamble blocking for `PROCESS_MANAGER` instead of reporting its contention --
   is untouched. This round changes only how the oracle sets up the contention it
@@ -349,9 +408,10 @@ claim-lint: scripts/claim-lint.py --files <this doc>               -> exit 0
   CPU that enters either one while the hold is up therefore keeps its own
   interrupts masked until the hold drops: the driver's notice time plus the 8 ms
   overlap on the arms that pass, and up to `FCNTL_PM_HOLD_SAFETY_US` (250 ms) on
-  `hold_safety_release`, the arm the holder takes when no request arrives. The
-  boot-test population does contain concurrent callers -- `process_list_populated`
-  is the one (a)(2) above names. This round introduces neither half of that:
+  `hold_safety_release`, the arm the holder takes when no request arrives. That
+  arm is not hypothetical here: 1 boot of 130 took it (#836), and the serial
+  shows `process_list_populated` -- the concurrent caller (a)(2) above names --
+  passing only after the hold dropped. This round introduces neither half of that:
   masking before blocking is the shape of those two entry points on
   `origin/main`, and it is the same property the falsified unpinned-driver
   design ran into from the other side. What this round does about it is bound it and make reaching the bound
