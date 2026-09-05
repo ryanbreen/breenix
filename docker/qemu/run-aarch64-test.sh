@@ -6,6 +6,16 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this script's qemu-system-aarch64 boot runs behind the
+# host-wide lock in lib/qemu-host-lock.sh. This script is Docker-wrapped --
+# the actual qemu-system-aarch64 process runs inside Docker's own Linux VM,
+# invisible to this host's pgrep -- but the `docker run` CLI invocation
+# blocks on the host with that exact token in its own argv for as long as
+# the container runs, so qemu_host_lock_count() (a pgrep -f) still sees it,
+# and holding the lock around the `docker run` call below still serializes
+# this script against the native-QEMU gates.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #825: this script's OUTPUT_DIR is a HOST path that is rm -rf'd, mkdir'd and
 # then bind-mounted into the container (-v "$OUTPUT_DIR:/output" below), so
 # the same-host collision #825 reports applies here despite the QEMU process
@@ -50,6 +60,7 @@ echo "Starting QEMU ARM64..."
 # -kernel: Load ELF directly (QEMU handles this)
 # -m 512: 512MB RAM
 # -serial: Serial output to file
+qemu_host_lock_acquire
 docker run --rm \
     -v "$KERNEL:/breenix/kernel:ro" \
     -v "$OUTPUT_DIR:/output" \
@@ -70,6 +81,10 @@ docker run --rm \
         &
 
 QEMU_PID=$!
+# F2: registers the docker run client with the lock's own EXIT trap (see
+# lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just this process
+# still stops the container instead of orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 # Wait for output (30 second timeout)
 echo "Waiting for kernel output (30s timeout)..."
@@ -99,6 +114,7 @@ echo "========================================="
 
 # Cleanup
 docker kill $(docker ps -q --filter ancestor=breenix-qemu-aarch64) 2>/dev/null || true
+qemu_host_lock_release
 
 if $FOUND; then
     echo "ARM64 kernel produced output!"

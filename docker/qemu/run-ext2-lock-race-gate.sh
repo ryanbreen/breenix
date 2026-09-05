@@ -225,6 +225,11 @@ set -E
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: serializes qemu-system-aarch64 boots host-wide (aarch64 leg
+# only -- see the ARCH branch below; the x86 leg is unchanged, beast has no
+# equivalent contention and is out of this lane's scope).
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container,
 # reached here via --x86) each invoking this script hardcode the identical
@@ -380,6 +385,7 @@ if [ "$ARCH" = "aarch64" ]; then
     PRIMARY_LOG="$OUTPUT_DIR/serial.txt"
     cp "$EXT2_ROOT_DISK" "$OUTPUT_DIR/ext2-root-writable.img"
     cp "$EXT2_HOME_DISK" "$OUTPUT_DIR/ext2-home-writable.img"
+    qemu_host_lock_acquire
     timeout "${AARCH64_BOOT_TIMEOUT:-90}" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -395,6 +401,10 @@ if [ "$ARCH" = "aarch64" ]; then
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" >"$OUTPUT_DIR/qemu.log" 2>&1 &
     QEMU_PID=$!
+    # F2: registers this PID with the aarch64 host lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this process during the poll below
+    # still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
     LIVENESS_PATTERN='(\[heartbeat\]|\[EXEC_SMOKE:TARGET_OK\]|\[bcheck\] Complete:|\[bwm\] Display:)'
 else
     PRIMARY_LOG="$OUTPUT_DIR/serial_kernel.txt"
@@ -622,6 +632,7 @@ for i in $(seq 1 "$POLL_BOUND"); do
 done
 kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
+qemu_host_lock_release
 
 SERIAL_ALL="$OUTPUT_DIR/serial-all.txt"
 cat "$OUTPUT_DIR"/serial*.txt >"$SERIAL_ALL" 2>/dev/null || true

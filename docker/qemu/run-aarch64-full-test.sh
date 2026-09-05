@@ -21,6 +21,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #825: two concurrent runs of this gate on the same host each hardcoded the
 # identical /tmp/breenix_aarch64_full_test path, so one run's rm -rf/mkdir
 # could delete and rewrite another run's in-flight boot output. Defaulting
@@ -162,6 +167,7 @@ echo "ext2 disk: $EXT2_DISK"
 echo ""
 
 # Start QEMU in background (180s total timeout — 84 tests, the exec smoke, and the soak)
+qemu_host_lock_acquire
 timeout 180 qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
@@ -775,6 +781,7 @@ fi
 kill $QEMU_PID 2>/dev/null || true
 wait $QEMU_PID 2>/dev/null || true
 unset QEMU_PID
+qemu_host_lock_release
 
 # --- Post-run forbidden-pattern scan over the WHOLE serial ---
 #

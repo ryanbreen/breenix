@@ -13,6 +13,11 @@ set -e
 MAX_RETRIES=5
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh (see that file's own top-of-file
+# comment for the mechanism).
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #825: two concurrent runs of this gate on the same host each hardcoded the
 # identical /tmp/breenix_aarch64_boot_native path, so one run's rm -rf/mkdir
 # could delete and rewrite the serial another run's poll loop was mid-boot
@@ -173,6 +178,7 @@ run_single_test() {
     else
         DISK_DEVICE_OPTS="-device virtio-blk-device,drive=ext2"
     fi
+    qemu_host_lock_acquire
     timeout 30 qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -186,6 +192,10 @@ run_single_test() {
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
+    # F2: registers this PID with the lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this process during the poll below
+    # still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
 
     # Wait for USERSPACE boot completion and the init-driven exec smoke (24s timeout)
     # Accept any of:
@@ -223,6 +233,7 @@ run_single_test() {
 
     kill $QEMU_PID 2>/dev/null || true
     wait $QEMU_PID 2>/dev/null || true
+    qemu_host_lock_release
 
     # Even if boot appeared successful, scan for crash markers that may have
     # appeared after the shell prompt (e.g., a child process crashed).
