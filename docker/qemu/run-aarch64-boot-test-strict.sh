@@ -41,6 +41,20 @@ STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:le
 # gate, [BOOT_TESTS:PASS] and every structural suite green.
 TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
+# #786 follow-on: the TTBR0 ASID census, emitted before userspace and at every
+# process exit. `untagged` counts publishes into `saved_process_cr3`/`next_cr3`
+# of a process root whose ASID field is not the userspace ASID -- the word the
+# `.Lrestore_saved_ttbr` arm of `syscall_entry.S` installs verbatim. Presence,
+# absence-of-untagged and evidence-that-anything-was-counted are pinned
+# separately: a census that reached no process-root publish reports untagged=0
+# for the same reason a dead counter does.
+# claim-lint:ok: 3 of 3 boots of this gate at this head print untagged=0 with
+# tagged above 17000, and the raw-operand mutation reddens the sibling gate --
+# docs/planning/green-program/aarch64-testing/serials/asid-ratchet/03-strict-x3.txt
+# and 02-runtime-anti-vacuity-prod-gate.txt
+ASID_CENSUS_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[0-9]+:kernel=[0-9]+:cleared=[0-9]+\]'
+ASID_CENSUS_UNTAGGED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[1-9][0-9]*:'
+ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][0-9]*:'
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -294,6 +308,18 @@ score_serial() {
     fi
     if grep -qF "[INIT_GROUP_CHILD_RAN]" "$serial_file" 2>/dev/null; then
         echo "Refused init-group child ran"
+        return 1
+    fi
+    if grep -qaE "$ASID_CENSUS_UNTAGGED_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "TTBR0 ASID census reported an untagged process-root publish ($(grep -aoE "$ASID_CENSUS_PATTERN" "$serial_file" | grep -E ':untagged=[1-9]' | tail -1))"
+        return 1
+    fi
+    if ! grep -qaE "$ASID_CENSUS_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "TTBR0 ASID census marker missing"
+        return 1
+    fi
+    if ! grep -qaE "$ASID_CENSUS_PUBLISHED_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "TTBR0 ASID census never counted a process-root publish"
         return 1
     fi
     return 0

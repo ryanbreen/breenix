@@ -1715,3 +1715,634 @@ fn the_blocking_resume_census_catches_an_unguarded_restore() {
         "the guarded spelling must pass: {unguarded:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The VALUE a shadow publish carries (#786 follow-on)
+// ---------------------------------------------------------------------------
+//
+// Everything above this line reads SHAPE: which function installs, whether it
+// settles both words, whether the value it installs traces to a parameter. The
+// defect that shipped on `main` for five hours passed every one of those
+// checks. `adopt_process_ttbr0` settled both words, in order, from a named
+// binding; what was wrong was the VALUE in the binding -- the caller's
+// ASID-untagged root -- and the `.Lrestore_saved_ttbr` arm of
+// `syscall_entry.S` installs that word verbatim, so a `nanosleep` or EINTR
+// return went to EL0 on ASID 0 while a dispatch return went on ASID 1.
+// claim-lint:ok: 25 of 27 tests in this file still pass with that value
+// defect restored, and the 2 that redden are named in
+// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/01-structural-anti-vacuity-raw-adopt.txt
+//
+// The brief for this round cites coordinator ruling R19 for why the shape
+// ratchet could not see it. That ruling's text is not recorded in this
+// repository, in issue #786 or in PR #800, so it is not quoted here; what IS
+// in the tree is the shape of the miss, and this census is what pins it:
+// `the_discipline_publishes_the_dispatch_asid` above checks ONE named
+// function, so a second publish site added tomorrow with an untagged operand
+// fails no check in this file.
+// claim-lint:ok: 1 of 1 function that check reads is `adopt_process_ttbr0`,
+// and the census below reaches 17 publishes across 5 functions --
+// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/05-suite-green-with-census.txt
+//
+// This census is the value ratchet. It walks every call to the two per-CPU
+// shadow accessors in aarch64-scoped code under `kernel/src` and requires
+// every operand to have an ACCOUNTED provenance: a literal 0, a value
+// normalised through `process_root_ttbr0`, a value carrying the dispatch tag,
+// this CPU's kernel root, or a value read back out of the register or out of a
+// shadow word. A raw `level_4_frame().start_address()` reaching a shadow store
+// is exactly what has no provenance here.
+// claim-lint:ok: 17 of 17 publishes and their dispositions are printed by
+// `every_shadow_publish_has_an_accounted_asid -- --nocapture` in
+// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/05-suite-green-with-census.txt
+//
+// Two disclosed narrowings, both covered by the RUNTIME census rather than by
+// this one:
+//
+//   * the aarch64 scope is `aarch64_scoped_functions`' scope, documented on
+//     that function: shared code with no cfg at all is outside it, and so is
+//     `kernel/src/per_cpu_aarch64.rs`, whose module declaration carries the
+//     cfg its path does not. The runtime counter sits at the per-CPU write
+//     itself, so a publish from any of those still reaches it.
+//   * a value read back out of the hardware register carries whatever ASID was
+//     installed, and no source shape can say what that was. The runtime
+//     counter is what measures it.
+
+/// The two per-CPU accessors that WRITE a corridor shadow word. The census is
+/// keyed on these names, not on a list of files: a new publish site is reached
+/// because it has to call one of them.
+const SHADOW_WRITERS: [&str; 2] = ["set_saved_process_cr3", "set_next_cr3"];
+
+/// How a published value got its ASID field.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Provenance {
+    /// A literal 0. The corridor arm for that word is disarmed, and 0 is the
+    /// one value `syscall_entry.S` tests for before installing.
+    Cleared,
+    /// Normalised through `process_root_ttbr0` in this function.
+    Normalised,
+    /// Carries the dispatch path's own ASID tag.
+    DispatchTagged,
+    /// This CPU's kernel root, which is the boot identity map and runs under
+    /// ASID 0 by construction, so the userspace ASID does not apply to it.
+    KernelRoot,
+    /// Read back out of `ttbr0_el1` or out of a shadow word: the ASID field is
+    /// whatever was already installed rather than a fresh choice.
+    ReadBack,
+    /// Came in through the signature: the caller chose it.
+    CallerBorne,
+    /// An unaccounted value reaching a corridor word: it matched no arm above.
+    Unaccounted,
+}
+
+impl Provenance {
+    fn label(self) -> &'static str {
+        match self {
+            Provenance::Cleared => "cleared",
+            Provenance::Normalised => "normalised",
+            Provenance::DispatchTagged => "dispatch-tagged",
+            Provenance::KernelRoot => "kernel root",
+            Provenance::ReadBack => "read back",
+            Provenance::CallerBorne => "caller-borne",
+            Provenance::Unaccounted => "UNACCOUNTED",
+        }
+    }
+
+    fn is_accounted(self) -> bool {
+        !matches!(self, Provenance::CallerBorne | Provenance::Unaccounted)
+    }
+}
+
+/// `body` with `//` line comments removed, so a comment that names a call the
+/// code no longer makes cannot enter the census as a publish.
+fn without_line_comments(body: &str) -> String {
+    let mut out = String::new();
+    for line in body.lines() {
+        let visible = match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        };
+        out.push_str(visible);
+        out.push_str("\n");
+    }
+    out
+}
+
+/// The right-hand side of a plain `name = ...;` assignment in `body`.
+///
+/// `let_binding_rhs` alone misses the deferred-initialisation shape, which is
+/// the one `sys_exec_aarch64` uses: `let previous_ttbr0;` on one line and
+/// `previous_ttbr0 = read_ttbr0_for_exec();` in the block below it.
+fn assignment_rhs(body: &str, name: &str) -> Option<String> {
+    let needle = format!("{name} = ");
+    let mut cursor = 0usize;
+    while let Some(offset) = body[cursor..].find(&needle) {
+        let at = cursor + offset;
+        let preceding = body[..at].trim_end();
+        let is_longer_identifier = body[..at]
+            .chars()
+            .last()
+            .is_some_and(|character| character.is_alphanumeric() || character == '_');
+        let is_binding = preceding.ends_with("let") || preceding.ends_with("mut");
+        let is_comparison = preceding.ends_with('!')
+            || preceding.ends_with('=')
+            || preceding.ends_with('<')
+            || preceding.ends_with('>');
+        if !is_longer_identifier && !is_binding && !is_comparison {
+            let rest = &body[at + needle.len()..];
+            let end = rest.find(';').unwrap_or(rest.len());
+            return Some(rest[..end].to_string());
+        }
+        cursor = at + needle.len();
+    }
+    None
+}
+
+/// The expression `name` is bound to in `body`, by `let` or by assignment.
+fn bound_expression(body: &str, name: &str) -> Option<String> {
+    let_binding_rhs(body, name).or_else(|| assignment_rhs(body, name))
+}
+
+/// Functions declared in `source` whose body reads `ttbr0_el1` with an `mrs`.
+/// A call to one of these is a register read-back however it is spelled.
+fn register_reading_functions(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in declared_function_names(source) {
+        let body = function_body(source, &name);
+        if body.contains("mrs") && body.contains("ttbr0_el1") {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// The provenance `expression` carries on its own, if any.
+fn expression_provenance(
+    expression: &str,
+    register_readers: &[String],
+    dispatch_tag: (u64, u32),
+) -> Option<Provenance> {
+    if expression.contains("process_root_ttbr0(") {
+        return Some(Provenance::Normalised);
+    }
+    if expression.contains("USER_ASID_TTBR0") || asid_tag(expression) == Some(dispatch_tag) {
+        return Some(Provenance::DispatchTagged);
+    }
+    if expression.contains("kernel_cr3()") || expression.contains("kernel_ttbr0()") {
+        return Some(Provenance::KernelRoot);
+    }
+    if expression.contains("next_cr3()")
+        || expression.contains("saved_process_cr3()")
+        || (expression.contains("mrs") && expression.contains("ttbr0_el1"))
+    {
+        return Some(Provenance::ReadBack);
+    }
+    for reader in register_readers {
+        if calls_function(expression, reader) {
+            return Some(Provenance::ReadBack);
+        }
+    }
+    None
+}
+
+/// Where `operand` got its ASID field, followed through this function's own
+/// bindings. Depth-limited for the same reason `traces_to_a_parameter` is: a
+/// publish normalises or tags a value a step or two before publishing it.
+fn value_provenance(
+    signature: &str,
+    body: &str,
+    operand: &str,
+    register_readers: &[String],
+    dispatch_tag: (u64, u32),
+) -> Provenance {
+    let operand = operand.trim();
+    if operand == "0" {
+        return Provenance::Cleared;
+    }
+    if operand.is_empty() {
+        return Provenance::Unaccounted;
+    }
+    if let Some(found) = expression_provenance(operand, register_readers, dispatch_tag) {
+        return found;
+    }
+
+    let parameters = identifiers(signature);
+    let mut frontier = vec![operand.to_string()];
+    let mut seen = BTreeSet::new();
+    let mut reached_a_parameter = false;
+    // The sibling of R7-002 on `derivation_fetches_nothing`: a value the
+    // function FETCHED is not a value its caller handed over, even when the
+    // thing it fetched from came in through the signature.
+    // `page_table.level_4_frame().start_address().as_u64()` bottoms out at a
+    // parameter and is exactly the untagged root this ratchet exists to catch,
+    // so any call in the derivation chain disqualifies the caller-borne
+    // disposition.
+    let mut fetched = false;
+    for _ in 0..4 {
+        let mut next = Vec::new();
+        for name in std::mem::take(&mut frontier) {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            match bound_expression(body, &name) {
+                Some(expression) => {
+                    if let Some(found) =
+                        expression_provenance(&expression, register_readers, dispatch_tag)
+                    {
+                        return found;
+                    }
+                    if expression.contains('(') {
+                        fetched = true;
+                    }
+                    next.extend(identifiers(&expression));
+                }
+                None => {
+                    if parameters.contains(&name) {
+                        reached_a_parameter = true;
+                    }
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+
+    if reached_a_parameter && !fetched {
+        Provenance::CallerBorne
+    } else {
+        Provenance::Unaccounted
+    }
+}
+
+/// One call that writes a corridor shadow word.
+struct ShadowPublish {
+    file: String,
+    function: String,
+    setter: String,
+    operand: String,
+    provenance: Provenance,
+}
+
+impl ShadowPublish {
+    fn site(&self) -> String {
+        format!("{}::{}", self.file, self.function)
+    }
+
+    fn disposition(&self) -> String {
+        format!(
+            "{}::{} {}({}) [{}]",
+            self.file,
+            self.function,
+            self.setter,
+            self.operand,
+            self.provenance.label()
+        )
+    }
+}
+
+/// The calls in aarch64-scoped code under `kernel/src` that write a corridor
+/// shadow word, with the provenance of the value each publishes.
+/// claim-lint:ok: 17 of 17 at this head, printed by
+/// `every_shadow_publish_has_an_accounted_asid -- --nocapture` in
+/// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/05-suite-green-with-census.txt
+fn shadow_publish_census(
+    sources: &[(String, String)],
+    dispatch_tag: (u64, u32),
+) -> Vec<ShadowPublish> {
+    let mut out = Vec::new();
+    for (file, name, raw_body) in aarch64_scoped_functions(sources) {
+        let source = sources
+            .iter()
+            .find(|(candidate, _)| candidate == &file)
+            .map(|(_, source)| source.as_str())
+            .expect("the census walks sources it was handed");
+        let register_readers = register_reading_functions(source);
+        let signature = function_signature(source, &name);
+        let body = without_line_comments(&raw_body);
+        for setter in SHADOW_WRITERS {
+            for operand in call_arguments(&body, setter) {
+                if operand.is_empty() {
+                    continue;
+                }
+                let provenance =
+                    value_provenance(&signature, &body, &operand, &register_readers, dispatch_tag);
+                out.push(ShadowPublish {
+                    file: file.clone(),
+                    function: name.clone(),
+                    setter: setter.to_string(),
+                    operand,
+                    provenance,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Caller-borne publishes whose callers do not resolve the provenance either,
+/// as `caller -> callee(argument)` strings.
+///
+/// A publish that hands over a parameter has not decided the ASID; its callers
+/// have. This walks them one level, which is the depth the shape needs: the
+/// one caller-borne publish with a live caller at this head is
+/// `restore_ttbr0_after_failed_exec`, whose caller captures the value from
+/// `ttbr0_el1` itself.
+fn unresolved_caller_borne(
+    sources: &[(String, String)],
+    census: &[ShadowPublish],
+    dispatch_tag: (u64, u32),
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for publish in census {
+        if publish.provenance != Provenance::CallerBorne {
+            continue;
+        }
+        for (file, name, raw_body) in aarch64_scoped_functions(sources) {
+            if name == publish.function {
+                continue;
+            }
+            let source = sources
+                .iter()
+                .find(|(candidate, _)| candidate == &file)
+                .map(|(_, source)| source.as_str())
+                .expect("the census walks sources it was handed");
+            let register_readers = register_reading_functions(source);
+            let signature = function_signature(source, &name);
+            let body = without_line_comments(&raw_body);
+            for argument in call_arguments(&body, &publish.function) {
+                let provenance =
+                    value_provenance(&signature, &body, &argument, &register_readers, dispatch_tag);
+                if !provenance.is_accounted() {
+                    out.push(format!(
+                        "{file}::{name} -> {}({argument}) [{}]",
+                        publish.function,
+                        provenance.label()
+                    ));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The ASID tag the discipline names, parsed out of its own constant.
+fn discipline_asid_tag(ttbr0: &str) -> (u64, u32) {
+    let line = ttbr0
+        .lines()
+        .find(|line| line.contains("const USER_ASID_TTBR0"))
+        .expect("the discipline must name the userspace ASID as a constant");
+    asid_tag(line).unwrap_or_else(|| panic!("parse the discipline ASID tag from {line:?}"))
+}
+
+#[test]
+fn every_shadow_publish_has_an_accounted_asid() {
+    let sources = rust_sources_below("kernel/src");
+    let tag = discipline_asid_tag(&repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs"));
+    let census = shadow_publish_census(&sources, tag);
+
+    assert!(
+        census.len() >= 12,
+        "the shadow-publish census reached only {} calls, so it is not covering the code it \
+         claims to",
+        census.len()
+    );
+
+    let dispositions: Vec<String> = census.iter().map(ShadowPublish::disposition).collect();
+    eprintln!(
+        "TTBR0 shadow-publish census ({} calls): {dispositions:#?}",
+        dispositions.len()
+    );
+
+    // The classifier has to be able to tell these apart on the real tree, or
+    // "no unaccounted publishes" would be a statement about a predicate that
+    // does not fire. Each accounted provenance is present at this head, and
+    // the census prints which call carries which.
+    // claim-lint:ok: 5 of 5 accounted provenances appear among the 17
+    // publishes printed in
+    // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/05-suite-green-with-census.txt
+    for expected in [
+        Provenance::Cleared,
+        Provenance::Normalised,
+        Provenance::DispatchTagged,
+        Provenance::KernelRoot,
+        Provenance::ReadBack,
+    ] {
+        assert!(
+            census.iter().any(|publish| publish.provenance == expected),
+            "no publish in the tree carries the {} provenance, so that arm of the classifier is \
+             unexercised",
+            expected.label()
+        );
+    }
+
+    let mut unaccounted = Vec::new();
+    for publish in &census {
+        let in_the_discipline = publish.file == "kernel/src/arch_impl/aarch64/ttbr0.rs";
+        let caller_borne = publish.provenance == Provenance::CallerBorne;
+        // The discipline is where normalisation is DEFINED. A publish inside
+        // it that hands the corridor a value its caller chose is the
+        // pre-9e877486 shape exactly, and it may not push the ASID decision
+        // back onto the routed call sites.
+        if publish.provenance == Provenance::Unaccounted || (in_the_discipline && caller_borne) {
+            unaccounted.push(publish.disposition());
+        }
+    }
+    assert!(
+        unaccounted.is_empty(),
+        "these publishes hand the syscall return corridor a value with no ASID provenance, and \
+         the corridor installs the word verbatim: {unaccounted:#?}"
+    );
+
+    let unresolved = unresolved_caller_borne(&sources, &census, tag);
+    assert!(
+        unresolved.is_empty(),
+        "these callers hand a shadow publish a value with no ASID provenance: {unresolved:#?}"
+    );
+}
+
+#[test]
+fn the_publication_census_catches_an_untagged_root() {
+    let tag = (1, 48);
+    let with = |body: &str| {
+        vec![(
+            "kernel/src/arch_impl/aarch64/invented.rs".to_string(),
+            body.to_string(),
+        )]
+    };
+
+    // Leg 1: a new publish site handing the corridor a bare page-table root.
+    let raw = "fn publish_a_root(page_table: &PageTable) {\n\
+        let root = page_table.level_4_frame().start_address().as_u64();\n\
+        unsafe { Aarch64PerCpu::set_next_cr3(root); }\n\
+    }\n";
+    let census = shadow_publish_census(&with(raw), tag);
+    let caught: Vec<String> = census
+        .iter()
+        .filter(|publish| publish.provenance == Provenance::Unaccounted)
+        .map(ShadowPublish::site)
+        .collect();
+    assert_eq!(
+        caught,
+        vec!["kernel/src/arch_impl/aarch64/invented.rs::publish_a_root".to_string()],
+        "an untagged root reaching a shadow store has to be caught"
+    );
+
+    // Leg 2: the same site, normalised. The census must accept it: without
+    // this arm, a predicate that rejected every publish would pass leg 1.
+    // claim-lint:ok: 5 legs in this test, and the in-tree mutation that
+    // reverts the discipline is recorded in
+    // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/01-structural-anti-vacuity-raw-adopt.txt
+    let normalised = raw.replace(
+        "Aarch64PerCpu::set_next_cr3(root)",
+        "Aarch64PerCpu::set_next_cr3(process_root_ttbr0(root))",
+    );
+    assert!(
+        shadow_publish_census(&with(&normalised), tag)
+            .iter()
+            .all(|publish| publish.provenance.is_accounted()),
+        "normalising the operand has to clear it"
+    );
+
+    // Leg 3: the pre-9e877486 discipline shape -- the operand is the caller's,
+    // and the discipline publishes it unchanged.
+    let discipline = "fn adopt_process_ttbr0(ttbr0_value: u64) {\n\
+        unsafe {\n\
+            super::percpu::Aarch64PerCpu::set_saved_process_cr3(ttbr0_value);\n\
+            super::percpu::Aarch64PerCpu::set_next_cr3(0);\n\
+        }\n\
+    }\n";
+    let sources = vec![(
+        "kernel/src/arch_impl/aarch64/ttbr0.rs".to_string(),
+        discipline.to_string(),
+    )];
+    let census = shadow_publish_census(&sources, tag);
+    assert!(
+        census.iter().any(|publish| publish.provenance == Provenance::CallerBorne
+            && publish.function == "adopt_process_ttbr0"),
+        "the discipline publishing its raw operand is caller-borne, which the census fails on \
+         inside the discipline module"
+    );
+
+    // Leg 4: a caller-borne publish OUTSIDE the discipline is resolved at its
+    // callers, and a caller handing over a raw root is what fails.
+    let primitive = "fn install_and_publish(ttbr0: u64) {\n\
+        unsafe { Aarch64PerCpu::set_saved_process_cr3(ttbr0); }\n\
+    }\n\
+    fn a_caller(page_table: &PageTable) {\n\
+        let root = page_table.level_4_frame().start_address().as_u64();\n\
+        install_and_publish(root);\n\
+    }\n";
+    let sources = with(primitive);
+    let census = shadow_publish_census(&sources, tag);
+    assert!(
+        census
+            .iter()
+            .any(|publish| publish.provenance == Provenance::CallerBorne),
+        "a publish of a parameter is caller-borne"
+    );
+    assert_eq!(
+        unresolved_caller_borne(&sources, &census, tag),
+        vec![
+            "kernel/src/arch_impl/aarch64/invented.rs::a_caller -> install_and_publish(root) \
+             [UNACCOUNTED]"
+                .to_string()
+        ],
+        "the caller that chose the untagged root is the site that has to be named"
+    );
+
+    // Leg 5: the same caller, capturing the value from the register instead.
+    let read_back = primitive.replace(
+        "let root = page_table.level_4_frame().start_address().as_u64();",
+        "let root = read_ttbr0();",
+    ) + "fn read_ttbr0() -> u64 {\n\
+        let value: u64;\n\
+        unsafe { core::arch::asm!(\"mrs {}, ttbr0_el1\", out(reg) value); }\n\
+        value\n\
+    }\n";
+    let sources = with(&read_back);
+    let census = shadow_publish_census(&sources, tag);
+    assert!(
+        unresolved_caller_borne(&sources, &census, tag).is_empty(),
+        "a caller that hands over what the register already held is resolved"
+    );
+}
+
+#[test]
+fn the_shadow_setters_feed_the_runtime_census() {
+    // The census above reads source shapes and stops there. What says the
+    // shipped kernel publishes a tagged root is the runtime counter, and it
+    // can only say so while both writes still go through it.
+    // claim-lint:ok: 2 of 2 per-CPU setters are checked below; the 3 boots
+    // that read the counter are in
+    // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1.txt
+    // and its 2 siblings
+    let percpu = repo_text("kernel/src/arch_impl/aarch64/percpu.rs");
+    for setter in SHADOW_WRITERS {
+        let body = function_body(&percpu, setter);
+        let write = body
+            .find("percpu_write_u64")
+            .unwrap_or_else(|| panic!("{setter} must write the per-CPU word"));
+        let count = body.find("note_shadow_publish").unwrap_or_else(|| {
+            panic!("{setter} writes a corridor shadow word without counting what it publishes")
+        });
+        assert!(
+            count < write,
+            "{setter} must count the value it is about to publish, not one it has published"
+        );
+    }
+
+    let ttbr0 = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
+    let counter = function_body(&ttbr0, "note_shadow_publish");
+    assert!(
+        counter.contains("USER_ASID_TTBR0"),
+        "the runtime census must score the ASID field against the discipline's own constant"
+    );
+    assert!(
+        counter.contains("kernel_ttbr0()"),
+        "the runtime census must exempt the kernel root, which is ASID 0 by construction"
+    );
+    for forbidden in ["lock()", "serial_println!", "log::", "format!", "alloc::"] {
+        assert!(
+            !counter.contains(forbidden),
+            "the runtime census runs where the shadow words are written and must not use \
+             {forbidden}"
+        );
+    }
+
+    let emitter = function_body(&ttbr0, "emit_asid_census");
+    assert!(
+        emitter.contains("[TTBR0_ASID_CENSUS:untagged="),
+        "the census marker the gates pin has to be the one the kernel prints"
+    );
+}
+
+#[test]
+fn both_aarch64_gates_fail_on_an_untagged_publish() {
+    // The counter is a ratchet only if a non-zero reading fails a gate. The 2
+    // aarch64 gates that boot a kernel are pinned here, by the shape of the
+    // assertion rather than by its wording.
+    // claim-lint:ok: 1 of those 2 gates was run against the raw-operand
+    // mutation and went red --
+    // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/02-runtime-anti-vacuity-prod-gate.txt
+    for gate in [
+        "docker/qemu/run-aarch64-boot-test-strict.sh",
+        "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
+    ] {
+        let script = repo_text(gate);
+        assert!(
+            script.contains("TTBR0_ASID_CENSUS:untagged=[1-9]"),
+            "{gate} does not look for a non-zero untagged publish"
+        );
+        assert!(
+            script.contains("TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9]"),
+            "{gate} does not require the census to have counted a process-root publish, so a dead \
+             counter would pass it"
+        );
+        assert!(
+            script.contains("untagged=[0-9]+:tagged=[0-9]+:kernel=[0-9]+:cleared=[0-9]+"),
+            "{gate} does not require the census marker to be present at all"
+        );
+    }
+}

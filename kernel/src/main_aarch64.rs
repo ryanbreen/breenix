@@ -1334,6 +1334,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
+    kernel::arch_impl::aarch64::ttbr0::emit_asid_census();
 
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all

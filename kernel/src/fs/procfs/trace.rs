@@ -208,6 +208,11 @@ pub fn generate_counters() -> String {
     // making late root-custody changes visible without logging in a hot path.
     crate::tracing::providers::teardown::emit_root_custody_summary();
     crate::tracing::providers::teardown::emit_tombstone_census();
+    // #786 follow-on: the TTBR0 ASID census rides the same cold path, so the
+    // count of process-root publishes carrying a foreign ASID is re-read as the
+    // run progresses rather than only once before userspace.
+    #[cfg(target_arch = "aarch64")]
+    crate::arch_impl::aarch64::ttbr0::emit_asid_census();
 
     let mut output = String::new();
 
