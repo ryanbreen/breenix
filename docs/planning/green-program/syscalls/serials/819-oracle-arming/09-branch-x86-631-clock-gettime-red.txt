@@ -1,0 +1,21 @@
+# x86 boot-tests run 2 of 3 (beast breenix-x86, clone /root/breenix-fcntlarm at c9f69055)
+# The #631 signature. Gate log lines, then the assertion excerpt read from
+# breenix_x86_boot_tests_1/serial_user.txt of THIS run, before run 3 reused
+# the same BREENIX_GATE_TMP directory.
+
+  Added: clock_gettime_test (184616 bytes, sectors 12317-12677)
+-rwxr-xr-x 1 root root 184616 Sep  5 18:17 clock_gettime_test
+x86 userspace gate: FAIL - failing process is not allowlisted: clock_gettime_test
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=110 nonzero=1 failed=[clock_gettime_test:1]
+[ERROR] kernel::syscall::handlers: 🚨 Failing userspace processes: clock_gettime_test:1 🚨
+>
+
+serial_user.txt of the failing run:
+690:Test 3: Sub-millisecond precision
+691-  Elapsed: 1332075 ns
+692-  FAIL: Elapsed time >= 1ms (possible PIT fallback)
+
+The oracle line in the same serial was unchanged:
+FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP
+
+Attribution: #631 (closed 2026-09-04, mechanism attributed to open #766).

@@ -934,10 +934,17 @@ for i in $(seq 1 "$COUNT"); do
     CENSUS_WIDEN_ORACLE_LINE=$(grep -h -F "$CENSUS_WIDEN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$CENSUS_WIDEN_ORACLE_LINE"
-    # #796 and #812 both pass this gate by pinning a SKIP line the && chain
-    # above requires, but neither line was echoed here, so a preserved copy of
-    # this driver's stdout showed the verdict and not the evidence behind it.
-    # Echo the line the grep actually found, the way CENSUS_WIDEN does.
+    # Surfaced for the same reason its sibling above is: the wait predicate
+    # already requires this literal fixed-string, so a run that reaches here
+    # matched it. Until this echo existed the gate printed its sibling oracle
+    # lines and not this one, so a gate log could not be read as a receipt for
+    # what the uniprocessor arm said -- and a round doc cited a gate log for
+    # exactly that. #796 and #812 both pass this gate by pinning a SKIP line
+    # the && chain above requires, but neither line was echoed here either,
+    # so a preserved copy of this driver's stdout showed the verdict and not
+    # the evidence behind it.
+    # claim-lint:ok: the citation and its correction are recorded in
+    # docs/planning/green-program/syscalls/819-ORACLE-ARMING-2026-09-05.md
     FCNTL_PM_CONTENTION_ORACLE_LINE=$(grep -h -F "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FCNTL_PM_CONTENTION_ORACLE_LINE"
