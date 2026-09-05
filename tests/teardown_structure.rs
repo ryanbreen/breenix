@@ -16540,10 +16540,10 @@ fn try_manager_mask_ratchet_is_not_vacuous() {
 
     // The ordering half of `restored_after_release` needs a leg that keeps the
     // release call and moves it, not one that removes it: a mutation that loses
-    // the release reddens on "never releases the mutex" whatever the ordering
-    // is, so it would prove nothing about ordering. This one lifts the release
-    // block out and re-inserts it below both restores, which is the regression
-    // shape the guard's comment warns against.
+    // the release reddens on the release-presence failure whatever the ordering
+    // is, so it reads release presence rather than ordering. This one lifts the
+    // release block out and re-inserts it below both restores, which is the
+    // regression shape the guard's comment warns against.
     let release_block = "        unsafe {\n            core::mem::ManuallyDrop::drop(&mut self.guard);\n        }\n\n";
     let x86_restore_block = "        #[cfg(target_arch = \"x86_64\")]\n        if self.interrupts_were_enabled {\n            unsafe {\n                crate::arch_enable_interrupts();\n            }\n        }\n";
     let reordered_drop = drop_impl
