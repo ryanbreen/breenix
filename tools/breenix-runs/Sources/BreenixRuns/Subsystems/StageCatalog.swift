@@ -48,9 +48,8 @@ public enum StageCatalogError: Error, Equatable, CustomStringConvertible {
 
 public enum StageCatalog {
     public static func load(for arch: Arch) throws -> [BootStage] {
-        let url = catalogURL(for: arch)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw StageCatalogError.missing(url)
+        guard let url = catalogURL(for: arch) else {
+            throw StageCatalogError.missing(expectedCatalogURL(for: arch))
         }
 
         let file = try RunStore.decoder.decode(StageCatalogFile.self, from: Data(contentsOf: url))
@@ -66,12 +65,18 @@ public enum StageCatalog {
         return file.stages
     }
 
-    public static func catalogURL(for arch: Arch) -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources/boot-stages-\(arch.rawValue).json")
+    public static func catalogURL(for arch: Arch) -> URL? {
+        resourceBundle.url(
+            forResource: "boot-stages-\(arch.rawValue)",
+            withExtension: "json"
+        )
+    }
+
+    private static func expectedCatalogURL(for arch: Arch) -> URL {
+        resourceBundle.bundleURL.appendingPathComponent("boot-stages-\(arch.rawValue).json")
+    }
+
+    private static var resourceBundle: Bundle {
+        Bundle.module
     }
 }

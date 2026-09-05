@@ -95,6 +95,15 @@ public enum StateMachine {
         return [marker]
     }
 
+    // These three shapes are `serial_println!("[boot] ...")` call sites in
+    // kernel/src/main_aarch64.rs, cited here per DESIGN.md Sec 4.2 ("the
+    // Inspector uses the gate's pattern verbatim and cites it, so the two
+    // cannot drift"):
+    //   `<X> init failed:` -- e.g. `:826` ("VirtIO keyboard init failed: {}")
+    //   `<X> failed:`       -- e.g. `:753,758,763,768,781,786,795`
+    //                          ("Display setup failed:", "GOP framebuffer
+    //                          failed:", "VirtIO graphics failed:", etc.)
+    //   `No <X> found`      -- `:800` ("No display device found")
     private static func detectedFailureArms(in index: SerialIndex) -> [FailureArm] {
         index.lines.compactMap { line in
             if let subject = capture(line.text, pattern: #"\[boot\]\s+(.+?)\s+init failed:"#) {

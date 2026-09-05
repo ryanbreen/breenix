@@ -1,6 +1,6 @@
 //! Run Inspector boot-stage catalog export ratchet.
 //!
-//! `tools/breenix-runs/Resources/boot-stages-<arch>.json` is committed so the
+//! `tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-<arch>.json` is committed so the
 //! Swift CLI/app can inspect stored runs without requiring Cargo at runtime.
 //! This test re-runs the live xtask exporter and compares it byte-for-byte with
 //! the committed files for both architectures. The assertion contains no
@@ -49,7 +49,7 @@ fn live_catalog(arch: &str) -> String {
 fn committed_catalog(arch: &str) -> String {
     fs::read_to_string(
         repo_root().join(format!(
-            "tools/breenix-runs/Resources/boot-stages-{arch}.json"
+            "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-{arch}.json"
         )),
     )
     .unwrap_or_else(|_| panic!("read committed boot stage catalog for {arch}"))

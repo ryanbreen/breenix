@@ -31,6 +31,16 @@ public enum RunShowError: Error, CustomStringConvertible {
 }
 
 public enum RunShow {
+    // The stage-name column width for `renderSubsystems`. `String(format:)`'s
+    // `%-N@` width flag is silently ignored for NSString substitutions on
+    // this Foundation, so alignment is done by hand instead (see `padded`
+    // below). Sized past the longest known catalog name (46 chars, x86_64's
+    // "Softirq nested interrupt rejection test passed") with headroom so a
+    // future catalog addition does not silently misalign the table again;
+    // `padded` never truncates, so a name that still exceeds this width
+    // widens the column for that row rather than corrupting it.
+    private static let stageNameColumnWidth = 50
+
     public static func render(manifest: RunManifest, store: RunStore, options rawOptions: RunShowOptions) throws -> String {
         let options = rawOptions.normalized
         let serialIndex = try scanSerials(manifest: manifest, store: store)
@@ -95,7 +105,7 @@ public enum RunShow {
             }
 
             let lineText = state.reachedLine.map { "L\($0)" } ?? "-"
-            lines.append(String(format: "%@ %-44@ %@", symbol, state.stage.name as NSString, lineText))
+            lines.append("\(symbol) \(padded(state.stage.name, to: stageNameColumnWidth)) \(lineText)")
             if state.isStoppedHere {
                 lines.append("    means: \(state.stage.failureMeaning)")
                 lines.append("    check: \(state.stage.checkHint)")
@@ -105,6 +115,16 @@ public enum RunShow {
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    // Pads `text` with trailing spaces to `width`; never truncates, so a
+    // name longer than `width` still renders in full (just misaligning that
+    // one row) rather than being silently cut off.
+    private static func padded(_ text: String, to width: Int) -> String {
+        guard text.count < width else {
+            return text
+        }
+        return text + String(repeating: " ", count: width - text.count)
     }
 
     private static func renderMessages(index: SerialIndex) -> String {

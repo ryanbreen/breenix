@@ -11,7 +11,10 @@ let package = Package(
         .executable(name: "breenix-runs", targets: ["breenix-runs"])
     ],
     targets: [
-        .target(name: "BreenixRuns"),
+        .target(
+            name: "BreenixRuns",
+            resources: [.copy("Resources")]
+        ),
         .executableTarget(
             name: "breenix-runs",
             dependencies: ["BreenixRuns"]
