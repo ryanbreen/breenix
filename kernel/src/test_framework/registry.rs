@@ -4161,8 +4161,11 @@ pub fn run_census_widen_oracle() -> bool {
 #[cfg(target_arch = "aarch64")]
 const FCNTL_PM_HOLD_US: u64 = 8_000;
 /// Microseconds the holder spins for the lock before reporting a failed arm.
+///
+/// Short, because this spin runs with interrupts masked: an arm that cannot get
+/// the lock quickly should give the CPU back and let the attempt be retried.
 #[cfg(target_arch = "aarch64")]
-const FCNTL_PM_ACQUIRE_US: u64 = 200_000;
+const FCNTL_PM_ACQUIRE_US: u64 = 20_000;
 /// Microseconds the driver waits for the holder to publish its window.
 #[cfg(target_arch = "aarch64")]
 const FCNTL_PM_ARM_WAIT_US: u64 = 500_000;
@@ -4217,39 +4220,52 @@ fn fcntl_pm_elapsed_us(since: u64) -> u64 {
     delta.saturating_mul(1_000_000) / hz
 }
 
-/// Hold PROCESS_MANAGER on this CPU for a bounded window.
+/// Hold PROCESS_MANAGER on this CPU for a bounded window, with interrupts
+/// masked for the whole hold.
 ///
-/// The lock is taken with try_manager(), which does not touch DAIF, so this CPU
-/// keeps taking timer interrupts while it holds it -- the global tick counter is
-/// CPU 0's and must not be stopped by this oracle. The release deadline is read
-/// from CNTVCT_EL0, which advances whether or not any CPU is masked, so the
-/// window closes even while the driver waits for the lock with interrupts off.
+/// The mask is not decoration and it is not an optimisation: the driver's
+/// contended call blocks for this lock with no timeout, by construction, so a
+/// holder that can be descheduled between acquiring and releasing wedges the
+/// boot rather than failing the test. That is what happened -- 1 of 6 boots hung
+/// with [TEST:syscall:fcntl_pm_contention_oracle:START] and no verdict -- when
+/// this held the lock with interrupts enabled. Masking gives the same shape
+/// crate::process::manager() itself uses on this architecture: nothing can take
+/// this CPU away between the acquire and the release, so the window always
+/// closes.
+///
+/// The release deadline is read from CNTVCT_EL0, which advances whether or not
+/// any CPU is masked, so the window closes even while the driver waits for the
+/// lock with its own interrupts off. The acquire is a bounded try-loop rather
+/// than a blocking manager(): an unbounded masked wait for a lock this oracle
+/// does not control would reintroduce the same hang from the other side.
 #[cfg(target_arch = "aarch64")]
 fn fcntl_pm_holder_body() {
-    let acquire_start = crate::tracing::trace_timestamp();
-    let guard = loop {
-        if let Some(guard) = crate::process::try_manager() {
-            break guard;
-        }
-        if fcntl_pm_elapsed_us(acquire_start) > FCNTL_PM_ACQUIRE_US {
-            FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);
-            return;
-        }
-        core::hint::spin_loop();
-    };
+    crate::arch_impl::aarch64::cpu::without_interrupts(|| {
+        let acquire_start = crate::tracing::trace_timestamp();
+        let guard = loop {
+            if let Some(guard) = crate::process::try_manager() {
+                break guard;
+            }
+            if fcntl_pm_elapsed_us(acquire_start) > FCNTL_PM_ACQUIRE_US {
+                FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);
+                return;
+            }
+            core::hint::spin_loop();
+        };
 
-    FCNTL_PM_HOLD_CPU.store(
-        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
-        AtomicOrdering::Relaxed,
-    );
-    let held_from = crate::tracing::trace_timestamp();
-    FCNTL_PM_HOLD_ACTIVE.store(true, AtomicOrdering::Release);
-    while fcntl_pm_elapsed_us(held_from) < FCNTL_PM_HOLD_US {
-        core::hint::spin_loop();
-    }
-    FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
-    drop(guard);
-    FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);
+        FCNTL_PM_HOLD_CPU.store(
+            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
+            AtomicOrdering::Relaxed,
+        );
+        let held_from = crate::tracing::trace_timestamp();
+        FCNTL_PM_HOLD_ACTIVE.store(true, AtomicOrdering::Release);
+        while fcntl_pm_elapsed_us(held_from) < FCNTL_PM_HOLD_US {
+            core::hint::spin_loop();
+        }
+        FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+        drop(guard);
+        FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);
+    });
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -4276,14 +4292,24 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
         use crate::task::kthread::{
             kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
         };
-        use crate::task::scheduler::{live_peer_cpu_for_test, release_cpu_affine_thread_for_test};
+        use crate::task::scheduler::{
+            live_peer_cpu_for_test, live_peer_cpu_for_test_excluding_cpu0,
+            release_cpu_affine_thread_for_test,
+        };
 
         // A peer that is still dispatching. Taking the first CPU that is merely
         // "not me" picked a stale CPU on this gate's own profile: the probe was
         // migrated off it by the scheduler's unschedulable-queue reclaim and
         // then bounced by the boot-test affinity retain check, so on 3 of 3
-        // smoke boots it armed and then reported joined=0.
+        // smoke boots it armed and then reported joined=0. CPU 0 is the second
+        // choice rather than the first because it is the only writer of the
+        // global tick counter and the holder masks interrupts while it holds
+        // the lock.
         let peer = live_peer_cpu_for_test();
+        let peer = match peer {
+            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+            other => other,
+        };
 
         let mut attempts = 0u64;
         let mut armed = 0u64;
@@ -4336,6 +4362,11 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
                 if FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
                     armed = 1;
                     holder_cpu = FCNTL_PM_HOLD_CPU.load(AtomicOrdering::Relaxed);
+                    // Pin the measurement: a driver that migrated onto the
+                    // peer between the peer choice and the contended call would
+                    // be waiting, with interrupts masked, for a holder that
+                    // cannot be dispatched on the CPU the driver is occupying.
+                    crate::per_cpu::preempt_disable();
                     // Independent read of the same lock, immediately before the
                     // measured call: this is what makes "contended" a reading
                     // rather than an assumption about the peer's timing.
@@ -4354,6 +4385,7 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
                             eagain += 1;
                         }
                     }
+                    crate::per_cpu::preempt_enable();
                 }
 
                 // Clear the forced placement before waiting, the same way the
@@ -7447,34 +7479,14 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 5000,
         stage: TestStage::PostScheduler,
     },
-    // Keep this after the kernel-stack accounting tests in PROCESS_TESTS. Its
-    // probe stack is allocated only once each earlier accounting window in this
-    // subsystem has closed, so asynchronous retirement cannot make the probe
-    // straddle such a window.
+    // Keep this last in PROCESS_TESTS. Its probe stack is allocated only after
+    // every earlier kernel-stack accounting window in this subsystem has closed,
+    // so asynchronous retirement cannot make the probe straddle such a window.
     TestDef {
         name: "census_widen_oracle",
         func: test_census_widen_oracle,
         arch: Arch::Aarch64,
         timeout_ms: 2000,
-        stage: TestStage::PostScheduler,
-    },
-    // #796, and it belongs HERE rather than in SYSCALL_TESTS for a measured
-    // reason. Subsystem test threads run concurrently, so a registration in the
-    // syscall subsystem put this oracle's window -- 8 ms in which no CPU can
-    // commit a dispatch, because it holds the lock every dispatch needs --
-    // alongside census_widen_oracle's baseline, which requires no thread queued
-    // on a non-dispatching CPU. That reddened census_widen_oracle on 2 of 2
-    // smoke boots while origin/main scored 3 of 3 green. Tests inside one
-    // subsystem run in sequence, so registering it after census_widen_oracle
-    // puts that baseline strictly before this window exists. It allocates one
-    // kthread stack, after census_widen_oracle's own probe has been joined and
-    // its verdict printed.
-    #[cfg(target_arch = "aarch64")]
-    TestDef {
-        name: "fcntl_pm_contention_oracle",
-        func: test_fcntl_pm_contention_oracle,
-        arch: Arch::Aarch64,
-        timeout_ms: 10000,
         stage: TestStage::PostScheduler,
     },
     // Note: Userspace stage tests cannot run from syscall context (would block).
@@ -7507,6 +7519,25 @@ static SYSCALL_TESTS: &[TestDef] = &[
         arch: Arch::Aarch64,
         timeout_ms: 2000,
         stage: TestStage::EarlyBoot,
+    },
+    // #796, and the stage is the load-bearing part. This oracle's window is
+    // 8 ms in which no CPU can commit a dispatch, because it holds the lock
+    // every dispatch needs. Subsystem test threads run concurrently, so at
+    // PostScheduler that window landed on census_widen_oracle's baseline --
+    // which requires no thread queued on a non-dispatching CPU -- and reddened
+    // it on 2 of 2 smoke boots while plain origin/main scored 3 of 3 green.
+    // Stages are barriers: advance_to_stage joins every subsystem thread before
+    // it returns, so ProcessContext puts this window strictly after each
+    // PostScheduler verdict, including that baseline. PROCESS_TESTS is not the
+    // answer either: strand_handoff_structure ratchets census_widen_oracle as
+    // the last registration in that array.
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "fcntl_pm_contention_oracle",
+        func: test_fcntl_pm_contention_oracle,
+        arch: Arch::Aarch64,
+        timeout_ms: 10000,
+        stage: TestStage::ProcessContext,
     },
 ];
 
