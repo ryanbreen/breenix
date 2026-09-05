@@ -1668,17 +1668,17 @@ fn retirement_oracle_clock_delta(milliseconds: u64) -> u64 {
     milliseconds
 }
 
-/// The quiesce/cleanup budget every retirement oracle below waits out, in the
-/// milliseconds `retirement_oracle_clock_delta` takes.
+/// The quiesce/cleanup budget the 13 retirement-oracle loops below wait out, in
+/// the milliseconds `retirement_oracle_clock_delta` takes.
 ///
-/// #767 (ruling R176). Every one of these loops was written as
-/// `retirement_oracle_clock_delta(5_000)` and every one of them was measured
-/// green at the wall-clock budget that expression actually bought at the time,
-/// which is not the same number on the two arches:
+/// #767 (ruling R176). Each of those 13 loops was written as
+/// `retirement_oracle_clock_delta(5_000)`, and each was measured green at the
+/// wall-clock budget that expression actually bought at the time, which is not
+/// the same number on the two arches:
 ///
 /// * aarch64: `retirement_oracle_clock_delta` is derived from the generic
-///   timer frequency, so 5_000 has always been 5 s of wall clock, and #767 does
-///   not touch that clock at all.
+///   timer frequency, so 5_000 has been 5 s of wall clock since that arm was
+///   written, and #767 does not touch that clock.
 /// * x86_64: the clock underneath is `get_monotonic_time()`, which returned raw
 ///   200 Hz PIT ticks until #767 scaled it. `delta(5_000)` therefore bought
 ///   5000 ticks -- 25 s of wall clock, and 5000 rounds of the inner one-tick
@@ -1697,7 +1697,7 @@ fn retirement_oracle_clock_delta(milliseconds: u64) -> u64 {
 const RETIREMENT_ORACLE_QUIESCE_MS: u64 = 5_000 * crate::time::timer::MS_PER_TICK;
 
 /// aarch64's half of `RETIREMENT_ORACLE_QUIESCE_MS` above: 5 s, the value this
-/// arch's frequency-derived oracle clock has always given, unchanged by #767.
+/// arch's frequency-derived oracle clock gives, unchanged by #767.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const RETIREMENT_ORACLE_QUIESCE_MS: u64 = 5_000;
 

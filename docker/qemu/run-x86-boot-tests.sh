@@ -327,8 +327,9 @@ CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
 # The kernel prints exactly one of these per boot, carrying the two bracketing
 # tick reads and the millisecond read taken between them. In THIS profile it is
 # emitted by run_x86_timer_scale_gate(), dispatched first in the boot_tests gate
-# list in kernel/src/main.rs: a measured 900 s boot of this profile emitted zero
-# of these lines when the only call site was test_timer_resolution() in
+# list in kernel/src/main.rs: a measured 900 s boot of this profile emitted 0 of
+# these lines in 1 of 1 such boots when the only call site was
+# test_timer_resolution() in
 # kernel_main_continue(), which the test userspace preempts before it is
 # reached. test_timer_resolution() is the shipped (zero-feature) profile's call
 # site, and is what run-x86-prod-profile-boot-test.sh pins. ms_per_tick=5 is x86's own

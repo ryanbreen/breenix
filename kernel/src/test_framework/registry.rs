@@ -1239,9 +1239,7 @@ fn test_timer_ticks() -> TestResult {
 ///
 /// Attempts to delay for approximately 10ms and checks that the elapsed
 /// time is within the MIN_MS..=MAX_MS band. This accounts for timer resolution
-/// and scheduling variance. The x86 branch raises its own ceiling to
-/// `MAX_MS + 2 * MS_PER_TICK` because the clock it reads only moves in 5 ms
-/// steps; see the comment there. On ARM64 the busy-wait additionally proves, from
+/// and scheduling variance. On ARM64 the busy-wait additionally proves, from
 /// inside the guest, whether wall-clock time advanced while this vCPU executed
 /// nothing at all; only those windows are re-measured, and the scored bounds
 /// never move (see the attribution comment in the aarch64 branch).
@@ -1251,6 +1249,9 @@ fn test_timer_ticks() -> TestResult {
 /// PIT path has no per-CPU interrupt counter with which to prove the premise
 /// the ARM64 attribution rests on; it is a knowingly unscreened measurement
 /// rather than an oversight.
+///
+/// #767: the x86 branch raises its own ceiling to `MAX_MS + 2 * MS_PER_TICK`,
+/// because the clock it reads moves in 5 ms steps; see the comment there.
 fn test_timer_delay() -> TestResult {
     // Target delay in milliseconds
     const TARGET_MS: u64 = 10;
@@ -1292,9 +1293,10 @@ fn test_timer_delay() -> TestResult {
         // This widens the x86 ceiling from 20 ms to 30 ms. It is a tolerance
         // change, not a budget change, and it is confined to this branch: the
         // aarch64 arm reads CNTVCT at microsecond resolution and keeps the
-        // 5..=20 band it was measured with. Nothing in this round executes this
-        // arm -- the x86 staged registry is off in every gate (#533) -- so it is
-        // argued from the arithmetic above, not from a boot.
+        // 5..=20 band it was measured with. 0 of the 5 gate runs in the #767
+        // round execute this arm: the x86 staged registry is off in each of the
+        // 3 x86 gate runs (#533), and the 2 aarch64 runs take the branch below.
+        // So the ceiling is argued from the arithmetic above, not from a boot.
         const X86_MAX_MS: u64 = MAX_MS + 2 * crate::time::timer::MS_PER_TICK;
 
         let start = crate::time::get_monotonic_time();
@@ -2288,9 +2290,9 @@ fn sleep_current_thread_ms(duration_ms: u64) {
     }
 }
 
-/// The wall-clock budget of every loopback backstop in this module.
+/// The wall-clock budget of the 4 loopback backstops in this module.
 ///
-/// #767 (ruling R176). Each of these four backstops was written as `1_000`
+/// #767 (ruling R176). Each of those 4 backstops was written as `1_000`
 /// against `get_monotonic_time()` while that function returned the raw tick
 /// counter, and each was measured green at what `1_000` bought on the arch it
 /// ran on: 1_000 ticks, which is 1 s on aarch64 (`MS_PER_TICK` = 1) and 5 s on
@@ -2300,9 +2302,9 @@ fn sleep_current_thread_ms(duration_ms: u64) {
 /// `MS_PER_TICK` holds each arch at the budget it was measured at. Tightening
 /// either one is a separate change that owes its own evidence.
 ///
-/// All four are timeout backstops on a loop that normally exits early, so the
-/// number is a ceiling on how long a *broken* boot spins, not a delay any
-/// passing run pays.
+/// Each of the 4 is a timeout backstop on a loop that exits early on the
+/// success path, so the number is a ceiling on how long a *broken* boot spins,
+/// not a delay a passing run pays.
 const LOOPBACK_BACKSTOP_MS: u64 = 1_000 * crate::time::timer::MS_PER_TICK;
 
 fn setup_loopback_tcp_pair(

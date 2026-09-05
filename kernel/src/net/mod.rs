@@ -284,7 +284,8 @@ const MAX_ARP_PENDING_QUEUE_SIZE: usize = 16;
 /// (efc2af57, 2026-05-31, long after PIT_HZ became 200 at c16faca1) is 5000
 /// ticks: 25 s on x86_64 and 5 s on aarch64. #767 made the producer return real
 /// milliseconds; keeping the bare literal would have cut the x86 window to a
-/// fifth of the one every green networking run on this tree was measured with.
+/// fifth of the one the 2 green x86 networking runs in the #767 round were
+/// measured with (docs/planning/green-program/timekeeping/767-FIX-2026-09-05.md).
 /// Scaling by `MS_PER_TICK` holds each arch at its measured window. Shortening
 /// it to the 5 s the name suggests is a defensible change, but it is a
 /// behaviour change with its own evidence to produce, not a side effect of a
