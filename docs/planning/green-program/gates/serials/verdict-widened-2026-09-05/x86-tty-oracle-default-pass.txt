@@ -1,0 +1,14 @@
+Building the shipped x86_64 production kernel profile...
+   Compiling kernel v0.1.0 (/root/breenix-verdict/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-verdict)
+    Finished `release` profile [optimized] target(s) in 15.63s
+   Compiling kernel v0.1.0 (/root/breenix-verdict/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-verdict)
+    Finished `release` profile [optimized] target(s) in 15.36s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-verdict/target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img (7405568 bytes)
+Booting the x86_64 production profile with the TTY oracle (boot 1/1)...
+  boot 1: 14/14 arms PASS, kernel live (bsshd reached)
+PASS: x86 TTY oracle gate - 1/1 boots, 14 arms green on the shipped production profile
+Serials: /root/breenix-verdict-tmp/breenix_x86_tty_oracle/boot_*/serial_*.txt
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h

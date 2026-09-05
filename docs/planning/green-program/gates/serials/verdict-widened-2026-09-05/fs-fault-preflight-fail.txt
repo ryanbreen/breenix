@@ -1,0 +1,10 @@
+host: this Mac (arm64), worktree /Users/wrb/fun/code/breenix/.claude/worktrees/wf_34c09a15-6e8-5
+command: BREENIX_GATE_TMP=relative-not-absolute docker/qemu/run-fs-fault-gate.sh
+exit status: 1
+re-captured: review round 1 (F3 header; F4 shifted the line from :93 to
+:105 -- this script's own redden() helper, added by F4, sits above the
+BASE-DIR PREFLIGHT block this run exercises).
+
+fs fault gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
+fs fault gate: FAIL (set -e abort at docker/qemu/run-fs-fault-gate.sh:105, exit 1)
+  failing command: false

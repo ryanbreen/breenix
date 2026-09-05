@@ -19,7 +19,15 @@ INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probe
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Error: No ARM64 kernel found. Build with:"
-    echo "  cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    # require_boot_tests_kernel() below refuses a kernel that lacks
+    # --features boot_tests, so the hint printed here must build one --
+    # the same reasoning as run-aarch64-boot-test-strict.sh's matching
+    # "No ARM64 kernel found" arm.
+    echo "  cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    echo ""
+    echo "========================================="
+    echo "ARM64 BOOT TEST: FAILED (no ARM64 kernel found)"
+    echo "========================================="
     exit 1
 fi
 
@@ -28,10 +36,71 @@ fi
 # (set -e aborts the test if the guard trips.)
 "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
 
+# Durable feature-profile guard, the same shape as
+# run-aarch64-boot-test-strict.sh's require_boot_tests_kernel(). This gate
+# pins INIT_GROUP_REFUSAL_ORACLE_LITERAL and the INIT_GROUP_WALK marker below.
+# claim-lint:ok: both are emitted only from functions marked
+# #[cfg(feature = "boot_tests")] -- init_group_refusal_oracle_test() at
+# kernel/src/tracing/providers/teardown.rs:5125-5126 and
+# emit_init_group_walk() at kernel/src/tracing/providers/teardown.rs:1422-1423
+# -- inside a registry+executor module tree gated on the same feature at
+# kernel/src/test_framework/mod.rs:60-66, so a kernel compiled without that
+# feature does not contain the code that prints either marker. A kernel built
+# without --features boot_tests therefore cannot print them, so every one of
+# the MAX_RETRIES boots below would time out on "marker missing" -- a
+# structural mismatch between this gate and the kernel's build profile, not a
+# kernel red.
+#
+# The missing-marker arm below prints this script's own PASSED/FAILED verdict
+# banner before exiting instead of a bare, unformatted exit.
+# claim-lint:ok: the ratchet at
+# tests/strand_handoff_structure.rs::boot_tests_gates_refuse_a_wrong_profile_kernel
+# ("native gate" entry) proves the missing-marker arm has exactly one
+# `exit 1` line and reddens if that count changes (see this branch's
+# NATIVE-GATE-GUARD-2026-09-05.md, "Mutation proof the added census line is
+# load-bearing"). It does NOT independently check for the banner echoes
+# above that line -- deleting them alone leaves the ratchet green -- so the
+# banner's presence is a maintained convention matching the other two
+# preflight arms below, not itself a ratcheted invariant.
+require_boot_tests_kernel() {
+    local kernel="$1"
+    local marker
+    local missing=""
+
+    # A census of marker literals rather than one sentinel: a single marker
+    # changing profile must not be able to disarm this guard quietly.
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
+        if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
+            missing="$missing $marker"
+        fi
+    done
+
+    if [ -n "$missing" ]; then
+        echo "Error: $kernel was not built with --features boot_tests."
+        echo "  Missing boot_tests-only marker literal(s):$missing"
+        echo "  This gate pins INIT_GROUP_REFUSAL_ORACLE_LITERAL and the INIT_GROUP_WALK"
+        echo "  marker, both boot_tests-only, so every boot below would fail on"
+        echo "  'marker missing' after $MAX_RETRIES retries -- not a kernel red."
+        echo "  Rebuild with:"
+        echo "    cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+        echo ""
+        echo "========================================="
+        echo "ARM64 BOOT TEST: FAILED (kernel is not a boot_tests build)"
+        echo "========================================="
+        exit 1
+    fi
+}
+
+require_boot_tests_kernel "$KERNEL"
+
 # Find ext2 disk (required for userspace)
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then
     echo "Error: ext2 disk not found at $EXT2_DISK"
+    echo ""
+    echo "========================================="
+    echo "ARM64 BOOT TEST: FAILED (ext2 disk not found)"
+    echo "========================================="
     exit 1
 fi
 

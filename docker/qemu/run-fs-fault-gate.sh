@@ -66,11 +66,12 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # real value (review finding F6 on #797).
 # claim-lint:ok: #797, diff-empty against origin/main once substituted -- see
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+#
+# The VALUE is not judged here -- that check is spent in the BASE-DIR
+# PREFLIGHT block right after the ERR trap is installed below (#802/#805
+# idiom, widened to this gate: a bare `exit` here would run before the trap
+# exists and could end the gate with no verdict line at all).
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
-case "$BREENIX_GATE_TMP" in
-    /*) ;;
-    *) echo "fs fault gate: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
-esac
 
 OUTPUT_DIR=""
 report_gate_failure() {
@@ -87,6 +88,26 @@ report_gate_failure() {
 }
 trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 
+# `return N` inside a function called as a plain statement fires the ERR
+# trap with `$?` equal to `N` (unlike a bare `exit N`, which escapes it --
+# see the "Verified" section of
+# docs/planning/green-program/gates/GATE-VERDICT-DISCIPLINE-2026-09-05.md).
+# This lets the two usage-error sites below preserve their pre-existing
+# `exit 2` contract (distinct from a runtime FAIL's `exit 1`) without a bare
+# `exit` statement; report_gate_failure's own `exit "$exit_code"` re-raise
+# stays the only literal `exit` in this script.
+redden() {
+    return "$1"
+}
+
+# --- BASE-DIR PREFLIGHT (#797 F6, routed through the verdict path by the
+# #802/#805 idiom widened to this gate) ---
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "fs fault gate preflight: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2
+       false ;;
+esac
+
 ARCH="aarch64"
 DISARM=""
 BUILD=1
@@ -96,7 +117,7 @@ while [ $# -gt 0 ]; do
         --aarch64) ARCH="aarch64"; shift ;;
         --disarm) DISARM="$2"; shift 2 ;;
         --no-build) BUILD=0; shift ;;
-        *) echo "unknown argument: $1" >&2; exit 2 ;;
+        *) echo "unknown argument: $1" >&2; redden 2 ;;
     esac
 done
 
@@ -106,7 +127,7 @@ case "$DISARM" in
     short_read)     DISARM_FEATURE="fs_fault_disarm_short_read" ;;
     eio)            DISARM_FEATURE="fs_fault_disarm_eio" ;;
     corrupt_inode)  DISARM_FEATURE="fs_fault_disarm_corrupt_inode" ;;
-    *) echo "unknown shape: $DISARM (expected short_read, eio or corrupt_inode)" >&2; exit 2 ;;
+    *) echo "unknown shape: $DISARM (expected short_read, eio or corrupt_inode)" >&2; redden 2 ;;
 esac
 
 # The arms the leg must report, in the order it reports them. This is the
@@ -202,7 +223,7 @@ if [ "$BUILD" -eq 1 ] && [ -f "$BUILD_LOG" ]; then
         echo "fs fault gate: FAIL (build produced warnings/errors, see $BUILD_LOG)"
         grep -E "^(warning|error)" "$BUILD_LOG" \
             | grep -vF "contain code that will be rejected by a future version of Rust" | head -20
-        exit 1
+        false
     fi
 fi
 
@@ -299,7 +320,7 @@ fail() {
     echo "fs fault gate ($ARCH${DISARM:+, disarm $DISARM}): FAIL - $1"
     echo "--- FSFAULT lines ---"
     grep -a "\[FSFAULT:" "$SERIAL_ALL" || echo "(none)"
-    exit 1
+    false
 }
 
 arm_verdict() {
@@ -355,6 +376,12 @@ for arm in "${REQUIRED_ARMS[@]}"; do
     [ "$verdict" != "$expected" ] && BAD=1
 done
 
+# Both legs converge here rather than each taking its own `exit 0`: an early
+# success exit does not print anything a fallthrough wouldn't, but it is
+# still an `exit` this gate's widened verdict-discipline ratchet forbids
+# outside the trap's own re-raise (#802/#805 idiom). Falling through to the
+# end of the script (status 0 from the last command) is what
+# run-x86-prod-profile-boot-test.sh's own PASS path already does.
 if [ -n "$DISARM" ]; then
     # Anti-vacuity leg: the disarmed shape MUST have reddened, with the leg
     # naming the reason as a fault that never happened, and nothing else may
@@ -366,12 +393,9 @@ if [ -n "$DISARM" ]; then
     done
     [ "$LEG_FAIL" -ge 1 ] || fail "the leg reported no failures at all with '$DISARM' disarmed"
     echo "fs fault gate ($ARCH): ANTI-VACUITY PASSED - disarming '$DISARM' reddens exactly that shape"
-    exit 0
+else
+    [ "$BAD" -eq 0 ] || fail "one or more arms did not report the required verdict"
+    [ "$LEG_FAIL" -eq 0 ] || fail "the leg reported $LEG_FAIL failing arm(s)"
+    [ "$LIVE" -eq 1 ] || fail "the boot did not reach its liveness marker after the fault leg"
+    echo "fs fault gate ($ARCH): PASSED - ${#REQUIRED_ARMS[@]} arms green, kernel live after every injected fault"
 fi
-
-[ "$BAD" -eq 0 ] || fail "one or more arms did not report the required verdict"
-[ "$LEG_FAIL" -eq 0 ] || fail "the leg reported $LEG_FAIL failing arm(s)"
-[ "$LIVE" -eq 1 ] || fail "the boot did not reach its liveness marker after the fault leg"
-
-echo "fs fault gate ($ARCH): PASSED - ${#REQUIRED_ARMS[@]} arms green, kernel live after every injected fault"
-exit 0

@@ -81,9 +81,16 @@ BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 # after `cd "$BREENIX_ROOT"`, but the ERR trap above is installed before that
 # cd and can read OUTPUT_DIR pre-cd on an early failure -- a relative value
 # would resolve differently in each place (review finding F6 on #797).
+#
+# The rejection below is `echo` + bare `false` rather than a bare `exit 1`
+# (#802/#805 idiom, widened to this gate): the ERR trap is already installed
+# above, so a `false` here fires it and the gate's own
+# "x86 frame-custody gate: FAIL (...)" line prints before the process ends,
+# instead of a silent `exit`, which the trap does not catch.
 case "$BREENIX_GATE_TMP" in
     /*) ;;
-    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)" >&2; exit 1 ;;
+    *) echo "x86 frame-custody gate preflight: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2
+       false ;;
 esac
 # The x86 serial console carries the scheduler's single-character trace stream
 # on the same port as kernel and userspace output, so any marker line can carry
@@ -320,6 +327,14 @@ KSTACK_QUIESCE_LEAK_PATTERN='\[KSTACK_QUIESCE_LEAK:baseline_outstanding=[0-9]+:o
 RECLAIM_DRAIN_PATTERN='\[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=[0-9]+:injected=1:pend_epoch=[0-9]+:pend_hw=[0-9]+:pend_shadow=[0-9]+:pend_selectable=0\]'
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:x86:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[0-9]+:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'
+# #796. This gate boots -smp 1, where two threads do not contend for the
+# process-manager lock: the dispatch path refuses to switch while it is held, so
+# the holder is not preempted and no second thread runs. The oracle says so in
+# its own marker rather than printing a PASS it did not earn; the aarch64 strict
+# gate pins the armed pattern, which reddens on origin/main. Pinning the SKIP
+# line keeps the emitter alive on this arch -- deleting the oracle would
+# otherwise leave this gate green.
+FCNTL_PM_CONTENTION_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -502,6 +517,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qE "$SCHED_STRAND_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$CENSUS_WIDEN_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -917,29 +934,29 @@ for i in $(seq 1 "$COUNT"); do
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (BOOT_TESTS:FAIL, KERNEL PANIC, or panic! marker present)"
-        exit 1
+        false
     fi
     if grep -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (CENSUS_WIDEN_ORACLE:FAIL marker present)"
-        exit 1
+        false
     fi
     if grep -qE '\[TEST:network:[^]]*:FAIL' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (TEST:network:*:FAIL marker present)"
-        exit 1
+        false
     fi
     if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (TEST:userspace:*:FAIL marker present)"
-        exit 1
+        false
     fi
     # Absence is meaningful because KSTACK_OWNER_ORACLE pins a nonzero
     # sched_publications driver and the injected marker proves the detector fires.
     if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (CREATION_LOCK_ORDER:VIOLATION marker present)"
-        exit 1
+        false
     fi
     echo "x86 frame-custody gate run $i: PASS"
 done

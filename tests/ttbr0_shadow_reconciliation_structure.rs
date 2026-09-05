@@ -2399,12 +2399,12 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
         (
             "docker/qemu/run-aarch64-boot-test-strict.sh",
             "BREENIX_STRICT_SCORE_ONLY",
-            "docs/planning/green-program/aarch64-testing/serials/asid-ratchet/03-strict-boot1-serial.txt",
+            "docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt",
         ),
         (
             "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
             "BREENIX_PROD_SCORE_ONLY",
-            "docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt",
+            "docs/planning/green-program/aarch64-testing/serials/slice3d/02-prod-boot1-serial.txt",
         ),
     ];
 
@@ -2467,7 +2467,8 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
 
         // Leg D. The census printed, having counted no process-root publish.
         // untagged=0 then says nothing, and a dead counter reads the same.
-        // claim-lint:ok: this leg rewrites 13 of 13 census lines to tagged=0, which the
+        // claim-lint:ok: this leg rewrites 13 of 13 census lines in each baseline serial
+        // to tagged=0, which the
         // gate rejects with its third assertion
         let (passed, output) = leg(
             "vacuous",

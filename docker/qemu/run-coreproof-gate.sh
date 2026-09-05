@@ -70,98 +70,17 @@ STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 RUN_STAMP="$(date -u '+%Y%m%dT%H%M%SZ')"
 OUTPUT_ROOT="$OUTPUT_BASE/${RUN_STAMP}_$$"
 
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --component) COMPONENT="$2"; shift 2 ;;
-        --seeds) SEEDS="$2"; shift 2 ;;
-        --profile) PROFILE="$2"; shift 2 ;;
-        --mode) MODE="$2"; shift 2 ;;
-        --window) WINDOW="$2"; shift 2 ;;
-        --disarm) DISARM=1; shift ;;
-        --require-cov) REQUIRE_COV="$2"; shift 2 ;;
-        --seed) PINNED_SEED="$2"; shift 2 ;;
-        --features) EXTRA_FEATURES="$2"; shift 2 ;;
-        *) echo "unknown argument: $1" >&2; exit 2 ;;
-    esac
-done
-EXTRA_FEATURES="${EXTRA_FEATURES:-}"
-
-case "$COMPONENT" in
-    A) COMPONENT_FEATURE="coreproof_component_a" ;;
-    C) COMPONENT_FEATURE="coreproof_component_c" ;;
-    H) COMPONENT_FEATURE="coreproof_component_h" ;;
-    *) echo "unknown component: $COMPONENT" >&2; exit 2 ;;
-esac
-
-# This script is the SOLE owner of the per-component mode default (rung 2
-# review, m1) - Pen for A, Adversarial for C and H, because Pen suppresses the
-# conditions those components hunt. `kernel/src/proof/quiesce.rs`'s own
-# `Mode::selected()` used to compute a second, duplicate default that was
-# dead under this script (which always passes an explicit
-# `BREENIX_COREPROOF_MODE`) and has been removed; its compile-time default
-# is now plain `Pen` for a build invoked outside this script. An explicit
-# `--mode` always wins over this script's own default.
-if [ -z "$MODE" ]; then
-    case "$COMPONENT" in
-        C|H) MODE="adversarial" ;;
-        *) MODE="pen" ;;
-    esac
-fi
-
-case "$MODE" in
-    pen|adversarial|ambient) ;;
-    *) echo "unknown mode: $MODE" >&2; exit 2 ;;
-esac
-
-if [ -z "$WINDOW" ]; then
-    if [ "$MODE" = "ambient" ]; then
-        WINDOW="overlap"
-    else
-        WINDOW="post_cohort"
-    fi
-fi
-case "$WINDOW" in
-    post_cohort|overlap) ;;
-    *) echo "unknown window: $WINDOW" >&2; exit 2 ;;
-esac
-
-REQUIRE_COV_SHORT="${REQUIRE_COV#coreproof_mut_}"
-if [ -n "$REQUIRE_COV" ] && [ -z "$REQUIRE_COV_SHORT" ]; then
-    echo "invalid coverage name: $REQUIRE_COV" >&2
-    exit 2
-fi
-if [ -n "$REQUIRE_COV_SHORT" ]; then
-    case "$REQUIRE_COV_SHORT" in
-        *[!a-z0-9_]*) echo "invalid coverage name: $REQUIRE_COV" >&2; exit 2 ;;
-    esac
-    if ! grep -qE "^coreproof_mut_${REQUIRE_COV_SHORT}[[:space:]]*=" \
-        "$BREENIX_ROOT/kernel/Cargo.toml"; then
-        echo "unknown mutation coverage name: $REQUIRE_COV" >&2
-        exit 2
-    fi
-fi
-
-case "$PROFILE" in
-    max) PROFILES=(max) ;;
-    cortex-a72) PROFILES=(cortex-a72) ;;
-    both) PROFILES=(max cortex-a72) ;;
-    *) echo "unknown profile: $PROFILE" >&2; exit 2 ;;
-esac
-
-RUN_PREFIX='[COREPROOF:RUN:'
-# The harness names each record's phase. `close` is the run's own statement that
-# it finished, and it is BOTH the signal to stop the guest and the record the
-# gate adjudicates. Counting RUN lines instead would confuse "about to start"
-# with "over": the open and settled records both exist before the first
-# iteration, so a count of two killed the guest at iteration zero and then read
-# that as the result.
-RUN_CLOSE_MARKER=':phase=close:'
-VIOLATION_PREFIX='[COREPROOF:VIOLATION:'
-BOOT_TESTS_PASS_LITERAL='[BOOT_TESTS:PASS]'
-
 QEMU_PID=""
 CURRENT_SERIAL=""
 
+# report_gate_failure/the ERR trap install moved here, ahead of argument
+# parsing and validation (#802/#805 idiom, widened to this gate): each
+# usage/validation error below used to be a bare `exit 2` reached before the
+# trap existed at all, the same shape #802 found in
+# run-x86-prod-profile-boot-test.sh's own preflights. Installing the trap
+# first and routing each rejection through `false`/`redden N` instead means
+# a verdict line prints for a bad argument the same way it does for a bad
+# boot.
 report_gate_failure() {
     local status=$?
     local line=$1
@@ -186,6 +105,106 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# Each non-1 exit code below (2 for a usage/validation error) reaches the
+# trap via `redden N` rather than a bare `exit N`: `return N` inside a
+# function is an ordinary command as far as `set -e`/errtrace are
+# concerned, so it fires the ERR trap with $? equal to N, and
+# report_gate_failure's own `exit "$status"` re-raise carries it through --
+# the trap's re-raise stays the only literal `exit` statement in this
+# script.
+redden() {
+    return "$1"
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --component) COMPONENT="$2"; shift 2 ;;
+        --seeds) SEEDS="$2"; shift 2 ;;
+        --profile) PROFILE="$2"; shift 2 ;;
+        --mode) MODE="$2"; shift 2 ;;
+        --window) WINDOW="$2"; shift 2 ;;
+        --disarm) DISARM=1; shift ;;
+        --require-cov) REQUIRE_COV="$2"; shift 2 ;;
+        --seed) PINNED_SEED="$2"; shift 2 ;;
+        --features) EXTRA_FEATURES="$2"; shift 2 ;;
+        *) echo "unknown argument: $1" >&2; redden 2 ;;
+    esac
+done
+EXTRA_FEATURES="${EXTRA_FEATURES:-}"
+
+case "$COMPONENT" in
+    A) COMPONENT_FEATURE="coreproof_component_a" ;;
+    C) COMPONENT_FEATURE="coreproof_component_c" ;;
+    H) COMPONENT_FEATURE="coreproof_component_h" ;;
+    *) echo "unknown component: $COMPONENT" >&2; redden 2 ;;
+esac
+
+# This script is the SOLE owner of the per-component mode default (rung 2
+# review, m1) - Pen for A, Adversarial for C and H, because Pen suppresses the
+# conditions those components hunt. `kernel/src/proof/quiesce.rs`'s own
+# `Mode::selected()` used to compute a second, duplicate default that was
+# dead under this script (which always passes an explicit
+# `BREENIX_COREPROOF_MODE`) and has been removed; its compile-time default
+# is now plain `Pen` for a build invoked outside this script. An explicit
+# `--mode` always wins over this script's own default.
+if [ -z "$MODE" ]; then
+    case "$COMPONENT" in
+        C|H) MODE="adversarial" ;;
+        *) MODE="pen" ;;
+    esac
+fi
+
+case "$MODE" in
+    pen|adversarial|ambient) ;;
+    *) echo "unknown mode: $MODE" >&2; redden 2 ;;
+esac
+
+if [ -z "$WINDOW" ]; then
+    if [ "$MODE" = "ambient" ]; then
+        WINDOW="overlap"
+    else
+        WINDOW="post_cohort"
+    fi
+fi
+case "$WINDOW" in
+    post_cohort|overlap) ;;
+    *) echo "unknown window: $WINDOW" >&2; redden 2 ;;
+esac
+
+REQUIRE_COV_SHORT="${REQUIRE_COV#coreproof_mut_}"
+if [ -n "$REQUIRE_COV" ] && [ -z "$REQUIRE_COV_SHORT" ]; then
+    echo "invalid coverage name: $REQUIRE_COV" >&2
+    redden 2
+fi
+if [ -n "$REQUIRE_COV_SHORT" ]; then
+    case "$REQUIRE_COV_SHORT" in
+        *[!a-z0-9_]*) echo "invalid coverage name: $REQUIRE_COV" >&2; redden 2 ;;
+    esac
+    if ! grep -qE "^coreproof_mut_${REQUIRE_COV_SHORT}[[:space:]]*=" \
+        "$BREENIX_ROOT/kernel/Cargo.toml"; then
+        echo "unknown mutation coverage name: $REQUIRE_COV" >&2
+        redden 2
+    fi
+fi
+
+case "$PROFILE" in
+    max) PROFILES=(max) ;;
+    cortex-a72) PROFILES=(cortex-a72) ;;
+    both) PROFILES=(max cortex-a72) ;;
+    *) echo "unknown profile: $PROFILE" >&2; redden 2 ;;
+esac
+
+RUN_PREFIX='[COREPROOF:RUN:'
+# The harness names each record's phase. `close` is the run's own statement that
+# it finished, and it is BOTH the signal to stop the guest and the record the
+# gate adjudicates. Counting RUN lines instead would confuse "about to start"
+# with "over": the open and settled records both exist before the first
+# iteration, so a count of two killed the guest at iteration zero and then read
+# that as the result.
+RUN_CLOSE_MARKER=':phase=close:'
+VIOLATION_PREFIX='[COREPROOF:VIOLATION:'
+BOOT_TESTS_PASS_LITERAL='[BOOT_TESTS:PASS]'
 
 # ---------------------------------------------------------------------------
 # Build. Its own target dir, so the shared aarch64 kernel other gates boot is
@@ -445,7 +464,7 @@ echo "boots=$TOTAL_BOOTS failed=$FAILED_BOOTS violations=$TOTAL_VIOLATIONS iters
 if [ "$FAILED_BOOTS" -ne 0 ]; then
     echo "ARM64 CORE-PROOF GATE: FAILED"
     echo "Serials preserved under $OUTPUT_ROOT"
-    exit 1
+    false
+else
+    echo "ARM64 CORE-PROOF GATE: PASSED"
 fi
-echo "ARM64 CORE-PROOF GATE: PASSED"
-exit 0

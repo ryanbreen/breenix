@@ -3872,13 +3872,78 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
         }
     };
 
-    let mut manager_guard = match crate::process::try_manager() {
-        Some(guard) => guard,
-        None => {
-            log::error!("sys_fcntl: Failed to get process manager");
-            return SyscallResult::Err(11); // EAGAIN
-        }
-    };
+    // #796: this used to be `try_manager()` with an `EAGAIN` arm, which made a
+    // momentarily contended process-manager lock look to userspace like an fcntl
+    // error. POSIX permits `[EAGAIN]` from `fcntl()` only in the `F_SETLK`
+    // record-locking arm, which this kernel does not implement, so no command
+    // reachable through the dispatch below has a legal `EAGAIN`; the observed
+    // failure was `fcntl(F_SETFD)` reporting it before `set_fd_flags` -- whose
+    // only error is `EBADF` -- was ever reached.
+    //
+    // Blocking here is the discipline this file already follows: `sys_dup` and
+    // `sys_dup2` directly above take `crate::process::manager()` for the same
+    // `process.fd_table` mutation from the same context. The safety argument,
+    // re-derived at these bytes rather than cited:
+    //
+    //   * This function is reachable only from the syscall dispatcher, i.e. from
+    //     a trap taken at EL0/ring 3. That is the same context class in which
+    //     `arch_impl/aarch64/exception.rs:2331` takes the blocking `manager()`
+    //     for a CoW abort, with the same justification: a CPU that was running
+    //     userspace when it trapped cannot already own PROCESS_MANAGER.
+    //   * An asynchronous bottom half CAN block on this lock, so the guard is
+    //     not "no asynchronous waiter for PM exists": `net/udp.rs`'s
+    //     `deliver_to_socket` takes the blocking `with_process_manager()`, and
+    //     it is reached from `net/mod.rs`'s `net_rx_softirq_handler`, which
+    //     `task::softirqd::do_softirq()` runs at IRQ exit on both architectures
+    //     (`arch_impl/aarch64/exception.rs`'s `handle_irq`, `per_cpu.rs`'s
+    //     `irq_exit`). What makes waiting here safe is narrower: no bottom half
+    //     can run on THIS CPU while this frame awaits or owns the lock.
+    //     - aarch64: `manager()` executes `msr daifset, #0xf` before it takes
+    //       the mutex and restores DAIF only in `Drop` (`process/mod.rs`), so no
+    //       IRQ -- hence no softirq -- is taken across the wait or the hold.
+    //     - x86_64: `manager()` masks no interrupt state, but `rust_syscall_handler`
+    //       brackets the whole syscall in `preempt_disable`/`preempt_enable`
+    //       (`syscall/handler.rs`), and `per_cpu::irq_exit()` runs
+    //       `do_softirq()` only when `preempt_count() == 0`.
+    //     A peer CPU's softirq that blocks on PM waits this window out; the wait
+    //     is one-directional, so it cannot close a cycle: 0 of the 2 operations
+    //     inside this window (the process lookup and the `fd_table` mutation)
+    //     waits on the network stack.
+    //     claim-lint:ok: the window's 2 operations are the
+    //     `find_process_by_thread_mut` lookup and the `match cmd` arms directly
+    //     below this comment; neither reaches the network stack.
+    //   * A holder is not preempted away from under the waiter, but the two
+    //     architectures reach that by different mechanisms -- they are not the
+    //     same refusal. aarch64's `manager()` masks DAIF for the guard's
+    //     lifetime, so its holder cannot be preempted at all. x86's timer
+    //     dispatch instead refuses to switch when it cannot get PM, "leaving the
+    //     lock-holding context -- the only one that can release it -- running"
+    //     (`interrupts/context_switch.rs`); that comment's "both entry paths"
+    //     are the two x86 dispatch entry paths, not an x86/aarch64 pair. The
+    //     aarch64 dispatch's `TtbrResult::PmLockBusy` arm does something else:
+    //     it redirects this CPU to idle and requeues the INCOMING thread, which
+    //     leaves no lock-holding context running. The DAIF argument covers
+    //     `manager()` holders only; a `try_manager()` holder masks no interrupt
+    //     state and is outside it -- filed as #812, not repaired here.
+    //     claim-lint:ok: #812 carries the reachability chain and its citations.
+    //   * The window is not free, and the cost is named rather than left
+    //     implicit. On aarch64 it is DAIF-masked across both the wait and the
+    //     critical section below, including this function's per-arm
+    //     `log::debug!` calls, which do reach COM2 (this build sets no
+    //     `release_max_level_*` feature and `logger.rs:977-978` admits each of
+    //     the 5 levels below `Trace`). The wait's worst case is the longest PM hold in the
+    //     tree -- `ProcessManager::exec_process_with_argv` holds PM across
+    //     `load_elf_into_page_table` -- not a short one. `sys_dup`/`sys_dup2`
+    //     directly above already pay exactly this cost, so it is not new here.
+    //     claim-lint:ok: 2 of 2 precedents are `handlers.rs:3774` and `:3821`;
+    //     the cost is itemised in the #796 doc's STEP 2 point 6.
+    //   * The window opened here takes no scheduler lock and publishes no
+    //     thread, so it cannot trip the PM->SCHEDULER order marker
+    //     (`SCHED_AFTER_PM_VIOLATIONS`).
+    //
+    // Census and per-site reasoning:
+    // docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
+    let mut manager_guard = crate::process::manager();
 
     let process = match manager_guard
         .as_mut()

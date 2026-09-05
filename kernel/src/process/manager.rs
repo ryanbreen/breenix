@@ -3108,7 +3108,16 @@ impl ProcessManager {
                 owner_pid: Some(child_pid.as_u64()),
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
-                cpu_affinity: parent_thread.cpu_affinity,
+                // A pin is not inherited, on either child-creation path. A
+                // `per_cpu_worker` pin is a claim about servicing one CPU's
+                // per-CPU state and a child services none of it; a hold-pen pin
+                // says the parent is parked in a staging pen the child was
+                // never put in. `sys_clone` already writes the empty state, so
+                // both paths now agree rather than disagreeing by cfg.
+                // claim-lint:ok: 14 of 15 `Thread` build sites in kernel/src carry
+                // `cpu_affinity: None` after this change, counted by grep over
+                // kernel/src in this round; the 15th is the `Clone` impl.
+                cpu_affinity: None,
             };
 
             // CoW fork: Child uses the same stack virtual addresses as the parent.

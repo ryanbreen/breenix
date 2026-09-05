@@ -20,6 +20,12 @@ KERNEL_ORACLE_LITERAL='[FUTEX_HANDOFF_ORACLE:'
 # shipped production profile.
 SCHED_STRAND_ORACLE_LITERAL='[SCHED_STRAND_ORACLE:'
 STRAND_INJECT_ORACLE_LITERAL='[STRAND_INJECT_ORACLE:'
+# #796's contention oracle is boot_tests-only for a reason that matters on this
+# profile: it holds the process-manager lock on a peer CPU on purpose. This is
+# the 4th boot_tests-only marker asserted absent here, and it is asserted for the
+# same reason as the other 3: a count of 0 on the shipped profile is a reading,
+# where a silent absence would be an assumption.
+FCNTL_PM_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:'
 # This proves init resumed after waiting for the self-limiting driver.
 INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='
 # This proves init's earlier oracle also completes on the unarmed profile.
@@ -65,6 +71,21 @@ BSSHD_LITERAL='bsshd: listening'
 ASID_CENSUS_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[0-9]+:kernel=[0-9]+:cleared=[0-9]+\]'
 ASID_CENSUS_UNTAGGED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[1-9][0-9]*:'
 ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][0-9]*:'
+# Slice 3d: the pinned-placement census. Three assertions rather than one, for
+# the reason the ASID block above gives: the line must be present, no line may
+# report a field above zero, and the one-shot first-hold marker must be absent
+# -- the census is emitted on a period, so a hold after the last emission would
+# otherwise be invisible while the marker fires whenever the first one happens.
+# A census line is scored by comparing it against the all-zero literal rather
+# than by matching each field, so a field added to the line later is gated on
+# the day it appears rather than on the day someone remembers to widen a regex.
+# claim-lint:ok: 3 of 3 strict boots and 3 of 3 production boots at this head
+# read the all-zero literal, and the forced-hold leg reddens this gate --
+# docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt,
+# 02-prod-boot1.txt and its 2 siblings, 05-runtime-anti-vacuity-strict-gate.txt
+PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+\]'
+PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]'
+PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected'
 
 OUTPUT_DIR="/tmp/breenix_aarch64_prod_profile"
@@ -114,6 +135,21 @@ pattern_count() {
     grep -aE -c "$pattern" "$serial_file" 2>/dev/null || true
 }
 
+# Census lines that differ from the zero literal. Scored by comparison rather
+# than by a per-field pattern, so a field added to the line later is gated the
+# day it appears rather than the day someone remembers to widen a regex.
+# claim-lint:ok: 5 of 5 legs of
+# both_aarch64_gates_fail_on_a_pinned_placement_refusal run this gate's own
+# verdict code, and 2 of those 5 vary a census field
+pinned_nonzero_count() {
+    local serial_file="$1"
+    if [ ! -f "$serial_file" ]; then
+        echo 0
+        return
+    fi
+    grep -aoE "$PINNED_CENSUS_PATTERN" "$serial_file" 2>/dev/null | grep -cvxF "$PINNED_CENSUS_ZERO_LITERAL" || true
+}
+
 crash_count() {
     local serial_file="$1"
     if [ ! -f "$serial_file" ]; then
@@ -129,6 +165,7 @@ print_observed_values() {
     echo "Observed kernel oracle marker count: $(marker_count "$serial_file" "$KERNEL_ORACLE_LITERAL")"
     echo "Observed scheduler strand oracle marker count: $(marker_count "$serial_file" "$SCHED_STRAND_ORACLE_LITERAL")"
     echo "Observed strand injection oracle marker count: $(marker_count "$serial_file" "$STRAND_INJECT_ORACLE_LITERAL")"
+    echo "Observed fcntl contention oracle marker count: $(marker_count "$serial_file" "$FCNTL_PM_ORACLE_LITERAL")"
     echo "Observed init-resumed marker count: $(marker_count "$serial_file" "$INIT_EXIT_LITERAL")"
     echo "Observed block EINTR oracle marker count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_LITERAL")"
     echo "Observed block EINTR oracle failure count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")"
@@ -141,6 +178,8 @@ print_observed_values() {
     echo "Observed bsshd marker count: $(marker_count "$serial_file" "$BSSHD_LITERAL")"
     echo "Observed TTBR0 ASID census marker count: $(pattern_count "$serial_file" "$ASID_CENSUS_PATTERN")"
     echo "Observed TTBR0 ASID census untagged-publish line count: $(pattern_count "$serial_file" "$ASID_CENSUS_UNTAGGED_PATTERN")"
+    echo "Observed pinned-placement census marker count: $(pattern_count "$serial_file" "$PINNED_CENSUS_PATTERN")"
+    echo "Observed pinned-placement non-zero census line count: $(pinned_nonzero_count "$serial_file")"
     echo "Observed crash marker count: $(crash_count "$serial_file")"
     if [ -f "$serial_file" ]; then
         grep -iE "$CRASH_MARKERS_PATTERN" "$serial_file" 2>/dev/null || true
@@ -275,6 +314,7 @@ PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL"
 KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
 SCHED_STRAND_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$SCHED_STRAND_ORACLE_LITERAL")
 STRAND_INJECT_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$STRAND_INJECT_ORACLE_LITERAL")
+FCNTL_PM_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$FCNTL_PM_ORACLE_LITERAL")
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
 BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
 BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
@@ -288,6 +328,9 @@ BSSHD_COUNT=$(marker_count "$SERIAL_FILE" "$BSSHD_LITERAL")
 ASID_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PATTERN")
 ASID_CENSUS_UNTAGGED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_UNTAGGED_PATTERN")
 ASID_CENSUS_PUBLISHED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PUBLISHED_PATTERN")
+PINNED_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$PINNED_CENSUS_PATTERN")
+PINNED_CENSUS_NONZERO_COUNT=$(pinned_nonzero_count "$SERIAL_FILE")
+PINNED_FIRST_HOLD_COUNT=$(marker_count "$SERIAL_FILE" "$PINNED_FIRST_HOLD_LITERAL")
 CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 
 if grep -qF '[BOOT_TESTS:FAIL' "$SERIAL_FILE" 2>/dev/null; then
@@ -311,6 +354,10 @@ fi
 }
 [ "$STRAND_INJECT_ORACLE_COUNT" -eq 0 ] || {
     echo "FAIL: boot_tests-only strand injection oracle marker was present"
+    exit 1
+}
+[ "$FCNTL_PM_ORACLE_COUNT" -eq 0 ] || {
+    echo "FAIL: boot_tests-only fcntl contention oracle marker was present"
     exit 1
 }
 [ "$INIT_EXIT_COUNT" -ge 1 ] || {
@@ -365,6 +412,18 @@ fi
     echo "FAIL: TTBR0 ASID census never counted a process-root publish, so untagged=0 says nothing"
     exit 1
 }
+[ "$PINNED_CENSUS_COUNT" -ge 1 ] || {
+    echo "FAIL: pinned-placement census marker missing"
+    exit 1
+}
+[ "$PINNED_CENSUS_NONZERO_COUNT" -eq 0 ] || {
+    echo "FAIL: pinned-placement census reported a field above zero: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | grep -vxF "$PINNED_CENSUS_ZERO_LITERAL" | tail -1)"
+    exit 1
+}
+[ "$PINNED_FIRST_HOLD_COUNT" -eq 0 ] || {
+    echo "FAIL: a pinned worker's wake was held for want of a dispatching home CPU: $(grep -aF -m1 "$PINNED_FIRST_HOLD_LITERAL" "$SERIAL_FILE")"
+    exit 1
+}
 [ "$CRASH_COUNT" -eq 0 ] || {
     echo "FAIL: crash marker detected"
     exit 1
@@ -375,6 +434,7 @@ echo "Observed: $(grep -F -m 1 "$PROD_SEAM_ABSENT_LITERAL" "$SERIAL_FILE")"
 echo "Observed: $(grep -F -m 1 "$INIT_EXIT_LITERAL" "$SERIAL_FILE")"
 echo "Observed: $(grep -F -m 1 "$BSSHD_LITERAL" "$SERIAL_FILE")"
 echo "Observed kernel oracle marker count: $KERNEL_ORACLE_COUNT"
+echo "Observed fcntl contention oracle marker count: $FCNTL_PM_ORACLE_COUNT"
 echo "Observed block EINTR oracle marker count: $BLOCK_EINTR_ORACLE_COUNT"
 echo "Observed block EINTR oracle failure count: $BLOCK_EINTR_ORACLE_FAIL_COUNT"
 echo "Observed poll TCP oracle marker count: $POLL_TCP_ORACLE_COUNT"
@@ -386,5 +446,8 @@ echo "Observed TTY oracle failure count: $TTY_ORACLE_FAIL_COUNT"
 echo "Observed TTBR0 ASID census marker count: $ASID_CENSUS_COUNT"
 echo "Observed TTBR0 ASID census untagged-publish line count: $ASID_CENSUS_UNTAGGED_COUNT"
 echo "Observed: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
+echo "Observed pinned-placement census marker count: $PINNED_CENSUS_COUNT"
+echo "Observed pinned-placement non-zero census line count: $PINNED_CENSUS_NONZERO_COUNT"
+echo "Observed: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0
