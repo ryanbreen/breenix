@@ -43,6 +43,13 @@ file. A bare `claim-lint:ok` with nothing after it does not silence anything:
     // claim-lint:ok: mutation-proven, see scripts/test_claim_lint.py
     // every close path decrements the refcount.
 
+One rule is the exception: `auto-close-keyword` flags a close/fix/resolve
+keyword sitting directly in front of "#N", which GitHub reads and acts on
+(auto-closing the referenced issue) independently of anything a human writes
+next to it. A `claim-lint:ok` annotation cannot discharge that finding --
+see check_auto_close_keyword()'s docstring below and
+docs/planning/green-program/claim-linting.md.
+
 Exit codes: 0 = clean, 1 = un-discharged findings, 2 = usage/internal error.
 """
 from __future__ import annotations
@@ -173,6 +180,21 @@ ARTIFACT_CLAIM_RE = re.compile(
     r"\b(preserved|attached|committed|saved|written|archived)\s+(?:at|to|in)\b"
     r"[^`]{0,40}`([^`]+)`",
     re.IGNORECASE,
+)
+
+# A different kind of rule from the five above: those look for a CLAIM shape
+# that might be false. This one looks for a GitHub *mechanism* trigger -- a
+# close/fix/resolve keyword bound to "#N" is not a claim to be right or wrong
+# about, it is text GitHub itself parses and acts on. GitHub auto-closes the
+# referenced issue the moment a PR body or a commit message on the default
+# branch carries one of these keywords immediately before "#N" (see GitHub's
+# "linking a pull request to an issue" docs). This project's convention is a
+# plain "#N", not a close/fix/resolve keyword directly in front of it, so an
+# explicit close stays a deliberate act rather than a side effect of prose.
+# PR #799 (2026-09-05) shipped the phrase and, on merge, GitHub auto-closed
+# the issue it named -- #737 -- ahead of the intended explicit close.
+AUTO_CLOSE_KEYWORD_RE = re.compile(
+    r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s*:?\s+#\d+", re.IGNORECASE
 )
 
 
@@ -567,8 +589,39 @@ def check_artifact_path(p: Paragraph, repo_root: str) -> Optional[Finding]:
     )
 
 
+def check_auto_close_keyword(p: Paragraph, repo_root: str) -> Optional[Finding]:
+    """A close/fix/resolve keyword sitting directly in front of "#N".
+
+    Deliberately does NOT call has_discharge() or check for an N-of-M count
+    or an evidence path -- there is nothing here for those to exempt. Every
+    other rule in this file asks "is this strong claim backed by evidence in
+    the same paragraph"; a `claim-lint:ok` answers that question. This rule
+    asks "will GitHub auto-close an issue when this text merges", and the
+    answer does not change because a human annotated the paragraph -- GitHub
+    reads the merged bytes, not the annotation, so a claim-lint:ok next to
+    this phrase would silence the tool while the auto-close still fires. The
+    only real fix is to remove the keyword or drop the colon/space binding it
+    to "#N" (see AUTO_CLOSE_KEYWORD_RE's comment for the incident this
+    codifies). See test_not_dischargeable_by_claim_lint_ok in
+    scripts/test_claim_lint.py.
+    """
+    m = AUTO_CLOSE_KEYWORD_RE.search(p.text)
+    if not m:
+        return None
+    return Finding(
+        p.file, p.start_line, "auto-close-keyword", p.text,
+        "'%s' immediately in front of an issue number triggers GitHub's "
+        "auto-close-on-merge; this project references issues as a plain "
+        "'#N' and never with a close/fix/resolve keyword right before it. "
+        "Not dischargeable by claim-lint:ok -- rewrite the reference, don't "
+        "annotate it." % m.group(0),
+        p.end_line,
+    )
+
+
 RULES = [check_universal, check_proven, check_live_claim,
-         check_absolute_guarantee, check_artifact_path]
+         check_absolute_guarantee, check_artifact_path,
+         check_auto_close_keyword]
 
 
 def lint_paragraph(p: Paragraph, repo_root: str) -> list:
@@ -785,6 +838,14 @@ def main(argv: list) -> int:
                 "docs/planning/green-program/claim-linting.md."
                 % (len(all_findings), len(targets), scope)
             )
+            if any(f.rule == "auto-close-keyword" for f in all_findings):
+                print(
+                    "claim-lint: auto-close-keyword finding(s) above cannot be "
+                    "discharged by a claim-lint:ok annotation -- the phrase "
+                    "acts on GitHub at merge/commit time regardless of any "
+                    "annotation. Rewrite the reference as a plain '#N' with "
+                    "no close/fix/resolve keyword directly in front of it."
+                )
         else:
             print("claim-lint: clean (%d file(s) checked, %s)."
                   % (len(targets), scope))

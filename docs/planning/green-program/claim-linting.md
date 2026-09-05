@@ -8,6 +8,10 @@
 re-derived after the R3 changes, and the command that produced it is printed
 next to it. Where a number got worse, the worse number is the one printed.
 
+**R4, 2026-09-05** adds a sixth rule, `auto-close-keyword`, in its own
+subsection under "What it catches" below. R4 did not re-run the R1–R3 audit
+tables elsewhere on this page; those numbers predate it and are unchanged.
+
 The 2026-09-01 assessment found that 37 of 66 blocking review findings across
 twelve arcs (56%) were factually wrong, checkable *sentences* in EVIDENCE/PROVE
 docs, PR bodies, gate-script headers, or source comments — not code defects. Nine
@@ -155,6 +159,12 @@ for every specimen a rule was built against, with the arc, the file:line or issu
 it shipped in, the review round that caught it, and (for the 12 whose bytes are
 recoverable) the commit the sentence shipped at:
 
+A sixth rule, `auto-close-keyword` (R4, 2026-09-05), sits outside that
+reverse-engineering process: it is not about whether a claim is true, it is
+about whether the text will make GitHub act. Its rationale, the incident
+behind it, and why it cannot be discharged the way the other five can are
+covered in its own subsection right after the table.
+
 | Rule | Fires on | Needs, in the same paragraph |
 |---|---|---|
 | `universal-claim` | every, all, none, zero, always, never, nothing, nowhere, wholly, entirely, completely, fully, exclusively, invariably | an N-of-M count (`12/12`, `3 of 4`), a captured-artifact citation that **resolves on disk**, or a `claim-lint:ok` carrying a citation |
@@ -162,6 +172,42 @@ recoverable) the commit the sentence shipped at:
 | `live-no-artifact` | "observed live", "confirmed live" | a resolving artifact citation, or a cited `claim-lint:ok` annotation <!-- claim-lint:ok: this row lists the rule's own trigger vocabulary rather than making a claim; the vocabulary is LIVE_CLAIM_RE in scripts/claim-lint.py --> |
 | `absolute-guarantee` | airtight, guarantee(d/s), structurally | an N-of-M count, a resolving artifact citation, or a cited `claim-lint:ok` annotation <!-- claim-lint:ok: this row lists the rule's own trigger vocabulary rather than making a claim; the vocabulary is ABSOLUTE_GUARANTEE_RE in scripts/claim-lint.py --> |
 | `artifact-path-missing` | a preserved/attached/committed/saved/written/**archived**-at claim naming a backticked path | the cited path must resolve to a **file** on disk (checked relative to the citing file's own directory, then the repo root) |
+| `auto-close-keyword` | a close/fix/resolve keyword bound to `#N` (e.g. `Fixes #N`, `closes: #N`, `resolved #N`) | No exemption — not dischargeable; see "`auto-close-keyword` is not like the other five" below |
+
+### `auto-close-keyword` is not like the other five
+
+Each rule above this line asks whether a strong claim has evidence sitting
+next to it in the same paragraph, and a `claim-lint:ok` annotation answers
+that question by naming what a human checked. `auto-close-keyword` asks a
+different question: will GitHub itself read this text as a directive.
+GitHub's merge-time parser auto-closes the issue named by a close/fix/resolve
+keyword bound to `#N` in a merged pull-request body or a commit message on
+the default branch, and it does that whether or not a comment sits next to
+the sentence — an annotation can record that a human reviewed the wording,
+it cannot stop GitHub from reading the merged bytes. That is why
+`check_auto_close_keyword()` in `scripts/claim-lint.py` does not call the
+discharge check the other five rules share.
+
+PR #799 (2026-09-05) is the incident this rule codifies: its body carried
+the phrase, and on merge GitHub auto-closed the issue it named — #737 — ahead
+of the round's own, later, explicit close. This project's convention is a
+plain `#N`: reference an issue or a PR by number, not with a close/fix/resolve
+keyword directly in front of it.
+
+A document that needs to name this rule's own trigger shape does not write
+the actual phrase, fenced or not: even inside a fenced code block — which
+the paragraph extractor already blanks out before any rule runs, see "Diff
+mode reports…" above and `FENCE_RE` in `scripts/claim-lint.py` — the bytes
+are still exactly what GitHub's own parser looks for, and a copy-paste into
+a real PR body or commit message would reproduce the incident this rule
+exists to prevent. This page names the shape broken instead: `Clos<ed> #N`,
+`Fix<es> #N`, `Resolv<ed> #N` — close enough to describe the pattern, and
+syntactically unable to match `AUTO_CLOSE_KEYWORD_RE` or GitHub's own
+parser. The one place the real phrase appears in this repo is the fixture
+built to be rejected by it — `test_vocabulary_and_shape` and
+`test_cli_exit_codes_for_the_three_anti_vacuity_cases` in
+`scripts/test_claim_lint.py`.
+
 
 Three design choices, each deliberate:
 
@@ -204,6 +250,11 @@ Three design choices, each deliberate:
   corpus specimens (F4, F16) are measured misses for exactly that reason.
 
 ## Discharging a hit honestly
+
+One rule is not covered by anything below: `auto-close-keyword` cannot be
+discharged by an annotation at all, for the reason given in "`auto-close-keyword`
+is not like the other five" above — the fix is to rewrite the reference, not to
+annotate it.
 
 If the claim is true and you can name what makes it true, cite it in the same
 paragraph. An N-of-M count or a resolving `serials/`/`confirm/`/`.log`/`.txt`

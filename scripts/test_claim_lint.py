@@ -433,6 +433,113 @@ class MechanicsTests(unittest.TestCase):
         self.assertFalse(cl.overlaps(f, [(1, 9)]))
 
 
+class AutoCloseKeywordTests(unittest.TestCase):
+    """The `auto-close-keyword` rule: a close/fix/resolve keyword bound to
+    "#N" is not a claim that might be true or false -- it is text GitHub
+    itself reads and acts on at merge/commit time, auto-closing the named
+    issue regardless of anything a human wrote next to it. PR #799
+    (2026-09-05) shipped exactly this phrase and, on merge, GitHub
+    auto-closed the issue it named -- #737 -- ahead of the intended explicit
+    close. This project's convention is a plain "#N" with no such keyword
+    directly in front of it."""
+
+    def test_vocabulary_and_shape(self):
+        cases = [
+            ("Fixes #737\n", True),
+            ("This is #737\n", False),
+            ("closes: #12\n", True),
+            ("Fixed #4.\n", True),
+            ("resolve #9001\n", True),
+            ("Close #10 for tracking.\n", True),
+            # a word that merely CONTAINS "close" is not the keyword --
+            # disclose/foreclose etc. must not fire on the substring.
+            ("This was disclosed #737 in the retro.\n", False),
+            # the keyword and the reference have to be adjacent (only
+            # whitespace/colon between); a keyword earlier in the sentence
+            # with other words before the issue number is not the shape
+            # GitHub's own parser recognizes.
+            ("The bug closes out a class of issues, tracked as #12.\n", False),
+        ]
+        for text, expect_flag in cases:
+            findings = cl.lint_text("x.md", text)
+            hit = any(f.rule == "auto-close-keyword" for f in findings)
+            self.assertEqual(
+                hit, expect_flag,
+                "text=%r expected auto-close-keyword=%r, findings=%r"
+                % (text, expect_flag, [f.rule for f in findings]),
+            )
+
+    def test_not_dischargeable_by_claim_lint_ok(self):
+        # The annotation records that a human checked something; it does not
+        # stop GitHub from reading the merged bytes and auto-closing the
+        # issue. This rule must fire even with a citation-bearing annotation
+        # right above it, unlike the rest of the rules in this file.
+        text = ("<!-- claim-lint:ok: reviewed, see #728 -->\n"
+                "Fixes #737\n")
+        findings = cl.lint_text("x.md", text)
+        self.assertTrue(
+            any(f.rule == "auto-close-keyword" for f in findings),
+            "a claim-lint:ok annotation must not discharge auto-close-keyword",
+        )
+
+    def test_not_exempted_by_nm_count_or_evidence_path(self):
+        # The other exemptions (N-of-M, a resolving evidence path) don't apply
+        # here either: there is no true-or-false claim here for them to
+        # exempt.
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "confirm"))
+            with open(os.path.join(tmp, "confirm", "run.txt"), "w") as fh:
+                fh.write("serial\n")
+            text = ("Fixes #737 -- 12/12 arms green, per "
+                    "`confirm/run.txt`.\n")
+            findings = cl.lint_text("EVIDENCE.md", text, tmp)
+            self.assertTrue(any(f.rule == "auto-close-keyword" for f in findings))
+
+    def test_fires_in_rust_and_shell_comments_too(self):
+        self.assertTrue(any(
+            f.rule == "auto-close-keyword"
+            for f in cl.lint_text("x.rs", "/// Fixes #737 once merged.\nfn f() {}\n")
+        ))
+        self.assertTrue(any(
+            f.rule == "auto-close-keyword"
+            for f in cl.lint_text("x.sh", "#!/bin/bash\n# closes: #12\necho hi\n")
+        ))
+
+    # ------------------------------------------------------------------
+    # ANTI-VACUITY: the real CLI, via `--files`, on three short one-line
+    # fixtures -- the shape a human actually runs, not just the in-process
+    # library call above. Asserts the literal process exit code.
+    # ------------------------------------------------------------------
+    CLI_CASES = [
+        ("Fixes #737\n", 1),
+        ("This is #737\n", 0),
+        ("closes: #12\n", 1),
+    ]
+
+    def test_cli_exit_codes_for_the_three_anti_vacuity_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, (text, expected_exit) in enumerate(self.CLI_CASES):
+                path = os.path.join(tmp, "case%d.md" % i)
+                with open(path, "w") as fh:
+                    fh.write(text)
+                out = subprocess.run(
+                    [sys.executable, CLAIM_LINT_PATH, "--files", path],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(
+                    out.returncode, expected_exit,
+                    "text=%r expected exit %d, got %d; stdout=%s"
+                    % (text, expected_exit, out.returncode, out.stdout),
+                )
+                if expected_exit == 1:
+                    self.assertIn(
+                        "auto-close-keyword", out.stdout,
+                        "a rejecting case must name the rule that fired",
+                    )
+                else:
+                    self.assertNotIn("auto-close-keyword", out.stdout)
+
+
 class HistoricalCorpusInContextTests(unittest.TestCase):
     """Layer 2a (HEADLINE): the linter run over the whole file as it shipped.
 
