@@ -4128,6 +4128,282 @@ pub fn run_census_widen_oracle() -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// #796: fcntl() must not report a contended process-manager lock as EAGAIN
+// ---------------------------------------------------------------------------
+//
+// The production failure was fcntl(F_SETFD) returning EAGAIN on a
+// production-profile aarch64 boot because sys_fcntl's process-lookup preamble
+// used try_manager() and turned a momentarily contended PROCESS_MANAGER lock
+// into an errno. This oracle recreates that contention on purpose -- a peer CPU
+// really holds the lock -- and asserts that no call returns EAGAIN.
+//
+// The driving thread is an ordinary test kthread with no process row, so on a
+// repaired kernel each of the 64 calls returns EBADF from the lookup that
+// follows the acquisition. That is the point: the oracle measures which arm the
+// syscall takes when the lock is busy, not whether set_fd_flags succeeds. The
+// successful-F_SETFD-under-production-load witness stays with tty_oracle's
+// cloexec_exec arm.
+//
+// pm_busy_probe and first_wait_us are the two anti-vacuity readings: the first
+// records that the lock was held at the instant the contended call was issued,
+// the second records how long the repaired call waited for it rather than
+// sailing through an uncontended lock. Both are what keep a green verdict from
+// being reachable without contention, and the oracle reddens on origin/main
+// with eagain=64:first_errno=11.
+
+/// Microseconds the peer CPU keeps PROCESS_MANAGER held.
+#[cfg(target_arch = "aarch64")]
+const FCNTL_PM_HOLD_US: u64 = 3_000;
+/// Microseconds the holder spins for the lock before reporting a failed arm.
+#[cfg(target_arch = "aarch64")]
+const FCNTL_PM_ACQUIRE_US: u64 = 200_000;
+/// Microseconds the driver waits for the holder to publish its window.
+#[cfg(target_arch = "aarch64")]
+const FCNTL_PM_ARM_WAIT_US: u64 = 500_000;
+/// Microseconds the driver waits for the holder thread to exit.
+#[cfg(target_arch = "aarch64")]
+const FCNTL_PM_JOIN_US: u64 = 500_000;
+/// Microseconds of quiet after the window closes, so the 3 ms in which no CPU
+/// could commit a dispatch does not ride into a later scheduler census.
+#[cfg(target_arch = "aarch64")]
+const FCNTL_PM_SETTLE_US: u64 = 20_000;
+/// Contended fcntl calls issued per attempt.
+#[cfg(target_arch = "aarch64")]
+const FCNTL_PM_CALLS: u64 = 64;
+/// Minimum time the first contended call must spend waiting for the lock.
+#[cfg(target_arch = "aarch64")]
+const FCNTL_PM_MIN_WAIT_US: u64 = 1_000;
+/// Arming attempts before the oracle reports what it measured and fails.
+#[cfg(target_arch = "aarch64")]
+const FCNTL_PM_ATTEMPTS: u64 = 3;
+
+#[cfg(target_arch = "aarch64")]
+static FCNTL_PM_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static FCNTL_PM_HOLD_DONE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static FCNTL_PM_HOLD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// The architected counter frequency, read straight from the register.
+///
+/// CNTVCT_EL0 keeps advancing while a CPU has DAIF masked, which the tick
+/// counter does not, so it is the only clock this oracle can use to bound a
+/// window that the driver spends waiting for a lock with interrupts off.
+#[cfg(target_arch = "aarch64")]
+fn fcntl_pm_counter_hz() -> u64 {
+    let freq: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+    }
+    freq
+}
+
+#[cfg(target_arch = "aarch64")]
+fn fcntl_pm_elapsed_us(since: u64) -> u64 {
+    let hz = fcntl_pm_counter_hz();
+    if hz == 0 {
+        // No usable clock: report an elapsed time past each of the 5 bounded
+        // deadlines in this oracle, so each loop exits at once and the oracle
+        // fails loudly instead of spinning forever.
+        return u64::MAX;
+    }
+    let delta = crate::tracing::trace_timestamp().wrapping_sub(since);
+    delta.saturating_mul(1_000_000) / hz
+}
+
+/// Hold PROCESS_MANAGER on this CPU for a bounded window.
+///
+/// The lock is taken with try_manager(), which does not touch DAIF, so this CPU
+/// keeps taking timer interrupts while it holds it -- the global tick counter is
+/// CPU 0's and must not be stopped by this oracle. The release deadline is read
+/// from CNTVCT_EL0, which advances whether or not any CPU is masked, so the
+/// window closes even while the driver waits for the lock with interrupts off.
+#[cfg(target_arch = "aarch64")]
+fn fcntl_pm_holder_body() {
+    let acquire_start = crate::tracing::trace_timestamp();
+    let guard = loop {
+        if let Some(guard) = crate::process::try_manager() {
+            break guard;
+        }
+        if fcntl_pm_elapsed_us(acquire_start) > FCNTL_PM_ACQUIRE_US {
+            FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);
+            return;
+        }
+        core::hint::spin_loop();
+    };
+
+    FCNTL_PM_HOLD_CPU.store(
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
+        AtomicOrdering::Relaxed,
+    );
+    let held_from = crate::tracing::trace_timestamp();
+    FCNTL_PM_HOLD_ACTIVE.store(true, AtomicOrdering::Release);
+    while fcntl_pm_elapsed_us(held_from) < FCNTL_PM_HOLD_US {
+        core::hint::spin_loop();
+    }
+    FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+    drop(guard);
+    FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn fcntl_pm_setfd_once() -> u64 {
+    use crate::ipc::fd::fcntl_cmd::F_SETFD;
+    use crate::ipc::fd::flags::FD_CLOEXEC;
+    match crate::syscall::handlers::sys_fcntl(
+        crate::ipc::fd::STDOUT as u64,
+        F_SETFD as u64,
+        u64::from(FD_CLOEXEC),
+    ) {
+        crate::syscall::SyscallResult::Ok(_) => 0,
+        crate::syscall::SyscallResult::Err(errno) => errno,
+    }
+}
+
+/// Measure which arm fcntl() takes while a peer CPU holds the process-manager
+/// lock, and score EAGAIN as a failure (#796). This reddens on origin/main --
+/// eagain=64:first_errno=11 -- and is green once the preamble blocks for the
+/// lock instead of reporting its contention.
+pub fn run_fcntl_pm_contention_oracle() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::task::kthread::{
+            kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
+        };
+
+        let online = crate::task::scheduler::online_cpu_count_snapshot();
+        let me = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+        let peer = (0..online).find(|&cpu| cpu != me);
+
+        let mut attempts = 0u64;
+        let mut armed = 0u64;
+        let mut holder_cpu = u64::MAX;
+        let mut pm_busy_probe = 0u64;
+        let mut calls = 0u64;
+        let mut eagain = 0u64;
+        let mut first_errno = u64::MAX;
+        let mut first_wait_us = 0u64;
+        let mut joined = 0u64;
+        let mut passed = false;
+
+        if let Some(peer) = peer {
+            while attempts < FCNTL_PM_ATTEMPTS && !passed {
+                attempts += 1;
+                armed = 0;
+                holder_cpu = u64::MAX;
+                pm_busy_probe = 0;
+                calls = 0;
+                eagain = 0;
+                first_errno = u64::MAX;
+                first_wait_us = 0;
+                joined = 0;
+
+                FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+                FCNTL_PM_HOLD_DONE.store(false, AtomicOrdering::Release);
+                FCNTL_PM_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
+
+                let Ok(handle) =
+                    kthread_run_on_cpu_for_test(fcntl_pm_holder_body, "fcntl-pm-holder", peer)
+                else {
+                    continue;
+                };
+
+                let arm_start = crate::tracing::trace_timestamp();
+                while !FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+                    && !FCNTL_PM_HOLD_DONE.load(AtomicOrdering::Acquire)
+                    && fcntl_pm_elapsed_us(arm_start) < FCNTL_PM_ARM_WAIT_US
+                {
+                    crate::arch_halt();
+                }
+
+                if FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
+                    armed = 1;
+                    holder_cpu = FCNTL_PM_HOLD_CPU.load(AtomicOrdering::Relaxed);
+                    // Independent read of the same lock, immediately before the
+                    // measured call: this is what makes "contended" a reading
+                    // rather than an assumption about the peer's timing.
+                    pm_busy_probe = u64::from(crate::process::try_manager().is_none());
+
+                    let call_start = crate::tracing::trace_timestamp();
+                    first_errno = fcntl_pm_setfd_once();
+                    first_wait_us = fcntl_pm_elapsed_us(call_start);
+                    calls = 1;
+                    if first_errno == 11 {
+                        eagain += 1;
+                    }
+                    while calls < FCNTL_PM_CALLS {
+                        calls += 1;
+                        if fcntl_pm_setfd_once() == 11 {
+                            eagain += 1;
+                        }
+                    }
+                }
+
+                let join_start = crate::tracing::trace_timestamp();
+                while !kthread_has_exited_for_test(&handle)
+                    && fcntl_pm_elapsed_us(join_start) < FCNTL_PM_JOIN_US
+                {
+                    crate::arch_halt();
+                }
+                if kthread_has_exited_for_test(&handle) {
+                    joined = u64::from(kthread_join(&handle).is_ok());
+                }
+
+                let settle_start = crate::tracing::trace_timestamp();
+                while fcntl_pm_elapsed_us(settle_start) < FCNTL_PM_SETTLE_US {
+                    crate::arch_halt();
+                }
+
+                passed = armed == 1
+                    && pm_busy_probe == 1
+                    && joined == 1
+                    && calls == FCNTL_PM_CALLS
+                    && eagain == 0
+                    && first_wait_us >= FCNTL_PM_MIN_WAIT_US;
+            }
+        }
+
+        crate::serial_println!(
+            "[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts={}:armed={}:holder_cpu={}:pm_busy_probe={}:calls={}:eagain={}:first_errno={}:first_wait_us={}:joined={}:{}]",
+            attempts,
+            armed,
+            holder_cpu,
+            pm_busy_probe,
+            calls,
+            eagain,
+            first_errno,
+            first_wait_us,
+            joined,
+            if passed { "PASS" } else { "FAIL" },
+        );
+        return passed;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        // Two threads do not contend for PROCESS_MANAGER on a uniprocessor
+        // boot: the dispatch path refuses to switch while the lock is held, so
+        // the holder is not preempted and no second thread runs. SKIP discloses
+        // that platform limitation; it is deliberately not a passing result.
+        // The aarch64 arm above carries the reddens-on-main leg.
+        crate::serial_println!(
+            "[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus={}:SKIP]",
+            crate::task::scheduler::online_cpu_count_snapshot(),
+        );
+        false
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn test_fcntl_pm_contention_oracle() -> TestResult {
+    if run_fcntl_pm_contention_oracle() {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("fcntl reported a contended process-manager lock to userspace")
+    }
+}
+
 fn test_census_widen_oracle() -> TestResult {
     if run_census_widen_oracle() {
         TestResult::Pass
@@ -7186,6 +7462,20 @@ static SYSCALL_TESTS: &[TestDef] = &[
         arch: Arch::Aarch64,
         timeout_ms: 2000,
         stage: TestStage::EarlyBoot,
+    },
+    // #796. PostScheduler because it needs a second kthread pinned to a peer
+    // CPU, and last in this subsystem because it is the one test here that
+    // stops each online CPU from committing a dispatch for the length of its
+    // 3 ms window.
+    // The Syscall subsystem runs after Process, so the scheduler censuses in
+    // PROCESS_TESTS take their baselines before this window ever opens.
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "fcntl_pm_contention_oracle",
+        func: test_fcntl_pm_contention_oracle,
+        arch: Arch::Aarch64,
+        timeout_ms: 10000,
+        stage: TestStage::PostScheduler,
     },
 ];
 
