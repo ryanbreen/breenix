@@ -1,0 +1,58 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-5/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-5)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.64s
+     Running tests/ttbr0_shadow_reconciliation_structure.rs (target/debug/deps/ttbr0_shadow_reconciliation_structure-fe46c1b52eab6525)
+
+running 23 tests
+test settling_one_shadow_is_not_settling_the_shadows ... ok
+test the_asid_check_rejects_a_disagreeing_tag ... ok
+test the_nomem_check_reads_the_asm_block_and_not_the_prose ... ok
+test init_reaches_userspace_on_the_root_the_shadows_name ... ok
+test the_blocking_resume_census_catches_an_unguarded_restore ... ok
+test the_primitive_exemption_rejects_a_fetched_root ... ok
+test the_primitive_exemption_rejects_a_shadow_touching_install ... ok
+test the_shadow_census_accepts_a_mechanism_primitive ... ok
+test the_caller_census_catches_a_wrapper_that_skips_the_discipline ... ok
+test the_shadow_census_rejects_an_unreconciled_install ... ok
+test the_sequence_census_catches_an_install_outside_the_discipline_module ... ok
+test the_caller_census_rejects_a_half_settled_caller ... 
+thread 'the_discipline_publishes_the_dispatch_asid' panicked at tests/ttbr0_shadow_reconciliation_structure.rs:1525:9:
+the installed value "ttbr0_value" must be bound in the discipline body
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test the_discipline_installs_in_order_and_orders_the_shadow_stores ... ok
+test the_dispatch_ttbr0_switch_settles_both_shadows ... ok
+test the_ttbr0_discipline_publishes_both_shadows ... ok
+test the_kernel_root_caller_census_catches_a_caller_that_leaves_the_shadows_armed ... ok
+test the_discipline_publishes_the_dispatch_asid ... FAILED
+TTBR0 install census (6 functions): [
+    "kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed (reconciles inline)",
+    "kernel/src/arch_impl/aarch64/paging.rs::write_root (parameter-borne)",
+    "kernel/src/arch_impl/aarch64/syscall_entry.rs::restore_ttbr0_after_failed_exec (reconciles inline)test no_ttbr0_installer_claims_it_touches_no_memory ... ok
+",
+    "kernel/src/arch_impl/aarch64/ttbr0.rs::switch_ttbr0_to_kernel (the discipline)",
+    "kernel/src/arch_impl/aarch64/ttbr0.rs::adopt_process_ttbr0 (the discipline)",
+    "kernel/src/memory/arch_stub.rs::write (parameter-borne)",
+]
+test every_ttbr0_install_settles_the_per_cpu_shadows ... ok
+test every_non_primitive_ttbr0_install_performs_the_install_sequence ... ok
+blocking-resume restore census (5 functions): [
+    "kernel/src/syscall/futex.rs::ensure_current_address_space",
+    "kernel/src/syscall/graphics.rs::ensure_current_address_space",
+    "kernel/src/syscall/handlers.rs::poll_ensure_address_space",
+    "kernel/src/syscall/time.rs::ensure_current_address_space",
+    "kernel/src/syscall/wait.rs::ensure_current_address_space",
+]
+test every_blocking_resume_restore_uses_the_guarded_helper ... ok
+test every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows ... ok
+test every_caller_of_the_kernel_root_install_settles_the_shadows ... ok
+
+failures:
+
+failures:
+    the_discipline_publishes_the_dispatch_asid
+
+test result: FAILED. 22 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.54s
+
+error: test failed, to rerun pass `--test ttbr0_shadow_reconciliation_structure`
+EXIT=101

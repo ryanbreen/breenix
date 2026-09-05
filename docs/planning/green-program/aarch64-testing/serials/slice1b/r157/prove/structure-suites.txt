@@ -1,0 +1,707 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-5/kernel)
+   Compiling breenix v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_c5cad9be-af5-5)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.29s
+     Running tests/block_request_lifetime_structure.rs (target/debug/deps/block_request_lifetime_structure-3c3a86f9ac148617)
+
+running 12 tests
+test completion_wait_validator_rejects_interruptible_synthetic_source ... ok
+test completion_wait_census_ignores_comments_and_string_literals ... ok
+test gate_poison_validator_rejects_synthetic_regressions ... ok
+test block_eintr_oracle_marker_is_pinned_in_the_gates ... ok
+test every_discovered_aarch64_boot_tests_gate_rejects_boot_test_failures ... ok
+test driver_guard_wedge_call_population_is_pinned ... ok
+test drivers_have_no_unpaired_keep_locked_escape ... ok
+test driver_release_on_drop_false_population_is_pinned ... ok
+test driver_completion_wait_population_is_pinned ... ok
+test drivers_have_no_interruptible_completion_waits ... ok
+test every_release_on_drop_false_arm_latches_wedged ... ok
+test every_wedged_driver_gate_refuses_inside_lock ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/context_restore_structure.rs (target/debug/deps/context_restore_structure-05ed9744a84727a2)
+
+running 97 tests
+test aarch64_resume_pc_records_publish_their_source_behind_a_store_barrier ... ok
+test abort_dispatch_validator_rejects_unconditional_running_transition ... ok
+test abort_dispatch_validator_rejects_unguarded_resume_dequeue ... ok
+test aarch64_ret_dispatch_refusal_leaves_the_refused_stack_before_custody_stops_naming_it ... ok
+test aarch64_inline_save_blocks_publish_their_resume_pc ... ok
+test blocked_syscall_dispatch_validator_rejects_log_only_no_cr3 ... ok
+test blocked_syscall_dispatch_validator_rejects_per_use_cr3_guards ... ok
+test blocked_syscall_dispatch_validator_rejects_late_no_cr3_refusal ... ok
+test aarch64_failed_exec_ttbr0_validator_rejects_missing_rollback ... ok
+test dispatch_guard_validator_rejects_acquisition_after_scheduling ... ok
+test dispatch_guard_validator_rejects_unavailable_fallthrough ... ok
+test a_custody_decision_reads_an_ownership_record_only_while_its_sentinel_guards_it ... ok
+test aarch64_failed_exec_restores_the_pretransition_ttbr0 ... ok
+test dispatch_guard_validator_rejects_userspace_only_acquisition ... ok
+test dispatch_guard_is_shared_and_acquired_before_scheduling ... ok
+test abort_dispatch_rollback_preserves_resume_thread_state ... ok
+test aarch64_refusal_drain_repoints_this_cpus_current_thread_before_terminating ... ok
+test aarch64_refusal_drain_acts_only_after_it_has_departed_the_victim_stack ... ok
+test every_context_switch_rsp0_publish_updates_tss_and_per_cpu_cache ... ok
+test every_save_failure_rolls_back_the_committed_dispatch ... ok
+test every_switch_return_rolls_back_the_committed_dispatch ... ok
+test blocked_syscall_dispatch_resolves_cr3_before_commit ... ok
+test an_inline_saved_resume_pc_is_admitted_on_both_dispatch_paths ... ok
+test aarch64_refusal_drain_acts_only_on_records_this_cpu_published ... ok
+test aarch64_inline_elr_slot_has_one_durable_layout_assert ... ok
+test a_refused_resume_is_never_routed_back_to_the_cpu_that_declined_it ... ok
+test both_kernel_resume_paths_adjudicate_the_stack_they_resume_on ... ok
+test first_run_logging_validator_rejects_aborted_arm_logging ... ok
+test first_run_logging_validator_rejects_setup_prologue_logging ... ok
+test a_masking_pivot_function_reads_its_identity_after_the_mask ... ok
+test first_userspace_entry_validator_rejects_idle_abort_recovery ... ok
+test first_userspace_entry_validator_rejects_write_first_dispatch ... ok
+test first_run_dispatch_logs_only_after_installation ... ok
+test every_aarch64_stack_pivot_runs_on_an_adjudicated_destination ... ok
+test every_userspace_resume_pc_producer_verdict_is_consumed ... ok
+test interrupt_return_validator_rejects_unconditional_saved_frame_lookup ... ok
+test first_userspace_entry_installs_address_space_before_ring3_commit ... ok
+test no_cr3_dispatch_validator_rejects_missing_return ... ok
+test no_cr3_dispatch_validator_rejects_scheduler_only_termination ... ok
+test no_cr3_dispatch_validator_rejects_warn_only_arm ... ok
+test init_cpu_publishes_both_idle_stack_top_and_stack_ownership ... ok
+test no_cr3_dispatch_fails_closed ... ok
+test restore_rejects_kernel_frames_before_context_writes ... ok
+test restore_validator_rejects_missing_kernel_selector_guard ... ok
+test interrupt_return_reads_old_thread_once_and_lazily_checks_saved_cs ... ok
+test percpu_stack_top_writers_consult_the_ownership_check ... ok
+test rollback_return_alternation_rejects_return_without_commitment ... ok
+test routing_enforcement_validator_rejects_has_started_conjunct ... ok
+test routing_enforcement_validator_rejects_missing_selector_check ... ok
+test rsp0_publisher_validator_rejects_a_tss_only_first_entry_write ... ok
+test save_failure_rollback_validator_rejects_rollback_after_return ... ok
+test save_failure_rollback_validator_rejects_unpaired_return ... ok
+test ret_dispatch_sites_record_an_r_path_dispatch_row ... ok
+test saved_frame_routing_matches_userspace_restore_enforcement ... ok
+test fatal_scheduler_census_m_c_rejects_broken_blocking_accessor_derivation ... ok
+test clone_publication_lifecycle_guard_census_reddens_when_either_arch_guard_removed ... ok
+test saved_lr_admission_is_the_three_named_classes ... ok
+test aarch64_eret_resume_selection_disambiguates_inline_saves ... ok
+test saved_lr_copies_route_through_the_single_accessor ... ok
+test switch_dispatch_rollback_validator_rejects_rollback_after_return ... ok
+test switch_dispatch_rollback_validator_rejects_unpaired_return ... ok
+test reclaim_drops_thread_control_blocks_inside_the_masked_region ... ok
+test shared_resume_pc_macros_each_have_one_definition ... ok
+test switch_validator_rejects_flag_only_dispatch ... ok
+test terminated_signal_validator_rejects_bookkeeping_rollback ... ok
+test terminated_signal_validator_rejects_return_without_completed_switch ... ok
+test terminated_signal_dispatch_completes_switch_to_idle ... ok
+test switch_dispatches_saved_kernel_frames_to_kernel_resume ... ok
+test set_saved_lr_classifies_and_reports_without_substituting ... ok
+test the_dead_first_entry_eret_entry_point_stays_deleted ... ok
+test the_custody_rule_the_kernel_delegates_to_is_executed_by_a_host_test ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test unblock_validator_rejects_foreign_flag_clear ... ok
+test unblock_preserves_blocked_syscall_context_ownership ... ok
+test inline_schedule_trampoline_retains_the_redundant_elr_guard ... ok
+test saved_context_layout_and_identity_are_compile_time_facts ... ok
+test userspace_fault_idle_return_validator_rejects_private_stack_derivation ... ok
+test swapper_files_do_not_assign_thread_id_zero ... ok
+test userspace_fault_termination_returns_on_the_idle_thread_stack ... ok
+test ret_dispatch_restores_a_staged_copy_taken_under_the_scheduler_lock ... ok
+test work_stealing_declines_a_thread_pinned_to_another_cpus_stack ... ok
+test the_aarch64_dispatch_refuses_a_foreign_resume_stack_and_routes_it_home ... ok
+test userspace_resume_pc_predicate_stays_outside_the_kernel_text_window ... ok
+test unpublished_dispatch_is_retry_only_on_both_architectures ... ok
+test every_el1_resume_pc_consumer_uses_the_shared_admission_macro ... ok
+test every_el0_resume_pc_consumer_has_a_shared_admission_arm ... ok
+test user_rsp_scratch_kernel_stack_installs_follow_the_pending_exception_level ... ok
+test userspace_resume_pc_producers_refuse_before_publishing_frame_elr ... ok
+test ctx596_oracles_are_permanent_while_forcing_stays_feature_gated ... ok
+test the_cpu_identity_token_is_only_minted_from_a_hardware_read ... ok
+test clone_publication_lifecycle_is_closed ... ok
+test every_eret_under_the_resume_pc_root_is_dispositioned ... ok
+test fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation ... ok
+test fatal_exception_reports_never_take_blocking_scheduler_accessors ... ok
+test fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee ... ok
+test fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site ... ok
+test fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee ... ok
+
+test result: ok. 97 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 39.82s
+
+     Running tests/coreproof_component_h_structure.rs (target/debug/deps/coreproof_component_h_structure-24c0976e8e09cc1c)
+
+running 5 tests
+test self_retraction_latch_cannot_outlive_one_measured_window ... ok
+test inline_slot_classification_counters_fire_from_exactly_one_site_each_and_stay_co_located ... ok
+test inline_schedule_state_is_only_ever_read_via_a_consumed_swap ... ok
+test the_new_inline_slot_instrument_is_entirely_coreproof_gated ... ok
+test self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coreproof_coverage_structure.rs (target/debug/deps/coreproof_coverage_structure-f554c771cc4be0b9)
+
+running 4 tests
+test coverage_census_matches_the_mutation_register_in_order ... ok
+test every_harness_side_exception_is_counted_inside_the_harness ... ok
+test every_coverage_placement_names_a_declared_site ... ok
+test every_non_harness_site_has_a_real_coverage_placement ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/coreproof_mutation_register_structure.rs (target/debug/deps/coreproof_mutation_register_structure-c927ef68d909ea2e)
+
+running 5 tests
+test the_register_names_exactly_the_declared_mutations ... ok
+test every_register_entry_cites_its_issue_its_fix_and_its_predicate ... ok
+test every_multi_file_mutation_gates_every_file_its_own_entry_names ... ok
+test every_declared_mutation_perturbs_a_real_site ... ok
+test every_gated_mutation_is_declared ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/coreproof_sites_structure.rs (target/debug/deps/coreproof_sites_structure-deb69be3c6dfdb88)
+
+running 4 tests
+test every_declared_site_is_listed_and_named ... ok
+test every_scheduler_seam_is_classified_correctly ... ok
+test every_placed_site_is_declared ... ok
+test every_declared_site_is_actually_placed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/degenerate_transfer_fd_validation_structure.rs (target/debug/deps/degenerate_transfer_fd_validation_structure-8f6770b3a73b4912)
+
+running 4 tests
+test the_guard_validator_rejects_the_pre_fix_shape ... ok
+test the_validator_reports_ebadf_from_the_descriptor_table ... ok
+test the_degenerate_transfer_census_is_not_vacuous ... ok
+test every_degenerate_transfer_guard_validates_the_descriptor_first ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/dispatch_path_lock_free_structure.rs (target/debug/deps/dispatch_path_lock_free_structure-7947f81b98024948)
+
+running 4 tests
+test switch_to_kernel_page_table_takes_no_lock ... ok
+test the_kernel_page_table_readers_go_through_the_accessor ... ok
+test setup_kernel_thread_return_allocates_nothing ... ok
+test master_kernel_pml4_is_read_without_a_lock ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dispatch_strand_census_structure.rs (target/debug/deps/dispatch_strand_census_structure-2b3c424885a93982)
+
+running 7 tests
+test the_snapshot_is_emitted_on_the_kernel_log_channel ... ok
+test the_surviving_record_census_in_the_dispatch_path_is_pinned ... ok
+test every_in_repo_caller_hands_the_census_the_kernel_serial ... ok
+test host_consumers_have_no_removed_record_dependency ... ok
+test dispatch_records_and_diagnostic_feature_are_gone ... ok
+test replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion ... ok
+test the_staleness_bound_has_exactly_one_copy_in_the_repository ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/dma_and_log_sink_structure.rs (target/debug/deps/dma_and_log_sink_structure-686312e9d26141f5)
+
+running 4 tests
+test virtqueue_validator_rejects_log_and_continue_shape ... ok
+test logger_validator_rejects_blocking_framebuffer_lock ... ok
+test virtqueue_dma_ring_allocation_fails_closed ... ok
+test framebuffer_log_sink_is_nonblocking_and_bounded ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/exec_lock_order_structure.rs (target/debug/deps/exec_lock_order_structure-8e3197fce399d659)
+
+running 44 tests
+test negative_collapsed_scheduler_census_is_rejected ... ok
+test negative_creation_injection_reusing_production_marker_is_rejected ... ok
+test negative_creation_marker_reusing_exec_marker_is_rejected ... ok
+test boot_verdict_emits_and_gates_on_the_exec_lock_order_counters ... ok
+test exec_smoke_is_wired_into_both_boot_paths ... ok
+test negative_exec_smoke_after_boot_services_is_rejected ... ok
+test negative_exec_smoke_after_reap_loop_is_rejected ... ok
+test negative_exec_smoke_before_liveness_spawn_is_rejected ... ok
+test negative_exec_sched_commit_without_must_use_is_rejected ... ok
+test negative_exec_smoke_definition_regated_to_one_arch_is_rejected ... ok
+test arm64_exec_bodies_stage_the_receipt_after_the_context_reset ... ok
+test negative_exec_smoke_x86_64_before_tty_oracle_is_rejected ... ok
+test negative_exec_smoke_x86_64_call_site_deletion_is_rejected ... ok
+test creation_publication_seams_are_first_and_unique ... ok
+test negative_exec_smoke_init_spawn_deletion_is_rejected ... ok
+test negative_creation_injection_duplicating_predicate_is_rejected ... ok
+test negative_creation_publication_after_without_interrupts_is_rejected ... ok
+test negative_full_gate_without_violation_grep_is_rejected ... ok
+test negative_sys_exec_apply_before_drop_is_rejected ... ok
+test negative_full_gate_without_exec_smoke_target_grep_is_rejected ... ok
+test negative_sys_exec_install_without_next_cr3_clear_is_rejected ... ok
+test negative_manager_module_scheduler_acquisition_is_rejected ... ok
+test negative_manager_scheduler_use_import_is_rejected ... ok
+test negative_scheduler_glob_import_is_rejected ... ok
+test negative_sys_exec_raw_ttbr0_install_is_rejected ... ok
+test exec_sched_commit_is_a_must_use_receipt_applied_in_the_scheduler ... ok
+test negative_sys_exec_missing_drop_is_rejected ... ok
+test sys_exec_releases_the_process_manager_before_the_scheduler ... ok
+test negative_exec_sched_commit_without_pm_guard_is_rejected ... ok
+test negative_arm64_exec_snapshot_before_reset_is_rejected ... ok
+test negative_sys_execv_with_frame_apply_before_drop_is_rejected ... ok
+test negative_sys_execv_with_frame_missing_drop_is_rejected ... ok
+test negative_creation_oracle_without_injected_assertion_is_rejected ... ok
+test sys_execv_with_frame_releases_the_process_manager_before_the_scheduler ... ok
+test creation_lock_order_marker_and_oracle_reader_are_pinned ... ok
+test x86_64_exec_body_stages_the_receipt_after_the_context_reset ... ok
+test negative_x86_64_exec_snapshot_before_reset_is_rejected ... ok
+test negative_arm64_exec_scheduler_acquisition_is_rejected ... ok
+test negative_arm64_exec_scheduler_path_call_is_rejected ... ok
+test negative_unqualified_scheduler_call_is_rejected ... ok
+test creation_paths_release_process_manager_before_publication ... ok
+test negative_creation_publication_inside_process_manager_scope_is_rejected ... ok
+test manager_module_has_no_scheduler_lock_acquisition_anywhere ... ok
+test arm64_exec_bodies_never_touch_the_scheduler_lock ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/exit_tally_structure.rs (target/debug/deps/exit_tally_structure-2a010662f66b73e6)
+
+running 6 tests
+test terminated_assignment_detector_handles_paths_without_counting_patterns ... ok
+test failure_table_lock_is_only_taken_with_interrupts_disabled ... ok
+test termination_functions_guard_assign_and_record_in_order_once_each ... ok
+test process_task_has_no_record_exit_call ... ok
+test terminated_state_assignments_are_confined_to_the_two_termination_functions ... ok
+test record_exit_calls_exist_only_at_the_two_termination_transitions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/ext2_lock_structure.rs (target/debug/deps/ext2_lock_structure-37d72c5632d6e8c6)
+
+running 36 tests
+test negative_marker_print_deleted_from_record_park_is_rejected ... ok
+test negative_marker_text_changed_is_rejected ... ok
+test negative_missing_accessor_call_is_rejected ... ok
+test negative_bare_prepare_to_wait_is_rejected ... ok
+test negative_missing_can_sleep_gate_is_rejected ... ok
+test negative_missing_raw_write_site_is_rejected ... ok
+test negative_aarch64_loses_interrupts_enabled_is_rejected ... ok
+test negative_missing_record_park_call_is_rejected ... ok
+test negative_missing_release_in_drop_is_rejected ... ok
+test negative_missing_spin_fallback_is_rejected ... ok
+test negative_never_using_checked_wait_is_rejected ... ok
+test negative_park_loop_deleted_from_one_function_is_rejected ... ok
+test negative_raw_fetch_add_alongside_record_park_is_rejected ... ok
+test negative_raw_fetch_add_instead_of_record_park_is_rejected ... ok
+test negative_raw_read_added_outside_the_three_functions_is_rejected ... ok
+test negative_raw_read_regression_is_rejected ... ok
+test negative_run_one_reset_call_deleted_is_rejected ... ok
+test negative_third_raw_write_site_is_rejected ... ok
+test negative_wake_before_release_is_rejected ... ok
+test negative_x86_preempt_count_weakened_to_greater_than_zero_is_rejected ... ok
+test negative_x86_regains_interrupts_enabled_is_rejected ... ok
+test ext2_acquire_itself_calls_record_park ... ok
+test ext2_acquire_write_itself_calls_checked_wait ... ok
+test ext2_record_park_itself_prints_the_marker ... ok
+test ext2_acquire_write_itself_calls_record_park ... ok
+test ext2_acquire_write_is_can_sleep_gated_with_a_spin_fallback ... ok
+test ext2_acquire_itself_calls_checked_wait ... ok
+test ext2_acquire_is_can_sleep_gated_with_a_spin_fallback ... ok
+test can_sleep_predicate_arch_split_is_correct ... ok
+test run_one_itself_resets_the_park_marker ... ok
+test read_guard_drop_releases_before_waking ... ok
+test no_raw_ext2_read_write_exists_file_wide ... ok
+test write_guard_drop_releases_before_waking ... ok
+test acquisition_paths_use_only_the_checked_timed_wait ... ok
+test x86_can_sleep_preempt_count_check_is_exact_one ... ok
+test is_mounted_is_home_mounted_and_home_mount_id_route_through_the_accessor ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fork_lock_order_structure.rs (target/debug/deps/fork_lock_order_structure-db92a55f79641e84)
+
+running 10 tests
+test negative_guard_live_across_reclaim_is_rejected ... ok
+test negative_dropped_terminated_reclaim_call_is_rejected ... ok
+test negative_reordered_page_table_before_reclaim_is_rejected ... ok
+test negative_missing_drop_before_spawn_front_is_rejected ... ok
+test negative_dropped_deferred_reclaim_call_is_rejected ... ok
+test negative_reintroduced_interrupt_mask_is_rejected ... ok
+test sys_fork_with_parent_context_has_the_required_lock_order ... ok
+test negative_deleted_cow_restore_is_rejected ... ok
+test negative_cow_restore_moved_after_the_try_is_rejected ... ok
+test both_production_forks_restore_the_parent_page_table_before_propagating ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/green_program_envelope_structure.rs (target/debug/deps/green_program_envelope_structure-a7d94989abb46b5d)
+
+running 14 tests
+test boot_tests_registry_stays_kthread_only ... ok
+test aarch64_tty_oracle_runs_with_exactly_one_persistent_background_process ... ok
+test x86_tty_oracle_runs_with_no_persistent_background_process ... ok
+test item4_mutation_proof ... ok
+test x86_gate_scripts_boot_smp_1 ... ok
+test aarch64_gate_scripts_boot_smp_4 ... ok
+test aarch64_syscall_dispatch_enosys_stubs_are_exactly_archprctl ... ok
+test item2_mutation_proof ... ok
+test x86_syscall_dispatch_enosys_stubs_are_exactly_gettime ... ok
+test x86_gate_scripts_mount_ext2_readonly ... ok
+test item1_mutation_proof ... ok
+test aarch64_gate_scripts_mount_ext2_writable ... ok
+test item3_mutation_proof ... ok
+test item5_mutation_proof ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/loopback_pump_structure.rs (target/debug/deps/loopback_pump_structure-08b9d338fae95006)
+
+running 63 tests
+test drain_guard_scope_excludes_delivery ... ok
+test drain_exclusion_validator_rejects_atomic_bool ... ok
+test drain_exclusion_is_a_typed_guard ... ok
+test general_idle_loop_validator_rejects_missing_x86_drain ... ok
+test drain_guard_scope_validator_rejects_delivery_in_take_window ... ok
+test drain_owner_validator_rejects_force_release ... ok
+test loopback_drain_exits_own_their_leftovers ... ok
+test any_context_wake_dispatches_on_execution_context ... ok
+test loopback_drain_validator_rejects_an_unflushed_empty_exit ... ok
+test generic_unblock_keeps_child_exit_dedicated ... ok
+test any_context_wake_never_takes_the_scheduler_lock_in_interrupt_context ... ok
+test general_idle_loop_validator_rejects_missing_aarch64_testing_drain ... ok
+test loopback_drain_validator_rejects_a_dropped_rearm ... ok
+test pump_does_not_halt_while_work_remains ... ok
+test pump_more_branch_validator_rejects_halt ... ok
+test general_idle_loop_validator_rejects_missing_aarch64_no_userspace_drain ... ok
+test general_idle_loops_drain_loopback ... ok
+test io_wake_validator_rejects_direct_any_context_routing ... ok
+test net_lock_guard_context_validator_rejects_softirq_execution_entry ... ok
+test net_lock_guard_disables_bottom_halves_not_softirq_execution ... ok
+test loopback_enqueue_validator_rejects_a_missing_kick ... ok
+test loopback_enqueue_owns_its_delivery ... ok
+test any_context_wake_validator_rejects_interrupt_scheduler_lock ... ok
+test generic_unblock_validator_rejects_child_exit_wake ... ok
+test tcp_accept_claim_validator_rejects_claim_outside_listener_lock ... ok
+test loopback_arch_validator_rejects_arch_specific_test ... ok
+test io_wake_buffers_before_thread_context_overflow_fallback ... ok
+test no_force_release_of_the_drain_owner ... ok
+test any_context_wake_dispatch_validator_rejects_wide_softirq_predicate ... ok
+test loopback_enqueue_validator_rejects_a_softirq_that_does_not_drain ... ok
+test tcp_accept_claims_pending_in_peek_closure ... ok
+test tcp_accept_inserts_before_pending_removal ... ok
+test io_wake_validator_rejects_interrupt_context_inline_fallback ... ok
+test wake_waiting_threads_is_arch_neutral ... ok
+test waiter_list_validator_rejects_pre_wake_drain ... ok
+test x86_gate_requires_the_loopback_regression_tests ... ok
+test waiter_lists_are_not_drained_before_the_wake ... ok
+test tcp_accept_order_validator_rejects_remove_before_insert ... ok
+test wake_waiting_threads_validator_rejects_arch_cfg ... ok
+test x86_gate_validator_rejects_missing_loopback_marker ... ok
+test x86_gate_validator_rejects_lower_userspace_exit_pin ... ok
+test x86_gate_validator_rejects_deferred_loopback_requirement ... ok
+test x86_gate_validator_rejects_short_registry_poll_bound ... ok
+test x86_gate_validator_rejects_weak_loopback_marker_count ... ok
+test x86_gate_validator_rejects_missing_http_deadline_tally_disclosure ... ok
+test schedule_rearms_a_blocked_pump ... ok
+test x86_gate_validator_rejects_missing_userspace_failure_trap ... ok
+test x86_userspace_launch_validator_rejects_missing_loopback_binary_load ... ok
+test x86_userspace_launch_validator_rejects_missing_loopback_process_launch ... ok
+test x86_userspace_phase_launches_loopback_wake_test ... ok
+test schedule_rearm_validator_rejects_missing_unblock ... ok
+test pump_producer_seam_validator_rejects_second_producer ... ok
+test wakeup_placement_is_bounded_by_online_cpus ... ok
+test wakeup_placement_validator_rejects_max_cpu_selection ... ok
+test scheduling_paths_reclaim_unschedulable_cpu_queues ... ok
+test pump_producer_seam_is_single ... ok
+test loopback_regression_tests_are_arch_neutral ... ok
+test wakeup_placement_validator_rejects_missing_scheduling_liveness_check ... ok
+test unschedulable_reclaim_validator_rejects_missing_deferred_reclaim ... ok
+test deliberately_broken_x86_loopback_gate_variants_fail_the_validator ... ok
+test x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer ... ok
+test pump_wake_validator_rejects_second_wake_path ... ok
+test pump_wake_is_the_only_pump_wake_path ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/masked_binary_load_structure.rs (target/debug/deps/masked_binary_load_structure-a8d081298bdf0768)
+
+running 4 tests
+test the_oracle_rejects_the_pre_fix_interactive_shape ... ok
+test the_interactive_profile_loads_before_it_masks ... ok
+test no_masked_block_on_the_boot_path_loads_a_test_binary ... ok
+test the_boot_path_still_loads_binaries_and_still_masks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mmap_floor_structure.rs (target/debug/deps/mmap_floor_structure-f9f5f98e06fc9d73)
+
+running 9 tests
+test a_reintroduced_literal_seed_reddens_the_census ... ok
+test a_deleted_floor_check_reddens_the_census ... ok
+test a_reintroduced_literal_floor_reddens_the_census ... ok
+test comments_and_strings_do_not_feed_the_census ... ok
+test reflowing_or_renaming_a_site_does_not_redden_the_census ... ok
+test no_producer_file_hardcodes_the_stale_mmap_floor_literal ... ok
+test mmap_floor_producers_match_the_pinned_census ... ok
+test mmap_hint_seed_sites_match_the_pinned_census ... ok
+test neither_census_is_empty ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/net_lock_structure.rs (target/debug/deps/net_lock_structure-7da2feff210a424c)
+
+running 19 tests
+test hardirq_surface_validator_rejects_net_table_reference ... ok
+test irq_primitive_validator_rejects_resurrected_irq_save ... ok
+test net_lock_guard_aarch64_validator_rejects_missing_daifset ... ok
+test net_static_validator_accepts_declared_thread_context_only_static ... ok
+test net_static_validator_rejects_empty_thread_context_only_reason ... ok
+test net_lock_guard_x86_validator_rejects_empty_arm ... ok
+test net_static_validator_rejects_public_mutex_static ... ok
+test net_static_validator_requires_exactly_one_classification ... ok
+test net_static_validator_rejects_discovered_unguarded_static ... ok
+test net_static_validator_rejects_immediately_dropped_guard ... ok
+test unmatched_tcp_rst_is_dropped_without_a_reply ... ok
+test net_lock_guard_aarch64_arm_still_masks_daif ... ok
+test net_lock_guard_x86_arm_is_a_real_bottom_half_disable ... ok
+test deliberately_broken_unmatched_rst_reply_fails_the_validator ... ok
+test tcp_accept_publish_race_has_a_sequential_recovery_path ... ok
+test deliberately_broken_tcp_accept_publish_race_variants_fail_the_validator ... ok
+test hardirq_surface_never_touches_the_net_tables ... ok
+test the_no_op_irq_primitives_stay_deleted ... ok
+test every_cross_context_net_static_is_guarded_or_declared_thread_only ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.61s
+
+     Running tests/poll_tcp_gate_wiring_structure.rs (target/debug/deps/poll_tcp_gate_wiring_structure-8274514645d309cf)
+
+running 3 tests
+test discover_files_finds_the_known_wired_gate ... ok
+test negative_a_script_missing_the_kernel_marker_is_detected ... ok
+test every_oracle_fail_gate_also_requires_the_kernel_ready_lost_marker ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/preempt_bracket_structure.rs (target/debug/deps/preempt_bracket_structure-8f1d66622ff82def)
+
+running 8 tests
+test comments_and_strings_do_not_feed_the_census ... ok
+test asymmetric_cfg_reddens_the_ratchet ... ok
+test symmetric_cfg_and_unconditional_brackets_pass ... ok
+test incomparable_cfg_contexts_reddens_the_chain_ratchet ... ok
+test the_underflow_guard_stays_fail_closed ... ok
+test boot_path_preempt_sites_share_one_cfg_context ... ok
+test boot_path_preempt_bracket_census_is_not_empty ... ok
+test boot_path_preempt_brackets_are_cfg_symmetric ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/serial_line_atomicity_structure.rs (target/debug/deps/serial_line_atomicity_structure-a34400a665c9070d)
+
+running 9 tests
+test tty_validator_rejects_per_byte_serial_writes ... ok
+test periodic_guard_validator_rejects_a_synthetic_unlocked_writer ... ok
+test tty_writes_line_segments_through_atomic_serial_path ... ok
+test every_serial_module_has_a_single_lock_batched_writer ... ok
+test unlocked_multi_byte_serial_writes_are_never_periodic ... ok
+test unlocked_multi_byte_serial_write_census_is_pinned ... ok
+test census_validator_rejects_a_synthetic_unlocked_multi_byte_writer ... ok
+test raw_serial_primitive_census_is_pinned ... ok
+test primitive_census_validator_rejects_a_differently_named_uart_writer ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/signal_eintr_predicate_structure.rs (target/debug/deps/signal_eintr_predicate_structure-4b50832fdb4af710)
+
+running 2 tests
+test eintr_validator_rejects_deliverable_signal_call ... ok
+test syscall_eintr_uses_disposition_aware_signal_predicate ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/strand_handoff_structure.rs (target/debug/deps/strand_handoff_structure-57cb4ff7108ce953)
+
+running 38 tests
+test full_test_rejects_post_run_stranded_markers ... ok
+test every_aarch64_census_gate_requires_joined_but_accepts_reported_retirement_evidence ... ok
+test service_sequence_census_columns_match_the_rows_it_writes ... ok
+test service_sequence_instruction_abort_signatures_are_set_shaped ... ok
+test service_sequence_635_arm_is_field_keyed_and_untolerated ... ok
+test service_sequence_pc_align_and_panic_classifiers_are_field_keyed_before_fallbacks ... ok
+test service_sequence_resume_pc_refusals_are_counted_exactly_once_per_boot ... ok
+test service_sequence_cpu_identity_splits_fail_the_profile ... ok
+test service_sequence_percpu_stack_alien_refusals_fail_the_profile ... ok
+test service_sequence_resume_pc_refusals_fail_the_profile ... ok
+test boot_tests_gates_refuse_a_wrong_profile_kernel ... ok
+test service_sequence_instruction_abort_classifier_is_single_signature ... ok
+test service_sequence_609_arm_is_field_keyed_and_untolerated ... ok
+test strict_gate_build_hint_enables_boot_tests ... ok
+test first_strand_census_precedes_the_steady_state_cadence ... ok
+test service_sequence_ret_stage_refusals_fail_the_profile_and_nontext_words_do_not ... ok
+test strand_marker_reports_dwell_and_nonprogress_axes ... ok
+test strict_gate_rejects_aggregate_boot_test_failures_with_a_field_signature ... ok
+test strict_gate_poll_loop_stops_only_on_crash_or_complete_score ... ok
+test service_sequence_ret_dispatch_refusals_are_counted_and_reported_not_gated ... ok
+test strict_gate_rejects_stranded_markers_from_finished_serial ... ok
+test strand_victim_parks_on_the_sample_timer ... ok
+test census_and_kernel_stack_ownership_oracles_share_a_subsystem_in_safe_order ... ok
+test cpu_affinity_zero_sentinel_is_never_a_thread_id ... ok
+test pending_next_is_taken_only_after_rollback_refusals ... ok
+test x86_strand_oracle_is_synchronous_and_sampled_by_the_executor ... ok
+test idle_disposability_is_parked_state_not_bare_tid_identity ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test strand_census_disposability_and_reachability_dimensions_cannot_shrink ... ok
+test injection_report_cap_preserves_in_flight_scoring_windows ... ok
+test injection_stimulus_default_is_idle_gated_and_live_widening_is_cfg_only ... ok
+test census_real_thread_arm_and_forced_placement_helpers_are_aarch64_only ... ok
+test x86_census_widen_oracle_is_one_shot_in_the_live_verdict_path ... ok
+test strand_census_progress_axes_and_ordering_cannot_shrink ... ok
+test wakeup_placement_requires_local_dispatchability ... ok
+test strand_handoff_structure_is_pinned_without_line_numbers ... ok
+test every_oracle_gate_pattern_matches_the_emitted_format ... ok
+test aarch64_census_widen_oracle_has_real_disarmed_and_armed_legs ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests/syscall_return_register_structure.rs (target/debug/deps/syscall_return_register_structure-f5cf430895d7d1aa)
+
+running 6 tests
+test comments_and_strings_do_not_forge_findings ... ok
+test correct_shapes_are_admitted ... ok
+test deliberately_broken_variants_fail_the_rules ... ok
+test every_returning_trap_declares_the_return_register_write ... ok
+test the_census_sees_the_repository_s_syscall_traps ... ok
+test no_trap_names_its_return_register_as_input_only ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/teardown_structure.rs (target/debug/deps/teardown_structure-67eb70246a628cbd)
+
+running 81 tests
+test code_mask_reports_only_real_code_occurrences ... ok
+test arm64_stack_bitmap_is_irqsafe_by_type_and_release_order ... ok
+test benign_reclaim_nesting_has_a_distinct_counter ... ok
+test direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass ... ok
+test both_complete_wait_arms_claim_before_they_copy ... ok
+test deliberately_broken_timer_delay_variants_fail_the_ratchet ... ok
+test blocking_family_ratchets_are_registered_and_nonvacuous ... ok
+test function_body_is_lexically_scoped_and_exactly_named ... ok
+test gate_producer_validator_rejects_arch_any_double_registration ... ok
+test exec_detach_oracle_pins_pre_exec_group_reachability_control ... ok
+test aarch64_reclamation_stays_outside_the_masked_scheduler_window ... ok
+test deferred_reclamation_census_rejects_an_added_operation ... ok
+test deferred_reclamation_census_rejects_each_missing_teardown_operation ... ok
+test creating_dispatch_refusal_oracle_is_registered_and_pinned ... ok
+test all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates ... ok
+test direct_x86_teardown_gates_keep_only_aarch64_registry_producers ... ok
+test item_path_is_cfg_and_impl_scoped ... ok
+test kernel_stack_gate_scripts_keep_ownership_evidence_pinned ... ok
+test init_group_refusal_oracle_is_registered_and_directly_reachable ... ok
+test kernel_stack_gate_validator_rejects_a_deleted_pin ... ok
+test init_shell_role_is_conferred_by_argument_not_pid ... ok
+test aarch64_exit_kick_waits_are_progress_bounded ... ok
+test kernel_stack_ownership_gate_launch_is_exact ... ok
+test kernel_stack_ownership_oracle_measures_by_slot_identity ... ok
+test kernel_stack_ownership_gate_launch_validator_rejects_missing_producers ... ok
+test init_identity_mechanism_is_cfg_free ... ok
+test leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture ... ok
+test kernel_stack_release_ordering_is_structural ... ok
+test oversized_reclaim_failures_name_every_root_proof_blocker ... ok
+test p5b_gate_scripts_keep_refusal_evidence_pinned ... ok
+test kstack_identity_validator_rejects_the_unsound_reads ... ok
+test nonowning_reclaim_queue_paths_are_bounded_and_fail_closed ... ok
+test kernel_stack_release_validator_rejects_unsafe_mutations ... ok
+test p6a_retire_arm_stays_outside_masked_and_queue_held_windows ... ok
+test production_boot_and_heartbeat_emit_root_custody_summary ... ok
+test init_row_builders_insert_only_after_all_fallible_steps ... ok
+test qemu_accelerator_is_opt_in_allowlisted_and_defaults_to_tcg ... ok
+test qemu_accelerator_validator_rejects_unvalidated_environment_input ... ok
+test reclaim_bracket_fixture_is_accepted_so_the_mutations_below_are_meaningful ... ok
+test reclaim_bracket_validator_rejects_a_deleted_disable ... ok
+test reclaim_bracket_validator_rejects_a_deleted_refusal_arm_enable ... ok
+test reclaim_bracket_validator_rejects_a_deleted_release_enable ... ok
+test reclaim_bracket_validator_rejects_a_disable_hoisted_above_the_boot_owner_return ... ok
+test reclaim_bracket_validator_rejects_a_disable_hoisted_above_the_context_violation_return ... ok
+test reclaim_bracket_validator_rejects_a_disable_taken_after_the_claim ... ok
+test reclaim_bracket_validator_rejects_an_interrupt_mask_in_place_of_a_preempt_bracket ... ok
+test reclaim_nesting_validator_rejects_context_violation_conflation ... ok
+test reclaim_progress_park_unpark_arms_follow_cpu_topology ... ok
+test reclaim_progress_topology_validator_rejects_arch_selection_and_a_skipped_counter ... ok
+test reclaim_queue_validator_rejects_a_blocking_enqueue_lock ... ok
+test root_custody_summary_validator_rejects_a_boot_tests_only_emitter ... ok
+test rust_fork_library_override_validator_rejects_hardcoded_paths ... ok
+test rust_fork_library_paths_are_overrideable_in_both_builders ... ok
+test shadow_root_clears_are_observable_in_production_counters ... ok
+test shadow_root_counter_validator_rejects_an_uncounted_clear ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test the_production_reclaim_claim_runs_with_preemption_disabled ... ok
+test timer_delay_retry_is_gated_on_proven_host_starvation ... ok
+test box_leak_box_new_census_rejects_a_sixth_site ... ok
+test every_external_schedule_from_kernel_call_reclaims_immediately_beforehand ... ok
+test x86_leaf_timing_oracle_has_an_exec_root_producer_in_its_window ... ok
+test production_boot_and_heartbeat_emit_the_tombstone_census ... ok
+test x86_production_profile_gate_verdict_discipline_holds ... ok
+test x86_production_profile_gate_ratchet_is_not_vacuous ... ok
+test box_leak_box_new_census_is_empty_and_nonvacuous ... ok
+test x86_teardown_gates_are_direct_reachable_and_exactly_once ... ok
+test tombstone_row_state_is_the_single_authority ... ok
+test blocking_primitive_census_sees_pub_crate_members ... ok
+test phase_one_retirement_fence_and_lock_domains_are_structural ... ok
+test init_pid_reservation_is_single_sourced ... ok
+test hardcoded_init_pid_shapes_are_confined_to_the_reservation ... ok
+test process_row_map_mutations_are_authority_scoped ... ok
+test debt4_row_removal_routes_through_the_join_on_both_arches ... ok
+test process_page_table_custody_ratchets_are_exact ... ok
+test keyed_row_lookups_go_through_the_tombstone_predicates ... ok
+test frame_ledger_return_and_initialization_ratchets_are_exact ... ok
+test current_teardown_bypass_surface_is_exact ... ok
+test drop_body_static_locks_are_irqsafe_by_derived_census ... ok
+test init_designation_authority_is_closed ... ok
+test v3_structural_closures_are_exact ... ok
+test deliberately_broken_variants_fail_the_ratchet ... ok
+
+test result: ok. 81 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.97s
+
+     Running tests/ttbr0_shadow_reconciliation_structure.rs (target/debug/deps/ttbr0_shadow_reconciliation_structure-fe46c1b52eab6525)
+
+running 23 tests
+test the_asid_check_rejects_a_disagreeing_tag ... ok
+test settling_one_shadow_is_not_settling_the_shadows ... ok
+test the_nomem_check_reads_the_asm_block_and_not_the_prose ... ok
+test init_reaches_userspace_on_the_root_the_shadows_name ... ok
+test the_primitive_exemption_rejects_a_fetched_root ... ok
+test the_blocking_resume_census_catches_an_unguarded_restore ... ok
+test the_caller_census_rejects_a_half_settled_caller ... ok
+test the_kernel_root_caller_census_catches_a_caller_that_leaves_the_shadows_armed ... ok
+test the_caller_census_catches_a_wrapper_that_skips_the_discipline ... ok
+test the_primitive_exemption_rejects_a_shadow_touching_install ... ok
+test the_shadow_census_accepts_a_mechanism_primitive ... ok
+test the_sequence_census_catches_an_install_outside_the_discipline_module ... ok
+test the_shadow_census_rejects_an_unreconciled_install ... ok
+test the_discipline_installs_in_order_and_orders_the_shadow_stores ... ok
+test the_discipline_publishes_the_dispatch_asid ... ok
+test the_dispatch_ttbr0_switch_settles_both_shadows ... ok
+test the_ttbr0_discipline_publishes_both_shadows ... ok
+test no_ttbr0_installer_claims_it_touches_no_memory ... ok
+test every_non_primitive_ttbr0_install_performs_the_install_sequence ... ok
+test every_ttbr0_install_settles_the_per_cpu_shadows ... ok
+test every_blocking_resume_restore_uses_the_guarded_helper ... ok
+test every_aarch64_caller_of_a_mechanism_primitive_settles_the_shadows ... ok
+test every_caller_of_the_kernel_root_install_settles_the_shadows ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.57s
+
+     Running tests/tty_oracle_structure.rs (target/debug/deps/tty_oracle_structure-b64110b8c1acb942)
+
+running 14 tests
+test a_boot_that_drove_nothing_cannot_pass_the_x86_gate ... ok
+test a_boot_that_drove_nothing_cannot_pass_the_gate ... ok
+test full_test_phase_two_does_not_accept_a_bare_pty_unlock_as_a_shell ... ok
+test init_launches_the_oracle_on_x86 ... ok
+test the_gate_carries_the_668_err_trap ... ok
+test the_gate_measures_the_profile_that_ships ... ok
+test the_x86_gate_carries_the_668_err_trap ... ok
+test init_launches_the_oracle_on_aarch64 ... ok
+test the_x86_gate_measures_the_profile_that_ships ... ok
+test the_gate_scores_exactly_the_arms_the_oracle_drives ... ok
+test the_x86_gate_scores_exactly_the_arms_the_oracle_drives ... ok
+test the_oracle_tally_matches_its_arm_census ... ok
+test deliberately_broken_x86_variants_fail_the_ratchets ... ok
+test deliberately_broken_variants_fail_the_ratchets ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT=0
