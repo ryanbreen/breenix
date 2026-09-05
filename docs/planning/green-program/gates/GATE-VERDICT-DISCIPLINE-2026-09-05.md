@@ -859,3 +859,47 @@ verdict, so 0 needed separate triage.
 claim-lint: scripts/claim-lint.py                                              -> exit 0
 claim-lint: scripts/claim-lint.py --commit-msg <repair commit message>          -> exit 0
 ```
+
+---
+
+## Addendum (`#812` landing, 2026-09-05) — the strict scorer's required-line list grows, and its fixtures are shared
+
+`run-aarch64-boot-test-strict.sh`'s `score_serial` function is not fixed: it
+has grown required-marker patterns across multiple branches
+(`FCNTL_PM_CONTENTION_ORACLE_PATTERN` during `#796`, `IRQ_HOLD_ORACLE_PATTERN`
+during `#812`), each `set -euo pipefail`-checked, and its scoring-only mode
+(`BREENIX_STRICT_SCORE_ONLY=<path>`, no kernel or disk needed — the same mode
+`run-aarch64-prod-profile-boot-test.sh` offers as `BREENIX_PROD_SCORE_ONLY`)
+is what `tests/*_structure.rs` uses to replay a captured serial through the
+scorer's current rules without booting QEMU. That gives the scorer's
+committed serial fixtures — `docs/planning/green-program/aarch64-testing/serials/{asid-ratchet,slice3d}/*.txt`
+at the time of writing — a property worth stating plainly: **a fixture is
+scored against whichever scorer version replays it, not the version that
+was current when it was captured.** A fixture recorded green before a
+required-line addition scores `SCORE: FAIL` on that addition alone, with no
+change to the kernel behaviour the fixture was ever meant to represent.
+
+**Standing landing step.** A branch that adds a required line to either
+aarch64 gate scorer's `score_serial` re-records, at the merged head, every
+fixture path that `grep -rn "BREENIX_STRICT_SCORE_ONLY\|BREENIX_PROD_SCORE_ONLY"
+tests/*.rs` finds threaded into that scorer's scoring-only mode as part of
+landing — 2 of 2 at the `#812` landing (`slice3d/01-strict-boot1-serial.txt`,
+`.../02-prod-boot1-serial.txt`), 1 of which needed the re-record and 1 of
+which the production scorer's own absence-only rule still passed unchanged —
+including a fixture a different, concurrently-landed branch added after this
+branch forked. The branch adding the requirement did
+not write that fixture and cannot have anticipated it, but the replay tests
+run against the tree as merged, not as forked, so the re-record is still this
+branch's landing step to take. Re-record from a boot of the merge commit's
+own `--features boot_tests` kernel (`scripts/check-kernel-no-neon.sh` clean,
+one boot with `pgrep -fl 'qemu-system-aarch64 -M'` reading 0 immediately
+before and after launch — the fixed `/tmp/breenix_aarch64_strict_N` output
+path this doc's own census above does not cover collides with a concurrent
+lane's boot, and a contaminated capture can carry a plausible-looking oracle
+line from the wrong kernel; verify the captured line's shape against
+`strings` on the built ELF before adopting it), confirm the previously-red
+replay test now passes, and record the fixture's directory README with the
+merged-head SHA, the kernel `BUILD_ID`, and why. `#796` did this once for
+`asid-ratchet/03-strict-boot1-serial.txt`; `#812`'s own review round did it
+again for the same file; the `#812` landing did it a third time, for
+`slice3d/01-strict-boot1-serial.txt`, a fixture `#812` never touched.
