@@ -15806,22 +15806,72 @@ fn report_gate_failure_status_variable(script: &str) -> Option<&str> {
     None
 }
 
+/// Splits a trimmed, non-comment shell line into individual statements on
+/// `;`, `&&`, and `||`, tracking single- and double-quote state (toggled
+/// per-line, not carried across lines) so a separator character INSIDE a
+/// quoted string is not treated as a statement boundary. This is what lets
+/// `verdict_trap_has_no_preempting_exit` see a case-arm's
+/// `*) echo "..."; exit 1 ;;` or an `||`-guarded group's
+/// `cmd || { echo "..."; exit 1; }` the same way it already saw a
+/// standalone `exit 1` line -- both forms appeared among the exits this
+/// campaign's #802/#805/widened-ratchet repairs removed (review finding F2
+/// on the widened-ratchet doc: the single-token-per-line scan the doc
+/// itself disclosed as a blind spot silently passed both reverted shapes).
+/// The quote tracking is what keeps this from false-positiving on
+/// `run-coreproof-gate.sh`'s `awk -F= ... '$1 == required { print $2; exit }'`
+/// line, where the `;` and the `exit` both sit inside a single-quoted AWK
+/// script, not bash control flow -- caught live when this rule first
+/// shipped without quote awareness. Still not a full shell parser: quote
+/// state resets at the start of each physical line rather than following a
+/// `\`-continued logical line across a line break, and it does not handle
+/// backslash-escaped quotes -- neither shape appears in the sites this
+/// rule polices today.
+fn split_shell_statements(line: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    for (i, c) in line.char_indices() {
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ';' | '&' | '|' if !in_single && !in_double => {
+                segments.push(&line[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    segments.push(&line[start..]);
+    segments
+}
+
 /// The widened #802/#805 no-pre-empting-exit rule, generalized from
-/// `validate_x86_prod_profile_harness`'s own scan: no line in a
+/// `validate_x86_prod_profile_harness`'s own scan: no *statement* in a
 /// verdict-trap script may open with the token `exit` except the exact
 /// re-raise of `report_gate_failure`'s own captured status variable. A
 /// script whose handler does not open with the expected `local <var>=$?`
 /// shape is itself a violation (the census cannot derive a re-raise to
-/// exempt) rather than a silent pass.
+/// exempt) rather than a silent pass. Each line is split into its
+/// constituent statements (`split_shell_statements` above) before the
+/// leading-token check, so an `exit` embedded after a case label or inside
+/// an `||`-guarded group is caught the same way a standalone `exit` line
+/// is -- not just the first token of the raw line.
 fn verdict_trap_has_no_preempting_exit(script: &str) -> Result<(), String> {
     let status_var = report_gate_failure_status_variable(script).ok_or_else(|| {
         "report_gate_failure does not open with `local <var>=$?`".to_string()
     })?;
     let reraise = format!("exit \"${status_var}\"");
     for line in script.lines() {
-        let statement = line.trim();
-        if statement.split_whitespace().next() == Some("exit") && statement != reraise {
-            return Err(format!("pre-empting exit: {statement}"));
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        for statement in split_shell_statements(trimmed) {
+            let statement = statement.trim();
+            if statement.split_whitespace().next() == Some("exit") && statement != reraise {
+                return Err(format!("pre-empting exit: {statement}"));
+            }
         }
     }
     Ok(())
@@ -15900,6 +15950,57 @@ fn verdict_trap_no_preempting_exit_rule_is_not_vacuous() {
     assert!(
         verdict_trap_has_no_preempting_exit(&no_local).is_err(),
         "a handler missing its `local <var>=$?` opener must redden, not pass"
+    );
+}
+
+#[test]
+fn verdict_trap_no_preempting_exit_rule_catches_inline_exit_shapes() {
+    // Review finding F2 on the widened-ratchet doc, reproduced directly:
+    // reverting either of these two real repaired sites back to their
+    // pre-repair `exit 1` shape must redden the rule. Both are inline --
+    // a case-arm and an `||`-guarded group -- exactly the blind spot the
+    // doc's own "What is NOT claimed" section disclosed for the
+    // first-token-of-line scan. `split_shell_statements` closes it.
+    let gate = repo_text("docker/qemu/run-aarch64-tty-oracle-gate.sh");
+    assert!(
+        verdict_trap_has_no_preempting_exit(&gate).is_ok(),
+        "run-aarch64-tty-oracle-gate.sh must be clean before mutation"
+    );
+
+    // Case-arm form: `*) echo "..."; false ;;` reverted to
+    // `*) echo "..."; exit 1 ;;`.
+    let case_arm_reverted = gate.replacen(
+        r#"*) echo "FAIL: unknown argument: $1"; false ;;"#,
+        r#"*) echo "FAIL: unknown argument: $1"; exit 1 ;;"#,
+        1,
+    );
+    assert_ne!(case_arm_reverted, gate, "case-arm mutation must apply");
+    let result = verdict_trap_has_no_preempting_exit(&case_arm_reverted);
+    assert!(
+        result.is_err(),
+        "a case-arm `exit 1` must redden the widened rule"
+    );
+    assert!(
+        result.unwrap_err().contains("exit 1"),
+        "the reddened reason should name the planted exit"
+    );
+
+    // `||`-guarded group form: `[ ... ] || { echo "..."; false; }` reverted
+    // to `[ ... ] || { echo "..."; exit 1; }`.
+    let or_group_reverted = gate.replacen(
+        r#"[ "$BOOTS" -ge 1 ] || { echo "FAIL: --boots must be at least 1"; false; }"#,
+        r#"[ "$BOOTS" -ge 1 ] || { echo "FAIL: --boots must be at least 1"; exit 1; }"#,
+        1,
+    );
+    assert_ne!(or_group_reverted, gate, "||-group mutation must apply");
+    let result = verdict_trap_has_no_preempting_exit(&or_group_reverted);
+    assert!(
+        result.is_err(),
+        "an ||-guarded group's `exit 1` must redden the widened rule"
+    );
+    assert!(
+        result.unwrap_err().contains("exit 1"),
+        "the reddened reason should name the planted exit"
     );
 }
 

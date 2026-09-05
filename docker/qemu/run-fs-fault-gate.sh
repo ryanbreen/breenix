@@ -88,6 +88,18 @@ report_gate_failure() {
 }
 trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 
+# `return N` inside a function called as a plain statement fires the ERR
+# trap with `$?` equal to `N` (unlike a bare `exit N`, which escapes it --
+# see the "Verified" section of
+# docs/planning/green-program/gates/GATE-VERDICT-DISCIPLINE-2026-09-05.md).
+# This lets the two usage-error sites below preserve their pre-existing
+# `exit 2` contract (distinct from a runtime FAIL's `exit 1`) without a bare
+# `exit` statement; report_gate_failure's own `exit "$exit_code"` re-raise
+# stays the only literal `exit` in this script.
+redden() {
+    return "$1"
+}
+
 # --- BASE-DIR PREFLIGHT (#797 F6, routed through the verdict path by the
 # #802/#805 idiom widened to this gate) ---
 case "$BREENIX_GATE_TMP" in
@@ -105,7 +117,7 @@ while [ $# -gt 0 ]; do
         --aarch64) ARCH="aarch64"; shift ;;
         --disarm) DISARM="$2"; shift 2 ;;
         --no-build) BUILD=0; shift ;;
-        *) echo "unknown argument: $1" >&2; false ;;
+        *) echo "unknown argument: $1" >&2; redden 2 ;;
     esac
 done
 
@@ -115,7 +127,7 @@ case "$DISARM" in
     short_read)     DISARM_FEATURE="fs_fault_disarm_short_read" ;;
     eio)            DISARM_FEATURE="fs_fault_disarm_eio" ;;
     corrupt_inode)  DISARM_FEATURE="fs_fault_disarm_corrupt_inode" ;;
-    *) echo "unknown shape: $DISARM (expected short_read, eio or corrupt_inode)" >&2; false ;;
+    *) echo "unknown shape: $DISARM (expected short_read, eio or corrupt_inode)" >&2; redden 2 ;;
 esac
 
 # The arms the leg must report, in the order it reports them. This is the
