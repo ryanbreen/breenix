@@ -98,11 +98,19 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # driven=2 proves both handoff seams ran; stage1/2 return, wake, and park fields
-# expose D1/D2. stage3_elapsed_ok=1 proves no early timeout return, while
+# expose D1/D2. stage3_elapsed_ok=1 proves the interval the oracle measured
+# reached the full requested duration -- since #627 that interval is anchored
+# to the same clock read the kernel used to compute the deadline, not to a
+# later oracle-internal read, so this bit can no longer read 0 on a wait that
+# was never actually short. arm_delay_us is that retired gap, kept visible.
 # stage3_ret=ETIMEDOUT plus rescues=0 proves the backstop did not end this wait.
 # stage3_elapsed_ms is the measured duration; residual/balance prove cleanup.
+# claim-lint:ok: #627 -- provable by construction from program order (futex.rs
+# reads base_ns before its deadline check; record_arm's own clock read comes
+# after), not by boot sampling: see kernel/src/syscall/futex_oracle.rs::record_arm
+# and validate_futex_oracle_record_arm_anchor in tests/teardown_structure.rs.
 # This marker is emitted from a syscall while the scheduler trace stream is live, so its line can carry a prefix.
-FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
+FUTEX_HANDOFF_ORACLE_PATTERN='\[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=[0-9]+:arm_delay_us=[0-9]+:rescues=0:queue_residual=0:balance=0\]'
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 # Device-enumeration census leg (green arc 5, bus+NIC blended). Self-counted
 # from this script's OWN -device flags in the QEMU invocation below, not a

@@ -39,9 +39,21 @@ before adopting it; the second capture, taken with `pgrep -fl
 'qemu-system-aarch64 -M'` reading 0 immediately before and after launch,
 matched.
 
+`01-strict-boot1-serial.txt` was re-recorded a second time during the `#627`
+landing (`fix/627-futex-oracle-anchor` merging `origin/main`, merge commit
+`99820c62`): that branch's own `arm_delay_us` field addition to
+`FUTEX_HANDOFF_ORACLE_PATTERN` conflicted textually with the `#812`-era
+content above (both had independently re-recorded this same file from a
+shared `fc76c8cc` ancestor), so the merge needed a fresh capture carrying
+both required lines at once. See
+`docs/planning/green-program/futex/627-ORACLE-ANCHOR-2026-09-05.md`'s
+"Landing" sections for the full derivation; `02-prod-boot1-serial.txt` again
+needed no re-record (checked directly against the merged head's production
+scorer, still `PASS`).
+
 | file | what it is |
 |---|---|
-| `01-strict-boot1-serial.txt` | re-recorded during `#812` landing: a strict-gate boot at merged head `9ff5c392` (`BUILD_ID 006a9c528e2cdf`), carrying the `IRQ_HOLD_ORACLE` PASS line the merged scorer now requires |
+| `01-strict-boot1-serial.txt` | re-recorded during `#627` landing: a strict-gate boot at merged head `99820c62` (`BUILD_ID 006a9c7287347d`), carrying both the `IRQ_HOLD_ORACLE` PASS line (`#812`) and the `arm_delay_us` field (`#627`) the merged scorer now requires |
 | `01-strict-x3.txt` | PR #824's strict gate, 3 iterations, at its own shipping head: `PASS: 3/3 boots succeeded` |
 | `02-prod-boot1-serial.txt` | PR #824's original production-gate boot serial; unchanged — still scores `PASS` against the merged head's production scorer |
 | `02-prod-boot1.txt` | PR #824's production-gate run 1 of 3 at its own shipping head |
