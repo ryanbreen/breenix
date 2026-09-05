@@ -1,0 +1,310 @@
+# #819 follow-on — the fcntl contention oracle's arming, and the verdict it printed when arming failed
+
+Branch: `fix/819-fcntl-oracle-arming-rendezvous`. Base: `origin/main` at `9b01687f`.
+Sibling of `docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md`,
+which introduced the oracle this round repairs.
+
+## The red
+
+On the aarch64 strict gate, 2 of 40 boots of the 2026-09-05 health run printed:
+
+```
+[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=3:armed=0:holder_cpu=18446744073709551615:pm_busy_probe=0:calls=0:eagain=0:first_errno=18446744073709551615:first_wait_us=0:hold_done=1:joined=1:FAIL]
+[TEST:syscall:fcntl_pm_contention_oracle:FAIL:fcntl reported a contended process-manager lock to userspace]
+```
+
+Two separate defects on one line.
+
+**(a) The arming lost a race it could not retry out of.** The peer CPU took
+`PROCESS_MANAGER`, held it for a fixed `FCNTL_PM_HOLD_US` (8 ms) measured on
+CNTVCT_EL0, and released it whether or not anybody had looked. The driver polled
+for the hold with interrupts enabled and preemption on. Three things make that
+window missable, and the boot-test runner supplies each of the 3:
+
+1. Subsystem test threads run concurrently. In the boot-17 serial the
+   `process:proc` cohort (`process_list_populated`, `frame_custody_healthy_counters`)
+   starts and finishes inside the oracle's own window, so the driver shares its
+   CPU with other runnable threads.
+2. `process_list_populated` takes the *blocking* `crate::process::manager()`
+   (`kernel/src/test_framework/registry.rs`), and on aarch64 that call masks DAIF
+   before it spins for the lock (`kernel/src/process/mod.rs`, the aarch64 arm of
+   `manager()`). A thread waiting for the lock this oracle is holding therefore
+   makes its whole CPU unavailable for the duration of the hold.
+3. A driver descheduled at the wrong moment cannot be dispatched again until the
+   hold ends -- and by then `FCNTL_PM_HOLD_ACTIVE` is back to `false` and
+   `FCNTL_PM_HOLD_DONE` is `true`, which is exactly `armed=0` with `calls=0`.
+
+`attempts=3` did not help: each retry re-opened the same 8 ms window into the
+same conditions.
+
+**(b) The verdict text was false for that arm.** `TestResult::Fail("fcntl
+reported a contended process-manager lock to userspace")` was the only failure
+message the test had, so an arming failure was reported as a syscall verdict.
+The same line says `calls=0`: 0 of 64 calls were issued, so no call reached
+`sys_fcntl` and no errno reached userspace.
+
+Serials: `serials/819-oracle-arming/00-main-health-boot17-armed0.txt` and
+`01-main-health-boot24-armed0.txt`.
+
+## The repair — arming is a rendezvous
+
+### Publication and ordering
+
+| Flag | Direction | Store | Load |
+|---|---|---|---|
+| `FCNTL_PM_HOLD_ACQUIRED` | holder -> driver | `Release`, inside the guard's scope | `Acquire`, after the join |
+| `FCNTL_PM_HOLD_CPU` | holder -> driver | `Relaxed`, before the `HOLD_ACTIVE` release store | `Relaxed`, after the join |
+| `FCNTL_PM_HOLD_ACTIVE` | holder -> driver | `Release`, inside the guard's scope; `false` again before the guard is dropped | `Acquire`, in the driver's rendezvous loop |
+| `FCNTL_PM_RELEASE_REQ` | driver -> holder | `Release`, in the instructions before the measured call, and on the give-up paths | `Acquire`, in the holder's acquire loop and hold loop |
+| `FCNTL_PM_HOLD_SAFETY_FIRED` | holder -> driver | `Release`, before `HOLD_ACTIVE` goes false | `Acquire`, after the join |
+| `FCNTL_PM_HOLD_DONE` | holder -> driver | `Release`, last, after the fields above | `Acquire`, in the rendezvous loop and after the join |
+
+The single release/acquire pair on `FCNTL_PM_HOLD_ACTIVE` is what makes the
+driver's next action -- the independent `try_manager()` probe, then the measured
+call -- happen after the acquisition; the pair on `FCNTL_PM_HOLD_DONE` is what
+makes the fields read after the join a settled set.
+
+### Deadlines
+
+| Constant | Value | What it bounds |
+|---|---|---|
+| `FCNTL_PM_ARM_WAIT_US` | 2 s | the driver's wait for the publication |
+| `FCNTL_PM_ARM_SPIN_US` | 20 ms | how much of that wait is spent spinning before it starts halting between polls |
+| `FCNTL_PM_ACQUIRE_US` | 20 ms | the holder's masked try-loop for the lock |
+| `FCNTL_PM_HOLD_SAFETY_US` | 250 ms | the holder's own release deadline, reported as `hold_safety=1` |
+| `FCNTL_PM_HOLD_OVERLAP_US` | 8 ms | how much longer the holder holds after the driver asks |
+| `FCNTL_PM_JOIN_US` / `FCNTL_PM_SETTLE_US` | 500 ms / 20 ms | join and quiesce, unchanged |
+
+**Why 2 s.** It is not a timing margin; it is the deadline for the one case a
+rendezvous cannot fix, a holder thread the scheduler does not dispatch. It has
+to sit above the sum of the holder's own bounds (20 ms + 250 ms + 8 ms = 278 ms)
+so the two do not race and report each other's failure, and under the registry
+entry's `timeout_ms: 10000` together with the join and settle windows. Being
+late inside it costs the run no measurement, because the hold does not close
+until the driver asks.
+
+### Holder release
+
+The holder keeps the lock until `FCNTL_PM_RELEASE_REQ`, then holds one further
+`FCNTL_PM_HOLD_OVERLAP_US`, then releases. The request has to be issued *before*
+the blocking call rather than after it: the call does not return until the lock
+is free, so a request after it would be a request the holder waits for while the
+driver waits for the holder. The overlap is what the call's wait measures --
+`first_wait_us` reads at or above 8 ms against a scored floor of 1 ms.
+
+If the request does not arrive within `FCNTL_PM_HOLD_SAFETY_US`, the holder
+releases anyway and records `hold_safety=1`, which is a **failing** verdict: a
+hold released on that deadline is a hold the driver did not use.
+
+### Two designs this round measured and discarded
+
+Both were run on the same gate, and both are recorded here because each one
+failed *and said so correctly* -- which is the second deliverable working.
+
+1. **Rendezvous with an unpinned driver.** Holder publishes and waits; driver
+   halt-polls with preemption on. 2 of 20 boots printed
+   `arm_wait_us=250368:armed=0:acquired=1:hold_safety=1:FAIL:hold_safety_release`
+   -- the hold was up, and the driver could not be dispatched to ask for it,
+   for the reason in (a)(2) above. Serial:
+   `serials/819-oracle-arming/02-falsified-unpinned-driver-hold-safety-release.txt`.
+2. **Holder waits for a driver go-ahead with interrupts enabled.** Driver pinned;
+   holder publishes readiness, then spins unmasked for the go-ahead before taking
+   the lock. 1 of 20 boots printed
+   `arm_wait_us=260560:ready=1:armed=0:acquired=0:FAIL:arming_timeout` with the
+   strand census reporting `queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1598`:
+   the holder lost its CPU during the unmasked wait and never reached the lock.
+   Serial: `serials/819-oracle-arming/03-falsified-holder-handshake-arming-timeout.txt`.
+
+The shipped design takes the lesson from both: **the holder is masked from the
+acquire to the release** (as it already was, for the hang recorded in the #796
+doc), and **the driver is pinned with `preempt_disable()` from before the hold
+can start until after the measured calls**. Neither side can be descheduled
+inside the window, so neither can be starved by a third thread spinning in
+`manager()`. Interrupts stay enabled on the driver -- a masked driver froze the
+tick counter its own peer needed, and 1 of 3 smoke boots reported `acquired=0`.
+
+## The verdict arms
+
+`FcntlPmArm` replaces the boolean. Each variant carries its own marker tag and
+its own `TestResult::Fail` text; only the EAGAIN arm describes a syscall result.
+
+| Marker tag | Meaning | Reported as |
+|---|---|---|
+| `PASS` | 64 calls against a held lock, 0 of them EAGAIN | pass |
+| `FAIL:eagain_reached_userspace` | a measured call returned EAGAIN -- #796's defect | "fcntl reported a contended process-manager lock as EAGAIN" |
+| `FAIL:hold_safety_release` | the peer released on its own safety deadline | arming, "the arming rendezvous did not complete" |
+| `FAIL:arming_timeout` | the peer published no hold inside the deadline | arming, "the arming rendezvous did not complete" |
+| `FAIL:contention_not_observed` | a hold was seen, but the call did not wait for it | "the contention it scores was not present" |
+| `FAIL:holder_not_joined` | window closed, holder did not exit and join | arming |
+| `FAIL:no_peer_cpu` | no peer CPU was dispatching | arming, "no call was measured" |
+| `FAIL:holder_spawn_failed` | the holder thread could not be created | arming, "no call was measured" |
+
+Each arming arm is still **gate-red**. What changed is that the serial says
+which of them happened, and the marker now carries `arm_wait_us`, `acquired` and
+`hold_safety` to say why.
+
+## The gate
+
+`docker/qemu/run-aarch64-boot-test-strict.sh` still requires the PASS marker.
+The pattern follows the new field order and pins the two new anti-vacuity
+fields it can pin (`acquired=1`, `hold_safety=0`) alongside the ones it already
+did; the `FCNTL_PM_WAIT_SELFCHECK` block still checks, at gate time and in the
+gate's own matcher, that the pattern rejects `first_wait_us=0` and accepts a
+real wait; and the FAIL scan became `:FAIL(:[a-z_]+)?\]` so a tagged arm is seen.
+`docker/qemu/run-aarch64-prod-profile-boot-test.sh`'s absence assertion is
+untouched -- it keys on the marker prefix, which did not change, and the
+production-profile run below reports `fcntl contention oracle marker count: 0`.
+
+## Ratchets and mutations
+
+`tests/fcntl_pm_contention_gate_structure.rs` gains 2 tests and re-derives 1.
+
+* `oracle_arming_is_a_rendezvous_not_an_attempt_count` -- the marker format must
+  carry `arm_wait_us` and must not carry `attempts=`; no `FCNTL_PM_*` constant
+  may count attempts; the rendezvous deadline must be at least 2 s.
+* `verdict_arms_are_distinct_and_only_one_describes_a_syscall_result` -- census
+  over the declared variants: each needs a tag and a message, the messages must
+  be distinct, exactly 1 may mention EAGAIN, and no other may contain the phrase
+  "to userspace".
+* `oracle_pass_predicate_carries_a_wait_floor_conjunct` -- rewritten to derive
+  the floor from the binding that carries it (the rendezvous has no `passed =`
+  assignment), and additionally requires that binding to be read again before the
+  verdict is emitted, so a floor computed and ignored also reddens.
+
+Mutations, each applied alone against the shipped tree, each `cargo test --test
+fcntl_pm_contention_gate_structure` exit 101:
+
+| # | Mutation | Reddens |
+|---|---|---|
+| M1 | arming arm's message restored to "fcntl reported a contended process-manager lock to userspace" | `verdict_arms_are_distinct_and_only_one_describes_a_syscall_result` |
+| M2 | `attempts=3:` re-added to the marker format string | `oracle_arming_is_a_rendezvous_not_an_attempt_count` |
+| M3 | `&& first_wait_us >= FCNTL_PM_MIN_WAIT_US` deleted from the verdict binding | `oracle_pass_predicate_carries_a_wait_floor_conjunct` |
+
+## Evidence
+
+Built with
+`cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`,
+0 kernel warnings, and `scripts/check-kernel-no-neon.sh` PASS (0 FP/SIMD
+load/stores in `.text`).
+
+### aarch64 strict gate, 20 boots at the shipping bytes
+
+`./docker/qemu/run-aarch64-boot-test-strict.sh 20` -> exit 0, 20/20 boots.
+Gate log: `serials/819-oracle-arming/04-branch-strict-x20-gate.txt`; the 20
+marker lines: `05-branch-strict-x20-markers.txt`. Every line is `PASS`, and the
+arming fields read:
+
+| boot | `arm_wait_us` | `holder_cpu` | `first_wait_us` |
+|---|---|---|---|
+| 1 | 96 | 1 | 8266 |
+| 2 | 100 | 1 | 8164 |
+| 3 | 82 | 1 | 8138 |
+| 4 | 91 | 1 | 8115 |
+| 5 | 93 | 2 | 8166 |
+| 6 | 82 | 2 | 8282 |
+| 7 | 6 | 1 | 8178 |
+| 8 | 334 | 1 | 8143 |
+| 9 | 88 | 2 | 8264 |
+| 10 | 100 | 2 | 8122 |
+| 11 | 118 | 1 | 8102 |
+| 12 | 82 | 1 | 8183 |
+| 13 | 112 | 2 | 8184 |
+| 14 | 98 | 2 | 8201 |
+| 15 | 84 | 2 | 8124 |
+| 16 | 272 | 2 | 8154 |
+| 17 | 8 | 2 | 8142 |
+| 18 | 87 | 1 | 8150 |
+| 19 | 90 | 1 | 8174 |
+| 20 | 404 | 1 | 8215 |
+
+One sample line, verbatim:
+
+```
+[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=96:armed=1:acquired=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=8266:hold_safety=0:hold_done=1:joined=1:PASS]
+```
+
+### The wider sample
+
+The shipped design ran 105 boots of this gate in 6 runs (5 + 20 + 20 + 20 + 20 +
+20). 105 of 105 printed a `PASS` oracle line -- 0 arming failures of any arm.
+Across those runs `arm_wait_us` read 6 us to 60900 us and `first_wait_us` read
+8094 us to 24089 us; both outliers come from the same boot, one the strict gate
+failed for an unrelated reason (below), where the guest was running slowly
+enough that the driver's wait and the post-release re-acquisition both stretched.
+`first_wait_us` can exceed the 8 ms overlap because the driver's call re-enters a
+queue of waiters when the hold drops.
+
+### Reds in those 105 boots, attributed
+
+2 of 105 boots failed the gate, both on `Exec smoke did not complete`, both with
+a `PASS` oracle line in the same serial: the signature of **#826** ("aarch64
+strict gate: 'Exec smoke did not complete' with no fault marker and a healthy
+guest -- 2/40 at be412ee9"), which main's own 40-boot health run of the same day
+hit at the same rate. One is preserved at
+`serials/819-oracle-arming/07-branch-826-exec-smoke-boot4.txt`.
+
+### aarch64 production profile
+
+`./docker/qemu/run-aarch64-prod-profile-boot-test.sh` -> exit 0,
+`PASS: production profile reached bsshd with the futex oracle seam absent`, and
+`Observed fcntl contention oracle marker count: 0`. Log:
+`serials/819-oracle-arming/06-branch-prod-profile-gate.txt`.
+
+### x86 (beast, `breenix-x86` Incus container)
+
+`cargo build --release --features testing,external_test_bins --bin qemu-uefi` --
+0 warnings (`grep -c warning` over the build log: 0).
+
+`docker/qemu/run-x86-boot-tests.sh 1`, 3 runs against the same binary: 2 PASS, 1
+FAIL. The x86 arm's line is unchanged in 3 of 3, byte for byte:
+
+```
+[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]
+```
+
+The red is `clock_gettime_test:1` -- `Test 3: Sub-millisecond precision`,
+`Elapsed: 1332075 ns`, `FAIL: Elapsed time >= 1ms (possible PIT fallback)`. That
+is the signature of **#631**, closed on 2026-09-04 having attributed the
+mechanism to the still-open **#766** (x86 timer wake dispatches only after a full
+round robin, p90 2592 ms). #631's own close says a fresh occurrence of the
+signature is expected and is not a reopen. The same binary passed the same gate
+twice, so it is not a property of this branch. Logs:
+`serials/819-oracle-arming/08-branch-x86-boot-tests-pass.txt` (run 3, GATE-EXIT=0)
+and `09-branch-x86-631-clock-gettime-red.txt` (run 2, with the assertion excerpt
+read from that run's serial before run 3 reused the directory).
+
+### Host-side suites
+
+31 of 31 `tests/*_structure.rs` suites pass, `fcntl_pm_contention_gate_structure`
+among them at 4 of 4. `python3 scripts/test_claim_lint.py` -> exit 0.
+
+```
+claim-lint: scripts/claim-lint.py                                  -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <each commit>       -> exit 0
+claim-lint: scripts/claim-lint.py --files <this doc>               -> exit 0
+```
+
+## What is NOT claimed
+
+* **The oracle's arming is not shown immune to starvation.** 105 of 105 boots
+  without an arming failure bounds the rate loosely; it does not establish that
+  the rate is 0. The pin and the mask remove the two starvation paths this round
+  *measured*; a third would surface as `arming_timeout` or `hold_safety_release`,
+  which are gate-red and named.
+* **No change here touches `sys_fcntl`.** The #796 repair -- the process-lookup
+  preamble blocking for `PROCESS_MANAGER` instead of reporting its contention --
+  is untouched. This round changes only how the oracle sets up the contention it
+  measures and what it says when the setup fails.
+* **The driver's pin is a real cost.** For the duration of the rendezvous no
+  other thread runs on the driver's CPU. Interrupts keep flowing and the tick
+  keeps advancing, so this is a scheduling stall, not a silent CPU; the measured
+  stall is `arm_wait_us` plus the call window, tens to hundreds of microseconds
+  plus about 8 ms on the boots above. The 2 s deadline is the worst case, and a
+  boot that reaches it is a boot the gate fails.
+* **`first_wait_us` measures a wait, not a fairness property.** It says the call
+  waited for a lock that was held; it does not say the call was the first waiter
+  to get it, and under load it reads well above the overlap window.
+* **#826 is not addressed here.** It is attributed, not repaired, and it is the
+  reason 2 of 105 boots were gate-red.
+* **The x86 arm is still a SKIP.** A uniprocessor boot has no peer to contend
+  with; that limitation is unchanged and is deliberately not a passing result.
