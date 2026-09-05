@@ -738,7 +738,21 @@ pub fn collect_strand_census(
         let now_ticks = crate::time::get_ticks();
         let online_cpu_count = scheduler.online_cpu_count();
 
-        for cpu in 0..online_cpu_count {
+        // Silence is measured over every CPU that either dispatches or is
+        // holding work, not just the online ones. A CPU past `online_cpu_count`
+        // with an empty queue is silent because nothing asked it for anything --
+        // that is not a finding. A CPU past `online_cpu_count` with threads
+        // still queued on it is the exact shape `queued_on_nondispatching_cpu`
+        // reports, and bounding this loop at `online_cpu_count` meant the field
+        // named for CPU scheduler silence could never see it: the widening
+        // oracle arms CPU 4 of 4 online, and read `cpu_silence_ms` from the four
+        // busy CPUs instead, which is 0 whenever all four happen to enter the
+        // scheduler inside one tick.
+        for cpu in 0..MAX_CPUS {
+            let holds_work = !scheduler.per_cpu_queues[cpu].is_empty();
+            if cpu >= online_cpu_count && !holds_work {
+                continue;
+            }
             let silence_ms = now_ticks.wrapping_sub(scheduler.cpu_state[cpu].last_schedule_ticks);
             if silence_ms > worst_cpu_scheduler_silence_ms {
                 worst_cpu_scheduler_silence_ms = silence_ms;

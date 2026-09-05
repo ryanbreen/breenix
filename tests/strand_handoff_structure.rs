@@ -2524,16 +2524,51 @@ fn strand_census_progress_axes_and_ordering_cannot_shrink() {
         "the scheduler must contain zero census-injection identifiers"
     );
 
-    let online_bound = code_occurrences(census, "for cpu in 0..online_cpu_count");
+    // claim-lint:ok: the 9 observed cpu_silence_ms readings (0, 1, 2, 2, 2, 3, 4,
+    // 6, 7) and the strict-gate pattern that rejects the 0 are quoted in section
+    // 3a of docs/planning/green-program/aarch64-testing/SLICE3-PLAN-2026-09-05.md
+    // The silence scan used to stop at `online_cpu_count`, which made the field
+    // named for CPU scheduler silence structurally unable to see the CPU the
+    // widening exists to report: `queued_on_nondispatching_cpu` counts a thread
+    // queued on a CPU at or past that bound, and the silence of exactly that CPU
+    // was excluded. So the bound is every CPU slot, and the only permitted skip
+    // is a CPU that is both past the online count and holding nothing.
     assert_eq!(
-        online_bound.len(),
-        1,
-        "CPU-silence sampling must iterate exactly the derived online CPU count"
+        code_occurrences(census, "for cpu in 0..online_cpu_count").len(),
+        0,
+        "CPU-silence sampling must not stop at the online prefix"
     );
-    let silence_scan = braced_block_after(census, "for cpu in 0..online_cpu_count");
+    assert_eq!(
+        code_occurrences(census, "worst_cpu_scheduler_silence_ms = silence_ms").len(),
+        1,
+        "the census must keep exactly one scheduler-silence scan"
+    );
+    // The census has two all-CPU scans; the silence one is the first, so slice it
+    // out by its own bounds rather than by a shared loop header.
+    let silence_start = census
+        .find("for cpu in 0..MAX_CPUS")
+        .expect("the census must open with an all-CPU silence scan");
+    let silence_end = census
+        .find("for thread in scheduler.threads.iter()")
+        .expect("the census must then walk the thread table");
+    assert!(
+        silence_start < silence_end,
+        "the silence scan must complete before the thread walk reads its result"
+    );
+    let silence_scan = &census[silence_start..silence_end];
+    assert!(
+        silence_scan.contains("worst_cpu_scheduler_silence_ms = silence_ms"),
+        "the first all-CPU scan in the census must be the silence scan"
+    );
     assert!(
         silence_scan.contains("cpu_state[cpu].last_schedule_ticks"),
-        "each online CPU must contribute its scheduler-silence timestamp"
+        "each considered CPU must contribute its scheduler-silence timestamp"
+    );
+    assert!(
+        silence_scan.contains("per_cpu_queues[cpu].is_empty()")
+            && silence_scan.contains("cpu >= online_cpu_count"),
+        "only a CPU that is both past the online count and holding no queued work may be \
+         skipped by the silence scan"
     );
 
     let queued_scan = census
