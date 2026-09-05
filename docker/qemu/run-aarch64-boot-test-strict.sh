@@ -57,16 +57,19 @@ ASID_CENSUS_UNTAGGED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[1-9][0-9]*:'
 ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][0-9]*:'
 # Slice 3d: the pinned-placement census. Three assertions rather than one, for
 # the reason the ASID block above gives: the line must be present, no line may
-# report a non-zero field, and the one-shot first-park marker must be absent --
-# the census is emitted on a period, so a refusal after the last emission would
+# report a field above zero, and the one-shot first-hold marker must be absent
+# -- the census is emitted on a period, so a hold after the last emission would
 # otherwise be invisible while the marker fires whenever the first one happens.
+# A census line is scored by comparing it against the all-zero literal rather
+# than by matching each field, so a field added to the line later is gated on
+# the day it appears rather than on the day someone remembers to widen a regex.
 # claim-lint:ok: 3 of 3 strict boots and 3 of 3 production boots at this head
-# read count=0:publish_discarded=0, and the forced-park leg reddens this gate --
+# read the all-zero literal, and the forced-hold leg reddens this gate --
 # docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt,
 # 02-prod-boot1.txt and its 2 siblings, 05-runtime-anti-vacuity-strict-gate.txt
-PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+\]'
-PINNED_CENSUS_NONZERO_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=([1-9][0-9]*:publish_discarded=[0-9]+|[0-9]+:publish_discarded=[1-9][0-9]*)\]'
-PINNED_FIRST_PARK_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
+PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+\]'
+PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]'
+PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
 
 # R157/ASID-01: the scoring-only entry point further down scores a serial that
 # was captured earlier, so it needs no kernel, no disk and no preflight. Those
@@ -344,12 +347,12 @@ score_serial() {
         echo "TTBR0 ASID census never counted a process-root publish"
         return 1
     fi
-    if grep -qaE "$PINNED_CENSUS_NONZERO_PATTERN" "$serial_file" 2>/dev/null; then
-        echo "Pinned-placement census reported a refusal or a discarded pin ($(grep -aoE "$PINNED_CENSUS_PATTERN" "$serial_file" | grep -vE ':count=0:publish_discarded=0\]' | tail -1))"
+    if grep -aoE "$PINNED_CENSUS_PATTERN" "$serial_file" 2>/dev/null | grep -qvxF "$PINNED_CENSUS_ZERO_LITERAL"; then
+        echo "Pinned-placement census reported a field above zero ($(grep -aoE "$PINNED_CENSUS_PATTERN" "$serial_file" | grep -vxF "$PINNED_CENSUS_ZERO_LITERAL" | tail -1))"
         return 1
     fi
-    if grep -qaF "$PINNED_FIRST_PARK_LITERAL" "$serial_file" 2>/dev/null; then
-        echo "A pinned worker was parked for want of a dispatching home CPU ($(grep -aF -m1 "$PINNED_FIRST_PARK_LITERAL" "$serial_file"))"
+    if grep -qaF "$PINNED_FIRST_HOLD_LITERAL" "$serial_file" 2>/dev/null; then
+        echo "A pinned worker's wake was held for want of a dispatching home CPU ($(grep -aF -m1 "$PINNED_FIRST_HOLD_LITERAL" "$serial_file"))"
         return 1
     fi
     if ! grep -qaE "$PINNED_CENSUS_PATTERN" "$serial_file" 2>/dev/null; then

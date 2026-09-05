@@ -1243,31 +1243,66 @@ fn validate_wakeup_placement_is_bounded_by_online_cpus(source: &str) -> Result<(
     Ok(())
 }
 
-/// A refused pinned wake becomes a park: off every ready queue, blocked, and
-/// with its pin untouched.
-/// claim-lint:ok: 3 of 3 legs for this rule are the tests below
+/// A refused pinned wake is HELD, not destroyed.
 ///
-/// The pin is untouched deliberately. `Thread::cpu_affinity` exists in two
-/// copies -- the process-table row and the scheduler's publication clone -- and
-/// this disposition runs on the scheduler's copy, so clearing it here would
-/// leave the row naming a CPU the thread is no longer pinned to. The park is a
-/// statement about placement, not about the pin.
-/// claim-lint:ok: 3 of 3 legs for this rule -- the live source, the deleted
-/// queue departure, and an injected pin write -- are the tests below
-fn validate_pinned_park_leaves_no_queue_holding_the_thread(source: &str) -> Result<(), String> {
-    let body = function_body(source, "park_pinned_worker_without_home")
-        .ok_or_else(|| "the pinned-wake park disposition is missing".to_string())?;
-    let compact = compact_code(body);
-    if !compact.contains("self.per_cpu_queues.iter_mut()") || !compact.contains("queue.retain(") {
+/// Three separate rules, because the finding this replaces was three defects
+/// wearing one shape. The refusal must not consume the wake (the hold writes no
+/// thread state, so the `Ready` its caller published stands and the blocked
+/// kind it woke from is not collapsed), it must not undo a publication some
+/// other path made (the hold writes no queue), and something must place the
+/// wake later (both scheduler entry points run the delivery, which enqueues).
+///
+/// The first two are enforced by the RECEIVER: `&self` cannot write a thread
+/// row or a queue, so those rules hold by type rather than by substring, and
+/// the leg for them mutates the receiver rather than the body. The pin rule is
+/// the one the earlier park carried: `Thread::cpu_affinity` exists in two
+/// copies, so writing it from here would leave the process-table row naming a
+/// CPU the scheduler's copy does not.
+/// claim-lint:ok: 6 of 6 legs for these rules -- the live source, a `&mut self`
+/// receiver, an injected state write, an injected queue write, a deleted
+/// enqueue, and a deleted delivery call -- are the tests below
+fn validate_pinned_hold_preserves_the_wake(source: &str) -> Result<(), String> {
+    if !source.contains("fn hold_pinned_wake_for_home(&self, thread_id: u64)") {
         return Err(
-            "the park must remove the thread from every per-CPU queue, not one".to_string(),
+            "the hold must take &self, so that it cannot write a thread row or a queue".to_string(),
         );
     }
-    if !compact.contains("ThreadState::Blocked") {
-        return Err("the park must publish the blocked state it claims".to_string());
+    let body = function_body(source, "hold_pinned_wake_for_home")
+        .ok_or_else(|| "the pinned-wake hold disposition is missing".to_string())?;
+    let compact = compact_code(body);
+    if !compact.contains("PINNED_HOME_CPU_UNAVAILABLE.fetch_add(") {
+        return Err("the hold must count itself, or no gate can see it".to_string());
+    }
+    if compact.contains("ThreadState::") || compact.contains("set_ready(") {
+        return Err(
+            "the hold writes thread state; the wake it was given would be lost".to_string(),
+        );
+    }
+    if compact.contains("per_cpu_queues") {
+        return Err("the hold writes a ready queue; it may only refuse a placement".to_string());
     }
     if compact.contains("cpu_affinity=") {
-        return Err("the park writes a pin; the two copies of the field would disagree".to_string());
+        return Err(
+            "the hold writes a pin; the two copies of the field would disagree".to_string(),
+        );
+    }
+
+    let delivery = function_body(source, "deliver_pinned_wakes_for_this_cpu")
+        .ok_or_else(|| "nothing places a held wake; the refusal would be permanent".to_string())?;
+    let delivery_compact = compact_code(delivery);
+    if !delivery_compact.contains("self.per_cpu_queues[cpu].push_back(") {
+        return Err("the delivery does not place the held wake on a ready queue".to_string());
+    }
+    if !delivery_compact.contains("PINNED_WAKES_DELIVERED.fetch_add(") {
+        return Err("the delivery does not count itself, so a recovery is invisible".to_string());
+    }
+    for name in ["schedule", "schedule_deferred_requeue"] {
+        let entry = function_body(source, name).ok_or_else(|| format!("missing {name}"))?;
+        if !compact_code(entry).contains("self.deliver_pinned_wakes_for_this_cpu()") {
+            return Err(format!(
+                "{name} does not place the wakes this CPU is holding, so entering the scheduler is not what ends a hold"
+            ));
+        }
     }
     Ok(())
 }
@@ -2110,37 +2145,110 @@ fn wakeup_placement_validator_accepts_the_live_source() {
 }
 
 #[test]
-fn pinned_park_leaves_no_queue_holding_the_thread() {
-    validate_pinned_park_leaves_no_queue_holding_the_thread(&repo_text(
-        "kernel/src/task/scheduler.rs",
-    ))
-    .expect("a refused pinned wake parks the thread off every queue");
+fn pinned_hold_preserves_the_wake() {
+    // Anti-vacuity for the five mutation legs below.
+    // claim-lint:ok: 5 of 5 mutation legs below depend on this control
+    validate_pinned_hold_preserves_the_wake(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("a refused pinned wake is held for its home CPU and later placed");
 }
 
 #[test]
-fn pinned_park_validator_rejects_a_park_that_leaves_the_thread_queued() {
+fn pinned_hold_validator_rejects_a_hold_that_can_write_scheduler_state() {
+    // The receiver IS the rule: `&mut self` is what a hold would need before it
+    // could publish a blocked state or empty a queue, so taking it away is the
+    // leg for both.
     let source = repo_text("kernel/src/task/scheduler.rs");
-    let park = function_body(&source, "park_pinned_worker_without_home")
-        .expect("find the park fixture");
-    let mutated_park = park.replacen("queue.retain(", "let _unused = (", 1);
-    assert_ne!(mutated_park, park, "fixture mutation must apply");
-    let mutated = source.replacen(park, &mutated_park, 1);
-    assert!(validate_pinned_park_leaves_no_queue_holding_the_thread(&mutated).is_err());
-}
-
-#[test]
-fn pinned_park_validator_rejects_a_park_that_rewrites_the_pin() {
-    let source = repo_text("kernel/src/task/scheduler.rs");
-    let park = function_body(&source, "park_pinned_worker_without_home")
-        .expect("find the park fixture");
-    let mutated_park = park.replacen(
-        "thread.state = ThreadState::Blocked;",
-        "thread.state = ThreadState::Blocked;\n                thread.cpu_affinity = None;",
+    let mutated = source.replacen(
+        "fn hold_pinned_wake_for_home(&self, thread_id: u64)",
+        "fn hold_pinned_wake_for_home(&mut self, thread_id: u64)",
         1,
     );
-    assert_ne!(mutated_park, park, "fixture mutation must apply");
-    let mutated = source.replacen(park, &mutated_park, 1);
-    assert!(validate_pinned_park_leaves_no_queue_holding_the_thread(&mutated).is_err());
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_hold_that_publishes_a_blocked_state() {
+    // The defect the earlier park shipped, as a leg: a refusal that writes
+    // `Blocked` consumes the wake its caller just published, and 0 of the paths
+    // in this tree re-arm it. Injected rather than deleted, because the repair
+    // is the ABSENCE of the write and a deletion leg cannot see an absence.
+    // claim-lint:ok: 1 of 1 injection, on 1 of 1 hold function
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+    let mutated_hold = hold.replacen(
+        "let holds = ",
+        "if let Some(thread) = self.get_thread_mut(thread_id) { thread.state = ThreadState::Blocked; }\n        let holds = ",
+        1,
+    );
+    assert_ne!(mutated_hold, hold, "fixture mutation must apply");
+    let mutated = source.replacen(hold, &mutated_hold, 1);
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_hold_that_empties_a_ready_queue() {
+    // The other half of the same defect: a refusal that empties each of the
+    // MAX_CPUS queues reverses a publication some other path may have made.
+    // claim-lint:ok: 1 of 1 injection, on 1 of 1 hold function
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+    let mutated_hold = hold.replacen(
+        "let holds = ",
+        "for queue in self.per_cpu_queues.iter_mut() { queue.retain(|&id| id != thread_id); }\n        let holds = ",
+        1,
+    );
+    assert_ne!(mutated_hold, hold, "fixture mutation must apply");
+    let mutated = source.replacen(hold, &mutated_hold, 1);
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_hold_that_rewrites_the_pin() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+    let mutated_hold = hold.replacen(
+        "let holds = ",
+        "if let Some(thread) = self.get_thread_mut(thread_id) { thread.cpu_affinity = None; }\n        let holds = ",
+        1,
+    );
+    assert_ne!(mutated_hold, hold, "fixture mutation must apply");
+    let mutated = source.replacen(hold, &mutated_hold, 1);
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_delivery_that_never_enqueues() {
+    // Without this leg the rules above describe a refusal that is polite about
+    // the thread's state and still leaves it in 0 ready queues for good.
+    // claim-lint:ok: 1 of 1 enqueue in the delivery is the mutation target
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let delivery = function_body(&source, "deliver_pinned_wakes_for_this_cpu")
+        .expect("find the delivery fixture");
+    let mutated_delivery =
+        delivery.replacen("self.per_cpu_queues[cpu].push_back(", "let _dropped = (", 1);
+    assert_ne!(mutated_delivery, delivery, "fixture mutation must apply");
+    let mutated = source.replacen(delivery, &mutated_delivery, 1);
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_scheduler_entry_that_skips_the_delivery() {
+    // A delivery that 1 of the 2 entry points runs is a delivery the other
+    // path's CPUs do not make, so 2 of 2 are named and 2 of 2 are legged.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    for name in ["schedule", "schedule_deferred_requeue"] {
+        let entry = function_body(&source, name).expect("find a scheduler entry fixture");
+        let mutated_entry = entry.replacen("self.deliver_pinned_wakes_for_this_cpu();", "", 1);
+        assert_ne!(
+            mutated_entry, entry,
+            "fixture mutation must apply for {name}"
+        );
+        let mutated = source.replacen(entry, &mutated_entry, 1);
+        let error = validate_pinned_hold_preserves_the_wake(&mutated)
+            .expect_err("a scheduler entry that skips the delivery must redden");
+        assert!(error.contains(name), "{error}");
+    }
 }
 
 /// Score `serial` with `gate`'s OWN verdict code, without booting.
@@ -2187,7 +2295,6 @@ fn rewrite_pinned_census_lines(serial: &str, replacement: Option<&str>) -> Strin
     out
 }
 
-
 #[test]
 fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
     // The gates are RUN, not grepped: a script whose census assertions have
@@ -2211,7 +2318,9 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
     for (gate, variable, baseline) in gates {
         let serial = repo_text(baseline);
         assert!(
-            serial.contains("[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0]"),
+            serial.contains(
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]"
+            ),
             "{baseline} is the green baseline for {gate} and must carry the census"
         );
         let leg = |name: &str, body: &str| {
@@ -2220,10 +2329,10 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
             score_with_gate(gate, variable, &path)
         };
 
-        // Leg A. Anti-vacuity for the three below: a gate that rejected every
+        // Leg A. Anti-vacuity for the four below: a gate that rejected every
         // serial would satisfy them without scoring anything.
-        // claim-lint:ok: 1 of 4 legs is this one, and it is what keeps the
-        // other 3 from being satisfied by a gate that rejects everything
+        // claim-lint:ok: 1 of 5 legs is this one, and it is what keeps the
+        // other 4 from being satisfied by a gate that rejects everything
         let (passed, output) = leg("green", &serial);
         assert!(
             passed,
@@ -2236,8 +2345,8 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         let (passed, output) = leg(
             "refused",
             &serial.replacen(
-                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0]",
-                "[PINNED_HOME_CPU_UNAVAILABLE:count=3:publish_discarded=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=3:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
                 1,
             ),
         );
@@ -2256,18 +2365,38 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
             "{gate} passed a serial with no pinned-placement census at all: {output}"
         );
 
-        // Leg D. A park happened AFTER the last census emission, so every
+        // Leg D. A hold happened AFTER the last census emission, so every
         // census line still reads zero and only the one-shot marker says so.
         // Without this leg the production gate, whose census is emitted once
         // before userspace, would score such a boot green.
         // claim-lint:ok: 1 of 1 census line in the production baseline reads
         // count=0, so only the appended marker distinguishes this leg
-        let mut late_park = serial.clone();
-        late_park.push_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=7:home=1:cpu=0:count=1]\n");
-        let (passed, output) = leg("late-park", &late_park);
+        let mut late_hold = serial.clone();
+        late_hold.push_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=7:home=1:cpu=0:count=1]\n");
+        let (passed, output) = leg("late-hold", &late_hold);
         assert!(
             !passed,
-            "{gate} passed a serial whose one-shot marker reports a park: {output}"
+            "{gate} passed a serial whose one-shot marker reports a hold: {output}"
+        );
+
+        // Leg E. A hold-pen pin was overridden. The gate scores a census line
+        // by comparing it against the zero literal rather than by matching each
+        // field, so 1 of the 2 fields this round added is gated by the same
+        // rule as the 2 that were there before it -- which is what this leg
+        // measures.
+        // claim-lint:ok: 4 of 4 census fields are covered by the comparison,
+        // and 2 of them are varied by a leg here
+        let (passed, output) = leg(
+            "hold-pen",
+            &serial.replacen(
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=2:delivered=0]",
+                1,
+            ),
+        );
+        assert!(
+            !passed,
+            "{gate} passed a serial reporting a silently overridden hold-pen pin: {output}"
         );
     }
 
