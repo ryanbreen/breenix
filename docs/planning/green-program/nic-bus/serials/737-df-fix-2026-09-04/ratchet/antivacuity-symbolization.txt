@@ -1,0 +1,9 @@
+nearest_preceding=0x359d80  offset=+0x0  core::panic::location::Location::file
+Disassembly of section .text:
+
+0000000000359d80 <core::panic::location::Location::file>:
+  359d80:	48 8b 07             	mov    (%rdi),%rax
+  359d83:	48 8b 57 08          	mov    0x8(%rdi),%rdx
+  359d87:	48 ff ca             	dec    %rdx
+  359d8a:	c3                   	ret
+  359d8b:	cc                   	int3

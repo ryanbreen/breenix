@@ -1,0 +1,23 @@
+   Compiling kernel v0.1.0 (/root/breenix-737-oracle/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-737-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.11s
+     Running tests/entry_point_df_structure.rs (target/debug/deps/entry_point_df_structure-95835f5ce9aacc2e)
+
+running 4 tests
+test the_analyzer_reddens_on_a_synthetic_entry_that_omits_cld ... ok
+census: 3 hand-written .asm file(s), 3 assembled into the kernel image
+census: 4 global symbol(s) in the assembled files
+test the_asm_entry_census_is_not_vacuous ... ok
+exempt census: kernel/src/interrupts.rs declares 12
+exempt census: kernel/src/interrupts_fix.rs declares 1
+exempt census: kernel/src/syscall/mod.rs declares 1
+exempt census: 14 compiler-generated interrupt handler(s) across 3 file(s)
+test llvm_generated_x86_interrupt_handlers_are_censused_and_exempt ... ok
+census: kernel/src/syscall/entry.asm:syscall_return_to_userspace is declared in Rust as a parameter-taking callable, so it is entered by an ordinary call under the SysV ABI (DF clear on entry) and is exempt
+ok: kernel/src/interrupts/breakpoint_entry.asm:breakpoint_entry clears DF [address-taken (installed in a descriptor table or MSR)]
+ok: kernel/src/interrupts/timer_entry.asm:timer_interrupt_entry clears DF [address-taken (installed in a descriptor table or MSR)]
+ok: kernel/src/syscall/entry.asm:syscall_entry clears DF [address-taken (installed in a descriptor table or MSR)]
+test every_hand_written_entry_clears_df_before_its_first_call_or_string_op ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
+

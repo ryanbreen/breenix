@@ -20,3 +20,13 @@ docs/planning/green-program/sockets/serials/693-fix/*.txt -text
 # guest console emits are part of the evidence, and a CRLF normalisation would
 # edit it.
 docs/planning/green-program/sockets/serials/775/**/*.txt -text
+
+# #737 DF-fix serials: raw x86 console captures from the beast gate host, kept
+# byte-exact for the same reason as the 693/775 captures above -- the CR bytes
+# the guest console emits are part of the evidence, and the per-file sha256
+# digests recorded in this round's hashes.txt are digests of these exact bytes,
+# so a CRLF normalisation would both edit preserved evidence and invalidate the
+# record that cites it.
+docs/planning/green-program/nic-bus/serials/737-df-fix-2026-09-04/**/*.txt -text
+docs/planning/green-program/nic-bus/serials/737-df-fix-2026-09-04/*.txt -text
+docs/planning/green-program/nic-bus/serials/737-df-fix-2026-09-04/*.log -text

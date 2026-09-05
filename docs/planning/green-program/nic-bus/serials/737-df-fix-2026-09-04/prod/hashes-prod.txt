@@ -1,0 +1,2 @@
+prod_kernel_elf 588671ffd4d9f93b7d7abacb56b7d7ef0ef564962736bdc19f984602b7cf16a0  5079752  target/x86_64-unknown-none/release/deps/artifact/kernel-3203cc2874472470/bin/kernel-3203cc2874472470
+prod_boot_image c466b7b168fe4c2d070cc75f7273ac7861db947231abd5cc1b5cdb178409e86d  7405568  target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img
