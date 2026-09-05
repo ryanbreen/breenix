@@ -778,6 +778,14 @@ impl Cr3Flags {
     pub const fn with_asid(asid: u16) -> Self {
         Self((asid as u64) << 48)
     }
+
+    /// The raw flag bits, for a caller that has to hand a complete TTBR0 value
+    /// (root plus ASID) to the install discipline in
+    /// `arch_impl::aarch64::ttbr0` rather than write the register itself.
+    #[inline]
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
 }
 
 impl Cr3 {

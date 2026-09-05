@@ -87,7 +87,6 @@ fn launch_init_from_elf(
     path: &str,
 ) -> Result<core::convert::Infallible, &'static str> {
     use alloc::string::String;
-    use core::arch::asm;
     use kernel::arch_impl::aarch64::context::return_to_userspace;
 
     // Disable interrupts for the entire process setup.
@@ -268,18 +267,32 @@ fn launch_init_from_elf(
     // above has evicted stale entries from the boot identity map. ASID=1
     // ensures any remaining stale boot entries (ASID=0) don't match.
     let ttbr0_value = ttbr0_phys | (1u64 << 48); // ASID=1
-    unsafe {
-        asm!(
-            "dsb ishst",
-            "msr ttbr0_el1, {0}",
-            "isb",
-            "tlbi vmalle1is",
-            "dsb ish",
-            "isb",
-            in(reg) ttbr0_value,
-            options(nostack, preserves_flags)
-        );
-    }
+    //
+    // Install through the shared discipline rather than a raw `msr`: init is
+    // the one thread that reaches EL0 without passing through
+    // `dispatch_thread_locked`, so nothing else on this path reconciles the
+    // per-CPU TTBR0 shadows with the register. `setup_idle_return_locked`
+    // publishes the KERNEL root into `next_cr3` on every idle dispatch, the
+    // syscall return corridor reads that word FIRST, and nothing on the idle
+    // return corridor consumes it -- so a `next_cr3` armed before this point
+    // decides where init's first `svc` returns.
+    // claim-lint:ok: 9 of the 10 censused process-root installs are routed
+    // through the discipline, the 10th being the Tier-1 site; the census is
+    // tests/ttbr0_shadow_reconciliation_structure.rs.
+    //
+    // On this branch's tree the boot CPU is pinned for the whole boot, so it
+    // takes no idle dispatch before this call and the word is not observed
+    // armed here: this install is DEFENSIVE at this site. The same install
+    // shape was measured firing on fix/562-761-aarch64-testing-profile, whose
+    // boot sequence hands the loader to a kernel thread and does let the boot
+    // CPU idle first: 13 of 26 baseline boots there aborted at init's own
+    // return address with FAR=ELR and ESR 0x8200000e, 0 of 24 did with the two
+    // shadow stores added, and 4 of 8 did again on reversion (#786).
+    // claim-lint:ok: the A/B/A rows are the committed arithmetic of
+    // docs/planning/green-program/aarch64-testing/serials/r7/aba/CLASSIFICATION.tsv
+    // at fix/562-761-aarch64-testing-profile commit 1245c64b, restated in
+    // docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
+    kernel::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0_value);
     // DO NOT call enable_interrupts() here. Interrupts are currently disabled
     // (since step 'd'). The ERET in return_to_userspace() loads SPSR_EL1=0
     // into PSTATE, which has DAIF clear (interrupts enabled). The pending

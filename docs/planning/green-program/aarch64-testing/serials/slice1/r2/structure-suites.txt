@@ -1,0 +1,32 @@
+review round 2 (R154): every tests/*_structure.rs suite at the round-2 tree
+$ cargo test --test <name>   (one invocation per suite)
+
+block_request_lifetime_structure                        ok        passed=12  failed=0 exit=0
+context_restore_structure                               ok        passed=97  failed=0 exit=0
+coreproof_component_h_structure                         ok        passed=5   failed=0 exit=0
+coreproof_coverage_structure                            ok        passed=4   failed=0 exit=0
+coreproof_mutation_register_structure                   ok        passed=5   failed=0 exit=0
+coreproof_sites_structure                               ok        passed=4   failed=0 exit=0
+degenerate_transfer_fd_validation_structure             ok        passed=4   failed=0 exit=0
+dispatch_strand_census_structure                        ok        passed=7   failed=0 exit=0
+dma_and_log_sink_structure                              ok        passed=4   failed=0 exit=0
+exec_lock_order_structure                               ok        passed=44  failed=0 exit=0
+exit_tally_structure                                    ok        passed=6   failed=0 exit=0
+ext2_lock_structure                                     ok        passed=36  failed=0 exit=0
+fork_lock_order_structure                               ok        passed=10  failed=0 exit=0
+green_program_envelope_structure                        ok        passed=14  failed=0 exit=0
+loopback_pump_structure                                 ok        passed=63  failed=0 exit=0
+masked_binary_load_structure                            ok        passed=4   failed=0 exit=0
+mmap_floor_structure                                    ok        passed=9   failed=0 exit=0
+net_lock_structure                                      ok        passed=19  failed=0 exit=0
+poll_tcp_gate_wiring_structure                          ok        passed=3   failed=0 exit=0
+preempt_bracket_structure                               ok        passed=8   failed=0 exit=0
+serial_line_atomicity_structure                         ok        passed=9   failed=0 exit=0
+signal_eintr_predicate_structure                        ok        passed=2   failed=0 exit=0
+strand_handoff_structure                                ok        passed=38  failed=0 exit=0
+syscall_return_register_structure                       ok        passed=6   failed=0 exit=0
+teardown_structure                                      ok        passed=81  failed=0 exit=0
+ttbr0_shadow_reconciliation_structure                   ok        passed=16  failed=0 exit=0
+tty_oracle_structure                                    ok        passed=14  failed=0 exit=0
+
+SUITES green=27 total=27 cases=524

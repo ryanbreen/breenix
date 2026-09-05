@@ -2718,8 +2718,15 @@ pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
             current_frame,
             new_frame
         );
-        Cr3::write(new_frame, flags); // Writes TTBR0_EL1 with barriers
-                                      // ARM64 Cr3::write includes DSB ISH and ISB, so no separate TLB flush needed
+        // #786: installing a process root is not just a register write. The
+        // syscall return corridor reads the per-CPU TTBR0 shadows and installs
+        // `next_cr3` when it is set, so a raw install here would leave the next
+        // return to EL0 running on whatever root the shadows still name. The
+        // discipline installs and settles both in one place, with the same
+        // barriers and TLB invalidation this path used to issue itself.
+        let ttbr0_value =
+            new_frame.start_address().as_u64() | (flags.bits() & 0xFFFF_0000_0000_0000);
+        crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0_value);
         log::debug!("ARM64: TTBR0 switch completed");
     }
 }

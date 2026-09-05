@@ -4385,18 +4385,7 @@ fn poll_ensure_address_space() {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
             if let Some(ref page_table) = process.page_table {
                 let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
-                unsafe {
-                    core::arch::asm!(
-                        "dsb ishst",
-                        "msr ttbr0_el1, {}",
-                        "isb",
-                        "tlbi vmalle1is",
-                        "dsb ish",
-                        "isb",
-                        in(reg) ttbr0_value,
-                        options(nomem, nostack)
-                    );
-                }
+                crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0_value);
             }
         }
     }

@@ -1,0 +1,8 @@
+profile: boot_tests
+command: cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 --features boot_tests
+---
+    Finished `release` profile [optimized] target(s) in 0.06s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+BUILD_EXIT=0
+grep -cE '^(warning|error)' over the build output above: 1
