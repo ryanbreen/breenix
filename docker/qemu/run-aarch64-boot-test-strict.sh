@@ -24,6 +24,12 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # active on this host for the boot's duration.
 # shellcheck source=lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+# #827: per-boot host-side facts (wall-clock window, host QEMU count and
+# load average at start/kill, QEMU's own CPU time, the guest's last
+# heartbeat, and which bound ended the boot) -- see that file's own header
+# for why a starved boot and a wedged boot could not be told apart before.
+# shellcheck source=lib/gate-boot-facts.sh
+source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same host,
 # both native QEMU rather than the shared beast container #797/#801 covered)
 # each hardcoded the identical /tmp/breenix_aarch64_strict_$iteration and
@@ -505,6 +511,7 @@ report_failure() {
     local iteration="$1"
     local reason="$2"
     local serial_file="$3"
+    local facts_line="$4"
     local failure_dir="$BREENIX_GATE_TMP/breenix_aarch64_strict_failures"
     local timestamp
     local preserved_serial
@@ -522,7 +529,12 @@ report_failure() {
         : > "$preserved_serial"
         lines=0
     fi
+    # #827: the facts line is preserved alongside the serial it describes,
+    # not only echoed to the console, so a failed boot's host-side reading
+    # is as durable as its serial capture.
+    printf '%s\n' "$facts_line" > "$failure_dir/${timestamp}-boot${iteration}.facts.txt"
     echo "  [FAIL] Boot $iteration: $reason ($lines lines); serial: $preserved_serial"
+    echo "  $facts_line"
 }
 
 run_single_test() {
@@ -540,6 +552,14 @@ run_single_test() {
     # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
     # Use writable disk copy (no readonly=on) to allow filesystem writes
     qemu_host_lock_acquire
+    # #827: "start" is sampled here, right after the lock is held and right
+    # before QEMU is launched -- this is when THIS boot's own wall-clock
+    # window actually begins, so time spent blocked on the host lock is not
+    # folded into the window the guest-uptime ratio is measured against.
+    local HOST_MS_START QEMU_AT_START LOAD_AT_START
+    HOST_MS_START="$(gbf_host_ms_now)"
+    QEMU_AT_START="$(qemu_host_lock_count)"
+    LOAD_AT_START="$(gbf_load_1m)"
     timeout 20 qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -602,6 +622,38 @@ run_single_test() {
         sleep 1.5
     done
 
+    # #827: reclassifies which of the loop's own two guarded breaks
+    # explains why polling stopped, using the SAME two predicates the loop
+    # above uses (check_crash_markers, score_serial), evaluated once more
+    # against the file's state right as the loop exits. This is not a new
+    # stop condition -- the loop body above is byte-for-byte what it was
+    # before this file existed -- it is a read taken immediately after the
+    # loop already stopped, naming which guarded branch a moment ago is
+    # still true right now. Left empty when neither is true, i.e. the loop
+    # simply ran out its 12 iterations without either break firing.
+    local ENDED_BY_LOOP=""
+    if [ -f "$OUTPUT_DIR/serial.txt" ] && check_crash_markers "$OUTPUT_DIR/serial.txt" >/dev/null 2>&1; then
+        ENDED_BY_LOOP="crash"
+    elif [ -f "$OUTPUT_DIR/serial.txt" ] && score_serial "$OUTPUT_DIR/serial.txt" >/dev/null 2>&1; then
+        ENDED_BY_LOOP="early_pass"
+    fi
+
+    # #827: sampled together, immediately before this boot's own kill --
+    # ps has no output for a PID already gone, so qemu_cpu_seconds and the
+    # aliveness check below must both run before the kill line, not after.
+    local HOST_MS_END QEMU_AT_END LOAD_AT_END QEMU_CPU_S
+    HOST_MS_END="$(gbf_host_ms_now)"
+    QEMU_AT_END="$(qemu_host_lock_count)"
+    LOAD_AT_END="$(gbf_load_1m)"
+    # #827: $QEMU_PID is `timeout`'s own pid (see gate-boot-facts.sh's
+    # own header for why); resolve to the actual qemu-system-aarch64
+    # child before reading its CPU time.
+    local QEMU_ACTUAL_PID
+    QEMU_ACTUAL_PID="$(gbf_resolve_qemu_pid "$QEMU_PID")"
+    QEMU_CPU_S="$(gbf_qemu_cpu_seconds "$QEMU_ACTUAL_PID")"
+    local QEMU_STILL_ALIVE=1
+    kill -0 "$QEMU_PID" 2>/dev/null || QEMU_STILL_ALIVE=0
+
     kill $QEMU_PID 2>/dev/null || true
     wait $QEMU_PID 2>/dev/null || true
     qemu_host_lock_release
@@ -609,12 +661,84 @@ run_single_test() {
     # The poll booleans above are a stop condition, not a verdict. Score the boot
     # from the serial file QEMU actually left behind.
     local FAIL_DETAIL
+    local SCORE_PASS=0
     if FAIL_DETAIL=$(score_serial "$OUTPUT_DIR/serial.txt"); then
+        SCORE_PASS=1
+    fi
+
+    # #827: ended_by names which bound in the loop above actually ended this
+    # boot, derived from the same control flow the scoring above already
+    # ran -- no new stop condition, no changed deadline.
+    #   crash_marker    -- the crash-marker break fired (ENDED_BY_LOOP=crash)
+    #   scored_pass     -- either the score_serial break fired
+    #                      (ENDED_BY_LOOP=early_pass) and the post-kill
+    #                      rescore still agrees, OR neither break fired
+    #                      (ENDED_BY_LOOP empty, so the loop's own 12
+    #                      iterations ran out or QEMU died on its own) but
+    #                      the guest's last required marker landed in the
+    #                      gap between this function's pre-kill sampling
+    #                      calls and the kill+rescore, so the post-kill
+    #                      rescore is a PASS anyway -- the mirror of the
+    #                      scored_fail race below, resolved the same way:
+    #                      the post-kill rescore, not the loop's now-stale
+    #                      classification, wins: the case block right below
+    #                      checks SCORE_PASS before it falls through to
+    #                      poll_exhausted/hard_timeout, so a PASS rescore
+    #                      lands on scored_pass, matching the SUCCESS
+    #                      verdict printed a few lines down
+    #   scored_fail     -- the score_serial break fired, but content written
+    #                      between that grep and the kill (e.g. a late strand)
+    #                      flipped the post-kill rescore to FAIL
+    #   poll_exhausted  -- neither break fired, the post-kill rescore is
+    #                      also not a PASS, and QEMU was still alive when
+    #                      the loop's own 12 iterations ran out (this
+    #                      script's own kill ends it)
+    #   hard_timeout    -- neither break fired, the post-kill rescore is
+    #                      also not a PASS, and QEMU was already dead when
+    #                      this point was reached -- the `timeout 20`
+    #                      wrapping the launch line above fired first
+    local ENDED_BY
+    case "$ENDED_BY_LOOP" in
+        crash)
+            ENDED_BY="crash_marker"
+            ;;
+        early_pass)
+            if [ "$SCORE_PASS" = "1" ]; then
+                ENDED_BY="scored_pass"
+            else
+                ENDED_BY="scored_fail"
+            fi
+            ;;
+        *)
+            if [ "$SCORE_PASS" = "1" ]; then
+                ENDED_BY="scored_pass"
+            elif [ "$QEMU_STILL_ALIVE" = "1" ]; then
+                ENDED_BY="poll_exhausted"
+            else
+                ENDED_BY="hard_timeout"
+            fi
+            ;;
+    esac
+
+    local GUEST_UPTIME_MS
+    GUEST_UPTIME_MS="$(gbf_last_heartbeat_uptime_ms "$OUTPUT_DIR/serial.txt")"
+
+    local FACTS_LINE
+    FACTS_LINE="$(gbf_emit_line "$iteration" "$HOST_MS_START" "$HOST_MS_END" \
+        "$QEMU_AT_START" "$LOAD_AT_START" "$QEMU_AT_END" "$LOAD_AT_END" \
+        "$QEMU_CPU_S" "$GUEST_UPTIME_MS" "$ENDED_BY")"
+    # Recorded into this boot's own evidence directory unconditionally --
+    # not only on failure, so a passing boot's host-side reading is on the
+    # record too.
+    printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
+
+    if [ "$SCORE_PASS" = "1" ]; then
         echo "  [OK] Boot $iteration: SUCCESS"
+        echo "  $FACTS_LINE"
         return 0
     fi
 
-    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt"
+    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE"
     return 1
 }
 
