@@ -2544,31 +2544,67 @@ fn strand_census_progress_axes_and_ordering_cannot_shrink() {
         "the census must keep exactly one scheduler-silence scan"
     );
     // The census has two all-CPU scans; the silence one is the first, so slice it
-    // out by its own bounds rather than by a shared loop header.
-    let silence_start = census
-        .find("for cpu in 0..MAX_CPUS")
+    // out by its own bounds rather than by a shared loop header. Both bounds come
+    // from `code_occurrences`, not a raw `find`: `function_body` returns a slice
+    // of the RAW file, so a comment quoting either loop header would otherwise
+    // move a boundary.
+    let silence_start = *code_occurrences(census, "for cpu in 0..MAX_CPUS")
+        .first()
         .expect("the census must open with an all-CPU silence scan");
-    let silence_end = census
-        .find("for thread in scheduler.threads.iter()")
+    let silence_end = *code_occurrences(census, "for thread in scheduler.threads.iter()")
+        .first()
         .expect("the census must then walk the thread table");
     assert!(
         silence_start < silence_end,
         "the silence scan must complete before the thread walk reads its result"
     );
     let silence_scan = &census[silence_start..silence_end];
-    assert!(
-        silence_scan.contains("worst_cpu_scheduler_silence_ms = silence_ms"),
+    // Each needle below is matched through `code_occurrences`, which blanks
+    // comments and string literals before matching. A bare `contains` on this
+    // raw slice would let a comment that merely NAMES the skip arm satisfy the
+    // pin with the arm itself deleted -- the vacuous-ratchet class this repo has
+    // been bitten by before (#549, #551, #527-r1).
+    assert_eq!(
+        code_occurrences(silence_scan, "worst_cpu_scheduler_silence_ms = silence_ms").len(),
+        1,
         "the first all-CPU scan in the census must be the silence scan"
     );
-    assert!(
-        silence_scan.contains("cpu_state[cpu].last_schedule_ticks"),
+    assert_eq!(
+        code_occurrences(silence_scan, "cpu_state[cpu].last_schedule_ticks").len(),
+        1,
         "each considered CPU must contribute its scheduler-silence timestamp"
     );
     assert!(
-        silence_scan.contains("per_cpu_queues[cpu].is_empty()")
-            && silence_scan.contains("cpu >= online_cpu_count"),
+        code_occurrences(silence_scan, "per_cpu_queues[cpu].is_empty()").len() == 1
+            && code_occurrences(silence_scan, "cpu >= online_cpu_count").len() == 1,
         "only a CPU that is both past the online count and holding no queued work may be \
          skipped by the silence scan"
+    );
+    // Those needles pin what the guard NAMES. They cannot pin what it DOES: a
+    // guard whose body no longer skips leaves the needles above matching while
+    // restoring the pre-fix blindness, because the scan then samples slots past
+    // the online count that hold no work. So take the guarded block itself and
+    // require that its code content is the skip.
+    let skip_arm = braced_block_after(silence_scan, "if cpu >= online_cpu_count && !holds_work");
+    let (skip_code, _) = code_source(skip_arm);
+    assert_eq!(
+        skip_code.split_whitespace().collect::<Vec<_>>().join(" "),
+        "continue;",
+        "the past-the-online-count-and-empty arm must skip that CPU, not merely name it"
+    );
+    assert_eq!(
+        code_occurrences(
+            silence_scan,
+            "let holds_work = !scheduler.per_cpu_queues[cpu].is_empty();"
+        )
+        .len(),
+        1,
+        "the skip decision must read this CPU's own queue occupancy"
+    );
+    assert_eq!(
+        code_occurrences(silence_scan, "continue").len(),
+        1,
+        "the silence scan must carry exactly one skip"
     );
 
     let queued_scan = census
