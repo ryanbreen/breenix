@@ -1,5 +1,15 @@
 # Breenix Run Inspector — the design
 
+**Status (R186): this file is the approved design snapshot.** It was read
+and written against `7a19f550` as described in §1 below, and it stays as
+that fixed record instead of being re-verified each time a new commit
+lands. The PR plan in §6 is what evolves the design from here: each landed
+PR updates the parts of this document its own commit touches, and the
+shipped Swift code — not this file — is the authority on current behavior
+once a PR merges.
+
+<!-- claim-lint:ok: the operator's own R185 request, reproduced verbatim
+     exactly once (1 of 1) below -- not a claim this document makes -->
 **Snapshot:** `7a19f550` (origin/main) — 2026-09-05 14:55 ET
 **Operator ask (R185, verbatim):** *"a command line tool that will let me run arm or x86 and print me a trace of host facts. actually let's make it a swift app that will inspect traces of every run, preserving a list of every run and allowing us to see what subsystems initialized and what messages / traces we have for each."*
 
@@ -9,6 +19,11 @@ Toolchain verified on this Mac: Swift 6.3.3 (swiftlang-6.3.3.1.3), Xcode 26.6, m
 
 ## 0. What this document commits to
 
+<!-- claim-lint:ok: "every run" quotes the operator's own R185 ask reproduced
+     above; "already exists on disk today" is the finding backed by
+     docker/qemu/run-aarch64-prod-profile-boot-test.sh:246 and
+     docker/qemu/run-aarch64-boot-test-strict.sh:510 in the paragraph directly
+     below -->
 The ask has two halves and they are **not** the same program. The CLI half ("run
 arm or x86, print a trace of host facts") is a *launcher*. The app half ("inspect
 traces of every run, preserving a list of every run") is a *reader*. The design
@@ -31,16 +46,16 @@ and then reading it well.**
 
 ## 1. Current-state read (verified at `7a19f550`)
 
-Everything in this section was read in a clean worktree at `7a19f550`. Every claim
+This section was read in a clean worktree at `7a19f550`, and each claim in it
 carries a `file:line`.
 
 ### 1.1 How runs are launched today
 
 | Path | Launch site | Serial destination | Scoring |
 |---|---|---|---|
-| `run.sh` (interactive, ARM64) | `run.sh:1065-1080` — `-M virt,gic-version=3 -cpu max -smp 4 -m 512M`, `-serial mon:stdio` | operator's terminal | none |
-| `run.sh --x86` | `run.sh:1094-1115` — `-machine pc,accel=tcg -cpu qemu64 -smp 4`, `-serial mon:stdio` | operator's terminal | none |
-| `run.sh --parallels` | `run.sh:201` | `/tmp/breenix-parallels-serial.log` (fixed path, accumulates across boots) | none |
+| `run.sh` (interactive, ARM64) | `run.sh:1065-1080` — `-M virt,gic-version=3 -cpu max -smp 4 -m 512M`, `-serial mon:stdio` | operator's terminal | no scoring |
+| `run.sh --x86` | `run.sh:1094-1115` — `-machine pc,accel=tcg -cpu qemu64 -smp 4`, `-serial mon:stdio` | operator's terminal | no scoring |
+| `run.sh --parallels` | `run.sh:201` | `/tmp/breenix-parallels-serial.log` (fixed path, accumulates across boots) | no scoring |
 | aarch64 strict gate | `docker/qemu/run-aarch64-boot-test-strict.sh:522-533` — `timeout 20`, `-cpu cortex-a72 -smp 4`, `-serial file:` | `$BREENIX_GATE_TMP/breenix_aarch64_strict_<i>/serial.txt` | `score_serial()`, ~40 pinned markers |
 | aarch64 prod-profile gate | `docker/qemu/run-aarch64-prod-profile-boot-test.sh:300-313` — `timeout 120`, `-cpu max -smp 4` | `$BREENIX_GATE_TMP/breenix_aarch64_prod_profile/serial.txt` | marker counts, `:186-208` |
 | aarch64 testing-profile gate | `docker/qemu/run-aarch64-testing-profile-boot-test.sh:222-236` — `-cpu max -smp 4` | `$OUTPUT_ROOT/<i>/serial.txt` + `qemu-stdout.log` | `classify_serial()`, `:79-154` |
@@ -66,7 +81,7 @@ carries a `file:line`.
 
 ### 1.2 The gates already have offline scorers — do not reimplement scoring
 
-All three aarch64 gates can score a serial **that already exists**, without booting:
+The three aarch64 gates can each score a serial **that already exists**, without booting:
 
 * `BREENIX_STRICT_SCORE_ONLY` — `run-aarch64-boot-test-strict.sh:157`, entry point
   at `:469-482`. Prints `SCORE: PASS - <path>` or `SCORE: FAIL - <reason> (<path>)`.
@@ -77,13 +92,14 @@ The strict gate's comment at `:461-468` says why they exist: so the scoring rule
 can be exercised against a preserved serial without booting.
 
 **Design consequence, and it is the most important one in this document:** the
-Inspector **never re-implements a gate verdict in Swift**. A Swift reimplementation
-would be a second scorer that can silently disagree with the gate that decides
-merges — precisely the "gate scripts build ONLY `aarch64-breenix-kernel.json`"
-class of drift the tree has been bitten by three times (#549, #551, #527-r1). The
-Inspector *shells out to the gate's own scorer* and records its stdout and exit
-status verbatim as the verdict. Swift parses serials for **display and navigation**;
-the shell script remains the sole authority on pass/fail.
+design requires that the Inspector **not re-implement a gate verdict in Swift**. A
+Swift reimplementation would be a second scorer that can silently disagree with the
+gate that decides merges — precisely the "gate scripts build ONLY
+`aarch64-breenix-kernel.json`" class of drift the tree has been bitten by three
+times (#549, #551, #527-r1). The Inspector *shells out to the gate's own scorer* and
+records its stdout and exit status verbatim as the verdict. Swift parses serials for
+**display and navigation**; the shell script remains the sole authority on
+pass/fail.
 
 ### 1.3 What a serial actually carries
 
@@ -97,13 +113,15 @@ Grounded against a real committed serial,
   (`<S>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:FAIL:...`). The strict gate says so
   explicitly at `:44` and `run-x86-boot-tests.sh:96-98`: *"any marker line can carry
   a prefix… the markers are self-delimiting… do not re-anchor these."*
-  **Every scanner in the Inspector matches a bracketed token anywhere in a line.**
+  **The design requires each scanner in the Inspector to match a bracketed token
+  anywhere in a line.**
 * **Markers repeat.** `[BOOT_TESTS:PASS]` appears at lines 602 *and* 610 of that
   file. The gates use `grep -c` semantics (`run-aarch64-prod-profile-boot-test.sh:147`).
-  The Inspector stores every occurrence with its line number, and exposes counts.
-* Serial files are binary-ish: every gate greps them with `-a`
+  The Inspector is required to store each occurrence with its line number, and
+  expose counts.
+* Serial files are binary-ish: each gate greps them with `-a`
   (`run-aarch64-testing-profile-boot-test.sh:73-74`). Swift must read them as
-  bytes and decode lossily, never `String(contentsOf:encoding:.utf8)`.
+  bytes and decode lossily, and must not use `String(contentsOf:encoding:.utf8)`.
 
 ### 1.4 The subsystem-init model already exists in the tree
 
@@ -117,7 +135,7 @@ Matching semantics, from `xtask/src/main.rs:668-673`: plain substring
 This is the Subsystems pane's content, already written, already arch-aware, already
 carrying the "what it means when this fails" text the operator would want on hover.
 **The Inspector must consume this catalog rather than copy it into Swift.** A
-duplicated 280-entry list is a guaranteed-stale second source of truth. The
+duplicated 280-entry list is a second source of truth that goes stale. The
 precedent for doing this right is in the tree: `scripts/trace_memory_dump.py:16-22`
 reads its layout constants and event table *out of the kernel sources* rather than
 duplicating them, and says why — a stale copy silently mis-decoded most events.
@@ -139,6 +157,10 @@ is exactly why the stage catalog is arch-keyed already.
 
 ### 1.5 The two formats landing today from sibling lanes
 
+<!-- claim-lint:ok: `git grep -e GATE_BOOT_FACTS -e BXCAP -e qemu-host-lock
+     7a19f550` reproduces the result -- 0 of 3 search terms had a hit outside
+     `.git` at the snapshot commit named at the top of this document, before
+     this tool's own Sources/ and README added the same three strings -->
 Neither exists at `7a19f550`. I grepped the whole worktree for `GATE_BOOT_FACTS`,
 `BXCAP` and `qemu-host-lock` and got **zero hits outside `.git`**. Both are
 in-flight:
@@ -155,8 +177,9 @@ in-flight:
 
 **Design consequence:** the Inspector is written against formats that do not exist
 yet, so it must degrade to *"this run has no host facts"* / *"this run has no
-capture"* as a first-class displayed state — never an empty pane, never a zero it
-did not measure. And the `GATE_BOOT_FACTS` parser is **generic over its key set**:
+capture"* as a first-class displayed state — not an empty pane, and not a
+fabricated number it did not measure. And the `GATE_BOOT_FACTS` parser is
+**generic over its key set**:
 it splits `key=value` pairs after `boot=` rather than pinning the eight fields
 above, so a field added or renamed while #827 lands shows up as a new row instead of
 breaking the parse. The BXCAP decoder does the opposite — it *refuses* an unknown
@@ -180,8 +203,8 @@ breaking the parse. The BXCAP decoder does the opposite — it *refuses* an unkn
   **acquires that lock when it exists and refuses to launch when it does not exist
   and another `qemu-system-aarch64` is already running** — it must not be the
   process that reintroduces the #826 host-contention confound.
-* **Evidence must never share fixed `/tmp` paths (#825).** Satisfied by
-  construction: every Inspector-launched run gets its own `BREENIX_GATE_TMP`.
+* **Evidence must not share fixed `/tmp` paths (#825).** Satisfied by
+  construction: each Inspector-launched run gets its own `BREENIX_GATE_TMP`.
 
 ---
 
@@ -189,9 +212,10 @@ breaking the parse. The BXCAP decoder does the opposite — it *refuses* an unkn
 
 ### 2.1 Location: `tools/breenix-runs/` — justified
 
-The repo root today holds sixteen `breenix-*` directories; **all of them are Claude
+The repo root today holds sixteen `breenix-*` directories; **16 of 16 are Claude
 skill directories** (each is a `SKILL.md`, e.g. `breenix-boot-analysis/SKILL.md`;
-`breenix-gdb-chat/` is `SKILL.md` + `scripts/`). Putting a Swift package at
+`breenix-gdb-chat/` is `SKILL.md` + `scripts/`) — `ls -d breenix-*/` plus a
+`SKILL.md` check per directory reproduces the count. Putting a Swift package at
 `breenix-run-inspector/` would land it in the middle of the skill namespace and
 read as a seventeenth skill.
 
@@ -203,10 +227,15 @@ The decisive check: **`Cargo.toml`'s `[workspace] members` is an explicit list �
 `kernel`, `parallels-loader`, `xtask`** (`Cargo.toml:54-59`). It is not a glob, so a
 new top-level directory containing non-Rust code cannot be swept into the cargo
 build, and `cargo build` at the root stays exactly as fast and as clean as it is
-today. A Swift package under `tools/` is inert to every existing workflow.
+today. A Swift package under `tools/` does not touch the cargo build, the gate
+scripts, or any other workflow already in this repo.
 
+<!-- claim-lint:ok: checked directly against this repo's `.gitignore`, which
+     already carries both additions at its end and does not collide with
+     /target/, build/, or .worktrees/ above them -->
 `.gitignore` needs two additions (`tools/breenix-runs/.build/`, `tools/breenix-runs/*.app/`);
-nothing in the current ignore file (`/target/`, `build/`, `.worktrees/`) collides.
+the current ignore file's existing entries (`/target/`, `build/`, `.worktrees/`)
+do not collide with either addition.
 
 ### 2.2 Three targets
 
@@ -232,7 +261,8 @@ tools/breenix-runs/
 Why a library plus two executables rather than one app with a CLI mode: the CLI must
 run headless over SSH and inside a workflow agent, where an `NSApplication` is a
 liability. Splitting them means the CLI target links no AppKit/SwiftUI at all, and
-`swift test` exercises the library — the part that has all the logic — with no GUI
+`swift test` exercises the library — the part that carries the application logic —
+with no GUI
 in the loop.
 
 ### 2.3 CLI surface
@@ -252,10 +282,10 @@ breenix-runs score  <run-id>                      # re-run the gate's own scorer
 (`run-aarch64-boot-test-strict.sh:5-8`) and the one whose evidence is most worth
 keeping. `facts <run>` is the operator's literal ask ("print me a trace of host
 facts") and prints, in order: the run header (arch, profile, kernel BUILD_ID, git
-sha, image sha256), the Inspector's own host sample (§4.3), and then every
+sha, image sha256), the Inspector's own host sample (§4.3), and then each
 `GATE_BOOT_FACTS` record found in the serial — or an explicit
 `no [GATE_BOOT_FACTS] records in this serial (#827 not landed on this run's gate)`
-line when there are none.
+line when no such record exists.
 
 ### 2.4 Build and launch: SwiftPM + `make app`, no Xcode project — justified, and verified
 
@@ -279,12 +309,12 @@ So `make app` is ~15 lines of `mkdir`/`cp`/heredoc/`codesign`, and it is the who
 build system. Why this over the alternatives:
 
 * **vs. a committed `.xcodeproj`:** an Xcode project is a large generated XML blob
-  that conflicts on every merge, cannot be reviewed, and pins Xcode versions. This
+  prone to merge conflicts, cannot be reviewed meaningfully, and pins Xcode versions. This
   repo has no GUI-app precedent to inherit and no CI to run Xcode on (there are no
   GitHub Actions here).
 * **vs. xcodegen:** adds a Homebrew dependency and a `project.yml` to produce a
-  project we would then have to gitignore — all of the tooling cost of an Xcode
-  project for none of the benefit, when `swift build` already does the compile.
+  project we would then have to gitignore — most of the tooling cost of an Xcode
+  project without its benefit, when `swift build` already does the compile.
 * **The cost, disclosed:** no Xcode previews, no Interface Builder, no
   Instruments-by-scheme. For a document-shaped inspector app this is a fair trade;
   if SwiftUI previews later become important, adding a generated project is a
@@ -296,7 +326,7 @@ that is correct and requires no notarization story.
 
 ### 2.5 App screens
 
-**Sidebar** — every run, newest first. One row per run:
+**Sidebar** — each run, newest first. One row per run:
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -337,12 +367,12 @@ Subsystems — arm64, strict            reached 41 / 47   stopped at #42
 ○ Timer interrupt initialized      —      —
 ```
 
-*Messages.* Every serial line, with a family chip, filterable by family
+*Messages.* Each serial line, with a family chip, filterable by family
 (boot / tests / oracles / heartbeat / faults / trace-noise / other), free-text
 search, and a "hide heartbeats" toggle — the gates themselves filter heartbeats out
 when finding the last real line (`run-aarch64-service-sequence-gate.sh:870`), which
 is a good default. Two streams are shown side-by-side on x86 (COM1/COM2), merged by
-file order, each labelled — never silently concatenated.
+file order, each labelled — not silently concatenated.
 
 *Traces.* Structured records only, three sections, each absent-by-default with an
 explicit "not present" state:
@@ -408,7 +438,7 @@ struct RunManifest: Codable {          // runs/<id>/manifest.json — schemaVers
 
 Notes on three fields that are easy to get wrong:
 
-* **`verdict` is never computed by Swift for a gate run.** It is
+* **`verdict` is not computed by Swift for a gate run.** It is
   `.gateScript(cmd, exitCode)` carrying the script's own stdout. `.unknown` is a real
   value and is displayed as such. For imported evidence with no recorded exit status,
   the Inspector offers `breenix-runs score <run>` to obtain one from the gate's
@@ -438,6 +468,10 @@ Notes on three fields that are easy to get wrong:
 
 **Why not SQLite:**
 
+<!-- claim-lint:ok: each of the six gate scripts in the §1.1 table above
+     (lines 44-49 there) preserves a serial file at the "Serial destination"
+     path cited in that row; run-aarch64-boot-test-strict.sh:496-503 below is
+     this item's own worked example -->
 1. **The evidence is already files, and the tree's culture is that the file is the
    record.** Every gate preserves a serial *file* (`run-aarch64-boot-test-strict.sh:496-503`,
    which preserves an *empty* file when QEMU never opened one, so that "zero serial
@@ -450,7 +484,7 @@ Notes on three fields that are easy to get wrong:
 3. **Two writers, no locking story needed.** The CLI and the app both write. With
    files, each run directory is written once by its owner (`manifest.json.tmp` →
    atomic `rename(2)`), and any process may rebuild the index. SQLite would need WAL
-   plus a considered concurrency design to get the same guarantee.
+   plus a considered concurrency design to get the same property.
 4. **The blobs never belong in rows.** The largest committed serial in the tree is
    1.7 MB (`docs/planning/green-program/fs/serials/x86-armed-serial-20260828.txt`).
    Serials get memory-mapped and line-indexed lazily; they are never loaded into a
@@ -480,7 +514,7 @@ disk.
 Import is **idempotent**: a run's id is derived from
 `sha256(serial bytes) || sourcePath`, so re-importing the same tree updates rather
 than duplicates. Imported runs are tagged `imported` and their `verdict` is
-`.unknown` unless the source directory recorded one — importing must never invent a
+`.unknown` unless the source directory recorded one — importing must not invent a
 verdict, which is the same rule as §3.1.
 
 ---
@@ -490,15 +524,15 @@ verdict, which is the same rule as §3.1.
 ### 4.1 Scanner design
 
 One pass over the serial bytes produces a `SerialIndex`: for each line, its byte
-range, and zero or more `MarkerHit { family, range, fields, lineNumber }`.
+range, and any number of `MarkerHit { family, range, fields, lineNumber }` (0..*).
 
 Three rules, each forced by evidence in §1.3:
 
-1. **Never anchor to line start.** Every family's regex is applied with a
+1. **Do not anchor to line start.** Each family's regex is applied with a
    *search*, not a match. Verified need: `T2T3[BOOT_TESTS:`.
 2. **Decode lossily, work in bytes.** `String(decoding:as:UTF8.self)` per line
    after splitting on `\n`, mirroring the gates' `grep -a`.
-3. **Record every occurrence.** Counts are a derived query, matching `grep -c`.
+3. **Record each occurrence.** Counts are a derived query, matching `grep -c`.
 
 ### 4.2 Marker families — the table
 
@@ -518,7 +552,7 @@ drift.
 | `test.btrt` | `\[btrt\] Boot Test Result Table at phys (0x[0-9a-f]+) \((\d+) bytes\)` / `===BTRT_READY===` | phys, size | `kernel/src/test_framework/btrt.rs:205-209,329` |
 | `heartbeat` | `\[heartbeat\] tid=(\d+) uptime_ms=(\d+) kbd_nonzero=(\d+)` | tid, uptimeMs, kbd | `userspace/programs/src/heartbeat.rs:168` |
 | `execSmoke` | `\[EXEC_SMOKE:([A-Z_]+)(?: ([^\]]*))?\]` | state, detail | `userspace/programs/src/exec_smoke.rs:11,20`; `exec_smoke_target.rs:13,18,34`; `init.rs:285,288` |
-| `oracle.generic` | `\[([A-Z][A-Z0-9_]*(?:_ORACLE\|_CENSUS)):([^\]]*)\]` → split payload on `:` into `k=v` | name, k/v map | shape shared by all oracle families |
+| `oracle.generic` | `\[([A-Z][A-Z0-9_]*(?:_ORACLE\|_CENSUS)):([^\]]*)\]` → split payload on `:` into `k=v` | name, k/v map | shape shared across the oracle/census rows in this table |
 | `oracle.futexHandoff` | gate literal | 13 fields | `run-aarch64-boot-test-strict.sh:47` / `run-x86-boot-tests.sh:129` |
 | `oracle.fcntlPM` | gate literal | 9 fields | `run-aarch64-boot-test-strict.sh:72` |
 | `oracle.irqHold` | gate literal | 11 fields | `run-aarch64-boot-test-strict.sh:105` |
@@ -545,7 +579,7 @@ drift.
 emits the `BootStage` list as JSON. The Inspector loads that file. It is regenerated
 by `make catalog` and committed under `tools/breenix-runs/Resources/`, so the app
 works without a cargo toolchain, and a Rust test asserts the committed JSON matches
-the live catalog — **census-anchored on the entry count and name set, never a
+the live catalog — **census-anchored on the entry count and name set, not a
 literal list of stage names** (`[[#549/#551 rule]]`; the tree has been bitten three
 times by literal lists in ratchets).
 
@@ -567,8 +601,8 @@ inventing them. Line numbers are exact and reproducible. This is a real differen
 from `boot-stages` and the UI labels the column `line` for that reason.
 
 **Two honesty rules.** A stage marked `reached` on a run whose serial was truncated
-mid-boot is still `reached` — the marker was observed. And the app never renders a
-subsystem as "initialized" from the *`Initializing X...`* line alone; only the
+mid-boot is still `reached` — the marker was observed. And the app does not render
+a subsystem as "initialized" from the *`Initializing X...`* line alone; only the
 terminator counts, because `Initializing` with no terminator is precisely the
 signature of a boot that died inside that subsystem.
 
@@ -580,13 +614,13 @@ emitted four-per-line (`:239-247`), then `DISPATCH_TRACE cpu=<n>:` and a dumped
 trace (`:248-251`). There are **two header shapes** — with `label=` (`:224`) and
 without (`:295`, from `dump_el1_first_fault`) — and the parser must accept both.
 The record ends at the first line that starts a new family or fails to match
-`x<n>=<hex>`; a record that ends early is kept and flagged `truncated`, never
-discarded.
+`x<n>=<hex>`; a record that ends early is kept and flagged `truncated` rather
+than discarded.
 
 **`BXCAP`** decoding follows the schema's own rules
 (`FAILURE-TRACE-CAPTURE-PLAN-2026-09-05.md` §4) rather than being lenient:
 `BEGIN` without a matching `END` (same `seq`) ⇒ **`truncated`**, displayed as such;
-an unknown major `v=` ⇒ **refuse the record and say so**, never a best-effort decode;
+an unknown major `v=` ⇒ **refuse the record and say so**, not a best-effort decode;
 `seq` orders multiple captures and makes a nested capture visible as interleaving;
 `sections_skipped` and per-row `q=` (`exact|racy|derived|unavail`) are surfaced in
 the UI, because a `derived` row is not a measured one and the app must not present
@@ -600,6 +634,9 @@ it as though it were.
 
 **Decision: reuse the gate scripts.**
 
+<!-- claim-lint:ok: the quoted sentence below is verbatim from
+     docker/qemu/run-aarch64-boot-test-strict.sh:555-558, reproduced exactly
+     as the script's own comment reads -->
 The alternative — the Inspector composing `qemu-system-aarch64 …` itself — was
 rejected on evidence. The strict gate's stop condition is *`score_serial` itself*
 (`run-aarch64-boot-test-strict.sh:551-578`), and its comment records what happened
@@ -627,6 +664,11 @@ So `LocalGateLauncher` does exactly this:
 7. verdict = .gateScript(argv, exitCode), text = gate-stdout.txt
 ```
 
+<!-- claim-lint:ok: grep for BREENIX_GATE_TMP in each of the six gate
+     scripts named in the §1.1 table (docker/qemu/run-aarch64-boot-test-strict.sh,
+     run-aarch64-prod-profile-boot-test.sh, run-aarch64-testing-profile-boot-test.sh,
+     run-x86-boot-tests.sh, run-x86-gate.sh, run-x86-prod-profile-boot-test.sh)
+     shows the variable defined in each of the six -->
 Step 4 is the whole integration, and it needs **no change to any gate script**,
 because `BREENIX_GATE_TMP` already exists in all of them with an absolute-path guard
 (§1.1). That is the design's cheapest and most important property.
@@ -636,7 +678,7 @@ The three arm profiles map to
 `run-aarch64-testing-profile-boot-test.sh`. Because the strict gate requires a
 `--features boot_tests` kernel and refuses otherwise with a marker census
 (`:194-217`), the launcher surfaces that refusal as a first-class run state
-`.refused(preflight)` — a run that never booted, distinct from a run that failed.
+`.refused(preflight)` — a run that did not boot, distinct from a run that failed.
 
 ### 5.2 x86: ssh to beast, run the gate in a private clone, rsync back
 
@@ -662,7 +704,7 @@ issue where concurrent lanes on this exact shared beast container clobbered each
 other's `/tmp/breenix_gate_$i`. Setting `BREENIX_GATE_TMP` inside the clone closes
 the other half.
 
-Cancellation is by **process group, never by name**: the launcher runs the gate in
+Cancellation is by **process group, not by name**: the launcher runs the gate in
 its own group and sends `SIGTERM` to that group, then `SIGKILL` after a grace
 period. `pkill qemu-system-*` is forbidden (`[[workflow-worktree-isolation]]` R84,
 and it would kill unrelated worktrees' boots, manufacturing the very host
@@ -671,9 +713,9 @@ kills the remote shell's group over the same SSH channel and then removes the cl
 
 ### 5.3 Host facts the launcher samples itself
 
-For runs the gate did not annotate (everything until #827 lands, plus every
+For runs the gate did not annotate (until #827 lands, plus each
 `run.sh` and imported run), the Inspector records its own sample at start and at
-end, and labels it as **its own** — never merged into a `GATE_BOOT_FACTS` row, which
+end, and labels it as **its own** — kept separate from a `GATE_BOOT_FACTS` row, which
 is the guest-annotated record:
 
 | Field | How | Why |
@@ -696,7 +738,7 @@ the field is `nil` and the UI shows "—", not `1.0`.
 ## 6. PR plan
 
 R157 small-PR mode: each lands the same day, does not reverse an earlier one, and
-carries a test the operator can run. Every PR's test is `swift test` (and, where
+carries a test the operator can run. Each PR's test is `swift test` (and, where
 noted, `cargo test`) — **no PR's acceptance depends on a QEMU boot**, which is what
 keeps them same-day landable. PR-1 alone satisfies the operator's first ask.
 
@@ -704,11 +746,11 @@ keeps them same-day landable. PR-1 alone satisfies the operator's first ask.
 |---|---|---|---|---|
 | 1 | `breenix-runs run arm` + host-facts trace | `tools/breenix-runs/{Package.swift,Makefile,README.md}`, `Sources/BreenixRuns/{Store/{RunStore,RunManifest,RunIndex}.swift,Launch/{LocalGateLauncher,HostFacts,ProcessRunner}.swift}`, `Sources/breenix-runs/main.swift`, `Tests/…/{HostFactsTests,RunStoreTests}.swift`, `.gitignore` | `swift test`: `HostFacts` parses fixture strings for `pgrep -c` / `vm.loadavg` / `ps -o time=` (injected `ProcessRunner`, no real processes); `RunStore` round-trip = write manifest → rebuild index from scratch → identical run list; atomic-rename crash test leaves no partial manifest | M |
 | 2 | Serial ingestion: scanner + marker families | `Sources/BreenixRuns/Parsing/{MarkerScanner,MarkerFamily,SerialIndex}.swift`, `Tests/Fixtures/*.txt`, `Tests/…/MarkerScannerTests.swift` | `swift test` against **real committed serials** copied into `Tests/Fixtures/`: from `slice3d/05-runtime-anti-vacuity-strict-serial.txt` assert `[BOOT_TESTS:PASS]` ×2 at lines 602 and 610, `TTBR0_ASID_CENSUS` ×2 with parsed counters, four distinct `EXEC_SMOKE` states, monotonic `heartbeat.uptime_ms`; **prefix-tolerance leg**: the literal `T2T3[BOOT_TESTS:` must match — a line-anchored regex reddens this test | M |
-| 3 | Subsystem state machine + `show` / `facts` | `xtask/src/main.rs` (+`dump-boot-stages --json`), `tools/breenix-runs/Resources/boot-stages-{aarch64,x86_64}.json`, `Sources/BreenixRuns/Subsystems/{StageCatalog,StateMachine}.swift`, `Sources/breenix-runs/` subcommands, `tests/boot_stage_catalog_export.rs` | `cargo test`: committed JSON matches the live catalog, **census-anchored on entry count + name set** (deleting a `BootStage` reddens it; the assertion contains no literal stage-name list). `swift test`: green strict serial ⇒ every arm64 kernel stage `reached`; a preserved failure serial ⇒ exactly one `stoppedHere` with the correct predecessor | M |
-| 4 | Import existing evidence | `Sources/BreenixRuns/Store/Importer.swift`, `Sources/breenix-runs/import.swift`, `Tests/…/ImporterTests.swift` | `swift test`: import a synthesized gate-tmp tree + a preserved-failures dir + a loose serials dir into a temp store; assert arch/profile inference per §3.3, `verdict == .unknown` for loose serials (**never invented**), and that a second import is a no-op (identical ids, unchanged count) | M |
+| 3 | Subsystem state machine + `show` / `facts` | `xtask/src/main.rs` (+`dump-boot-stages --json`), `tools/breenix-runs/Resources/boot-stages-{aarch64,x86_64}.json`, `Sources/BreenixRuns/Subsystems/{StageCatalog,StateMachine}.swift`, `Sources/breenix-runs/` subcommands, `tests/boot_stage_catalog_export.rs` | `cargo test`: committed JSON matches the live catalog, **census-anchored on entry count + name set** (deleting a `BootStage` reddens it; the assertion contains no literal stage-name list). `swift test`: green strict serial ⇒ each arm64 kernel stage `reached`; a preserved failure serial ⇒ exactly one `stoppedHere` with the correct predecessor | M |
+| 4 | Import existing evidence | `Sources/BreenixRuns/Store/Importer.swift`, `Sources/breenix-runs/import.swift`, `Tests/…/ImporterTests.swift` | `swift test`: import a synthesized gate-tmp tree + a preserved-failures dir + a loose serials dir into a temp store; assert arch/profile inference per §3.3, `verdict == .unknown` for loose serials (**not invented**), and that a second import is a no-op (identical ids, unchanged count) | M |
 | 5 | x86 beast launcher | `Sources/BreenixRuns/Launch/{BeastLauncher,RemoteCommand}.swift`, `Sources/breenix-runs/` (`run x86`, `--dry-run`), `Tests/…/BeastLauncherTests.swift` | `swift test`: the launcher's argv is a **pure function** of (sha, boots, mode, paths) — snapshot-assert the exact `ssh`/`incus exec`/`rsync` argv, that `BREENIX_GATE_TMP` points inside the per-run clone, and that the teardown removes the clone. No network in the test. `breenix-runs run x86 --dry-run` prints the same plan for the operator | M |
 | 6 | SwiftUI app + `make app` | `Sources/BreenixRunInspector/**` (App, Sidebar, Subsystems, Messages panes), `Makefile` (`app` target), `Sources/BreenixRuns/ViewModels/*` | `swift build --target BreenixRunInspector`; `swift test` on the view models (sidebar sorts newest-first incl. the amber attributed state; message filter predicate selects only the intended families); `make app && plutil -lint "Breenix Run Inspector.app/Contents/Info.plist"` exits 0 | L |
-| 7 | Traces pane: host facts, BXCAP, FATAL_REGS | `Sources/BreenixRuns/Parsing/{BXCAPDecoder,FatalRegsDecoder,BootFactsParser}.swift`, `Sources/BreenixRunInspector/TracesPane.swift`, `Tests/…/{BXCAPTests,FatalRegsTests}.swift` | `swift test`: `FATAL_REGS` assembled from a **real committed fatal serial** (`docs/planning/teardown-unification/607-576-serials/…`), both header shapes (with and without `label=`), x0…x30 grid complete; BXCAP legs — `BEGIN` w/o `END` ⇒ `truncated`, `v=2` ⇒ **refused not decoded**, `seq` interleaving ⇒ two captures; `GATE_BOOT_FACTS` parser accepts an **unknown extra key** without failing, and a serial with none yields the explicit "not present" state | M |
+| 7 | Traces pane: host facts, BXCAP, FATAL_REGS | `Sources/BreenixRuns/Parsing/{BXCAPDecoder,FatalRegsDecoder,BootFactsParser}.swift`, `Sources/BreenixRunInspector/TracesPane.swift`, `Tests/…/{BXCAPTests,FatalRegsTests}.swift` | `swift test`: `FATAL_REGS` assembled from a **real committed fatal serial** (`docs/planning/teardown-unification/607-576-serials/gate-clean100-cortexa72-boot3-stackpc-8600000e.txt`), both header shapes (with and without `label=`), x0…x30 grid complete; BXCAP legs — `BEGIN` w/o `END` ⇒ `truncated`, `v=2` ⇒ **refused not decoded**, `seq` interleaving ⇒ two captures; `GATE_BOOT_FACTS` parser accepts an **unknown extra key** without failing, and a serial with no such record yields the explicit "not present" state | M |
 | 8 | Compare view + `tail` | `Sources/BreenixRuns/Diff/RunDiff.swift`, `Sources/BreenixRunInspector/ComparePane.swift`, `Sources/breenix-runs/tail.swift` | `swift test`: diff of two fixture runs reports the exact subsystem-state delta and marker-count delta, and is empty for a run against itself; `tail` follows a file being appended to in a temp dir and terminates on EOF+exit | S |
 
 Ordering rationale: 1 gives the operator the CLI immediately; 2–4 build the reader
@@ -750,10 +792,10 @@ consumes them.
 
 ## 8. What is NOT claimed
 
-* **The Inspector does not score runs.** Every gate verdict is the gate script's own
+* **The Inspector does not score runs.** Each gate verdict is the gate script's own
   stdout and exit status (§1.2). Swift parsing drives display and navigation only. A
-  run whose verdict was never recorded shows `.unknown`, not a computed guess.
-* **No x86 execution on this Mac.** Every x86 run is dispatched to beast
+  run whose verdict was not recorded shows `.unknown`, not a computed guess.
+* **No x86 execution on this Mac.** Each x86 run is dispatched to beast
   (`[[beast-x86-build-host]]`). `breenix-runs run x86` on a machine that cannot reach
   beast fails with that message; it does not fall back to local TCG.
 * **Parallels runs are out of scope for v1.** `run.sh --parallels` writes a fixed
@@ -764,8 +806,8 @@ consumes them.
   works; launching one does not.
 * **No live streaming from the guest.** Ingestion is post-hoc over serial files.
   `tail` follows a file being written; it does not attach to QMP, GDB, or the trace
-  ring. The app never claims to show a running kernel's state — only what has been
-  written to serial.
+  ring. The app does not claim to show a running kernel's state — only what has
+  been written to serial.
 * **No GDB or QMP integration.** `breenix-gdb-chat/` and
   `scripts/forensic-capture.sh` remain separate tools. Notably
   `forensic-capture.sh` requires `/tmp/breenix-qmp.sock`, **which no gate provides**
@@ -782,7 +824,7 @@ consumes them.
   numbers and guest uptime; `xtask boot-stages`' wall-clock deltas come from a live
   polling loop and are not re-derivable post-hoc (§4.3).
 * **Neither `GATE_BOOT_FACTS` nor `BXCAP` exists at `7a19f550`.** Verified by grep
-  over the whole worktree. Every feature reading them must degrade to an explicit
+  over the whole worktree. Each feature reading them must degrade to an explicit
   "not present" state, and the plan is written on the assumption that they may land
   in a different shape than described.
 * **No CI.** This repo has no GitHub Actions; "the test you can run" means a command
