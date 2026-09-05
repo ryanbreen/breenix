@@ -6094,6 +6094,52 @@ fn validate_futex_oracle_marker_and_gate_pins(
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
+/// #627: the oracle's elapsed measurement must be anchored to the same clock
+/// read futex.rs used to compute the deadline (base_ns), not to a fresh read
+/// taken inside record_arm itself. A fresh internal read is the regression
+/// this catches -- it understated stage3's elapsed time by whatever this
+/// call site had already spent on process-manager lookups, making
+/// stage3_elapsed_ok read 0 on waits that were never actually short.
+/// claim-lint:ok: #627 -- reddened by the deliberately-broken-variants mutation
+/// leg two functions below (`record_arm base_ns anchor`), not asserted here.
+fn validate_futex_oracle_record_arm_anchor(sources: &[(String, String)]) -> Result<(), Vec<String>> {
+    let oracle = source(sources, "kernel/src/syscall/futex_oracle.rs");
+    let mut failures = Vec::new();
+    check(
+        &mut failures,
+        "record_arm must accept the #627 base_ns: u64 anchor parameter",
+        oracle.contains(
+            "pub fn record_arm(stage: Stage, tg_id: u64, uaddr: u64, base_ns: u64) -> u64",
+        ),
+    );
+
+    let record_arm = function_body(oracle, "record_arm");
+    for stage_arm_ns in ["STAGE1_ARM_NS", "STAGE2_ARM_NS", "STAGE3_ARM_NS"] {
+        check(
+            &mut failures,
+            &format!(
+                "record_arm must anchor {stage_arm_ns} to base_ns, not a fresh internal read"
+            ),
+            record_arm.contains(&format!("{stage_arm_ns}.store(base_ns, Ordering::Release)")),
+        );
+    }
+    check(
+        &mut failures,
+        "record_arm's own backstop deadline must stay computed from its own clock read          (#627 anchors only the oracle's reporting, never the futex deadline arithmetic)",
+        record_arm.contains("started_at.saturating_add(BACKSTOP_NS)"),
+    );
+
+    let futex = source(sources, "kernel/src/syscall/futex.rs");
+    let futex_wait = function_body(futex, "futex_wait");
+    check(
+        &mut failures,
+        "futex_wait must call record_arm with an explicit base_ns argument",
+        futex_wait.contains("crate::syscall::futex_oracle::record_arm(stage, tg_id, uaddr, base_ns)"),
+    );
+
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
 fn validate_exit_sgi_is_teardown_only(sources: &[(String, String)]) -> Result<(), ()> {
     let scheduler = source(sources, "kernel/src/task/scheduler.rs");
     (scheduler.contains("fn send_exit_expedite_sgi(")
@@ -8254,6 +8300,15 @@ fn current_teardown_bypass_surface_is_exact() {
         &mut failures,
         "futex oracle marker and gate pins",
         validate_futex_oracle_marker_and_gate_pins(&sources),
+    );
+
+    // This ratchet catches record_arm reverting to a fresh internal clock read for its
+    // stored ARM_NS anchor instead of the base_ns futex.rs already computed the deadline
+    // from -- the #627 regression that understated stage3's measured elapsed time.
+    record(
+        &mut failures,
+        "futex oracle record_arm base_ns anchor",
+        validate_futex_oracle_record_arm_anchor(&sources),
     );
 
     record(
@@ -10431,6 +10486,26 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             &sources,
             "kernel/src/syscall/futex_oracle.rs",
             broken_oracle,
+        )),
+    );
+
+    // #627: reverting record_arm to stamp its own fresh clock read into STAGE3_ARM_NS
+    // (the pre-fix shape) instead of the base_ns anchor futex.rs hands it must be
+    // rejected -- that is the regression that understated stage3's elapsed time and
+    // made stage3_elapsed_ok read 0 on waits that were never actually short.
+    // claim-lint:ok: #627 -- this is the mutation leg itself; report_vacuity below
+    // asserts validate_futex_oracle_record_arm_anchor rejects it.
+    let broken_arm_anchor = source(&sources, "kernel/src/syscall/futex_oracle.rs").replacen(
+        "STAGE3_ARM_NS.store(base_ns, Ordering::Release);",
+        "STAGE3_ARM_NS.store(started_at, Ordering::Release);",
+        1,
+    );
+    report_vacuity(
+        "record_arm base_ns anchor",
+        validate_futex_oracle_record_arm_anchor(&with_replaced_source(
+            &sources,
+            "kernel/src/syscall/futex_oracle.rs",
+            broken_arm_anchor,
         )),
     );
 
