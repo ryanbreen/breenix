@@ -9,6 +9,16 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this session's qemu-system-aarch64 boot runs behind the
+# host-wide lock in lib/qemu-host-lock.sh, including here -- a
+# long-running human-driven session competes for that lock the same way a
+# gate script does (Docker-wrapped; see run-aarch64-test.sh's comment for
+# why the host-side lock still applies to a `docker run` invocation). A
+# human at the VNC console who wants to run a gate at the same time can
+# BREENIX_QEMU_LOCK=off this session; there is no separate per-script
+# exemption.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 cd "$BREENIX_ROOT"
 
 # Build the kernel if needed
@@ -78,6 +88,7 @@ if [ -f "$EXT2_DISK" ]; then
     DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,file=/breenix/ext2.img"
 fi
 
+qemu_host_lock_acquire
 docker run --rm \
     -p 5901:5900 \
     -v "$KERNEL:/breenix/kernel:ro" \
@@ -128,6 +139,7 @@ echo ""
 
 # Wait for docker to finish
 wait $DOCKER_PID 2>/dev/null
+qemu_host_lock_release
 
 echo ""
 echo "========================================="

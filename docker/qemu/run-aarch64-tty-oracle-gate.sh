@@ -18,6 +18,11 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # #825: two concurrent runs of this gate on the same host each hardcoded the
 # identical /tmp/breenix_aarch64_tty_oracle path, so one run's rm -rf/mkdir
@@ -177,6 +182,7 @@ while [ "$boot" -le "$BOOTS" ]; do
     cp "$EXT2_DISK" "$RUN_DIR/ext2-writable.img"
 
     echo "Booting the ARM64 production profile (boot $boot/$BOOTS)..."
+    qemu_host_lock_acquire
     timeout 120 qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -201,6 +207,7 @@ while [ "$boot" -le "$BOOTS" ]; do
     done
     kill "$QEMU_PID" 2>/dev/null || true
     wait "$QEMU_PID" 2>/dev/null || true
+    qemu_host_lock_release
 
     # --- Crash checks first: a panic must be reported as a panic. ---
     CRASH_COUNT=$(grep -aiE -c "$CRASH_MARKERS_PATTERN" "$SERIAL" 2>/dev/null || true)

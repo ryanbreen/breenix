@@ -20,6 +20,11 @@ TIMEOUT="${2:-45}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -53,6 +58,7 @@ mkfifo "$MONITOR_OUT"
 # Use -serial file for output capture
 # Use -monitor pipe for sending commands
 # Use writable disk copy (no readonly=on) to allow filesystem writes
+qemu_host_lock_acquire
 timeout "$TIMEOUT" qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512 \
     -kernel "$KERNEL" \
@@ -137,6 +143,7 @@ done
 kill $QEMU_PID 2>/dev/null || true
 kill $SEND_PID 2>/dev/null || true
 wait $QEMU_PID 2>/dev/null || true
+qemu_host_lock_release
 
 # Show output
 echo ""

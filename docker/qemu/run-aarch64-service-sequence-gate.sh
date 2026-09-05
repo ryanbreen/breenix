@@ -97,6 +97,11 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh -- #826's own 40-boot health
+# battery was this script, at a measured 4-6 concurrent QEMUs on this host.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # driven=2 proves both handoff seams ran; stage1/2 return, wake, and park fields
 # expose D1/D2. stage3_elapsed_ok=1 proves no early timeout return, while
 # stage3_ret=ETIMEDOUT plus rescues=0 proves the backstop did not end this wait.
@@ -1099,6 +1104,7 @@ run_profile() {
             drive_opts="$drive_opts,throttling.iops-total=$IOPS"
         fi
 
+        qemu_host_lock_acquire
         qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu "$cpu_profile" -m 512 -smp 4 \
             -kernel "$KERNEL" \
@@ -1175,6 +1181,7 @@ run_profile() {
         qemu_status=$?
         set -e
         QEMU_PID=""
+        qemu_host_lock_release
         rm -f "$writable_disk"
         CURRENT_DISK=""
 

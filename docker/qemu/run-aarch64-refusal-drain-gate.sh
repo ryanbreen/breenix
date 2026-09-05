@@ -11,6 +11,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
+# active on this host for the boot's duration.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 GATE_TARGET_DIR="$BREENIX_ROOT/target/refusal-drain-gate"
 # #825: fixed by default so the serial lands at the path a runbook expects it.
 # It is overridable because the directory is rm -rf'd on entry: a second copy
@@ -76,6 +81,7 @@ mkdir -p "$OUTPUT_DIR"
 EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
 cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
+qemu_host_lock_acquire
 timeout 200 qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
