@@ -40,9 +40,10 @@ const GATE_BOOT_FACTS_LIB: &str = "docker/qemu/lib/gate-boot-facts.sh";
 const STRICT_GATE: &str = "docker/qemu/run-aarch64-boot-test-strict.sh";
 const PROD_GATE: &str = "docker/qemu/run-aarch64-prod-profile-boot-test.sh";
 
-/// The 10 field labels #827 names, in the order `gbf_emit_line` prints
-/// them. `GATE_BOOT_FACTS:` itself is checked as an 11th, separate token
-/// -- the line's own name, not a field.
+/// The 9 field labels #827 names, in the order `gbf_emit_line` prints
+/// them, plus `GATE_BOOT_FACTS:` itself as a 10th, separate entry -- the
+/// line's own name, not a field. 9 fields + 1 name token = the 10 entries
+/// this array actually holds.
 const REQUIRED_FIELD_LABELS: &[&str] = &[
     "GATE_BOOT_FACTS:",
     "boot=",
@@ -232,12 +233,19 @@ fn gate_boot_facts_predicates_are_not_vacuous() {
         missing_ended_by_assignments(&prod_text).is_empty(),
         "sanity: the real prod gate must be clean before mutation"
     );
-    // "crash_marker" (not "hard_timeout") because this gate assigns
-    // ended_by="hard_timeout" from TWO distinct branches (the qemu_died
-    // loop-break and the fallback's dead-QEMU leg) -- replacing only the
-    // first occurrence would leave the second standing, so the census
-    // would (correctly) still find the value present and this mutation
-    // would not redden the test.
+    // "crash_marker" -- like "hard_timeout", "poll_exhausted", and
+    // "scored_fail", it has exactly one `ended_by="..."` occurrence in
+    // this file, so replacing that one occurrence removes the value
+    // outright, and the census reddens on it by name. Deliberately NOT
+    // "scored_pass": this gate assigns ended_by="scored_pass" from TWO
+    // distinct branches of the case statement below (the early_pass path,
+    // where the bsshd break fired and the assertion chain still exits 0;
+    // and the mirror empty-ENDED_BY_LOOP path, where neither break fired
+    // but the assertion chain exits 0 anyway because the pass landed in
+    // the gap between the loop's own classification and the chain
+    // reading $status) -- replacing only one occurrence would leave the
+    // other standing, so the census would (correctly) still find the
+    // value present and that mutation would not redden the test.
     let crash_marker_line = "ended_by=\"crash_marker\"\n";
     assert!(
         prod_text.contains(crash_marker_line),

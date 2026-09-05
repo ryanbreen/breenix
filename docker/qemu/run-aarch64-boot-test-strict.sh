@@ -645,7 +645,7 @@ run_single_test() {
     QEMU_ACTUAL_PID="$(gbf_resolve_qemu_pid "$QEMU_PID")"
     QEMU_CPU_S="$(gbf_qemu_cpu_seconds "$QEMU_ACTUAL_PID")"
     local QEMU_STILL_ALIVE=1
-    kill -0 $QEMU_PID 2>/dev/null || QEMU_STILL_ALIVE=0
+    kill -0 "$QEMU_PID" 2>/dev/null || QEMU_STILL_ALIVE=0
 
     kill $QEMU_PID 2>/dev/null || true
     wait $QEMU_PID 2>/dev/null || true
@@ -663,17 +663,33 @@ run_single_test() {
     # boot, derived from the same control flow the scoring above already
     # ran -- no new stop condition, no changed deadline.
     #   crash_marker    -- the crash-marker break fired (ENDED_BY_LOOP=crash)
-    #   scored_pass     -- the score_serial break fired (ENDED_BY_LOOP=early_pass)
-    #                      and the post-kill rescore still agrees
+    #   scored_pass     -- either the score_serial break fired
+    #                      (ENDED_BY_LOOP=early_pass) and the post-kill
+    #                      rescore still agrees, OR neither break fired
+    #                      (ENDED_BY_LOOP empty, so the loop's own 12
+    #                      iterations ran out or QEMU died on its own) but
+    #                      the guest's last required marker landed in the
+    #                      gap between this function's pre-kill sampling
+    #                      calls and the kill+rescore, so the post-kill
+    #                      rescore is a PASS anyway -- the mirror of the
+    #                      scored_fail race below, resolved the same way:
+    #                      the post-kill rescore, not the loop's now-stale
+    #                      classification, wins: the case block right below
+    #                      checks SCORE_PASS before it falls through to
+    #                      poll_exhausted/hard_timeout, so a PASS rescore
+    #                      lands on scored_pass, matching the SUCCESS
+    #                      verdict printed a few lines down
     #   scored_fail     -- the score_serial break fired, but content written
     #                      between that grep and the kill (e.g. a late strand)
     #                      flipped the post-kill rescore to FAIL
-    #   poll_exhausted  -- neither break fired; the loop's own 12 iterations
-    #                      ran out, and QEMU was still alive when that
-    #                      ceiling was reached (this script's own kill ends it)
-    #   hard_timeout    -- neither break fired, and QEMU was already dead when
-    #                      this point was reached -- the `timeout 20` wrapping
-    #                      the launch line above fired first
+    #   poll_exhausted  -- neither break fired, the post-kill rescore is
+    #                      also not a PASS, and QEMU was still alive when
+    #                      the loop's own 12 iterations ran out (this
+    #                      script's own kill ends it)
+    #   hard_timeout    -- neither break fired, the post-kill rescore is
+    #                      also not a PASS, and QEMU was already dead when
+    #                      this point was reached -- the `timeout 20`
+    #                      wrapping the launch line above fired first
     local ENDED_BY
     case "$ENDED_BY_LOOP" in
         crash)
@@ -687,7 +703,9 @@ run_single_test() {
             fi
             ;;
         *)
-            if [ "$QEMU_STILL_ALIVE" = "1" ]; then
+            if [ "$SCORE_PASS" = "1" ]; then
+                ENDED_BY="scored_pass"
+            elif [ "$QEMU_STILL_ALIVE" = "1" ]; then
                 ENDED_BY="poll_exhausted"
             else
                 ENDED_BY="hard_timeout"

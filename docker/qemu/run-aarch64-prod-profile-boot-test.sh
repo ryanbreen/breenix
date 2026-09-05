@@ -261,16 +261,39 @@ cleanup() {
         # ended_by, from the same control flow the assertion chain above
         # already ran -- no new stop condition, no changed deadline:
         #   crash_marker   -- the crash-marker break fired
-        #   scored_pass    -- the bsshd break fired, and the full assertion
-        #                     chain (unchanged, above) still exits 0
+        #   scored_pass    -- either the bsshd break fired and the full
+        #                     assertion chain (unchanged, above) still
+        #                     exits 0, OR neither break fired (the loop's
+        #                     own kill -0 check ended the loop, or its 120
+        #                     iterations ran out) but bsshd's listening
+        #                     line landed in the gap between this
+        #                     function's pre-kill sampling calls and the
+        #                     assertion chain that reads $status -- the
+        #                     mirror of the scored_fail race below,
+        #                     resolved the same way: $status, not the
+        #                     loop's now-stale classification, wins -- the
+        #                     case block right below checks $status -eq 0
+        #                     before it falls through to
+        #                     poll_exhausted/hard_timeout, so a $status
+        #                     of 0 lands on scored_pass, matching the
+        #                     PASS line the assertion chain already printed
         #   scored_fail    -- the bsshd break fired, but a later assertion in
         #                     that chain rejected the boot anyway (status=1)
-        #   hard_timeout   -- QEMU exited on its own before either of the
-        #                     above matched -- the wrapping `timeout 120`
-        #                     firing is the only thing that does this
-        #   poll_exhausted -- neither break fired; the loop's own 120
-        #                     iterations ran out with QEMU still alive
-        #                     (this script's own kill ends it)
+        #   hard_timeout   -- neither break fired, $status is not 0, and
+        #                     QEMU was already dead when this point was
+        #                     reached -- either the wrapping `timeout 120`
+        #                     killed it, or the loop's own `! kill -0`
+        #                     break already caught QEMU exiting on its own
+        #                     (a crash that missed CRASH_MARKERS_PATTERN,
+        #                     an OOM kill, a triple fault under -no-reboot
+        #                     that also failed to print a recognized
+        #                     marker) --
+        #                     both leave QEMU dead here, so this label
+        #                     covers both, not only the `timeout` wrapper
+        #   poll_exhausted -- neither break fired, $status is not 0, and
+        #                     the loop's own 120 iterations ran out with
+        #                     QEMU still alive (this script's own kill
+        #                     ends it)
         case "${PROD_ENDED_BY_LOOP:-}" in
             crash)
                 ended_by="crash_marker"
@@ -283,7 +306,9 @@ cleanup() {
                 fi
                 ;;
             *)
-                if [ "${PROD_QEMU_STILL_ALIVE:-1}" = "1" ]; then
+                if [ "$status" -eq 0 ]; then
+                    ended_by="scored_pass"
+                elif [ "${PROD_QEMU_STILL_ALIVE:-1}" = "1" ]; then
                     ended_by="poll_exhausted"
                 else
                     ended_by="hard_timeout"
