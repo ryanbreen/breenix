@@ -41,6 +41,28 @@ STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:le
 # gate, [BOOT_TESTS:PASS] and every structural suite green.
 TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
+# #786 follow-on: the TTBR0 ASID census, emitted before userspace and at every
+# process exit. `untagged` counts publishes into `saved_process_cr3`/`next_cr3`
+# of a process root whose ASID field is not the userspace ASID -- the word the
+# `.Lrestore_saved_ttbr` arm of `syscall_entry.S` installs verbatim. Presence,
+# absence-of-untagged and evidence-that-anything-was-counted are pinned
+# separately: a census that reached no process-root publish reports untagged=0
+# for the same reason a dead counter does.
+# claim-lint:ok: 3 of 3 boots of this gate at this head print untagged=0 with
+# tagged above 17000, and the raw-operand mutation reddens the sibling gate --
+# docs/planning/green-program/aarch64-testing/serials/asid-ratchet/03-strict-x3.txt
+# and 02-runtime-anti-vacuity-prod-gate.txt
+ASID_CENSUS_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[0-9]+:kernel=[0-9]+:cleared=[0-9]+\]'
+ASID_CENSUS_UNTAGGED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[1-9][0-9]*:'
+ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][0-9]*:'
+
+# R157/ASID-01: the scoring-only entry point further down scores a serial that
+# was captured earlier, so it needs no kernel, no disk and no preflight. Those
+# checks are guarded on this being empty; the scoring rules themselves are not
+# guarded at all, which is the point of running them from a test.
+SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
+
+if [ -z "$SCORE_ONLY_SERIAL" ]; then
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -107,6 +129,8 @@ EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then
     echo "Error: ext2 disk not found at $EXT2_DISK"
     exit 1
+fi
+
 fi
 
 # Track results
@@ -296,6 +320,18 @@ score_serial() {
         echo "Refused init-group child ran"
         return 1
     fi
+    if grep -qaE "$ASID_CENSUS_UNTAGGED_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "TTBR0 ASID census reported an untagged process-root publish ($(grep -aoE "$ASID_CENSUS_PATTERN" "$serial_file" | grep -E ':untagged=[1-9]' | tail -1))"
+        return 1
+    fi
+    if ! grep -qaE "$ASID_CENSUS_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "TTBR0 ASID census marker missing"
+        return 1
+    fi
+    if ! grep -qaE "$ASID_CENSUS_PUBLISHED_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "TTBR0 ASID census never counted a process-root publish"
+        return 1
+    fi
     return 0
 }
 
@@ -303,12 +339,16 @@ score_serial() {
 # exists so the scoring rules can be exercised against a preserved serial without
 # booting, which is how the "a serial containing every success marker scores as a
 # success" property is proven.
-if [ -n "${BREENIX_STRICT_SCORE_ONLY:-}" ]; then
-    if SCORE_REASON=$(score_serial "$BREENIX_STRICT_SCORE_ONLY"); then
-        echo "SCORE: PASS - $BREENIX_STRICT_SCORE_ONLY"
+if [ -n "$SCORE_ONLY_SERIAL" ]; then
+    if [ ! -f "$SCORE_ONLY_SERIAL" ]; then
+        echo "SCORE: FAIL - BREENIX_STRICT_SCORE_ONLY names no readable serial ($SCORE_ONLY_SERIAL)"
+        exit 1
+    fi
+    if SCORE_REASON=$(score_serial "$SCORE_ONLY_SERIAL"); then
+        echo "SCORE: PASS - $SCORE_ONLY_SERIAL"
         exit 0
     else
-        echo "SCORE: FAIL - $SCORE_REASON ($BREENIX_STRICT_SCORE_ONLY)"
+        echo "SCORE: FAIL - $SCORE_REASON ($SCORE_ONLY_SERIAL)"
         exit 1
     fi
 fi

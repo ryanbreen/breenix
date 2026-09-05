@@ -1,0 +1,120 @@
+R157/ASID-02: what the runtime ASID census costs on the corridor-reached path
+==============================================================================
+
+Method. Two builds of the SHIPPED production profile
+(cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc
+ -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64),
+differing only in whether the two `super::ttbr0::note_shadow_publish(val);` calls
+are present in kernel/src/arch_impl/aarch64/percpu.rs. Each binary disassembled
+with the toolchain's llvm-objdump; instructions counted per symbol.
+
+This is a STATIC INSTRUCTION COUNT, not a cycle measurement. It does not measure
+LL/SC retry under contention, cache behaviour, or the cost of the load-acquire on
+a loaded machine. No cycle measurement was taken.
+
+Symbols. The three are the corridor-reached publishers named in the ttbr0.rs
+census comment: `syscall_entry.S` and `boot.S` both `bl
+check_need_resched_and_switch_arm64`, which reaches `dispatch_thread_locked`
+(-> set_next_ttbr0_for_thread, switch_ttbr0_if_needed) and `dispatch_idle_locked`
+(-> setup_idle_return_locked).
+
+  symbol                        without census   with census   delta
+  switch_ttbr0_if_needed             20            53       33
+  set_next_ttbr0_for_thread        1925          1943       18
+  setup_idle_return_locked          255           294       39
+
+The 33 instructions added to `switch_ttbr0_if_needed` cover TWO publishes (the
+root into saved_process_cr3 and the 0 into next_cr3). They are, per publish: a
+load-acquire of the per-CPU-initialised flag and a per-CPU read of this CPU's
+kernel root (via kernel_ttbr0), an lsr/adrp/add/csel chain that selects one of
+four counters, and an ldxr/add/stxr/cbnz retry loop -- there is no LSE atomic on
+this target, so the increment is LL/SC. The disassembly is below.
+
+Against the budget. CLAUDE.md budgets interrupt handlers at <1000 cycles. 33
+added instructions with two uncontended LL/SC pairs is a small fraction of that
+even at one instruction per cycle, and the reschedule path this sits on is not
+the timer handler itself. That is an argument from an instruction count, and it
+is the only measurement taken; it is stated as such rather than as a timing
+result.
+
+Disassembly, with census, switch_ttbr0_if_needed:
+
+ffff00004058b870 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE>:
+ffff00004058b870: d538d088     	mrs	x8, TPIDR_EL1
+ffff00004058b874: b4000668     	cbz	x8, 0xffff00004058b940 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0xd0>
+ffff00004058b878: f9402108     	ldr	x8, [x8, #0x40]
+ffff00004058b87c: b4000628     	cbz	x8, 0xffff00004058b940 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0xd0>
+ffff00004058b880: d5382009     	mrs	x9, TTBR0_EL1
+ffff00004058b884: eb08013f     	cmp	x9, x8
+ffff00004058b888: 540004a0     	b.eq	0xffff00004058b91c <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0xac>
+ffff00004058b88c: d5033a9f     	dsb	ishst
+ffff00004058b890: d5182008     	msr	TTBR0_EL1, x8
+ffff00004058b894: d5033fdf     	isb
+ffff00004058b898: d508831f     	tlbi	vmalle1is
+ffff00004058b89c: d5033b9f     	dsb	ish
+ffff00004058b8a0: d5033fdf     	isb
+ffff00004058b8a4: 90006149     	adrp	x9, 0xffff0000411b3000 <_ZN6kernel10log_buffer10LOG_BUFFER17h12510b8b29984deeE+0x7880>
+ffff00004058b8a8: 91310129     	add	x9, x9, #0xc40
+ffff00004058b8ac: 08dffd2a     	ldarb	w10, [x9]
+ffff00004058b8b0: 92748d09     	and	x9, x8, #0xfffffffff000
+ffff00004058b8b4: 340000ea     	cbz	w10, 0xffff00004058b8d0 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x60>
+ffff00004058b8b8: d538d08a     	mrs	x10, TPIDR_EL1
+ffff00004058b8bc: b40000aa     	cbz	x10, 0xffff00004058b8d0 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x60>
+ffff00004058b8c0: f940254a     	ldr	x10, [x10, #0x48]
+ffff00004058b8c4: b400006a     	cbz	x10, 0xffff00004058b8d0 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x60>
+ffff00004058b8c8: 92748d4a     	and	x10, x10, #0xfffffffff000
+ffff00004058b8cc: 14000002     	b	0xffff00004058b8d4 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x64>
+ffff00004058b8d0: 52a8400a     	mov	w10, #0x42000000 // =1107296256
+ffff00004058b8d4: d370fd0b     	lsr	x11, x8, #48
+ffff00004058b8d8: 9000614c     	adrp	x12, 0xffff0000411b3000 <_ZN6kernel10log_buffer10LOG_BUFFER17h12510b8b29984deeE+0x7880>
+ffff00004058b8dc: 9120418c     	add	x12, x12, #0x810
+ffff00004058b8e0: 9000614d     	adrp	x13, 0xffff0000411b3000 <_ZN6kernel10log_buffer10LOG_BUFFER17h12510b8b29984deeE+0x7880>
+ffff00004058b8e4: 912061ad     	add	x13, x13, #0x818
+ffff00004058b8e8: f100057f     	cmp	x11, #0x1
+ffff00004058b8ec: 9a8c01ab     	csel	x11, x13, x12, eq
+ffff00004058b8f0: eb0a013f     	cmp	x9, x10
+ffff00004058b8f4: 90006149     	adrp	x9, 0xffff0000411b3000 <_ZN6kernel10log_buffer10LOG_BUFFER17h12510b8b29984deeE+0x7880>
+ffff00004058b8f8: 91208129     	add	x9, x9, #0x820
+ffff00004058b8fc: 9a8b0129     	csel	x9, x9, x11, eq
+ffff00004058b900: c85f7d2a     	ldxr	x10, [x9]
+ffff00004058b904: 9100054a     	add	x10, x10, #0x1
+ffff00004058b908: c80b7d2a     	stxr	w11, x10, [x9]
+ffff00004058b90c: 35ffffab     	cbnz	w11, 0xffff00004058b900 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x90>
+ffff00004058b910: d538d089     	mrs	x9, TPIDR_EL1
+ffff00004058b914: b4000049     	cbz	x9, 0xffff00004058b91c <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0xac>
+ffff00004058b918: f9002928     	str	x8, [x9, #0x50]
+ffff00004058b91c: 90006148     	adrp	x8, 0xffff0000411b3000 <_ZN6kernel10log_buffer10LOG_BUFFER17h12510b8b29984deeE+0x7880>
+ffff00004058b920: 91202108     	add	x8, x8, #0x808
+ffff00004058b924: c85f7d09     	ldxr	x9, [x8]
+ffff00004058b928: 91000529     	add	x9, x9, #0x1
+ffff00004058b92c: c80a7d09     	stxr	w10, x9, [x8]
+ffff00004058b930: 35ffffaa     	cbnz	w10, 0xffff00004058b924 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0xb4>
+ffff00004058b934: d538d088     	mrs	x8, TPIDR_EL1
+ffff00004058b938: b4000048     	cbz	x8, 0xffff00004058b940 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0xd0>
+ffff00004058b93c: f900211f     	str	xzr, [x8, #0x40]
+ffff00004058b940: d65f03c0     	ret
+
+Disassembly, without census, switch_ttbr0_if_needed:
+
+ffff00004046068c <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE>:
+ffff00004046068c: d538d088     	mrs	x8, TPIDR_EL1
+ffff000040460690: b4000248     	cbz	x8, 0xffff0000404606d8 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x4c>
+ffff000040460694: f9402108     	ldr	x8, [x8, #0x40]
+ffff000040460698: b4000208     	cbz	x8, 0xffff0000404606d8 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x4c>
+ffff00004046069c: d5382009     	mrs	x9, TTBR0_EL1
+ffff0000404606a0: eb08013f     	cmp	x9, x8
+ffff0000404606a4: 54000140     	b.eq	0xffff0000404606cc <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x40>
+ffff0000404606a8: d5033a9f     	dsb	ishst
+ffff0000404606ac: d5182008     	msr	TTBR0_EL1, x8
+ffff0000404606b0: d5033fdf     	isb
+ffff0000404606b4: d508831f     	tlbi	vmalle1is
+ffff0000404606b8: d5033b9f     	dsb	ish
+ffff0000404606bc: d5033fdf     	isb
+ffff0000404606c0: d538d089     	mrs	x9, TPIDR_EL1
+ffff0000404606c4: b4000049     	cbz	x9, 0xffff0000404606cc <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x40>
+ffff0000404606c8: f9002928     	str	x8, [x9, #0x50]
+ffff0000404606cc: d538d088     	mrs	x8, TPIDR_EL1
+ffff0000404606d0: b4000048     	cbz	x8, 0xffff0000404606d8 <_ZN6kernel9arch_impl7aarch6414context_switch22switch_ttbr0_if_needed17hb8936d543a0b34cbE+0x4c>
+ffff0000404606d4: f900211f     	str	xzr, [x8, #0x40]
+ffff0000404606d8: d65f03c0     	ret
+
