@@ -1186,6 +1186,88 @@ fn validate_wakeup_placement_is_bounded_by_online_cpus(source: &str) -> Result<(
         if compact.contains("(0..MAX_CPUS).min_by_key(") {
             return Err(format!("{name} selects from all MAX_CPUS queues"));
         }
+        // The pairing rule, which is what makes this validator see arms that
+        // did not exist when it was written. Each placement arm in these
+        // functions bounds a CPU choice by the online range AND filters it
+        // through scheduling liveness, so the two references come in pairs.
+        // Counting the pair rather than naming the arms is deliberate: the pin
+        // arm this slice adds is a second arm, and the 4 substring rules above
+        // describe the least-loaded arm only -- they stay green whatever the
+        // pin arm does. A new arm that brings one half of the pair reddens
+        // this, whatever it is called; a new arm that brings both passes.
+        let mask = code_mask(body);
+        let bounds = identifier_offsets(body, &mask, "online_cpu_count").len();
+        let liveness = identifier_offsets(body, &mask, "cpu_accepts_wakeups").len();
+        if bounds != liveness {
+            return Err(format!(
+                "{name} has {bounds} online-range test(s) but {liveness} scheduling-liveness test(s): every placement arm must consult both"
+            ));
+        }
+
+        // And the rule the pairing count alone cannot enforce: a placement made
+        // from a thread's stored CPU pin is a placement like any other, so the
+        // block that reads cpu_affinity must consult the online range and
+        // scheduling liveness BEFORE it returns a CPU. Deleting both halves of
+        // that condition together keeps the counts balanced, so without this
+        // the pairing rule stays green on exactly the shape the finding was
+        // about. Located by the cpu_affinity read, not by arm name.
+        for offset in identifier_offsets(body, &mask, "cpu_affinity") {
+            let block = braced_block(body, &mask, offset)
+                .ok_or_else(|| format!("{name} reads cpu_affinity outside any block"))?;
+            if !has_identifier(block, "online_cpu_count") {
+                return Err(format!(
+                    "{name} returns a pinned CPU without bounding it by the online range"
+                ));
+            }
+            if !has_identifier(block, "cpu_accepts_wakeups") {
+                return Err(format!(
+                    "{name} returns a pinned CPU without consulting scheduling liveness"
+                ));
+            }
+            let block_mask = code_mask(block);
+            let first_return = identifier_offsets(block, &block_mask, "return")
+                .into_iter()
+                .next();
+            let first_liveness = identifier_offsets(block, &block_mask, "cpu_accepts_wakeups")
+                .into_iter()
+                .next();
+            if let (Some(returned), Some(checked)) = (first_return, first_liveness) {
+                if returned < checked {
+                    return Err(format!(
+                        "{name} returns from the pin block before consulting scheduling liveness"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A refused pinned wake becomes a park: off every ready queue, blocked, and
+/// with its pin untouched.
+/// claim-lint:ok: 3 of 3 legs for this rule are the tests below
+///
+/// The pin is untouched deliberately. `Thread::cpu_affinity` exists in two
+/// copies -- the process-table row and the scheduler's publication clone -- and
+/// this disposition runs on the scheduler's copy, so clearing it here would
+/// leave the row naming a CPU the thread is no longer pinned to. The park is a
+/// statement about placement, not about the pin.
+/// claim-lint:ok: 3 of 3 legs for this rule -- the live source, the deleted
+/// queue departure, and an injected pin write -- are the tests below
+fn validate_pinned_park_leaves_no_queue_holding_the_thread(source: &str) -> Result<(), String> {
+    let body = function_body(source, "park_pinned_worker_without_home")
+        .ok_or_else(|| "the pinned-wake park disposition is missing".to_string())?;
+    let compact = compact_code(body);
+    if !compact.contains("self.per_cpu_queues.iter_mut()") || !compact.contains("queue.retain(") {
+        return Err(
+            "the park must remove the thread from every per-CPU queue, not one".to_string(),
+        );
+    }
+    if !compact.contains("ThreadState::Blocked") {
+        return Err("the park must publish the blocked state it claims".to_string());
+    }
+    if compact.contains("cpu_affinity=") {
+        return Err("the park writes a pin; the two copies of the field would disagree".to_string());
     }
     Ok(())
 }
@@ -1965,6 +2047,231 @@ fn wakeup_placement_validator_rejects_missing_scheduling_liveness_check() {
     );
     let mutated = source.replacen(least_loaded, &mutated_least_loaded, 1);
     assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
+}
+
+#[test]
+fn wakeup_placement_validator_rejects_unfiltered_affinity_arm() {
+    // The arm as the parked branch first wrote it: a pinned CPU returned early,
+    // bounded by the online range with no scheduling-liveness check.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
+        .expect("find wakeup placement fixture");
+    let mutated_wakeup = wakeup.replacen(
+        "(home_is_this_cpu || self.cpu_accepts_wakeups(pin.cpu))",
+        "true",
+        1,
+    );
+    assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
+    let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
+    assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
+}
+
+#[test]
+fn wakeup_placement_validator_rejects_max_cpu_bound_on_the_affinity_arm() {
+    // The other half of the same arm: a pinned CPU judged against MAX_CPUS
+    // instead of the online range.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
+        .expect("find wakeup placement fixture");
+    let mutated_wakeup =
+        wakeup.replacen("pin.cpu < self.online_cpu_count()", "pin.cpu < MAX_CPUS", 1);
+    assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
+    let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
+    assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
+}
+
+#[test]
+fn wakeup_placement_validator_rejects_deleting_the_liveness_filter_alone() {
+    // The third leg, and the one the pairing rule exists for: the pin arm keeps
+    // its online bound and loses its liveness test, which no substring rule
+    // written against the least-loaded arm can see.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
+        .expect("find wakeup placement fixture");
+    let mutated_wakeup = wakeup.replacen(
+        "(home_is_this_cpu || self.cpu_accepts_wakeups(pin.cpu))",
+        "home_is_this_cpu",
+        1,
+    );
+    assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
+    let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
+    let error = validate_wakeup_placement_is_bounded_by_online_cpus(&mutated)
+        .expect_err("the pairing rule must see a pin arm that lost its liveness test");
+    assert!(error.contains("scheduling-liveness test(s)"), "{error}");
+}
+
+#[test]
+fn wakeup_placement_validator_accepts_the_live_source() {
+    // Anti-vacuity for the mutation legs above: they mean nothing unless the
+    // unmutated source passes, so that is asserted rather than implied.
+    // claim-lint:ok: 3 of 3 mutation legs above depend on this control
+    validate_wakeup_placement_is_bounded_by_online_cpus(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("live scheduler source passes the placement validator");
+}
+
+#[test]
+fn pinned_park_leaves_no_queue_holding_the_thread() {
+    validate_pinned_park_leaves_no_queue_holding_the_thread(&repo_text(
+        "kernel/src/task/scheduler.rs",
+    ))
+    .expect("a refused pinned wake parks the thread off every queue");
+}
+
+#[test]
+fn pinned_park_validator_rejects_a_park_that_leaves_the_thread_queued() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let park = function_body(&source, "park_pinned_worker_without_home")
+        .expect("find the park fixture");
+    let mutated_park = park.replacen("queue.retain(", "let _unused = (", 1);
+    assert_ne!(mutated_park, park, "fixture mutation must apply");
+    let mutated = source.replacen(park, &mutated_park, 1);
+    assert!(validate_pinned_park_leaves_no_queue_holding_the_thread(&mutated).is_err());
+}
+
+#[test]
+fn pinned_park_validator_rejects_a_park_that_rewrites_the_pin() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let park = function_body(&source, "park_pinned_worker_without_home")
+        .expect("find the park fixture");
+    let mutated_park = park.replacen(
+        "thread.state = ThreadState::Blocked;",
+        "thread.state = ThreadState::Blocked;\n                thread.cpu_affinity = None;",
+        1,
+    );
+    assert_ne!(mutated_park, park, "fixture mutation must apply");
+    let mutated = source.replacen(park, &mutated_park, 1);
+    assert!(validate_pinned_park_leaves_no_queue_holding_the_thread(&mutated).is_err());
+}
+
+/// Score `serial` with `gate`'s OWN verdict code, without booting.
+///
+/// Each aarch64 gate exposes a scoring-only entry point through an environment
+/// variable; setting it makes the script skip the QEMU boot and run its verdict
+/// block against the named serial. The `contains` check is a guard, not the
+/// assertion: if the entry point were removed, invoking the script here would
+/// boot QEMU out of a unit test, so this fails first instead.
+fn score_with_gate(gate: &str, variable: &str, serial: &Path) -> (bool, String) {
+    let script = repo_text(gate);
+    assert!(
+        script.contains(variable),
+        "{gate} has no {variable} scoring-only entry point, so its verdict rules cannot be run \
+         from a test -- and invoking it without one would boot QEMU"
+    );
+    let output = std::process::Command::new("bash")
+        .arg(repo_root().join(gate))
+        .env(variable, serial)
+        .current_dir(repo_root())
+        .output()
+        .unwrap_or_else(|error| panic!("run {gate} in scoring-only mode: {error}"));
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    (output.status.success(), text)
+}
+
+/// `serial` with every pinned-placement census line rewritten to `replacement`,
+/// or deleted when there is none.
+/// claim-lint:ok: 2 of 2 uses of this helper are legs C and B below
+fn rewrite_pinned_census_lines(serial: &str, replacement: Option<&str>) -> String {
+    let mut out = String::new();
+    for line in serial.lines() {
+        if line.contains("[PINNED_HOME_CPU_UNAVAILABLE:") {
+            if let Some(text) = replacement {
+                out.push_str(text);
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+
+#[test]
+fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
+    // The gates are RUN, not grepped: a script whose census assertions have
+    // been deleted still contains its pattern variables, so only the exit
+    // status measures the rule. Four legs against each gate.
+    let gates = [
+        (
+            "docker/qemu/run-aarch64-boot-test-strict.sh",
+            "BREENIX_STRICT_SCORE_ONLY",
+            "docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt",
+        ),
+        (
+            "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
+            "BREENIX_PROD_SCORE_ONLY",
+            "docs/planning/green-program/aarch64-testing/serials/slice3d/02-prod-boot1-serial.txt",
+        ),
+    ];
+    let scratch =
+        std::env::temp_dir().join(format!("breenix-pinned-gate-legs-{}", std::process::id()));
+    fs::create_dir_all(&scratch).expect("create the scratch directory for the gate legs");
+    for (gate, variable, baseline) in gates {
+        let serial = repo_text(baseline);
+        assert!(
+            serial.contains("[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0]"),
+            "{baseline} is the green baseline for {gate} and must carry the census"
+        );
+        let leg = |name: &str, body: &str| {
+            let path = scratch.join(format!("{variable}-{name}.txt"));
+            fs::write(&path, body).expect("write a gate leg serial");
+            score_with_gate(gate, variable, &path)
+        };
+
+        // Leg A. Anti-vacuity for the three below: a gate that rejected every
+        // serial would satisfy them without scoring anything.
+        // claim-lint:ok: 1 of 4 legs is this one, and it is what keeps the
+        // other 3 from being satisfied by a gate that rejects everything
+        let (passed, output) = leg("green", &serial);
+        assert!(
+            passed,
+            "{gate} must pass the serial it was recorded green on, or the failing legs below \
+             say nothing: {output}"
+        );
+
+        // Leg B. One census line reports a refusal. That is the class the
+        // counter exists for.
+        let (passed, output) = leg(
+            "refused",
+            &serial.replacen(
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=3:publish_discarded=0]",
+                1,
+            ),
+        );
+        assert!(
+            !passed,
+            "{gate} passed a serial reporting a pinned-placement refusal: {output}"
+        );
+
+        // Leg C. The census never printed. A gate that only fails on a non-zero
+        // reading is satisfied by a kernel that stopped reporting.
+        // claim-lint:ok: this leg deletes 4 of 4 census lines in the strict
+        // baseline and 1 of 1 in the production one
+        let (passed, output) = leg("missing", &rewrite_pinned_census_lines(&serial, None));
+        assert!(
+            !passed,
+            "{gate} passed a serial with no pinned-placement census at all: {output}"
+        );
+
+        // Leg D. A park happened AFTER the last census emission, so every
+        // census line still reads zero and only the one-shot marker says so.
+        // Without this leg the production gate, whose census is emitted once
+        // before userspace, would score such a boot green.
+        // claim-lint:ok: 1 of 1 census line in the production baseline reads
+        // count=0, so only the appended marker distinguishes this leg
+        let mut late_park = serial.clone();
+        late_park.push_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=7:home=1:cpu=0:count=1]\n");
+        let (passed, output) = leg("late-park", &late_park);
+        assert!(
+            !passed,
+            "{gate} passed a serial whose one-shot marker reports a park: {output}"
+        );
+    }
+
+    fs::remove_dir_all(&scratch).ok();
 }
 
 #[test]

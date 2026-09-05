@@ -1164,6 +1164,19 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "#[cfg(target_arch=aarch64)] fn dump_cpu_state_history",
         9,
     ),
+    // The pinned-worker park emits a one-shot marker from inside the scheduler
+    // lock with interrupts masked, where the logger's own lock would deadlock:
+    // the same exception the injectors above already carry. It fires at most
+    // once per boot, and on a healthy boot zero times.
+    // claim-lint:ok: 0 of 3 strict boots and 0 of 3 production boots at this
+    // head printed it --
+    // docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt
+    // and 02-prod-boot1.txt with its 2 siblings
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn park_pinned_worker_without_home",
+        5,
+    ),
     (
         "kernel/src/test_framework/registry.rs",
         "fn test_serial_output",

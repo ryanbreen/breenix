@@ -65,6 +65,18 @@ BSSHD_LITERAL='bsshd: listening'
 ASID_CENSUS_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[0-9]+:kernel=[0-9]+:cleared=[0-9]+\]'
 ASID_CENSUS_UNTAGGED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[1-9][0-9]*:'
 ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][0-9]*:'
+# Slice 3d: the pinned-placement census. Three assertions rather than one, for
+# the reason the ASID block above gives: the line must be present, no line may
+# report a non-zero field, and the one-shot first-park marker must be absent --
+# the census is emitted on a period, so a refusal after the last emission would
+# otherwise be invisible while the marker fires whenever the first one happens.
+# claim-lint:ok: 3 of 3 strict boots and 3 of 3 production boots at this head
+# read count=0:publish_discarded=0, and the forced-park leg reddens this gate --
+# docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt,
+# 02-prod-boot1.txt and its 2 siblings, 05-runtime-anti-vacuity-strict-gate.txt
+PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+\]'
+PINNED_CENSUS_NONZERO_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=([1-9][0-9]*:publish_discarded=[0-9]+|[0-9]+:publish_discarded=[1-9][0-9]*)\]'
+PINNED_FIRST_PARK_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected'
 
 OUTPUT_DIR="/tmp/breenix_aarch64_prod_profile"
@@ -141,6 +153,8 @@ print_observed_values() {
     echo "Observed bsshd marker count: $(marker_count "$serial_file" "$BSSHD_LITERAL")"
     echo "Observed TTBR0 ASID census marker count: $(pattern_count "$serial_file" "$ASID_CENSUS_PATTERN")"
     echo "Observed TTBR0 ASID census untagged-publish line count: $(pattern_count "$serial_file" "$ASID_CENSUS_UNTAGGED_PATTERN")"
+    echo "Observed pinned-placement census marker count: $(pattern_count "$serial_file" "$PINNED_CENSUS_PATTERN")"
+    echo "Observed pinned-placement refusal line count: $(pattern_count "$serial_file" "$PINNED_CENSUS_NONZERO_PATTERN")"
     echo "Observed crash marker count: $(crash_count "$serial_file")"
     if [ -f "$serial_file" ]; then
         grep -iE "$CRASH_MARKERS_PATTERN" "$serial_file" 2>/dev/null || true
@@ -288,6 +302,9 @@ BSSHD_COUNT=$(marker_count "$SERIAL_FILE" "$BSSHD_LITERAL")
 ASID_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PATTERN")
 ASID_CENSUS_UNTAGGED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_UNTAGGED_PATTERN")
 ASID_CENSUS_PUBLISHED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PUBLISHED_PATTERN")
+PINNED_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$PINNED_CENSUS_PATTERN")
+PINNED_CENSUS_NONZERO_COUNT=$(pattern_count "$SERIAL_FILE" "$PINNED_CENSUS_NONZERO_PATTERN")
+PINNED_FIRST_PARK_COUNT=$(marker_count "$SERIAL_FILE" "$PINNED_FIRST_PARK_LITERAL")
 CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 
 if grep -qF '[BOOT_TESTS:FAIL' "$SERIAL_FILE" 2>/dev/null; then
@@ -365,6 +382,18 @@ fi
     echo "FAIL: TTBR0 ASID census never counted a process-root publish, so untagged=0 says nothing"
     exit 1
 }
+[ "$PINNED_CENSUS_COUNT" -ge 1 ] || {
+    echo "FAIL: pinned-placement census marker missing"
+    exit 1
+}
+[ "$PINNED_CENSUS_NONZERO_COUNT" -eq 0 ] || {
+    echo "FAIL: pinned-placement census reported a refusal or a discarded pin: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | grep -vE ':count=0:publish_discarded=0\]' | tail -1)"
+    exit 1
+}
+[ "$PINNED_FIRST_PARK_COUNT" -eq 0 ] || {
+    echo "FAIL: a pinned worker was parked for want of a dispatching home CPU: $(grep -aF -m1 "$PINNED_FIRST_PARK_LITERAL" "$SERIAL_FILE")"
+    exit 1
+}
 [ "$CRASH_COUNT" -eq 0 ] || {
     echo "FAIL: crash marker detected"
     exit 1
@@ -386,5 +415,8 @@ echo "Observed TTY oracle failure count: $TTY_ORACLE_FAIL_COUNT"
 echo "Observed TTBR0 ASID census marker count: $ASID_CENSUS_COUNT"
 echo "Observed TTBR0 ASID census untagged-publish line count: $ASID_CENSUS_UNTAGGED_COUNT"
 echo "Observed: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
+echo "Observed pinned-placement census marker count: $PINNED_CENSUS_COUNT"
+echo "Observed pinned-placement refusal line count: $PINNED_CENSUS_NONZERO_COUNT"
+echo "Observed: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0

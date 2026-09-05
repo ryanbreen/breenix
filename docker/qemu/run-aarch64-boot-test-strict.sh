@@ -55,6 +55,18 @@ CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:bas
 ASID_CENSUS_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[0-9]+:kernel=[0-9]+:cleared=[0-9]+\]'
 ASID_CENSUS_UNTAGGED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[1-9][0-9]*:'
 ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][0-9]*:'
+# Slice 3d: the pinned-placement census. Three assertions rather than one, for
+# the reason the ASID block above gives: the line must be present, no line may
+# report a non-zero field, and the one-shot first-park marker must be absent --
+# the census is emitted on a period, so a refusal after the last emission would
+# otherwise be invisible while the marker fires whenever the first one happens.
+# claim-lint:ok: 3 of 3 strict boots and 3 of 3 production boots at this head
+# read count=0:publish_discarded=0, and the forced-park leg reddens this gate --
+# docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt,
+# 02-prod-boot1.txt and its 2 siblings, 05-runtime-anti-vacuity-strict-gate.txt
+PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+\]'
+PINNED_CENSUS_NONZERO_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=([1-9][0-9]*:publish_discarded=[0-9]+|[0-9]+:publish_discarded=[1-9][0-9]*)\]'
+PINNED_FIRST_PARK_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
 
 # R157/ASID-01: the scoring-only entry point further down scores a serial that
 # was captured earlier, so it needs no kernel, no disk and no preflight. Those
@@ -330,6 +342,18 @@ score_serial() {
     fi
     if ! grep -qaE "$ASID_CENSUS_PUBLISHED_PATTERN" "$serial_file" 2>/dev/null; then
         echo "TTBR0 ASID census never counted a process-root publish"
+        return 1
+    fi
+    if grep -qaE "$PINNED_CENSUS_NONZERO_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "Pinned-placement census reported a refusal or a discarded pin ($(grep -aoE "$PINNED_CENSUS_PATTERN" "$serial_file" | grep -vE ':count=0:publish_discarded=0\]' | tail -1))"
+        return 1
+    fi
+    if grep -qaF "$PINNED_FIRST_PARK_LITERAL" "$serial_file" 2>/dev/null; then
+        echo "A pinned worker was parked for want of a dispatching home CPU ($(grep -aF -m1 "$PINNED_FIRST_PARK_LITERAL" "$serial_file"))"
+        return 1
+    fi
+    if ! grep -qaE "$PINNED_CENSUS_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "Pinned-placement census marker missing"
         return 1
     fi
     return 0

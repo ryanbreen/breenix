@@ -4020,6 +4020,29 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn park_pinned_worker_without_home", 1),
+];
+/// The one production blocked-state publication that is not a blocking-family
+/// primitive, registered by anchor so a second cannot appear quietly.
+///
+/// `park_pinned_worker_without_home` does not block its caller. It runs on a
+/// wake path, on behalf of ANOTHER thread, and undoes the `Ready` that same
+/// wake published a few lines earlier when the placement it implies turns out
+/// to be unacceptable -- a per-CPU worker whose home CPU is not dispatching.
+/// The family names (`block_current*`, `prepare_to_wait*`) all describe a
+/// caller publishing its own blocked state, which this is not, so renaming it
+/// into the family would be a false statement about what it does.
+/// claim-lint:ok: 1 of 1 exemption row, and the 2 family name prefixes it does
+/// not match are `BLOCKING_NAME_PREFIXES` above.
+///
+/// The invariant the family is there for -- the publication and the departure
+/// from each ready queue happening together, which is #647 -- is asserted for
+/// this row by
+/// `validate_pinned_park_leaves_no_queue_holding_the_thread` in
+/// `tests/loopback_pump_structure.rs`, with its own delete-mutation leg.
+#[rustfmt::skip]
+const BLOCKED_STATE_PUBLICATION_FAMILY_EXEMPTIONS: &[(&str, &str)] = &[
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn park_pinned_worker_without_home"),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -4660,6 +4683,12 @@ fn validate_blocked_state_publication_family(
     let mut failures = Vec::new();
     for ((path, item), count) in census(sources, blocked_state_publication_offsets) {
         if item_path_is_test_fixture(&item) {
+            continue;
+        }
+        if BLOCKED_STATE_PUBLICATION_FAMILY_EXEMPTIONS
+            .iter()
+            .any(|(exempt_path, exempt_item)| *exempt_path == path && *exempt_item == item)
+        {
             continue;
         }
         let in_family = item_path_function_name(&item).is_some_and(|name| {
