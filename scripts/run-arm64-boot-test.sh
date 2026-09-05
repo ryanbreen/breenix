@@ -28,6 +28,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$BREENIX_ROOT"
 
+# #826/#834/R181: this script's qemu-system-aarch64 boot runs behind the
+# host-wide lock in docker/qemu/lib/qemu-host-lock.sh -- #834 extends that
+# lock's coverage from docker/qemu/*.sh (its original #826/R181 scope) to
+# scripts/ as well.
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 # Configuration
 KERNEL_PATH="target/aarch64-breenix-kernel/release/kernel-aarch64"
 SERIAL_OUTPUT="/tmp/arm64_boot_test_output.txt"
@@ -91,6 +98,7 @@ fi
 # Start QEMU in background
 # Always include VirtIO GPU and keyboard so the kernel's MMIO enumeration
 # discovers them (needed for interactive shell and device driver tests)
+qemu_host_lock_acquire
 qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
@@ -104,6 +112,11 @@ qemu-system-aarch64 \
     $NET_OPTS \
     -serial "file:$SERIAL_OUTPUT" &
 QEMU_PID=$!
+# F2: registers QEMU with the lock's own EXIT trap (see
+# docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just
+# this script's own PID during the poll below still kills QEMU instead of
+# orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 # Wait for output - different markers for different test modes
 echo "[3/4] Waiting for kernel output (${TIMEOUT_SECS}s timeout)..."

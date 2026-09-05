@@ -42,6 +42,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# #826/#834/R181: sourced unconditionally since this harness's --arch is
+# runtime-selected, but only the aarch64 branch below actually calls
+# qemu_host_lock_acquire -- the host-wide lock in
+# docker/qemu/lib/qemu-host-lock.sh serializes qemu-system-aarch64 boots
+# specifically, and this script's x86_64 leg (qemu-system-x86_64) is outside
+# that lock's scope, same as run.sh's x86_64 leg. #834 extends this lock's
+# coverage from docker/qemu/*.sh (its original #826/R181 scope) to scripts/
+# as well.
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 # #825: without --out, two concurrent invocations of this harness for the
 # same --arch hardcoded the identical /tmp/breenix_trace_test_$ARCH path, so
 # one invocation's rm -rf/mkdir could delete and rewrite another's in-flight
@@ -204,6 +215,7 @@ if [ "$ARCH" = "aarch64" ]; then
         exit 1
     fi
     cp "$EXT2_DISK" "$OUTPUT_DIR/ext2-writable.img"
+    qemu_host_lock_acquire
     "$QEMU_BIN" \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL_BIN" \
@@ -219,6 +231,11 @@ if [ "$ARCH" = "aarch64" ]; then
         -gdb "tcp::$GDB_PORT" \
         >"$OUTPUT_DIR/qemu.log" 2>&1 &
     QEMU_PID=$!
+    # F2: registers QEMU with the lock's own EXIT trap (see
+    # docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to
+    # just this script's own PID during the settle window still kills QEMU
+    # instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
 else
     UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
     if [ -z "$UEFI_IMG" ]; then

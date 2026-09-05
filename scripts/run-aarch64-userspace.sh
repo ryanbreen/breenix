@@ -6,6 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$BREENIX_ROOT"
 
+# #826/#834/R181: this script's qemu-system-aarch64 boot runs behind the
+# host-wide lock in docker/qemu/lib/qemu-host-lock.sh -- #834 extends that
+# lock's coverage from docker/qemu/*.sh (its original #826/R181 scope) to
+# scripts/ as well.
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 # Build ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
@@ -48,7 +55,14 @@ case "$(uname)" in
     *)      DISPLAY_OPT="-display sdl" ;;
 esac
 
-exec qemu-system-aarch64 \
+# #834: this is an interactive display session (Ctrl-A X exits QEMU), but
+# it still takes the host-wide lock -- not exempt just because a human, not
+# a gate, is driving it. `exec` is dropped in favor of a plain foreground
+# launch: replacing this shell's own process image would discard the
+# qemu_host_lock_acquire EXIT trap before it could release the lock, since
+# there would be no bash process left to run it.
+qemu_host_lock_acquire
+qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
     -m 512M \
