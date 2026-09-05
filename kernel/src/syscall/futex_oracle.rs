@@ -40,6 +40,7 @@ pub const PROBE_ACK: u64 = 0x4655_5850;
 static STAGE1_TG_ID: AtomicU64 = AtomicU64::new(0);
 static STAGE1_UADDR: AtomicU64 = AtomicU64::new(0);
 static STAGE1_ARM_NS: AtomicU64 = AtomicU64::new(0);
+static STAGE1_ARM_DELAY_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE1_WAKE: AtomicU64 = AtomicU64::new(0);
 static STAGE1_PARKED: AtomicU64 = AtomicU64::new(0);
 static STAGE1_ENQUEUED: AtomicU64 = AtomicU64::new(0);
@@ -50,6 +51,7 @@ static STAGE1_ELAPSED_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE2_TG_ID: AtomicU64 = AtomicU64::new(0);
 static STAGE2_UADDR: AtomicU64 = AtomicU64::new(0);
 static STAGE2_ARM_NS: AtomicU64 = AtomicU64::new(0);
+static STAGE2_ARM_DELAY_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE2_WAKE: AtomicU64 = AtomicU64::new(0);
 static STAGE2_PARKED: AtomicU64 = AtomicU64::new(0);
 static STAGE2_ENQUEUED: AtomicU64 = AtomicU64::new(0);
@@ -60,6 +62,7 @@ static STAGE2_ELAPSED_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE3_TG_ID: AtomicU64 = AtomicU64::new(0);
 static STAGE3_UADDR: AtomicU64 = AtomicU64::new(0);
 static STAGE3_ARM_NS: AtomicU64 = AtomicU64::new(0);
+static STAGE3_ARM_DELAY_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE3_PARKED: AtomicU64 = AtomicU64::new(0);
 static STAGE3_ENQUEUED: AtomicU64 = AtomicU64::new(0);
 static STAGE3_LEFT: AtomicU64 = AtomicU64::new(0);
@@ -94,25 +97,47 @@ pub fn is_report(val3: u32) -> bool {
     val3 == REPORT_SENTINEL
 }
 
-pub fn record_arm(stage: Stage, tg_id: u64, uaddr: u64) -> u64 {
+/// Arms one stage's bookkeeping and returns this oracle's own backstop
+/// deadline (unrelated to `base_ns` below; see #584/#627).
+///
+/// `base_ns` is the clock read the *caller* already took to compute the
+/// futex deadline (`futex.rs`'s `now_ns` at the point the requested timeout
+/// was added). Elapsed time is measured from `base_ns` (via
+/// `elapsed_since_arm`), not from a fresh read taken in here -- a fresh read
+/// is exactly what #627 found: a stage-3 wait against a real 50ms request
+/// could read as little as 46ms elapsed, because the old read was taken
+/// after this function's caller had already spent a few ms resolving the
+/// current thread's process-manager entry. `base_ns <= ` the internal read
+/// below by construction, so `elapsed_since_arm` can no longer read short.
+/// The gap between the two reads is stored as this stage's `arm_delay_ns`
+/// purely for visibility -- it does not feed the elapsed calculation.
+pub fn record_arm(stage: Stage, tg_id: u64, uaddr: u64, base_ns: u64) -> u64 {
     let started_at = now_ns();
+    let arm_delay_ns = started_at.saturating_sub(base_ns);
     match stage {
         Stage::S1 => {
             STAGE1_TG_ID.store(tg_id, Ordering::Release);
             STAGE1_UADDR.store(uaddr, Ordering::Release);
-            STAGE1_ARM_NS.store(started_at, Ordering::Release);
+            STAGE1_ARM_NS.store(base_ns, Ordering::Release);
+            STAGE1_ARM_DELAY_NS.store(arm_delay_ns, Ordering::Release);
         }
         Stage::S2 => {
             STAGE2_TG_ID.store(tg_id, Ordering::Release);
             STAGE2_UADDR.store(uaddr, Ordering::Release);
-            STAGE2_ARM_NS.store(started_at, Ordering::Release);
+            STAGE2_ARM_NS.store(base_ns, Ordering::Release);
+            STAGE2_ARM_DELAY_NS.store(arm_delay_ns, Ordering::Release);
         }
         Stage::S3 => {
             STAGE3_TG_ID.store(tg_id, Ordering::Release);
             STAGE3_UADDR.store(uaddr, Ordering::Release);
-            STAGE3_ARM_NS.store(started_at, Ordering::Release);
+            STAGE3_ARM_NS.store(base_ns, Ordering::Release);
+            STAGE3_ARM_DELAY_NS.store(arm_delay_ns, Ordering::Release);
         }
     }
+    // The backstop deadline is unrelated to the caller's own timeout and is
+    // still computed from this function's own read, exactly as before #627
+    // -- only the *stored* anchor used for elapsed-since-arm reporting moved
+    // to base_ns. This line is unchanged futex-deadline arithmetic.
     started_at.saturating_add(BACKSTOP_NS)
 }
 
@@ -246,11 +271,24 @@ pub fn report() {
         ),
     ]);
     let stage3_elapsed = STAGE3_ELAPSED_NS.load(Ordering::Acquire);
-    // This bit proves only that the wait did not return before its requested
-    // timeout. ETIMEDOUT plus rescues=0 in the marker proves the backstop did
-    // not end this wait.
+    // This bit compares the interval measured from STAGE3_ARM_NS against the
+    // requested 50ms. Since #627, STAGE3_ARM_NS is the same clock read
+    // futex.rs used to compute the deadline (passed into record_arm as
+    // base_ns), not a later read taken inside this oracle after the
+    // process-manager lookup futex_wait performs to resolve the caller's
+    // thread group. ETIMEDOUT plus rescues=0 in the marker separately shows
+    // the backstop timer, not this deadline, ended the wait. arm_delay_us
+    // below is that old, now-unused-for-this-bit gap (record_arm's own clock
+    // read minus base_ns), reported so a nonzero value stays visible rather
+    // than silently absorbed.
+    // claim-lint:ok: #627 -- the anchor-vs-fresh-read distinction is provable
+    // by construction from program order (see the comment on record_arm in
+    // this file), not by boot sampling; the mutation leg that reddens on a
+    // regression to the pre-#627 shape is
+    // validate_futex_oracle_record_arm_anchor in tests/teardown_structure.rs.
     let stage3_elapsed_ok = u64::from(stage3_elapsed >= STAGE3_REQUEST_NS);
     let stage3_elapsed_ms = stage3_elapsed / 1_000_000;
+    let stage3_arm_delay_us = STAGE3_ARM_DELAY_NS.load(Ordering::Acquire) / 1_000;
     let total_enqueued = STAGE1_ENQUEUED.load(Ordering::Acquire)
         + STAGE2_ENQUEUED.load(Ordering::Acquire)
         + STAGE3_ENQUEUED.load(Ordering::Acquire);
@@ -259,7 +297,7 @@ pub fn report() {
         + STAGE3_LEFT.load(Ordering::Acquire);
 
     crate::serial_println!(
-        "[FUTEX_HANDOFF_ORACLE:{}:driven={}:stage1_ret={}:stage1_wake={}:stage1_parked={}:stage2_ret={}:stage2_wake={}:stage2_parked={}:stage3_ret={}:stage3_elapsed_ok={}:stage3_elapsed_ms={}:rescues={}:queue_residual={}:balance={}]",
+        "[FUTEX_HANDOFF_ORACLE:{}:driven={}:stage1_ret={}:stage1_wake={}:stage1_parked={}:stage2_ret={}:stage2_wake={}:stage2_parked={}:stage3_ret={}:stage3_elapsed_ok={}:stage3_elapsed_ms={}:arm_delay_us={}:rescues={}:queue_residual={}:balance={}]",
         if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86" },
         DRIVEN.load(Ordering::Acquire),
         ret_token(STAGE1_RET.load(Ordering::Acquire)),
@@ -271,6 +309,7 @@ pub fn report() {
         ret_token(STAGE3_RET.load(Ordering::Acquire)),
         stage3_elapsed_ok,
         stage3_elapsed_ms,
+        stage3_arm_delay_us,
         RESCUES.load(Ordering::Acquire),
         queue_residual,
         balance(total_enqueued, total_left),

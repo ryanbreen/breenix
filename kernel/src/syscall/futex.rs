@@ -86,6 +86,14 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
         return SyscallResult::Err(super::errno::EFAULT as u64);
     }
 
+    // #627: the oracle's stage3_elapsed_ok bit must be anchored to the same
+    // clock read the deadline below is computed from, not to a later read
+    // taken after process-manager lookups. Captured here, unconditionally,
+    // so the boot_tests build can hand it to the oracle as its measurement
+    // origin (see the record_arm call site below).
+    #[cfg(feature = "boot_tests")]
+    let mut deadline_base_ns: Option<u64> = None;
+
     let (user_wake_time_ns, zero_timeout) = if timeout_ptr != 0 {
         let timeout = match crate::syscall::userptr::copy_from_user::<crate::syscall::time::Timespec>(
             timeout_ptr as *const crate::syscall::time::Timespec,
@@ -100,6 +108,10 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
 
         let (cur_secs, cur_nanos) = crate::time::get_monotonic_time_ns();
         let now_ns = cur_secs as u64 * 1_000_000_000 + cur_nanos as u64;
+        #[cfg(feature = "boot_tests")]
+        {
+            deadline_base_ns = Some(now_ns);
+        }
         let relative_ns = timeout.tv_sec as u64 * 1_000_000_000 + timeout.tv_nsec as u64;
         (Some(now_ns.saturating_add(relative_ns)), relative_ns == 0)
     } else {
@@ -128,8 +140,25 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
     #[cfg(feature = "boot_tests")]
     let oracle_stage = crate::syscall::futex_oracle::arm_from_val3(_val3);
     #[cfg(feature = "boot_tests")]
-    let oracle_deadline =
-        oracle_stage.map(|stage| crate::syscall::futex_oracle::record_arm(stage, tg_id, uaddr));
+    let oracle_deadline = oracle_stage.map(|stage| {
+        // Anchor the oracle's elapsed measurement to deadline_base_ns (the
+        // same read the deadline above used), not to a fresh read taken here
+        // -- that later origin was #627 (this call site sat strictly after
+        // the process-manager lookup above, understating elapsed by exactly
+        // that lookup's cost). No timeout means no deadline to anchor to, so
+        // record_arm falls back to reading the clock itself -- the pre-#627
+        // fallback shape, kept only for that untimed case.
+        // claim-lint:ok: #627 -- the fallback path is unreachable for every
+        // oracle stage on this branch (stage1/2/3 all pass a nonzero timeout
+        // in userspace/programs/src/futex_handoff_oracle.rs), kept only as a
+        // defensive default; see validate_futex_oracle_record_arm_anchor in
+        // tests/teardown_structure.rs.
+        let base_ns = deadline_base_ns.unwrap_or_else(|| {
+            let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+            seconds as u64 * 1_000_000_000 + nanos as u64
+        });
+        crate::syscall::futex_oracle::record_arm(stage, tg_id, uaddr, base_ns)
+    });
 
     let key = (tg_id, uaddr);
     let effective_wake_time_ns = {
