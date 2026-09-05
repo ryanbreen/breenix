@@ -29,9 +29,14 @@ BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 # Must be absolute: a relative value would resolve against whatever
 # directory happens to be current when it is read (the same F6 guard PR
 # #801 gave the x86 gate scripts for #797).
+# This gate's own house convention (see the comment above trap
+# report_gate_failure ERR further down) is echo + bare `false`, never
+# `exit`, so every rejection is a textually uniform statement the whole-file
+# no-pre-empting-exit ratchet can police without a position-dependent
+# exemption for a guard that runs before the trap below is installed.
 case "$BREENIX_GATE_TMP" in
     /*) ;;
-    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; false ;;
 esac
 OUTPUT_ROOT="$BREENIX_GATE_TMP/breenix_aarch64_tty_oracle"
 BOOTS=1
