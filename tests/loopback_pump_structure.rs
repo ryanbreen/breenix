@@ -1307,6 +1307,131 @@ fn validate_pinned_hold_preserves_the_wake(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Slice 3e's migration guard, judged on what it does rather than on being
+/// present.
+///
+/// The census rule above only asks whether a function CONSULTS the pin. A
+/// guard that read the pin and then moved the thread anyway would satisfy it,
+/// which is why this rule reads the guard itself. Five facts, and each of them
+/// has a mutation leg:
+///
+///   1. it reads `cpu_affinity` and separates the two pin kinds by
+///      `per_cpu_worker`, because slice 3d gave them opposite dispositions;
+///   2. it short-circuits when the destination the caller chose already IS the
+///      pinned CPU, so an on-home placement is not counted as a refusal;
+///   3. it bounds the pinned CPU by the online range before indexing a queue
+///      with it;
+///   4. it can answer BOTH ways -- at least one `true` and at least one
+///      `false` return. An "unconditional move" mutation removes the `true`
+///      answers and is exactly what this catches;
+///   5. when it does refuse, the thread goes to the pinned CPU's queue or its
+///      wake is held for that CPU by slice 3d's hold -- and to `taking_cpu`,
+///      the destination it just refused, on 0 of its arms.
+fn validate_pin_guard_refuses_a_foreign_placement(source: &str) -> Result<(), String> {
+    let body = function_body(source, "retain_cpu_affine_thread")
+        .ok_or("kernel/src/task/scheduler.rs defines no retain_cpu_affine_thread guard")?;
+    let compact = compact_code(body);
+
+    if !body.contains("cpu_affinity") {
+        return Err("the migration guard does not read Thread::cpu_affinity".into());
+    }
+    if !body.contains("per_cpu_worker") {
+        return Err(
+            "the migration guard does not separate a per-CPU worker pin from a hold pen".into(),
+        );
+    }
+    if !compact.contains("pin.cpu==taking_cpu") {
+        return Err(
+            "the migration guard does not short-circuit when the caller's destination is \
+             already the pinned CPU"
+                .into(),
+        );
+    }
+    if !compact.contains("pin.cpu>=self.online_cpu_count()") {
+        return Err(
+            "the migration guard indexes a queue by the pinned CPU without bounding it by the \
+             online range"
+                .into(),
+        );
+    }
+    let refusals = compact.matches("returntrue;").count() + compact.matches("}true}").count();
+    if refusals == 0 {
+        return Err(
+            "the migration guard has no arm that refuses: every path returns false, so every \
+             site places the thread exactly where it would have without the guard"
+                .into(),
+        );
+    }
+    if !compact.contains("returnfalse;") {
+        return Err(
+            "the migration guard never declines, so an unpinned thread no longer takes the \
+             caller's own placement"
+                .into(),
+        );
+    }
+    if !compact.contains("self.per_cpu_queues[pin.cpu].push_back(thread_id)") {
+        return Err("the migration guard never places the thread on the pinned CPU".into());
+    }
+    if !compact.contains("self.hold_pinned_wake_for_home(thread_id)") {
+        return Err(
+            "the migration guard does not use slice 3d's hold when the pinned CPU is not \
+             accepting wakeups"
+                .into(),
+        );
+    }
+    if !compact.contains("self.pinned_wake_is_waiting_here(thread_id,pin.cpu)") {
+        return Err(
+            "the migration guard holds a wake without checking that the hold is in the shape \
+             its delivery recognises"
+                .into(),
+        );
+    }
+    if compact.contains("per_cpu_queues[taking_cpu]") {
+        return Err(
+            "the migration guard places the thread on the very CPU whose placement it refused"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Each call of the guard decides a placement.
+///
+/// A site that called `retain_cpu_affine_thread` and discarded the answer would
+/// satisfy the census -- its body would contain the marker -- while migrating
+/// the thread anyway. So each call outside the definition must be the condition
+/// of an `if`, which is the 1 shape that can suppress the caller's own push.
+fn validate_pin_guard_calls_decide_the_placement(source: &str) -> Result<(), String> {
+    // Normalised rather than compacted: the receiver keeps its space from the
+    // `if`, so `if self.` cannot be misread as one identifier.
+    let normalised = normalized_code(source);
+    let mut searched = 0usize;
+    let mut calls = 0usize;
+    while let Some(relative) = normalised[searched..].find("retain_cpu_affine_thread(") {
+        let offset = searched + relative;
+        searched = offset + "retain_cpu_affine_thread(".len();
+        let before = &normalised[..offset];
+        if before.ends_with("fn ") {
+            continue;
+        }
+        calls += 1;
+        let conditional = ["if self.", "if !self.", "if sched.", "if !sched."]
+            .iter()
+            .any(|shape| before.ends_with(shape));
+        if !conditional {
+            return Err(format!(
+                "a retain_cpu_affine_thread call is not the condition of an if -- it reads \
+                 `...{}`, so its answer cannot suppress the caller's own placement",
+                &before[before.len().saturating_sub(48)..]
+            ));
+        }
+    }
+    if calls == 0 {
+        return Err("no site calls the migration guard".into());
+    }
+    Ok(())
+}
+
 fn validate_scheduling_paths_reclaim_unschedulable_cpu_queues(source: &str) -> Result<(), String> {
     for name in ["schedule", "schedule_deferred_requeue"] {
         let body = function_body(source, name).ok_or_else(|| format!("missing {name}"))?;
@@ -2304,12 +2429,12 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         (
             "docker/qemu/run-aarch64-boot-test-strict.sh",
             "BREENIX_STRICT_SCORE_ONLY",
-            "docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt",
+            "docs/planning/green-program/aarch64-testing/serials/slice3e/01-strict-boot1-serial.txt",
         ),
         (
             "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
             "BREENIX_PROD_SCORE_ONLY",
-            "docs/planning/green-program/aarch64-testing/serials/slice3d/02-prod-boot1-serial.txt",
+            "docs/planning/green-program/aarch64-testing/serials/slice3e/02-prod-boot1-serial.txt",
         ),
     ];
     let scratch =
@@ -2319,7 +2444,7 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         let serial = repo_text(baseline);
         assert!(
             serial.contains(
-                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]"
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]"
             ),
             "{baseline} is the green baseline for {gate} and must carry the census"
         );
@@ -2345,8 +2470,8 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         let (passed, output) = leg(
             "refused",
             &serial.replacen(
-                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
-                "[PINNED_HOME_CPU_UNAVAILABLE:count=3:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=3:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]",
                 1,
             ),
         );
@@ -2389,8 +2514,8 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         let (passed, output) = leg(
             "hold-pen",
             &serial.replacen(
-                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
-                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=2:delivered=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=2:delivered=0:migration_refused=0:stack_home_conflict=0]",
                 1,
             ),
         );
@@ -2398,7 +2523,137 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
             !passed,
             "{gate} passed a serial reporting a silently overridden hold-pen pin: {output}"
         );
+
+        // Leg F. A migration site refused to move a pinned thread. That is the
+        // field slice 3e added, and it is gated by the same whole-line
+        // comparison as the 4 before it -- which is what this leg measures, on
+        // the field that was not there yesterday.
+        // claim-lint:ok: 6 of 6 census fields are covered by the comparison,
+        // and 3 of them are varied by a leg here
+        let (passed, output) = leg(
+            "migration-refused",
+            &serial.replacen(
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=5:stack_home_conflict=0]",
+                1,
+            ),
+        );
+        assert!(
+            !passed,
+            "{gate} passed a serial reporting a refused migration: {output}"
+        );
     }
+
+    fs::remove_dir_all(&scratch).ok();
+}
+
+/// The strict gate scores slice 3e's pin-guard oracle, and the production gate
+/// refuses to see it at all.
+///
+/// Two directions, because the two gates want opposite things. On the strict
+/// profile the line must be there and must say PASS: a verdict of FAIL is the
+/// shape `origin/main` prints -- the FAIL line below is the one
+/// `serials/slice3e/03-red-on-main-oracle-serial.txt` carries, quoted rather
+/// than invented -- and a missing line is a kernel that stopped measuring. On
+/// the production profile the line must be absent, because the probe is
+/// boot-tests-only scaffolding and its presence would mean it reached a shipped
+/// kernel.
+/// claim-lint:ok: 4 of 4 legs here run the gates' own verdict code, and 3 of
+/// the 4 expect a red
+#[test]
+fn the_gates_score_the_pin_guard_oracle_in_opposite_directions() {
+    let scratch =
+        std::env::temp_dir().join(format!("breenix-pin-guard-gate-legs-{}", std::process::id()));
+    fs::create_dir_all(&scratch).expect("create the scratch directory for the oracle gate legs");
+    let leg = |name: &str, body: &str, gate: &str, variable: &str| {
+        let path = scratch.join(format!("{variable}-{name}.txt"));
+        fs::write(&path, body).expect("write an oracle gate leg serial");
+        score_with_gate(gate, variable, &path)
+    };
+
+    let strict = "docker/qemu/run-aarch64-boot-test-strict.sh";
+    let strict_serial = repo_text(
+        "docs/planning/green-program/aarch64-testing/serials/slice3e/01-strict-boot1-serial.txt",
+    );
+    let pass_line = strict_serial
+        .lines()
+        .find(|line| line.contains("[PIN_GUARD_ORACLE:aarch64:"))
+        .expect("the strict baseline carries the oracle line")
+        .to_string();
+    assert!(
+        pass_line.contains(":verdict=PASS]"),
+        "the strict baseline's oracle line must be the green one: {pass_line}"
+    );
+
+    // Leg A. Anti-vacuity: the gate accepts the serial it was recorded on.
+    let (passed, output) = leg("green", &strict_serial, strict, "BREENIX_STRICT_SCORE_ONLY");
+    assert!(
+        passed,
+        "{strict} must pass the serial it was recorded green on: {output}"
+    );
+
+    // Leg B. The oracle's verdict is FAIL -- the reading origin/main produces.
+    let red_line = repo_text(
+        "docs/planning/green-program/aarch64-testing/serials/slice3e/03-red-on-main-oracle-serial.txt",
+    )
+    .lines()
+    .find(|line| line.contains("[PIN_GUARD_ORACLE:aarch64:"))
+    .expect("the red-on-main capture carries the oracle line")
+    .to_string();
+    assert!(
+        red_line.contains(":verdict=FAIL]"),
+        "the red-on-main capture's oracle line must be the failing one: {red_line}"
+    );
+    let (passed, output) = leg(
+        "verdict-fail",
+        &strict_serial.replacen(pass_line.as_str(), red_line.as_str(), 1),
+        strict,
+        "BREENIX_STRICT_SCORE_ONLY",
+    );
+    assert!(
+        !passed,
+        "{strict} passed a serial whose pin-guard oracle reported FAIL: {output}"
+    );
+
+    // Leg C. The oracle line is gone. A gate that only fails on a FAIL verdict
+    // is satisfied by a kernel that stopped running the oracle.
+    let without_oracle: String = strict_serial
+        .lines()
+        .filter(|line| !line.contains("[PIN_GUARD_ORACLE:"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let (passed, output) = leg(
+        "missing",
+        &without_oracle,
+        strict,
+        "BREENIX_STRICT_SCORE_ONLY",
+    );
+    assert!(
+        !passed,
+        "{strict} passed a serial with no pin-guard oracle line at all: {output}"
+    );
+
+    // Leg D. The production gate must refuse the oracle's presence.
+    let production = "docker/qemu/run-aarch64-prod-profile-boot-test.sh";
+    let mut production_serial = repo_text(
+        "docs/planning/green-program/aarch64-testing/serials/slice3e/02-prod-boot1-serial.txt",
+    );
+    assert!(
+        !production_serial.contains("[PIN_GUARD_ORACLE:"),
+        "the production baseline must not carry the boot-tests-only oracle line"
+    );
+    production_serial.push_str(&pass_line);
+    production_serial.push('\n');
+    let (passed, output) = leg(
+        "oracle-in-production",
+        &production_serial,
+        production,
+        "BREENIX_PROD_SCORE_ONLY",
+    );
+    assert!(
+        !passed,
+        "{production} passed a serial carrying the boot-tests-only pin-guard oracle: {output}"
+    );
 
     fs::remove_dir_all(&scratch).ok();
 }
@@ -2422,13 +2677,18 @@ fn unschedulable_reclaim_validator_rejects_missing_deferred_reclaim() {
     assert!(validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&mutated).is_err());
 }
 
-/// A `cpu_affinity` guard is what slice 3e still owes each migration site
-/// below: a function in `kernel/src/task/scheduler.rs` that pushes a thread onto a
-/// `per_cpu_queues` slot without reading the pin anywhere in its own body --
-/// neither the `cpu_affinity` field nor `CpuPin` directly, nor through
-/// either of the 2 functions that read the field on this file's behalf
-/// (`find_target_cpu_for_wakeup`, the wake path's placement rule, and
-/// `pinned_wake_is_waiting_here`, the hold's delivery predicate).
+/// A pin-blind migration site: a function in `kernel/src/task/scheduler.rs`
+/// that pushes a thread onto a `per_cpu_queues` slot without reading the pin
+/// anywhere in its own body -- neither the `cpu_affinity` field nor `CpuPin`
+/// directly, nor through any of the 3 functions that read the field on this
+/// file's behalf (`find_target_cpu_for_wakeup`, the wake path's placement
+/// rule; `pinned_wake_is_waiting_here`, the hold's delivery predicate; and
+/// `retain_cpu_affine_thread`, slice 3e's migration guard).
+///
+/// Slice 3d enumerated 11 of these and owed the guard at 11 of 11. Slice 3e
+/// landed it, so the expected count below is 0: the number of places in this
+/// file that can move a thread between per-CPU queues without asking whether
+/// it is allowed to.
 ///
 /// Census-shaped, not a name list: this walks each `.push_back(` /
 /// `.push_front(` call on a `per_cpu_queues[..]` slot in the file and
@@ -2524,7 +2784,8 @@ fn pin_blind_migration_sites(source: &str) -> Vec<PinBlindSite> {
         let pin_aware = body.contains("cpu_affinity")
             || body.contains("CpuPin")
             || body.contains("find_target_cpu_for_wakeup(")
-            || body.contains("pinned_wake_is_waiting_here(");
+            || body.contains("pinned_wake_is_waiting_here(")
+            || body.contains("retain_cpu_affine_thread(");
         if pin_aware {
             continue;
         }
@@ -2589,31 +2850,167 @@ fn pin_blind_migration_sites(source: &str) -> Vec<PinBlindSite> {
     sites
 }
 
-/// Slice 3d's own R157 ruling left the reclaim and steal sites unguarded
-/// (SLICE3D-2026-09-05.md section 13, "What is not claimed"). This is the
-/// census that section's table now enumerates by file:line. The count is
-/// slice 3e's scope, not a claim that any of it is fixed here -- 0 threads
-/// carry a `per_cpu_worker` pin at runtime today, so each of these 11
-/// sites is inert in the same sense the rest of this slice's new arms are
-/// (section 4).
+/// Slice 3d's R157 ruling left 11 of 11 reclaim, steal and requeue sites
+/// unguarded and enumerated them (SLICE3D-2026-09-05.md section 13, "What is
+/// not claimed"). Slice 3e closed the list: the table in
+/// SLICE3E-2026-09-05.md names 11 of 11 with the consultation each one gained,
+/// and the count this rule pins is now 0.
+///
+/// It stays a census rather than becoming a "the guard is called 11 times"
+/// count, because the thing worth forbidding is a NEW pin-blind push, and a
+/// call count would not see one added inside a function that already calls the
+/// guard. The count is 0 exactly when no such push exists.
 #[test]
 fn pin_blind_migration_census_matches_the_slice_3e_table() {
     let source = repo_text("kernel/src/task/scheduler.rs");
     let sites = pin_blind_migration_sites(&source);
     assert_eq!(
         sites.len(),
-        11,
-        "kernel/src/task/scheduler.rs now has {} pin-blind per_cpu_queues \
-         migration sites (found: {:?}) but SLICE3D-2026-09-05.md section 13's \
-         census table has 11 rows; slice 3e owes the cpu_affinity guard at \
-         every one of them -- update that table to match before changing \
-         this expectation",
+        0,
+        "kernel/src/task/scheduler.rs has {} pin-blind per_cpu_queues \
+         migration sites (found: {:?}); slice 3e closed the 11 that \
+         SLICE3D-2026-09-05.md section 13 enumerated and SLICE3E-2026-09-05.md \
+         tables, so every migration site must consult the thread's pin before \
+         it pushes -- add the `retain_cpu_affine_thread` guard at the site, or \
+         table the new site and its argument before changing this expectation",
         sites.len(),
         sites
             .iter()
             .map(|s| format!("{}:{}({})", s.function, s.line, s.index_expr))
             .collect::<Vec<_>>()
     );
+}
+
+/// Anti-vacuity for the census above, in both directions. A rule that expects
+/// 0 is satisfied by a detector that finds 0 sites in any source at all, so the
+/// detector is fed 1 source it must count and 1 it must not.
+///
+/// These are synthetic fixtures rather than mutations of the live file so they
+/// run on each pass of the suite rather than only when someone remembers to
+/// mutate the kernel by hand.
+#[test]
+fn pin_blind_migration_census_counts_a_bare_push() {
+    let synthetic = "impl Scheduler {\n\
+        fn spare_migration_probe(&mut self, thread_id: u64, cpu: usize) {\n\
+            self.per_cpu_queues[cpu].push_back(thread_id);\n\
+        }\n\
+    }\n";
+    let sites = pin_blind_migration_sites(synthetic);
+    assert_eq!(
+        sites.len(),
+        1,
+        "the census must count a bare per_cpu_queues push that reads no pin \
+         (found: {:?})",
+        sites
+            .iter()
+            .map(|s| format!("{}({})", s.function, s.index_expr))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(sites[0].function, "spare_migration_probe");
+}
+
+#[test]
+fn pin_blind_migration_census_does_not_count_a_guarded_push() {
+    let synthetic = "impl Scheduler {\n\
+        fn spare_migration_probe(&mut self, thread_id: u64, cpu: usize) {\n\
+            if !self.retain_cpu_affine_thread(thread_id, cpu) {\n\
+                self.per_cpu_queues[cpu].push_back(thread_id);\n\
+            }\n\
+        }\n\
+    }\n";
+    assert!(
+        pin_blind_migration_sites(synthetic).is_empty(),
+        "the census must not count a push whose function consults the pin guard"
+    );
+}
+
+#[test]
+fn pin_guard_refuses_a_foreign_placement() {
+    validate_pin_guard_refuses_a_foreign_placement(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("the migration guard keeps a per-CPU worker on the CPU its pin names");
+}
+
+#[test]
+fn pin_guard_validator_rejects_an_unconditional_move() {
+    // The mutation the rule exists for: the guard still reads the pin, still
+    // counts, and then returns false on 1 of 1 remaining arm -- so 11 of 11
+    // sites place the thread exactly where they would have without a guard,
+    // while the census above stays green because the marker is still there.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+    let mutated_body = body.replace("return true;", "return false;");
+    let mutated_body = {
+        let tail = mutated_body
+            .rfind("        true\n")
+            .expect("the guard's trailing refusal");
+        format!(
+            "{}        false\n{}",
+            &mutated_body[..tail],
+            &mutated_body[tail + "        true\n".len()..]
+        )
+    };
+    assert_ne!(mutated_body, body, "fixture mutation must apply");
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_pin_guard_refuses_a_foreign_placement(&mutated).is_err());
+}
+
+#[test]
+fn pin_guard_validator_rejects_a_guard_that_never_places_on_the_pinned_cpu() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+    let mutated_body = body.replace(
+        "self.per_cpu_queues[pin.cpu].push_back(thread_id);",
+        "self.per_cpu_queues[taking_cpu].push_back(thread_id);",
+    );
+    assert_ne!(mutated_body, body, "fixture mutation must apply");
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_pin_guard_refuses_a_foreign_placement(&mutated).is_err());
+}
+
+#[test]
+fn pin_guard_validator_rejects_a_refusal_that_drops_the_hold() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+    let mutated_body = body.replace(
+        "self.hold_pinned_wake_for_home(thread_id);",
+        "let _ = thread_id;",
+    );
+    assert_ne!(mutated_body, body, "fixture mutation must apply");
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_pin_guard_refuses_a_foreign_placement(&mutated).is_err());
+}
+
+#[test]
+fn pin_guard_validator_rejects_an_unbounded_pinned_index() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+    let mutated_body = body.replace(
+        "if pin.cpu >= self.online_cpu_count() {",
+        "if pin.cpu >= MAX_CPUS {",
+    );
+    assert_ne!(mutated_body, body, "fixture mutation must apply");
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_pin_guard_refuses_a_foreign_placement(&mutated).is_err());
+}
+
+#[test]
+fn pin_guard_calls_decide_the_placement() {
+    validate_pin_guard_calls_decide_the_placement(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("every migration site acts on the guard's answer");
+}
+
+#[test]
+fn pin_guard_call_validator_rejects_a_discarded_answer() {
+    // A site that consults the pin and then pushes anyway: the census sees the
+    // marker and passes, so this is the rule that catches it.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let mutated = source.replacen(
+        "if !self.retain_cpu_affine_thread(previous, cpu) {\n                self.per_cpu_queues[cpu].push_back(previous);\n            }",
+        "let _ = self.retain_cpu_affine_thread(previous, cpu);\n            self.per_cpu_queues[cpu].push_back(previous);",
+        1,
+    );
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_pin_guard_calls_decide_the_placement(&mutated).is_err());
 }
 
 #[test]
