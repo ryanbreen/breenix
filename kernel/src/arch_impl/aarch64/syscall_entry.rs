@@ -1008,6 +1008,10 @@ fn restore_ttbr0_after_failed_exec(ttbr0: u64) {
         return;
     }
 
+    // The install block carries `nostack` and deliberately not `nomem`: the two
+    // shadow stores below have to stay on this side of the barriers, and
+    // `nomem` would tell the compiler the block touches no memory and leave it
+    // free to move them across. Compiler ordering only -- no instruction added.
     unsafe {
         core::arch::asm!(
             "dsb ishst",
@@ -1017,7 +1021,7 @@ fn restore_ttbr0_after_failed_exec(ttbr0: u64) {
             "dsb ish",
             "isb",
             in(reg) ttbr0,
-            options(nomem, nostack)
+            options(nostack)
         );
         Aarch64PerCpu::set_saved_process_cr3(ttbr0);
         Aarch64PerCpu::set_next_cr3(0);

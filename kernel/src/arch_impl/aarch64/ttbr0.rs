@@ -34,6 +34,17 @@ pub fn kernel_ttbr0() -> u64 {
 ///
 /// Exit, exec, and fault cleanup all use this implementation so none of them
 /// can retire a process page-table root while the CPU still has it installed.
+///
+/// The block carries `nostack` and deliberately not `nomem`. `nomem` tells the
+/// compiler the asm reads and writes no memory, which is a licence to move
+/// memory accesses across the block -- including the per-CPU shadow stores a
+/// caller makes around this install: `quiesce_ttbr0_for_exit` zeroes both
+/// words immediately after it. Without `nomem` the compiler must assume the
+/// block may read or write that same memory, so it keeps those accesses on the
+/// side of the block the source puts them on. That constrains the compiler
+/// only. No instruction is added, and no claim is made about what another CPU
+/// observes: the hardware ordering is still the `dsb ishst` before the `msr`
+/// and the `dsb ish; isb` after.
 #[inline(always)]
 pub fn switch_ttbr0_to_kernel() {
     let ttbr0 = kernel_ttbr0();
@@ -47,7 +58,7 @@ pub fn switch_ttbr0_to_kernel() {
             "dsb ish",
             "isb",
             ttbr0 = in(reg) ttbr0,
-            options(nomem, nostack)
+            options(nostack)
         );
     }
 }
@@ -79,6 +90,18 @@ pub fn switch_ttbr0_to_kernel() {
 /// this call the architectural register is the decision, so a pending "switch
 /// to some other root on the way out" request is either the same root or a
 /// stale one, and applying either on the return path is wrong.
+///
+/// The asm block carries `nostack` and deliberately not `nomem`. The two
+/// shadow stores below are the memory this install has to stay ordered
+/// against, and a caller's page-table stores are the memory that has to be
+/// settled before it; `nomem` would tell the compiler the block reads and
+/// writes no memory, leaving it free to move either across the barriers.
+/// Without `nomem` the compiler must assume the block may read or write that
+/// same memory, so it keeps those accesses on the side of the block the source
+/// puts them on. The change constrains the compiler only. No instruction is
+/// added, and no claim is made about what another CPU observes: the hardware
+/// ordering is still the `dsb ishst` before the `msr` and the `dsb ish; isb`
+/// after.
 #[inline(always)]
 pub fn adopt_process_ttbr0(ttbr0_value: u64) {
     unsafe {
@@ -90,7 +113,7 @@ pub fn adopt_process_ttbr0(ttbr0_value: u64) {
             "dsb ish",
             "isb",
             ttbr0 = in(reg) ttbr0_value,
-            options(nomem, nostack)
+            options(nostack)
         );
         super::percpu::Aarch64PerCpu::set_saved_process_cr3(ttbr0_value);
         super::percpu::Aarch64PerCpu::set_next_cr3(0);
