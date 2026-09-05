@@ -903,6 +903,16 @@ for i in $(seq 1 "$COUNT"); do
     CENSUS_WIDEN_ORACLE_LINE=$(grep -h -F "$CENSUS_WIDEN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$CENSUS_WIDEN_ORACLE_LINE"
+    # #796 and #812 both pass this gate by pinning a SKIP line the && chain
+    # above requires, but neither line was echoed here, so a preserved copy of
+    # this driver's stdout showed the verdict and not the evidence behind it.
+    # Echo the line the grep actually found, the way CENSUS_WIDEN does.
+    FCNTL_PM_CONTENTION_ORACLE_LINE=$(grep -h -F "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$FCNTL_PM_CONTENTION_ORACLE_LINE"
+    IRQ_HOLD_ORACLE_LINE=$(grep -h -F "$IRQ_HOLD_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$IRQ_HOLD_ORACLE_LINE"
     FUTEX_HANDOFF_ORACLE_LINE=$(grep -h -E "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FUTEX_HANDOFF_ORACLE_LINE"
