@@ -100,6 +100,17 @@ public enum Verdict: Codable, Equatable, Sendable {
             try container.encode(exitCode, forKey: .exitCode)
         }
     }
+
+    public var isFailure: Bool {
+        switch self {
+        case .fail, .attributed, .refused:
+            return true
+        case .gateScript(_, let exitCode):
+            return exitCode != 0
+        case .pass, .running, .unknown:
+            return false
+        }
+    }
 }
 
 public enum VerdictSource: Codable, Equatable, Sendable {

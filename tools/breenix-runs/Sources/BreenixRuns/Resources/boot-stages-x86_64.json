@@ -1,0 +1,1518 @@
+{
+  "schemaVersion": 1,
+  "arch": "x86_64",
+  "stages": [
+    {
+      "name": "Kernel entry point",
+      "marker": "Kernel entry point reached",
+      "failureMeaning": "Kernel failed to start at all",
+      "checkHint": "Bootloader configuration, kernel binary corrupted"
+    },
+    {
+      "name": "Serial port initialized",
+      "marker": "Serial port initialized and buffer flushed",
+      "failureMeaning": "Serial driver failed to initialize",
+      "checkHint": "serial::init() in kernel/src/serial.rs"
+    },
+    {
+      "name": "GDT and IDT initialized",
+      "marker": "GDT and IDT initialized",
+      "failureMeaning": "CPU descriptor tables not set up",
+      "checkHint": "interrupts::init() in kernel/src/interrupts/mod.rs"
+    },
+    {
+      "name": "GDT segment test passed",
+      "marker": "GDT segment test passed",
+      "failureMeaning": "Segment registers have wrong values or privilege levels",
+      "checkHint": "gdt_tests::test_gdt_segments() - CS/DS not Ring 0"
+    },
+    {
+      "name": "GDT readability test passed",
+      "marker": "GDT readability test passed",
+      "failureMeaning": "GDT not accessible via SGDT or wrong size",
+      "checkHint": "gdt_tests::test_gdt_readable() - check GDT base/limit"
+    },
+    {
+      "name": "User segment configuration test passed",
+      "marker": "User segment configuration test passed",
+      "failureMeaning": "User segments (Ring 3) not properly configured",
+      "checkHint": "gdt_tests::test_user_segments() - verify user code/data selectors 0x33/0x2B"
+    },
+    {
+      "name": "User segment descriptor validation passed",
+      "marker": "User segment descriptor validation passed",
+      "failureMeaning": "User segment descriptors have wrong DPL or flags",
+      "checkHint": "gdt_tests::test_user_segment_descriptors() - check descriptor bits"
+    },
+    {
+      "name": "TSS descriptor test passed",
+      "marker": "TSS descriptor test passed",
+      "failureMeaning": "TSS descriptor not present or has wrong type",
+      "checkHint": "gdt_tests::test_tss_descriptor() - verify TSS type and presence"
+    },
+    {
+      "name": "TSS.RSP0 test passed",
+      "marker": "TSS.RSP0 test passed",
+      "failureMeaning": "TSS.RSP0 not properly configured or misaligned",
+      "checkHint": "gdt_tests::test_tss_rsp0() - check kernel stack pointer"
+    },
+    {
+      "name": "GDT tests completed",
+      "marker": "GDT tests completed",
+      "failureMeaning": "GDT validation did not finish",
+      "checkHint": "gdt_tests::run_all_tests() in main.rs"
+    },
+    {
+      "name": "Per-CPU data initialized",
+      "marker": "Per-CPU data initialized",
+      "failureMeaning": "Per-CPU storage failed",
+      "checkHint": "per_cpu::init() - check GS base setup"
+    },
+    {
+      "name": "HAL per-CPU initialized",
+      "marker": "HAL_PERCPU_INITIALIZED",
+      "failureMeaning": "HAL per-CPU abstraction layer failed to initialize",
+      "checkHint": "per_cpu::init() HAL integration - verify X86PerCpu trait methods work"
+    },
+    {
+      "name": "Physical memory available",
+      "marker": "Physical memory offset available",
+      "failureMeaning": "Bootloader didn't map physical memory",
+      "checkHint": "BOOTLOADER_CONFIG in main.rs, check bootloader version"
+    },
+    {
+      "name": "PCI bus enumerated",
+      "marker": "PCI: Enumeration complete",
+      "failureMeaning": "PCI enumeration failed or found no devices",
+      "checkHint": "drivers::pci::enumerate() - check I/O port access (0xCF8/0xCFC)"
+    },
+    {
+      "name": "E1000 network device found",
+      "marker": "E1000 network device found",
+      "failureMeaning": "No E1000 network device detected on PCI bus - network I/O will fail",
+      "checkHint": "Check QEMU e1000 configuration, verify vendor ID 0x8086 and device ID 0x100E"
+    },
+    {
+      "name": "VirtIO block device found",
+      "marker": "[1af4:1001] VirtIO MassStorage",
+      "failureMeaning": "No VirtIO block device detected - disk I/O will fail",
+      "checkHint": "Check QEMU virtio-blk-pci configuration, verify vendor ID 0x1AF4 and device ID 0x1001/0x1042"
+    },
+    {
+      "name": "VirtIO block driver initialized",
+      "marker": "VirtIO block: Driver initialized with",
+      "failureMeaning": "VirtIO device initialization failed - queue setup or feature negotiation issue",
+      "checkHint": "drivers/virtio/block.rs - check queue size matches device (must use exact device size in legacy mode)"
+    },
+    {
+      "name": "VirtIO disk read successful",
+      "marker": "VirtIO block test: Read successful!",
+      "failureMeaning": "VirtIO disk I/O failed - cannot read from block device",
+      "checkHint": "drivers/virtio/block.rs:read_sector() - check descriptor chain setup and polling"
+    },
+    {
+      "name": "E1000 driver initialized",
+      "marker": "E1000 driver initialized",
+      "failureMeaning": "E1000 device initialization failed - MMIO mapping, MAC setup, or link configuration issue",
+      "checkHint": "drivers/e1000/mod.rs:init() - check MMIO BAR mapping, MAC address reading, and link status"
+    },
+    {
+      "name": "Network stack initialized",
+      "marker": "Network stack initialized",
+      "failureMeaning": "Network stack initialization failed - ARP cache or configuration issue",
+      "checkHint": "net/mod.rs:init() - check network configuration and ARP cache initialization"
+    },
+    {
+      "name": "ARP request sent successfully",
+      "marker": "ARP request sent successfully",
+      "failureMeaning": "Failed to send ARP request for gateway - E1000 transmit path broken",
+      "checkHint": "net/arp.rs:request() and drivers/e1000/mod.rs:transmit() - check TX descriptor setup and transmission"
+    },
+    {
+      "name": "ARP reply received and gateway MAC resolved",
+      "marker": "NET: ARP resolved gateway MAC:",
+      "failureMeaning": "ARP request was sent but no reply received - network RX path broken or gateway not responding",
+      "checkHint": "net/arp.rs:handle_arp() - check E1000 RX descriptor processing, interrupt handling, and ARP reply parsing"
+    },
+    {
+      "name": "ICMP echo reply received from gateway",
+      "marker": "NET: ICMP echo reply received from",
+      "failureMeaning": "Ping was sent but no reply received - ICMP handling broken or gateway not responding to ping",
+      "checkHint": "net/icmp.rs:handle_icmp() - check ICMP echo reply processing and IPv4 packet handling"
+    },
+    {
+      "name": "IST stacks updated",
+      "marker": "Updated IST stacks with per-CPU emergency",
+      "failureMeaning": "Interrupt stack tables not configured",
+      "checkHint": "gdt::update_ist_stacks() - IST stack allocation"
+    },
+    {
+      "name": "Initial TSS.RSP0 configured",
+      "marker": "Initial TSS.RSP0 set to",
+      "failureMeaning": "Kernel stack for Ring 3 transitions not set",
+      "checkHint": "gdt::set_tss_rsp0() before contract tests"
+    },
+    {
+      "name": "Contract tests passed",
+      "marker": "passed, 0 failed",
+      "failureMeaning": "Kernel invariants violated",
+      "checkHint": "contract_runner.rs - check which specific contract failed"
+    },
+    {
+      "name": "Heap allocation working",
+      "marker": "Heap allocation test passed",
+      "failureMeaning": "Kernel heap allocator broken",
+      "checkHint": "memory::init() - heap initialization"
+    },
+    {
+      "name": "TLS initialized",
+      "marker": "TLS initialized",
+      "failureMeaning": "Thread local storage failed",
+      "checkHint": "tls::init() - TLS region allocation"
+    },
+    {
+      "name": "SWAPGS support enabled",
+      "marker": "SWAPGS support enabled",
+      "failureMeaning": "User/kernel transition mechanism failed",
+      "checkHint": "tls::setup_swapgs_support() - MSR configuration"
+    },
+    {
+      "name": "PIC initialized",
+      "marker": "PIC initialized",
+      "failureMeaning": "Programmable Interrupt Controller failed",
+      "checkHint": "interrupts::init_pic() - 8259 PIC setup"
+    },
+    {
+      "name": "Timer initialized",
+      "marker": "Timer initialized",
+      "failureMeaning": "PIT timer not configured",
+      "checkHint": "time::init() - timer frequency setup"
+    },
+    {
+      "name": "HAL timer calibrated",
+      "marker": "HAL_TIMER_CALIBRATED",
+      "failureMeaning": "HAL timer abstraction layer failed to calibrate TSC",
+      "checkHint": "arch_impl/x86_64/timer.rs calibrate() - verify TSC calibration via HAL"
+    },
+    {
+      "name": "Syscall infrastructure ready",
+      "marker": "System call infrastructure initialized",
+      "failureMeaning": "INT 0x80 handler not installed",
+      "checkHint": "syscall::init() - IDT entry for syscalls"
+    },
+    {
+      "name": "Switched to kernel stack",
+      "marker": "Successfully switched to kernel stack",
+      "failureMeaning": "Failed to switch from bootstrap to kernel stack",
+      "checkHint": "stack_switch::switch_stack_and_call_with_arg()"
+    },
+    {
+      "name": "TSS.RSP0 verified",
+      "marker": "TSS.RSP0 verified at",
+      "failureMeaning": "TSS kernel stack pointer not properly set",
+      "checkHint": "per_cpu::update_tss_rsp0() after stack switch"
+    },
+    {
+      "name": "Threading subsystem ready",
+      "marker": "Threading subsystem initialized with init_task",
+      "failureMeaning": "Scheduler initialization failed",
+      "checkHint": "task::scheduler::init_with_current()"
+    },
+    {
+      "name": "Process management ready",
+      "marker": "Process management initialized",
+      "failureMeaning": "Process manager creation failed",
+      "checkHint": "process::init() - ProcessManager allocation"
+    },
+    {
+      "name": "First userspace process scheduled",
+      "marker": "RING3_SMOKE: created userspace PID",
+      "failureMeaning": "Failed to schedule first userspace process",
+      "checkHint": "process::creation::create_user_process() - ELF loading. This is a checkpoint - actual execution verified by stages 31-32"
+    },
+    {
+      "name": "Breakpoint test passed",
+      "marker": "Breakpoint test completed",
+      "failureMeaning": "int3 exception handler not working",
+      "checkHint": "IDT breakpoint handler in interrupts/mod.rs"
+    },
+    {
+      "name": "Kernel tests starting",
+      "marker": "Running kernel tests to create userspace processes",
+      "failureMeaning": "Test phase not reached",
+      "checkHint": "Check kernel initialization before tests"
+    },
+    {
+      "name": "Direct execution test: process scheduled",
+      "marker": "Direct execution test: process scheduled for execution",
+      "failureMeaning": "Failed to schedule direct execution test process",
+      "checkHint": "Check test_exec::test_direct_execution() and process creation logs. This is a checkpoint - actual execution verified by stage 31"
+    },
+    {
+      "name": "Fork test: process scheduled",
+      "marker": "Fork test: process scheduled for execution",
+      "failureMeaning": "Failed to schedule fork test process",
+      "checkHint": "Check test_exec::test_userspace_fork() and process creation logs. This is a checkpoint - actual execution verified by stage 31"
+    },
+    {
+      "name": "ENOSYS test: process scheduled",
+      "marker": "ENOSYS test: process scheduled for execution",
+      "failureMeaning": "Failed to schedule ENOSYS test process",
+      "checkHint": "Check test_exec::test_syscall_enosys() and process creation logs. This is a checkpoint - actual execution verified by stage 32"
+    },
+    {
+      "name": "Precondition 1: IDT timer entry",
+      "marker": "PRECONDITION 1: IDT timer entry ✓ PASS",
+      "failureMeaning": "IDT timer entry not properly configured",
+      "checkHint": "interrupts::validate_timer_idt_entry() - verify IDT entry for IRQ0 (vector 32)"
+    },
+    {
+      "name": "Precondition 2: Timer handler registered",
+      "marker": "PRECONDITION 2: Timer handler registered ✓ PASS",
+      "failureMeaning": "Timer interrupt handler not registered",
+      "checkHint": "Check IDT entry for IRQ0 points to timer_interrupt_entry (same as Precondition 1)"
+    },
+    {
+      "name": "Precondition 3: PIT counter active",
+      "marker": "PRECONDITION 3: PIT counter ✓ PASS",
+      "failureMeaning": "PIT (Programmable Interval Timer) hardware not counting",
+      "checkHint": "time::timer::validate_pit_counting() - verify PIT counter changing between reads"
+    },
+    {
+      "name": "Precondition 4: PIC IRQ0 unmasked",
+      "marker": "PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS",
+      "failureMeaning": "IRQ0 is masked in PIC - timer interrupts will not fire",
+      "checkHint": "interrupts::validate_pic_irq0_unmasked() - verify bit 0 of PIC1 mask register is clear"
+    },
+    {
+      "name": "Precondition 5: Runnable threads exist",
+      "marker": "PRECONDITION 5: Scheduler has runnable threads ✓ PASS",
+      "failureMeaning": "Scheduler has no runnable threads - timer interrupt has nothing to schedule",
+      "checkHint": "task::scheduler::has_runnable_threads() - verify userspace processes were created"
+    },
+    {
+      "name": "Precondition 6: Current thread set",
+      "marker": "PRECONDITION 6: Current thread set ✓ PASS",
+      "failureMeaning": "Current thread not set in per-CPU data",
+      "checkHint": "per_cpu::current_thread() - verify returns Some(thread) with valid pointer"
+    },
+    {
+      "name": "Precondition 7: Interrupts disabled",
+      "marker": "PRECONDITION 7: Interrupts disabled ✓ PASS",
+      "failureMeaning": "Interrupts already enabled - precondition validation should run with interrupts off",
+      "checkHint": "interrupts::are_interrupts_enabled() - verify RFLAGS.IF is clear"
+    },
+    {
+      "name": "All preconditions passed",
+      "marker": "ALL PRECONDITIONS PASSED",
+      "failureMeaning": "Summary check failed - not all individual preconditions passed",
+      "checkHint": "Check which specific precondition failed above (stages 35-41)"
+    },
+    {
+      "name": "Kernel timer arithmetic check",
+      "marker": "Timer resolution test passed",
+      "failureMeaning": "Basic timer arithmetic broken (ticks * 10 != get_monotonic_time())",
+      "checkHint": "time_test::test_timer_resolution() - trivial check that timer math is consistent with itself (not actual resolution validation)"
+    },
+    {
+      "name": "Kernel clock_gettime API test",
+      "marker": "clock_gettime tests passed",
+      "failureMeaning": "Kernel-internal clock_gettime function broken (not userspace test)",
+      "checkHint": "clock_gettime_test::test_clock_gettime() - calls clock_gettime() from kernel context only, does NOT test Ring 3 syscall path or userspace execution"
+    },
+    {
+      "name": "Kernel initialization complete",
+      "marker": "Kernel initialization complete",
+      "failureMeaning": "Something failed before enabling interrupts",
+      "checkHint": "Check logs above - this must print BEFORE interrupts enabled"
+    },
+    {
+      "name": "Interrupts enabled",
+      "marker": "scheduler::schedule() returned",
+      "failureMeaning": "Interrupts not enabled or scheduler not running",
+      "checkHint": "x86_64::instructions::interrupts::enable() and scheduler::schedule()"
+    },
+    {
+      "name": "Ring 3 execution confirmed",
+      "marker": "RING3_SYSCALL: First syscall from userspace",
+      "failureMeaning": "IRETQ may have succeeded but userspace did not execute or trigger a syscall",
+      "checkHint": "syscall/handler.rs - emit_ring3_syscall_marker() emits on first Ring 3 syscall"
+    },
+    {
+      "name": "Userspace hello printed",
+      "marker": "Hello from userspace",
+      "failureMeaning": "hello_time.elf did not print output",
+      "checkHint": "Check if hello_time.elf actually executed and printed to stdout"
+    },
+    {
+      "name": "Userspace clock_gettime validated",
+      "marker": "USERSPACE CLOCK_GETTIME: OK",
+      "failureMeaning": "Userspace process called clock_gettime syscall but got zero time or syscall failed",
+      "checkHint": "Verify syscall dispatch to SYS_clock_gettime (228) works from userspace and returns non-zero time"
+    },
+    {
+      "name": "Userspace brk syscall validated",
+      "marker": "USERSPACE BRK: ALL TESTS PASSED",
+      "failureMeaning": "brk() syscall failed - heap expansion/contraction or memory access broken",
+      "checkHint": "Check sys_brk in syscall/memory.rs, verify page table mapping and heap_start/heap_end tracking"
+    },
+    {
+      "name": "Userspace mmap/munmap syscalls validated",
+      "marker": "USERSPACE MMAP: ALL TESTS PASSED",
+      "failureMeaning": "mmap/munmap syscalls failed - anonymous mapping or unmapping broken",
+      "checkHint": "Check sys_mmap/sys_munmap in syscall/mmap.rs, verify VMA tracking and page table operations"
+    },
+    {
+      "name": "Diagnostic: Summary",
+      "marker": "✓ All diagnostic tests passed",
+      "failureMeaning": "Not all diagnostic tests passed - see individual test results above",
+      "checkHint": "Check syscall_diagnostic_test output for failures"
+    },
+    {
+      "name": "Signal handler execution verified",
+      "marker": "SIGNAL_HANDLER_EXECUTED",
+      "failureMeaning": "Signal handler was not executed when signal was delivered",
+      "checkHint": "Check syscall/signal.rs:sys_sigaction() and signal delivery path"
+    },
+    {
+      "name": "Signal handler return verified",
+      "marker": "SIGNAL_RETURN_WORKS",
+      "failureMeaning": "Signal handler did not return correctly via sigreturn trampoline",
+      "checkHint": "Check syscall/signal.rs:sys_sigreturn() and signal trampoline setup"
+    },
+    {
+      "name": "Signal register preservation verified",
+      "marker": "SIGNAL_REGS_PRESERVED",
+      "failureMeaning": "Registers were not properly preserved across signal delivery and return",
+      "checkHint": "Check signal context save/restore in syscall/signal.rs and sigreturn implementation"
+    },
+    {
+      "name": "sigaltstack() syscall verified",
+      "marker": "SIGALTSTACK_TEST_PASSED",
+      "failureMeaning": "sigaltstack() syscall failed - alternate signal stacks not working",
+      "checkHint": "Check syscall/signal.rs:sys_sigaltstack() and SA_ONSTACK support"
+    },
+    {
+      "name": "UDP socket created from userspace",
+      "marker": "UDP: Socket created fd=",
+      "failureMeaning": "sys_socket syscall failed from userspace",
+      "checkHint": "Check syscall/socket.rs:sys_socket() and socket module initialization"
+    },
+    {
+      "name": "UDP socket bound to port",
+      "marker": "UDP: Socket bound to port",
+      "failureMeaning": "sys_bind syscall failed - socket registry or port binding broken",
+      "checkHint": "Check syscall/socket.rs:sys_bind() and socket::SOCKET_REGISTRY"
+    },
+    {
+      "name": "UDP packet sent from userspace",
+      "marker": "UDP: Packet sent successfully",
+      "failureMeaning": "sys_sendto syscall failed - UDP TX path broken",
+      "checkHint": "Check syscall/socket.rs:sys_sendto(), net/udp.rs:build_udp_packet()"
+    },
+    {
+      "name": "UDP RX socket created and bound",
+      "marker": "UDP: RX socket bound to port 54321",
+      "failureMeaning": "Failed to create or bind RX socket",
+      "checkHint": "Check syscall/socket.rs:sys_socket() and sys_bind()"
+    },
+    {
+      "name": "UDP loopback packet sent",
+      "marker": "UDP: Loopback packet sent",
+      "failureMeaning": "Failed to send packet to ourselves",
+      "checkHint": "Check net/udp.rs:build_udp_packet() and send_ipv4() for loopback handling"
+    },
+    {
+      "name": "UDP packet delivered to socket RX queue",
+      "marker": "UDP: Delivered packet to socket on port",
+      "failureMeaning": "Packet arrived but was not delivered to socket - RX delivery path broken",
+      "checkHint": "Check net/udp.rs:deliver_to_socket()"
+    },
+    {
+      "name": "UDP packet received from userspace",
+      "marker": "UDP: Received packet",
+      "failureMeaning": "sys_recvfrom syscall failed or returned no data",
+      "checkHint": "Check syscall/socket.rs:sys_recvfrom() and socket/udp.rs:recv_from()"
+    },
+    {
+      "name": "UDP RX data verified",
+      "marker": "UDP: RX data matches TX data - SUCCESS",
+      "failureMeaning": "Received packet but data was corrupted",
+      "checkHint": "Check packet data integrity in RX path"
+    },
+    {
+      "name": "UDP ephemeral port bind",
+      "marker": "UDP_EPHEMERAL_TEST: port 0 bind OK",
+      "failureMeaning": "bind(port=0) failed - ephemeral port allocation broken",
+      "checkHint": "Check syscall/socket.rs:sys_bind() for port 0 handling"
+    },
+    {
+      "name": "UDP EADDRINUSE detection",
+      "marker": "UDP_EADDRINUSE_TEST: conflict detected OK",
+      "failureMeaning": "Binding to already-bound port did not return EADDRINUSE",
+      "checkHint": "Check kernel port conflict detection in UDP bind path"
+    },
+    {
+      "name": "UDP EAGAIN on empty queue",
+      "marker": "UDP_EAGAIN_TEST: empty queue OK",
+      "failureMeaning": "recvfrom on empty queue did not return EAGAIN",
+      "checkHint": "Check syscall/socket.rs:sys_recvfrom() EAGAIN handling"
+    },
+    {
+      "name": "UDP multiple packets received",
+      "marker": "UDP_MULTIPACKET_TEST: 3 packets OK",
+      "failureMeaning": "Failed to receive 3 packets in sequence",
+      "checkHint": "Check net/udp.rs packet queuing and delivery"
+    },
+    {
+      "name": "UDP socket test completed",
+      "marker": "UDP Socket Test: All tests passed",
+      "failureMeaning": "UDP socket test did not complete successfully",
+      "checkHint": "Check userspace/programs/udp_socket_test.rs for which step failed"
+    },
+    {
+      "name": "TCP socket created",
+      "marker": "TCP_TEST: socket created OK",
+      "failureMeaning": "sys_socket(SOCK_STREAM) failed from userspace",
+      "checkHint": "Check syscall/socket.rs:sys_socket() for SOCK_STREAM support"
+    },
+    {
+      "name": "TCP socket bound",
+      "marker": "TCP_TEST: bind OK",
+      "failureMeaning": "sys_bind for TCP socket failed",
+      "checkHint": "Check syscall/socket.rs:sys_bind() for TCP socket handling"
+    },
+    {
+      "name": "TCP socket listening",
+      "marker": "TCP_TEST: listen OK",
+      "failureMeaning": "sys_listen failed",
+      "checkHint": "Check syscall/socket.rs:sys_listen() implementation"
+    },
+    {
+      "name": "TCP client socket created",
+      "marker": "TCP_TEST: client socket OK",
+      "failureMeaning": "Second TCP socket creation failed",
+      "checkHint": "Check fd allocation or socket creation in sys_socket()"
+    },
+    {
+      "name": "TCP connect executed",
+      "marker": "TCP_TEST: connect OK",
+      "failureMeaning": "sys_connect failed",
+      "checkHint": "Check syscall/socket.rs:sys_connect()"
+    },
+    {
+      "name": "TCP accept executed",
+      "marker": "TCP_TEST: accept OK",
+      "failureMeaning": "sys_accept returned unexpected error",
+      "checkHint": "Check syscall/socket.rs:sys_accept()"
+    },
+    {
+      "name": "TCP shutdown executed",
+      "marker": "TCP_TEST: shutdown OK",
+      "failureMeaning": "sys_shutdown(SHUT_RDWR) failed",
+      "checkHint": "Check syscall/socket.rs:sys_shutdown()"
+    },
+    {
+      "name": "TCP shutdown unconnected rejected",
+      "marker": "TCP_TEST: shutdown_unconnected OK",
+      "failureMeaning": "sys_shutdown on unconnected socket did not return ENOTCONN",
+      "checkHint": "Check sys_shutdown() ENOTCONN handling"
+    },
+    {
+      "name": "TCP EADDRINUSE detected",
+      "marker": "TCP_TEST: eaddrinuse OK",
+      "failureMeaning": "Binding to already-bound port did not return EADDRINUSE",
+      "checkHint": "Check kernel port conflict detection in sys_bind()"
+    },
+    {
+      "name": "TCP listen unbound rejected",
+      "marker": "TCP_TEST: listen_unbound OK",
+      "failureMeaning": "listen() on unbound socket did not return EINVAL",
+      "checkHint": "Check sys_listen() validates socket is bound first"
+    },
+    {
+      "name": "TCP accept nonlisten rejected",
+      "marker": "TCP_TEST: accept_nonlisten OK",
+      "failureMeaning": "accept() on non-listening socket did not return error",
+      "checkHint": "Check sys_accept() validates socket is in listen state"
+    },
+    {
+      "name": "TCP data test started",
+      "marker": "TCP_DATA_TEST: starting",
+      "failureMeaning": "TCP data transfer test did not start",
+      "checkHint": "Check tcp_socket_test.rs test 12 section"
+    },
+    {
+      "name": "TCP data server listening",
+      "marker": "TCP_DATA_TEST: server listening on 8082",
+      "failureMeaning": "TCP data test server failed to bind/listen",
+      "checkHint": "Check sys_bind/sys_listen for TCP sockets"
+    },
+    {
+      "name": "TCP data client connected",
+      "marker": "TCP_DATA_TEST: client connected",
+      "failureMeaning": "TCP data test client failed to connect",
+      "checkHint": "Check sys_connect for loopback TCP connections"
+    },
+    {
+      "name": "TCP data send",
+      "marker": "TCP_DATA_TEST: send OK",
+      "failureMeaning": "write() on TCP socket failed",
+      "checkHint": "Check syscall/io.rs:sys_write() for TCP socket support"
+    },
+    {
+      "name": "TCP data accept",
+      "marker": "TCP_DATA_TEST: accept OK",
+      "failureMeaning": "accept() on data test server failed after connect",
+      "checkHint": "Check sys_accept() loopback connection queuing"
+    },
+    {
+      "name": "TCP data recv",
+      "marker": "TCP_DATA_TEST: recv OK",
+      "failureMeaning": "read() on accepted TCP socket failed",
+      "checkHint": "Check syscall/io.rs:sys_read() for TCP socket support"
+    },
+    {
+      "name": "TCP data verified",
+      "marker": "TCP_DATA_TEST: data verified",
+      "failureMeaning": "Received TCP data did not match sent data",
+      "checkHint": "Check tcp_send/tcp_recv implementation"
+    },
+    {
+      "name": "TCP post-shutdown write test started",
+      "marker": "TCP_SHUTDOWN_WRITE_TEST: starting",
+      "failureMeaning": "Post-shutdown write test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP write after shutdown rejected with EPIPE",
+      "marker": "TCP_SHUTDOWN_WRITE_TEST: EPIPE OK",
+      "failureMeaning": "Write after SHUT_WR was not rejected with EPIPE",
+      "checkHint": "Check tcp_send returns EPIPE when send_shutdown=true"
+    },
+    {
+      "name": "TCP SHUT_RD test started",
+      "marker": "TCP_SHUT_RD_TEST: starting",
+      "failureMeaning": "SHUT_RD test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP SHUT_RD returns EOF",
+      "marker": "TCP_SHUT_RD_TEST:",
+      "failureMeaning": "Read after SHUT_RD did not return EOF",
+      "checkHint": "Check tcp_recv honors recv_shutdown flag"
+    },
+    {
+      "name": "TCP SHUT_WR test started",
+      "marker": "TCP_SHUT_WR_TEST: starting",
+      "failureMeaning": "SHUT_WR test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP SHUT_WR succeeded",
+      "marker": "TCP_SHUT_WR_TEST: SHUT_WR write rejected OK",
+      "failureMeaning": "shutdown(SHUT_WR) failed",
+      "checkHint": "Check sys_shutdown handling of SHUT_WR"
+    },
+    {
+      "name": "TCP bidirectional test started",
+      "marker": "TCP_BIDIR_TEST: starting",
+      "failureMeaning": "Bidirectional data test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP server->client data verified",
+      "marker": "TCP_BIDIR_TEST: server->client OK",
+      "failureMeaning": "Server-to-client TCP data transfer failed",
+      "checkHint": "Check tcp_send/tcp_recv for accepted connection fd"
+    },
+    {
+      "name": "TCP large data test started",
+      "marker": "TCP_LARGE_TEST: starting",
+      "failureMeaning": "Large data test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP 256 bytes verified",
+      "marker": "TCP_LARGE_TEST: 256 bytes verified OK",
+      "failureMeaning": "256-byte TCP transfer failed or corrupted",
+      "checkHint": "Check buffer handling in tcp_send/tcp_recv for larger data"
+    },
+    {
+      "name": "TCP backlog test started",
+      "marker": "TCP_BACKLOG_TEST: starting",
+      "failureMeaning": "Backlog test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP backlog test passed",
+      "marker": "TCP_BACKLOG_TEST:",
+      "failureMeaning": "Backlog overflow test failed",
+      "checkHint": "Check tcp_listen backlog parameter handling"
+    },
+    {
+      "name": "TCP ECONNREFUSED test started",
+      "marker": "TCP_CONNREFUSED_TEST: starting",
+      "failureMeaning": "ECONNREFUSED test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP ECONNREFUSED test passed",
+      "marker": "TCP_CONNREFUSED_TEST:",
+      "failureMeaning": "Connect to non-listening port did not fail properly",
+      "checkHint": "Check tcp_connect error handling"
+    },
+    {
+      "name": "TCP MSS test started",
+      "marker": "TCP_MSS_TEST: starting",
+      "failureMeaning": "MSS boundary test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP MSS test passed",
+      "marker": "TCP_MSS_TEST: 2000 bytes",
+      "failureMeaning": "Data > MSS (1460) failed to transfer",
+      "checkHint": "Check TCP segmentation for large data"
+    },
+    {
+      "name": "TCP multi-cycle test started",
+      "marker": "TCP_MULTI_TEST: starting",
+      "failureMeaning": "Multi-cycle test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP multi-cycle test passed",
+      "marker": "TCP_MULTI_TEST: 3 messages",
+      "failureMeaning": "Multiple write/read cycles failed",
+      "checkHint": "Check TCP connection state management"
+    },
+    {
+      "name": "TCP address test started",
+      "marker": "TCP_ADDR_TEST: starting",
+      "failureMeaning": "Client address test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP address test passed",
+      "marker": "TCP_ADDR_TEST: 10.x.x.x OK",
+      "failureMeaning": "Accept did not return client address correctly",
+      "checkHint": "Check sys_accept address output handling"
+    },
+    {
+      "name": "TCP simultaneous close test started",
+      "marker": "TCP_SIMUL_CLOSE_TEST: starting",
+      "failureMeaning": "Simultaneous close test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP simultaneous close test passed",
+      "marker": "TCP_SIMUL_CLOSE_TEST: simultaneous close OK",
+      "failureMeaning": "Both sides calling shutdown simultaneously failed",
+      "checkHint": "Check sys_shutdown handling when both sides close"
+    },
+    {
+      "name": "TCP half-close test started",
+      "marker": "TCP_HALFCLOSE_TEST: starting",
+      "failureMeaning": "Half-close test did not start",
+      "checkHint": "Previous test may have failed"
+    },
+    {
+      "name": "TCP half-close test passed",
+      "marker": "TCP_HALFCLOSE_TEST: read after SHUT_WR OK",
+      "failureMeaning": "Client could not read data after calling SHUT_WR",
+      "checkHint": "Check tcp_recv - recv_shutdown should only be set by SHUT_RD"
+    },
+    {
+      "name": "TCP socket test passed",
+      "marker": "TCP Socket Test: PASSED",
+      "failureMeaning": "TCP socket test did not complete successfully",
+      "checkHint": "Check userspace/programs/tcp_socket_test.rs for which step failed"
+    },
+    {
+      "name": "DNS google resolve",
+      "marker": "DNS_TEST: google_resolve OK|DNS_TEST: google_resolve SKIP",
+      "failureMeaning": "DNS resolution of www.google.com failed",
+      "checkHint": "Check libs/libbreenix/src/dns.rs:resolve() and UDP socket path"
+    },
+    {
+      "name": "DNS example resolve",
+      "marker": "DNS_TEST: example_resolve OK|DNS_TEST: example_resolve SKIP",
+      "failureMeaning": "DNS resolution of example.com failed",
+      "checkHint": "Check libs/libbreenix/src/dns.rs"
+    },
+    {
+      "name": "DNS NXDOMAIN handling",
+      "marker": "DNS_TEST: nxdomain OK",
+      "failureMeaning": "NXDOMAIN handling for nonexistent domain failed",
+      "checkHint": "Check libs/libbreenix/src/dns.rs RCODE 3 handling"
+    },
+    {
+      "name": "DNS empty hostname",
+      "marker": "DNS_TEST: empty_hostname OK",
+      "failureMeaning": "Empty hostname validation failed",
+      "checkHint": "Check dns.rs resolve() InvalidHostname for empty string"
+    },
+    {
+      "name": "DNS long hostname",
+      "marker": "DNS_TEST: long_hostname OK",
+      "failureMeaning": "Hostname too long validation failed",
+      "checkHint": "Check dns.rs resolve() HostnameTooLong for >255 char hostname"
+    },
+    {
+      "name": "DNS txid varies",
+      "marker": "DNS_TEST: txid_varies OK|DNS_TEST: txid_varies SKIP",
+      "failureMeaning": "Transaction ID variation test failed",
+      "checkHint": "Check dns.rs generate_txid() produces different IDs"
+    },
+    {
+      "name": "DNS test completed",
+      "marker": "DNS Test: All tests passed",
+      "failureMeaning": "DNS test did not complete successfully",
+      "checkHint": "Check userspace/programs/dns_test.rs for which step failed"
+    },
+    {
+      "name": "HTTP port out of range",
+      "marker": "HTTP_TEST: port_out_of_range OK",
+      "failureMeaning": "HTTP client should reject port > 65535",
+      "checkHint": "Check libs/libbreenix/src/http.rs parse_port()"
+    },
+    {
+      "name": "HTTP port non-numeric",
+      "marker": "HTTP_TEST: port_non_numeric OK",
+      "failureMeaning": "HTTP client should reject non-numeric port",
+      "checkHint": "Check libs/libbreenix/src/http.rs parse_port()"
+    },
+    {
+      "name": "HTTP empty host",
+      "marker": "HTTP_TEST: empty_host OK",
+      "failureMeaning": "HTTP client should reject empty host",
+      "checkHint": "Check libs/libbreenix/src/http.rs parse_url()"
+    },
+    {
+      "name": "HTTP URL too long",
+      "marker": "HTTP_TEST: url_too_long OK",
+      "failureMeaning": "HTTP client should reject URL > 2048 chars",
+      "checkHint": "Check libs/libbreenix/src/http.rs MAX_URL_LEN check"
+    },
+    {
+      "name": "HTTP HTTPS rejection",
+      "marker": "HTTP_TEST: https_rejected OK",
+      "failureMeaning": "HTTP client should reject HTTPS URLs",
+      "checkHint": "Check libs/libbreenix/src/http.rs HTTPS check"
+    },
+    {
+      "name": "HTTP invalid domain",
+      "marker": "HTTP_TEST: invalid_domain OK",
+      "failureMeaning": "HTTP client should return DnsError for .invalid TLD",
+      "checkHint": "Check libs/libbreenix/src/http.rs and dns.rs"
+    },
+    {
+      "name": "HTTP example fetch",
+      "marker": "HTTP_TEST: example_fetch OK|HTTP_TEST: example_fetch SKIP",
+      "failureMeaning": "HTTP GET to example.com failed with unexpected error",
+      "checkHint": "Check libs/libbreenix/src/http.rs"
+    },
+    {
+      "name": "HTTP test completed",
+      "marker": "HTTP Test: All tests passed",
+      "failureMeaning": "HTTP test did not complete successfully",
+      "checkHint": "Check userspace/programs/http_test.rs for which step failed"
+    },
+    {
+      "name": "Pipe IPC test passed",
+      "marker": "PIPE_TEST_PASSED",
+      "failureMeaning": "pipe() syscall test failed",
+      "checkHint": "Check kernel/src/syscall/pipe.rs and kernel/src/ipc/pipe.rs"
+    },
+    {
+      "name": "Unix socket test passed",
+      "marker": "UNIX_SOCKET_TEST_PASSED",
+      "failureMeaning": "Unix domain socket test failed",
+      "checkHint": "Check kernel/src/syscall/socket.rs Unix socket handling"
+    },
+    {
+      "name": "SIGTERM kill test passed",
+      "marker": "SIGNAL_KILL_TEST_PASSED",
+      "failureMeaning": "SIGTERM kill test failed",
+      "checkHint": "Check signal/delivery.rs, context_switch signal delivery path"
+    },
+    {
+      "name": "SIGCHLD delivery test passed",
+      "marker": "SIGCHLD_TEST_PASSED",
+      "failureMeaning": "SIGCHLD delivery test failed",
+      "checkHint": "Check task/process_task.rs handle_thread_exit() SIGCHLD handling"
+    },
+    {
+      "name": "Pause syscall test passed",
+      "marker": "PAUSE_TEST_PASSED",
+      "failureMeaning": "pause() syscall test failed",
+      "checkHint": "Check syscall/signal.rs:sys_pause()"
+    },
+    {
+      "name": "Sigsuspend syscall test passed",
+      "marker": "SIGSUSPEND_TEST_PASSED",
+      "failureMeaning": "sigsuspend() syscall test failed",
+      "checkHint": "Check syscall/signal.rs:sys_sigsuspend()"
+    },
+    {
+      "name": "Dup syscall test passed",
+      "marker": "DUP_TEST_PASSED",
+      "failureMeaning": "dup() syscall test failed",
+      "checkHint": "Check syscall/io.rs:sys_dup() and fd table management"
+    },
+    {
+      "name": "Fcntl syscall test passed",
+      "marker": "FCNTL_TEST_PASSED",
+      "failureMeaning": "fcntl() syscall test failed",
+      "checkHint": "Check syscall/handlers.rs:sys_fcntl()"
+    },
+    {
+      "name": "Close-on-exec test passed",
+      "marker": "CLOEXEC_TEST_PASSED",
+      "failureMeaning": "close-on-exec test failed",
+      "checkHint": "Check process/manager.rs exec_process_with_argv() FD_CLOEXEC handling"
+    },
+    {
+      "name": "Pipe2 syscall test passed",
+      "marker": "PIPE2_TEST_PASSED",
+      "failureMeaning": "pipe2() syscall test failed",
+      "checkHint": "Check syscall/pipe.rs:sys_pipe2()"
+    },
+    {
+      "name": "Shell pipeline execution test passed",
+      "marker": "SHELL_PIPE_TEST_PASSED",
+      "failureMeaning": "Shell pipeline test failed",
+      "checkHint": "Check dup2() in syscall/fd.rs, pipe in ipc/pipe.rs"
+    },
+    {
+      "name": "Signal exec reset test passed",
+      "marker": "SIGNAL_EXEC_TEST_PASSED",
+      "failureMeaning": "signal exec reset test failed",
+      "checkHint": "Check process/manager.rs:exec_process() signal handler reset"
+    },
+    {
+      "name": "Waitpid test passed",
+      "marker": "WAITPID_TEST_PASSED",
+      "failureMeaning": "waitpid test failed",
+      "checkHint": "Check syscall/process.rs:sys_wait4()"
+    },
+    {
+      "name": "Signal fork inheritance test passed",
+      "marker": "SIGNAL_FORK_TEST_PASSED",
+      "failureMeaning": "signal fork inheritance test failed",
+      "checkHint": "Check process/fork.rs signal handler cloning"
+    },
+    {
+      "name": "WNOHANG timing test passed",
+      "marker": "WNOHANG_TIMING_TEST_PASSED",
+      "failureMeaning": "WNOHANG timing test failed",
+      "checkHint": "Check syscall/process.rs:sys_wait4() WNOHANG handling"
+    },
+    {
+      "name": "Poll syscall test passed",
+      "marker": "POLL_TEST_PASSED",
+      "failureMeaning": "poll() syscall test failed",
+      "checkHint": "Check syscall/handlers.rs:sys_poll()"
+    },
+    {
+      "name": "Select syscall test passed",
+      "marker": "SELECT_TEST_PASSED",
+      "failureMeaning": "select() syscall test failed",
+      "checkHint": "Check syscall/handlers.rs:sys_select()"
+    },
+    {
+      "name": "O_NONBLOCK pipe test passed",
+      "marker": "NONBLOCK_TEST_PASSED",
+      "failureMeaning": "O_NONBLOCK pipe test failed",
+      "checkHint": "Check sys_read()/sys_write() O_NONBLOCK handling"
+    },
+    {
+      "name": "TTY layer test passed",
+      "marker": "TTY_TEST_PASSED",
+      "failureMeaning": "TTY layer test failed",
+      "checkHint": "Check tty/ module, syscall/ioctl.rs"
+    },
+    {
+      "name": "Session syscall test passed",
+      "marker": "SESSION_TEST_PASSED",
+      "failureMeaning": "session/process group syscall test failed",
+      "checkHint": "Check syscall/process.rs session/pgid functions"
+    },
+    {
+      "name": "File read test passed",
+      "marker": "FILE_READ_TEST_PASSED",
+      "failureMeaning": "ext2 file read test failed",
+      "checkHint": "Check fs/ext2/ module, syscall/fs.rs"
+    },
+    {
+      "name": "Getdents test passed",
+      "marker": "GETDENTS_TEST_PASSED",
+      "failureMeaning": "getdents64 syscall failed",
+      "checkHint": "Check syscall/fs.rs sys_getdents64()"
+    },
+    {
+      "name": "Lseek test passed",
+      "marker": "LSEEK_TEST_PASSED",
+      "failureMeaning": "lseek syscall failed",
+      "checkHint": "Check syscall/fs.rs sys_lseek()"
+    },
+    {
+      "name": "Filesystem write test passed",
+      "marker": "FS_WRITE_TEST_PASSED",
+      "failureMeaning": "filesystem write operations failed",
+      "checkHint": "Check syscall/fs.rs sys_open O_CREAT/O_TRUNC, sys_write for RegularFile"
+    },
+    {
+      "name": "Filesystem rename test passed",
+      "marker": "FS_RENAME_TEST_PASSED",
+      "failureMeaning": "filesystem rename operations failed",
+      "checkHint": "Check fs/ext2/mod.rs rename(), syscall/fs.rs sys_rename()"
+    },
+    {
+      "name": "Large file test passed (indirect blocks)",
+      "marker": "FS_LARGE_FILE_TEST_PASSED",
+      "failureMeaning": "large file operations failed",
+      "checkHint": "Check fs/ext2/file.rs set_block_num(), write_file_range() for indirect blocks"
+    },
+    {
+      "name": "Directory ops test passed",
+      "marker": "FS_DIRECTORY_TEST_PASSED",
+      "failureMeaning": "directory operations failed",
+      "checkHint": "Check fs/ext2/mod.rs mkdir(), rmdir()"
+    },
+    {
+      "name": "Link ops test passed",
+      "marker": "FS_LINK_TEST_PASSED",
+      "failureMeaning": "link operations failed",
+      "checkHint": "Check fs/ext2/mod.rs link(), symlink(), readlink()"
+    },
+    {
+      "name": "Access syscall test passed",
+      "marker": "ACCESS_TEST_PASSED",
+      "failureMeaning": "access() syscall failed",
+      "checkHint": "Check syscall/fs.rs sys_access()"
+    },
+    {
+      "name": "Devfs test passed",
+      "marker": "DEVFS_TEST_PASSED",
+      "failureMeaning": "devfs test failed",
+      "checkHint": "Check fs/devfs/mod.rs and sys_open for /dev/* paths"
+    },
+    {
+      "name": "CWD test passed",
+      "marker": "CWD_TEST_PASSED",
+      "failureMeaning": "One or more cwd tests failed",
+      "checkHint": "Check cwd_test.rs output for specific failure"
+    },
+    {
+      "name": "Exec ext2 test start",
+      "marker": "EXEC_EXT2_TEST_START",
+      "failureMeaning": "exec from ext2 test failed to start",
+      "checkHint": "Check exec_from_ext2_test.rs is built and loaded"
+    },
+    {
+      "name": "Exec ext2 /bin OK",
+      "marker": "EXEC_EXT2_BIN_OK",
+      "failureMeaning": "exec /bin/hello_world from ext2 failed",
+      "checkHint": "Check load_elf_from_ext2(), verify ext2 has /bin/hello_world"
+    },
+    {
+      "name": "Exec ext2 ENOENT OK",
+      "marker": "EXEC_EXT2_ENOENT_OK",
+      "failureMeaning": "exec of nonexistent file did not return ENOENT",
+      "checkHint": "Check load_elf_from_ext2() error handling"
+    },
+    {
+      "name": "Exec ext2 EACCES OK",
+      "marker": "EXEC_EXT2_EACCES_OK",
+      "failureMeaning": "exec of non-executable file did not return EACCES",
+      "checkHint": "Check load_elf_from_ext2() permission check"
+    },
+    {
+      "name": "Exec ext2 ENOTDIR OK",
+      "marker": "EXEC_EXT2_ENOTDIR_OK",
+      "failureMeaning": "exec of directory did not return ENOTDIR/EACCES",
+      "checkHint": "Check load_elf_from_ext2() directory check"
+    },
+    {
+      "name": "Exec ext2 /bin/ls OK",
+      "marker": "EXEC_EXT2_LS_OK",
+      "failureMeaning": "exec /bin/ls failed",
+      "checkHint": "Check kernel exec path resolution and ls (BusyBox) in ext2"
+    },
+    {
+      "name": "Exec ext2 test passed",
+      "marker": "EXEC_EXT2_TEST_PASSED",
+      "failureMeaning": "One or more exec from ext2 tests failed",
+      "checkHint": "Check exec_from_ext2_test.rs output"
+    },
+    {
+      "name": "Block alloc test passed",
+      "marker": "BLOCK_ALLOC_TEST_PASSED",
+      "failureMeaning": "Block allocation regression test failed",
+      "checkHint": "Check fs_block_alloc_test.rs and fs/ext2/block_group.rs"
+    },
+    {
+      "name": "true coreutil test passed",
+      "marker": "TRUE_TEST_PASSED",
+      "failureMeaning": "/sbin/true did not exit with code 0",
+      "checkHint": "Check BusyBox true applet and true_test.rs"
+    },
+    {
+      "name": "false coreutil test passed",
+      "marker": "FALSE_TEST_PASSED",
+      "failureMeaning": "/bin/false did not exit with code 1",
+      "checkHint": "Check BusyBox false applet and false_test.rs"
+    },
+    {
+      "name": "head coreutil test passed",
+      "marker": "HEAD_TEST_PASSED",
+      "failureMeaning": "/bin/head failed to process files correctly",
+      "checkHint": "Check BusyBox head applet and head_test.rs"
+    },
+    {
+      "name": "tail coreutil test passed",
+      "marker": "TAIL_TEST_PASSED",
+      "failureMeaning": "/bin/tail failed to process files correctly",
+      "checkHint": "Check BusyBox tail applet and tail_test.rs"
+    },
+    {
+      "name": "wc coreutil test passed",
+      "marker": "WC_TEST_PASSED",
+      "failureMeaning": "/bin/wc failed to count lines/words/bytes correctly",
+      "checkHint": "Check BusyBox wc applet and wc_test.rs"
+    },
+    {
+      "name": "which coreutil test passed",
+      "marker": "WHICH_TEST_PASSED",
+      "failureMeaning": "/bin/which failed to locate commands in PATH",
+      "checkHint": "Check BusyBox which applet and which_test.rs"
+    },
+    {
+      "name": "cat coreutil test passed",
+      "marker": "CAT_TEST_PASSED",
+      "failureMeaning": "/bin/cat failed to output file contents correctly",
+      "checkHint": "Check BusyBox cat applet and cat_test.rs"
+    },
+    {
+      "name": "ls coreutil test passed",
+      "marker": "LS_TEST_PASSED",
+      "failureMeaning": "/bin/ls failed to list directory contents correctly",
+      "checkHint": "Check BusyBox ls applet and ls_test.rs"
+    },
+    {
+      "name": "Rust std println! works",
+      "marker": "RUST_STD_PRINTLN_WORKS",
+      "failureMeaning": "Rust std println! macro failed",
+      "checkHint": "Check hello_std_real.rs, verify libbreenix-libc is linked correctly"
+    },
+    {
+      "name": "Rust std Vec works",
+      "marker": "RUST_STD_VEC_WORKS",
+      "failureMeaning": "Rust std Vec allocation failed",
+      "checkHint": "Check mmap/brk syscalls with std programs, verify GlobalAlloc in libbreenix-libc"
+    },
+    {
+      "name": "Rust std String works",
+      "marker": "RUST_STD_STRING_WORKS",
+      "failureMeaning": "Rust std String operations failed",
+      "checkHint": "Check hello_std_real.rs, verify String::from() and + operator"
+    },
+    {
+      "name": "Rust std getrandom works",
+      "marker": "RUST_STD_GETRANDOM_WORKS",
+      "failureMeaning": "getrandom() syscall failed",
+      "checkHint": "Check syscall/random.rs and libbreenix-libc getrandom"
+    },
+    {
+      "name": "Rust std HashMap works",
+      "marker": "RUST_STD_HASHMAP_WORKS",
+      "failureMeaning": "HashMap creation failed - likely getrandom not seeding hasher",
+      "checkHint": "HashMap requires working getrandom for hasher seeding"
+    },
+    {
+      "name": "Rust std realloc preserves data",
+      "marker": "RUST_STD_REALLOC_WORKS",
+      "failureMeaning": "realloc() did not preserve data when growing",
+      "checkHint": "Check libbreenix-libc realloc implementation"
+    },
+    {
+      "name": "Rust std format! macro works",
+      "marker": "RUST_STD_FORMAT_WORKS",
+      "failureMeaning": "format! macro failed",
+      "checkHint": "Check String and Vec allocation paths"
+    },
+    {
+      "name": "Rust std realloc shrink preserves data",
+      "marker": "RUST_STD_REALLOC_SHRINK_WORKS",
+      "failureMeaning": "realloc() did not preserve data when shrinking",
+      "checkHint": "Check libbreenix-libc realloc implementation"
+    },
+    {
+      "name": "Rust std read() error handling works",
+      "marker": "RUST_STD_READ_ERROR_WORKS",
+      "failureMeaning": "read() did not return proper error for invalid fd",
+      "checkHint": "Check libbreenix-libc read implementation"
+    },
+    {
+      "name": "Rust std read() success with pipe works",
+      "marker": "RUST_STD_READ_SUCCESS_WORKS",
+      "failureMeaning": "read() did not successfully read data from a pipe",
+      "checkHint": "Check libbreenix-libc pipe/read implementation"
+    },
+    {
+      "name": "Rust std malloc boundary conditions work",
+      "marker": "RUST_STD_MALLOC_BOUNDARY_WORKS",
+      "failureMeaning": "malloc() boundary conditions failed",
+      "checkHint": "Check libbreenix-libc malloc implementation"
+    },
+    {
+      "name": "Rust std posix_memalign works",
+      "marker": "RUST_STD_POSIX_MEMALIGN_WORKS",
+      "failureMeaning": "posix_memalign() failed",
+      "checkHint": "Check libbreenix-libc posix_memalign implementation"
+    },
+    {
+      "name": "Rust std sbrk works",
+      "marker": "RUST_STD_SBRK_WORKS",
+      "failureMeaning": "sbrk() failed",
+      "checkHint": "Check libbreenix-libc sbrk implementation"
+    },
+    {
+      "name": "Rust std getpid/gettid works",
+      "marker": "RUST_STD_GETPID_WORKS",
+      "failureMeaning": "getpid()/gettid() failed",
+      "checkHint": "Check libbreenix-libc getpid/gettid implementation"
+    },
+    {
+      "name": "Rust std posix_memalign error handling works",
+      "marker": "RUST_STD_POSIX_MEMALIGN_ERRORS_WORK",
+      "failureMeaning": "posix_memalign() did not return EINVAL for invalid alignments",
+      "checkHint": "Check libbreenix-libc posix_memalign EINVAL paths"
+    },
+    {
+      "name": "Rust std close works",
+      "marker": "RUST_STD_CLOSE_WORKS",
+      "failureMeaning": "close() syscall failed",
+      "checkHint": "Check libbreenix-libc close/dup implementation"
+    },
+    {
+      "name": "Rust std mprotect works",
+      "marker": "RUST_STD_MPROTECT_WORKS",
+      "failureMeaning": "mprotect() syscall failed",
+      "checkHint": "Check libbreenix-libc mprotect and syscall/mmap.rs:sys_mprotect"
+    },
+    {
+      "name": "Rust std stub functions work",
+      "marker": "RUST_STD_STUB_FUNCTIONS_WORK",
+      "failureMeaning": "libc stub functions failed",
+      "checkHint": "Check libbreenix-libc stub function implementations"
+    },
+    {
+      "name": "Rust std free(NULL) is safe",
+      "marker": "RUST_STD_FREE_NULL_WORKS",
+      "failureMeaning": "free(NULL) crashed or behaved incorrectly",
+      "checkHint": "Check libbreenix-libc free implementation NULL check"
+    },
+    {
+      "name": "Rust std write edge cases work",
+      "marker": "RUST_STD_WRITE_EDGE_CASES_WORK",
+      "failureMeaning": "write() edge case handling failed",
+      "checkHint": "Check libbreenix-libc write implementation and syscall/io.rs error paths"
+    },
+    {
+      "name": "Rust std mmap/munmap direct tests work",
+      "marker": "RUST_STD_MMAP_WORKS",
+      "failureMeaning": "Direct mmap/munmap tests failed",
+      "checkHint": "Check libbreenix-libc mmap/munmap and syscall/mmap.rs"
+    },
+    {
+      "name": "Rust std thread::sleep works",
+      "marker": "RUST_STD_SLEEP_WORKS",
+      "failureMeaning": "nanosleep syscall failed",
+      "checkHint": "Check syscall/time.rs:sys_nanosleep and scheduler wake_expired_timers"
+    },
+    {
+      "name": "Rust std thread::spawn and join work",
+      "marker": "RUST_STD_THREAD_WORKS",
+      "failureMeaning": "clone/futex syscalls failed - thread creation or join not working",
+      "checkHint": "Check syscall/clone.rs, syscall/futex.rs, libbreenix-libc pthread_create/join"
+    },
+    {
+      "name": "Ctrl-C (SIGINT) test passed",
+      "marker": "CTRL_C_TEST_PASSED",
+      "failureMeaning": "Ctrl-C signal test failed",
+      "checkHint": "Check signal/delivery.rs, syscall/signal.rs:sys_kill()"
+    },
+    {
+      "name": "Fork memory isolation test passed",
+      "marker": "FORK_MEMORY_ISOLATION_PASSED",
+      "failureMeaning": "Fork memory isolation test failed",
+      "checkHint": "Check process/fork.rs CoW page table cloning"
+    },
+    {
+      "name": "Fork state copy test passed",
+      "marker": "FORK_STATE_COPY_PASSED",
+      "failureMeaning": "Fork state test failed",
+      "checkHint": "Check process/fork.rs copy_process_state()"
+    },
+    {
+      "name": "Fork pending signal test passed",
+      "marker": "FORK_PENDING_SIGNAL_TEST_PASSED",
+      "failureMeaning": "Fork pending signal test failed - child inherited pending signals",
+      "checkHint": "Check process/fork.rs signal state handling"
+    },
+    {
+      "name": "CoW signal delivery test passed",
+      "marker": "COW_SIGNAL_TEST_PASSED",
+      "failureMeaning": "CoW signal test failed",
+      "checkHint": "Check interrupts handle_cow_direct() - CoW fault during signal delivery"
+    },
+    {
+      "name": "CoW cleanup test passed",
+      "marker": "COW_CLEANUP_TEST_PASSED",
+      "failureMeaning": "CoW cleanup test failed",
+      "checkHint": "Check frame_decref() calls on process exit"
+    },
+    {
+      "name": "CoW sole owner test passed",
+      "marker": "COW_SOLE_OWNER_TEST_PASSED",
+      "failureMeaning": "CoW sole owner test failed",
+      "checkHint": "Check frame_is_shared() and sole owner path in handle_cow_fault"
+    },
+    {
+      "name": "CoW stress test passed",
+      "marker": "COW_STRESS_TEST_PASSED",
+      "failureMeaning": "CoW stress test failed",
+      "checkHint": "Check refcounting at scale"
+    },
+    {
+      "name": "CoW read-only page sharing test passed",
+      "marker": "COW_READONLY_TEST_PASSED",
+      "failureMeaning": "CoW read-only test failed",
+      "checkHint": "Check setup_cow_pages() read-only path in process/fork.rs"
+    },
+    {
+      "name": "Argv support test passed",
+      "marker": "ARGV_TEST_PASSED",
+      "failureMeaning": "Argv test failed",
+      "checkHint": "Check process/manager.rs exec_process_with_argv() and setup_argv_on_stack()"
+    },
+    {
+      "name": "Exec argv test passed",
+      "marker": "EXEC_ARGV_TEST_PASSED",
+      "failureMeaning": "Exec argv test failed",
+      "checkHint": "Check process/manager.rs exec_process_with_argv()"
+    },
+    {
+      "name": "Exec stack argv test passed",
+      "marker": "EXEC_STACK_ARGV_TEST_PASSED",
+      "failureMeaning": "Stack-allocated argv test failed",
+      "checkHint": "Check core::hint::black_box() usage in try_execute_external()"
+    },
+    {
+      "name": "FbInfo syscall test passed",
+      "marker": "FBINFO_TEST: all tests PASSED",
+      "failureMeaning": "FbInfo syscall test failed",
+      "checkHint": "Check syscall/graphics.rs sys_fbinfo()"
+    },
+    {
+      "name": "Diagnostic: Multiple getpid calls",
+      "marker": "Test 41a: Multiple no-arg syscalls (getpid)|Result: PASS",
+      "failureMeaning": "Multiple no-arg syscalls (getpid) failed - basic syscall mechanism broken",
+      "checkHint": "Check syscall0() wrapper and SYS_GETPID (39) handler in syscall_diagnostic_test.rs"
+    },
+    {
+      "name": "Diagnostic: Multiple sys_write calls",
+      "marker": "Test 41b: Multiple sys_write calls|Result: PASS",
+      "failureMeaning": "Multiple sys_write calls failed - multi-arg syscalls broken",
+      "checkHint": "Check syscall3() wrapper and SYS_WRITE (1) handler in syscall_diagnostic_test.rs"
+    },
+    {
+      "name": "Diagnostic: Single clock_gettime",
+      "marker": "Test 41c: Single clock_gettime|Result: PASS",
+      "failureMeaning": "First clock_gettime call failed - syscall2 or clock_gettime handler broken",
+      "checkHint": "Check syscall2() wrapper and SYS_CLOCK_GETTIME (228) handler"
+    },
+    {
+      "name": "Diagnostic: Register preservation",
+      "marker": "Test 41d: Register preservation|Result: PASS",
+      "failureMeaning": "Callee-saved registers (R12, R13) corrupted across syscall - context switch broken",
+      "checkHint": "Check SavedRegisters save/restore in interrupts/context_switch.rs"
+    },
+    {
+      "name": "Diagnostic: Second clock_gettime",
+      "marker": "Test 41e: Second clock_gettime|Result: PASS",
+      "failureMeaning": "Second clock_gettime call failed - register corruption between syscalls",
+      "checkHint": "Check SyscallFrame vs SavedRegisters sync in context_switch.rs - RDI corruption likely"
+    },
+    {
+      "name": "Process group kill semantics test passed",
+      "marker": "KILL_PGROUP_TEST_PASSED",
+      "failureMeaning": "kill process group test failed - kill(0, sig), kill(-pgid, sig), or kill(-1, sig) not working correctly",
+      "checkHint": "Check kernel/src/syscall/signal.rs:sys_kill() and process group signal delivery in kernel/src/signal/delivery.rs"
+    },
+    {
+      "name": "Kthread created",
+      "marker": "KTHREAD_CREATE: kthread created",
+      "failureMeaning": "Kernel thread creation failed - Thread::new_kernel or scheduler::spawn broken",
+      "checkHint": "Check kernel/src/task/kthread.rs:kthread_run() and scheduler integration"
+    },
+    {
+      "name": "Kthread running",
+      "marker": "KTHREAD_RUN: kthread running",
+      "failureMeaning": "Kernel thread not scheduled - timer interrupts not working or kthread entry not called",
+      "checkHint": "Check timer interrupt handler, scheduler ready queue, and kthread_entry() function"
+    },
+    {
+      "name": "Kthread stop signal sent",
+      "marker": "KTHREAD_STOP: kthread received stop signal",
+      "failureMeaning": "kthread_stop() failed - should_stop flag not set or kthread not woken",
+      "checkHint": "Check kthread_stop() and kthread_unpark() in kernel/src/task/kthread.rs"
+    },
+    {
+      "name": "Kthread exited cleanly",
+      "marker": "KTHREAD_EXIT: kthread exited cleanly",
+      "failureMeaning": "Kernel thread did not exit - kthread_should_stop() not returning true or thread not terminating",
+      "checkHint": "Check kthread_should_stop() and thread termination in kthread_entry()"
+    },
+    {
+      "name": "Kthread join completed",
+      "marker": "KTHREAD_JOIN_TEST: join returned exit_code=",
+      "failureMeaning": "kthread_join() failed - thread did not exit or exit_code not retrieved",
+      "checkHint": "Check kthread_join() spin loop and exit_code atomic access in kernel/src/task/kthread.rs"
+    },
+    {
+      "name": "Kthread park test started",
+      "marker": "KTHREAD_PARK_TEST: started",
+      "failureMeaning": "Kthread park test did not start - kthread creation or scheduling failed",
+      "checkHint": "Check test_kthread_park_unpark() in kernel/src/main.rs"
+    },
+    {
+      "name": "Kthread unparked successfully",
+      "marker": "KTHREAD_PARK_TEST: unparked",
+      "failureMeaning": "Kthread not unparked - kthread_park() blocked forever or kthread_unpark() not working",
+      "checkHint": "Check kthread_park() and kthread_unpark() in kernel/src/task/kthread.rs"
+    },
+    {
+      "name": "Workqueue system initialized",
+      "marker": "WORKQUEUE_INIT: workqueue system initialized",
+      "failureMeaning": "Work queue initialization failed - system workqueue not created",
+      "checkHint": "Check kernel/src/task/workqueue.rs:init_workqueue()"
+    },
+    {
+      "name": "Kworker thread started",
+      "marker": "KWORKER_SPAWN: kworker/0 started",
+      "failureMeaning": "Worker thread spawn failed - kthread_run() or worker_thread_fn() broken",
+      "checkHint": "Check kernel/src/task/workqueue.rs:ensure_worker() and worker_thread_fn()"
+    },
+    {
+      "name": "Workqueue basic execution passed",
+      "marker": "WORKQUEUE_TEST: basic execution passed",
+      "failureMeaning": "Basic work execution failed - work not queued or worker not executing",
+      "checkHint": "Check Work::execute() and Workqueue::queue() in kernel/src/task/workqueue.rs"
+    },
+    {
+      "name": "Workqueue multiple items passed",
+      "marker": "WORKQUEUE_TEST: multiple work items passed",
+      "failureMeaning": "Multiple work items test failed - work not executed in order or not all executed",
+      "checkHint": "Check worker_thread_fn() loop and queue ordering in kernel/src/task/workqueue.rs"
+    },
+    {
+      "name": "Workqueue flush completed",
+      "marker": "WORKQUEUE_TEST: flush completed",
+      "failureMeaning": "Flush test failed - flush_system_workqueue() did not wait for pending work",
+      "checkHint": "Check Workqueue::flush() sentinel pattern in kernel/src/task/workqueue.rs"
+    },
+    {
+      "name": "Workqueue all tests passed",
+      "marker": "WORKQUEUE_TEST: all tests passed",
+      "failureMeaning": "One or more workqueue tests failed",
+      "checkHint": "Check test_workqueue() in kernel/src/main.rs for specific assertion failures"
+    },
+    {
+      "name": "Workqueue re-queue rejection passed",
+      "marker": "WORKQUEUE_TEST: re-queue rejection passed",
+      "failureMeaning": "Re-queue rejection test failed - schedule_work allowed already-pending work",
+      "checkHint": "Check Work::try_set_pending() and Workqueue::queue() in kernel/src/task/workqueue.rs"
+    },
+    {
+      "name": "Workqueue multi-item flush passed",
+      "marker": "WORKQUEUE_TEST: multi-item flush passed",
+      "failureMeaning": "Multi-item flush test failed - flush did not wait for all queued work",
+      "checkHint": "Check Workqueue::flush() and flush_system_workqueue() in kernel/src/task/workqueue.rs"
+    },
+    {
+      "name": "Workqueue shutdown test passed",
+      "marker": "WORKQUEUE_TEST: shutdown test passed",
+      "failureMeaning": "Workqueue shutdown test failed - destroy did not complete pending work",
+      "checkHint": "Check Workqueue::destroy() and worker_thread_fn() in kernel/src/task/workqueue.rs"
+    },
+    {
+      "name": "Workqueue error path test passed",
+      "marker": "WORKQUEUE_TEST: error path test passed",
+      "failureMeaning": "Workqueue error path test failed - schedule_work accepted re-queue",
+      "checkHint": "Check Work::try_set_pending() and Workqueue::queue() in kernel/src/task/workqueue.rs"
+    },
+    {
+      "name": "Softirq system initialized",
+      "marker": "SOFTIRQ_INIT: Softirq subsystem initialized",
+      "failureMeaning": "Softirq initialization failed - ksoftirqd not spawned",
+      "checkHint": "Check init_softirq() in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq handler registration test passed",
+      "marker": "SOFTIRQ_TEST: handler registration passed",
+      "failureMeaning": "Softirq handler registration test failed",
+      "checkHint": "Check register_softirq_handler() in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq Timer test passed",
+      "marker": "SOFTIRQ_TEST: Timer softirq passed",
+      "failureMeaning": "Timer softirq test failed - handler not called",
+      "checkHint": "Check raise_softirq() and do_softirq() in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq NetRx test passed",
+      "marker": "SOFTIRQ_TEST: NetRx softirq passed",
+      "failureMeaning": "NetRx softirq test failed - handler not called",
+      "checkHint": "Check raise_softirq() and do_softirq() in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq multiple test passed",
+      "marker": "SOFTIRQ_TEST: multiple softirqs passed",
+      "failureMeaning": "Multiple softirq test failed - handlers not all called",
+      "checkHint": "Check do_softirq() iteration in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq priority order test passed",
+      "marker": "SOFTIRQ_TEST: priority order passed",
+      "failureMeaning": "Priority order test failed - lower priority softirq executed before higher priority",
+      "checkHint": "Check trailing_zeros() priority order in do_softirq() in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq nested interrupt rejection test passed",
+      "marker": "SOFTIRQ_TEST: nested interrupt rejection passed",
+      "failureMeaning": "Nested interrupt rejection failed - do_softirq() should return false in interrupt context",
+      "checkHint": "Check in_interrupt() check at start of do_softirq() in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq iteration limit test passed",
+      "marker": "SOFTIRQ_TEST: iteration limit passed",
+      "failureMeaning": "Iteration limit test failed - ksoftirqd did not process deferred softirqs",
+      "checkHint": "Check MAX_SOFTIRQ_RESTART limit and wakeup_ksoftirqd() in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq ksoftirqd verification passed",
+      "marker": "SOFTIRQ_TEST: ksoftirqd verification passed",
+      "failureMeaning": "ksoftirqd verification failed - thread not initialized",
+      "checkHint": "Check is_initialized() and ksoftirqd_fn() in kernel/src/task/softirqd.rs"
+    },
+    {
+      "name": "Softirq all tests passed",
+      "marker": "SOFTIRQ_TEST: all tests passed",
+      "failureMeaning": "Softirq test suite failed",
+      "checkHint": "Check test_softirq() in kernel/src/main.rs"
+    }
+  ]
+}
