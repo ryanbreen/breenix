@@ -1,0 +1,14 @@
+Round 2 (R161) aarch64 artefacts, this Mac, worktree
+/Users/wrb/fun/code/breenix/.claude/worktrees/wf_af39df6d-621-1
+
+Built with:
+  cargo build --release --features boot_tests \
+    --target aarch64-breenix-kernel.json \
+    -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
+    -p kernel --bin kernel-aarch64
+b68c53e8962498369fc6e0f3f874c87abdbf05d16928a2c845e570bff55eb5ce  target/aarch64-breenix-kernel/release/kernel-aarch64
+-rwxr-xr-x 1 wrb staff 4034704 Sep  4 22:17 target/aarch64-breenix-kernel/release/kernel-aarch64
+03bb82815191160d3a70ca52e4edc2b8830229dddf0a66b0ea24301041111e5d  target/ext2-aarch64.img
+-rw-r--r-- 1 wrb staff 268435456 Sep  4 22:18 target/ext2-aarch64.img
+
+pgrep -fl qemu-system-aarch64 | wc -l recorded before each strict launch: 0, 0, 0

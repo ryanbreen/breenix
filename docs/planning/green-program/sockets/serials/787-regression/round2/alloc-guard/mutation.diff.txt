@@ -1,0 +1,18 @@
+diff --git a/kernel/src/interrupts/context_switch.rs b/kernel/src/interrupts/context_switch.rs
+index a5d7f184..932b0919 100644
+--- a/kernel/src/interrupts/context_switch.rs
++++ b/kernel/src/interrupts/context_switch.rs
+@@ -1290,9 +1290,11 @@ fn setup_kernel_thread_return(
+     // property or it re-arms #791.
+     // claim-lint:ok: the deadlock this hazard class produced is issue #791 and
+     // docs/planning/green-program/sockets/787-REGRESSION-RCA-2026-09-04.md.
+-    let thread_info = scheduler::with_thread_mut(thread_id, |thread| thread.context.clone());
++    let thread_info = scheduler::with_thread_mut(thread_id, |thread| {
++        (thread.name.clone(), thread.context.clone())
++    });
+ 
+-    if let Some(context) = thread_info {
++    if let Some((_name, context)) = thread_info {
+         unsafe {
+             interrupt_frame.as_mut().update(|frame| {
+                 frame.instruction_pointer = x86_64::VirtAddr::new(context.rip);
