@@ -19,7 +19,15 @@ INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probe
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Error: No ARM64 kernel found. Build with:"
-    echo "  cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    # require_boot_tests_kernel() below refuses a kernel that lacks
+    # --features boot_tests, so the hint printed here must build one --
+    # the same reasoning as run-aarch64-boot-test-strict.sh's matching
+    # "No ARM64 kernel found" arm.
+    echo "  cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    echo ""
+    echo "========================================="
+    echo "ARM64 BOOT TEST: FAILED (no ARM64 kernel found)"
+    echo "========================================="
     exit 1
 fi
 
@@ -45,13 +53,15 @@ fi
 #
 # The missing-marker arm below prints this script's own PASSED/FAILED verdict
 # banner before exiting instead of a bare, unformatted exit.
-# claim-lint:ok: every path through this function's missing-marker arm prints
-# that banner ahead of its exit by construction -- the arm has exactly one
-# `exit 1` line, proven by
+# claim-lint:ok: the ratchet at
 # tests/strand_handoff_structure.rs::boot_tests_gates_refuse_a_wrong_profile_kernel
-# ("native gate" entry), which reddens if that invariant breaks (see this
-# branch's NATIVE-GATE-GUARD-2026-09-05.md, "Mutation proof the added
-# census line is load-bearing").
+# ("native gate" entry) proves the missing-marker arm has exactly one
+# `exit 1` line and reddens if that count changes (see this branch's
+# NATIVE-GATE-GUARD-2026-09-05.md, "Mutation proof the added census line is
+# load-bearing"). It does NOT independently check for the banner echoes
+# above that line -- deleting them alone leaves the ratchet green -- so the
+# banner's presence is a maintained convention matching the other two
+# preflight arms below, not itself a ratcheted invariant.
 require_boot_tests_kernel() {
     local kernel="$1"
     local marker
@@ -87,6 +97,10 @@ require_boot_tests_kernel "$KERNEL"
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then
     echo "Error: ext2 disk not found at $EXT2_DISK"
+    echo ""
+    echo "========================================="
+    echo "ARM64 BOOT TEST: FAILED (ext2 disk not found)"
+    echo "========================================="
     exit 1
 fi
 

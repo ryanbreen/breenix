@@ -64,26 +64,41 @@ check, called once at top level as `require_boot_tests_kernel "$KERNEL"`.
 The one deliberate difference from the strict gate's copy: this gate's own
 verdict convention is the `ARM64 BOOT TEST: PASSED` / `ARM64 BOOT TEST:
 FAILED` banner printed at the bottom of the script on the retry-loop path.
-The guard's missing-marker arm prints that same banner (with a
-guard-specific parenthetical) immediately before its `exit 1`, so the early
-exit is not bare — it flows through the verdict shape this script already
-reports through on its ordinary retry-exhausted path. <!-- claim-lint:ok:
-resolving citation for "the single path every preflight rejection ... is
-required to go through" -- that requirement is the ratchet
+**Review R157 correction:** the first version of this change routed only
+the new missing-marker arm through that banner, leaving this script's two
+pre-existing preflight rejections (no kernel found, no ext2 disk found)
+exiting bare — the same defect this whole change exists to remove, on a
+different arm. Fixed in the same commit as this correction: 3 of 3
+preflight arms now print the banner (each with its own parenthetical)
+immediately before their `exit 1`, so every preflight rejection in this
+script flows through the verdict shape this script already reports through
+on its ordinary retry-exhausted path, not just the marker-census one.
+<!-- claim-lint:ok: resolving citation for "the single path every preflight
+rejection ... is required to go through" -- that requirement is the ratchet
 `x86_production_profile_gate_verdict_discipline_holds` in
 tests/teardown_structure.rs, described in
-docs/planning/green-program/gates/GATE-PREFLIGHT-VERDICT-802-2026-09-05.md;
-this branch adds no equivalent ratchet for the aarch64 native gate, so the
-parallel drawn here is to that script's established convention, not a claim
-that the same ratchet now covers this one. --> The same requirement —
-route a preflight rejection through the script's one verdict-reporting
-mechanism rather than a bare `exit` — is what
-`docker/qemu/run-x86-prod-profile-boot-test.sh`'s `report_gate_failure`
-machinery enforces for that gate
+docs/planning/green-program/gates/GATE-PREFLIGHT-VERDICT-802-2026-09-05.md.
+This branch adds no equivalent ratchet for the aarch64 native gate -- the
+banner-before-`exit 1` on all three preflight arms here is a maintained
+convention this document records, not an invariant any test enforces, and
+the parallel drawn below is to that x86 ratchet's underlying PRINCIPLE, not
+a claim that this script would itself satisfy that ratchet's structural
+checks. --> The same principle — route a preflight rejection through the
+script's one verdict-reporting mechanism rather than a bare `exit` — is
+what `docker/qemu/run-x86-prod-profile-boot-test.sh`'s `report_gate_failure`
+machinery enforces for that gate, in that mechanism's own idiom: a single
+`report_gate_failure ...; exit "$exit_code"` call site, an ERR trap, and a
+`reached` flag, all checked by
+`tests/teardown_structure.rs::validate_x86_prod_profile_harness`
 (`docs/planning/green-program/gates/GATE-PREFLIGHT-VERDICT-802-2026-09-05.md`).
-A downstream harness grepping for the `ARM64 BOOT TEST: FAILED` banner text
-gets a labeled verdict on this failure mode too, not an unlabeled early exit
-that reads as a script crash.
+This native script implements the analogous idea independently, with its
+own bespoke banner-before-`exit 1` convention, no ERR trap, and no `reached`
+flag, and would NOT itself satisfy that x86-specific structural test — it
+rejects any `exit` statement other than `exit "$exit_code"`, and every
+preflight arm in this script exits via a bare `exit 1`. A downstream
+harness grepping for the `ARM64 BOOT TEST: FAILED` banner text gets a
+labeled verdict on all three preflight rejections, not an unlabeled early
+exit that reads as a script crash.
 
 The census reuses the strict gate's exact seven marker prefixes
 (`[SCHED_STRAND_ORACLE:`, `[STRAND_INJECT_ORACLE:`, `[CENSUS_WIDEN_ORACLE:`,
@@ -137,9 +152,70 @@ with at least `MIN_BOOT_TESTS_PROFILE_MARKERS` (6) bracketed markers,
 `grep -aqF` inspection, single `missing="$missing $marker"` accumulation,
 single `exit 1` in the missing-marker arm, single top-level invocation,
 no-NEON preflight ordered first). Added a `NATIVE_GATE_PATH` constant and
-one entry, `("native gate", NATIVE_GATE_PATH)`, to that test's gate list —
-the whole point of item (c) below is that a future aarch64 gate script
-cannot ship without this guard passing the same census.
+one entry, `("native gate", NATIVE_GATE_PATH)`, to that test's gate list.
+<!-- claim-lint:ok: narrowed per review R157 finding N2 -- the test iterates
+a literal four-path list (SERVICE_SEQUENCE_GATE_PATH, STRICT_GATE_PATH,
+FULL_TEST_PATH, NATIVE_GATE_PATH; see the top of
+tests/strand_handoff_structure.rs), not a directory scan, so it censuses
+only those four scripts. A brand-new fifth aarch64 gate script is not
+covered by this list at all and would ship with no guard and no red test to
+say so. docker/qemu/run-aarch64-arma609-arm.sh already demonstrates the
+gap: it defines and calls its own `require_boot_tests_kernel()` with a
+5-marker census (below `MIN_BOOT_TESTS_PROFILE_MARKERS`), sits outside this
+test's list, and `grep -rn arma609 tests/*.rs` finds no reference to it
+anywhere in the test tree -- deleting its guard reddens no test. This repo
+does have a directory-discovery shape elsewhere
+(`discover_aarch64_oracle_gates()` in tests/block_request_lifetime_structure.rs,
+which enumerates `docker/qemu/run-aarch64-*.sh` by content), but porting it
+here naively would also sweep in run-aarch64-prod-profile-boot-test.sh
+(name matches, and it references the same kernel path at its own line 207),
+which must NOT carry this guard -- so the literal-list mechanism is
+defensible; only the claim about what it covers was wrong. --> This census
+covers the four gate scripts the test already names, not a directory-wide
+discovery: those four scripts cannot silently lose this guard shape, but a
+new fifth script is invisible to this list until someone adds it.
+
+### (d) Review R157: the top-of-script build hint, and one honesty fix
+
+**N1 (major).** The script's own "No ARM64 kernel found" arm — the very
+first preflight check, at the top of the file, before
+`require_boot_tests_kernel()` is even defined — still told the operator to
+build a kernel WITHOUT `--features boot_tests`: the exact kernel the guard
+60 lines below then refuses. 3 of 3 peer boot_tests-requiring aarch64
+gates (service-sequence, strict, full-test) already carried the feature in
+that same arm; this script was the one exception. Fixed by adding
+`--features boot_tests` to that hint, with a one-line comment pointing at
+`require_boot_tests_kernel()` as the reason.
+
+The pre-existing ratchet,
+`strict_gate_build_hint_enables_boot_tests`, only ever checked the strict
+gate's build hint, so it could not have caught this. Renamed to
+`boot_tests_gate_build_hints_enable_boot_tests` and generalized to loop over
+both the strict and native gates. The first pass at the generalized
+assertion (`.any(build_hints, contains "--features boot_tests")`) was
+itself vacuous against exactly this bug: the native gate has a *second*
+`cargo build` echo line, inside `require_boot_tests_kernel()`'s own
+missing-marker arm, which already carried `--features boot_tests` before
+this round — so "at least one hint has the feature" was already true even
+with the top-of-script hint broken. Strengthened to `.all(...)`, which
+requires every build-hint line in the gate to carry the feature.
+Mutation-proven both ways in this round: reverting only the top-of-script
+hint to drop `--features boot_tests` (leaving the guard's own hint
+untouched) reddens `boot_tests_gate_build_hints_enable_boot_tests` with
+"native gate every build hint must enable --features boot_tests"; restoring
+it returns the suite to green (38/38 in
+`tests/strand_handoff_structure.rs`, plus `tests/exec_lock_order_structure.rs`
+44/44 and `tests/teardown_structure.rs` 83/83, all of which also read this
+script's text and were otherwise unaffected).
+
+**N3 (minor).** The in-script comment ahead of `require_boot_tests_kernel()`
+had claimed the ratchet proved the banner echoes print "by construction,"
+citing the same `exit 1`-count check the ratchet actually performs. The
+ratchet proves the arm has exactly one `exit 1` line; it does not inspect
+the echo lines above it, so deleting the three banner echoes alone (proven
+by mutation, then reverted) leaves the ratchet green. Reworded the comment
+to state only what the ratchet checks, and to say plainly that the banner's
+presence is a maintained convention, not a ratcheted one.
 
 ## Mutation proof the added census line is load-bearing
 
