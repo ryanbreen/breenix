@@ -17,6 +17,19 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #825: two concurrent runs of this gate on the same host each hardcoded the
+# identical /tmp/breenix_aarch64_stability path, so one run's rm -rf/mkdir
+# could delete and rewrite another run's in-flight boot output. Defaulting
+# to /tmp keeps a caller that leaves it unset byte-identical; a concurrent-lane
+# launcher sets this to a per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever
+# directory happens to be current when it is read (the same F6 guard PR
+# #801 gave the x86 gate scripts for #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+esac
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -33,7 +46,7 @@ if [ ! -f "$EXT2_DISK" ]; then
     exit 1
 fi
 
-OUTPUT_DIR="/tmp/breenix_aarch64_stability"
+OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_stability"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 

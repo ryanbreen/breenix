@@ -1,0 +1,26 @@
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/kernel)
+   Compiling breenix v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
+     Running tests/teardown_structure.rs (target/debug/deps/teardown_structure-67eb70246a628cbd)
+
+running 1 test
+test try_manager_is_a_masked_acquisition_on_every_arch ... FAILED
+
+failures:
+
+---- try_manager_is_a_masked_acquisition_on_every_arch stdout ----
+try_manager aarch64: saved=true masked_before_try_lock=false restored_on_failed_acquire=true guard_saves_state=true restored_after_release=true
+try_manager x86_64: saved=true masked_before_try_lock=true restored_on_failed_acquire=true guard_saves_state=true restored_after_release=true
+try_manager IRQ shape: try_manager()'s aarch64 arm does not mask interrupts before its try_lock
+
+thread 'try_manager_is_a_masked_acquisition_on_every_arch' panicked at tests/teardown_structure.rs:16515:5:
+1 #812 shape failure(s) in try_manager()/TryProcessManagerGuard
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    try_manager_is_a_masked_acquisition_on_every_arch
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 87 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test teardown_structure`

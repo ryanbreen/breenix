@@ -4508,6 +4508,466 @@ fn test_fcntl_pm_contention_oracle() -> TestResult {
     }
 }
 
+// ---------------------------------------------------------------------------
+// #812: a try_manager() holder must not be interruptible on its own CPU
+// ---------------------------------------------------------------------------
+//
+// The defect: on aarch64 a syscall body runs IRQ-unmasked and preempt-disabled
+// (syscall_entry.S's `msr daifclr, #0x3`, syscall_entry.rs's preempt_disable),
+// and crate::process::try_manager() used to change no interrupt state at all.
+// A holder could therefore take an IRQ, and that IRQ's exit path runs
+// do_softirq() unconditionally (exception.rs, after irq_exit()); the NetRx
+// softirq reaches net/udp.rs's deliver_to_socket, which acquires the same
+// PROCESS_MANAGER through the BLOCKING with_process_manager. spin::Mutex is
+// not reentrant, so the CPU spins for a lock it already owns.
+//
+// This oracle forces exactly that race. A kthread on a peer CPU takes the
+// try_manager() hold with a preempt-disable, queues loopback UDP datagrams for
+// a socket the oracle owns -- which raises NetRx softirq-pending on that same
+// CPU -- and stays in the hold for longer than two timer ticks before
+// releasing. On origin/main the holder's own IRQ exit runs the NetRx softirq
+// inside the hold and the CPU wedges with PROCESS_MANAGER held forever; the
+// gate scores the boot as a failure. With the repair the hold is masked, the
+// softirq cannot run on that CPU, and the datagram is delivered after release.
+//
+// masked_in_hold and netrx_pending_at_release are the anti-vacuity pair:
+// the first records that the acquisition really did mask this CPU, the second
+// that the deadlock's trigger really was pending on it for the whole window.
+// Neither reading is reachable by an oracle whose holder failed to arm.
+
+/// Microseconds the holder keeps PROCESS_MANAGER while IRQs would otherwise be
+/// live. The aarch64 tick target is 1 kHz, so this is >= 2 ticks with margin.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_US: u64 = 12_000;
+/// Floor the measured hold must clear for a green verdict.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_MIN_US: u64 = 8_000;
+/// Microseconds between the holder's datagram sends inside the window.
+///
+/// One datagram is not enough to make the red deterministic: an idle peer CPU
+/// drains the shared loopback queue from its idle loop, and a stealer that
+/// takes the batch then blocks on the held lock leaves the holder's own softirq
+/// an empty queue to deliver from. Re-queueing across the window means the
+/// holder's next IRQ exit finds work whether or not the first was stolen.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_SEND_INTERVAL_US: u64 = 1_000;
+/// Microseconds the holder spins for the lock before reporting a failed arm.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_ACQUIRE_US: u64 = 20_000;
+/// Microseconds the driver waits for the holder to publish its window.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_ARM_WAIT_US: u64 = 500_000;
+/// Microseconds the driver waits for the holder thread to exit.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_JOIN_US: u64 = 500_000;
+/// Microseconds the driver waits for the datagram to reach the socket.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_RECV_US: u64 = 500_000;
+/// Microseconds of quiet after the window closes.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_SETTLE_US: u64 = 20_000;
+/// Arming attempts before the oracle reports what it measured and fails.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_ATTEMPTS: u64 = 3;
+/// UDP port the oracle binds for its own loopback traffic.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_PORT: u16 = 54_540;
+/// UDP source port of the oracle's datagrams.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_SRC_PORT: u16 = 54_541;
+/// Payload the oracle sends and looks for.
+#[cfg(target_arch = "aarch64")]
+const IRQ_HOLD_PAYLOAD: &[u8] = b"breenix-812";
+
+#[cfg(target_arch = "aarch64")]
+static IRQ_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static IRQ_HOLD_DONE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static IRQ_HOLD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(target_arch = "aarch64")]
+static IRQ_HOLD_IRQS_ENABLED_BEFORE: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static IRQ_HOLD_MASKED_IN_HOLD: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static IRQ_HOLD_SENDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static IRQ_HOLD_MEASURED_US: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static IRQ_HOLD_NETRX_PENDING: AtomicU64 = AtomicU64::new(0);
+
+/// Elapsed microseconds since `since`, read from CNTVCT_EL0.
+///
+/// The architected counter keeps advancing while a CPU has DAIF masked, which
+/// the tick counter does not, so it is the only clock that can bound a window
+/// whose whole point is that this CPU takes no interrupts.
+#[cfg(target_arch = "aarch64")]
+fn irq_hold_elapsed_us(since: u64) -> u64 {
+    let freq: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+    }
+    if freq == 0 {
+        // No usable clock: report an elapsed time past each of the bounded
+        // deadlines in this oracle, so each loop exits at once and the verdict
+        // is a loud failure rather than a spin.
+        return u64::MAX;
+    }
+    let delta = crate::tracing::trace_timestamp().wrapping_sub(since);
+    delta.saturating_mul(1_000_000) / freq
+}
+
+/// The holder: preempt-disabled, holding PROCESS_MANAGER through the
+/// non-blocking accessor, with NetRx softirq work pending on this CPU.
+///
+/// This body contains 0 unmask operations. Whether the window is interruptible
+/// is decided by `try_manager()`, which is the code under test, and
+/// `masked_in_hold` reports which of the two it did.
+#[cfg(target_arch = "aarch64")]
+fn irq_hold_holder_body(packet: alloc::vec::Vec<u8>) {
+    IRQ_HOLD_IRQS_ENABLED_BEFORE.store(
+        u64::from(crate::arch_interrupts_enabled()),
+        AtomicOrdering::Release,
+    );
+
+    crate::per_cpu::preempt_disable();
+
+    let acquire_start = crate::tracing::trace_timestamp();
+    let guard = loop {
+        if let Some(guard) = crate::process::try_manager() {
+            break guard;
+        }
+        if irq_hold_elapsed_us(acquire_start) > IRQ_HOLD_ACQUIRE_US {
+            crate::per_cpu::preempt_enable();
+            IRQ_HOLD_DONE.store(true, AtomicOrdering::Release);
+            return;
+        }
+        core::hint::spin_loop();
+    };
+
+    IRQ_HOLD_CPU.store(
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
+        AtomicOrdering::Relaxed,
+    );
+    IRQ_HOLD_MASKED_IN_HOLD.store(
+        u64::from(!crate::arch_interrupts_enabled()),
+        AtomicOrdering::Relaxed,
+    );
+
+    // Publish the open window BEFORE the first send. The send is what raises
+    // the softirq, so on an unrepaired kernel the CPU can wedge inside it and
+    // not reach a later publication: the driver would then report armed=0 and
+    // the reader would have to infer the deadlock from the dead boot instead of
+    // reading masked_in_hold=0 off the verdict line.
+    IRQ_HOLD_ACTIVE.store(true, AtomicOrdering::Release);
+
+    let mut sends = 0u64;
+    if crate::net::send_ipv4([127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet).is_ok() {
+        sends += 1;
+    }
+    IRQ_HOLD_SENDS.store(sends, AtomicOrdering::Relaxed);
+
+    let held_from = crate::tracing::trace_timestamp();
+    let mut next_send_us = IRQ_HOLD_SEND_INTERVAL_US;
+    loop {
+        let elapsed = irq_hold_elapsed_us(held_from);
+        if elapsed >= IRQ_HOLD_US {
+            break;
+        }
+        if elapsed >= next_send_us {
+            next_send_us = elapsed.saturating_add(IRQ_HOLD_SEND_INTERVAL_US);
+            if crate::net::send_ipv4([127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet)
+                .is_ok()
+            {
+                sends += 1;
+                IRQ_HOLD_SENDS.store(sends, AtomicOrdering::Relaxed);
+            }
+        }
+        core::hint::spin_loop();
+    }
+
+    IRQ_HOLD_NETRX_PENDING.store(
+        u64::from(crate::task::softirqd::softirq_pending(
+            crate::task::softirqd::SoftirqType::NetRx,
+        )),
+        AtomicOrdering::Relaxed,
+    );
+    IRQ_HOLD_MEASURED_US.store(irq_hold_elapsed_us(held_from), AtomicOrdering::Relaxed);
+    IRQ_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+
+    drop(guard);
+    crate::per_cpu::preempt_enable();
+    IRQ_HOLD_DONE.store(true, AtomicOrdering::Release);
+}
+
+/// A loopback UDP socket owned by a live process row, plus the fd it occupies.
+#[cfg(target_arch = "aarch64")]
+struct IrqHoldSocket {
+    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    pid: crate::process::process::ProcessId,
+    fd: i32,
+}
+
+#[cfg(target_arch = "aarch64")]
+fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
+    use crate::ipc::fd::{FdKind, FileDescriptor};
+
+    // deliver_to_socket resolves the port to a pid and then scans that
+    // process's fd table, so the socket has to live in a real row.
+    let pid = crate::process::with_process_manager(|manager| {
+        manager.all_pids().first().copied()
+    })
+    .flatten()?;
+
+    let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
+    socket
+        .lock()
+        .bind(pid, [127, 0, 0, 1], IRQ_HOLD_PORT)
+        .ok()?;
+
+    let entry = FileDescriptor::with_flags(FdKind::UdpSocket(socket.clone()), 0, 0);
+    let fd = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process_mut(pid)
+            .and_then(|process| process.fd_table.alloc_with_entry(entry).ok())
+    })
+    .flatten();
+
+    let Some(fd) = fd else {
+        crate::socket::SOCKET_REGISTRY.unbind_udp(IRQ_HOLD_PORT);
+        return None;
+    };
+
+    Some(IrqHoldSocket { socket, pid, fd })
+}
+
+#[cfg(target_arch = "aarch64")]
+fn irq_hold_close_socket(open: &IrqHoldSocket) {
+    let pid = open.pid;
+    let fd = open.fd;
+    let _ = crate::process::with_process_manager(|manager| {
+        if let Some(process) = manager.get_process_mut(pid) {
+            let _ = process.fd_table.close(fd);
+        }
+    });
+    crate::socket::SOCKET_REGISTRY.unbind_udp(IRQ_HOLD_PORT);
+}
+
+/// Count the oracle's own datagrams sitting in the socket's receive queue.
+#[cfg(target_arch = "aarch64")]
+fn irq_hold_received(open: &IrqHoldSocket) -> u64 {
+    let socket = open.socket.lock();
+    let queue = socket.rx_queue.lock();
+    queue
+        .iter()
+        .filter(|packet| packet.data.as_slice() == IRQ_HOLD_PAYLOAD)
+        .count() as u64
+}
+
+/// Force a NetRx softirq to land inside a `try_manager()` hold and require the
+/// hold to survive it (#812). Reddens on origin/main, where the same window is
+/// interruptible and the holder's CPU wedges on a lock it already owns.
+pub fn run_irq_hold_oracle() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::task::kthread::{
+            kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
+        };
+        use crate::task::scheduler::{
+            live_peer_cpu_for_test, live_peer_cpu_for_test_excluding_cpu0,
+            release_cpu_affine_thread_for_test,
+        };
+
+        // Same peer choice as the #796 contention oracle: a CPU that is still
+        // dispatching, and not CPU 0 if there is another, because CPU 0 is the
+        // only writer of the global tick counter and this holder masks
+        // interrupts for the length of its window.
+        let peer = live_peer_cpu_for_test();
+        let peer = match peer {
+            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+            other => other,
+        };
+
+        let packet = crate::net::udp::build_udp_packet(
+            IRQ_HOLD_SRC_PORT,
+            IRQ_HOLD_PORT,
+            IRQ_HOLD_PAYLOAD,
+        );
+
+        let mut attempts = 0u64;
+        let mut armed = 0u64;
+        let mut holder_cpu = u64::MAX;
+        let mut irqs_enabled_before = 0u64;
+        let mut masked_in_hold = 0u64;
+        let mut sends = 0u64;
+        let mut hold_us = 0u64;
+        let mut netrx_pending = 0u64;
+        let mut received = 0u64;
+        let mut stalled = 0u64;
+        let mut hold_done = 0u64;
+        let mut joined = 0u64;
+        let mut passed = false;
+
+        let open = irq_hold_open_socket();
+
+        if let (Some(peer), Some(open)) = (peer, open.as_ref()) {
+            while attempts < IRQ_HOLD_ATTEMPTS && !passed {
+                attempts += 1;
+                armed = 0;
+                holder_cpu = u64::MAX;
+                irqs_enabled_before = 0;
+                masked_in_hold = 0;
+                sends = 0;
+                hold_us = 0;
+                netrx_pending = 0;
+                received = 0;
+                stalled = 0;
+                hold_done = 0;
+                joined = 0;
+
+                IRQ_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+                IRQ_HOLD_DONE.store(false, AtomicOrdering::Release);
+                IRQ_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
+                IRQ_HOLD_IRQS_ENABLED_BEFORE.store(0, AtomicOrdering::Relaxed);
+                IRQ_HOLD_MASKED_IN_HOLD.store(0, AtomicOrdering::Relaxed);
+                IRQ_HOLD_SENDS.store(0, AtomicOrdering::Relaxed);
+                IRQ_HOLD_MEASURED_US.store(0, AtomicOrdering::Relaxed);
+                IRQ_HOLD_NETRX_PENDING.store(0, AtomicOrdering::Relaxed);
+
+                let holder_packet = packet.clone();
+                let Ok(handle) = kthread_run_on_cpu_for_test(
+                    move || irq_hold_holder_body(holder_packet),
+                    "irq-hold-812",
+                    peer,
+                ) else {
+                    continue;
+                };
+
+                // Spin rather than halt: the window is milliseconds wide and a
+                // halted waiter only looks again on the next tick.
+                let arm_start = crate::tracing::trace_timestamp();
+                while !IRQ_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+                    && !IRQ_HOLD_DONE.load(AtomicOrdering::Acquire)
+                    && irq_hold_elapsed_us(arm_start) < IRQ_HOLD_ARM_WAIT_US
+                {
+                    core::hint::spin_loop();
+                }
+                if IRQ_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
+                    armed = 1;
+                }
+
+                release_cpu_affine_thread_for_test(handle.tid());
+
+                let join_start = crate::tracing::trace_timestamp();
+                while !kthread_has_exited_for_test(&handle)
+                    && irq_hold_elapsed_us(join_start) < IRQ_HOLD_JOIN_US
+                {
+                    crate::arch_halt();
+                }
+                hold_done = u64::from(IRQ_HOLD_DONE.load(AtomicOrdering::Acquire));
+                if kthread_has_exited_for_test(&handle) {
+                    joined = u64::from(kthread_join(&handle).is_ok());
+                } else {
+                    // A holder that took this lock and did not come back by
+                    // the join deadline is the #812 signature itself, and it is
+                    // the one reading that does not depend on the holder
+                    // reaching a publication: the deadlock can land on the
+                    // instruction after the acquire, before any store.
+                    stalled = 1;
+                }
+
+                holder_cpu = IRQ_HOLD_CPU.load(AtomicOrdering::Relaxed);
+                irqs_enabled_before = IRQ_HOLD_IRQS_ENABLED_BEFORE.load(AtomicOrdering::Acquire);
+                masked_in_hold = IRQ_HOLD_MASKED_IN_HOLD.load(AtomicOrdering::Relaxed);
+                sends = IRQ_HOLD_SENDS.load(AtomicOrdering::Relaxed);
+                hold_us = IRQ_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
+                netrx_pending = IRQ_HOLD_NETRX_PENDING.load(AtomicOrdering::Relaxed);
+
+                if stalled == 1 {
+                    // The lock is held by a CPU that cannot return, so a
+                    // retry would wait out three more deadlines and measure the
+                    // same wedge again. Report what was read.
+                    break;
+                }
+
+                // The datagram is delivered by whichever context next runs the
+                // NetRx softirq or a loopback drain; the oracle's claim is that
+                // it arrives after the hold, not which context carried it.
+                let recv_start = crate::tracing::trace_timestamp();
+                loop {
+                    received = irq_hold_received(open);
+                    if received > 0 || irq_hold_elapsed_us(recv_start) >= IRQ_HOLD_RECV_US {
+                        break;
+                    }
+                    crate::arch_halt();
+                }
+
+                let settle_start = crate::tracing::trace_timestamp();
+                while irq_hold_elapsed_us(settle_start) < IRQ_HOLD_SETTLE_US {
+                    crate::arch_halt();
+                }
+
+                passed = armed == 1
+                    && irqs_enabled_before == 1
+                    && masked_in_hold == 1
+                    && sends >= 1
+                    && hold_us >= IRQ_HOLD_MIN_US
+                    && netrx_pending == 1
+                    && received >= 1
+                    && stalled == 0
+                    && hold_done == 1
+                    && joined == 1;
+            }
+        }
+
+        crate::serial_println!(
+            "[IRQ_HOLD_ORACLE:aarch64:attempts={}:armed={}:holder_cpu={}:irqs_enabled_before={}:masked_in_hold={}:sends={}:hold_us={}:netrx_pending_at_release={}:received={}:stalled={}:hold_done={}:joined={}:{}]",
+            attempts,
+            armed,
+            holder_cpu,
+            irqs_enabled_before,
+            masked_in_hold,
+            sends,
+            hold_us,
+            netrx_pending,
+            received,
+            stalled,
+            hold_done,
+            joined,
+            if passed { "PASS" } else { "FAIL" },
+        );
+
+        if let Some(open) = open.as_ref() {
+            irq_hold_close_socket(open);
+        }
+        return passed;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        // x86_64 closes this window on the softirq side rather than the holder
+        // side: per_cpu::irq_exit() runs do_softirq() only at preempt_count 0,
+        // and this oracle's holder is preempt-disabled by construction, so the
+        // NetRx softirq cannot run on top of the hold and the race has no way
+        // to fire. SKIP discloses that; it is deliberately not a passing
+        // result. The aarch64 arm above carries the reddens-on-main leg.
+        crate::serial_println!(
+            "[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus={}:SKIP]",
+            crate::task::scheduler::online_cpu_count_snapshot(),
+        );
+        false
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn test_irq_hold_oracle() -> TestResult {
+    if run_irq_hold_oracle() {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("a try_manager() holder was interruptible on its own CPU")
+    }
+}
+
 fn test_census_widen_oracle() -> TestResult {
     if run_census_widen_oracle() {
         TestResult::Pass
@@ -7584,6 +8044,21 @@ static SYSCALL_TESTS: &[TestDef] = &[
         func: test_fcntl_pm_contention_oracle,
         arch: Arch::Aarch64,
         timeout_ms: 10000,
+        stage: TestStage::ProcessContext,
+    },
+    // #812, registered here for the same two reasons as the oracle above and
+    // one more. Same stage: this window also holds PROCESS_MANAGER, so it must
+    // land after each PostScheduler verdict rather than inside one. Same
+    // array: tests within one subsystem run sequentially on that subsystem's
+    // kthread, so the two PM-holding windows cannot overlap and starve each
+    // other's arm. It needs a live process row (the socket the softirq
+    // delivers to has to sit in one), which is what ProcessContext means.
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "irq_hold_oracle",
+        func: test_irq_hold_oracle,
+        arch: Arch::Aarch64,
+        timeout_ms: 20000,
         stage: TestStage::ProcessContext,
     },
 ];

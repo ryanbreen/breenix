@@ -373,6 +373,7 @@ TEST_ONLY_MARKERS=(
     '[SCHED_STRAND_ORACLE:'
     '[CENSUS_WIDEN_ORACLE:'
     '[FCNTL_PM_CONTENTION_ORACLE:'
+    '[IRQ_HOLD_ORACLE:'
     'Testing features enabled'
 )
 

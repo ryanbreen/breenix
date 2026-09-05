@@ -21,6 +21,22 @@ set -e
 COUNT=${1:-10}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #825: two concurrent invocations of this script on the same host each
+# hardcoded the identical /tmp/breenix_aarch64_kthread_$i paths (reconstructed
+# independently in the launch loop and the wait/verdict loop below, the same
+# duplication PR #801 found in its x86 twin run-kthread-parallel.sh for
+# #797), so one invocation's rm -rf/mkdir could delete and rewrite the serial
+# another invocation's poll loop was mid-boot scoring. Defaulting to /tmp
+# keeps a caller that leaves it unset byte-identical; a concurrent-lane launcher sets
+# this to a per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever
+# directory happens to be current when each loop below runs (the same F6
+# guard PR #801 gave the x86 gate scripts for #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+esac
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -47,7 +63,7 @@ declare -a QEMU_PIDS
 
 # Create output directories and launch QEMU instances
 for i in $(seq 1 $COUNT); do
-    OUTPUT_DIR="/tmp/breenix_aarch64_kthread_$i"
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_kthread_$i"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -80,7 +96,7 @@ PASSED=0
 FAILED=0
 
 for i in $(seq 1 $COUNT); do
-    OUTPUT_DIR="/tmp/breenix_aarch64_kthread_$i"
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_kthread_$i"
 
     # Wait up to 60 seconds for this test
     # Look for userspace shell prompt ("breenix>" or "bsh ") which indicates:
@@ -139,7 +155,7 @@ echo "Passed: $PASSED"
 echo "Failed: $FAILED"
 echo "Total:  $COUNT"
 echo ""
-echo "Output logs in: /tmp/breenix_aarch64_kthread_*/"
+echo "Output logs in: $BREENIX_GATE_TMP/breenix_aarch64_kthread_*/"
 echo "========================================="
 
 if [ $FAILED -eq 0 ]; then

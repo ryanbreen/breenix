@@ -19,7 +19,27 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-OUTPUT_ROOT="/tmp/breenix_aarch64_tty_oracle"
+# #825: two concurrent runs of this gate on the same host each hardcoded the
+# identical /tmp/breenix_aarch64_tty_oracle path, so one run's rm -rf/mkdir
+# could delete and rewrite another run's in-flight boot output -- the same
+# hazard PR #801 fixed for this gate's x86 twin, run-x86-tty-oracle-gate.sh,
+# for #797. Defaulting to /tmp keeps a caller that leaves it unset byte-identical; a
+# concurrent-lane launcher sets this to a per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever
+# directory happens to be current when it is read (the same F6 guard PR
+# #801 gave the x86 gate scripts for #797).
+# This gate's own house convention (see the comment above trap
+# report_gate_failure ERR further down) is echo + bare `false`, not
+# `exit`, so a rejection here matches the uniform statement shape the
+# whole-file no-pre-empting-exit ratchet polices, without a
+# position-dependent exemption for a guard that runs before the trap
+# below is installed.
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; false ;;
+esac
+OUTPUT_ROOT="$BREENIX_GATE_TMP/breenix_aarch64_tty_oracle"
 BOOTS=1
 REBUILD_USERSPACE=false
 CURRENT_SERIAL=""

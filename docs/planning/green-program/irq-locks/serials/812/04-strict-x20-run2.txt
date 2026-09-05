@@ -1,0 +1,68 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/target/ext2-aarch64.img
+Iterations: 20
+Requirement: 100% success rate (all 20 must pass)
+
+Running tests...
+
+qemu-system-aarch64: terminating on signal 15 from pid 10106 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 10608 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 11093 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 11556 (<unknown process>)
+  [OK] Boot 4: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 11998 (<unknown process>)
+  [OK] Boot 5: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 12523 (<unknown process>)
+  [OK] Boot 6: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 13060 (<unknown process>)
+  [OK] Boot 7: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 13643 (<unknown process>)
+  [OK] Boot 8: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 14495 (<unknown process>)
+  [OK] Boot 9: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 15223 (<unknown process>)
+  [OK] Boot 10: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 15858 (<unknown process>)
+  [OK] Boot 11: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 16389 (<unknown process>)
+  [OK] Boot 12: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 16887 (<unknown process>)
+  [OK] Boot 13: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 17491 (<unknown process>)
+  [OK] Boot 14: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 18074 (<unknown process>)
+  [OK] Boot 15: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 18562 (<unknown process>)
+  [OK] Boot 16: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 19109 (<unknown process>)
+  [OK] Boot 17: SUCCESS
+qemu-system-aarch64: terminating on signal 15
+  [OK] Boot 18: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 20278 (<unknown process>)
+  [OK] Boot 19: SUCCESS
+qemu-system-aarch64: terminating on signal 15 from pid 20833 (<unknown process>)
+  [OK] Boot 20: SUCCESS
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+Duration: 244s
+
+=========================================
+PASS: 20/20 boots succeeded
+=========================================

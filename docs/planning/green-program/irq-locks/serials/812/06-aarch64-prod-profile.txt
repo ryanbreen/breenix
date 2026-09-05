@@ -1,0 +1,30 @@
+Building the shipped ARM64 production kernel profile...
+    Finished `release` profile [optimized] target(s) in 0.26s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-812/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Booting the ARM64 production profile...
+qemu-system-aarch64: terminating on signal 15 from pid 59943 (<unknown process>)
+PASS: production profile reached bsshd with the futex oracle seam absent
+Observed: [FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+Observed: [init] futex_handoff_oracle exited pid=6 code=0
+Observed: bsshd: listening on 0.0.0.0:2222
+Observed kernel oracle marker count: 0
+Observed fcntl contention oracle marker count: 0
+Observed IRQ-hold oracle marker count: 0
+Observed block EINTR oracle marker count: 2
+Observed block EINTR oracle failure count: 0
+Observed poll TCP oracle marker count: 2
+Observed poll TCP oracle failure count: 0
+Observed kernel poll timeout report count: 1
+Observed kernel lost-readiness report count: 0
+Observed TTY oracle marker count: 2
+Observed TTY oracle failure count: 0
+Observed TTBR0 ASID census marker count: 13
+Observed TTBR0 ASID census untagged-publish line count: 0
+Observed: [TTBR0_ASID_CENSUS:untagged=0:tagged=22372:kernel=26195:cleared=47854]
+Observed crash marker count: 0
