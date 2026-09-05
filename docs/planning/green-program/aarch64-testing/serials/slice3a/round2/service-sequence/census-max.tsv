@@ -1,0 +1,26 @@
+boot	bucket	end	seconds	ctx596_divergence	reason	serial	ret_dispatch_refusals	resume_pc_refusals	percpu_stack_aliens	cpu_identity_splits	ret_stage_refusals	lr_nontext
+1	GREEN	early	20	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-1.txt	0	0	0	0	0	8
+2	GREEN	early	21	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-2.txt	0	0	0	0	0	4
+3	GREEN	early	22	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-3.txt	0	0	0	0	0	4
+4	GREEN	early	22	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-4.txt	0	0	0	0	0	6
+5	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-5.txt	0	0	0	0	0	4
+6	GREEN	early	21	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-6.txt	0	0	0	0	0	6
+7	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-7.txt	0	0	0	0	0	6
+8	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-8.txt	0	0	0	0	0	4
+9	GREEN	early	24	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-9.txt	0	0	0	0	0	4
+10	GREEN	early	23	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-10.txt	0	0	0	0	0	4
+11	GREEN	early	22	2	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-11.txt	0	0	0	0	0	8
+12	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-12.txt	0	0	0	0	0	4
+13	GREEN	early	22	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-13.txt	0	0	0	0	0	6
+14	GREEN	early	21	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-14.txt	0	0	0	0	0	6
+15	GREEN	early	22	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-15.txt	0	0	0	0	0	4
+16	GREEN	early	20	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-16.txt	0	0	0	0	0	6
+17	GREEN	early	29	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-17.txt	0	0	0	0	0	6
+18	GREEN	early	21	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-18.txt	0	0	0	0	0	8
+19	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-19.txt	0	0	0	0	0	6
+20	GREEN	early	22	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-20.txt	0	0	0	0	0	4
+21	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-21.txt	0	0	0	0	0	4
+22	GREEN	early	21	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-22.txt	0	0	0	0	0	4
+23	GREEN	early	20	2	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-23.txt	0	0	0	0	0	8
+24	GREEN	early	18	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-24.txt	0	0	0	0	0	4
+25	GREEN	early	23	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/max/serial-25.txt	0	0	0	0	0	8

@@ -49,3 +49,10 @@ docs/planning/green-program/sockets/serials/787-regression/** -text
 # the same reason as the captures above -- the CR bytes the guest console emits
 # are part of the evidence.
 docs/planning/green-program/nic-bus/serials/737-landing-resmoke-2026-09-05/*.txt -text
+
+# Slice 3a serials: raw aarch64 QEMU serial captures from this Mac -- 5 strict
+# boots at the fix head, 5 strict boots at the pre-fix baseline (origin/main's
+# scheduler.rs restored), and 3 production-profile boots. Kept byte-exact for
+# the same reason as the captures above -- the CR bytes the guest console emits
+# are part of the evidence, and a CRLF normalisation would edit it.
+docs/planning/green-program/aarch64-testing/serials/slice3a/** -text
