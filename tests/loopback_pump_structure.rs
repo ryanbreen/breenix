@@ -840,12 +840,23 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
     // re-derivation closed a pre-existing one-row gap — the enumeration read 101
     // while the gate's own runs measured 102, because the RING3_SMOKE
     // `smoke_hello_time` process was never counted. 102 + 2 = 104.
+    //
+    // Re-pinned again to 105 by the #737 DF-oracle branch: `df_preempt_oracle`
+    // joined the RING3_SMOKE roster as one more launched program that runs to
+    // completion and exits once, which moves this floor by exactly 1. The gate
+    // script carries the same derivation beside its own constant. This literal
+    // and that one are the two halves of one pin, and when the branch moved the
+    // script it left this half at 104, which is the finding this edit closes.
+    // claim-lint:ok: 1 of 1 `readonly EXPECTED_USERSPACE_EXITS=` assignment in
+    // docker/qemu/run-x86-boot-tests.sh reads 105 at this head, and the
+    // mutation leg `x86_gate_validator_rejects_lower_userspace_exit_pin` below
+    // reddens this validator by rewriting exactly that assignment. #737.
     if source
-        .matches("readonly EXPECTED_USERSPACE_EXITS=104")
+        .matches("readonly EXPECTED_USERSPACE_EXITS=105")
         .count()
         != 1
     {
-        return Err("x86 gate does not pin the 104 expected userspace exits".to_string());
+        return Err("x86 gate does not pin the 105 expected userspace exits".to_string());
     }
     for rationale in [
         "B1",
@@ -1565,8 +1576,8 @@ fn x86_gate_validator_rejects_missing_userspace_failure_trap() {
 fn x86_gate_validator_rejects_lower_userspace_exit_pin() {
     let source = repo_text("docker/qemu/run-x86-boot-tests.sh");
     let mutated = source.replacen(
+        "readonly EXPECTED_USERSPACE_EXITS=105",
         "readonly EXPECTED_USERSPACE_EXITS=104",
-        "readonly EXPECTED_USERSPACE_EXITS=103",
         1,
     );
     assert_ne!(mutated, source, "userspace exit-pin mutation must apply");
