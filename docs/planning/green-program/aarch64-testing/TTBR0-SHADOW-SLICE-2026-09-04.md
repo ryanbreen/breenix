@@ -6,9 +6,28 @@ on `main` at every aarch64 process-root install, where the write to
 `TTBR0_EL1` and the two per-CPU words the syscall return corridor reads
 disagree about which page-table root a return to EL0 should run on. This slice
 ports that repair, and only that repair, onto `main`.
-claim-lint:ok: 10 such installs are censused under `kernel/src` at this head;
-9 of 10 are routed through the new discipline and 1 of 10 is left behind the
-Tier-1 rule. The list is in section 7.
+claim-lint:ok: 10 of 10 process-root install decision sites on `main` carried
+that shape; 9 of 10 are listed in section 2 and the 10th in section 6.
+
+Two counts run through this document and they are not the same number, so both
+are stated here and neither is left to be inferred:
+
+* **10 process-root install DECISION sites** existed on `main` — the places
+  that chose a root and wrote it to `TTBR0_EL1`. 9 of 10 are routed through the
+  new discipline by this slice; 1 of 10, the Tier-1 site
+  `kernel/src/syscall/time.rs::ensure_current_address_space`, is left behind the
+  Tier-1 rule. The 9 are listed in section 2 and the 1 in section 6.
+* **7 FUNCTIONS still write `TTBR0_EL1` with a raw `msr`** at this head, and
+  those 7 are what the ratchet census in section 7 walks: 2 discipline-module
+  helpers, 2 that reconcile both shadows inline, 2 mechanism primitives that
+  install what a caller decided, and the same 1 Tier-1 site.
+
+The 9 routed sites are absent from the 7 precisely because they no longer write
+the register themselves. Wherever this document says "the tenth site" it means
+the 10th of the 10 decision sites, which is also 1 of the 7 censused functions.
+claim-lint:ok: 9 of 10 decision sites routed and 7 of 7 functions censused at
+this head; the decision sites are listed in section 2 and the censused
+functions in section 7.
 
 Branch head the port was taken from: `2b3fb187`. Base: `origin/main`
 `d6b7a186`.
@@ -92,10 +111,12 @@ function. Without it the existing suite goes red on a correct change.
   (`5f21d2f3`, `ead21609`, `ea552f9d`), the idle-identity refusal work
   (`264294f5`, `023e049d` and the rest), the musl catalog commits, the x86
   affinity and staging build commits, and the branch's own RCA document.
-* `kernel/src/syscall/time.rs::ensure_current_address_space`, the tenth site
-  and the same defect shape. `syscall/time.rs` is on CLAUDE.md's Tier-1
-  prohibited list; changing it needs explicit operator approval, which this
-  slice does not have. It is disclosed rather than hidden — see section 6.
+* `kernel/src/syscall/time.rs::ensure_current_address_space` — the tenth of the
+  10 decision sites the header describes, which is also 1 of the 7 functions
+  the section-7 census reaches, and the same defect shape. `syscall/time.rs` is
+  on CLAUDE.md's Tier-1 prohibited list; changing it needs explicit operator
+  approval, which this slice does not have. It is disclosed rather than hidden
+  — see section 6.
 * The branch's `tests/aarch64_testing_profile_structure.rs` as a file. Its
   #562/#761 tests pin functions that do not exist on `main` (for example
   `kernel/src/task/idle_sleep.rs`, which `main` does not have), so the TTBR0
@@ -193,45 +214,86 @@ These rows are the parked branch's arithmetic over its own committed serials.
 They are cited here by commit and path; they were not reproduced on `main`,
 because section 3 shows `main` cannot reproduce them.
 
-## 5. Smoke at this head (R13)
+## 5. Boots at this head (round 3)
 
-Every boot below was run on its own on this Mac, 18 boots in total across two
-batteries, never two at once.
-claim-lint:ok: 18 of 18 boots serialised; the serials are the three
-`serials/slice1/smoke-*` directories and `serials/slice1/r13-final/`.
+The boots that speak for the head this document is committed at are round 3's.
+They were run against the kernel and test sources of commit `98f1bf7a`, which
+are the same bytes commit `0f2621b0` carries -- that later commit adds only the
+round's artifacts.
+claim-lint:ok: `git diff --stat 98f1bf7a..0f2621b0 -- kernel tests` reports 0
+changed files, and 10 of the 10 files that commit does change are under
+`docs/`.
 
-The smoke was run twice: once at the code commit `9e9131d0`
-(`serials/slice1/smoke-*`), and again at the final head after the ratchets,
-serials and this document had landed (`serials/slice1/r13-final/`). The kernel
-sources are byte-identical between them — every commit after `9e9131d0` touches
-only `tests/`, `docs/` and this file — so the second battery is a re-run at the
-returned head rather than a different kernel.
-claim-lint:ok: 0 of the 4 commits after `9e9131d0` touch `kernel/`,
-reproducible with `git diff --stat 9e9131d0..HEAD -- kernel`.
-Serials: `serials/slice1/r13-final/strict-boot1-serial.txt` and its 8 siblings.
+Each boot was run on its own on this Mac, one at a time, with
+`pgrep -fl qemu-system-aarch64 | wc -l` recorded immediately before each launch
+and the launch made only when that count was 2 or lower. It read 0 before each
+of the 6, and each gate transcript carries its own reading on its first line.
+claim-lint:ok: 6 of 6 transcripts open with `pgrep-at-launch: 0`; they are the
+6 `*-gate.txt` files under `serials/slice1/prove-r3/`.
 
-| profile | command | boots per battery | result, both batteries |
+| profile | command | boots | result |
 |---|---|---|---|
-| strict | `docker/qemu/run-aarch64-boot-test-strict.sh 1`, three times | 3 | 3 PASS, 0 FAIL each time |
-| production | `docker/qemu/run-aarch64-prod-profile-boot-test.sh`, three times | 3 | 3 PASS, 0 FAIL each time |
-| testing | direct QEMU boot, same invocation the strict gate uses | 3 | 3 FAIL each time — see below |
+| strict | `docker/qemu/run-aarch64-boot-test-strict.sh 1`, three times | 3 | 3 PASS, 0 FAIL |
+| production | `docker/qemu/run-aarch64-prod-profile-boot-test.sh`, three times | 3 | 2 PASS, 1 FAIL — below |
 
-The `testing` profile **does build** on `main` (`--features testing`, soft-float
-target, `scripts/check-kernel-no-neon.sh` PASS). It does not boot. Two failure
-signatures appear across the two batteries, in different proportions: a panic at
-`kernel/src/task/softirq_tests.rs:228:5` — "ksoftirqd should have processed
-deferred softirqs (tid=Some(2))" — and a boot that makes no progress past
-`[smp] 4 CPUs online`, reaching neither a shell prompt nor a panic before the
-20 s timeout. The first battery scored 2 panics and 1 no-progress; the second
-scored 3 panics and 0 no-progress.
+### The production red
 
-That is #562, and it is not this slice's doing. The same kernel built at
-`origin/main` `d6b7a186` with the slice stashed out, booted 3 times with the
-same command, produced the same two signatures: 2 panics at
-`softirq_tests.rs:228:5` and 1 no-progress boot. Control serials:
-`serials/slice1/main-control-testing/`. 3 of 3 red in each battery at this
-branch's head, 3 of 3 red on the base commit, the same two signatures — the
-profile's red is inherited, not introduced.
+Boot 1 of the production battery failed. The whole serial is preserved at
+`serials/slice1/prove-r3/prod-boot1-FAIL-serial.txt` and the gate transcript
+beside it at `prod-boot1-FAIL-gate.txt`; the 5 green boots' transcripts are in
+the same directory.
+
+It is a stall, not a fault. `clonevm_exec_test` prints
+`CLONEVM_EXEC_TEST: second stage` and never reaches
+`post-exec rendezvous complete`; `init` stays blocked in `waitpid` on it, so
+`bsshd` is never spawned and the gate ends with "bsshd never reached its
+listening state". The guest is alive throughout: heartbeats continue to
+119415 ms, `[net-rx-counters]` samples keep advancing to sample 10, and the
+custody and tombstone censuses keep printing. The gate counted 0 crash markers.
+claim-lint:ok: 1 of 3 production boots, read off the whole serial at
+`serials/slice1/prove-r3/prod-boot1-FAIL-serial.txt`.
+
+That is the exact signature of open issue **#690** — "clonevm_exec_test hangs
+after 'second stage': post-exec rendezvous never completes" — which that issue
+reports at 1 boot in 30 on the `cortex-a72` service-sequence profile. This gate
+runs `-cpu max`, so the same signature is being seen on a second profile.
+claim-lint:ok: the signature is matched against issue #690, whose own serial is
+`docs/planning/green-program/sockets/serials/aarch64-clonevm-second-stage-stall-20260829.txt`.
+
+**It is recorded as UNATTRIBUTED and this round does not call the branch
+landable.** #690 is not one of the pre-adjudicated signatures this round was
+given (#555 softirq, #536 timer_delay, #576 EL1 NULL-PC, #586 starved
+wake-loss, and a host-load window miss, which requires a recorded pre-launch
+count above 2 and this had 0). Round 3 ran no control at `origin/main` on this
+profile, so no measurement here rules the branch out either — and the branch
+does change the exec-path TTBR0 install that `clonevm_exec_test` exercises.
+Naming #690 identifies the signature; it does not discharge the red.
+claim-lint:ok: 0 of the 5 pre-adjudicated signatures listed above matches this
+red; the issue it does match is #690.
+
+### The `testing` profile
+
+Rounds 1 and 2 measured the `--features testing` profile: it builds (round 3
+rebuilt it, `BUILD_EXIT=0`, `check-kernel-no-neon.sh` PASS — section 8) and it
+does not boot. Round 1 recorded two signatures across two 3-boot batteries — a
+panic at `kernel/src/task/softirq_tests.rs:228:5`, "ksoftirqd should have
+processed deferred softirqs (tid=Some(2))", and a boot making no progress past
+`[smp] 4 CPUs online` — and a 3-boot control at `origin/main` `d6b7a186` with
+the slice stashed out that produced the same two signatures, 2 panics and 1
+no-progress. Control serials: `serials/slice1/main-control-testing/`. That is
+#562 and it is inherited, not introduced. Round 3 did not boot this profile.
+
+### The earlier batteries, as history
+
+Round 1 ran 18 boots across two batteries (`serials/slice1/smoke-*` and
+`serials/slice1/r13-final/`), 3 strict and 3 production PASS in each. Those
+batteries were run at the round-1 kernel; round 2 then changed kernel source —
+`4770c056` dropped `nomem` from four install blocks — so they are not runs of
+the kernel this document is committed at, and round 1's sentence claiming the
+kernel sources were byte-identical from `9e9131d0` onward stopped being true at
+that commit. Round 3's boots above are the ones that describe this head.
+claim-lint:ok: 1 of the commits after `9e9131d0` touches `kernel/` — commit
+`4770c056` — reproducible with `git diff --stat 9e9131d0..HEAD -- kernel`.
 
 ## 6. The Tier-1 site, disclosed
 
@@ -314,7 +376,7 @@ helper added later cannot slip past it.
 the censused installers kernel-wide, with the same Tier-1 disposition as the
 shadow census: print, do not pin.
 claim-lint:ok: 7 of 7 censused installs are checked and 1 of 7 is the Tier-1
-site it prints; the run is `serials/slice1/r2/structure-suites.txt`.
+site it prints; the run is `serials/slice1/r3/structure-suites.txt`.
 `the_dispatch_ttbr0_switch_settles_both_shadows` pins
 `context_switch::switch_ttbr0_if_needed` independently of the census, because it
 is the install every userspace thread takes on dispatch: the root it publishes
@@ -329,76 +391,148 @@ site that touches one shadow is rejected as a primitive; and a synthetic
 aarch64 wrapper handing a process root straight to a primitive is caught by the
 caller census and cleared once routed through the discipline.
 
-Round 2 added 4 more self-contained legs, so the tightened predicates cannot go
-vacuous without a test going red: a synthetic install block carrying
-`options(nomem, nostack)` is caught and clears once the option is dropped, while
-prose above the block naming the option does not decide the answer; a synthetic
-bare `msr` with no barriers fails the sequence check; the four one-word-settled
-shapes (both / saved only / pending only / pending left armed) are accepted and
-rejected as their names say; and a synthetic aarch64 caller that hands a process
-root to a primitive and publishes only `saved_process_cr3` is caught by the
-caller census, clearing only when `set_next_cr3(0)` is added beside it.
+Round 2 added 3 more self-contained tests, so the tightened predicates cannot go
+vacuous without a test going red:
+
+* `the_nomem_check_reads_the_asm_block_and_not_the_prose` — a synthetic install
+  block carrying `options(nomem, nostack)` is caught and clears once the option
+  is dropped, prose above the block naming the option does not decide the
+  answer, and a bare `msr` with no barriers fails the sequence check. That last
+  assertion is a 4th leg living inside this test rather than a test of its own,
+  which is what round 1's "four legs" wording obscured.
+* `settling_one_shadow_is_not_settling_the_shadows` — the four one-word-settled
+  shapes (both / saved only / pending only / pending left armed) are accepted
+  and rejected as their names say.
+* `the_caller_census_rejects_a_half_settled_caller` — a synthetic aarch64
+  caller that hands a process root to a primitive and publishes only
+  `saved_process_cr3` is caught by the caller census, clearing only when
+  `set_next_cr3(0)` is added beside it.
+
+claim-lint:ok: 3 of 3 are named above and run in
+`serials/slice1/r3/structure-suites.txt`; the 4th leg is an assertion inside
+the 1st of the 3.
+
+Round 3 added 4 more tests, closing three gaps round 2 left open. Section 12
+records what each one changed and the mutation that shows it is not vacuous.
+
+* `every_non_primitive_ttbr0_install_performs_the_install_sequence` — the
+  6-step sequence, applied to each censused install that is not a mechanism
+  primitive, not just to the discipline module. 5 of the 7 censused functions
+  are checked, in 3 files, with the census's Tier-1 disposition. The two
+  mechanism primitives are exempt and the test's doc comment says what that
+  narrows: 2 of 2 of them run no `isb` after the `msr` and no
+  `tlbi vmalle1is`, and this ratchet makes no claim that their callers make up
+  for it.
+* `the_sequence_census_catches_an_install_outside_the_discipline_module` — the
+  self-contained leg for the above.
+* `every_caller_of_the_kernel_root_install_settles_the_shadows` — the callers
+  of `switch_ttbr0_to_kernel`, which settles neither shadow by design and whose
+  callers no round-2 check constrained. 3 of 3 callers at this head must either
+  settle both words themselves -- clearing them to 0 when no process root is
+  live -- or sit in one interrupt-masked window whose 2 exits both reinstall
+  through a helper that settles both.
+* `the_kernel_root_caller_census_catches_a_caller_that_leaves_the_shadows_armed`
+  — its self-contained leg, in 4 parts: bare caller caught, zeroed caller
+  cleared, half-zeroed caller caught, masked-window caller cleared and then
+  caught again once its failure arm stops reinstalling.
+
+`settles_both_shadows` also changed in round 3: it scores the LAST write to
+each shadow word rather than the first, so a body that clears `next_cr3` and
+arms it again afterwards no longer passes.
 
 `tests/exec_lock_order_structure.rs` gains two negative tests of its own:
 deleting `set_next_cr3(0)` from the helper reddens the exec-path T4 validator,
 and putting a raw `msr` back into `sys_exec_aarch64` reddens it too.
 
-## 8. Builds and suites at the round-1 head
+## 8. Builds and suites at this head (round 3)
 
-The rows below were run at the round-1 head, `ceda999d`. Review round 2 changed
-kernel source, so the 3 aarch64 profiles and the 27 suites were rebuilt and
-re-run afterwards; section 11 carries those results and the artifact path for
-each. The x86_64 row is beast-only and was not re-run.
+The rows below were run in round 3, at this head, on this Mac. Each aarch64
+artifact carries the full `cargo` command on its second line and a
+`BUILD_EXIT=` line at the end, so the exit status is recorded rather than
+asserted.
 
-| what | result |
-|---|---|
-| aarch64 `--features boot_tests`, `aarch64-breenix-kernel.json`, soft-float | builds; `scripts/check-kernel-no-neon.sh` PASS, 0 FP/SIMD load/store in `.text` |
-| aarch64 no features (the production profile, built by the prod gate itself) | builds; `check-kernel-no-neon.sh` PASS |
-| aarch64 `--features testing` | builds; `check-kernel-no-neon.sh` PASS (it is the boot that fails, section 5) |
-| x86_64 `--features testing,external_test_bins --bin qemu-uefi`, on beast | builds, exit 0, 0 lines matching `^(warning\|error)` |
-| the 27 `tests/*_structure.rs` suites | 27 of 27 suites green, 0 failures (round 2 re-ran them: 27 of 27, 524 cases) |
-| the 9-boot R13 smoke, re-run at the final head | `serials/slice1/r13-final/` |
+| what | result | artifact under `serials/slice1/r3/` |
+|---|---|---|
+| aarch64 no features (the production profile) | `BUILD_EXIT=0`; 1 `^(warning\|error)` line, the toolchain notice below | `aarch64-no-features-build.txt` |
+| its `check-kernel-no-neon.sh` | `NO_NEON_EXIT=0`, PASS, 0 FP/SIMD load/store in `.text` | `aarch64-no-features-no-neon.txt` |
+| aarch64 `--features boot_tests`, `aarch64-breenix-kernel.json`, soft-float | `BUILD_EXIT=0`; the same 1 line | `aarch64-boot_tests-build.txt` |
+| its `check-kernel-no-neon.sh` | `NO_NEON_EXIT=0`, PASS | `aarch64-boot_tests-no-neon.txt` |
+| aarch64 `--features testing` | `BUILD_EXIT=0`; the same 1 line (it is the boot that fails, section 5) | `aarch64-testing-build.txt` |
+| its `check-kernel-no-neon.sh` | `NO_NEON_EXIT=0`, PASS | `aarch64-testing-no-neon.txt` |
+| x86_64 `--features testing,external_test_bins --bin qemu-uefi`, on beast | `BUILD_EXIT=0`, the `^(warning\|error)` grep printed 0 lines | `x86-testing-external_test_bins-build.txt` |
+| the 27 `tests/*_structure.rs` suites | 27 of 27 green, 528 cases, 0 failures | `structure-suites.txt` |
+| the userspace ELFs the `boot_tests` build links | copied, not built here; 152 of 152 files identical to the primary working copy | `userspace-elfs.md` |
 
 0 of the 3 aarch64 builds emit a warning attributable to this tree. The one
 warning `cargo` prints on each `-Z build-std` invocation here — "the following
 packages contain code that will be rejected by a future version of Rust: core
 v0.0.0" — is about the pinned toolchain's own `core`, is present identically at
 `origin/main`, and is not this branch's.
-claim-lint:ok: 3 of 3 aarch64 `-Z build-std` profiles built here emit it, as
-does the same command at `origin/main`.
+claim-lint:ok: 3 of 3 aarch64 `-Z build-std` profiles built in round 3 emit it
+and nothing else, visible in the 3 build artifacts named above.
+
+Round 1's rows were run at `ceda999d` and round 2's at `887f56d2`; both are
+kept in section 11 as that round's record rather than restated here, because
+round 2 changed kernel source and round 3 rebuilt everything afterwards.
 
 ## 9. The x86_64 build
 
-x86 builds run on beast, not on this Mac. A fresh clone of this branch at
-`9d847b95` was made at `/root/breenix-ttbr0` inside the `breenix-x86` Incus
-container and built with the standard command:
+x86 builds run on beast, not on this Mac. The clone at `/root/breenix-ttbr0`
+inside the `breenix-x86` Incus container was reset to this branch and built
+with the standard command:
 
 ```
-cargo build --release --features testing,external_test_bins --bin qemu-uefi
+cargo build --release --features testing,external_test_bins --bin qemu-uefi 2>&1 | grep -E "^(warning|error)"
 ```
 
-Result, from `serials/slice1/builds/x86-testing-external_test_bins-build.txt`:
+Round 3 ran it at `0f2621b0`, and the container echoed that commit back from
+its own `git rev-parse HEAD` before building. The grep printed nothing and
+`BUILD_EXIT=0`. The transcript, including the command and the container's
+`rev-parse` line, is `serials/slice1/r3/x86-testing-external_test_bins-build.txt`.
 
-```
-    Finished `release` profile [optimized] target(s) in 3m 10s
-```
+The commits after `0f2621b0` on this branch are documentation only, so the x86
+sources the container built are the x86 sources at the head this document is
+committed at.
 
-`BUILD_EXIT=0`, and `grep -nE '^(warning|error)'` over that log returns 0 of
-123 lines. No boot was run on x86; this slice touches no x86 code path, and the
-x86 gate reds tracked at #630, #636, #554, #608 and #540 are unrelated to it.
+**No x86 boot gate was run, and this round did not intend to run one**: the
+x86 `boot_tests` gate is red on `main` for #787, and this slice touches no x86
+code path. The x86 reds tracked at #630, #636, #554, #608 and #540 are
+unrelated to it as well.
 
 ## 10. Build and boot logs, by path
 
+Round 3's artifacts — these are the ones that describe this head:
+
 | file | what it is |
 |---|---|
-| `serials/slice1/builds/aarch64-boot_tests-build.txt` | the `--features boot_tests` build at this head, exit 0 |
-| `serials/slice1/builds/aarch64-boot_tests-no-neon.txt` | its `check-kernel-no-neon.sh` PASS |
-| `serials/slice1/builds/aarch64-no-features-build.txt` | the production-profile build at this head, exit 0 |
-| `serials/slice1/builds/aarch64-no-features-no-neon.txt` | its `check-kernel-no-neon.sh` PASS |
-| `serials/slice1/builds/aarch64-testing-build.txt` | the `--features testing` build at this head, exit 0 |
-| `serials/slice1/builds/aarch64-testing-no-neon.txt` | its `check-kernel-no-neon.sh` PASS |
-| `serials/slice1/builds/x86-testing-external_test_bins-build.txt` | the beast x86 build, exit 0 |
-| `serials/slice1/r2/` | review round 2: the 3 rebuilt aarch64 profiles with their no-neon runs, the 27-suite run, and the 2 anti-vacuity mutation runs |
+| `serials/slice1/r3/aarch64-no-features-build.txt` | the production-profile build, command and `BUILD_EXIT=0` |
+| `serials/slice1/r3/aarch64-no-features-no-neon.txt` | its `check-kernel-no-neon.sh`, `NO_NEON_EXIT=0` |
+| `serials/slice1/r3/aarch64-boot_tests-build.txt` | the `--features boot_tests` build, command and `BUILD_EXIT=0` |
+| `serials/slice1/r3/aarch64-boot_tests-no-neon.txt` | its `check-kernel-no-neon.sh`, `NO_NEON_EXIT=0` |
+| `serials/slice1/r3/aarch64-testing-build.txt` | the `--features testing` build, command and `BUILD_EXIT=0` |
+| `serials/slice1/r3/aarch64-testing-no-neon.txt` | its `check-kernel-no-neon.sh`, `NO_NEON_EXIT=0` |
+| `serials/slice1/r3/x86-testing-external_test_bins-build.txt` | the beast x86 build at `0f2621b0`, command, `rev-parse` echo, empty grep, `BUILD_EXIT=0` |
+| `serials/slice1/r3/structure-suites.txt` | the 27 suites, one `cargo test --test` invocation each, 528 cases |
+| `serials/slice1/r3/userspace-elfs.md` | where the `boot_tests` profile's userspace ELFs came from, with the hash comparison |
+| `serials/slice1/r3/README.md` | the 3 round-3 anti-vacuity mutations, verbatim, with the byte-copy hashes |
+| `serials/slice1/r3/mutation-n003-sequence-stripped.txt` | N-003's run, exit 101 |
+| `serials/slice1/r3/mutation-n004-next-cr3-rearmed.txt` | N-004's run, exit 101 |
+| `serials/slice1/r3/mutation-n005-quiesce-shadows-dropped.txt` | N-005's run, exit 101 |
+| `serials/slice1/r3/restored-green.txt` | the suite after the byte-copy restores, exit 0, 20 of 20 |
+| `serials/slice1/prove-r3/prod-boot1-FAIL-serial.txt` | the whole serial of round 3's production red |
+| `serials/slice1/prove-r3/prod-boot1-FAIL-gate.txt` | that boot's gate transcript, with its pre-launch process count |
+| `serials/slice1/prove-r3/strict-boot1-PASS-gate.txt` and its 2 siblings | the 3 strict boots' gate transcripts, each with its pre-launch process count |
+| `serials/slice1/prove-r3/prod-boot2-PASS-gate.txt` and its 1 sibling | the 2 green production boots' gate transcripts, likewise |
+
+Earlier rounds, kept for history:
+
+| file | what it is |
+|---|---|
+| `serials/slice1/builds/` | round 1's builds, run at `ceda999d` |
+| `serials/slice1/smoke-*`, `serials/slice1/r13-final/` | round 1's 18 boots |
+| `serials/slice1/main-control-testing/` | round 1's `--features testing` control at `origin/main` `d6b7a186` |
+| `serials/slice1/mutation-5/`, `serials/slice1/diffs/` | section 3's latency probe and its diff |
+| `serials/slice1/r2/` | round 2: the 3 rebuilt aarch64 profiles with their no-neon runs, the 27-suite run, and the 2 anti-vacuity mutation runs |
 
 
 ## 11. Review round 2 (R154)
@@ -609,9 +743,9 @@ does not carry; they were produced here by
 `./userspace/programs/build.sh --arch aarch64` (148 binaries installed, exit 0)
 before that build was run. This branch changes no userspace source.
 
-x86_64 was not rebuilt this round: x86 builds run on beast, this round touches
-no x86 code path, and section 9's x86 result stands as the round-1 record of a
-tree whose x86 sources are byte-identical to this one's.
+x86_64 was not rebuilt in round 2: x86 builds run on beast and that round
+touched no x86 code path. Section 9 now carries round 3's x86 build, run at
+`0f2621b0`, rather than round 1's.
 
 ```
 claim-lint: scripts/claim-lint.py                                          -> exit 0
@@ -631,3 +765,219 @@ d6b7a186e37b)" with 269 pre-existing findings outside those hunks not
 reported.
 
 claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md -> exit 0
+
+## 12. Round 3 (R158)
+
+Round 2's review left three ratchet gaps open and five documentation claims
+that were no longer true of the tree. Round 3 closes 3 of 3 gaps and 5 of 5
+claims in one pass and re-derives the evidence at this head. It changes no
+kernel source: the diff against the round-2 head is
+`tests/ttbr0_shadow_reconciliation_structure.rs`, this file, and the round-3
+artifacts.
+claim-lint:ok: 0 of round 3's commits touch `kernel/`, reproducible with
+`git diff --stat e03d4cea..HEAD -- kernel`.
+
+### N-003 — the install sequence ran over one file
+
+`the_discipline_installs_in_order_and_orders_the_shadow_stores` checked the
+6-step sequence in `kernel/src/arch_impl/aarch64/ttbr0.rs` only. The two
+installs outside that module — `context_switch.rs::switch_ttbr0_if_needed` and
+`syscall_entry.rs::restore_ttbr0_after_failed_exec` — could lose their barriers
+with the suite still green.
+
+`every_non_primitive_ttbr0_install_performs_the_install_sequence` (new) applies
+`performs_install_sequence` to each censused install that is not a mechanism
+primitive. It reaches 5 sites at this head, in 3 files:
+
+```
+kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed
+kernel/src/arch_impl/aarch64/syscall_entry.rs::restore_ttbr0_after_failed_exec
+kernel/src/arch_impl/aarch64/ttbr0.rs::switch_ttbr0_to_kernel
+kernel/src/arch_impl/aarch64/ttbr0.rs::adopt_process_ttbr0
+kernel/src/syscall/time.rs::ensure_current_address_space
+```
+
+Its coverage floor is census-shaped rather than a name list: at least 4 sites,
+in at least 2 files, so it cannot quietly collapse back onto the discipline
+module. The Tier-1 site is checked and printed rather than pinned, the same
+disposition the other kernel-wide censuses use.
+
+The mechanism-primitive exemption is a real narrowing and the test's own doc
+comment says so: 2 of 2 primitives at this head — `paging.rs::write_root` and
+`memory/arch_stub.rs::Cr3::write` — run `dsb ishst` / `msr` / `dsb ish` / `isb`,
+with no `isb` after the `msr` and no `tlbi vmalle1is`, so neither would pass
+this check if it were applied to them. The ratchet makes no claim that their
+callers make up for it.
+
+Mutation, recorded verbatim in
+`serials/slice1/r3/mutation-n003-sequence-stripped.txt`: the `tlbi vmalle1is`,
+`dsb ish` and trailing `isb` lines were deleted from the install block in
+`switch_ttbr0_if_needed`, and
+
+```
+$ cargo test --test ttbr0_shadow_reconciliation_structure
+exit: 101
+test result: FAILED. 19 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+
+every_non_primitive_ttbr0_install_performs_the_install_sequence panicked:
+these TTBR0 installs do not run ["dsb ishst", "msr ttbr0_el1", "isb", "tlbi vmalle1is", "dsb ish", "isb"] in order, so a stale translation can survive the install or the root can be taken before it is visible: ["kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed"]
+```
+
+The file was restored from the byte copy taken before the edit and the SHA-256
+matched.
+
+### N-004 — the predicate read the first write, not the last
+
+`settles_both_shadows` read the FIRST occurrence of each accessor. A body that
+cleared `next_cr3` and then armed it again with a root passed, because the
+reader stopped at the first call — while the corridor reads whatever the last
+store left there.
+
+`call_argument` becomes `call_arguments` plus `last_call_argument`, and both
+shadow predicates now score the LAST write to each word. A companion predicate,
+`zeroes_both_shadows`, scores the kernel-root disposition (both words literal
+`0`) the same way; the two are deliberately not interchangeable, because
+`settles_both_shadows` rejects a `saved_process_cr3` of 0.
+
+Mutation, recorded verbatim in
+`serials/slice1/r3/mutation-n004-next-cr3-rearmed.txt`:
+`Aarch64PerCpu::set_next_cr3(next_ttbr0);` was appended immediately after the
+existing `set_next_cr3(0)` in `switch_ttbr0_if_needed`, and
+
+```
+$ cargo test --test ttbr0_shadow_reconciliation_structure
+exit: 101
+test result: FAILED. 18 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+
+the_dispatch_ttbr0_switch_settles_both_shadows panicked:
+the dispatch switch must also retire the pending switch it consumed: a `next_cr3` left armed is installed FIRST on the next return to EL0
+
+every_ttbr0_install_settles_the_per_cpu_shadows panicked:
+these TTBR0 installs leave one or both per-CPU shadows naming another root: ["kernel/src/arch_impl/aarch64/context_switch.rs::switch_ttbr0_if_needed"]
+```
+
+Under round 2's first-occurrence reader that same mutation passed.
+
+### N-005 — the kernel-root install's callers were unconstrained
+
+`switch_ttbr0_to_kernel` settles neither shadow, by design: it is the mechanism,
+and the kernel root is not a value either corridor arm may install on a return
+to EL0. The obligation is therefore the caller's, and no round-2 check scored
+those callers — the primitive-caller census skips the discipline module, and
+this helper is not a mechanism primitive by that census's definition.
+
+`every_caller_of_the_kernel_root_install_settles_the_shadows` (new) censuses
+them. 3 callers at this head:
+
+```
+kernel/src/arch_impl/aarch64/syscall_entry.rs::sys_exit_aarch64
+kernel/src/arch_impl/aarch64/syscall_entry.rs::sys_exec_aarch64
+kernel/src/arch_impl/aarch64/ttbr0.rs::quiesce_ttbr0_for_exit
+```
+
+Each has to discharge the obligation one of two ways. 2 of the 3 —
+`sys_exit_aarch64` and `quiesce_ttbr0_for_exit` — settle both words themselves,
+clearing them to 0 because no process root is live on this CPU any more. The
+remaining 1, `sys_exec_aarch64`, is the exec shape: the kernel-root install and
+the reinstall that ends it are one `without_interrupts` window, and both ways
+out of that window go through a helper that settles both words —
+`adopt_process_ttbr0` on the success arm and `restore_ttbr0_after_failed_exec`
+on the failure arm.
+
+That window is pinned by two suites this one names rather than duplicating:
+`validate_aarch64_failed_exec_ttbr0_rollback` in
+`tests/context_restore_structure.rs` requires the TTBR0 capture, the
+kernel-root transition and the `exec_process_with_argv` call to appear exactly
+once in that order and the `Err` arm to roll back before any return; and
+`validate_sys_exec_releases_process_manager` in
+`tests/exec_lock_order_structure.rs` requires exactly one
+`adopt_process_ttbr0(` after `commit.apply()` and no raw `msr ttbr0_el1`
+anywhere in the function.
+
+Mutation, recorded verbatim in
+`serials/slice1/r3/mutation-n005-quiesce-shadows-dropped.txt`: the
+`set_saved_process_cr3(0)` / `set_next_cr3(0)` pair was deleted from
+`quiesce_ttbr0_for_exit`, and
+
+```
+$ cargo test --test ttbr0_shadow_reconciliation_structure
+exit: 101
+test result: FAILED. 19 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+
+every_caller_of_the_kernel_root_install_settles_the_shadows panicked:
+these aarch64 callers install the kernel root and leave the per-CPU TTBR0 shadows naming another one, so the next return to EL0 may reinstall a root this CPU has just left: ["kernel/src/arch_impl/aarch64/ttbr0.rs::quiesce_ttbr0_for_exit"]
+```
+
+**Disclosed narrowing.** The aarch64 scope filter these caller censuses use
+covers code under `kernel/src/arch_impl/aarch64/` and functions carrying
+`#[cfg(target_arch = "aarch64")]`. Code with no `cfg` at all is outside it.
+`kernel/src/memory/kernel_page_table.rs::build_master_kernel_pml4` is exactly
+that shape: cfg-free, in a cfg-free file, and it calls the `Cr3::write`
+primitive. No aarch64 code path executes it at this head — its only caller is
+the cfg-free `kernel/src/memory/mod.rs::init`, whose only caller is
+`kernel_main` in `kernel/src/main.rs` behind `#[cfg(target_arch = "x86_64")]` —
+but that is a fact about the current call graph, not something the filter
+checks. A cfg-free caller added on the aarch64 side would sit outside each
+census in the file. This is written on `aarch64_scoped_functions` in the test
+as well as here.
+
+### The documentation claims that were wrong
+
+* **N-001.** Section 5 said round 1's boots were a re-run at the returned head
+  because "the kernel sources are byte-identical" from `9e9131d0` onward. Round
+  2's `4770c056` dropped `nomem` from four install blocks, so that stopped
+  being true. Section 5 is now round 3's boots at this head, with round 1's
+  batteries kept as clearly-labelled history and the false byte-identical
+  sentence removed. Section 8 and section 10 likewise now carry round 3's
+  builds and artifact paths rather than round 1's.
+* **N-006.** The header counted "10 installs / 9 of 10 routed / 1 of 10 Tier-1"
+  while section 7's census counted 7 functions, and nothing said these were
+  different things. The header now states both accountings and section 2 says
+  which one "the tenth site" refers to. The test module's own doc carried the
+  same conflation twice over; it now states both counts once, and the duplicated
+  `claim-lint:ok` sentence on `ttbr0_install_census` is collapsed to one.
+* **N-007.** Round 2's build table used a code-font `BUILD_EXIT=0` token that
+  its artifacts did not actually record. Round 3's artifacts do: each carries
+  the full `cargo` command on its second line and a `BUILD_EXIT=` line at the
+  end, and `serials/slice1/r3/userspace-elfs.md` records where the userspace
+  ELFs came from — copied from the primary working copy rather than built here,
+  with the hash comparison showing 152 of 152 files match.
+* **N-008.** "The tenth site" now cross-references the two accountings
+  explicitly wherever it appears.
+* **N-009.** Section 7 said round 2 added "4 more self-contained legs" and then
+  listed 4 items, one of which is an assertion inside another. It now says 3
+  tests, names them, and says which leg lives inside the first of them.
+
+### What round 3 measured
+
+Builds, suites and boots are in sections 5 and 8, with artifact paths in
+section 10. In summary: 3 of 3 aarch64 profiles `BUILD_EXIT=0` with
+`check-kernel-no-neon.sh` PASS, the beast x86 build `BUILD_EXIT=0` with an
+empty `^(warning|error)` grep, 27 of 27 structure suites green over 528 cases,
+3 of 3 strict boots PASS, and 2 of 3 production boots PASS with 1 red carrying
+open issue #690's exact signature and recorded as UNATTRIBUTED.
+
+**This round does not call the branch landable.** The production red is
+unattributed by the pre-adjudicated set it was given, and no control at
+`origin/main` was run on that profile, so no measurement here rules the branch
+out either.
+claim-lint:ok: 1 of 3 production boots is the red, recorded at
+`serials/slice1/prove-r3/prod-boot1-FAIL-gate.txt`.
+
+```
+claim-lint: scripts/claim-lint.py                                                                                          -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md     -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/serials/slice1/r3/README.md          -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/serials/slice1/r3/userspace-elfs.md  -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/serials/slice1/r3/structure-suites.txt docs/planning/green-program/aarch64-testing/serials/slice1/r3/mutation-n003-sequence-stripped.txt docs/planning/green-program/aarch64-testing/serials/slice1/r3/mutation-n004-next-cr3-rearmed.txt docs/planning/green-program/aarch64-testing/serials/slice1/r3/mutation-n005-quiesce-shadows-dropped.txt docs/planning/green-program/aarch64-testing/serials/slice1/r3/restored-green.txt -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/serials/slice1/r3/x86-testing-external_test_bins-build.txt docs/planning/green-program/aarch64-testing/serials/slice1/prove-r3/prod-boot1-FAIL-gate.txt -> exit 0
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/serials/slice1/prove-r3/strict-boot1-PASS-gate.txt docs/planning/green-program/aarch64-testing/serials/slice1/prove-r3/strict-boot2-PASS-gate.txt docs/planning/green-program/aarch64-testing/serials/slice1/prove-r3/strict-boot3-PASS-gate.txt docs/planning/green-program/aarch64-testing/serials/slice1/prove-r3/prod-boot2-PASS-gate.txt docs/planning/green-program/aarch64-testing/serials/slice1/prove-r3/prod-boot3-PASS-gate.txt -> exit 0
+```
+
+The whole-file run over `tests/ttbr0_shadow_reconciliation_structure.rs`
+returns exit 1 on prose the file already carried before this round; those
+findings sit outside round 3's hunks, which is what the diff-mode run above
+scores, and that run is clean.
+claim-lint:ok: diff mode reports "clean (77 file(s) checked, changed hunks vs
+d6b7a186e37b)" with 269 pre-existing findings outside those hunks not
+reported.

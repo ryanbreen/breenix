@@ -1,0 +1,21 @@
+profile: x86_64 testing,external_test_bins
+host: beast -> incus container breenix-x86, clone at /root/breenix-ttbr0
+commit: 0f2621b069b1ce5a389c5abb9ddcd55505049abd
+command: ssh beast 'sudo -n incus exec breenix-x86 -- bash -lc "source $HOME/.cargo/env; cd /root/breenix-ttbr0 && git fetch origin && git checkout fix/ttbr0-shadow-reconciliation && git reset --hard origin/fix/ttbr0-shadow-reconciliation && git rev-parse HEAD && cargo build --release --features testing,external_test_bins --bin qemu-uefi 2>&1 | grep -E \"^(warning|error)\"; echo BUILD_EXIT=${PIPESTATUS[0]}"'
+---
+transcript, from the fetch line onwards:
+
+From https://github.com/ryanbreen/breenix
+   9d847b95..0f2621b0  fix/ttbr0-shadow-reconciliation -> origin/fix/ttbr0-shadow-reconciliation
+Your branch is behind 'origin/fix/ttbr0-shadow-reconciliation' by 9 commits, and can be fast-forwarded.
+Already on 'fix/ttbr0-shadow-reconciliation'
+HEAD is now at 0f2621b0 measure(786,r3,prove): builds, no-neon, 27 suites and 6 boots at this head
+0f2621b069b1ce5a389c5abb9ddcd55505049abd
+BUILD_EXIT=0
+---
+grep -E '^(warning|error)' output: (empty -- the grep printed no lines between
+the rev-parse output and the BUILD_EXIT line)
+BUILD_EXIT=0
+
+No x86 boot gate was run. The x86 boot_tests gate is red on main for #787, and
+this slice touches no x86 code path.
