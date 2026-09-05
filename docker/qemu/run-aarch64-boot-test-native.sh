@@ -13,6 +13,19 @@ set -e
 MAX_RETRIES=5
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #825: two concurrent runs of this gate on the same host each hardcoded the
+# identical /tmp/breenix_aarch64_boot_native path, so one run's rm -rf/mkdir
+# could delete and rewrite the serial another run's poll loop was mid-boot
+# scoring. Defaulting to /tmp keeps every existing caller byte-identical; a
+# concurrent-lane launcher sets this to a per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever
+# directory happens to be current when run_single_test runs (the same F6
+# guard PR #801 gave the x86 gate scripts for #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "ARM64 BOOT TEST: FAILED (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
+esac
 INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
 
 # Find the ARM64 kernel
@@ -139,7 +152,7 @@ check_crash_markers() {
 }
 
 run_single_test() {
-    local OUTPUT_DIR="/tmp/breenix_aarch64_boot_native"
+    local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_boot_native"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -337,5 +350,5 @@ echo "NOTE: If this test frequently requires retries or fails repeatedly,"
 echo "there may be a regression. Check recent changes to boot code."
 echo ""
 echo "Last output:"
-tail -10 /tmp/breenix_aarch64_boot_native/serial.txt 2>/dev/null || echo "(no output)"
+tail -10 "$BREENIX_GATE_TMP/breenix_aarch64_boot_native/serial.txt" 2>/dev/null || echo "(no output)"
 exit 1

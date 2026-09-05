@@ -12,12 +12,23 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 GATE_TARGET_DIR="$BREENIX_ROOT/target/refusal-drain-gate"
-# Fixed by default so the serial lands where every runbook expects it. It is
-# overridable because the directory is rm -rf'd on entry: a second copy of this
-# gate running on the same host (another worktree, a parallel soak) otherwise
-# deletes and rewrites the first one's serial mid-boot, and the first run then
-# reports the *second* run's kernel as its own result.
-OUTPUT_DIR="${BREENIX_REFUSAL_DRAIN_OUTPUT_DIR:-/tmp/breenix_aarch64_refusal_drain_gate}"
+# #825: fixed by default so the serial lands where every runbook expects it.
+# It is overridable because the directory is rm -rf'd on entry: a second copy
+# of this gate running on the same host (another worktree, a parallel soak)
+# otherwise deletes and rewrites the first one's serial mid-boot, and the
+# first run then reports the *second* run's kernel as its own result --
+# exactly the collision #825 reports for this gate's strict and prod-profile
+# siblings. BREENIX_REFUSAL_DRAIN_OUTPUT_DIR (this gate's own pre-existing
+# override, kept for any caller already setting it) takes priority;
+# otherwise this now falls back to the shared BREENIX_GATE_TMP convention
+# PR #801 gave the x86 gate scripts for #797, rather than a bare /tmp
+# literal a caller had no shared knob to redirect.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+esac
+OUTPUT_DIR="${BREENIX_REFUSAL_DRAIN_OUTPUT_DIR:-$BREENIX_GATE_TMP/breenix_aarch64_refusal_drain_gate}"
 
 # This proves init's block EINTR oracle ran during the boot-tests sequence.
 BLOCK_EINTR_ORACLE_LITERAL='[BLOCK_EINTR_ORACLE:'
