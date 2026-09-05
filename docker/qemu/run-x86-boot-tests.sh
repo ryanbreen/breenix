@@ -188,10 +188,10 @@ readonly TOMBSTONE_FIXTURE_REMOVALS=2
 # claim-lint:ok: #697 -- "every ... call site ... is one child" is this
 # derivation's own definition (it is what the grep loop immediately below
 # counts, not an empirical claim about the kernel), and measured directly:
-# 2 of 15 current roster files match (loopback_wake_test.rs: 4 sites,
+# 2 of 16 current roster files match (loopback_wake_test.rs: 4 sites,
 # tcp_cloexec_exec_test.rs: 1 site), summing to the 5 this pin now derives;
 # widening the pattern to the five idioms above leaves that sum unchanged
-# (verified against every one of the 15 roster files plus, for the three
+# (verified against every one of the 16 roster files plus, for the three
 # newly-recognised idioms, tcp_blocking_test.rs=2, bsh.rs=3,
 # sigkill_teardown_test.rs=4 -- none of which are on today's roster).
 # `|| true`: under `set -o pipefail`, a roster-comment rename or removal in
@@ -212,7 +212,7 @@ PRODUCTION_REAPED_ROWS=0
 for _ring3_smoke_name in $RING3_SMOKE_ROSTER; do
     _ring3_smoke_src="$BREENIX_ROOT/userspace/programs/src/${_ring3_smoke_name}.rs"
     test -f "$_ring3_smoke_src"
-    # `|| true`: 13 of 15 current roster programs never fork (measured --
+    # `|| true`: 14 of 16 current roster programs never fork (measured --
     # only loopback_wake_test.rs and tcp_cloexec_exec_test.rs match), so a
     # zero-match grep here is the expected case, not a failure -- see the
     # PCI_CENSUS_LINE comment below for why an unguarded pipefail would
