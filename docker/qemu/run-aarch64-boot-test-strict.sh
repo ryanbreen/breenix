@@ -40,6 +40,16 @@ STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:le
 # exactly once. Without this pin, deleting the oracle's registry entry left this
 # gate, [BOOT_TESTS:PASS] and every structural suite green.
 TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
+# #796. The 9 fields are driven inside one run. armed=1 and pm_busy_probe=1 are the
+# anti-vacuity pair: the peer CPU really held PROCESS_MANAGER, and an independent
+# try-lock read confirmed it busy at the instant the measured fcntl was issued.
+# first_wait_us is bounded below by the oracle itself (>= 1000 us of a 3000 us
+# window), so a call that sailed through an uncontended lock cannot score.
+# first_errno=9 is EBADF: the driving thread is a kthread with no process row, so
+# the repaired syscall reaches the lookup and fails there instead of reporting
+# EAGAIN from the lock. eagain=0 is the property under test; on origin/main the
+# same oracle prints eagain=64:first_errno=11 and FAIL.
+FCNTL_PM_CONTENTION_ORACLE_PATTERN='\[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=[0-9]+:joined=1:PASS\]'
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 
 # Find the ARM64 kernel
@@ -82,7 +92,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -260,6 +270,18 @@ score_serial() {
     fi
     if ! grep -qE "$CENSUS_WIDEN_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Census widening mutation oracle marker missing or failed"
+        return 1
+    fi
+    # #796, pinned as a pair: the FAIL scan names what went wrong even when the
+    # pattern check would already have rejected the boot, and it also catches a
+    # verdict line whose fields drift out of the pattern for some other reason.
+    if grep -qF "[FCNTL_PM_CONTENTION_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
+        && grep -q "FCNTL_PM_CONTENTION_ORACLE.*:FAIL\]" "$serial_file" 2>/dev/null; then
+        echo "fcntl process-manager contention oracle reported failure ($(grep -aoE '\[FCNTL_PM_CONTENTION_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "fcntl process-manager contention oracle marker missing or failed"
         return 1
     fi
     if ! grep -qF "[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]" "$serial_file" 2>/dev/null; then
