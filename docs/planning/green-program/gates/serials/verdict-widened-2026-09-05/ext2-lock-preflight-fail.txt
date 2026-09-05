@@ -1,3 +1,9 @@
+host: this Mac (arm64), worktree /Users/wrb/fun/code/breenix/.claude/worktrees/wf_34c09a15-6e8-5
+command: BREENIX_GATE_TMP=relative-not-absolute docker/qemu/run-ext2-lock-race-gate.sh
+exit status: 1
+re-captured: review round 1 (F3) -- byte-identical to the original capture;
+added for provenance only.
+
 ext2 lock-race gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
 ext2 lock-race gate: FAIL (set -e abort at docker/qemu/run-ext2-lock-race-gate.sh:263, exit 1)
   failing command: false

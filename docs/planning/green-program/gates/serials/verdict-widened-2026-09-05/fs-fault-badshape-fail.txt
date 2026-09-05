@@ -1,0 +1,9 @@
+host: this Mac (arm64), worktree /Users/wrb/fun/code/breenix/.claude/worktrees/wf_34c09a15-6e8-5
+command: docker/qemu/run-fs-fault-gate.sh --disarm bogus
+exit status: 2
+added: review round 1 (F4) -- proves redden 2 preserves the pre-repair
+exit 2 usage-error contract for this script's --disarm validation site.
+
+unknown shape: bogus (expected short_read, eio or corrupt_inode)
+fs fault gate: FAIL (set -e abort at docker/qemu/run-fs-fault-gate.sh:125, exit 2)
+  failing command: return "$1"

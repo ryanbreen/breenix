@@ -31,8 +31,35 @@ uniformly, and the repair that follows from it.
 
 Grepped `docker/qemu/` and `scripts/` for the verdict-line shapes named in
 the task: `"PASS:`, `"FAIL:`, `PASS (`, `FAIL (`, `gate: (PASS|FAIL)`,
-`gate run`, `verdict`, and `BREENIX_GATE_TMP`. 36 `.sh` files matched. For
-each, the question that matters is not "does it print PASS/FAIL text" —
+`gate run`, `verdict`, and `BREENIX_GATE_TMP`. 37 `.sh` files matched (this
+doc originally said 36; re-run directly:
+`grep -lE '"PASS:|"FAIL:|PASS \(|FAIL \(|gate: (PASS|FAIL)|gate run|verdict|BREENIX_GATE_TMP'
+$(find docker/qemu scripts -name '*.sh')` over the current 91-script tree
+→ 37).
+
+**Correction (review round 1, F6, MAJOR).** That grep pattern is itself an
+undercount of scripts that print a PASS/FAIL-shaped verdict: it misses any
+script phrased as `: PASS"`, `: FAILED (`, or `RATCHET: FAILED` instead of
+the exact shapes above. 18 such scripts exist, four of them gate scripts
+this campaign's own census gates invoke directly as sub-checks
+(`scripts/check-kernel-no-neon.sh`, called from
+`run-aarch64-tty-oracle-gate.sh`; `scripts/check-coreproof-production-clean.sh`,
+`scripts/check-fs-fault-production-clean.sh`,
+`scripts/check-x86-dispatch-no-alloc.sh`) plus fourteen more
+(`run-blocking-recv-test.sh`, `run-dns-test.sh`, `run-keyboard-test.sh`,
+`run-kthread-test.sh`, `scripts/check-coreproof-seams.sh`,
+`scripts/ci/ring3_check.sh`, `scripts/parallels/build-efi.sh`,
+`scripts/parallels/collect-breenix-cpu0-traces.sh`,
+`scripts/parallels/collect-hwdump.sh`,
+`scripts/parallels/collect-linux-cpu0-traces.sh`,
+`scripts/parallels/inject.sh`, `scripts/parallels/screenshot-vm.sh`,
+`scripts/run-arm64-keyboard-test.sh`, `scripts/test_fork_mcp.sh`). Checked
+each of the 18 directly for the shape that actually decides scope
+(`report_gate_failure() {` + an `ERR` trap that arms it, per the paragraph
+below) — 0 of 18 carry it, so the final answer (7 scripts, listed below)
+is unaffected. This corrects the doc's own undercounted candidate pool,
+not the repair's scope. For each,
+the question that matters is not "does it print PASS/FAIL text" —
 most of them do, in ad hoc ways — but "does it carry the specific
 `report_gate_failure`-via-`ERR`-trap backstop architecture that makes the
 #802 shape possible in the first place": `set -e`/`set -E`, a function named
@@ -44,7 +71,7 @@ different verdict model (an ad hoc echo-then-exit sequence, or an
 exit-code-only contract) and forcing the #805 idiom onto it would not be a
 parallel fix -- it would be inventing an architecture that script did not have.
 
-Grepping the 36 candidates for `report_gate_failure` + an `ERR` trap that
+Grepping the 37 candidates for `report_gate_failure` + an `ERR` trap that
 arms it found exactly **7**, 7 of 7 under `docker/qemu/`, 0 of 7 under
 `scripts/`:
 
@@ -58,7 +85,7 @@ docker/qemu/run-x86-prod-profile-boot-test.sh
 docker/qemu/run-x86-tty-oracle-gate.sh
 ```
 
-The remaining 29 of 36 each use `trap cleanup EXIT` or
+The remaining 30 of 37 each use `trap cleanup EXIT` or
 `trap "rm -rf $DIR" EXIT` (resource cleanup on any exit, not a verdict
 backstop) or carry no trap at all.
 
@@ -112,7 +139,9 @@ touched. Two recognizable sub-shapes, listed rather than each individually
 audited (per the task's own instruction: a script that reports only via
 exit code is a different shape):
 
-- **Ad hoc echo-then-exit, no trap backstop** (22 scripts): `run-aarch64-boot-test-native.sh`,
+- **Ad hoc echo-then-exit, no trap backstop** (23 scripts — this doc
+  originally said 22, an independent miscount found and fixed alongside
+  F6): `run-aarch64-boot-test-native.sh`,
   `run-aarch64-boot-test-strict.sh`, `run-aarch64-full-test.sh`,
   `run-aarch64-kthread-parallel.sh`, `run-aarch64-percpu-stack-custody-gate.sh`,
   `run-aarch64-prod-profile-boot-test.sh` (the **aarch64** production-profile
@@ -159,13 +188,50 @@ is the one `exit` statement left.
 **Where the pre-empting exit ran before the trap existed** (the
 `BREENIX_GATE_TMP` preflights in `run-x86-tty-oracle-gate.sh`,
 `run-fs-fault-gate.sh`, `run-ext2-lock-race-gate.sh`; the entire
-argument-parsing/validation block in `run-coreproof-gate.sh`): the trap
-installation (and, for `run-coreproof-gate.sh`, the `cleanup()` `EXIT` trap
-and a new `redden()` helper) moved earlier in the script, to immediately
-after the variables `report_gate_failure` itself reads (`QEMU_PID`,
-`CURRENT_SERIAL`/`OUTPUT_DIR`, already initialized). The check itself then
-runs as the first thing under the armed trap — a `BASE-DIR PREFLIGHT` block
-matching #805's own naming — rejecting with `echo` + `false`.
+argument-parsing/validation block in `run-coreproof-gate.sh`): <!--
+claim-lint:ok: "Correction" paragraph immediately below states plainly that
+this sentence was wrong; the corrected sentence follows it, with line
+numbers. --> ~~the trap installation (and, for `run-coreproof-gate.sh`, the
+`cleanup()` `EXIT` trap and a new `redden()` helper) moved earlier in the
+script, to immediately after the variables `report_gate_failure` itself
+reads (`QEMU_PID`, `CURRENT_SERIAL`/`OUTPUT_DIR`, already initialized).~~
+**Correction (review round 1, F5).** That sentence has it backwards. In
+`run-fs-fault-gate.sh` and `run-ext2-lock-race-gate.sh` the trap barely
+moved at all (`trap ... ERR` sits at `:88`→`:89` and `:259`→`:259`,
+`origin/main` vs. commit `5a5c1ce4` — the one-line shift in the first is an
+inserted comment, not a relocation): what moved was the **check itself**,
+downward, to just after the already-installed trap. `run-coreproof-gate.sh`
+is the one script where the trap genuinely moved earlier (its
+`cleanup()`/`redden()` install now runs before the argument-parsing block
+that used to precede it, since that script had no `BREENIX_GATE_TMP` check
+to relocate — the whole validation block needed the trap ahead of it). The
+check itself then runs as the first thing under the armed trap — a
+`BASE-DIR PREFLIGHT` block matching #805's own naming — rejecting with
+`echo` + `false`.
+
+**F5's other two commit-message errors, same correction.** <!--
+claim-lint:ok: "Both false" resolves to the `grep -n 'BASE-DIR PREFLIGHT'
+docker/qemu/*.sh` citation two sentences later in this same paragraph,
+which names every file the block actually appears in (4 of the 91 `.sh`
+scripts in the tree) -- run-x86-boot-tests.sh is not among them. --> Commit
+`5a5c1ce4`'s own message (immutable — corrected here, not by rewriting
+pushed history, per this project's own rule) also says: "run-x86-boot-tests.sh's
+BREENIX_GATE_TMP absolute-path check ... moved to a BASE-DIR PREFLIGHT
+block right after their ERR traps" and that run-x86-tty-oracle-gate.sh's
+"AF_UNIX sun_path check" moved into that same block. Both false.
+`run-x86-boot-tests.sh` has no `BASE-DIR PREFLIGHT` block at all (`grep -n
+'BASE-DIR PREFLIGHT' docker/qemu/*.sh` finds it in
+`run-x86-tty-oracle-gate.sh`, `run-ext2-lock-race-gate.sh`,
+`run-fs-fault-gate.sh`, and `run-x86-prod-profile-boot-test.sh` only) — its
+one preflight site converted `exit 1` → `false` in place, already past its
+already-installed trap, nothing moved. `run-x86-tty-oracle-gate.sh`'s
+`sun_path` check does sit after that script's `BASE-DIR PREFLIGHT` block
+(the block ends before the argument-parsing loop; the `sun_path` check is
+a separate, later block of its own, currently around `:177`-`:181`) — a
+distinct check, not folded into it. And the message's "run-coreproof-gate.sh's
+five usage-error sites (previously exit 2)" undercounts: there are eight
+(`grep -c 'redden 2' docker/qemu/run-coreproof-gate.sh` → 8), which is what
+this doc's own Repair section already says a few paragraphs below.
 
 **Distinct exit codes** (`run-ext2-lock-race-gate.sh`'s `--park-only` mode:
 0 PARK OBSERVED, 1 SPIN/NO PARK, 2 INCONCLUSIVE, review finding F10;
@@ -210,6 +276,22 @@ merged into one `if`/`else` so both converge without an early exit, matching
 carried no `exit 0` at any point in this arc; its PASS message is the last thing the script
 prints, then it falls off the end with the last command's (an `echo`, status
 0) exit code.
+
+**Correction (review round 1, F4, MAJOR).** The commit that first widened
+this idiom to `run-fs-fault-gate.sh` (`5a5c1ce4`) converted that script's
+two usage-error sites (`unknown argument`, `unknown shape`) from `origin/main`'s
+`exit 2` straight to a bare `false` — silently collapsing them onto the
+generic `exit 1` gate-FAIL code, the exact collision this whole section
+argues must not happen, and which the repair correctly avoided for
+`run-ext2-lock-race-gate.sh` (`redden 64`) and `run-coreproof-gate.sh`
+(`redden 2`). Neither the commit message nor this doc disclosed it. Fixed
+here: `run-fs-fault-gate.sh` now defines its own `redden()` helper
+(immediately after its `trap ... ERR` line) and both usage-error sites call
+`redden 2`, restoring the pre-`5a5c1ce4` contract. No caller in the tree
+checks this script's exit code today (`grep` over `docker/`, `scripts/`,
+`tests/`, `kernel/` for a check against its `$?` finds only doc-comment
+references), so the silent collapse had no live consumer — it was still an
+undisclosed contract change, now reverted.
 
 ## The widened ratchet
 
@@ -326,6 +408,35 @@ runs (6 scripts x 2 runs) is saved as its own file under
 `docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/`,
 named in each run's own "Full output:" line below.
 
+**Correction (review round 1, F3, MAJOR).** F3 flagged two things: the four
+aarch64 preflight-fail serials carried no host/SHA provenance header
+(unlike the x86 pair, which do), and that these four "do not reproduce at
+HEAD." The header gap was real; all four preflight-fail serials and the
+four default-pass serials now carry one. The "does not reproduce" half
+does not hold up under direct re-test: <!-- claim-lint:ok: "4 of 4" is
+counted by the four named files on the next two lines, each with its
+reproduced line number. --> re-running all four preflight-fail commands
+against this same worktree at HEAD reproduces 4 of 4 byte-for-byte,
+including the exact line numbers this doc already published
+(`run-aarch64-tty-oracle-gate.sh:101`, `run-fs-fault-gate.sh:93` [now
+`:105` after F4's own edit -- see that script's proof above],
+`run-ext2-lock-race-gate.sh:263`, `run-coreproof-gate.sh` "at line 136")
+-- *when the script is invoked directly* (`docker/qemu/run-....sh ...`,
+its own `#!/bin/bash` shebang, which on this Mac resolves to the system
+`/bin/bash`, the same way the gate's own callers and CI invoke it). Traced
+the discrepancy: these scripts read `${BASH_LINENO[0]}` inside their ERR
+trap handler, and macOS's system `/bin/bash` (an old, pre-GPLv3 build) and
+a newer Homebrew `bash` on `$PATH` report a different `BASH_LINENO[0]` for
+a `case` statement inside a loop -- the old system bash reports the
+`case ... in` line, a newer bash reports the actual failing arm's line.
+Reproduced directly on a minimal script sharing this exact shape: `/bin/bash`
+(this Mac's system bash) reports the `case` line, a `bash` resolved from
+`$PATH` (Homebrew, newer) reports the true failing line. Invoking these
+gate scripts as `bash script.sh ...` instead of `script.sh ...` picks up
+the different, `$PATH`-resolved bash and produces the higher line number
+F3's own reproduction reported -- not a stale artifact, a different
+interpreter than the one the gate's shebang, and its own CI/callers, use.
+
 ### Environment note
 
 This git worktree has no `rust-fork/` checkout and no prebuilt userspace
@@ -390,16 +501,33 @@ fs fault gate (aarch64): PASSED - 8 arms green, kernel live after every injected
 ```
 exit 0. Full output: `docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/fs-fault-default-pass.txt`.
 
-Simulated preflight failure (relative `BREENIX_GATE_TMP` — the check moved
-ahead of the trap by this round's repair):
+Simulated preflight failure (relative `BREENIX_GATE_TMP` — the check now
+runs after the already-installed trap, per this round's repair):
 
 ```
 $ BREENIX_GATE_TMP=relative-not-absolute docker/qemu/run-fs-fault-gate.sh
 fs fault gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
-fs fault gate: FAIL (set -e abort at docker/qemu/run-fs-fault-gate.sh:93, exit 1)
+fs fault gate: FAIL (set -e abort at docker/qemu/run-fs-fault-gate.sh:105, exit 1)
   failing command: false
 ```
-exit 1. Full output: `docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/fs-fault-preflight-fail.txt`.
+exit 1 (re-captured for review round 1: F4's `redden()` addition shifted
+this line from `:93` to `:105`; the failing command here is still the
+BASE-DIR PREFLIGHT's own bare `false`, unaffected by F4, which touched only
+the two argument/`--disarm` usage-error sites further down). Full output:
+`docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/fs-fault-preflight-fail.txt`.
+
+Simulated usage-error, added for review round 1 (F4): proves `redden 2`
+preserves this script's pre-repair `exit 2` usage-error code, the same way
+`run-coreproof-gate.sh --component Z` already proved it for that script.
+
+```
+$ docker/qemu/run-fs-fault-gate.sh --disarm bogus
+unknown shape: bogus (expected short_read, eio or corrupt_inode)
+fs fault gate: FAIL (set -e abort at docker/qemu/run-fs-fault-gate.sh:125, exit 2)
+  failing command: return "$1"
+```
+exit **2** (not 1). Full output:
+`docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/fs-fault-badshape-fail.txt`.
 
 **`run-ext2-lock-race-gate.sh`** (default: aarch64, single race construction)
 
@@ -542,20 +670,47 @@ exit 1. Full output: `docs/planning/green-program/gates/serials/verdict-widened-
   `redden N` pattern and its observed `TRAP status=2` output directly
   (not committed as a script; the snippet in that section is the
   reproduction).
-- **The structure-test scanner's own known blind spot is inherited, not
-  fixed.** `verdict_trap_has_no_preempting_exit` — like the original
-  `validate_x86_prod_profile_harness` it generalizes — only catches `exit`
-  as the first whitespace token of a trimmed line. An `exit 1` embedded
-  mid-line (inside a one-line `if ...; then exit 1; fi`, or after a case
-  label like `*) ... exit 1 ;;`) is invisible to it, exactly as #805's own
-  PR body disclosed for the original rule. This round's own anti-vacuity
-  mutation hit that blind spot directly (see the note under "Anti-vacuity
-  mutation, run directly") and each of the 6 repaired scripts places
-  `exit`/`false`/`redden N` on its own line specifically so
-  the scanner *can* see it — but the scanner does not enforce that
-  placement itself. Closing that gap is a separate, larger change to the
-  scan (parsing case-arm and single-line-if bodies) with its own review,
-  not folded into this one.
+- **Correction (review round 1, F1, BLOCKING).** This bullet used to close
+  with: <!-- claim-lint:ok: the quoted sentence is the false claim being
+  corrected, not this doc's own assertion; see the counts and line numbers
+  immediately after it, which ARE this doc's claim (5 of 6 scripts, 16
+  sites, each with its own line number). --> "each of the 6
+  repaired scripts places `exit`/`false`/`redden N` on its own line
+  specifically so the scanner *can* see it." That was false for 5 of 6
+  — only `run-x86-boot-tests.sh` has zero such sites. Counted
+  directly
+  (non-comment lines where `false`/`redden N` follows a case label or an
+  `echo` on the same line, rather than opening the line): `run-x86-tty-oracle-gate.sh`
+  3 (`:161`, `:166`, `:168`), `run-aarch64-tty-oracle-gate.sh` 4 (`:104`,
+  `:109`, `:111`, `:128`), `run-fs-fault-gate.sh` 2 (`:120`, `:130`, after
+  the `redden 2` fix below — F4 renumbered this script by 12 lines),
+  `run-ext2-lock-race-gate.sh` 1 (`:297`), `run-coreproof-gate.sh` 6
+  (`:131`, `:140`, `:160`, `:172`, `:182`, `:195`) — 16 sites total. The
+  false sentence neutralized the blind-spot disclosure it followed,
+  reading as "the gap exists but this branch is outside it" when the
+  branch was squarely inside it.
+
+  **The gap itself is now closed (review finding F2, r157).**
+  `verdict_trap_has_no_preempting_exit` in `tests/teardown_structure.rs`
+  no longer checks only the first whitespace token of a raw line; it
+  splits each non-comment line into individual statements on `;`, `&&`,
+  and `||` (quote-aware — a `;` or `|` inside a single- or double-quoted
+  string, e.g. `run-coreproof-gate.sh`'s embedded
+  `awk ... '$1 == required { print $2; exit }'`, is not treated as a
+  statement boundary, which a first cut at this fix false-positived on
+  before the quote tracking was added) and checks the leading token of
+  each statement instead of just the line's. <!-- claim-lint:ok: "always
+  did" resolves to `verdict_trap_no_preempting_exit_rule_is_not_vacuous`
+  (0 of 2 mutations there is new; both pre-date this round), the
+  pre-existing test proving the standalone-line case, next to its new
+  sibling below proving the 2 of 2 inline shapes this paragraph adds. -->
+  A case-arm `exit 1` or an `||`-guarded group's
+  `exit 1` now reddens the rule exactly like a standalone `exit 1` line
+  always did.
+  `verdict_trap_no_preempting_exit_rule_catches_inline_exit_shapes`
+  reverts two of the real sites above
+  (`run-aarch64-tty-oracle-gate.sh:104` and `:111`) to their pre-repair
+  bare `exit 1` and confirms the rule reddens both, by name.
 
 ## claim-lint
 

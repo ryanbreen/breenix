@@ -1,3 +1,13 @@
+host: this Mac (arm64), worktree /Users/wrb/fun/code/breenix/.claude/worktrees/wf_34c09a15-6e8-1
+note: added in review round 1 (F3) -- provenance header only, prepended to
+the original run's own output below, which is unchanged. Captured by a
+prior review-round worktree (visible in the ELF/allowlist paths inside the
+output itself); kernel/userspace/libs are byte-identical between commit
+5a5c1ce4 (this branch's repair commit) and c0c7ef5b (this doc's own
+commit) -- `git diff --stat 5a5c1ce4 c0c7ef5b -- kernel/ userspace/ libs/`
+is empty -- so this run reflects the same kernel/userspace bytes this
+branch ships.
+
 =========================================
 #728 ext2 lock-race gate
   arch:     aarch64
