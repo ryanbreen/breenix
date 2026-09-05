@@ -23,6 +23,13 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # claim-lint:ok: #797, diff-empty against origin/main -- see
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value resolves against whatever directory is
+# current at the point each command runs, which this script does not pin to
+# BREENIX_ROOT the way the trap-bearing gates do (review finding F6 on #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)" >&2; exit 1 ;;
+esac
 # Re-pin consciously whenever this profile's launched test-program set changes.
 #
 # Measured on the x86 gate host with this runner, one boot each:

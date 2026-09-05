@@ -77,6 +77,14 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # claim-lint:ok: #797, diff-empty against origin/main -- see
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: OUTPUT_DIR (below, post-cd) is built from this value
+# after `cd "$BREENIX_ROOT"`, but the ERR trap above is installed before that
+# cd and can read OUTPUT_DIR pre-cd on an early failure -- a relative value
+# would resolve differently in each place (review finding F6 on #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)" >&2; exit 1 ;;
+esac
 # The x86 serial console carries the scheduler's single-character trace stream
 # on the same port as kernel and userspace output, so any marker line can carry
 # a prefix. The markers are self-delimiting (`[...]` or a unique sentence), so

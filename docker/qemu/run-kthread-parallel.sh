@@ -15,6 +15,12 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # claim-lint:ok: #797, diff-empty against origin/main -- see
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value resolves against whatever directory is
+# current at the point each command runs (review finding F6 on #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)" >&2; exit 1 ;;
+esac
 
 # Find the kthread_test_only image (build with: cargo build --release --features kthread_test_only --bin qemu-uefi)
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)

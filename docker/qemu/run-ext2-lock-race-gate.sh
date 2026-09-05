@@ -226,6 +226,23 @@ set -E
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# #797: concurrent lanes sharing one host (e.g. the beast Incus container,
+# reached here via --x86) each invoking this script hardcode the identical
+# /tmp/breenix_ext2_lock_race_gate_$ARCH path, so one lane's rm -rf/mkdir can
+# clobber another lane's in-flight run. Defaulting to /tmp keeps every
+# existing caller byte-identical; a concurrent-lane launcher sets this to a
+# per-clone directory instead. Must be absolute -- a relative value would
+# resolve against whatever directory happens to be current when each command
+# runs, and the ERR trap below can fire before OUTPUT_DIR is even assigned
+# its real value (review finding F6 on #797).
+# claim-lint:ok: #797, diff-empty against origin/main once substituted -- see
+# docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "ext2 lock-race gate: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
+esac
+
 OUTPUT_DIR=""
 report_gate_failure() {
     local exit_code=$?
@@ -332,7 +349,7 @@ fi
 # ---------------------------------------------------------------------------
 # Boot
 # ---------------------------------------------------------------------------
-OUTPUT_DIR="/tmp/breenix_ext2_lock_race_gate_$ARCH"
+OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_ext2_lock_race_gate_$ARCH"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 

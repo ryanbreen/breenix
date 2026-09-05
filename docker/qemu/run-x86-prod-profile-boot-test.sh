@@ -200,7 +200,31 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # (BUILD_LOG) that only gained quotes -- see
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: OUTPUT_DIR below is computed before `cd "$BREENIX_ROOT"`
+# (unlike run-x86-boot-tests.sh, which computes its OUTPUT_DIR after its own
+# cd) and the ERR trap installed further down can fire before that cd too --
+# a relative value would resolve inconsistently depending on which of those
+# points read it (review finding F6 on #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "x86 production-profile gate: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)" >&2; exit 1 ;;
+esac
 OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_prod_profile"
+# AF_UNIX sun_path is 108 bytes on Linux including the terminating NUL, so a
+# constructed console-socket path over 107 characters cannot be bound -- fail
+# loudly here rather than a cryptic error from qemu or the python liveness
+# stimulus later, both of which use "$OUTPUT_DIR/console.sock" (review
+# finding F7 on #797; the default and the custom value this change was
+# tested with are both far under this, but the variable is now
+# operator-controlled).
+# claim-lint:ok: #797 F7 -- 42/56-char measurements and the beast rejection
+# test for a deliberately oversized value are in
+# docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+CONSOLE_SOCK_PATH="$OUTPUT_DIR/console.sock"
+if [ "${#CONSOLE_SOCK_PATH}" -gt 107 ]; then
+    echo "x86 production-profile gate: FAIL (console socket path exceeds the AF_UNIX sun_path limit of 107 chars: \"$CONSOLE_SOCK_PATH\" is ${#CONSOLE_SOCK_PATH} chars -- shorten BREENIX_GATE_TMP)" >&2
+    exit 1
+fi
 QEMU_PID=""
 # #673 anti-vacuity knob. Empty (default) builds the real shipped profile;
 # set to "disable_x86_prod_init" to build the pre-fix, zero-userspace kernel
