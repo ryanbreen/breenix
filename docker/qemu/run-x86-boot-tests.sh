@@ -895,6 +895,17 @@ for i in $(seq 1 "$COUNT"); do
     CENSUS_WIDEN_ORACLE_LINE=$(grep -h -F "$CENSUS_WIDEN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$CENSUS_WIDEN_ORACLE_LINE"
+    # Surfaced for the same reason its sibling above is: the wait predicate
+    # already requires this literal fixed-string, so a run that reaches here
+    # matched it. Until this echo existed the gate printed its sibling oracle
+    # lines and not this one, so a gate log could not be read as a receipt for
+    # what the uniprocessor arm said -- and a round doc cited a gate log for
+    # exactly that.
+    # claim-lint:ok: the citation and its correction are recorded in
+    # docs/planning/green-program/syscalls/819-ORACLE-ARMING-2026-09-05.md
+    FCNTL_PM_CONTENTION_ORACLE_LINE=$(grep -h -F "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$FCNTL_PM_CONTENTION_ORACLE_LINE"
     FUTEX_HANDOFF_ORACLE_LINE=$(grep -h -E "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FUTEX_HANDOFF_ORACLE_LINE"

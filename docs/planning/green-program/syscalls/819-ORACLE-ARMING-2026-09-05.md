@@ -155,6 +155,14 @@ real wait; and the FAIL scan became `:FAIL(:[a-z_]+)?\]` so a tagged arm is seen
 untouched -- it keys on the marker prefix, which did not change, and the
 production-profile run below reports `fcntl contention oracle marker count: 0`.
 
+`docker/qemu/run-x86-boot-tests.sh` gains one line of output and no new
+requirement. Its `passed=true` conjunction already required the uniprocessor
+SKIP literal fixed-string; it now also echoes the matched line into its own log,
+the way it already does for `CENSUS_WIDEN_ORACLE`. Until it did, a gate log
+could not be read as a receipt for this oracle line -- see the x86 evidence
+section below, where a citation in this document's own first version turned on
+exactly that.
+
 ## Ratchets and mutations
 
 `tests/fcntl_pm_contention_gate_structure.rs` gains 2 tests and re-derives 1.
@@ -256,22 +264,54 @@ hit at the same rate. One is preserved at
 0 warnings (`grep -c warning` over the build log: 0).
 
 `docker/qemu/run-x86-boot-tests.sh 1`, 3 runs against the same binary: 2 PASS, 1
-FAIL. The x86 arm's line is unchanged in 3 of 3, byte for byte:
+FAIL. The uniprocessor arm prints:
 
 ```
 [FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]
 ```
 
-The red is `clock_gettime_test:1` -- `Test 3: Sub-millisecond precision`,
-`Elapsed: 1332075 ns`, `FAIL: Elapsed time >= 1ms (possible PIT fallback)`. That
-is the signature of **#631**, closed on 2026-09-04 having attributed the
-mechanism to the still-open **#766** (x86 timer wake dispatches only after a full
-round robin, p90 2592 ms). #631's own close says a fresh occurrence of the
-signature is expected and is not a reopen. The same binary passed the same gate
-twice, so it is not a property of this branch. Logs:
-`serials/819-oracle-arming/08-branch-x86-boot-tests-pass.txt` (run 3, GATE-EXIT=0)
-and `09-branch-x86-631-clock-gettime-red.txt` (run 2, with the assertion excerpt
-read from that run's serial before run 3 reused the directory).
+**What the diff does and does not change here.** The `serial_println!` format
+string above and its one argument are byte-identical to `origin/main`; what the
+diff does change in the `#[cfg(not(target_arch = "aarch64"))]` arm is its return
+value, `false` becoming
+`TestResult::Fail("fcntl process-manager contention oracle has no arm on a
+uniprocessor boot")`, because the function's return type became `TestResult`.
+So the printed line is unchanged by construction, and that is readable in
+`git diff 9b01687f...HEAD -- kernel/src/test_framework/registry.rs`; it is not
+something the boot runs below establish.
+
+**What each x86 artifact is evidence of.** An earlier version of this section
+claimed the line was unchanged "in 3 of 3, byte for byte" and cited the two logs
+below as the receipts. That citation did not hold, and this is what does:
+
+| run | verdict | artifact | what that artifact shows about this line |
+|---|---|---|---|
+| 1 | PASS | not checked in | no reading of this line |
+| 2 | FAIL (#631) | `09-branch-x86-631-clock-gettime-red.txt` | the line, transcribed under a commentary header from that run's serial -- an excerpt, not a dump |
+| 3 | PASS | `08-branch-x86-boot-tests-pass.txt` | not the line: `grep -i fcntl` over that file hits only the clone's path name |
+| re-run | PASS | `10-branch-x86-fcntl-oracle-line-surfaced.txt` | the line, in the gate's own stdout |
+
+Run 3's `GATE-EXIT=0` carries the fact by entailment rather than by display:
+`passed=true` in `docker/qemu/run-x86-boot-tests.sh` is one conjunction, and
+`grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL"` over that run's serial is a
+conjunct of it, so a run cannot reach exit 0 with the literal absent or altered.
+That is a fixed-string machine check, and it is a stronger reading than a
+transcription; what it is not is a file the line can be read out of, which is
+what citing the log implied. The gap was in the gate: it echoed its sibling
+oracle lines into its own log and not this one. This round adds that echo next
+to its `CENSUS_WIDEN_ORACLE` sibling, so the entailment and the receipt are the
+same artifact from here on. The `re-run` row is that gate, re-run on the same
+container and the same kernel binary as runs 1-3 with this round's gate-script
+bytes applied; its header records the SHA.
+
+The red in run 2 is `clock_gettime_test:1` -- `Test 3: Sub-millisecond
+precision`, `Elapsed: 1332075 ns`, `FAIL: Elapsed time >= 1ms (possible PIT
+fallback)`. That is the signature of **#631**, closed on 2026-09-04 having
+attributed the mechanism to the still-open **#766** (x86 timer wake dispatches
+only after a full round robin, p90 2592 ms). #631's own close says a fresh
+occurrence of the signature is expected and is not a reopen. The same binary
+passed the same gate 3 times across runs 1, 3 and the re-run, so it is not a
+property of this branch.
 
 ### Host-side suites
 
