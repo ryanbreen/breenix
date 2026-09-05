@@ -1261,16 +1261,20 @@ fn test_timer_delay() -> TestResult {
         // Wait on the same clock the assertion below reads.
         //
         // This used to convert TARGET_MS into a tick count with a hardcoded
-        // "200 Hz PIT, 5ms per tick", giving `(10 / 5) + 1 = 3` ticks. The x86
-        // PIT runs at 1000 Hz - `get_monotonic_time()` is literally
-        // `get_ticks()`, one tick per millisecond - so the loop waited ~3ms and
-        // then asserted `elapsed >= 5`. The test could not pass. Nobody saw it
-        // because the x86 staged registry was never dispatched (#533); the
-        // first boot that did dispatch it reported
-        // `[TEST:timer:timer_delay:FAIL:delay too short on x86_64]`.
+        // "200 Hz PIT, 5ms per tick", giving `(10 / 5) + 1 = 3` ticks, while
+        // scoring the result on a clock that then returned raw ticks: the loop
+        // waited ~3 ticks and then asserted `elapsed >= 5`. The test could not
+        // pass. Nobody saw it because the x86 staged registry was not being
+        // dispatched (#533); the first boot that did dispatch it reported
+        // `[TEST:timer:timer_delay:FAIL:delay too short on x86_64]`. The
+        // repair for that was to read one clock at both ends, which is what
+        // this does; the comment written with it claimed the x86 PIT runs at
+        // 1000 Hz, which #767 records as false -- PIT_HZ is 200.
         //
-        // Reading one clock removes the conversion, and with it the chance of
-        // the two ends of this test disagreeing about what a tick is.
+        // Since #767 both ends read milliseconds, so TARGET_MS, MIN_MS and
+        // MAX_MS are milliseconds here, at the 5 ms resolution one PIT tick
+        // gives: the loop waits for 10 ms of tick advance and the band admits
+        // 5..=20 ms.
         let start = crate::time::get_monotonic_time();
 
         while crate::time::get_monotonic_time().saturating_sub(start) < TARGET_MS {

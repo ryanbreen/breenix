@@ -1,4 +1,9 @@
-//! Core PIT-backed timer facilities (1000 Hz, 1 ms resolution).
+//! Core tick-backed timer facilities.
+//!
+//! One tick is `MS_PER_TICK` milliseconds: on x86_64 the PIT below is
+//! programmed at `PIT_HZ` = 200, so 5 ms; on aarch64 the interrupt that writes
+//! `TICKS` is programmed at 1000 Hz, so 1 ms. Millisecond resolution is
+//! therefore the tick period, not 1 ms on both.
 //!
 //! The PIT provides a fallback timer for systems where TSC is unavailable
 //! or as a reference during TSC calibration. For high-precision timing,
@@ -109,19 +114,24 @@ pub fn get_ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
-/// Milliseconds since the kernel was initialized (PIT-based, 1ms resolution).
+/// Milliseconds since the kernel was initialized, at `MS_PER_TICK` resolution.
 ///
-/// For nanosecond precision, use `get_monotonic_time_ns()` instead.
-/// Guaranteed monotonic and never wraps earlier than ~584 million years.
+/// For finer resolution, use `get_monotonic_time_ns()`, which reads the TSC
+/// when it is calibrated. Monotonic, and does not wrap earlier than ~584
+/// million years.
+///
+/// #767: the returned value used to be the raw tick count, which is
+/// milliseconds only where a tick is 1 ms. It is scaled here, at the one
+/// producer, rather than at the call sites that read it as milliseconds.
 #[inline]
 pub fn get_monotonic_time() -> u64 {
-    // At 1000 Hz, ticks == milliseconds
-    get_ticks()
+    get_ticks().saturating_mul(MS_PER_TICK)
 }
 
 /// Nanoseconds since the kernel was initialized (TSC-based, nanosecond resolution).
 ///
-/// Falls back to PIT-based millisecond timing if TSC is not calibrated.
+/// Falls back to the tick counter if the TSC is not calibrated, in which case
+/// the resolution is `MS_PER_TICK` milliseconds rather than nanoseconds.
 /// Returns (seconds, nanoseconds) tuple for POSIX timespec compatibility.
 #[inline]
 pub fn get_monotonic_time_ns() -> (u64, u64) {
@@ -130,7 +140,7 @@ pub fn get_monotonic_time_ns() -> (u64, u64) {
         return (secs, nanos);
     }
 
-    // Fallback to PIT (millisecond precision)
+    // Fallback to the tick counter (MS_PER_TICK resolution)
     let ms = get_monotonic_time();
     (ms / 1000, (ms % 1000) * 1_000_000)
 }

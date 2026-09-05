@@ -287,11 +287,14 @@ struct LoopbackPacket {
     /// Delivery latency is the quantity #636 is about, so the queue carries the
     /// only timestamp from which it can be computed without a test harness.
     ///
-    /// Ticks, not milliseconds: `crate::time::get_monotonic_time()` returns the
-    /// raw tick counter, and on x86_64 the PIT runs at 200 Hz, so one tick is
-    /// five milliseconds there and one millisecond on aarch64. Residency is
-    /// therefore reported in ticks and converted by the reader, rather than
-    /// carrying a unit this kernel does not actually keep.
+    /// Ticks, not milliseconds, and read from `crate::time::get_ticks()` for
+    /// that reason: on x86_64 the PIT runs at 200 Hz, so one tick is five
+    /// milliseconds there and one millisecond on aarch64. Residency is
+    /// reported in ticks and converted by the reader.
+    ///
+    /// #767 scaled `get_monotonic_time()` to real milliseconds. This field and
+    /// its threshold are named in ticks and are read against the raw counter
+    /// so that the number this queue reports keeps the meaning it had.
     queued_at_tick: u64,
 }
 
@@ -377,7 +380,7 @@ pub fn loopback_slow_deliveries() -> u64 {
 
 /// Record one packet's queue-to-delivery latency and report the outliers.
 fn note_loopback_residency(queued_at_tick: u64, source: LoopbackDrainSource) {
-    let now_tick = crate::time::get_monotonic_time();
+    let now_tick = crate::time::get_ticks();
     let residency_ticks = now_tick.saturating_sub(queued_at_tick);
 
     LOOPBACK_MAX_RESIDENCY_TICKS.fetch_max(residency_ticks, Ordering::Relaxed);
@@ -1220,7 +1223,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
 
             queue.push(LoopbackPacket {
                 data: ip_packet,
-                queued_at_tick: crate::time::get_monotonic_time(),
+                queued_at_tick: crate::time::get_ticks(),
             });
             let queue_len = queue.len();
             LOOPBACK_QUEUE_DEPTH.store(queue_len, Ordering::Release);
