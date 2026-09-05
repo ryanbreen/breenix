@@ -1272,6 +1272,16 @@ fn kernel_main_continue() -> ! {
             kernel::userspace_test::get_test_binary("clonevm_exec_test");
         let futex_handoff_oracle_buf =
             kernel::userspace_test::get_test_binary("futex_handoff_oracle");
+        // #737 direction-flag preempt oracle. Fork-free on purpose: the gate's
+        // PRODUCTION_REAPED_ROWS census counts fork() call sites per roster
+        // program (docker/qemu/run-x86-boot-tests.sh), and this program has no
+        // such call site, so it contributes 0 there and moves only
+        // EXPECTED_USERSPACE_EXITS.
+        // claim-lint:ok: 0 of 0 fork() call sites in
+        // userspace/programs/src/df_preempt_oracle.rs under the gate's own
+        // census pattern, measured in the round that added this launch. #737.
+        let df_preempt_oracle_buf =
+            kernel::userspace_test::get_test_binary("df_preempt_oracle");
 
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
@@ -1563,6 +1573,30 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create futex_handoff_oracle process: {}", e);
+                    }
+                }
+            }
+
+            // The 737 direction-flag preempt oracle: it holds DF=1 across many
+            // timer ticks so the first from-userspace preempt lands inside the
+            // window, instead of waiting for the timer to hit a userspace
+            // memmove backward arm. Fork-free, so the gate's
+            // PRODUCTION_REAPED_ROWS census (which counts fork call sites per
+            // roster program) is unmoved; it moves EXPECTED_USERSPACE_EXITS by 1.
+            {
+                serial_println!("RING3_SMOKE: creating df_preempt_oracle userspace process");
+                match process::creation::create_user_process(
+                    String::from("df_preempt_oracle"),
+                    &df_preempt_oracle_buf,
+                ) {
+                    Ok(pid) => {
+                        log::info!(
+                            "Created df_preempt_oracle process with PID {}",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create df_preempt_oracle process: {}", e);
                     }
                 }
             }

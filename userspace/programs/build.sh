@@ -142,6 +142,8 @@ STD_BINARIES=(
     "futex_handoff_oracle"
     # Green-program arc 4: production-profile TTY/PTY evidence leg
     "tty_oracle"
+    # #737 direction-flag preempt oracle (x86 only; fork-free)
+    "df_preempt_oracle"
 
     # Phase 1: No-fork programs
     "syscall_enosys"

@@ -188,10 +188,10 @@ readonly TOMBSTONE_FIXTURE_REMOVALS=2
 # claim-lint:ok: #697 -- "every ... call site ... is one child" is this
 # derivation's own definition (it is what the grep loop immediately below
 # counts, not an empirical claim about the kernel), and measured directly:
-# 2 of 15 current roster files match (loopback_wake_test.rs: 4 sites,
+# 2 of 16 current roster files match (loopback_wake_test.rs: 4 sites,
 # tcp_cloexec_exec_test.rs: 1 site), summing to the 5 this pin now derives;
 # widening the pattern to the five idioms above leaves that sum unchanged
-# (verified against every one of the 15 roster files plus, for the three
+# (verified against every one of the 16 roster files plus, for the three
 # newly-recognised idioms, tcp_blocking_test.rs=2, bsh.rs=3,
 # sigkill_teardown_test.rs=4 -- none of which are on today's roster).
 # `|| true`: under `set -o pipefail`, a roster-comment rename or removal in
@@ -212,7 +212,7 @@ PRODUCTION_REAPED_ROWS=0
 for _ring3_smoke_name in $RING3_SMOKE_ROSTER; do
     _ring3_smoke_src="$BREENIX_ROOT/userspace/programs/src/${_ring3_smoke_name}.rs"
     test -f "$_ring3_smoke_src"
-    # `|| true`: 13 of 15 current roster programs never fork (measured --
+    # `|| true`: 14 of 16 current roster programs never fork (measured --
     # only loopback_wake_test.rs and tcp_cloexec_exec_test.rs match), so a
     # zero-match grep here is the expected case, not a failure -- see the
     # PCI_CENSUS_LINE comment below for why an unguarded pipefail would
@@ -309,7 +309,7 @@ CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
 # Thirteen oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
 # Ten launched test programs, one smoke_hello_time (the RING3_SMOKE process
 # kernel_main_continue creates after the twelve disk-loaded ones), one
-# futex_handoff_oracle, 64 retire-cohort children, five loopback_wake_test
+# futex_handoff_oracle, one df_preempt_oracle, 64 retire-cohort children, five loopback_wake_test
 # processes (parent, reader, peer, load, watchdog), 16 exec-cohort children, one
 # clonevm_exec_test process (renamed by its second-stage exec), its phase-1
 # CLONE_VM child, two clone-admission oracle rows, one init designation
@@ -319,19 +319,36 @@ CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
 # init designation oracle's other synthetic rows are removed with remove_process
 # and contribute nothing, while its two construction-failure arms create no row
 # at all:
-# 10 + 1 + 1 + 64 + 5 + 16 + 1 + 1 + 2 + 1 + 2 = 104. The exec-detach oracle contributes
+# 10 + 1 + 1 + 1 + 64 + 5 + 16 + 1 + 1 + 2 + 1 + 2 = 105. The exec-detach oracle contributes
 # zero because its rows use the deferred-reclaim path rather than the
 # Process::terminate / terminate_minimal tally choke point. This is a floor,
 # checked >= by scripts/x86-gate-verdict.sh; the production-path arm execs the
 # cohort's already-inserted parent and fails without launching a new userspace
 # process; re-pin consciously.
+# claim-lint:ok: the 12 addends above are this paragraph's own enumeration,
+# and their sum is checked as a FLOOR (>=) by scripts/x86-gate-verdict.sh, so a
+# boot that exits fewer rows than the enumeration names still fails it. The
+# "contribute nothing" clause names rows removed with remove_process, which
+# never reach the Process::terminate / terminate_minimal choke point this
+# floor counts.
 #
 # Re-derived for P6a PR-2, and the re-derivation closed a pre-existing one-row
 # gap rather than only adding this PR's two: the enumeration read 101 while the
 # gate's own runs measured 102 (two runs, 2026-08-23) because smoke_hello_time
 # was never counted. 102 + this PR's two staged rows = 104, which is what the
 # branch's own run measures.
-readonly EXPECTED_USERSPACE_EXITS=104
+#
+# 105, not 104, since the 737 direction-flag preempt oracle joined the
+# RING3_SMOKE roster. It is one more launched program that runs to
+# completion and exits once, so it moves this floor by exactly 1. It never
+# forks, so it contributes 0 to PRODUCTION_REAPED_ROWS above, which is
+# derived from fork call sites and is left untouched by this addition.
+# claim-lint:ok: 0 of 0 fork() call sites in
+# userspace/programs/src/df_preempt_oracle.rs under the same
+# grep -cE '(match|=) *([a-zA-Z_]+::)*fork\(\)' pattern the
+# PRODUCTION_REAPED_ROWS loop above runs; the +1 is the single exit of the
+# single process kernel/src/main.rs creates for it. #737.
+readonly EXPECTED_USERSPACE_EXITS=105
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi

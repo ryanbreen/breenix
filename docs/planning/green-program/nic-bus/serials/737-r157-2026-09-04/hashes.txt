@@ -1,0 +1,14 @@
+# R157 bytes (R17). Clone /root/breenix-737-oracle @ 3ff50763, container breenix-x86 on beast.
+# sha256  size  path
+db3ae5d3dda45a4fab470c9aa34a6abaabaada05d9af0baaa83d0354fc62d6d4  5467600  target/x86_64-unknown-none/release/deps/artifact/kernel-493a8075635ade12/bin/kernel-493a8075635ade12
+156d59f19b971ae9e325705afd5ed01f48ebd9d1181f337744d3bf61d26c035e  7405568  target/release/build/breenix-1ddb662735daef9c/out/breenix-uefi.img
+6b11ed2952fe3079988932e2389f1f03e5b6d668787ca5ff6f4508025426cfb8  31011840  target/test_binaries.img
+c9f6d4e950ebbad1fede5458c9a80132c66da09ebaf72613e87b75478b02d947  268435456  target/ext2.img
+318e22f90aa0de72bb03b4e937a57ac8c3b633f43bdd84a0526d263cdd74ad56  187664  userspace/programs/df_preempt_oracle.elf
+# serial captures:
+6d3181bed5c5811241a9e6313922f9f4ffda14b6cbc7c06991de98c189b28928  375207  boot-1-kernel.txt
+9bfcf045e1af0ed4d7dec3ea81fa975be1a18b3c1fb9b15586c0fe2ea921e301  62918  boot-1-user.txt
+3e7d964e3c69ae5e4302cd4b412071815a51617e55043d261588a7e9fb388a16  1830  ratchet-head.txt
+9187298e1729111ba786e1f3a7ab69808cce6807ee419162ca1e2ca80fc981ea  2465  ratchet-mutation-outside-dirs.txt
+399972149551a6869e030a76d80459a8a155b9b0643c3bd6ac37808a96ac4741  1831  ratchet-after-revert.txt
+b787596eaafd2305a550a7f0885eea2b3e4e2746e2518730b7c569669bda7c21  793  boot-run.txt

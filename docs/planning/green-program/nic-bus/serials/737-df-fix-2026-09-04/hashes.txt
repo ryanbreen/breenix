@@ -1,0 +1,67 @@
+#737 DF fix -- every byte booted or symbolized in this round (R17).
+Gate host: beast -> Incus container breenix-x86, clone /root/breenix-737-oracle,
+rust-fork -> /root/breenix/rust-fork-real. Every gate run executed under
+`unshare -m` with /tmp bind-mounted to <clone>/gate-tmp/tmp (R18).
+
+--------------------------------------------------------------------------
+A. testing,external_test_bins -- the bytes of the three PASSING oracle boots
+   built at head 7d1316b61f27ace2b80c40bb6498823744c6dc4b
+--------------------------------------------------------------------------
+sha256                                                            size      path
+db3ae5d3dda45a4fab470c9aa34a6abaabaada05d9af0baaa83d0354fc62d6d4  5467600   target/x86_64-unknown-none/release/deps/artifact/kernel-493a8075635ade12/bin/kernel-493a8075635ade12
+9172e3b1b82c1e92cfb15c5c02edfffe6a28676fe5a6f3c16480451acd75955c  7405568   target/release/build/breenix-1ddb662735daef9c/out/breenix-uefi.img
+9bee23decd8ce571ec02bd6adc0b9ce921280a57f26eb60c7d9c7e8ff4829bab  31011840  target/test_binaries.img
+0b3ebcd0252ff55febaac30c41ea3bd156f799a277c22562f0baabca3d0cb46c  268435456 target/ext2.img
+180639ffdf4c7d79a2b905563a711df90d72f1ddef312cf969c559b08a820381  187600    userspace/programs/df_preempt_oracle.elf
+ba0b9d5339047f46a439e3d81cd436cb0d4e95678345f3d287bf7b0a1dcba670  3541280   target/release/qemu-uefi
+
+--------------------------------------------------------------------------
+B. zero-feature production profile -- the bytes of the two PASSING prod boots
+--------------------------------------------------------------------------
+588671ffd4d9f93b7d7abacb56b7d7ef0ef564962736bdc19f984602b7cf16a0  5079752   target/x86_64-unknown-none/release/deps/artifact/kernel-3203cc2874472470/bin/kernel-3203cc2874472470
+c466b7b168fe4c2d070cc75f7273ac7861db947231abd5cc1b5cdb178409e86d  7405568   target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img
+
+--------------------------------------------------------------------------
+C. the ANTI-VACUITY mutant -- this round's cld deleted, nothing else changed
+--------------------------------------------------------------------------
+7dea6daa4d319cda14cacb51ed7bdc4c8f19a5c8fc19223a5ec150d53e694502  5467600   kernel ELF (mutated)
+ff72fb56099673fec39afd1cfdbb8ceb898a373e89196a900ff07bfcf8ed2c9a  7405568   boot image (mutated)
+
+7dea6daa4d319cda... is byte-identical to the kernel ELF the pre-fix slot booted
+for its three faulting boots (737-DF-ORACLE-2026-09-04.md section 2). Deleting
+the cld reproduces the pre-fix binary exactly, so the cld is the whole delta.
+
+--------------------------------------------------------------------------
+D. the FINAL head f2ed50bcd611e169f54d2df21eb251ca0002c845
+--------------------------------------------------------------------------
+db3ae5d3dda45a4fab470c9aa34a6abaabaada05d9af0baaa83d0354fc62d6d4  5467600   kernel ELF
+6e9adc595f9b4762f74c266ff64d9fae7f4d6753054e63a4bff364e5c653cf75  7405568   boot image
+9bee23decd8ce571ec02bd6adc0b9ce921280a57f26eb60c7d9c7e8ff4829bab  31011840  target/test_binaries.img
+
+The kernel ELF and the test disk are byte-identical to section A: the only
+commit between the boot head and the final head touches
+tests/loopback_pump_structure.rs, a host-side test file that reaches no kernel
+binary. The boot image differs in bootloader FAT metadata only (same size), the
+same per-build variation section 2 of the oracle record already recorded.
+
+--------------------------------------------------------------------------
+E. serial transcripts
+--------------------------------------------------------------------------
+oracle/boot-1-user.txt    b0aced249e6776419d9fd3cd398a27be61298b4d35fcaf14b2ff771449ed5a44
+oracle/boot-1-kernel.txt  0f112035a685095a35ccba139eb31c5851db64e9b0101b75a3d349af2b7643b9
+oracle/boot-2-user.txt    8770023cc44760adc7e62a3677363f448bf3642abd704e6f36ff9a27a50b62a1
+oracle/boot-2-kernel.txt  cd708202b128d8c311e7dbf03bc146121c8c1f96559f0ddc0ff770b84e412087
+oracle/boot-3-user.txt    a26c1506721caf14778a5cd30e4580e8a9218c5c7a0f20397c1db01e3f1bc42e
+oracle/boot-3-kernel.txt  3a76d582cb0f22c51489d51bda10c7d98776b1169a2c7bf5a53399dc231089a2
+
+--------------------------------------------------------------------------
+F. note on file names and line endings
+--------------------------------------------------------------------------
+The three cargo build transcripts were captured as .log and are committed as
+.txt (build-testing.txt, ratchet/build-mutated.txt, ratchet/build-restored.txt)
+because this repo's .gitignore excludes *.log; the contents are unchanged.
+
+Every .txt under this directory is marked `-text` in .gitattributes, so the
+committed bytes are the bytes captured on the gate host -- CR bytes from the
+guest console included -- and the section E digests above are digests of those
+exact bytes.
