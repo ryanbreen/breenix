@@ -296,6 +296,11 @@ path = "src/futex_handoff_oracle.rs"
 name = "tty_oracle"
 path = "src/tty_oracle.rs"
 
+# #737 direction-flag preempt oracle (x86 only; fork-free)
+[[bin]]
+name = "df_preempt_oracle"
+path = "src/df_preempt_oracle.rs"
+
 # Additional test programs
 [[bin]]
 name = "alarm_test"
