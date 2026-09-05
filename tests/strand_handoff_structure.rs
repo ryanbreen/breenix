@@ -19,6 +19,7 @@ const TEST_REGISTRY_PATH: &str = "kernel/src/test_framework/registry.rs";
 const X86_BOOT_GATE_PATH: &str = "docker/qemu/run-x86-boot-tests.sh";
 const SERVICE_SEQUENCE_GATE_PATH: &str = "docker/qemu/run-aarch64-service-sequence-gate.sh";
 const STRICT_GATE_PATH: &str = "docker/qemu/run-aarch64-boot-test-strict.sh";
+const NATIVE_GATE_PATH: &str = "docker/qemu/run-aarch64-boot-test-native.sh";
 const FULL_TEST_PATH: &str = "docker/qemu/run-aarch64-full-test.sh";
 const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
 /// New instruction-abort refusal reasons are welcome; losing one is not.
@@ -1694,6 +1695,7 @@ fn boot_tests_gates_refuse_a_wrong_profile_kernel() {
         ("service-sequence gate", SERVICE_SEQUENCE_GATE_PATH),
         ("strict gate", STRICT_GATE_PATH),
         ("full test", FULL_TEST_PATH),
+        ("native gate", NATIVE_GATE_PATH),
     ] {
         let gate = repo_text(gate_path);
         let guard = shell_function_body(&gate, "require_boot_tests_kernel");
