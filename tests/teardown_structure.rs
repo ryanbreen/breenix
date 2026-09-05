@@ -16126,10 +16126,12 @@ fn gate_scripts_route_per_run_output_under_breenix_gate_tmp() {
 
     // Anti-vacuity floor: a census of scripts under docker/qemu/ and
     // scripts/ that already carry BREENIX_GATE_TMP support, measured at 22
-    // when this ratchet shipped (5 from #797's original commit, 4 more
-    // R157/F1 added the same PR, and 13 this branch gave #825's aarch64
-    // family) -- not a closed name list, free to grow as more scripts adopt
-    // the convention.
+    // when this ratchet shipped (8 from #797's PR #801 -- 4 from its
+    // original commit, 4 more the R157/F1 review round added -- plus 1
+    // more, run-aarch64-testing-profile-boot-test.sh, from the unrelated
+    // #763, and 13 this branch gave #825's aarch64 family) -- not a
+    // closed name list, free to grow as more scripts adopt the
+    // convention.
     let compliant = scripts
         .iter()
         .filter(|(_, text)| text.contains("BREENIX_GATE_TMP"))

@@ -11,11 +11,14 @@ observed 18/20 false red produced exactly this way: a second agent's strict
 run on a different worktree was writing the same `/tmp/breenix_aarch64_strict_N`
 paths while the first agent's poll loop was scoring them.
 
-Five sibling x86 gate scripts already carried the fix for the identical
+Eight sibling x86 gate scripts already carried the fix for the identical
 shape (#797, `docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md`):
 `BREENIX_GATE_TMP`, defaulting to `/tmp` (so an unset caller is
-byte-identical to before), validated absolute. The aarch64 family, and a
-few `scripts/` utilities with the same hazard, did not.
+byte-identical to before), validated absolute. One more script,
+`run-aarch64-testing-profile-boot-test.sh`, already carried the same
+convention from an unrelated fix (#763) -- nine scripts total pre-existed
+this branch. The rest of the aarch64 family, and a few `scripts/`
+utilities with the same hazard, did not.
 
 ## What changed
 
@@ -115,8 +118,8 @@ value starting with `/tmp/breenix`, carrying no `$$`, in a script that does
 not mention `BREENIX_GATE_TMP` anywhere in its text — a script that has adopted
 the convention anywhere is not, by this rule's own definition, missing it.
 An anti-vacuity floor separately pins the count of scripts that already
-carry `BREENIX_GATE_TMP` at 22 (measured on this branch: 9 from #797's
-original PR, 13 from this one).
+carry `BREENIX_GATE_TMP` at 22 (measured on this branch: 8 from #797's
+PR #801, 1 more from the unrelated #763, and 13 from this one).
 
 `fixed_tmp_rm_rf_violation_rule_is_not_vacuous` proves the predicate on
 four legs: it names the fixed path in reconstructed pre-fix text; it
@@ -205,8 +208,8 @@ after the run, not asserted by eye.
 ## Structural suites and claim-lint
 
 ```
-cargo test --test <name>   for each of the 30 tests/*_structure.rs files
--> 30/30 green, 0 failed (teardown_structure.rs: 88 passed, including the
+cargo test --test <name>   for each of the 31 tests/*_structure.rs files
+-> 31/31 green, 0 failed (teardown_structure.rs: 88 passed, including the
    two new tests above)
 
 python3 scripts/test_claim_lint.py
@@ -214,7 +217,8 @@ python3 scripts/test_claim_lint.py
 
 claim-lint: scripts/claim-lint.py -> exit 0
 claim-lint: scripts/claim-lint.py --files docs/planning/green-program/gates/GATE-TMP-BASEDIR-AARCH64-2026-09-05.md -> exit 0
-claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (x7, one per commit)
+claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (x9, one per commit,
+  including this fix round's own)
 ```
 
 The no-argument, changed-hunks-vs-`origin/main` run of `scripts/claim-lint.py`
