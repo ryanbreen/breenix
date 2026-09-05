@@ -1,0 +1,3 @@
+ext2 lock-race gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
+ext2 lock-race gate: FAIL (set -e abort at docker/qemu/run-ext2-lock-race-gate.sh:263, exit 1)
+  failing command: false

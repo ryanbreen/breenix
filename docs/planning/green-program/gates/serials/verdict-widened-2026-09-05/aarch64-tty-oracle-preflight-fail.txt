@@ -1,0 +1,3 @@
+FAIL: unknown argument: --nonsense-flag
+aarch64 TTY oracle gate: FAIL (set -e abort at docker/qemu/run-aarch64-tty-oracle-gate.sh:101, exit 1)
+  failing command: false

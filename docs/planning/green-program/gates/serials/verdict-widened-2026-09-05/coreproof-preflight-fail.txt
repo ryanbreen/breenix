@@ -1,0 +1,5 @@
+unknown component: Z
+
+ARM64 CORE-PROOF GATE: FAILED
+  at line 136: return "$1" (exit 2)
+  started=2026-09-05T10:23:00Z ended=2026-09-05T10:23:00Z

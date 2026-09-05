@@ -1,0 +1,3 @@
+fs fault gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
+fs fault gate: FAIL (set -e abort at docker/qemu/run-fs-fault-gate.sh:93, exit 1)
+  failing command: false
