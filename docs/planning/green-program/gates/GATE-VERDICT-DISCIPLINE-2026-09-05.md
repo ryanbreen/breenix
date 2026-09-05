@@ -765,6 +765,94 @@ exit 1. Full output: `docs/planning/green-program/gates/serials/verdict-widened-
   (`run-aarch64-tty-oracle-gate.sh:104` and `:111`) to their pre-repair
   bare `exit 1` and confirms the rule reddens both, by name.
 
+## Landing re-smoke
+
+Re-run at the merged head (`git merge --no-ff origin/main`, merge commit
+`8c87639a7069300c6498931d325a3cf0dad96f5b`; `git diff --stat origin/main..HEAD`
+lists only this branch's own 21 files -- the 7 gate scripts, this doc, its
+serials, and `tests/teardown_structure.rs` -- confirming the merge carried
+0 conflicts, per `git status` reporting a clean tree right after it).
+Everything below is this round's own run, not a re-quote of the F1-F6
+proofs above.
+
+**Full `tests/*_structure.rs` sweep**, run individually through
+`scripts/run-structure-tests.sh` (same worktree workaround the F1-F6 proofs
+used):
+
+**30 of 30 suites green, 565 cases, 0 failed.** (One more case than the
+83-scripts-ago count quoted above in "Structure suites" -- `teardown_structure`
+itself grew from 85 to 86 passed between that snapshot and this one, matching
+`grep -c '^\s*#\[test\]' tests/teardown_structure.rs` -> 86 on the file as
+merged; no regression, the file is byte-identical pre- and post-merge, this
+is just a later count of the same growing suite.)
+
+**`scripts/test_claim_lint.py`**: `Ran 72 tests in 1.681s` / `OK`, exit 0.
+
+**aarch64 (this Mac)**. Host-load rule checked (`pgrep -f qemu-system-aarch64`
+-> 0 before each boot). Built via
+`cargo build --release --features boot_tests --target aarch64-breenix-kernel.json
+-Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel
+--bin kernel-aarch64` (clean, no warnings) then `scripts/check-kernel-no-neon.sh`
+(PASS), matching the F1-F6 proofs' own "Environment note": this worktree has
+no `rust-fork/` and no prebuilt userspace, so `userspace/programs/aarch64/*.elf`
+and `target/ext2-aarch64.img` were copied in from the main checkout
+(`/Users/wrb/fun/code/breenix`, gitignored build products, not repository
+content; no userspace/kernel source changed on this branch) rather than
+rebuilt in this worktree.
+
+```
+$ docker/qemu/run-aarch64-tty-oracle-gate.sh
+...
+  boot 1: 14/14 arms PASS, kernel live (bsshd reached)
+PASS: aarch64 TTY oracle gate - 1/1 boots, 14 arms green on the shipped production profile
+```
+exit 0. Full output:
+`docs/planning/green-program/gates/serials/verdict-widened-landing-2026-09-05/aarch64-tty-oracle-landing-default-pass.txt`.
+
+```
+$ docker/qemu/run-aarch64-tty-oracle-gate.sh --nonsense-flag
+FAIL: unknown argument: --nonsense-flag
+aarch64 TTY oracle gate: FAIL (set -e abort at docker/qemu/run-aarch64-tty-oracle-gate.sh:101, exit 1)
+  failing command: false
+```
+exit 1. Full output:
+`docs/planning/green-program/gates/serials/verdict-widened-landing-2026-09-05/aarch64-tty-oracle-landing-preflight-fail.txt`.
+
+**x86 (beast, `breenix-x86` container, `/root/breenix-verdict` at
+`8c87639a`)**. `pgrep -f qemu-system-x86_64` checked <= 2 before each boot
+(1, then 2, both within the cap). Build clean first:
+`cargo build --release --features boot_tests,testing,external_test_bins --bin
+qemu-uefi` (3 lines of output total: `Compiling kernel`, `Compiling
+breenix`, `Finished release`), then that same output grepped for
+`^(warning|error)` -- 0 of 3 lines matched.
+
+```
+$ BREENIX_GATE_TMP=/root/breenix-verdict-tmp BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork/library ./docker/qemu/run-x86-boot-tests.sh 1
+...
+[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=3:injected=1:pend_epoch=0:pend_hw=0:pend_shadow=1:pend_selectable=0]
+x86 frame-custody gate run 1: PASS
+```
+exit 0. Captured output is a tail (the orchestrating session's own
+command-output limit), not the F1-F6 proofs' full 470-line capture -- it
+covers every FRAME_CUSTODY/PT_CUSTODY/TOMBSTONE/RECLAIM_DRAIN oracle line the
+gate prints and its own final PASS verdict, which is what this re-smoke
+needs. Full output:
+`docs/planning/green-program/gates/serials/verdict-widened-landing-2026-09-05/x86-boot-tests-landing-default-pass.txt`.
+
+```
+$ env BREENIX_GATE_TMP=relative-not-absolute ./docker/qemu/run-x86-boot-tests.sh 1
+x86 frame-custody gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
+x86 frame-custody gate: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:93, exit 1)
+  failing command: false
+```
+exit 1. Full output:
+`docs/planning/green-program/gates/serials/verdict-widened-landing-2026-09-05/x86-boot-tests-landing-preflight-fail.txt`.
+
+**Unattributed reds: 0 of 6.** Six re-smoke checks ran this round (the
+structure-suite sweep, the claim-lint self-test, and the aarch64/x86
+default-pass and preflight-fail pairs); each of the 6 matched its expected
+verdict, so 0 needed separate triage.
+
 ## claim-lint
 
 ```

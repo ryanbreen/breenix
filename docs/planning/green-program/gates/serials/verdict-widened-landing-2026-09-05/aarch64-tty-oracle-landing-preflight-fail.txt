@@ -1,0 +1,7 @@
+host: this Mac (arm64), worktree /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/verdict/land-verdict
+sha: 8c87639a7069300c6498931d325a3cf0dad96f5b (this branch's merge commit, gates/verdict-discipline-widened)
+note: landing re-smoke, simulated preflight failure (unknown argument), run against the merged head (STEP 2).
+
+FAIL: unknown argument: --nonsense-flag
+aarch64 TTY oracle gate: FAIL (set -e abort at docker/qemu/run-aarch64-tty-oracle-gate.sh:101, exit 1)
+  failing command: false
