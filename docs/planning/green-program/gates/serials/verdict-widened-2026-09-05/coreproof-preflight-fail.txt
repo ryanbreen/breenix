@@ -1,0 +1,12 @@
+host: this Mac (arm64), worktree /Users/wrb/fun/code/breenix/.claude/worktrees/wf_34c09a15-6e8-5
+command: docker/qemu/run-coreproof-gate.sh --component Z
+exit status: 2
+re-captured: review round 1 (F3) -- byte-identical to the original capture
+other than the wall-clock started/ended timestamps this script itself
+prints; added for provenance only.
+
+unknown component: Z
+
+ARM64 CORE-PROOF GATE: FAILED
+  at line 136: return "$1" (exit 2)
+  started=2026-09-05T11:35:51Z ended=2026-09-05T11:35:51Z

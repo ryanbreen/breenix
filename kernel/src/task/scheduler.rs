@@ -996,6 +996,39 @@ pub fn stale_peer_cpu_for_test() -> Option<usize> {
     .flatten()
 }
 
+/// Select a non-current CPU that is still entering the scheduler.
+///
+/// The complement of `stale_peer_cpu_for_test`, and needed for the opposite
+/// reason: a test that wants a second CPU to actually RUN something has to
+/// avoid the CPU a boot has stopped dispatching on, or its probe is migrated
+/// off the CPU it asked for by `reclaim_unschedulable_cpu_queues` and then
+/// bounced by the affinity retain check.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub fn live_peer_cpu_for_test() -> Option<usize> {
+    with_scheduler(|scheduler| {
+        let current_cpu = Scheduler::current_cpu_id();
+        let online = scheduler.online_cpu_count();
+        (0..online).find(|&cpu| cpu != current_cpu && !scheduler.cpu_dispatch_stale(cpu))
+    })
+    .flatten()
+}
+
+/// The same selection, with CPU 0 excluded.
+///
+/// The global tick counter has 1 writer on this architecture, the cpu_id == 0
+/// arm of timer_interrupt_handler, so a test that intends to mask interrupts on
+/// the CPU it picks prefers a different live peer, and falls back to CPU 0 when
+/// this selection is empty.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub fn live_peer_cpu_for_test_excluding_cpu0() -> Option<usize> {
+    with_scheduler(|scheduler| {
+        let current_cpu = Scheduler::current_cpu_id();
+        let online = scheduler.online_cpu_count();
+        (1..online).find(|&cpu| cpu != current_cpu && !scheduler.cpu_dispatch_stale(cpu))
+    })
+    .flatten()
+}
+
 /// Lock-free-consumer liveness snapshot for watchdog diagnostics.
 ///
 /// Collected with `SCHEDULER.try_lock()` so callers never block on the

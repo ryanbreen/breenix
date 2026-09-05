@@ -1,0 +1,18 @@
+host: this Mac (arm64), worktree /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/verdict/land-verdict
+sha: 8c87639a7069300c6498931d325a3cf0dad96f5b (this branch's merge commit, gates/verdict-discipline-widened)
+note: landing re-smoke, run against the merged head (STEP 2).
+
+Building the shipped ARM64 production kernel profile...
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/verdict/land-verdict/kernel)
+    Finished `release` profile [optimized] target(s) in 5.79s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/verdict/land-verdict/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/verdict/land-verdict/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Booting the ARM64 production profile (boot 1/1)...
+  boot 1: 14/14 arms PASS, kernel live (bsshd reached)
+PASS: aarch64 TTY oracle gate - 1/1 boots, 14 arms green on the shipped production profile
+Serials: /tmp/breenix_aarch64_tty_oracle/boot_*/serial.txt

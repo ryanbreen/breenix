@@ -86,18 +86,29 @@ report_gate_failure() {
 }
 trap report_gate_failure ERR
 
+# The 17 checks below this point that used to stop with a bare `exit`
+# (13 standalone plus 4 case-arm/`||`-group forms) now fail with `echo` +
+# bare `false` instead (#802/#805 idiom, widened to this gate): a bare
+# `exit` does not reach the trap above -- it terminates the process
+# directly, the same way it would with no trap installed at all (verified:
+# `exit N` does not fire an ERR trap under `set -e`, unlike a
+# nonzero-returning command) -- so it can end the gate with no verdict
+# line. `false` under `set -e`/`set -E` fires the trap, so a rejection is
+# spent through report_gate_failure and the trap's own re-raise
+# (`exit "$exit_code"` above) stays the only `exit` statement left in this
+# script.
 while [ $# -gt 0 ]; do
     case "$1" in
         --boots) BOOTS="$2"; shift 2 ;;
         --rebuild-userspace) REBUILD_USERSPACE=true; shift ;;
-        *) echo "FAIL: unknown argument: $1"; exit 1 ;;
+        *) echo "FAIL: unknown argument: $1"; false ;;
     esac
 done
 
 case "$BOOTS" in
-    ''|*[!0-9]*) echo "FAIL: --boots must be a positive integer"; exit 1 ;;
+    ''|*[!0-9]*) echo "FAIL: --boots must be a positive integer"; false ;;
 esac
-[ "$BOOTS" -ge 1 ] || { echo "FAIL: --boots must be at least 1"; exit 1; }
+[ "$BOOTS" -ge 1 ] || { echo "FAIL: --boots must be at least 1"; false; }
 
 marker_count() {
     grep -aF -c "$2" "$1" 2>/dev/null || true
@@ -110,16 +121,16 @@ if ! (cd "$BREENIX_ROOT" && cargo build --release --target aarch64-breenix-kerne
         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
         -p kernel --bin kernel-aarch64); then
     echo "FAIL: production-profile kernel build failed"
-    exit 1
+    false
 fi
 
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
-[ -f "$KERNEL" ] || { echo "FAIL: production kernel missing at $KERNEL"; exit 1; }
+[ -f "$KERNEL" ] || { echo "FAIL: production kernel missing at $KERNEL"; false; }
 
 # Durable #528 guard: the shipped kernel must remain on the soft-float target.
 if ! "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"; then
     echo "FAIL: production kernel failed the no-NEON guard"
-    exit 1
+    false
 fi
 
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -130,7 +141,7 @@ fi
 if [ ! -f "$EXT2_DISK" ]; then
     echo "FAIL: ext2 disk not found at $EXT2_DISK"
     echo "Re-run with --rebuild-userspace to build userspace and create it."
-    exit 1
+    false
 fi
 
 rm -rf "$OUTPUT_ROOT"
@@ -176,14 +187,14 @@ while [ "$boot" -le "$BOOTS" ]; do
     if [ "$CRASH_COUNT" -ne 0 ]; then
         echo "FAIL: boot $boot crashed - $CRASH_COUNT crash marker(s)"
         grep -aiE "$CRASH_MARKERS_PATTERN" "$SERIAL" | head -5
-        exit 1
+        false
     fi
 
     # --- The leg must have run at all. ---
     if [ "$(marker_count "$SERIAL" "$ANY_COMPLETE_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot produced no [TTY_ORACLE:COMPLETE:] marker - the leg never ran"
         echo "  (a boot that does not drive the TTY surface cannot satisfy this gate)"
-        exit 1
+        false
     fi
 
     # --- No arm may report a failure. ---
@@ -191,7 +202,7 @@ while [ "$boot" -le "$BOOTS" ]; do
     if [ "$ARM_FAIL_COUNT" -ne 0 ]; then
         echo "FAIL: boot $boot - $ARM_FAIL_COUNT TTY arm failure(s)"
         grep -aF "$ARM_FAIL_LITERAL" "$SERIAL" | sort -u
-        exit 1
+        false
     fi
 
     # --- Every expected arm must have reported PASS. ---
@@ -199,7 +210,7 @@ while [ "$boot" -le "$BOOTS" ]; do
         if [ "$(marker_count "$SERIAL" "[TTY_ORACLE:${arm}:verdict=PASS")" -eq 0 ]; then
             echo "FAIL: boot $boot - arm '${arm}' produced no PASS verdict"
             grep -aF '[TTY_ORACLE:' "$SERIAL" | sort -u
-            exit 1
+            false
         fi
     done
 
@@ -207,7 +218,7 @@ while [ "$boot" -le "$BOOTS" ]; do
     if [ "$(marker_count "$SERIAL" "$COMPLETE_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot - missing '$COMPLETE_LITERAL'"
         grep -aF "$ANY_COMPLETE_LITERAL" "$SERIAL" | sort -u
-        exit 1
+        false
     fi
 
     # --- init must have reaped the child with status 0, via a genuine
@@ -215,28 +226,28 @@ while [ "$boot" -le "$BOOTS" ]; do
     if [ "$(marker_count "$SERIAL" "$INIT_REAP_FAILED_LITERAL")" -ne 0 ]; then
         echo "FAIL: boot $boot - init's waitpid() on tty_oracle failed"
         grep -aF "$INIT_REAP_FAILED_LITERAL" "$SERIAL" | head -2
-        exit 1
+        false
     fi
     if [ "$(marker_count "$SERIAL" "${INIT_EXIT_LITERAL}")" -eq 0 ]; then
         echo "FAIL: boot $boot - init never recorded the tty_oracle child exiting"
-        exit 1
+        false
     fi
     if [ "$(grep -acE '\[init\] tty_oracle exited pid=[0-9]+ code=0' "$SERIAL" || true)" -eq 0 ]; then
         echo "FAIL: boot $boot - tty_oracle exited nonzero"
         grep -aF "$INIT_EXIT_LITERAL" "$SERIAL" | head -2
-        exit 1
+        false
     fi
 
     # --- The shipped profile must carry no boot_tests-only output. ---
     if [ "$(marker_count "$SERIAL" "$BOOT_TESTS_LITERAL")" -ne 0 ]; then
         echo "FAIL: boot $boot - boot_tests-only markers present in the production profile"
-        exit 1
+        false
     fi
 
     # --- Liveness AFTER the leg: the kernel is still usable. ---
     if [ "$(marker_count "$SERIAL" "$BSSHD_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot - kernel did not reach bsshd after the TTY leg"
-        exit 1
+        false
     fi
 
     echo "  boot $boot: $EXPECTED_ARM_COUNT/$EXPECTED_ARM_COUNT arms PASS, kernel live (bsshd reached)"
