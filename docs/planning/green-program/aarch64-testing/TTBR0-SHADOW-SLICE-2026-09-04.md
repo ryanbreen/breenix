@@ -957,10 +957,13 @@ empty `^(warning|error)` grep, 27 of 27 structure suites green over 528 cases,
 3 of 3 strict boots PASS, and 2 of 3 production boots PASS with 1 red carrying
 open issue #690's exact signature and recorded as UNATTRIBUTED.
 
-**This round does not call the branch landable.** The production red is
-unattributed by the pre-adjudicated set it was given, and no control at
-`origin/main` was run on that profile, so no measurement here rules the branch
-out either.
+**Section 13 supersedes this paragraph.** At the time this round was
+written, the production red was unattributed by the pre-adjudicated set
+available then, and no control at `origin/main` had been run on that profile,
+so no measurement here ruled the branch out either. Ruling R160's dedicated
+20-boot A/B discriminator against `origin/main` (section 13) supplies that
+control and settles the question under R160's own mechanical rule: the branch
+is landable, with #690 pre-adjudicated for this slice by that ruling.
 claim-lint:ok: 1 of 3 production boots is the red, recorded at
 `serials/slice1/prove-r3/prod-boot1-FAIL-gate.txt`.
 
@@ -981,3 +984,100 @@ scores, and that run is clean.
 claim-lint:ok: diff mode reports "clean (77 file(s) checked, changed hunks vs
 d6b7a186e37b)" with 269 pre-existing findings outside those hunks not
 reported.
+
+## 13. A/B on the #690 signature (R160)
+
+Round 3 (section 12) left one production red carrying open issue #690's
+signature, unattributed by the pre-adjudicated set available at that time,
+with no control run on `origin/main` to compare against. Ruling R160 resolved
+that gap with a dedicated 20-boot A/B discriminator between this branch's
+head and `origin/main`, run on the aarch64 production profile
+(`docker/qemu/run-aarch64-prod-profile-boot-test.sh`, unmodified), alternating
+one boot at a time with `pgrep -fl qemu-system-aarch64 | wc -l` recorded
+before each of the 20 launches (host-load rule, gated to <=2).
+<!-- claim-lint:ok: 20/20 boots, all pgrep-at-launch=0 -- serials/slice1/ab-690/README.md -->
+The discriminator's own README is committed at
+`serials/slice1/ab-690/README.md`, alongside the 40 per-boot transcripts
+`branch/boot-{1..10}-{gate,serial}.txt` and `main/boot-{1..10}-{gate,serial}.txt`
+in that same directory.
+
+<!-- claim-lint:ok: #690 -- signature quoted verbatim from the R160 task, same wording as serials/slice1/ab-690/README.md -->
+The #690 signature this A/B tests for: `clonevm_exec_test` hangs at "second
+stage", init never leaves `waitpid`, bsshd never spawns, and the gate ends
+`FAIL: bsshd never reached its listening state`.
+
+### Branch arm (`fix/ttbr0-shadow-reconciliation` @ `b731e53a7da2526c4f93d7efbecdb6b106b6df69`)
+
+| boot | pgrep-at-launch | result | signature |
+|-----:|:---:|:---|:---|
+| 1 | 0 | PASS | -- |
+| 2 | 0 | PASS | -- |
+| 3 | 0 | PASS | -- |
+| 4 | 0 | PASS | -- |
+| 5 | 0 | PASS | -- |
+| 6 | 0 | PASS | -- |
+| 7 | 0 | PASS | -- |
+| 8 | 0 | PASS | -- |
+| 9 | 0 | PASS | -- |
+| 10 | 0 | PASS | -- |
+
+### Main arm (`origin/main` @ `d6b7a186e37b67ee53f9c233442cdc54565874df`)
+
+| boot | pgrep-at-launch | result | signature |
+|-----:|:---:|:---|:---|
+| 1 | 0 | PASS | -- |
+| 2 | 0 | PASS | -- |
+| 3 | 0 | **FAIL** | UNATTRIBUTED -- `TTY_ORACLE:FAIL:cloexec_exec:fcntl_setfd_failed:EAGAIN` (bsshd had already reached its listening state in this boot's serial; the gate still failed because the TTY-oracle check runs before the bsshd check) |
+| 4 | 0 | PASS | -- |
+| 5 | 0 | PASS | -- |
+| 6 | 0 | PASS | -- |
+| 7 | 0 | PASS | -- |
+| 8 | 0 | PASS | -- |
+| 9 | 0 | PASS | -- |
+| 10 | 0 | PASS | -- |
+
+<!-- claim-lint:ok: 10/10 branch, 9/10 main -- serials/slice1/ab-690/{branch,main}/boot-{1..10}-gate.txt -->
+Branch: 10/10 PASS, 0 reds, 0 occurrences of the #690 signature. Main: 9/10
+PASS, 1 red (the boot-3 TTY-oracle failure above; unattributed, not #690, not
+#555, not #536, not #576, not #586, and not host-load since pgrep-at-launch
+was 0 at every launch on both arms), 0 occurrences of the #690 signature.
+
+### Fisher's exact test (information only)
+
+2x2 table (#690 count vs not, branch vs main): `[[0,10],[0,10]]`. One-sided
+(branch > main), `scipy.stats.fisher_exact`: `p = 1.0`.
+<!-- claim-lint:ok: 0/10 branch, 0/10 main -- serials/slice1/ab-690/README.md per-boot table -->
+With 0 of 10 #690 occurrences on the branch arm and 0 of 10 on the main arm,
+this is the only value the test can return; it carries no evidence in either
+direction, and R160 does not use it to decide landability -- the mechanical
+rule below does.
+
+### The R160 rule and its outcome
+
+R160's landability rule, verbatim:
+
+```
+landable = (branch has no red outside #690) AND (branch #690 count <= main #690 count + 1)
+```
+
+Applied to this sample: the branch produced 0 reds of any kind across 10
+boots, so "branch has no red outside #690" is vacuously true; the branch's
+#690 count (0) is <= the main #690 count (0) + 1. Both conjuncts hold, so
+`landable = true` under R160's stated mechanical rule.
+
+### Honesty caveat, carried from the discriminator's own README
+
+<!-- claim-lint:ok: 0/10 vs a reported 1-in-3 -- see serials/slice1/ab-690/README.md Discussion section for the full P(0 hits) arithmetic -->
+This 20-boot sample (10 per arm) reproduced zero #690 occurrences on either
+arm, which does not reproduce the "1 in 3 on this branch" rate the R160 task
+attributed to the cortex-a72 service-sequence gate -- a different, more
+expensive script than the production-profile gate this A/B ran. At a true
+1-in-3 rate, P(zero hits in 10 boots) is approximately 1.7%: unlikely but not
+impossible from sampling noise, and also consistent with the reported rate
+being specific to the service-sequence profile rather than the production
+profile tested here. This sample does not rule out an elevated branch rate;
+it only fails to reproduce one on this gate at this n. Section 12's
+"does not call the branch landable" sentence is superseded by this section:
+under R160's mechanical rule, applied to R160's own dedicated A/B evidence,
+the branch is landable, with #690 pre-adjudicated for this slice by that
+ruling rather than resolved by first-principles attribution.
