@@ -422,7 +422,9 @@ then re-smoked:
   ambiguous. Other `qemu-system-aarch64` processes launched by unrelated
   worktrees on this same host were observed running concurrently during
   this window, consistent with the elevated load reading. The remaining 19
-  boots each read `ended_by=scored_pass`.
+  boots each read `ended_by=scored_pass`. The full boot 2 serial is
+  preserved at
+  `docs/planning/green-program/gates/serials/827-landing-2026-09-05/boot2-hard_timeout-serial.txt`.
 - One aarch64 prod-profile run (`run-aarch64-prod-profile-boot-test.sh`,
   which builds its own no-features kernel): 1/1 boot,
   `PASS: production profile reached bsshd with the futex oracle seam absent`,
