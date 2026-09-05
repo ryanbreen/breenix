@@ -39,9 +39,38 @@ before adopting it; the second capture, taken with `pgrep -fl
 'qemu-system-aarch64 -M'` reading 0 immediately before and after launch,
 matched.
 
+`01-strict-boot1-serial.txt` was re-recorded a second time during the
+`fix/819-fcntl-oracle-arming-rendezvous` landing (`ld-fcntl-arm`), for the
+same structural reason as the paragraph above: `#819` rewrites the
+`FCNTL_PM_CONTENTION_ORACLE` marker itself, from a boolean-attempt shape
+(`attempts=1:armed=1:...`) to a 7-named-arm rendezvous shape
+(`arm_wait_us=...:armed=1:acquired=1:...:hold_safety=0:...`), and changed
+`docker/qemu/run-aarch64-boot-test-strict.sh`'s required pattern to match.
+Merging `origin/main` (carrying the `#812` re-record above, with the old
+`attempts=` shape) into `fix/819-fcntl-oracle-arming-rendezvous` (carrying the
+new `arm_wait_us=` shape but no `IRQ_HOLD_ORACLE` line, since it branched
+before `#812`) left no single side's copy able to satisfy both scorer
+requirements at once, and the merge's file-level conflict resolution (taking
+`origin/main`'s copy outright) scored
+`SCORE: FAIL - fcntl process-manager contention oracle marker missing or failed`
+in both replay tests. The replacement is a strict-gate boot at the merged
+head (`BUILD_ID 006a9c732f0d64`), carrying
+`[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=93:armed=1:acquired=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=8107:hold_safety=0:hold_done=1:joined=1:PASS]`
+alongside an `IRQ_HOLD_ORACLE` PASS line, the all-zero
+`PINNED_HOME_CPU_UNAVAILABLE` census, and 18851 `TTBR0_ASID_CENSUS` tagged
+entries all reading `untagged=0`; both replay tests pass again
+(`both_aarch64_gates_fail_on_a_pinned_placement_refusal`,
+`both_aarch64_gates_fail_on_an_untagged_publish`). Checked against the built
+kernel's own `strings` output (the `arm_wait_us=` format string) before
+adopting it, and taken with the host's aarch64 QEMU count read as 0
+immediately before launch (`docker/qemu/run-aarch64-boot-test-strict.sh`
+itself now honors `BREENIX_GATE_TMP` for its output directory, so this
+capture did not need the discard-and-retake step the paragraph above
+required).
+
 | file | what it is |
 |---|---|
-| `01-strict-boot1-serial.txt` | re-recorded during `#812` landing: a strict-gate boot at merged head `9ff5c392` (`BUILD_ID 006a9c528e2cdf`), carrying the `IRQ_HOLD_ORACLE` PASS line the merged scorer now requires |
+| `01-strict-boot1-serial.txt` | re-recorded twice: during `#812` landing (a strict-gate boot at merged head `9ff5c392`, `BUILD_ID 006a9c528e2cdf`, adding the `IRQ_HOLD_ORACLE` PASS line), then during `#819` landing (a strict-gate boot at the `ld-fcntl-arm` merged head, `BUILD_ID 006a9c732f0d64`, updating the `FCNTL_PM_CONTENTION_ORACLE` line to the rendezvous marker shape) |
 | `01-strict-x3.txt` | PR #824's strict gate, 3 iterations, at its own shipping head: `PASS: 3/3 boots succeeded` |
 | `02-prod-boot1-serial.txt` | PR #824's original production-gate boot serial; unchanged — still scores `PASS` against the merged head's production scorer |
 | `02-prod-boot1.txt` | PR #824's production-gate run 1 of 3 at its own shipping head |
