@@ -16,6 +16,13 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # active on this host for the boot's duration.
 # shellcheck source=lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+# #827: per-boot host-side facts (wall-clock window, host QEMU count and
+# load average at start/kill, QEMU's own CPU time, the guest's last
+# heartbeat, and which bound ended the boot) -- the same shape the strict
+# gate now records, so a boot that ran out of its host-side wall-clock
+# budget and a boot that genuinely wedged score identically no longer.
+# shellcheck source=lib/gate-boot-facts.sh
+source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same
 # host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
@@ -241,6 +248,59 @@ cleanup() {
     qemu_host_lock_release
     _qhl_verdict_banner
 
+    # #827: only when this run actually reached the launch line above --
+    # PROD_HOST_MS_END is unset on a path that aborted before boot (a
+    # kernel-build failure, a missing ext2 disk), where there is no boot to
+    # report facts about, and it stays unset by construction if `set -e`
+    # aborted from inside the poll loop's own body before this function's
+    # own post-loop sampling ran.
+    local facts_line=""
+    if [ -n "${PROD_HOST_MS_END:-}" ]; then
+        local guest_uptime_ms ended_by
+        guest_uptime_ms="$(gbf_last_heartbeat_uptime_ms "$SERIAL_FILE")"
+        # ended_by, from the same control flow the assertion chain above
+        # already ran -- no new stop condition, no changed deadline:
+        #   crash_marker   -- the crash-marker break fired
+        #   scored_pass    -- the bsshd break fired, and the full assertion
+        #                     chain (unchanged, above) still exits 0
+        #   scored_fail    -- the bsshd break fired, but a later assertion in
+        #                     that chain rejected the boot anyway (status=1)
+        #   hard_timeout   -- QEMU exited on its own before either of the
+        #                     above matched -- the wrapping `timeout 120`
+        #                     firing is the only thing that does this
+        #   poll_exhausted -- neither break fired; the loop's own 120
+        #                     iterations ran out with QEMU still alive
+        #                     (this script's own kill ends it)
+        case "${PROD_ENDED_BY_LOOP:-}" in
+            crash)
+                ended_by="crash_marker"
+                ;;
+            early_pass)
+                if [ "$status" -eq 0 ]; then
+                    ended_by="scored_pass"
+                else
+                    ended_by="scored_fail"
+                fi
+                ;;
+            *)
+                if [ "${PROD_QEMU_STILL_ALIVE:-1}" = "1" ]; then
+                    ended_by="poll_exhausted"
+                else
+                    ended_by="hard_timeout"
+                fi
+                ;;
+        esac
+        facts_line="$(gbf_emit_line 1 "$PROD_HOST_MS_START" "$PROD_HOST_MS_END" \
+            "$PROD_QEMU_AT_START" "$PROD_LOAD_AT_START" \
+            "$PROD_QEMU_AT_END" "$PROD_LOAD_AT_END" \
+            "$PROD_QEMU_CPU_S" "$guest_uptime_ms" "$ended_by")"
+        # Recorded into this boot's own evidence directory unconditionally --
+        # not only on failure, so a passing boot's host-side reading is on
+        # the record too.
+        printf '%s\n' "$facts_line" > "$OUTPUT_DIR/gate_boot_facts.txt" 2>/dev/null || true
+        echo "$facts_line"
+    fi
+
     if [ "$status" -ne 0 ]; then
         timestamp=$(date -u +%Y%m%dT%H%M%SZ)
         failure_dir="$BREENIX_GATE_TMP/breenix_prod_profile_failures/$timestamp"
@@ -254,6 +314,9 @@ cleanup() {
             cp "$SERIAL_FILE" "$failure_dir/serial.txt"
         else
             : > "$failure_dir/serial.txt"
+        fi
+        if [ -n "$facts_line" ]; then
+            printf '%s\n' "$facts_line" > "$failure_dir/gate_boot_facts.txt"
         fi
         echo "Preserved failing serial: $failure_dir/serial.txt"
         print_observed_values "$failure_dir/serial.txt"
@@ -318,6 +381,13 @@ cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
 echo "Booting the ARM64 production profile..."
 qemu_host_lock_acquire
+# #827: "start" is sampled here, right after the lock is held and right
+# before QEMU is launched -- see gate-boot-facts.sh's own header for why.
+# These are plain (non-local) assignments: cleanup(), which reads them, is
+# a separate top-level function, not a nested scope of this block.
+PROD_HOST_MS_START="$(gbf_host_ms_now)"
+PROD_QEMU_AT_START="$(qemu_host_lock_count)"
+PROD_LOAD_AT_START="$(gbf_load_1m)"
 timeout 120 qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
@@ -348,6 +418,39 @@ while [ "$POLL" -lt 120 ]; do
     POLL=$((POLL + 1))
     sleep 1
 done
+
+# #827: reclassifies which of the loop's own guarded breaks explains why
+# polling stopped, using the SAME two content checks the loop above uses
+# (bsshd reached, a crash pattern present), evaluated once more against
+# the file's state right as the loop exits. This is not a new stop
+# condition -- the loop body above is unchanged -- it is a read taken
+# immediately after the loop already stopped. "early_pass" is this gate's
+# own primary target (bsshd reached) but NOT the full verdict, since the
+# assertion chain below still has to run; left empty when neither content
+# check is true, which covers both "QEMU exited on its own" (the loop's
+# own kill -0 break) and "the loop ran out its 120 iterations" -- the
+# QEMU-aliveness check just below tells those two apart the same way the
+# strict gate's poll_exhausted/hard_timeout split does.
+PROD_ENDED_BY_LOOP=""
+if [ -f "$SERIAL_FILE" ] && grep -F -q "$BSSHD_LITERAL" "$SERIAL_FILE" 2>/dev/null; then
+    PROD_ENDED_BY_LOOP="early_pass"
+elif [ -f "$SERIAL_FILE" ] && grep -qiE "$CRASH_MARKERS_PATTERN" "$SERIAL_FILE" 2>/dev/null; then
+    PROD_ENDED_BY_LOOP="crash"
+fi
+
+# #827: sampled together, immediately before this boot's own kill -- ps
+# has no output for a PID already gone, so qemu_cpu_seconds and the
+# aliveness check below must both run before the kill line, not after.
+PROD_HOST_MS_END="$(gbf_host_ms_now)"
+PROD_QEMU_AT_END="$(qemu_host_lock_count)"
+PROD_LOAD_AT_END="$(gbf_load_1m)"
+# #827: $QEMU_PID is `timeout`'s own pid (see gate-boot-facts.sh's own
+# header for why); resolve to the actual qemu-system-aarch64 child
+# before reading its CPU time.
+PROD_QEMU_ACTUAL_PID="$(gbf_resolve_qemu_pid "$QEMU_PID")"
+PROD_QEMU_CPU_S="$(gbf_qemu_cpu_seconds "$PROD_QEMU_ACTUAL_PID")"
+PROD_QEMU_STILL_ALIVE=1
+kill -0 "$QEMU_PID" 2>/dev/null || PROD_QEMU_STILL_ALIVE=0
 
 kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
