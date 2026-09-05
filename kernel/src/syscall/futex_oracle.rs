@@ -40,7 +40,6 @@ pub const PROBE_ACK: u64 = 0x4655_5850;
 static STAGE1_TG_ID: AtomicU64 = AtomicU64::new(0);
 static STAGE1_UADDR: AtomicU64 = AtomicU64::new(0);
 static STAGE1_ARM_NS: AtomicU64 = AtomicU64::new(0);
-static STAGE1_ARM_DELAY_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE1_WAKE: AtomicU64 = AtomicU64::new(0);
 static STAGE1_PARKED: AtomicU64 = AtomicU64::new(0);
 static STAGE1_ENQUEUED: AtomicU64 = AtomicU64::new(0);
@@ -51,7 +50,6 @@ static STAGE1_ELAPSED_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE2_TG_ID: AtomicU64 = AtomicU64::new(0);
 static STAGE2_UADDR: AtomicU64 = AtomicU64::new(0);
 static STAGE2_ARM_NS: AtomicU64 = AtomicU64::new(0);
-static STAGE2_ARM_DELAY_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE2_WAKE: AtomicU64 = AtomicU64::new(0);
 static STAGE2_PARKED: AtomicU64 = AtomicU64::new(0);
 static STAGE2_ENQUEUED: AtomicU64 = AtomicU64::new(0);
@@ -109,8 +107,12 @@ pub fn is_report(val3: u32) -> bool {
 /// after this function's caller had already spent a few ms resolving the
 /// current thread's process-manager entry. `base_ns <= ` the internal read
 /// below by construction, so `elapsed_since_arm` can no longer read short.
-/// The gap between the two reads is stored as this stage's `arm_delay_ns`
-/// purely for visibility -- it does not feed the elapsed calculation.
+/// The gap between the two reads is stored as `STAGE3_ARM_DELAY_NS` and
+/// surfaced in `report()` as `arm_delay_us`, purely for visibility -- it
+/// does not feed the elapsed calculation. Only stage 3 carries this field:
+/// R180 scopes the anchor fix to stage 3, the only stage `report()` gates
+/// on (`stage3_elapsed_ok`), so stage 1 and stage 2 have no equivalent gap
+/// to keep visible.
 pub fn record_arm(stage: Stage, tg_id: u64, uaddr: u64, base_ns: u64) -> u64 {
     let started_at = now_ns();
     let arm_delay_ns = started_at.saturating_sub(base_ns);
@@ -119,13 +121,11 @@ pub fn record_arm(stage: Stage, tg_id: u64, uaddr: u64, base_ns: u64) -> u64 {
             STAGE1_TG_ID.store(tg_id, Ordering::Release);
             STAGE1_UADDR.store(uaddr, Ordering::Release);
             STAGE1_ARM_NS.store(base_ns, Ordering::Release);
-            STAGE1_ARM_DELAY_NS.store(arm_delay_ns, Ordering::Release);
         }
         Stage::S2 => {
             STAGE2_TG_ID.store(tg_id, Ordering::Release);
             STAGE2_UADDR.store(uaddr, Ordering::Release);
             STAGE2_ARM_NS.store(base_ns, Ordering::Release);
-            STAGE2_ARM_DELAY_NS.store(arm_delay_ns, Ordering::Release);
         }
         Stage::S3 => {
             STAGE3_TG_ID.store(tg_id, Ordering::Release);
