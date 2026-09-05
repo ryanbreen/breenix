@@ -1,0 +1,12 @@
+# Strict-gate scoring runs of the two captured serials, re-run against the
+# committed copies. Captured 2026-09-05 on branch fix/812-try-manager-masked.
+
+== 01-red-unrepaired-serial.txt (kernel WITHOUT the try_manager mask, oracle present)
+[IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=0:sends=1:hold_us=0:netrx_pending_at_release=0:received=0:stalled=1:hold_done=0:joined=0:FAIL]
+$ BREENIX_STRICT_SCORE_ONLY=docs/planning/green-program/irq-locks/serials/812/01-red-unrepaired-serial.txt docker/qemu/run-aarch64-boot-test-strict.sh   -> exit 1
+SCORE: FAIL - Userspace not detected (docs/planning/green-program/irq-locks/serials/812/01-red-unrepaired-serial.txt)
+
+== 02-green-repaired-serial.txt (kernel WITH the try_manager mask)
+[IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12028:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:PASS]
+$ BREENIX_STRICT_SCORE_ONLY=docs/planning/green-program/irq-locks/serials/812/02-green-repaired-serial.txt docker/qemu/run-aarch64-boot-test-strict.sh   -> exit 0
+SCORE: PASS - docs/planning/green-program/irq-locks/serials/812/02-green-repaired-serial.txt

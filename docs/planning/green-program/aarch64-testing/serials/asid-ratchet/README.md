@@ -5,16 +5,16 @@ The 33 captured artifacts behind
 Files 01–07 are from the round as first written; 08–13 are from the R157 review
 round that closed five findings against it; 14–17 are the landing re-smoke,
 taken at the merge commit that carries this branch onto `main`.
-`03-strict-boot1-serial.txt` was re-recorded in place during the #796 landing
-(see `docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md`'s
-"Landing" section): `tests/ttbr0_shadow_reconciliation_structure.rs` replays it
-through `docker/qemu/run-aarch64-boot-test-strict.sh`'s scoring-only mode, and
-#796 added a required `FCNTL_PM_CONTENTION_ORACLE` line to that scorer after
-this file was first captured, so the original content scored `FAIL`. The
-replacement is a single strict-gate boot of the #796 merge commit `ae9b2cd9`
-(BUILD_ID `006a9c04ac0a15`); `03-strict-boot2-serial.txt` and
-`03-strict-boot3-serial.txt` are untouched originals from the round as first
-written and are not replayed by any test.
+`03-strict-boot1-serial.txt` has been re-recorded in place twice, for the same
+structural reason both times: `tests/ttbr0_shadow_reconciliation_structure.rs`
+replays it through `docker/qemu/run-aarch64-boot-test-strict.sh`'s scoring-only
+mode, so a scorer that grows a new required marker makes the older content
+score `FAIL`. First during the #796 landing, which added a required
+`FCNTL_PM_CONTENTION_ORACLE` line; then during #812, which added a required
+`IRQ_HOLD_ORACLE` line. The current content is a single strict-gate boot on
+`fix/812-try-manager-masked` (BUILD_ID `006a9c3ace0dfa`), carrying both.
+`03-strict-boot2-serial.txt` and `03-strict-boot3-serial.txt` are untouched
+originals from the round as first written and are not replayed by any test.
 claim-lint:ok: 33 of 33 files beside this README are covered by the 25 rows
 below; 3 rows use brace notation for the boots they cover.
 
@@ -24,7 +24,7 @@ below; 3 rows use brace notation for the boots they cover.
 | `02-runtime-anti-vacuity-prod-gate.txt` | the production gate run against a kernel built from that same revert: exit 1 on a non-0 `untagged` |
 | `02-runtime-anti-vacuity-prod-serial.txt` | that boot's serial, where the census climbs to `untagged=14` |
 | `03-strict-x3.txt` | the strict gate, 3 iterations, at the shipping head |
-| `03-strict-boot1-serial.txt` | re-recorded during #796 landing: a single strict-gate boot of merge commit `ae9b2cd9` (BUILD_ID `006a9c04ac0a15`), carrying `[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=8082:hold_done=1:joined=1:PASS]`; the strict scorer accepts it (`SCORE: PASS`) |
+| `03-strict-boot1-serial.txt` | re-recorded during #812: a single strict-gate boot on `fix/812-try-manager-masked` (BUILD_ID `006a9c3ace0dfa`), carrying both `[FCNTL_PM_CONTENTION_ORACLE:aarch64:...:PASS]` and `[IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=2:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12030:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:PASS]`; the strict scorer accepts it (`SCORE: PASS`) |
 | `03-strict-boot{2,3}-serial.txt` | untouched originals from the round as first written, not replayed by any test |
 | `04-prod-boot{1,2,3}.txt` | 3 production-gate runs at the shipping head |
 | `04-prod-boot{1,2,3}-serial.txt` | those 3 boots' serials |

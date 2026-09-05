@@ -77,16 +77,47 @@ pub struct ProcessManagerGuard {
 }
 
 /// Non-blocking process-manager guard with the same owner instrumentation as
-/// `manager()`, but without changing interrupt state.
+/// `manager()`, and the same local-interrupt masking: the two acquisition modes
+/// differ only in whether they block (#812).
+///
+/// The saved state is the interrupt-enable state the acquisition found, and it
+/// is restored only after the mutex has been released, so the lock is out of
+/// this CPU's hands before an interrupt can be taken on it again.
 pub struct TryProcessManagerGuard {
     guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<ProcessManager>>>,
+    /// Saved DAIF register value (ARM64 only) - restored on drop.
+    #[cfg(target_arch = "aarch64")]
+    saved_daif: u64,
+    /// Saved RFLAGS.IF state (x86_64 only) - restored on drop.
+    #[cfg(target_arch = "x86_64")]
+    interrupts_were_enabled: bool,
 }
 
 impl Drop for TryProcessManagerGuard {
     fn drop(&mut self) {
         note_process_manager_lock_released();
+
+        // Same ordering rule as ProcessManagerGuard::drop: release the lock
+        // BEFORE restoring interrupts. Restoring first would re-open exactly
+        // the window this guard exists to close.
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self.guard);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!(
+                "msr daif, {}",
+                in(reg) self.saved_daif,
+                options(nomem, nostack)
+            );
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if self.interrupts_were_enabled {
+            unsafe {
+                crate::arch_enable_interrupts();
+            }
         }
     }
 }
@@ -311,13 +342,62 @@ where
     })
 }
 
-/// Try to get the process manager without blocking (for interrupt contexts)
+/// Try to get the process manager without blocking (for interrupt contexts).
+///
+/// The acquisition masks local interrupts first and the guard restores the
+/// saved state after the release, so a holder cannot be interrupted on its own
+/// CPU while it owns the lock. A failed `try_lock` restores immediately and
+/// leaves interrupt state exactly as it found it.
+///
+/// #812: without the mask, a thread-context holder here could take an IRQ whose
+/// exit path runs the NetRx softirq on the same CPU, and that softirq acquires
+/// PROCESS_MANAGER through the blocking `with_process_manager`. `spin::Mutex`
+/// is not reentrant, so the CPU waits on a lock it already owns. The mask makes
+/// this accessor differ from `manager()` only in whether it blocks.
 pub fn try_manager() -> Option<TryProcessManagerGuard> {
-    let guard = PROCESS_MANAGER.try_lock()?;
-    note_process_manager_lock_acquired();
-    Some(TryProcessManagerGuard {
-        guard: core::mem::ManuallyDrop::new(guard),
-    })
+    #[cfg(target_arch = "aarch64")]
+    {
+        let saved_daif: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+        }
+        let Some(guard) = PROCESS_MANAGER.try_lock() else {
+            unsafe {
+                core::arch::asm!(
+                    "msr daif, {}",
+                    in(reg) saved_daif,
+                    options(nomem, nostack)
+                );
+            }
+            return None;
+        };
+        note_process_manager_lock_acquired();
+        Some(TryProcessManagerGuard {
+            guard: core::mem::ManuallyDrop::new(guard),
+            saved_daif,
+        })
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let interrupts_were_enabled = crate::arch_interrupts_enabled();
+        unsafe {
+            crate::arch_disable_interrupts();
+        }
+        let Some(guard) = PROCESS_MANAGER.try_lock() else {
+            if interrupts_were_enabled {
+                unsafe {
+                    crate::arch_enable_interrupts();
+                }
+            }
+            return None;
+        };
+        note_process_manager_lock_acquired();
+        Some(TryProcessManagerGuard {
+            guard: core::mem::ManuallyDrop::new(guard),
+            interrupts_were_enabled,
+        })
+    }
 }
 
 /// Per-process info for lockup diagnostics (small, stack-allocated).
