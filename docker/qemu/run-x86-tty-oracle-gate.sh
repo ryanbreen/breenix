@@ -55,11 +55,12 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # claim-lint:ok: #797, diff-empty against origin/main except one line
 # (BUILD_LOG) that only gained quotes -- see
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+#
+# The absolute-path VALUE is not judged here -- that check is spent in the
+# BASE-DIR PREFLIGHT block right after the ERR trap is installed below
+# (#802/#805 idiom, widened to this gate: a bare `exit` here would run before
+# the trap exists and could end the gate with no verdict line at all).
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
-case "$BREENIX_GATE_TMP" in
-    /*) ;;
-    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
-esac
 OUTPUT_ROOT="$BREENIX_GATE_TMP/breenix_x86_tty_oracle"
 BOOTS=1
 REBUILD_USERSPACE=false
@@ -137,18 +138,34 @@ report_gate_failure() {
 }
 trap report_gate_failure ERR
 
+# --- BASE-DIR PREFLIGHT (#797 F6, routed through the verdict path by the
+# #802/#805 idiom widened to this gate) ---
+#
+# This is the check on the operator-controlled BREENIX_GATE_TMP, and it runs
+# HERE -- immediately after the ERR trap is installed, as the first command
+# to run under it -- rather than beside the assignment that derives its
+# subject. A bare `exit` there, before the trap exists, can end the gate with
+# no verdict line at all. Failing here instead spends the rejection through
+# report_gate_failure: the gate's own "x86 TTY oracle gate: FAIL (...)" line
+# prints, names the failing command, and re-raises the nonzero status.
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "x86 TTY oracle gate preflight: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2
+       false ;;
+esac
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --boots) BOOTS="$2"; shift 2 ;;
         --rebuild-userspace) REBUILD_USERSPACE=true; shift ;;
-        *) echo "FAIL: unknown argument: $1"; exit 1 ;;
+        *) echo "FAIL: unknown argument: $1"; false ;;
     esac
 done
 
 case "$BOOTS" in
-    ''|*[!0-9]*) echo "FAIL: --boots must be a positive integer"; exit 1 ;;
+    ''|*[!0-9]*) echo "FAIL: --boots must be a positive integer"; false ;;
 esac
-[ "$BOOTS" -ge 1 ] || { echo "FAIL: --boots must be at least 1"; exit 1; }
+[ "$BOOTS" -ge 1 ] || { echo "FAIL: --boots must be at least 1"; false; }
 
 # AF_UNIX sun_path is 108 bytes on Linux including the terminating NUL, so a
 # console-socket path over 107 characters cannot be bound (review finding F7
@@ -160,7 +177,7 @@ esac
 WIDEST_CONSOLE_SOCK_PATH="$OUTPUT_ROOT/boot_$BOOTS/console.sock"
 if [ "${#WIDEST_CONSOLE_SOCK_PATH}" -gt 107 ]; then
     echo "FAIL: console socket path exceeds the AF_UNIX sun_path limit of 107 chars: \"$WIDEST_CONSOLE_SOCK_PATH\" is ${#WIDEST_CONSOLE_SOCK_PATH} chars -- shorten BREENIX_GATE_TMP"
-    exit 1
+    false
 fi
 
 # Single-argument form, scoped to the current boot's run dir (matches
@@ -206,7 +223,7 @@ fi
 if [ ! -f "$EXT2_IMG" ]; then
     echo "FAIL: ext2 disk not found at $EXT2_IMG"
     echo "Re-run with --rebuild-userspace to build userspace and create it."
-    exit 1
+    false
 fi
 
 rm -rf "$OUTPUT_ROOT"
@@ -267,14 +284,14 @@ while [ "$boot" -le "$BOOTS" ]; do
     if [ "$CRASH_COUNT" -ne 0 ]; then
         echo "FAIL: boot $boot crashed - $CRASH_COUNT crash marker(s)"
         grep -aiE "$CRASH_MARKERS_PATTERN" "$RUN_DIR"/serial_*.txt | head -5
-        exit 1
+        false
     fi
 
     # --- The leg must have run at all. ---
     if [ "$(marker_count "$ANY_COMPLETE_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot produced no [TTY_ORACLE:COMPLETE:] marker - the leg never ran"
         echo "  (a boot that does not drive the TTY surface cannot satisfy this gate)"
-        exit 1
+        false
     fi
 
     # --- No arm may report a failure. ---
@@ -282,7 +299,7 @@ while [ "$boot" -le "$BOOTS" ]; do
     if [ "$ARM_FAIL_COUNT" -ne 0 ]; then
         echo "FAIL: boot $boot - $ARM_FAIL_COUNT TTY arm failure(s)"
         grep -aF "$ARM_FAIL_LITERAL" "$RUN_DIR"/serial_*.txt | sort -u
-        exit 1
+        false
     fi
 
     # --- Every expected arm must have reported PASS. ---
@@ -290,7 +307,7 @@ while [ "$boot" -le "$BOOTS" ]; do
         if [ "$(marker_count "[TTY_ORACLE:${arm}:verdict=PASS")" -eq 0 ]; then
             echo "FAIL: boot $boot - arm '${arm}' produced no PASS verdict"
             grep -aF '[TTY_ORACLE:' "$RUN_DIR"/serial_*.txt | sort -u
-            exit 1
+            false
         fi
     done
 
@@ -298,7 +315,7 @@ while [ "$boot" -le "$BOOTS" ]; do
     if [ "$(marker_count "$COMPLETE_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot - missing '$COMPLETE_LITERAL'"
         grep -aF "$ANY_COMPLETE_LITERAL" "$RUN_DIR"/serial_*.txt | sort -u
-        exit 1
+        false
     fi
 
     # --- init must have reaped the child with status 0, via a genuine
@@ -306,28 +323,28 @@ while [ "$boot" -le "$BOOTS" ]; do
     if [ "$(marker_count "$INIT_REAP_FAILED_LITERAL")" -ne 0 ]; then
         echo "FAIL: boot $boot - init's waitpid() on tty_oracle failed"
         grep -aF "$INIT_REAP_FAILED_LITERAL" "$RUN_DIR"/serial_*.txt | head -2
-        exit 1
+        false
     fi
     if [ "$(marker_count "$INIT_EXIT_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot - init never recorded the tty_oracle child exiting"
-        exit 1
+        false
     fi
     if [ "$(grep -aE -h -c '\[init\] tty_oracle exited pid=[0-9]+ code=0' "$RUN_DIR"/serial_*.txt 2>/dev/null | awk '{ total += $1 } END { print total + 0 }')" -eq 0 ]; then
         echo "FAIL: boot $boot - tty_oracle exited nonzero"
         grep -aF "$INIT_EXIT_LITERAL" "$RUN_DIR"/serial_*.txt | head -2
-        exit 1
+        false
     fi
 
     # --- The shipped profile must carry no boot_tests-only output. ---
     if [ "$(marker_count "$BOOT_TESTS_LITERAL")" -ne 0 ]; then
         echo "FAIL: boot $boot - boot_tests-only markers present in the production profile"
-        exit 1
+        false
     fi
 
     # --- Liveness AFTER the leg: the kernel is still usable. ---
     if [ "$(marker_count "$BSSHD_LITERAL")" -eq 0 ]; then
         echo "FAIL: boot $boot - kernel did not reach bsshd after the TTY leg"
-        exit 1
+        false
     fi
 
     echo "  boot $boot: $EXPECTED_ARM_COUNT/$EXPECTED_ARM_COUNT arms PASS, kernel live (bsshd reached)"

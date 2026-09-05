@@ -1,0 +1,10 @@
+host: beast, breenix-x86 Incus container, clone /root/breenix-verdict
+sha: 8c87639a7069300c6498931d325a3cf0dad96f5b (this branch's merge commit, gates/verdict-discipline-widened)
+note: landing re-smoke (STEP 2), simulated preflight failure (relative
+BREENIX_GATE_TMP).
+
+$ env BREENIX_GATE_TMP=relative-not-absolute ./docker/qemu/run-x86-boot-tests.sh 1
+x86 frame-custody gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
+x86 frame-custody gate: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:93, exit 1)
+  failing command: false
+exit 1

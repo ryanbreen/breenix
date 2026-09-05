@@ -1,0 +1,7 @@
+host: beast, container breenix-x86, clone /root/breenix-verdict @ 5a5c1ce4
+command: env BREENIX_GATE_TMP=relative-not-absolute /root/breenix-verdict/docker/qemu/run-x86-boot-tests.sh
+exit status: 1
+
+x86 frame-custody gate: FAIL (set -e abort at /root/breenix-verdict/docker/qemu/run-x86-boot-tests.sh:93, exit 1)
+  failing command: false
+x86 frame-custody gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute

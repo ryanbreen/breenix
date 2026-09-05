@@ -1,0 +1,10 @@
+host: this Mac (arm64), worktree /Users/wrb/fun/code/breenix/.claude/worktrees/wf_34c09a15-6e8-5
+command: docker/qemu/run-aarch64-tty-oracle-gate.sh --nonsense-flag
+exit status: 1
+re-captured: review round 1 (F3) -- byte-identical to the original capture;
+added for provenance only, per F3's finding that the aarch64 preflight-fail
+serials carried no host/SHA header while the x86 pair already did.
+
+FAIL: unknown argument: --nonsense-flag
+aarch64 TTY oracle gate: FAIL (set -e abort at docker/qemu/run-aarch64-tty-oracle-gate.sh:101, exit 1)
+  failing command: false
