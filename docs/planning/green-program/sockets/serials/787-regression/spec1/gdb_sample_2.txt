@@ -1,0 +1,66 @@
+The target architecture is set to "i386:x86-64".
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000100002cd482 in ?? ()
+add symbol table from file "/root/breenix-787/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961" at
+	.text_addr = 0x100000be6e0
+	.rodata_addr = 0x1000007dc78
+	.data_addr = 0x10000421e00
+	.bss_addr = 0x10000457500
+rip            0x100002cd482       0x100002cd482 <core::sync::atomic::spin_loop_hint+2>
+rsp            0xffffc900000fcb58  0xffffc900000fcb58
+eflags         0x2                 [ IOPL=0 ]
+cs             0x8                 8
+core::sync::atomic::spin_loop_hint + 2 in section .text
+
+===== stack walk (text-looking words) =====
+  [  0] 0x00000100003485ba -> kernel::memory::kernel_page_table::master_kernel_pml4 + 122 in section .text
+  [  3] 0x000001000044d188 -> kernel::gdt::GDT in section .data
+  [  6] 0x0000010000359e15 -> kernel::memory::process_memory::switch_to_kernel_page_table + 21 in section .text
+  [ 22] 0x0000010000336ec0 -> conquer_once::cell::OnceCell<T,B>::try_get + 144 in section .text
+  [ 23] 0x000001000044d188 -> kernel::gdt::GDT in section .data
+  [ 28] 0x0000010000336ada -> conquer_once::cell::OnceCell<T,B>::get + 26 in section .text
+  [ 32] 0x000001000013a86b -> volatile::Volatile<R,A>::write + 91 in section .text
+  [ 35] 0x000001000023c862 -> x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text
+  [ 40] 0x000001000013aa63 -> volatile::Volatile<R,A>::update + 115 in section .text
+  [ 44] 0x000001000023c862 -> x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text
+  [ 49] 0x000001000023c862 -> x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text
+  [ 54] 0x00000100000f458a -> kernel::interrupts::context_switch::setup_kernel_thread_return + 474 in section .text
+  [ 78] 0x000001000023c862 -> x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text
+  [101] 0x000001000023c862 -> x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text
+  [109] 0x000001000039bf40 -> core::ptr::drop_in_place<spin::mutex::spin::SpinMutexGuard<core::option::Option<kernel::task::scheduler::Scheduler>>> in section .text
+  [110] 0x000001000039bb6a -> core::ptr::drop_in_place<spin::mutex::MutexGuard<core::option::Option<kernel::task::scheduler::Scheduler>>> + 10 in section .text
+  [111] 0x000001000039bb60 -> core::ptr::drop_in_place<spin::mutex::MutexGuard<core::option::Option<kernel::task::scheduler::Scheduler>>> in section .text
+  [112] 0x00000100002b5327 -> kernel::task::scheduler::with_thread_mut::{{closure}} + 391 in section .text
+  [114] 0x000001000036cb0a -> x86_64::registers::rflags::_::InternalBitFlags::from_bits_truncate + 10 in section .text
+  [117] 0x0000010000448d00 -> kernel::task::scheduler::SCHEDULER in section .data
+  [124] 0x00000100003a7d0d -> <core::str::iter::Bytes as core::iter::traits::iterator::Iterator>::next + 13 in section .text
+  [126] 0x00000100002880a2 -> x86_64::instructions::port::PortGeneric<T,A>::write + 18 in section .text
+  [128] 0x00000100000f1584 -> kernel::interrupts::context_switch::switch_to_thread + 2068 in section .text
+  [137] 0x0000010000139d7d -> <core::option::Option<T> as core::ops::try_trait::Try>::branch + 93 in section .text
+  [153] 0x000001000044d060 -> kernel::memory::slab::SIGNAL_HANDLERS_SLAB in section .data
+  [157] 0x000001000042212a -> kernel::interrupts::PICS + 2 in section .data
+
+===== per-CPU current thread =====
+  current_thread_ptr = 0x444444600d38
+   thread+0x00 = 0x0000000000000001
+   thread+0x08 = 0xffffc90000285000
+   thread+0x10 = 0x0000000000000000
+   thread+0x18 = 0x000001000040ab30
+   thread+0x20 = 0x0000000000000001
+   thread+0x28 = 0x0000000000000001
+   thread+0x30 = 0x0000000000000000
+   thread+0x38 = 0x0000000000000008
+
+===== key statics =====
+  kernel::memory::kernel_page_table::MASTER_KERNEL_PML4 @0x100004b3db8 = 0x0000000000000001 0x0000000000000001
+  kernel::task::scheduler::SCHEDULER @0x10000448d00 = 0x0000000000000000 0x0000000000000001
+  kernel::task::dispatch_strand_census::OVERFLOW_EVENTS @0x100004b9088 = 0x0000000000000000 0x000000190c13a121
+  kernel::task::dispatch_strand_census::SNAPSHOT_SEQ @0x100004b9098 = 0x0000000000000045 0x0000000000000000
+  kernel::task::dispatch_strand_census::LAST_HEARTBEAT_NS @0x100004b9090 = 0x000000190c13a121 0x0000000000000045
+
+===== interrupt-frame scan (cs==0x8 candidates) =====
+  frame@+0x118: rip=0x1000023c862 (x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text) rflags=0x284 rsp=0xffffc90000284ef0
+  frame@+0x160: rip=0x1000023c862 (x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text) rflags=0x284 rsp=0xffffc90000284ef0
+  frame@+0x188: rip=0x1000023c862 (x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text) rflags=0x284 rsp=0xffffc90000284ef0
+[Inferior 1 (process 1) detached]

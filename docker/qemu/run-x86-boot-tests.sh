@@ -352,6 +352,17 @@ readonly EXPECTED_USERSPACE_EXITS=105
 
 cd "$BREENIX_ROOT"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
+
+# Binary-level guard for #791: the kernel-thread dispatch path must not allocate.
+# tests/dispatch_path_lock_free_structure.rs checks the same property at source
+# level, but only as a denylist of spellings it knows; this reads the kernel that
+# is about to boot. It is placed here, immediately after the build that produces
+# that ELF, because this is the only gate step that has the linked kernel in
+# hand. It fails the gate rather than warning: an allocation on that path is the
+# defect that wedged this very gate inside x86_retire_cohort.
+# claim-lint:ok: the guard is scripts/check-x86-dispatch-no-alloc.sh; its
+# anti-vacuity arm fails when the symbol is absent.
+./scripts/check-x86-dispatch-no-alloc.sh
 BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release \
     --features boot_tests,testing,external_test_bins --bin qemu-uefi >/dev/null
 # create-test-disk packs userspace/programs/*.elf without rebuilding them, so

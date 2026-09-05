@@ -1,0 +1,4 @@
+90d96d3e1266a70b30dc49c80d5af726740643b3f9a140ac4f1a3ae01daf7d6e  target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img
+c2920c6164d4d3aab363236d346c5abcc26d2d5f5802fe9ff6fa76e54df10512  target/x86_64-unknown-none/release/deps/artifact/kernel-3203cc2874472470/bin/kernel-3203cc2874472470
+-rw-r--r-- 1 root root 7405568 Sep  5 03:12 target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img
+-rwxr-xr-x 1 root root 5077984 Sep  5 03:12 target/x86_64-unknown-none/release/deps/artifact/kernel-3203cc2874472470/bin/kernel-3203cc2874472470

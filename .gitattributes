@@ -38,3 +38,8 @@ docs/planning/green-program/nic-bus/serials/737-df-fix-2026-09-04/*.log -text
 # bytes, so a CRLF normalisation would both edit preserved evidence and
 # invalidate the record that cites it.
 docs/planning/green-program/nic-bus/serials/737-r157-2026-09-04/*.txt -text
+# #791 regression serials: raw x86 console captures from the beast container,
+# plus the GDB dumps and objdump listing taken against them. Kept byte-exact for
+# the same reason as the 693/775 captures above -- the CR bytes the guest console
+# emits are part of the evidence, and a CRLF normalisation would edit it.
+docs/planning/green-program/sockets/serials/787-regression/** -text

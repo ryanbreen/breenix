@@ -1,0 +1,8 @@
+5ee69537331c58a752f7937ad26205179332291562a50de06a54b77c62f39393  target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img
+6579875158ae1058b0abcb44b6211342e66f04147e1b1afb4afcee67fd5ba3df  target/test_binaries.img
+91dba7c9d5b594bdc0c2035be2e7a14cdb51d1c6b119348c7c832a4d926d9c99  target/ext2.img
+bd255118bd5948d4451a6405c6ad1dff8a025960f5345b18c2a47617e8708e50  target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
+-rw-r--r-- 1 root root 268435456 Sep  5 03:04 target/ext2.img
+-rw-r--r-- 1 root root   7405568 Sep  5 03:04 target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img
+-rw-r--r-- 1 root root  30815232 Sep  5 03:04 target/test_binaries.img
+-rwxr-xr-x 1 root root   5952096 Sep  5 03:04 target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
