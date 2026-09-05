@@ -116,12 +116,21 @@ fn scripts_asserting_oracle_fail() -> Vec<PathBuf> {
 /// Each member of `scripts` that does NOT also carry the kernel's
 /// READY_LOST marker -- i.e. this call's own `comm -23` result, computed
 /// in-process rather than shelled out.
+///
+/// R157: this reader used `read_to_string(...).unwrap_or_else(panic!)`,
+/// which panicked on any non-UTF8 file reaching this filter (e.g. a stray
+/// `scripts/__pycache__/*.pyc` left by `python3 scripts/claim-lint.py`). A
+/// gate script is text by construction, so a file that fails to decode as
+/// UTF-8 is not a member of this census and is skipped rather than fatal.
 fn missing_ready_lost_wiring(scripts: &[PathBuf]) -> Vec<PathBuf> {
     scripts
         .iter()
         .filter(|path| {
-            let text = fs::read_to_string(path)
-                .unwrap_or_else(|_| panic!("read script {}", path.display()));
+            let bytes =
+                fs::read(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+            let Ok(text) = String::from_utf8(bytes) else {
+                return false;
+            };
             !text.contains(READY_LOST_LITERAL)
         })
         .cloned()

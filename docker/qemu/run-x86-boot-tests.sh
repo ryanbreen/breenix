@@ -327,6 +327,14 @@ KSTACK_QUIESCE_LEAK_PATTERN='\[KSTACK_QUIESCE_LEAK:baseline_outstanding=[0-9]+:o
 RECLAIM_DRAIN_PATTERN='\[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=[0-9]+:injected=1:pend_epoch=[0-9]+:pend_hw=[0-9]+:pend_shadow=[0-9]+:pend_selectable=0\]'
 SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:x86:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[0-9]+:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
 CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]'
+# #796. This gate boots -smp 1, where two threads do not contend for the
+# process-manager lock: the dispatch path refuses to switch while it is held, so
+# the holder is not preempted and no second thread runs. The oracle says so in
+# its own marker rather than printing a PASS it did not earn; the aarch64 strict
+# gate pins the armed pattern, which reddens on origin/main. Pinning the SKIP
+# line keeps the emitter alive on this arch -- deleting the oracle would
+# otherwise leave this gate green.
+FCNTL_PM_CONTENTION_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -491,6 +499,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qE "$SCHED_STRAND_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$CENSUS_WIDEN_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \

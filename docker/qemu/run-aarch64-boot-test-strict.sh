@@ -40,6 +40,40 @@ STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:le
 # exactly once. Without this pin, deleting the oracle's registry entry left this
 # gate, [BOOT_TESTS:PASS] and every structural suite green.
 TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
+# #796. The 9 fields are driven inside one run. armed=1 and pm_busy_probe=1 are the
+# anti-vacuity pair: the peer CPU really held PROCESS_MANAGER, and an independent
+# try-lock read confirmed it busy at the instant the measured fcntl was issued.
+# first_wait_us is pinned HERE to at least four digits -- i.e. >= 1000 us of the
+# oracle's 8000 us window -- so a call that sailed through an uncontended lock
+# cannot score even if the oracle's own >= FCNTL_PM_MIN_WAIT_US conjunct is
+# deleted. R157/F3: the previous [0-9]+ accepted first_wait_us=0, which left the
+# in-kernel conjunct as the sole authority and this gate green after deleting it.
+# first_errno=9 is EBADF: the driving thread is a kthread with no process row, so
+# the repaired syscall reaches the lookup and fails there instead of reporting
+# EAGAIN from the lock. eagain=0 is the property under test; on origin/main the
+# same oracle prints eagain=64:first_errno=11 and FAIL.
+FCNTL_PM_CONTENTION_ORACLE_PATTERN='\[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=[1-9][0-9]{3,}:hold_done=1:joined=1:PASS\]'
+# FCNTL_PM_WAIT_SELFCHECK (R157/F3). The pattern above is this gate's sole
+# gate-side reading that the measured fcntl really waited for a held lock, so
+# check that the pattern separates the two cases BEFORE it is used to score any
+# boot. The review's finding was that a first_wait_us=[0-9]+ pin accepts
+# first_wait_us=0, which left the oracle's own in-kernel floor as the sole
+# authority; that pin fails the first check below instead of scoring a boot
+# green.
+# claim-lint:ok: 3 of 3 mutation runs, recorded in the #796 doc's STEP 3
+# anti-vacuity block -- shipped pattern exits 0, [0-9]+ exits 1 on the zero leg,
+# [0-9]{9,} exits 1 on the 8032 leg.
+fcntl_pm_oracle_sample() {
+    printf '[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=%s:hold_done=1:joined=1:PASS]\n' "$1"
+}
+if fcntl_pm_oracle_sample 0 | grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN"; then
+    echo "FAIL: FCNTL_PM_CONTENTION_ORACLE_PATTERN accepts first_wait_us=0, so this gate would score green on a call that never waited for the process-manager lock"
+    exit 1
+fi
+if ! fcntl_pm_oracle_sample 8032 | grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN"; then
+    echo "FAIL: FCNTL_PM_CONTENTION_ORACLE_PATTERN rejects first_wait_us=8032, a wait the repaired oracle really records, so this gate can never pass"
+    exit 1
+fi
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 # #786 follow-on: the TTBR0 ASID census, emitted before userspace and at every
 # process exit. `untagged` counts publishes into `saved_process_cr3`/`next_cr3`
@@ -104,7 +138,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -284,6 +318,18 @@ score_serial() {
     fi
     if ! grep -qE "$CENSUS_WIDEN_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Census widening mutation oracle marker missing or failed"
+        return 1
+    fi
+    # #796, pinned as a pair: the FAIL scan names what went wrong even when the
+    # pattern check would already have rejected the boot, and it also catches a
+    # verdict line whose fields drift out of the pattern for some other reason.
+    if grep -qF "[FCNTL_PM_CONTENTION_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
+        && grep -q "FCNTL_PM_CONTENTION_ORACLE.*:FAIL\]" "$serial_file" 2>/dev/null; then
+        echo "fcntl process-manager contention oracle reported failure ($(grep -aoE '\[FCNTL_PM_CONTENTION_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "fcntl process-manager contention oracle marker missing or failed"
         return 1
     fi
     if ! grep -qF "[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]" "$serial_file" 2>/dev/null; then
