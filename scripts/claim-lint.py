@@ -188,13 +188,22 @@ ARTIFACT_CLAIM_RE = re.compile(
 # about, it is text GitHub itself parses and acts on. GitHub auto-closes the
 # referenced issue the moment a PR body or a commit message on the default
 # branch carries one of these keywords immediately before "#N" (see GitHub's
-# "linking a pull request to an issue" docs). This project's convention is a
-# plain "#N", not a close/fix/resolve keyword directly in front of it, so an
-# explicit close stays a deliberate act rather than a side effect of prose.
-# PR #799 (2026-09-05) shipped the phrase and, on merge, GitHub auto-closed
-# the issue it named -- #737 -- ahead of the intended explicit close.
+# "linking a pull request to an issue" docs, which also documents the
+# cross-repo "OWNER/REPO#N" form and a full issue/PR URL as equivalent
+# triggers; "GH-N" is the legacy autolink form from GitHub's original
+# closing-keywords announcement -- each of the three is matched below
+# alongside a bare "#N"). The convention from here on is a plain "#N", not a
+# close/fix/resolve keyword directly in front of it, so an explicit close
+# stays a deliberate act rather than a side effect of prose. #737 auto-closed
+# at the exact moment PR #799 (2026-09-05) merged, ahead of the round's own,
+# later, explicit close -- see docs/planning/green-program/claim-linting.md
+# for what is and is not recoverable about which mechanism actually fired.
 AUTO_CLOSE_KEYWORD_RE = re.compile(
-    r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s*:?\s+#\d+", re.IGNORECASE
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+"
+    r"(?:[\w.-]+/[\w.-]+#\d+|"
+    r"https?://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+|"
+    r"GH-\d+|#\d+)\b",
+    re.IGNORECASE,
 )
 
 
@@ -390,9 +399,9 @@ def extract_comment_paragraphs(file: str, lines: list, ext: str) -> list:
     return paragraphs
 
 
-def extract_paragraphs(file: str, content: str) -> list:
+def extract_paragraphs(file: str, content: str, ext_override: str = None) -> list:
     lines = content.splitlines()
-    ext = os.path.splitext(file)[1]
+    ext = ext_override if ext_override is not None else os.path.splitext(file)[1]
     if ext == ".md" or ext == ".txt":
         return extract_markdown_paragraphs(file, lines)
     if ext in LINE_COMMENT_PREFIXES:
@@ -610,11 +619,16 @@ def check_auto_close_keyword(p: Paragraph, repo_root: str) -> Optional[Finding]:
         return None
     return Finding(
         p.file, p.start_line, "auto-close-keyword", p.text,
-        "'%s' immediately in front of an issue number triggers GitHub's "
-        "auto-close-on-merge; this project references issues as a plain "
-        "'#N' and never with a close/fix/resolve keyword right before it. "
-        "Not dischargeable by claim-lint:ok -- rewrite the reference, don't "
-        "annotate it." % m.group(0),
+        "'%s' immediately in front of an issue reference triggers GitHub's "
+        "auto-close-on-merge; the convention from here on is a plain '#N', "
+        "not a close/fix/resolve keyword directly in front of it. Not "
+        "dischargeable by claim-lint:ok -- rewrite the reference, don't "
+        "annotate it. A negated claim ('does not resolve #N') is not "
+        "exempt either: GitHub's own matcher does not parse negation, so "
+        "the bytes are exactly as dangerous -- break the adjacency instead, "
+        "e.g. 'resolve issue #N' or lead with the number ('#N is not "
+        "resolved by this change'); see "
+        "docs/planning/green-program/claim-linting.md." % m.group(0),
         p.end_line,
     )
 
@@ -633,21 +647,45 @@ def lint_paragraph(p: Paragraph, repo_root: str) -> list:
     return findings
 
 
-def lint_text(file: str, content: str, repo_root: str = None) -> list:
+def lint_text(file: str, content: str, repo_root: str = None,
+              ext_override: str = None) -> list:
     if repo_root is None:
         repo_root = REPO_ROOT
     findings = []
-    for p in extract_paragraphs(file, content):
+    for p in extract_paragraphs(file, content, ext_override):
         findings.extend(lint_paragraph(p, repo_root))
     return findings
 
 
-def lint_file(path: str, repo_root: str = None) -> list:
+def lint_file(path: str, repo_root: str = None,
+              assume_text: bool = False) -> Optional[list]:
+    """Lint one file. Returns a list of findings (possibly empty), or `None`
+    if the file was SKIPPED because its extension is not in
+    `TEXT_EXTENSIONS` and `assume_text` is False.
+
+    `None` is a distinct outcome from `[]` on purpose (review F3): before
+    this, a skipped file and a clean file both produced `[]`, and main()'s
+    summary line counted a skip as "checked" -- an explicit `--files
+    COMMIT_EDITMSG` run (no recognized extension) reported "clean (1 file(s)
+    checked)" and exit 0 having never opened the file. `--files` is the
+    round checklist's own required step for linting a PR body or a
+    scratchpad doc (see docs/planning/green-program/claim-linting.md), and
+    those surfaces are not guaranteed to carry a `.md`/`.txt` extension --
+    `git commit`'s own `COMMIT_EDITMSG` has none. `assume_text=True` (main()
+    sets it whenever the caller named files explicitly via `--files`) treats
+    an unrecognized extension as prose rather than skipping it; `--all` and
+    diff-mode targets (auto-discovered, and able to include images, locks,
+    and other non-prose files) keep the strict allowlist, and main() now
+    reports a skip there instead of folding it into "checked".
+    """
     if repo_root is None:
         repo_root = REPO_ROOT
     ext = os.path.splitext(path)[1]
+    ext_override = None
     if ext not in TEXT_EXTENSIONS:
-        return []
+        if not assume_text:
+            return None
+        ext_override = ".txt"
     rel = os.path.relpath(path, repo_root) if os.path.isabs(path) else path
     if is_capture_file(rel):
         return []
@@ -656,7 +694,7 @@ def lint_file(path: str, repo_root: str = None) -> list:
             content = fh.read()
     except (FileNotFoundError, IsADirectoryError):
         return []
-    return lint_text(rel, content, repo_root)
+    return lint_text(rel, content, repo_root, ext_override)
 
 
 # ---------------------------------------------------------------------------
@@ -809,12 +847,23 @@ def main(argv: list) -> int:
                 untracked.add(rel)
 
     changed_only = base is not None and not args.whole_file
+    # `--files` names an explicit surface the checklist requires linting no
+    # matter its extension -- a PR body or `COMMIT_EDITMSG` frequently
+    # carries no extension (review F3). Everything else (whole-repo and
+    # diff-mode targets) auto-discovers files and keeps the strict allowlist
+    # instead, since those can include images, lockfiles and other
+    # non-prose files a markdown/comment parser would misread.
+    assume_text = bool(args.files)
 
     all_findings = []
     suppressed = 0
+    skipped = []
     for rel in targets:
         path = rel if os.path.isabs(rel) else os.path.join(repo_root, rel)
-        found = lint_file(path, repo_root)
+        found = lint_file(path, repo_root, assume_text=assume_text)
+        if found is None:
+            skipped.append(rel)
+            continue
         # A new file has no diff to intersect with; it is linted whole.
         if changed_only and found and rel not in untracked:
             ranges = changed_line_ranges(base, rel, repo_root)
@@ -822,6 +871,8 @@ def main(argv: list) -> int:
             suppressed += len(found) - len(kept)
             found = kept
         all_findings.extend(found)
+
+    checked = len(targets) - len(skipped)
 
     if args.format == "json":
         print(format_json(all_findings))
@@ -836,7 +887,7 @@ def main(argv: list) -> int:
                 "`claim-lint:ok: <citation>` annotation naming an N-of-M count, "
                 "a resolving path, an issue, or a review. See "
                 "docs/planning/green-program/claim-linting.md."
-                % (len(all_findings), len(targets), scope)
+                % (len(all_findings), checked, scope)
             )
             if any(f.rule == "auto-close-keyword" for f in all_findings):
                 print(
@@ -848,11 +899,17 @@ def main(argv: list) -> int:
                 )
         else:
             print("claim-lint: clean (%d file(s) checked, %s)."
-                  % (len(targets), scope))
+                  % (checked, scope))
         if changed_only and suppressed:
             print("claim-lint: %d pre-existing finding(s) outside this "
                   "branch's changed hunks not reported (--whole-file shows them)."
                   % suppressed)
+        if skipped:
+            print(
+                "claim-lint: %d target(s) SKIPPED, not checked (extension "
+                "not in %s): %s"
+                % (len(skipped), sorted(TEXT_EXTENSIONS), ", ".join(skipped))
+            )
 
     return 1 if all_findings else 0
 

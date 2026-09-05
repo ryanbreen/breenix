@@ -12,6 +12,13 @@ next to it. Where a number got worse, the worse number is the one printed.
 subsection under "What it catches" below. R4 did not re-run the R1–R3 audit
 tables elsewhere on this page; those numbers predate it and are unchanged.
 
+**R157, 2026-09-05** is a review round on R4's rule: it corrects a false
+universal in the rule's own wording, broadens the vocabulary to match
+GitHub's cross-repo/URL/legacy reference forms, replaces the test fixtures'
+live issue numbers with synthetic ones, corrects an unverifiable claim about
+PR #799, and documents the rewrite recipe for an honest-scoping negation.
+Detail is in the `auto-close-keyword` subsection below, not repeated here.
+
 The 2026-09-01 assessment found that 37 of 66 blocking review findings across
 twelve arcs (56%) were factually wrong, checkable *sentences* in EVIDENCE/PROVE
 docs, PR bodies, gate-script headers, or source comments — not code defects. Nine
@@ -172,7 +179,7 @@ covered in its own subsection right after the table.
 | `live-no-artifact` | "observed live", "confirmed live" | a resolving artifact citation, or a cited `claim-lint:ok` annotation <!-- claim-lint:ok: this row lists the rule's own trigger vocabulary rather than making a claim; the vocabulary is LIVE_CLAIM_RE in scripts/claim-lint.py --> |
 | `absolute-guarantee` | airtight, guarantee(d/s), structurally | an N-of-M count, a resolving artifact citation, or a cited `claim-lint:ok` annotation <!-- claim-lint:ok: this row lists the rule's own trigger vocabulary rather than making a claim; the vocabulary is ABSOLUTE_GUARANTEE_RE in scripts/claim-lint.py --> |
 | `artifact-path-missing` | a preserved/attached/committed/saved/written/**archived**-at claim naming a backticked path | the cited path must resolve to a **file** on disk (checked relative to the citing file's own directory, then the repo root) |
-| `auto-close-keyword` | a close/fix/resolve keyword bound to `#N` (e.g. `Fixes #N`, `closes: #N`, `resolved #N`) | No exemption — not dischargeable; see "`auto-close-keyword` is not like the other five" below |
+| `auto-close-keyword` | a close/fix/resolve keyword bound to `#N`, `OWNER/REPO#N`, a full issue/PR URL, or the legacy `GH-N` form (e.g. `Fixes #N`, `closes: #N`, `resolved #N`, `closes owner/repo#N`, `fixes https://github.com/owner/repo/issues/N`, `resolved GH-N`) | No exemption — not dischargeable; see "`auto-close-keyword` is not like the other five" below |
 
 ### `auto-close-keyword` is not like the other five
 
@@ -188,11 +195,43 @@ it cannot stop GitHub from reading the merged bytes. That is why
 `check_auto_close_keyword()` in `scripts/claim-lint.py` does not call the
 discharge check the other five rules share.
 
-PR #799 (2026-09-05) is the incident this rule codifies: its body carried
-the phrase, and on merge GitHub auto-closed the issue it named — #737 — ahead
-of the round's own, later, explicit close. This project's convention is a
-plain `#N`: reference an issue or a PR by number, not with a close/fix/resolve
-keyword directly in front of it.
+**R157 (2026-09-05 review round on R4)** corrected six findings on this
+rule's first draft — F1, F2, F4, F5, F6 and F7 below name each; the
+corrected text follows. (A seventh finding from the same round, F3, was a
+general extension-handling bug in `lint_file()`, shared by `--files` and the
+whole-repo-lint code path and unrelated to this rule; it is fixed directly in
+`scripts/claim-lint.py` and is not otherwise discussed on this page.)
+
+<!-- claim-lint:ok: the quoted "never" below is the R4 draft's own refuted
+     wording, reproduced so the correction is checkable against it, not an
+     assertion this paragraph makes -- see scripts/claim-lint.py's
+     check_auto_close_keyword() and the git log/--all counts cited inline. -->
+#737 auto-closed at the exact moment PR #799 (2026-09-05) merged, ahead of
+the round's own, later, explicit close (`gh pr view 799 --json
+mergedAt,closingIssuesReferences` and #737's own `closedAt` land on the same
+second). **What mechanism fired cannot be pinned down after the fact, and
+the R4 draft overclaimed it (review F7):** the PR body as it reads today carries no
+close/fix/resolve keyword bound to `#N` anywhere (`gh pr view 799 --json
+body`), and neither does any of its 16 commits (`gh log --format='%B'` over
+each). GitHub does not expose a PR body's edit history through its API, so a
+keyword phrase later edited out before merge cannot be ruled out — and
+neither can a manual "Development" sidebar issue link, which auto-closes
+with no keyword text anywhere. What is certain, and what this rule exists to
+catch regardless of which mechanism actually fired here, is the auto-close
+itself, coincident with merge and ahead of the intended explicit close. The
+convention from here on is a plain `#N`: reference an issue or a PR by
+number, not with a close/fix/resolve keyword directly in front of it — the
+R4 draft asserted this as an existing, universal fact about the repo
+("references issues as a plain `#N` and never with a close/fix/resolve
+keyword right before it"), which review F1 found false by construction:
+`scripts/claim-lint.py --all` finds the opposite shape in 47 paragraphs
+across 24 files today (`docs/planning/PROJECT_ROADMAP.md` alone carries 16,
+in its "Recently Completed" bullets' own house style — a `Clos<es> #N`
+keyword directly in front of the merged PR's own issue number), and the
+shape is routine in commit and PR history too (`git log --format=%s -600
+origin/main` alone has 7 bare `Fix<es> #N`-shaped subject lines). Going
+forward is a decision this rule can enforce; it was never a description of
+the past.
 
 A document that needs to name this rule's own trigger shape does not write
 the actual phrase, fenced or not: even inside a fenced code block — which
@@ -203,10 +242,61 @@ a real PR body or commit message would reproduce the incident this rule
 exists to prevent. This page names the shape broken instead: `Clos<ed> #N`,
 `Fix<es> #N`, `Resolv<ed> #N` — close enough to describe the pattern, and
 syntactically unable to match `AUTO_CLOSE_KEYWORD_RE` or GitHub's own
-parser. The one place the real phrase appears in this repo is the fixture
-built to be rejected by it — `test_vocabulary_and_shape` and
-`test_cli_exit_codes_for_the_three_anti_vacuity_cases` in
-`scripts/test_claim_lint.py`.
+parser. **The R4 draft claimed the real phrase's one place in this repo was
+two test methods (review F4: it was actually five —
+`test_vocabulary_and_shape`, `test_not_dischargeable_by_claim_lint_ok`,
+`test_not_exempted_by_nm_count_or_evidence_path`,
+`test_fires_in_rust_and_shell_comments_too`, and the CLI exit-code
+fixtures), and that "one place" framing was itself backwards: the real
+*shape* — a close/fix/resolve keyword bound to a live, in-range `#N` — was
+never rare (the 47/24 count above is the same shape, in files nobody built
+as a fixture).** R157 also closed the fixtures' own hazard (review F6): the
+five test methods above quoted the incident's own live issue numbers — #737,
+plus real, merged #4/#10/#12 — so pasting that diff into a real PR body or
+commit message would have reproduced the incident a second time. They now
+use synthetic, out-of-range numbers (`AutoCloseKeywordTests.FAKE*` in
+`scripts/test_claim_lint.py`), so the real phrase does not appear anywhere
+in this repo at all — not even in the tests built to reject it.
+
+**A negated claim is not exempt, and the R4 draft shipped no way to write one
+honestly (review F2).** "This design does not resolve #N" is not a weaker
+trigger than "resolves #N": GitHub's matcher does not parse negation — it
+looks only for the keyword immediately before `#N` — so the negated
+form is exactly as likely to auto-close on merge, and this rule correctly
+refuses to exempt it (see `test_negation_still_fires_and_the_documented_
+rewrite_does_not` in `scripts/test_claim_lint.py`). What was missing was the
+rewrite: **break the adjacency instead of removing the claim.** Two forms
+both keep the meaning and are not a GitHub-parsed shape either:
+
+- Insert a word between the keyword and the number: `does not resolve #N` →
+  `does not resolve issue #N`.
+- Lead with the number instead of the verb: `does not resolve #N` → `#N is
+  not resolved by this change`.
+
+The same fix closes the roadmap's own house style, which R157's review
+demonstrated collides with this rule the moment anyone extends it: inserting
+a new `PROJECT_ROADMAP.md` "Recently Completed" bullet in the tree's own
+`- ✅ **…, closes #N** (branch …)` shape reproduces the failure on the next
+routine update (`scripts/claim-lint.py` in diff mode, exit 1). Write the
+issue as a bare, un-adjacent reference instead — `- ✅ **…** (#N, branch
+…)` — which the convention above already asks for. R157 fixed four of the
+six live specimens review F2 named directly — `789-SLICE2-2026-09-04.md`,
+`693-FIX-2026-09-02.md`, and `CONFIRM-NIC-x86-2026-09-02.md` twice — plus a
+fifth instance of the identical shape found in that same NIC-x86 file while
+fixing it, as a demonstration that the rewrite holds meaning without
+changing what the sentence says. The other two review F2 named,
+`DESIGN.md` and `PLAN.md`, are deliberately left alone: each negated claim
+there sits inside one very long table-row/paragraph line already carrying
+unrelated pre-existing findings from this tool's other rules, about the
+teardown-unification design itself, that a rewrite of the negation would
+pull into this branch's changed-hunk scope — verifying those separate claims
+needs the teardown-unification arc's own evidence, not a claim-lint round,
+so they stay as pre-existing debt outside this round rather than getting
+annotated on faith.
+The remaining 47 pre-existing paragraphs (mostly the roadmap's own
+historical bullets) are untouched too — diff mode only re-flags one if its
+hunk is touched again, and rewriting settled history is not this round's
+job.
 
 
 Three design choices, each deliberate:
