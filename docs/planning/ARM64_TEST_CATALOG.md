@@ -339,15 +339,20 @@ Per arm64-parity.md:
 
 ### Running Tests
 ```bash
-# Build ARM64 kernel
-cargo build --release --features testing --target aarch64-breenix-kernel.json \
+# Build ARM64 kernel with --features boot_tests: run-aarch64-boot-test-native.sh's
+# own require_boot_tests_kernel() guard refuses a kernel built with plain
+# --features testing (a --features testing kernel carries none of the
+# boot_tests-only markers the guard requires; see
+# docs/planning/green-program/gates/NATIVE-GATE-GUARD-2026-09-05.md).
+cargo build --release --features boot_tests --target aarch64-breenix-kernel.json \
     -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
     -p kernel --bin kernel-aarch64
 
 # Run boot test
 ./docker/qemu/run-aarch64-boot-test-native.sh
 
-# Run full test suite
+# Run full test suite (builds its own --features testing kernel internally,
+# independent of the kernel built above)
 ./docker/qemu/run-aarch64-test-suite.sh --all
 ```
 
