@@ -39,21 +39,67 @@ before adopting it; the second capture, taken with `pgrep -fl
 'qemu-system-aarch64 -M'` reading 0 immediately before and after launch,
 matched.
 
-`01-strict-boot1-serial.txt` was re-recorded a second time during the `#627`
+`01-strict-boot1-serial.txt` was re-recorded a second time during the
+`fix/819-fcntl-oracle-arming-rendezvous` landing (`ld-fcntl-arm`), for the
+same structural reason as the paragraph above: `#819` rewrites the
+`FCNTL_PM_CONTENTION_ORACLE` marker itself, from a boolean-attempt shape
+(`attempts=1:armed=1:...`) to a 7-named-arm rendezvous shape
+(`arm_wait_us=...:armed=1:acquired=1:...:hold_safety=0:...`), and changed
+`docker/qemu/run-aarch64-boot-test-strict.sh`'s required pattern to match.
+Merging `origin/main` (carrying the `#812` re-record above, with the old
+`attempts=` shape) into `fix/819-fcntl-oracle-arming-rendezvous` (carrying the
+new `arm_wait_us=` shape but no `IRQ_HOLD_ORACLE` line, since it branched
+before `#812`) left no single side's copy able to satisfy both scorer
+requirements at once, and the merge's file-level conflict resolution (taking
+`origin/main`'s copy outright) scored
+`SCORE: FAIL - fcntl process-manager contention oracle marker missing or failed`
+in both replay tests. The replacement was a strict-gate boot at that merge's
+head (`BUILD_ID 006a9c732f0d64`), carrying
+`[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=93:armed=1:acquired=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=8107:hold_safety=0:hold_done=1:joined=1:PASS]`
+alongside an `IRQ_HOLD_ORACLE` PASS line, the all-zero
+`PINNED_HOME_CPU_UNAVAILABLE` census, and 18851 `TTBR0_ASID_CENSUS` tagged
+entries all reading `untagged=0`; both replay tests passed again
+(`both_aarch64_gates_fail_on_a_pinned_placement_refusal`,
+`both_aarch64_gates_fail_on_an_untagged_publish`) against that capture, which
+was superseded before landing by the re-record below once `origin/main`
+advanced again.
+
+`01-strict-boot1-serial.txt` was re-recorded a third time during the `#627`
 landing (`fix/627-futex-oracle-anchor` merging `origin/main`, merge commit
-`99820c62`): that branch's own `arm_delay_us` field addition to
+`99820c62`), independently of and concurrently with the `#819` landing
+above: that branch's own `arm_delay_us` field addition to
 `FUTEX_HANDOFF_ORACLE_PATTERN` conflicted textually with the `#812`-era
-content above (both had independently re-recorded this same file from a
-shared `fc76c8cc` ancestor), so the merge needed a fresh capture carrying
-both required lines at once. See
-`docs/planning/green-program/futex/627-ORACLE-ANCHOR-2026-09-05.md`'s
+content, so its merge needed a fresh capture carrying both required lines at
+once. See `docs/planning/green-program/futex/627-ORACLE-ANCHOR-2026-09-05.md`'s
 "Landing" sections for the full derivation; `02-prod-boot1-serial.txt` again
 needed no re-record (checked directly against the merged head's production
 scorer, still `PASS`).
 
+`01-strict-boot1-serial.txt` was re-recorded a fourth time when the `#819`
+landing merged `origin/main` a second time (merge commit `3d2a083d`), after
+`#627`'s merge (and PR #835, `gates/a64-host-qemu-lock`) had landed ahead of
+it: the `#627`-era capture above carries the `arm_delay_us` field and the
+`IRQ_HOLD_ORACLE` line but reverts `FCNTL_PM_CONTENTION_ORACLE` to the
+pre-`#819` `attempts=1:armed=1:...` shape (it was taken before `#819` had
+merged), so the second `#819` merge again needed a capture satisfying all
+three requirements together. The replacement is a strict-gate boot at that
+merge's head (`BUILD_ID 006a9c7cb301c7`), carrying
+`[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=92:armed=1:acquired=1:holder_cpu=2:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=8114:hold_safety=0:hold_done=1:joined=1:PASS]`,
+`[IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12014:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:PASS]`
+and `[FUTEX_HANDOFF_ORACLE:aarch64:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=50:arm_delay_us=16:rescues=0:queue_residual=0:balance=0]`
+together, alongside 4 of 4 `PINNED_HOME_CPU_UNAVAILABLE` census lines
+reading `count=0` and 14 of 14 `TTBR0_ASID_CENSUS` lines reading
+`untagged=0`; the strict scorer accepts it and both replay tests pass
+against it. See `docs/planning/green-program/syscalls/819-ORACLE-ARMING-2026-09-05.md`'s
+"Landing" sections for the full derivation. This capture used the new
+`docker/qemu/lib/qemu-host-lock.sh` mechanism PR #835 added in the same
+merge (`QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0` in the
+gate's own stdout), superseding the manual `pgrep`-before-launch discipline
+the three re-records above each used by hand.
+
 | file | what it is |
 |---|---|
-| `01-strict-boot1-serial.txt` | re-recorded during `#627` landing: a strict-gate boot at merged head `99820c62` (`BUILD_ID 006a9c7287347d`), carrying both the `IRQ_HOLD_ORACLE` PASS line (`#812`) and the `arm_delay_us` field (`#627`) the merged scorer now requires |
+| `01-strict-boot1-serial.txt` | re-recorded four times, each time by a landing whose branch changed a required line one of the two replay tests' gate scorers checks: `#812` (added `IRQ_HOLD_ORACLE`), `#819`'s first merge (rewrote `FCNTL_PM_CONTENTION_ORACLE` to the rendezvous shape), `#627` (added `arm_delay_us` to `FUTEX_HANDOFF_ORACLE`, independently and concurrently with `#819`), and `#819`'s second merge (recombined all three requirements after `#627` landed first, `BUILD_ID 006a9c7cb301c7`) |
 | `01-strict-x3.txt` | PR #824's strict gate, 3 iterations, at its own shipping head: `PASS: 3/3 boots succeeded` |
 | `02-prod-boot1-serial.txt` | PR #824's original production-gate boot serial; unchanged — still scores `PASS` against the merged head's production scorer |
 | `02-prod-boot1.txt` | PR #824's production-gate run 1 of 3 at its own shipping head |

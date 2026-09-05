@@ -70,19 +70,26 @@ STRAND_INJECT_ORACLE_PATTERN='\[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:le
 # exactly once. Without this pin, deleting the oracle's registry entry left this
 # gate, [BOOT_TESTS:PASS] and every structural suite green.
 TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]'
-# #796. The 9 fields are driven inside one run. armed=1 and pm_busy_probe=1 are the
-# anti-vacuity pair: the peer CPU really held PROCESS_MANAGER, and an independent
-# try-lock read confirmed it busy at the instant the measured fcntl was issued.
+# #796. The 12 fields are driven inside one run. armed=1 and pm_busy_probe=1 are
+# the anti-vacuity pair: the peer CPU really held PROCESS_MANAGER, and an
+# independent try-lock read confirmed it busy at the instant the measured fcntl
+# was issued.
 # first_wait_us is pinned HERE to at least four digits -- i.e. >= 1000 us of the
-# oracle's 8000 us window -- so a call that sailed through an uncontended lock
-# cannot score even if the oracle's own >= FCNTL_PM_MIN_WAIT_US conjunct is
-# deleted. R157/F3: the previous [0-9]+ accepted first_wait_us=0, which left the
-# in-kernel conjunct as the sole authority and this gate green after deleting it.
+# oracle's 8000 us overlap window -- so a call that sailed through an
+# uncontended lock cannot score even if the oracle's own
+# >= FCNTL_PM_MIN_WAIT_US conjunct is deleted. R157/F3: the previous [0-9]+
+# accepted first_wait_us=0, which left the in-kernel conjunct as the sole
+# authority and this gate green after deleting it.
 # first_errno=9 is EBADF: the driving thread is a kthread with no process row, so
 # the repaired syscall reaches the lookup and fails there instead of reporting
 # EAGAIN from the lock. eagain=0 is the property under test; on origin/main the
-# same oracle prints eagain=64:first_errno=11 and FAIL.
-FCNTL_PM_CONTENTION_ORACLE_PATTERN='\[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=[1-9][0-9]{3,}:hold_done=1:joined=1:PASS\]'
+# same oracle prints eagain=64:first_errno=11 and a FAIL verdict.
+# The shape changed with the arming rendezvous: `attempts=[1-3]` is gone -- there
+# is no retry loop to count -- and arm_wait_us (how long the driver waited for
+# the peer to publish its hold), acquired and hold_safety took its place.
+# hold_safety=0 is pinned because a hold released on the holder's own safety
+# deadline is a hold the driver did not use, whatever the other fields read.
+FCNTL_PM_CONTENTION_ORACLE_PATTERN='\[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=[0-9]+:armed=1:acquired=1:holder_cpu=[0-9]+:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=[1-9][0-9]{3,}:hold_safety=0:hold_done=1:joined=1:PASS\]'
 # FCNTL_PM_WAIT_SELFCHECK (R157/F3). The pattern above is this gate's sole
 # gate-side reading that the measured fcntl really waited for a held lock, so
 # check that the pattern separates the two cases BEFORE it is used to score any
@@ -94,7 +101,7 @@ FCNTL_PM_CONTENTION_ORACLE_PATTERN='\[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempt
 # anti-vacuity block -- shipped pattern exits 0, [0-9]+ exits 1 on the zero leg,
 # [0-9]{9,} exits 1 on the 8032 leg.
 fcntl_pm_oracle_sample() {
-    printf '[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=%s:hold_done=1:joined=1:PASS]\n' "$1"
+    printf '[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=4021:armed=1:acquired=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=%s:hold_safety=0:hold_done=1:joined=1:PASS]\n' "$1"
 }
 if fcntl_pm_oracle_sample 0 | grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN"; then
     echo "FAIL: FCNTL_PM_CONTENTION_ORACLE_PATTERN accepts first_wait_us=0, so this gate would score green on a call that never waited for the process-manager lock"
@@ -397,7 +404,7 @@ score_serial() {
     # pattern check would already have rejected the boot, and it also catches a
     # verdict line whose fields drift out of the pattern for some other reason.
     if grep -qF "[FCNTL_PM_CONTENTION_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
-        && grep -q "FCNTL_PM_CONTENTION_ORACLE.*:FAIL\]" "$serial_file" 2>/dev/null; then
+        && grep -qE "FCNTL_PM_CONTENTION_ORACLE.*:FAIL(:[a-z_]+)?\]" "$serial_file" 2>/dev/null; then
         echo "fcntl process-manager contention oracle reported failure ($(grep -aoE '\[FCNTL_PM_CONTENTION_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
         return 1
     fi
