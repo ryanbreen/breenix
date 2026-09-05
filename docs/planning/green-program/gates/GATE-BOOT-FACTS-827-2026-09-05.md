@@ -387,3 +387,50 @@ claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (one per commit
   contention or a real liveness defect is the next, separate step (an
   attribution battery run against a deliberately contended host), which
   this branch's own facts make mechanical rather than answering here.
+
+## Landing re-smoke (2026-09-05, worktree ld-827)
+
+Before opening the landing PR, this branch was merged with `origin/main` via
+`git merge --no-ff` -- the merge applied with 0 conflicts (git's own
+"Automatic merge went well" report) across 41 changed files -- 41 of 41
+main's own commits landed since this branch's fork point (819
+oracle-arming docs/serials, x86 boot-test script updates, the
+strict-boot-test serial/README refresh, `tools/breenix-runs`, and
+`kernel/src/test_framework/registry.rs` /
+`tests/fcntl_pm_contention_gate_structure.rs` additions); nothing in this
+merge commit was hand-authored beyond the merge itself. The merged head was
+then re-smoked:
+
+- 33 of 33 `tests/*_structure.rs` suites (run as one `cargo test`
+  invocation naming each with `--test`): 593 passed, 0 failed, 0 ignored --
+  including this branch's own `gate_boot_facts_structure.rs` (4 passed) and
+  the merged-in `fcntl_pm_contention_gate_structure.rs`.
+- `python3 scripts/test_claim_lint.py` -> exit 0.
+- One aarch64 strict-gate run (`run-aarch64-boot-test-strict.sh`, script
+  default of 20 iterations) against a `boot_tests`-featured build of the
+  merged kernel: 19/20 `SUCCESS`, 1 `FAIL`. The one failure (boot 2) read
+  `ended_by=hard_timeout` with `load_at_start=7.81` climbing to
+  `load_at_end=18.03` at the kill sample. The "What is NOT claimed" section
+  above notes the `hard_timeout` signature had not yet been reproduced by a
+  live specimen at authoring time; this landing run is that live specimen.
+  Its own serial shows the TTY oracle's full run
+  (`[TTY_ORACLE:COMPLETE:pass=14:fail=0]`), a `[heartbeat]` line at
+  `uptime_ms=19133`, `exec_smoke` launched (`[EXEC_SMOKE:LAUNCH]`), and 0
+  crash markers before the poll loop's 18s bound ran out -- the same
+  "starved, not wedged" shape #826's own red describes, this time with the
+  `ended_by` field #827 adds naming it directly instead of leaving it
+  ambiguous. Other `qemu-system-aarch64` processes launched by unrelated
+  worktrees on this same host were observed running concurrently during
+  this window, consistent with the elevated load reading. The remaining 19
+  boots each read `ended_by=scored_pass`.
+- One aarch64 prod-profile run (`run-aarch64-prod-profile-boot-test.sh`,
+  which builds its own no-features kernel): 1/1 boot,
+  `PASS: production profile reached bsshd with the futex oracle seam absent`,
+  `ended_by=scored_pass`.
+
+```
+claim-lint: scripts/claim-lint.py -> exit 0
+claim-lint: scripts/claim-lint.py --files <this doc> -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <merge commit message> -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <landing commit message> -> exit 0
+```
