@@ -1,0 +1,27 @@
+The target architecture is set to "i386:x86-64".
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000100002cd482 in ?? ()
+add symbol table from file "/root/breenix-787/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961" at
+	.text_addr = 0x100000be6e0
+	.rodata_addr = 0x1000007dc78
+	.data_addr = 0x10000421e00
+	.bss_addr = 0x10000457500
+rsp = 0xffffc900000fcb58
+
+===== IRET frames with IF=1 anywhere in rsp..rsp+0x20000 =====
+  +0x00118 rip=0x1000023c862 (x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text)
+            rflags=0x284 rsp=0xffffc90000284ef0
+  +0x00160 rip=0x1000023c862 (x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text)
+            rflags=0x284 rsp=0xffffc90000284ef0
+  +0x00188 rip=0x1000023c862 (x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text)
+            rflags=0x284 rsp=0xffffc90000284ef0
+  +0x01780 rip=0x1000023c862 (x86_64::instructions::interrupts::enable_and_hlt + 2 in section .text)
+            rflags=0x284 rsp=0xffffc90000284ef0
+  +0x04b10 rip=0x100000c2ffa (kernel::kernel_main_on_kernel_stack + 3882 in section .text)
+            rflags=0x296 rsp=0xffffc90000101698
+
+===== master_kernel_pml4 return addresses on the stack =====
+  +0x00000 0x100003485ba -> kernel::memory::kernel_page_table::master_kernel_pml4 + 122 in section .text
+  +0x00030 0x10000359e15 -> kernel::memory::process_memory::switch_to_kernel_page_table + 21 in section .text
+[Inferior 1 (process 1) detached]

@@ -1,0 +1,27 @@
+The target architecture is set to "i386:x86-64".
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000100002cd482 in ?? ()
+add symbol table from file "/root/breenix-787/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961" at
+	.text_addr = 0x100000be6e0
+	.rodata_addr = 0x1000007dc78
+	.data_addr = 0x10000421e00
+	.bss_addr = 0x10000457500
+
+===== disassemble master_kernel_pml4 =====
+ERR No symbol table is loaded.  Use the "file" command.
+
+===== bytes around MASTER_KERNEL_PML4 =====
+addr = 0x100004b3db8
+0x100004b3db0 <_ZN6kernel6memory17kernel_page_table17KERNEL_PDPT_FRAME17h7918455cb1b7e137E+16>:	0x00	0xa0	0x61	0x00	0x00	0x00	0x00	0x00
+0x100004b3db8 <_ZN6kernel6memory17kernel_page_table18MASTER_KERNEL_PML417h7582772580ac190aE>:	0x01	0x00	0x00	0x00	0x00	0x00	0x00	0x00
+
+KERNEL_PDPT_FRAME = 0x100004b3da0
+0x100004b3da0 <_ZN6kernel6memory17kernel_page_table17KERNEL_PDPT_FRAME17h7918455cb1b7e137E>:	0x00	0x00	0x00	0x00	0x00	0x00	0x00	0x00
+0x100004b3da8 <_ZN6kernel6memory17kernel_page_table17KERNEL_PDPT_FRAME17h7918455cb1b7e137E+8>:	0x01	0x00	0x00	0x00	0x00	0x00	0x00	0x00
+
+
+===== scan for saved RIPs inside master_kernel_pml4 (heap + kernel stacks) =====
+range 0x10000348540 .. 0x10000348740
+  hit @0xffffc900000fcb58 -> 0x100003485ba (kernel::memory::kernel_page_table::master_kernel_pml4 + 122 in section .text)
+[Inferior 1 (process 1) detached]
