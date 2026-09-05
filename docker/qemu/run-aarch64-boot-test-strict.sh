@@ -43,13 +43,13 @@ TOMBSTONE_JOIN_ORACLE_LITERAL='[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:re
 # #796. The 9 fields are driven inside one run. armed=1 and pm_busy_probe=1 are the
 # anti-vacuity pair: the peer CPU really held PROCESS_MANAGER, and an independent
 # try-lock read confirmed it busy at the instant the measured fcntl was issued.
-# first_wait_us is bounded below by the oracle itself (>= 1000 us of a 3000 us
+# first_wait_us is bounded below by the oracle itself (>= 1000 us of an 8000 us
 # window), so a call that sailed through an uncontended lock cannot score.
 # first_errno=9 is EBADF: the driving thread is a kthread with no process row, so
 # the repaired syscall reaches the lookup and fails there instead of reporting
 # EAGAIN from the lock. eagain=0 is the property under test; on origin/main the
 # same oracle prints eagain=64:first_errno=11 and FAIL.
-FCNTL_PM_CONTENTION_ORACLE_PATTERN='\[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=[0-9]+:joined=1:PASS\]'
+FCNTL_PM_CONTENTION_ORACLE_PATTERN='\[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=[0-9]+:hold_done=1:joined=1:PASS\]'
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 
 # Find the ARM64 kernel

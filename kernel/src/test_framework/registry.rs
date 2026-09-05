@@ -4153,8 +4153,13 @@ pub fn run_census_widen_oracle() -> bool {
 // with eagain=64:first_errno=11.
 
 /// Microseconds the peer CPU keeps PROCESS_MANAGER held.
+///
+/// Wider than one timer tick on purpose. The tick is 5 ms here, and a 3 ms
+/// window let the driver sleep through the whole hold on 1 of 3 smoke boots:
+/// it armed, held and released between two of the driver's wakeups, which
+/// scored armed=0 rather than a contended call.
 #[cfg(target_arch = "aarch64")]
-const FCNTL_PM_HOLD_US: u64 = 3_000;
+const FCNTL_PM_HOLD_US: u64 = 8_000;
 /// Microseconds the holder spins for the lock before reporting a failed arm.
 #[cfg(target_arch = "aarch64")]
 const FCNTL_PM_ACQUIRE_US: u64 = 200_000;
@@ -4164,7 +4169,7 @@ const FCNTL_PM_ARM_WAIT_US: u64 = 500_000;
 /// Microseconds the driver waits for the holder thread to exit.
 #[cfg(target_arch = "aarch64")]
 const FCNTL_PM_JOIN_US: u64 = 500_000;
-/// Microseconds of quiet after the window closes, so the 3 ms in which no CPU
+/// Microseconds of quiet after the window closes, so the 8 ms in which no CPU
 /// could commit a dispatch does not ride into a later scheduler census.
 #[cfg(target_arch = "aarch64")]
 const FCNTL_PM_SETTLE_US: u64 = 20_000;
@@ -4271,10 +4276,14 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
         use crate::task::kthread::{
             kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
         };
+        use crate::task::scheduler::{live_peer_cpu_for_test, release_cpu_affine_thread_for_test};
 
-        let online = crate::task::scheduler::online_cpu_count_snapshot();
-        let me = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-        let peer = (0..online).find(|&cpu| cpu != me);
+        // A peer that is still dispatching. Taking the first CPU that is merely
+        // "not me" picked a stale CPU on this gate's own profile: the probe was
+        // migrated off it by the scheduler's unschedulable-queue reclaim and
+        // then bounced by the boot-test affinity retain check, so on 3 of 3
+        // smoke boots it armed and then reported joined=0.
+        let peer = live_peer_cpu_for_test();
 
         let mut attempts = 0u64;
         let mut armed = 0u64;
@@ -4284,6 +4293,7 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
         let mut eagain = 0u64;
         let mut first_errno = u64::MAX;
         let mut first_wait_us = 0u64;
+        let mut hold_done = 0u64;
         let mut joined = 0u64;
         let mut passed = false;
 
@@ -4297,6 +4307,7 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
                 eagain = 0;
                 first_errno = u64::MAX;
                 first_wait_us = 0;
+                hold_done = 0;
                 joined = 0;
 
                 FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
@@ -4309,12 +4320,17 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
                     continue;
                 };
 
+                // Spin rather than halt: the window is measured in
+                // milliseconds and a halted waiter only looks again on the next
+                // timer tick, which cost 1 of 3 smoke boots the whole hold. The
+                // loop is bounded by FCNTL_PM_ARM_WAIT_US, and the peer runs on
+                // its own CPU, so spinning here does not delay the arm.
                 let arm_start = crate::tracing::trace_timestamp();
                 while !FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
                     && !FCNTL_PM_HOLD_DONE.load(AtomicOrdering::Acquire)
                     && fcntl_pm_elapsed_us(arm_start) < FCNTL_PM_ARM_WAIT_US
                 {
-                    crate::arch_halt();
+                    core::hint::spin_loop();
                 }
 
                 if FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
@@ -4340,12 +4356,19 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
                     }
                 }
 
+                // Clear the forced placement before waiting, the same way the
+                // census widening oracle releases its probe: the holder has done
+                // its job by now, and leaving it pinned means its exit depends on
+                // the CPU it was placed on continuing to dispatch.
+                release_cpu_affine_thread_for_test(handle.tid());
+
                 let join_start = crate::tracing::trace_timestamp();
                 while !kthread_has_exited_for_test(&handle)
                     && fcntl_pm_elapsed_us(join_start) < FCNTL_PM_JOIN_US
                 {
                     crate::arch_halt();
                 }
+                hold_done = u64::from(FCNTL_PM_HOLD_DONE.load(AtomicOrdering::Acquire));
                 if kthread_has_exited_for_test(&handle) {
                     joined = u64::from(kthread_join(&handle).is_ok());
                 }
@@ -4357,6 +4380,7 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
 
                 passed = armed == 1
                     && pm_busy_probe == 1
+                    && hold_done == 1
                     && joined == 1
                     && calls == FCNTL_PM_CALLS
                     && eagain == 0
@@ -4365,7 +4389,7 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
         }
 
         crate::serial_println!(
-            "[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts={}:armed={}:holder_cpu={}:pm_busy_probe={}:calls={}:eagain={}:first_errno={}:first_wait_us={}:joined={}:{}]",
+            "[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts={}:armed={}:holder_cpu={}:pm_busy_probe={}:calls={}:eagain={}:first_errno={}:first_wait_us={}:hold_done={}:joined={}:{}]",
             attempts,
             armed,
             holder_cpu,
@@ -4374,6 +4398,7 @@ pub fn run_fcntl_pm_contention_oracle() -> bool {
             eagain,
             first_errno,
             first_wait_us,
+            hold_done,
             joined,
             if passed { "PASS" } else { "FAIL" },
         );
@@ -7422,14 +7447,34 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 5000,
         stage: TestStage::PostScheduler,
     },
-    // Keep this last in PROCESS_TESTS. Its probe stack is allocated only after
-    // every earlier kernel-stack accounting window in this subsystem has closed,
-    // so asynchronous retirement cannot make the probe straddle such a window.
+    // Keep this after the kernel-stack accounting tests in PROCESS_TESTS. Its
+    // probe stack is allocated only once each earlier accounting window in this
+    // subsystem has closed, so asynchronous retirement cannot make the probe
+    // straddle such a window.
     TestDef {
         name: "census_widen_oracle",
         func: test_census_widen_oracle,
         arch: Arch::Aarch64,
         timeout_ms: 2000,
+        stage: TestStage::PostScheduler,
+    },
+    // #796, and it belongs HERE rather than in SYSCALL_TESTS for a measured
+    // reason. Subsystem test threads run concurrently, so a registration in the
+    // syscall subsystem put this oracle's window -- 8 ms in which no CPU can
+    // commit a dispatch, because it holds the lock every dispatch needs --
+    // alongside census_widen_oracle's baseline, which requires no thread queued
+    // on a non-dispatching CPU. That reddened census_widen_oracle on 2 of 2
+    // smoke boots while origin/main scored 3 of 3 green. Tests inside one
+    // subsystem run in sequence, so registering it after census_widen_oracle
+    // puts that baseline strictly before this window exists. It allocates one
+    // kthread stack, after census_widen_oracle's own probe has been joined and
+    // its verdict printed.
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "fcntl_pm_contention_oracle",
+        func: test_fcntl_pm_contention_oracle,
+        arch: Arch::Aarch64,
+        timeout_ms: 10000,
         stage: TestStage::PostScheduler,
     },
     // Note: Userspace stage tests cannot run from syscall context (would block).
@@ -7462,20 +7507,6 @@ static SYSCALL_TESTS: &[TestDef] = &[
         arch: Arch::Aarch64,
         timeout_ms: 2000,
         stage: TestStage::EarlyBoot,
-    },
-    // #796. PostScheduler because it needs a second kthread pinned to a peer
-    // CPU, and last in this subsystem because it is the one test here that
-    // stops each online CPU from committing a dispatch for the length of its
-    // 3 ms window.
-    // The Syscall subsystem runs after Process, so the scheduler censuses in
-    // PROCESS_TESTS take their baselines before this window ever opens.
-    #[cfg(target_arch = "aarch64")]
-    TestDef {
-        name: "fcntl_pm_contention_oracle",
-        func: test_fcntl_pm_contention_oracle,
-        arch: Arch::Aarch64,
-        timeout_ms: 10000,
-        stage: TestStage::PostScheduler,
     },
 ];
 
