@@ -1085,6 +1085,134 @@ fn validate_scheduling_paths_reclaim_unschedulable_cpu_queues(source: &str) -> R
     Ok(())
 }
 
+/// A thread that carries a CPU pin is queued to the CPU that pin names.
+///
+/// The placement functions are DERIVED, not listed: a scheduler function that
+/// resolves a ready-queue target through `least_loaded_cpu()` is one, which is
+/// 1 of 1 today (`add_thread_inner`), so a second cannot appear without this
+/// rule seeing it and renaming the current one does not silence it. Each must
+/// read the thread's own `cpu_affinity` pin BEFORE the least-loaded choice,
+/// resolve that pin to the CPU it names, bound it by the online range, and fall
+/// through to `least_loaded_cpu()` when there is no pin -- which is the path
+/// taken today, `spawn_on_cpu` having 0 callers.
+fn validate_thread_placement_honours_the_cpu_pin(source: &str) -> Result<(), String> {
+    let mut placements: Vec<(String, String)> = Vec::new();
+    for span in function_spans(source) {
+        let body = source[span.open..=span.close].to_string();
+        if !has_identifier(&body, "least_loaded_cpu") {
+            continue;
+        }
+        // Skip an enclosing scope that merely contains a placement function.
+        let nested = function_spans(&body)
+            .into_iter()
+            .any(|inner| has_identifier(&body[inner.open..=inner.close], "least_loaded_cpu"));
+        if nested {
+            continue;
+        }
+        placements.push((span.name.clone(), body));
+    }
+
+    if placements.is_empty() {
+        return Err(
+            "no scheduler function resolves a queue target through least_loaded_cpu(): the placement census is empty"
+                .to_string(),
+        );
+    }
+
+    for (name, body) in placements {
+        let mask = code_mask(&body);
+        let compact = compact_code(&body);
+        let Some(pin_read) = identifier_offsets(&body, &mask, "cpu_affinity")
+            .into_iter()
+            .next()
+        else {
+            return Err(format!(
+                "{name} chooses a queue without reading the thread's cpu_affinity pin"
+            ));
+        };
+        if !compact.contains("cpu_affinity.map(|pin|pin.cpu)") {
+            return Err(format!(
+                "{name} does not resolve the thread's pin to the CPU it names"
+            ));
+        }
+        if !compact.contains(".filter(|cpu|*cpu<self.online_cpu_count())") {
+            return Err(format!(
+                "{name} does not bound the pinned CPU by the online range"
+            ));
+        }
+        if !compact.contains(".unwrap_or_else(||self.least_loaded_cpu())") {
+            return Err(format!(
+                "{name} does not fall through to least_loaded_cpu() for an unpinned thread"
+            ));
+        }
+        let Some(least_loaded) = identifier_offsets(&body, &mask, "least_loaded_cpu")
+            .into_iter()
+            .next()
+        else {
+            return Err(format!("{name} lost its least_loaded_cpu() fall-through"));
+        };
+        if pin_read > least_loaded {
+            return Err(format!(
+                "{name} consults least_loaded_cpu() before the thread's own pin"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A pin records WHY it exists, and each of the 2 ways of building one says so.
+///
+/// Censused over the constructors of `CpuPin` rather than named one by one: a
+/// constructor added later that leaves the reason implicit reddens this. The
+/// reason is not decoration -- the two kinds need opposite treatment when the
+/// home CPU stops dispatching, and a bare CPU index on `Thread` cannot carry
+/// the distinction at all.
+fn validate_cpu_pin_records_its_reason(source: &str) -> Result<(), String> {
+    let mask = code_mask(source);
+    if !compact_code(source).contains("pubcpu_affinity:Option<CpuPin>") {
+        return Err("Thread::cpu_affinity does not carry a CpuPin".to_string());
+    }
+
+    let struct_offset = code_text_offset(source, "struct CpuPin")
+        .ok_or_else(|| "CpuPin is not defined".to_string())?;
+    let fields = braced_block(source, &mask, struct_offset)
+        .ok_or_else(|| "CpuPin has no field block".to_string())?;
+    for field in ["cpu", "per_cpu_worker"] {
+        if !has_identifier(fields, field) {
+            return Err(format!("CpuPin does not carry the {field} field"));
+        }
+    }
+
+    let impl_offset = code_text_offset(source, "impl CpuPin")
+        .ok_or_else(|| "CpuPin has no constructors".to_string())?;
+    let constructors = braced_block(source, &mask, impl_offset)
+        .ok_or_else(|| "impl CpuPin has no block".to_string())?;
+    let mut kinds: Vec<bool> = Vec::new();
+    for span in function_spans(constructors) {
+        let body = compact_code(&constructors[span.open..=span.close]);
+        if body.contains("per_cpu_worker:true") {
+            kinds.push(true);
+        } else if body.contains("per_cpu_worker:false") {
+            kinds.push(false);
+        } else {
+            return Err(format!(
+                "CpuPin::{} builds a pin without naming the reason it exists",
+                span.name
+            ));
+        }
+    }
+    if kinds.is_empty() {
+        return Err("CpuPin has no constructor to census".to_string());
+    }
+    if !kinds.contains(&true) || !kinds.contains(&false) {
+        return Err(
+            "CpuPin cannot express both reasons: a per-CPU worker and a hold pen are the two a later reclaim disposition has to tell apart"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn pump_producer_seam_is_single() {
     validate_pump_producer_seam_is_single(&net_source_text()).expect("single producer seam");
@@ -1708,6 +1836,77 @@ fn unschedulable_reclaim_validator_rejects_missing_deferred_reclaim() {
     assert_ne!(mutated_deferred, deferred, "fixture mutation must apply");
     let mutated = source.replacen(deferred, &mutated_deferred, 1);
     assert!(validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&mutated).is_err());
+}
+
+#[test]
+fn thread_placement_honours_the_cpu_pin() {
+    validate_thread_placement_honours_the_cpu_pin(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("a pinned thread is queued to the CPU its pin names");
+}
+
+#[test]
+fn thread_placement_validator_rejects_a_deleted_pin_arm() {
+    // The mutation this rule exists to catch: the placement arm reverts to the
+    // unconditional least-loaded choice, so a thread that names a CPU is queued
+    // wherever load balancing puts it instead.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let placement = function_body(&source, "add_thread_inner").expect("find placement fixture");
+    let arm_start = placement
+        .find("let target = cpu_affinity")
+        .expect("find the pin arm");
+    let arm_end = arm_start
+        + placement[arm_start..]
+            .find(';')
+            .expect("the pin arm terminates")
+        + 1;
+    let mutated_placement = format!(
+        "{}let target = self.least_loaded_cpu();{}",
+        &placement[..arm_start],
+        &placement[arm_end..]
+    );
+    assert_ne!(mutated_placement, placement, "fixture mutation must apply");
+    let mutated = source.replacen(placement, &mutated_placement, 1);
+    assert!(validate_thread_placement_honours_the_cpu_pin(&mutated).is_err());
+}
+
+#[test]
+fn thread_placement_validator_rejects_an_unbounded_pin() {
+    // A pin that names a queue above the online count starves, in the words of
+    // the comment on `online_cpu_count` itself: no thread runs there and the
+    // reschedule IPI helpers refuse the target.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let placement = function_body(&source, "add_thread_inner").expect("find placement fixture");
+    let mutated_placement =
+        placement.replacen(".filter(|cpu| *cpu < self.online_cpu_count())", "", 1);
+    assert_ne!(mutated_placement, placement, "fixture mutation must apply");
+    let mutated = source.replacen(placement, &mutated_placement, 1);
+    assert!(validate_thread_placement_honours_the_cpu_pin(&mutated).is_err());
+}
+
+#[test]
+fn cpu_pin_records_its_reason() {
+    validate_cpu_pin_records_its_reason(&repo_text("kernel/src/task/thread.rs"))
+        .expect("every CpuPin constructor names the reason the pin exists");
+}
+
+#[test]
+fn cpu_pin_reason_validator_rejects_a_kindless_constructor() {
+    let source = repo_text("kernel/src/task/thread.rs");
+    let mutated = source.replacen("            per_cpu_worker: false,\n", "", 1);
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_cpu_pin_records_its_reason(&mutated).is_err());
+}
+
+#[test]
+fn cpu_pin_reason_validator_rejects_a_bare_cpu_index() {
+    let source = repo_text("kernel/src/task/thread.rs");
+    let mutated = source.replacen(
+        "pub cpu_affinity: Option<CpuPin>",
+        "pub cpu_affinity: Option<usize>",
+        1,
+    );
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_cpu_pin_records_its_reason(&mutated).is_err());
 }
 
 /// Every loopback enqueue must schedule its own delivery.
