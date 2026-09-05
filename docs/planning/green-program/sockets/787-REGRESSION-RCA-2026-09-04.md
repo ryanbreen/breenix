@@ -270,7 +270,7 @@ Two changes, both removing work from the interrupt-context dispatch path.
    ("the dispatch path has no lock left to spin on", in this document and in
    commit `6d17b83a`'s message; corrected in the PR body, since the message is
    pushed). `setup_kernel_thread_return` still calls
-   `scheduler::with_thread_mut` (`context_switch.rs:1279`), which takes
+   `scheduler::with_thread_mut` (`context_switch.rs:1293`), which takes
    `SCHEDULER.lock()` -- also a `spin::Mutex` -- via `lock_scheduler`
    (`scheduler.rs:4719-4728` -> `:330-334`). What keeps that acquisition out of
    the failure class of step 6 is not its absence but the interrupt state of its
