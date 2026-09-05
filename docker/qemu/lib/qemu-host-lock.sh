@@ -48,11 +48,27 @@
 # when locking is skipped and again, via the EXIT trap, immediately after
 # the script's own PASS/FAIL output -- adjacent to the verdict without this
 # file having to know each of its ~20 callers' own verdict-printing shape.
+# BREENIX_QEMU_LOCK must be an absolute path when set to anything other
+# than "off" -- qemu_host_lock_acquire refuses a relative value the same
+# way callers already refuse a relative BREENIX_GATE_TMP (the F6 guard from
+# PR #801/#797), since a relative lock directory resolves against whatever
+# directory happens to be current when each caller runs and would silently
+# split what is supposed to be one shared lock domain into several.
+#
+# PID TRACKING: qemu_host_lock_track_pid registers the PID a caller just
+# launched (a backgrounded qemu-system-aarch64, or a backgrounded `docker
+# run` client) so this lock's own EXIT trap can terminate it even on a path
+# where the calling script's own poll-and-kill sequence does not run -- e.g. a
+# SIGTERM/SIGINT delivered to just the script's own PID during the boot-poll
+# window, which does not propagate to a foreground or backgrounded child on
+# its own. Callers with their own working cleanup trap do not need this;
+# it exists for the callers that had no cleanup trap of their own.
 
 _QHL_LOCK_HELD=0
 _QHL_LOCK_DIR=""
 _QHL_DISABLED=0
 _QHL_TRAP_INSTALLED=0
+_QHL_TRACKED_PIDS=()
 
 # The directory this lock's atomic mkdir acquires. Not the file the
 # top-of-file comment's "flock on <path>" language names literally -- the
@@ -96,12 +112,18 @@ qemu_host_lock_count() {
     echo $((native + docker_wrapped))
 }
 
-# Chains this file's own release (and, if the lock is disabled this run,
-# the disabled-banner) onto whatever EXIT trap the calling script already
-# had, rather than replacing it -- several callers (run-aarch64-arma609-arm.sh,
-# run-aarch64-prod-profile-boot-test.sh, run-aarch64-stability-test.sh,
-# run-aarch64-full-test.sh) already `trap cleanup EXIT` their own QEMU_PID
-# kill+wait, and this must run in addition to that, not instead of it.
+# Chains this file's own cleanup (killing any PID registered via
+# qemu_host_lock_track_pid, then releasing the lock, then -- if the lock is
+# disabled this run -- the disabled-banner) onto whatever EXIT trap the
+# calling script already had, rather than replacing it -- several callers
+# (run-aarch64-arma609-arm.sh, run-aarch64-prod-profile-boot-test.sh,
+# run-aarch64-stability-test.sh, run-aarch64-full-test.sh) already
+# `trap cleanup EXIT` their own QEMU_PID kill+wait, and this must run in
+# addition to that, not instead of it. The tracked-PID kill runs BEFORE the
+# existing trap and the lock release, not after: it is what makes the
+# release reachable on a caller with no cleanup of its own, and
+# running it before the existing trap adds no cost when that trap does its
+# own kill+wait on the same PID (a dead/reaped PID is a silent no-op).
 # Installed at most once per process (idempotent across a script's own
 # per-boot acquire/release loop) so the chain does not grow one link per
 # iteration.
@@ -110,11 +132,35 @@ _qhl_chain_exit_trap() {
     local existing
     existing="$(trap -p EXIT 2>/dev/null | sed -E "s/^trap -- '(.*)' EXIT\$/\1/")"
     if [ -n "$existing" ]; then
-        trap "$existing; qemu_host_lock_release; _qhl_verdict_banner" EXIT
+        trap "_qhl_kill_tracked_pids; $existing; qemu_host_lock_release; _qhl_verdict_banner" EXIT
     else
-        trap "qemu_host_lock_release; _qhl_verdict_banner" EXIT
+        trap "_qhl_kill_tracked_pids; qemu_host_lock_release; _qhl_verdict_banner" EXIT
     fi
     _QHL_TRAP_INSTALLED=1
+}
+
+# Registers a PID this script just launched (a backgrounded
+# qemu-system-aarch64, or a backgrounded `docker run` client) so the EXIT
+# trap above can terminate it even when this script has no cleanup of its
+# own. Call immediately after capturing the PID (`... &`; PID=$!). Safe to
+# call across a retry/boot loop -- earlier, already-dead entries are silent
+# no-ops when the trap fires.
+qemu_host_lock_track_pid() {
+    [ -n "${1:-}" ] || return 0
+    _QHL_TRACKED_PIDS+=("$1")
+}
+
+# Kills and reaps each PID registered via qemu_host_lock_track_pid. An
+# already-dead or already-reaped PID is a harmless no-op here (both kill and
+# wait fail silently) -- the normal case, since most exits reach this only
+# after the calling script's own kill+wait already ran.
+_qhl_kill_tracked_pids() {
+    local pid
+    for pid in "${_QHL_TRACKED_PIDS[@]:-}"; do
+        [ -n "$pid" ] || continue
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
 }
 
 _qhl_verdict_banner() {
@@ -131,6 +177,15 @@ _qhl_verdict_banner() {
 # 30s span (poll granularity is 1s; the message is not itself the poll interval).
 qemu_host_lock_acquire() {
     _qhl_chain_exit_trap
+    if [ -n "${BREENIX_QEMU_LOCK:-}" ] && [ "$BREENIX_QEMU_LOCK" != "off" ]; then
+        case "$BREENIX_QEMU_LOCK" in
+            /*) ;;
+            *)
+                echo "QEMU HOST LOCK: FAIL -- BREENIX_QEMU_LOCK must be an absolute path (or 'off'), got: $BREENIX_QEMU_LOCK" >&2
+                exit 1
+                ;;
+        esac
+    fi
     local count
     count="$(qemu_host_lock_count)"
     if [ "${BREENIX_QEMU_LOCK:-}" = "off" ]; then

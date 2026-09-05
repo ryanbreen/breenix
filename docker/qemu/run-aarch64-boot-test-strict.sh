@@ -500,6 +500,10 @@ run_single_test() {
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
+    # F2: registers this PID with the lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this process during the poll below
+    # still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
 
     # Wait for userspace liveness AND exec smoke completion (18s max, checking every 1.5s)
     # Accept any of these as the liveness condition:

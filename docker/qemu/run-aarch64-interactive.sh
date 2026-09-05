@@ -112,6 +112,12 @@ docker run --rm \
     &
 
 DOCKER_PID=$!
+# F2: registers the docker run client with the lock's own EXIT trap so a
+# SIGTERM/SIGINT delivered to just this process (e.g. a non-interactive
+# Ctrl-C) still stops the container instead of orphaning it with the lock
+# free. docker run proxies signals to the container by default (sig-proxy),
+# so killing this PID stops qemu-system-aarch64 inside it too.
+qemu_host_lock_track_pid "$DOCKER_PID"
 
 # Wait for VNC to be ready
 echo "Waiting for QEMU to start..."

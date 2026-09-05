@@ -81,6 +81,10 @@ docker run --rm \
         &
 
 QEMU_PID=$!
+# F2: registers the docker run client with the lock's own EXIT trap (see
+# lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just this process
+# still stops the container instead of orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 # Wait for output (30 second timeout)
 echo "Waiting for kernel output (30s timeout)..."

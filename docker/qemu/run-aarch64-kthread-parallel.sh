@@ -78,10 +78,6 @@ echo "Kernel: $KERNEL"
 echo "ext2 disk: $EXT2_DISK"
 echo ""
 
-# Array to track QEMU PIDs (kept for the closing "Output logs" message's
-# shape parity with the rest of this file's history; each entry is set and
-# consumed within the same iteration below, not read back in a later one).
-declare -a QEMU_PIDS
 PASSED=0
 FAILED=0
 
@@ -109,8 +105,12 @@ for i in $(seq 1 $COUNT); do
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" &>/dev/null &
-    QEMU_PIDS[$i]=$!
-    echo "  Started test $i (PID ${QEMU_PIDS[$i]})"
+    QEMU_PID=$!
+    # F2: registers this PID with the lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this process during the poll below
+    # still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
+    echo "  Started test $i (PID $QEMU_PID)"
 
     # Wait up to 60 seconds for this test, starting from ITS OWN launch above.
     # Look for userspace shell prompt ("breenix>" or "bsh ") which indicates:
@@ -137,8 +137,8 @@ for i in $(seq 1 $COUNT); do
     done
 
     # Kill the QEMU instance if still running
-    kill ${QEMU_PIDS[$i]} 2>/dev/null || true
-    wait ${QEMU_PIDS[$i]} 2>/dev/null || true
+    kill $QEMU_PID 2>/dev/null || true
+    wait $QEMU_PID 2>/dev/null || true
     qemu_host_lock_release
 
     if $FOUND; then
@@ -164,7 +164,7 @@ done
 
 echo ""
 echo "========================================="
-echo "ARM64 Kthread Parallel Test Results"
+echo "ARM64 Kthread Sequential Test Results"
 echo "========================================="
 echo "Passed: $PASSED"
 echo "Failed: $FAILED"

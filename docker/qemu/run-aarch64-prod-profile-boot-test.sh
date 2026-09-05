@@ -219,6 +219,20 @@ cleanup() {
         kill "$QEMU_PID" 2>/dev/null || true
         wait "$QEMU_PID" 2>/dev/null || true
     fi
+    # F1: this function ends in `exit "$status"` below, which terminates the
+    # shell immediately -- when this cleanup runs because
+    # qemu-host-lock.sh's own chained EXIT trap invoked it (a SIGTERM/SIGINT
+    # delivered during the boot-poll window, or any set -e/ERR abort in that
+    # same window, while the lock is held), the rest of that chained trap
+    # string (`qemu_host_lock_release; _qhl_verdict_banner`) sits AFTER this
+    # call in the composed trap and would not run. Releasing here,
+    # immediately after the kill+wait above has confirmed QEMU_PID is gone,
+    # closes that gap without racing a concurrent acquirer against a still-
+    # dying QEMU: both calls are idempotent no-ops on the normal path, where
+    # the outer script already released the lock at line ~334 before this
+    # trap ever fires.
+    qemu_host_lock_release
+    _qhl_verdict_banner
 
     if [ "$status" -ne 0 ]; then
         timestamp=$(date -u +%Y%m%dT%H%M%SZ)

@@ -255,6 +255,10 @@ if [ "$ARCH" = "aarch64" ]; then
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" >"$OUTPUT_DIR/qemu.log" 2>&1 &
     QEMU_PID=$!
+    # F2: registers this PID with the aarch64 host lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this process during the poll below
+    # still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
     # The boot must reach its normal userspace completion markers AFTER the leg;
     # that is the leg's liveness proof, not the leg's own final line.
     LIVENESS_PATTERN='(\[heartbeat\]|\[EXEC_SMOKE:TARGET_OK\]|\[bcheck\] Complete:|\[bwm\] Display:)'

@@ -172,7 +172,11 @@ PYTHON
         -netdev user,id=net0 \
         -serial file:"$output_file" 2>&1 &
     QEMU_PID=$!
-    
+    # F2: registers this PID with the lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this process during the poll below
+    # still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$QEMU_PID"
+
     # Wait for test to complete (look for exit marker)
     for i in $(seq 1 25); do
         if grep -qE "exit\([0-9]+\)|Userspace Test Complete|Test Summary|RESULT:" "$output_file" 2>/dev/null; then

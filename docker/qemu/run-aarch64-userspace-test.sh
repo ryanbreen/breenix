@@ -74,6 +74,10 @@ timeout "$TIMEOUT" qemu-system-aarch64 \
     -monitor pipe:"$OUTPUT_DIR/monitor" \
     &
 QEMU_PID=$!
+# F2: registers this PID with the lock's own EXIT trap so a SIGTERM/SIGINT
+# delivered to just this process during the waits below still kills QEMU
+# instead of orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 # Wait for shell prompt
 echo "Waiting for shell prompt..."

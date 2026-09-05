@@ -117,7 +117,7 @@ existing `cleanup`-on-`EXIT` scripts among them already needed anyway).
 | `run-aarch64-boot-test-strict.sh` | single launch inside a per-boot loop (the gate #826's own health battery ran) |
 | `run-aarch64-boot-test-native.sh` | single launch inside a per-boot retry loop |
 | `run-aarch64-prod-profile-boot-test.sh` | single launch |
-| `run-aarch64-testing-profile-boot-test.sh` | single launch inside a per-boot loop, foreground (no `&`) |
+| `run-aarch64-testing-profile-boot-test.sh` | single launch inside a per-boot loop, backgrounded and tracked (see the fix-round addendum below -- this ran foreground until then) |
 | `run-aarch64-full-test.sh` | single launch |
 | `run-aarch64-stability-test.sh` | single launch |
 | `run-aarch64-percpu-stack-custody-gate.sh` | single launch, release via the chained `EXIT` trap only |
@@ -336,6 +336,66 @@ claim-lint: scripts/claim-lint.py --files <issue #834's body> -> exit 0
 claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (one per commit)
 ```
 
+## Fix round: signal safety (review findings, same day)
+
+A review of this branch found two gaps the sections above did not disclose,
+both about what happens on a SIGTERM/SIGINT delivered to just a routed
+script's own PID (not its process group) during the boot-poll window,
+while the lock is held -- a non-terminal termination path (a CI
+job-canceller targeting the child PID, for instance), distinct from the
+terminal-Ctrl-C / process-group case the boot proofs above did not need to
+cover since a process-group signal already reaches a backgrounded child on
+its own.
+
+- **The lock could be left un-released.**
+  `run-aarch64-prod-profile-boot-test.sh`'s `cleanup()` (chained onto the
+  helper's own EXIT trap since it predates this branch) ends in
+  `exit "$status"`, which terminates the shell immediately -- the
+  `qemu_host_lock_release; _qhl_verdict_banner` half of the composed trap,
+  positioned after `cleanup $?` in that trap string, did not run. Reproduced
+  with an isolated harness under `/bin/bash` (this host's `#!/bin/bash`
+  target is macOS's stock 3.2.57, not a newer bash) mirroring the exact
+  chain shape: a targeted `kill -TERM` on the script's own PID left the
+  lock directory behind for the next acquirer's stale-PID reclaim path to
+  find, instead of an explicit release. Fixed by having `cleanup()` call
+  `qemu_host_lock_release` and `_qhl_verdict_banner` itself, right after
+  its own kill+wait of `QEMU_PID` and before its own `exit` -- confirmed
+  with the same harness: the lock directory is gone immediately, not
+  reclaimed later.
+- **12 of the 20 scripts had no PID a targeted signal could reach.** The
+  helper's chained EXIT trap releases the lock but does not, by itself,
+  touch the caller's own QEMU/`docker run` process; for a script with no cleanup of
+  its own, a SIGTERM/SIGINT to just its PID freed the lock while the actual
+  `qemu-system-aarch64` (or, for the three Docker-wrapped scripts, the
+  host-side `docker run` client) kept running -- the exact contention this
+  branch exists to prevent, now with the lock itself reporting free.
+  Reproduced for both a backgrounded launch and a foreground one (matching
+  `run-aarch64-testing-profile-boot-test.sh`'s shape at the time, which had
+  no `&` and so no PID to capture): both left the child alive after a
+  targeted kill of the parent. Fixed with a new helper function,
+  `qemu_host_lock_track_pid`, that a script calls immediately after
+  capturing its launch's PID; the helper's EXIT trap now kills and reaps
+  each tracked PID before releasing the lock. Wired into the twelve
+  affected scripts (`run-aarch64-boot-test-native.sh`,
+  `run-aarch64-boot-test-strict.sh`, `run-aarch64-interactive.sh`,
+  `run-aarch64-kthread-parallel.sh`, `run-aarch64-test.sh`,
+  `run-aarch64-test-suite.sh`, `run-aarch64-testing-profile-boot-test.sh`,
+  `run-aarch64-tty-oracle-gate.sh`, `run-aarch64-userspace-test.sh`,
+  `run-aarch64-userspace.sh`, `run-ext2-lock-race-gate.sh`'s aarch64 leg,
+  `run-fs-fault-gate.sh`'s aarch64 leg);
+  `run-aarch64-testing-profile-boot-test.sh` also had its foreground launch
+  backgrounded so it has a PID to track at all. The other eight routed
+  scripts already killed and waited their own `QEMU_PID` inside a working
+  `cleanup` trap and needed no change for this gap.
+
+What this fix round does not extend to: an untrappable `SIGKILL` (or a host
+crash) still leaves both the QEMU child and the lock directory behind with
+no trap able to run at all -- unchanged from the stale-lock reclaim design
+described above, now also true of the child process, not only the lock
+directory. And the two reproductions above are, like the boot proofs
+section, single-shot harness runs demonstrating the mechanism, not a
+many-iteration soak of the signal-delivery path.
+
 ## What is NOT claimed
 
 - **Beast (x86) is unchanged.** This branch touches no x86-only script, and
@@ -376,3 +436,17 @@ claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (one per commit
   characteristics** (sequential instead of concurrent boots, `COUNT` times
   longer wall-clock) for the reason given above; this was not soak-tested
   at a larger `COUNT` as part of this branch.
+- **An untrappable `SIGKILL`, or a host crash, still leaves both the QEMU
+  child and the lock directory behind.** The fix-round section above closes
+  the gap for a trap-reachable signal (SIGTERM/SIGINT, as reproduced
+  there); `SIGKILL` bypasses the EXIT trap by design (POSIX does not
+  deliver it to a trap handler), so this branch's code -- before or
+  after the fix round -- has no path to the child process in that case,
+  and the lock directory
+  is left for the next acquirer's stale-PID `kill -0` reclaim path, same as
+  the top-of-file design already describes for a host crash.
+- **The fix round's two signal reproductions are single-shot, not a soak.**
+  Each demonstrates the mechanism once (a targeted `kill -TERM` against a
+  harness mirroring the real chain shape); neither is a many-iteration
+  statistical claim about the signal-delivery path the way the boot proofs
+  section's 49-sample concurrent-run check is for the no-signal path.
