@@ -1,8 +1,10 @@
 # Slice 3e — captured runs
 
-The 14 artifacts behind
+The 20 artifacts behind
 `docs/planning/green-program/aarch64-testing/SLICE3E-2026-09-05.md`, recorded on
-`sched/562-slice3e-pin-guard`. 12 of the 12 `.txt` files here are raw
+`sched/562-slice3e-pin-guard`. `01` through `14` are round 1, at head
+`fc302093`; `15` through `20` are round 2, at head `9136c85e`, and section 11 of
+that document is the table they evidence. 18 of the 18 `.txt` files here are raw
 captures; the
 `-text` attribute in `.gitattributes` keeps the CR bytes the guest console emits
 byte-exact, for the same reason the slice 3a and slice 3d trees carry it.
@@ -85,3 +87,16 @@ scoping the constant to aarch64, and `10` is the re-run at that head.
 | `12-x86-build-zero-feature.txt` | x86 build, no features: exit 0, 0 lines |
 | `13-strict-x20.txt` | the strict gate's own stdout: `PASS: 20/20 boots succeeded` |
 | `14-prod-gate.txt` | the production gate's own stdout, with the 6-field census and the absent oracle |
+| `15-r2-strict-x1.txt` | round 2's strict gate stdout at `9136c85e`: `PASS: 1/1 boots succeeded` |
+| `16-r2-prod-gate.txt` | round 2's production gate stdout at `9136c85e`: `PASS` |
+| `17-r2-strict-boot1-serial.txt` | the boot behind `15`, `BUILD_ID` `006a9ca4e213dd`: `verdict=PASS`, all-zero census |
+| `18-r2-x86-boot-tests-gate.txt` | round 2's x86 boot-tests gate on beast: `PASS`, `exited=110`, `stranded=0` |
+| `19-r2-x86-dispatch-no-alloc.txt` | `scripts/check-x86-dispatch-no-alloc.sh` at `9136c85e`: `PASS`, 3 symbols, 19 edges — the receipt round 1 left as "see below" |
+| `20-r2-x86-build-boot-tests.txt` | round 2's x86 boot-tests build tail: exit 0, 0 warning/error lines |
+
+**Round 2, `9136c85e`.** `15`, `16` and `17` are from this Mac; `18`, `19` and
+`20` are from the `breenix-x86` container on beast, in round 2's own clone
+`/root/breenix-slice3e` with `BREENIX_GATE_TMP=/root/breenix-slice3e-tmp`. `17`
+carries `BUILD_ID` `006a9ca4e213dd` and `16`'s boot carries `006a9ca4fe0397`;
+neither replaces `01` or `02`, which stay the fixtures the 3 replay tests score,
+because this round changed 0 fields of the census line those tests compare.
