@@ -30,6 +30,92 @@ const ARCH_TAG: &str = if cfg!(target_arch = "x86_64") {
     "aarch64"
 };
 
+/// One bracketed tick/millisecond sample and the verdict on it (#767).
+struct TimerScaleSample {
+    ticks_before: u64,
+    ms: u64,
+    ticks_after: u64,
+    ms_per_tick: u64,
+    low_ms: u64,
+    high_ms: u64,
+    in_range: bool,
+    ticks_nonzero: bool,
+}
+
+/// Read the tick counter either side of one `get_monotonic_time()` read.
+///
+/// `low_ms`/`high_ms` are what the two bracketing tick reads are worth in
+/// milliseconds at this build's `MS_PER_TICK`. `ticks_nonzero` is the
+/// anti-vacuity term: with a tick counter still at 0, any scale factor
+/// produces 0 ms and the range check cannot discriminate, so such a sample is
+/// reported as a non-verdict rather than as a pass.
+fn sample_timer_scale() -> TimerScaleSample {
+    let ticks_before = crate::time::get_ticks();
+    let ms = crate::time::get_monotonic_time();
+    let ticks_after = crate::time::get_ticks();
+
+    let ms_per_tick = crate::time::timer::MS_PER_TICK;
+    let low_ms = ticks_before.saturating_mul(ms_per_tick);
+    let high_ms = ticks_after.saturating_mul(ms_per_tick);
+    TimerScaleSample {
+        ticks_before,
+        ms,
+        ticks_after,
+        ms_per_tick,
+        low_ms,
+        high_ms,
+        in_range: ms >= low_ms && ms <= high_ms,
+        ticks_nonzero: ticks_before > 0,
+    }
+}
+
+/// Emit the `[TIMER_SCALE_ORACLE:...]` marker for `sample`, once per boot.
+///
+/// Once per boot because two profiles reach this check from different places:
+/// the shipped x86 profile through `test_timer_resolution()` in
+/// kernel_main_continue, and the boot_tests profile through
+/// `run_x86_timer_scale_gate()`. Both gates pin the emission count at 1, and a
+/// single counted emission keeps that pin true whichever call sites a profile
+/// happens to compile.
+fn report_timer_scale(sample: &TimerScaleSample) {
+    static EMITTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if EMITTED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    crate::serial_println!(
+        "[TIMER_SCALE_ORACLE:{}:ms_per_tick={}:ticks_before={}:ms={}:ticks_after={}:ticks_nonzero={}:in_range={}:{}]",
+        ARCH_TAG,
+        sample.ms_per_tick,
+        sample.ticks_before,
+        sample.ms,
+        sample.ticks_after,
+        u8::from(sample.ticks_nonzero),
+        u8::from(sample.in_range),
+        if sample.in_range && sample.ticks_nonzero {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    );
+}
+
+/// The #767 oracle in the x86 boot_tests profile.
+///
+/// `test_timer_resolution()` below is the shipped profile's call site, and a
+/// boot_tests boot measured on 2026-09-05 does not reach it: kernel_main_continue
+/// is preempted before that statement once the test userspace starts, and that
+/// 900 s boot_tests boot logged 0 PRECONDITION lines from the same block. This
+/// arm is dispatched from the x86 boot_tests gate list in kernel/src/main.rs,
+/// which runs after `interrupts::enable()` at main.rs:615, so the tick counter
+/// is already advancing when the sample is taken. Marker only: the gate script
+/// scores it, and a boot_tests kernel that panicked here would take the rest of
+/// the gate's evidence with it.
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+pub fn run_x86_timer_scale_gate() {
+    let sample = sample_timer_scale();
+    report_timer_scale(&sample);
+}
+
 /// Validates timer resolution and correctness
 ///
 /// This test ensures that get_monotonic_time() returns milliseconds, scored
@@ -67,37 +153,20 @@ pub fn test_timer_resolution() {
     // #767: the range is scaled by MS_PER_TICK. Comparing ms against the raw
     // tick range asserted a 1 tick == 1 ms identity that holds on aarch64 and
     // does not hold on x86_64, where the PIT is programmed at PIT_HZ = 200.
-    let ticks_before = crate::time::get_ticks();
-    let ms = crate::time::get_monotonic_time();
-    let ticks_after = crate::time::get_ticks();
-
-    // #767 oracle. `low_ms`/`high_ms` are what the two live tick reads that
-    // bracket the millisecond read are worth in milliseconds. `ticks_nonzero`
-    // is the anti-vacuity term: with a tick counter still at 0, any scale
-    // factor produces 0 ms and the range check cannot discriminate, so such
-    // a sample is reported as a non-verdict rather than a pass. The
-    // marker is emitted before the verdict below so the serial carries the
-    // observed numbers even on the arm that panics.
-    let ms_per_tick = crate::time::timer::MS_PER_TICK;
-    let low_ms = ticks_before.saturating_mul(ms_per_tick);
-    let high_ms = ticks_after.saturating_mul(ms_per_tick);
-    let in_range = ms >= low_ms && ms <= high_ms;
-    let ticks_nonzero = ticks_before > 0;
-    crate::serial_println!(
-        "[TIMER_SCALE_ORACLE:{}:ms_per_tick={}:ticks_before={}:ms={}:ticks_after={}:ticks_nonzero={}:in_range={}:{}]",
-        ARCH_TAG,
-        ms_per_tick,
+    // #767 oracle. The marker is emitted before the verdict below so the
+    // serial carries the observed numbers even on the arm that panics.
+    let sample = sample_timer_scale();
+    report_timer_scale(&sample);
+    let TimerScaleSample {
         ticks_before,
         ms,
         ticks_after,
-        u8::from(ticks_nonzero),
-        u8::from(in_range),
-        if in_range && ticks_nonzero {
-            "PASS"
-        } else {
-            "FAIL"
-        }
-    );
+        ms_per_tick,
+        low_ms,
+        high_ms,
+        in_range,
+        ticks_nonzero: _,
+    } = sample;
 
     log::info!(
         "Current state: {} ticks (before), {} ms, {} ticks (after)",
