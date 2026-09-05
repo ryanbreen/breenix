@@ -68,6 +68,23 @@ trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
+# invoking this script hardcode the identical /tmp/breenix_x86_boot_tests_$i
+# path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run and
+# a poll loop can read back the wrong lane's serial as its own. Defaulting to
+# /tmp keeps every existing caller byte-identical; a concurrent-lane launcher
+# sets this to a per-clone directory instead.
+# claim-lint:ok: #797, diff-empty against origin/main -- see
+# docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: OUTPUT_DIR (below, post-cd) is built from this value
+# after `cd "$BREENIX_ROOT"`, but the ERR trap above is installed before that
+# cd and can read OUTPUT_DIR pre-cd on an early failure -- a relative value
+# would resolve differently in each place (review finding F6 on #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)" >&2; exit 1 ;;
+esac
 # The x86 serial console carries the scheduler's single-character trace stream
 # on the same port as kernel and userspace output, so any marker line can carry
 # a prefix. The markers are self-delimiting (`[...]` or a unique sentence), so
@@ -380,7 +397,7 @@ UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"
 
 for i in $(seq 1 "$COUNT"); do
-    OUTPUT_DIR="/tmp/breenix_x86_boot_tests_$i"
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_boot_tests_$i"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
     cp target/ovmf/x64/code.fd "$OUTPUT_DIR/OVMF_CODE.fd"

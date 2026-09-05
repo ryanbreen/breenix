@@ -32,6 +32,12 @@
 #                       beast VM keeps a real clone and needs the repoint. Not
 #                       committed, not required elsewhere.
 #   BREENIX_GATE_TIMEOUT per-boot timeout in seconds (default: 150)
+#   BREENIX_GATE_TMP    base dir for boot output (default: /tmp). #797:
+#                       concurrent lanes on the shared beast container each
+#                       hardcoded /tmp/breenix_gate_$i, so one lane's rm -rf +
+#                       mkdir could clobber another lane's in-flight run and
+#                       score its serial as its own; a concurrent-lane
+#                       launcher sets this to a per-clone directory instead.
 #
 # What is NOT here, and cannot be: the fetch/checkout of the branch under test.
 # Something outside the working tree has to put the code there before a script
@@ -54,6 +60,14 @@ MODE="${2:-kthread}"
 MAX_CONCURRENCY=4
 REPO_DIR="${BREENIX_REPO_DIR:-$DEFAULT_REPO_DIR}"
 TIMEOUT_SECS="${BREENIX_GATE_TIMEOUT:-150}"
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever
+# directory happens to be current when each command runs (review finding F6
+# on #797 -- carried here from the same fix in the other four gate scripts).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
+esac
 
 # Non-interactive shells don't source .bashrc/.profile, so put cargo on PATH.
 source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
@@ -139,7 +153,7 @@ PASS=0
 FAIL=0
 BOOT_START=$SECONDS
 for i in $(seq 1 "$COUNT"); do
-  OUTDIR="/tmp/breenix_gate_$i"
+  OUTDIR="$BREENIX_GATE_TMP/breenix_gate_$i"
   rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
   # BREENIX_NET_MODE=none: the qemu-uefi binary hardcodes a SLIRP hostfwd on
   # host port 2323; disabling networking avoids lingering port state between

@@ -1,0 +1,13 @@
+=== over-length leg, timed ===
+rc=1 elapsed_s=0.030
+x86 production-profile gate preflight: console socket path "/root/gate-tmp-802-gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg/breenix_x86_prod_profile/console.sock" is 147 chars, over the AF_UNIX sun_path limit of 107 -- shorten BREENIX_GATE_TMP
+x86 production-profile gate: FAIL (set -e abort at ./docker/qemu/run-x86-prod-profile-boot-test.sh:830, exit 1)
+  failing command: false
+=== relative leg, timed ===
+rc=1 elapsed_s=0.029
+x86 production-profile gate preflight: BREENIX_GATE_TMP must be an absolute path, got: relative-not-absolute
+x86 production-profile gate: FAIL (set -e abort at ./docker/qemu/run-x86-prod-profile-boot-test.sh:826, exit 1)
+  failing command: false
+=== dirs that must NOT exist ===
+ls: cannot access '/root/gate-tmp-802-gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg': No such file or directory
+ls: cannot access '/root/breenix-health/relative-not-absolute': No such file or directory
