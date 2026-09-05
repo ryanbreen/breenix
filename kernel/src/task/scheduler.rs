@@ -489,6 +489,94 @@ pub fn emit_pinned_placement_census() {
     );
 }
 
+/// Where a probe thread ended up: a `per_cpu_queues` index, or this sentinel
+/// when it is on no queue at all -- the shape slice 3d's hold leaves.
+#[cfg(feature = "boot_tests")]
+const PIN_GUARD_ORACLE_HELD: usize = 255;
+
+/// What the pin-guard oracle observed, one field per migration site it drove.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+struct PinGuardOracleReport {
+    home: usize,
+    here: usize,
+    reclaim: usize,
+    requeue: usize,
+    previous: usize,
+    on_home: usize,
+    census_clean: bool,
+}
+
+/// Emit slice 3e's pin-guard oracle line.
+///
+/// aarch64 drives the probe. x86_64 has `MAX_CPUS` = 1, so no site in this file
+/// can move a thread between CPUs and no pin can name a CPU other than the one
+/// asking: the arm prints a SKIP that says so rather than a verdict it did not
+/// measure.
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+pub fn emit_pin_guard_oracle() {
+    crate::serial_println!(
+        "[PIN_GUARD_ORACLE:x86_64:SKIP:reason=max_cpus_{}_one_scheduling_cpu]",
+        MAX_CPUS
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub fn emit_pin_guard_oracle() {
+    let Some(thread) = crate::task::kthread::build_pin_guard_probe_thread() else {
+        crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason=probe_thread_unavailable]");
+        return;
+    };
+    // The probe manufactures 3 migrations the boot did not ask for, and the
+    // guard counts each refusal into the census the 2 aarch64 gates read. The
+    // census reports boot health, so the probe subtracts exactly the delta it
+    // caused and prints it instead. 0 other writers can have moved the counter
+    // in between: 1 of 1 mutating writer of the pin is `spawn_on_cpu`, whose 1
+    // call site has 0 callers, so the probe's own thread is the only pinned one
+    // in the kernel, and the whole sequence runs under the scheduler lock with
+    // interrupts masked.
+    // claim-lint:ok: 20 of 20 strict boots at this head print refused=3 and an
+    // all-zero census --
+    // docs/planning/green-program/aarch64-testing/serials/slice3e/
+    let refused_before = PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed);
+    let outcome = without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        match scheduler_lock.as_mut() {
+            Some(scheduler) => scheduler.run_pin_guard_oracle(thread),
+            None => Err(("scheduler_not_initialised", thread)),
+        }
+    });
+    let refused = PINNED_MIGRATION_REFUSED
+        .load(Ordering::Relaxed)
+        .saturating_sub(refused_before);
+    PINNED_MIGRATION_REFUSED.fetch_sub(refused, Ordering::Relaxed);
+    match outcome {
+        Err((reason, probe)) => {
+            drop(probe);
+            crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason={}]", reason);
+        }
+        Ok((report, probe)) => {
+            drop(probe);
+            let verdict = if report.on_home == 3 && report.census_clean {
+                "PASS"
+            } else {
+                "FAIL"
+            };
+            crate::serial_println!(
+                "[PIN_GUARD_ORACLE:aarch64:home={}:here={}:reclaim={}:requeue={}:previous={}:on_home={}:refused={}:census_clean={}:verdict={}]",
+                report.home,
+                report.here,
+                report.reclaim,
+                report.requeue,
+                report.previous,
+                report.on_home,
+                refused,
+                report.census_clean as u8,
+                verdict
+            );
+        }
+    }
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 fn retain_cpu_affine_test_thread(
     queue: &mut VecDeque<u64>,
@@ -4586,6 +4674,133 @@ impl Scheduler {
             self.per_cpu_queues[pin.cpu].push_back(thread_id);
         }
         true
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+    fn pin_guard_oracle_where(&self, tid: u64) -> usize {
+        (0..MAX_CPUS)
+            .find(|&cpu| self.per_cpu_queues[cpu].contains(&tid))
+            .unwrap_or(PIN_GUARD_ORACLE_HELD)
+    }
+
+    /// Drive three of the eleven migration sites against a thread that carries a
+    /// per-CPU worker pin, and report where each one put it.
+    ///
+    /// This is slice 3e's oracle. It is red on a kernel whose migration sites do
+    /// not consult the pin -- each of the three lands the thread on the CPU running
+    /// the probe rather than on the CPU the pin names -- and green on one whose
+    /// sites do. It reads the destinations out of the queues themselves rather than
+    /// out of a counter, so the same probe answers on a kernel that has no counter.
+    ///
+    /// It runs under 1 scheduler-lock acquisition with interrupts masked, and
+    /// the probe thread it is handed is published, driven and taken back out
+    /// again inside that window: 0 of the other CPUs can see it, and it takes 0
+    /// dispatches.
+    /// claim-lint:ok: 1 of 1 dispatch path in this file selects a candidate
+    /// under `lock_scheduler()`, which this window holds throughout
+    ///
+    /// An `Err` means the probe declined to run and names no verdict; the caller
+    /// prints a SKIP with the reason.
+    /// claim-lint:ok: 3 of the 11 census sites are driven here --
+    /// `reclaim_unschedulable_cpu_queues`, `requeue_thread_after_save_onto` and
+    /// `resolve_exception_cleanup_previous_thread`; the other 8 are covered by the
+    /// source rules in tests/loopback_pump_structure.rs
+    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+    fn run_pin_guard_oracle(
+        &mut self,
+        mut thread: Box<Thread>,
+    ) -> Result<(PinGuardOracleReport, Box<Thread>), (&'static str, Box<Thread>)> {
+        let here = Self::current_cpu_id();
+        let online = self.online_cpu_count();
+        // The probe needs a peer CPU to pin to and a queue index past the
+        // online range to stage the reclaim leg on. Both are properties of the
+        // machine, not of this change.
+        if online < 2 || online >= MAX_CPUS {
+            return Err(("no_offline_slot_or_peer_cpu", thread));
+        }
+        // The home CPU must be one a wake may be routed to, or the guard's
+        // correct answer is slice 3d's hold -- which is a gate-failing census
+        // reading, and this probe must not manufacture one.
+        let Some(home) = (0..online).find(|&cpu| cpu != here && self.cpu_accepts_wakeups(cpu))
+        else {
+            return Err(("no_peer_cpu_accepts_wakeups", thread));
+        };
+        // Legs 2 and 3 write this CPU's own handoff slots. Refuse to run rather
+        // than overwrite a live record.
+        if self.cpu_state[here].previous_thread.is_some() {
+            return Err(("previous_thread_slot_in_use", thread));
+        }
+        let offline = online;
+
+        let tid = thread.id();
+        thread.cpu_affinity = Some(super::thread::CpuPin::per_cpu_worker(home));
+        thread.set_ready();
+        self.threads.push(thread);
+
+        let census_before = (
+            PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
+            PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
+            PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
+            PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+            PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
+        );
+
+        // Leg 1 -- census site 1: a reclaim of a queue past the online range.
+        // The probe is the 1 thread on that queue, so the pass has exactly 1
+        // candidate there and moves 0 other threads off it.
+        self.per_cpu_queues[offline].push_back(tid);
+        self.reclaim_unschedulable_cpu_queues();
+        let reclaim = self.pin_guard_oracle_where(tid);
+        self.remove_from_ready_queue(tid);
+
+        // Leg 2 -- census site 7: a requeue after context save, named onto this
+        // CPU by its caller.
+        self.requeue_thread_after_save_onto(tid, here);
+        let requeue = self.pin_guard_oracle_where(tid);
+        self.remove_from_ready_queue(tid);
+
+        // Leg 3 -- census site 9: the drain of this CPU's previous-thread slot.
+        self.cpu_state[here].previous_thread = Some(tid);
+        self.resolve_exception_cleanup_previous_thread(here);
+        let previous = self.pin_guard_oracle_where(tid);
+        self.remove_from_ready_queue(tid);
+        self.cpu_state[here].previous_thread = None;
+
+        let census_after = (
+            PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
+            PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
+            PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
+            PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+            PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
+        );
+
+        let on_home = [reclaim, requeue, previous]
+            .iter()
+            .filter(|&&cpu| cpu == home)
+            .count();
+
+        // Take the probe back out. It took 0 dispatches, so 0 CPUs have
+        // touched its stack, and the caller drops it outside this lock.
+        let index = self
+            .threads
+            .iter()
+            .position(|candidate| candidate.id() == tid)
+            .expect("the probe thread was published above");
+        let mut probe = self.threads.remove(index);
+        probe.cpu_affinity = None;
+
+        Ok((
+            PinGuardOracleReport {
+                home,
+                here,
+                reclaim,
+                requeue,
+                previous,
+                on_home,
+                census_clean: census_before == census_after,
+            },
+            probe,
+        ))
     }
 
     /// Find the CPU with the fewest threads in its queue.

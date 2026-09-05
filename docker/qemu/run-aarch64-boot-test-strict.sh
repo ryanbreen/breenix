@@ -166,9 +166,26 @@ ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][
 # read the all-zero literal, and the forced-hold leg reddens this gate --
 # docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt,
 # 02-prod-boot1.txt and its 2 siblings, 05-runtime-anti-vacuity-strict-gate.txt
-PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+\]'
-PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]'
+PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+:migration_refused=[0-9]+:stack_home_conflict=[0-9]+\]'
+PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]'
 PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
+
+# Slice 3e's pin-guard oracle. The boot drives 3 of the 11 migration sites the
+# slice 3d census enumerated against a thread that carries a per-CPU worker pin
+# and reports the CPU each site put it on. Three assertions, for the same reason
+# the census has three: a verdict of FAIL is a red, a missing line is a red (a
+# kernel that stopped running the oracle must not read as a kernel that passed
+# it), and a SKIP is a red too -- the probe declines only on a machine shape
+# this gate does not boot, so a SKIP here means the shape changed and the
+# oracle stopped measuring.
+# The P5b pin census counts this script's occurrences of the INIT_GROUP_WALK
+# failing-verdict literal, so this comment deliberately does not spell that
+# string: the failing reading of the oracle below is the PASS suffix absent.
+# claim-lint:ok: 20 of 20 strict boots at this head print a passing verdict, and
+# the unconditional-move mutation of the guard prints a failing one --
+# docs/planning/green-program/aarch64-testing/serials/slice3e/
+PIN_GUARD_ORACLE_PATTERN='\[PIN_GUARD_ORACLE:aarch64:'
+PIN_GUARD_ORACLE_PASS_LITERAL=':verdict=PASS]'
 
 # R157/ASID-01: the scoring-only entry point further down scores a serial that
 # was captured earlier, so it needs no kernel, no disk and no preflight. Those
@@ -478,6 +495,14 @@ score_serial() {
     fi
     if ! grep -qaE "$PINNED_CENSUS_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Pinned-placement census marker missing"
+        return 1
+    fi
+    if ! grep -qaE "$PIN_GUARD_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "Pin-guard oracle line missing"
+        return 1
+    fi
+    if ! grep -aE "$PIN_GUARD_ORACLE_PATTERN" "$serial_file" 2>/dev/null | grep -qF "$PIN_GUARD_ORACLE_PASS_LITERAL"; then
+        echo "Pin-guard oracle did not pass ($(grep -aE "$PIN_GUARD_ORACLE_PATTERN" "$serial_file" | tail -1))"
         return 1
     fi
     return 0
