@@ -13,6 +13,7 @@ use crate::memory::arch_stub::{
     Cr3, Cr3Flags, PageTable, PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr,
 };
 use crate::memory::frame_allocator::allocate_frame;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{
@@ -24,8 +25,32 @@ use x86_64::{
 /// The global kernel PDPT (L3 page table) frame
 static KERNEL_PDPT_FRAME: Mutex<Option<PhysFrame>> = Mutex::new(None);
 
-/// The master kernel PML4 frame (Phase 2)
-static MASTER_KERNEL_PML4: Mutex<Option<PhysFrame>> = Mutex::new(None);
+/// The master kernel PML4 frame (Phase 2), published as a physical address in a
+/// lock-free cell rather than as a `Mutex<Option<PhysFrame>>`.
+///
+/// It is written exactly once, by `build_master_kernel_pml4()` during
+/// `memory::init()`, and is read-only for the rest of the boot.
+///
+/// It has to be lock-free because one of its readers is the context-switch
+/// path: `interrupts::context_switch::setup_kernel_thread_return` calls
+/// `process_memory::switch_to_kernel_page_table`, which reads this value with
+/// interrupts disabled, while `map_kernel_page`/`unmap_kernel_page` read it
+/// from ordinary thread context with interrupts enabled. Behind a spin lock
+/// those two readers deadlock a single-CPU machine: a timer preemption inside
+/// the thread-context reader leaves the lock held, and the dispatch that same
+/// interrupt performs then spins on it forever with IF=0, so no later
+/// interrupt can run to resume the holder.
+/// claim-lint:ok: that deadlock is the GDB specimen recorded in
+/// docs/planning/green-program/sockets/787-REGRESSION-RCA-2026-09-04.md.
+///
+/// `0` means "not built yet". The frame this cell holds comes from
+/// `allocate_frame()` in `build_master_kernel_pml4()`, and the boot frame
+/// allocator does not hand out physical address 0, so 0 is unambiguous as the
+/// sentinel.
+/// claim-lint:ok: 1 of 1 store to this cell is the one in
+/// `build_master_kernel_pml4()` below, pinned by
+/// tests/dispatch_path_lock_free_structure.rs.
+static MASTER_KERNEL_PML4_PHYS: AtomicU64 = AtomicU64::new(0);
 
 /// Physical memory offset for accessing page tables
 static mut PHYS_MEM_OFFSET: Option<VirtAddr> = None;
@@ -123,7 +148,7 @@ pub unsafe fn map_kernel_page(
     // CRITICAL FIX: Use the master kernel PML4 if available, otherwise current
     // This ensures kernel mappings go into the shared kernel page tables
     // that all processes inherit, not just the current process's view
-    let pml4_frame = if let Some(master_frame) = MASTER_KERNEL_PML4.lock().clone() {
+    let pml4_frame = if let Some(master_frame) = master_kernel_pml4() {
         log::trace!("Using master kernel PML4 for kernel mapping");
         master_frame
     } else {
@@ -272,7 +297,7 @@ pub unsafe fn unmap_kernel_page(virt: VirtAddr) -> Result<Option<PhysFrame>, &'s
         .lock()
         .ok_or("Kernel PDPT not initialized")?;
 
-    let pml4_frame = if let Some(master_frame) = MASTER_KERNEL_PML4.lock().clone() {
+    let pml4_frame = if let Some(master_frame) = master_kernel_pml4() {
         master_frame
     } else {
         let (current_frame, _) = Cr3::read();
@@ -731,7 +756,15 @@ pub fn build_master_kernel_pml4() {
 
     // Store the master PML4 for process creation
     log::info!("STORING: master_pml4_frame={:?}", master_pml4_frame);
-    *MASTER_KERNEL_PML4.lock() = Some(master_pml4_frame);
+    // Release: a reader of this cell dereferences the hierarchy it names, so the
+    // table writes above must be visible to whoever observes the store. The
+    // paired Acquire is in master_kernel_pml4() below.
+    // claim-lint:ok: 1 of 1 load of this cell is that accessor, pinned by
+    // tests/dispatch_path_lock_free_structure.rs.
+    MASTER_KERNEL_PML4_PHYS.store(
+        master_pml4_frame.start_address().as_u64(),
+        Ordering::Release,
+    );
 
     // CRITICAL: Switch to master PML4 immediately
     log::info!(
@@ -775,8 +808,16 @@ pub fn build_master_kernel_pml4() {
 /// Get the master kernel PML4 frame for process creation (Phase 2)
 ///
 /// IMPORTANT: This function is called from the context switch path (via
-/// switch_to_kernel_page_table), so it must not do any logging. Logging
-/// from interrupt context can cause deadlocks if the logger lock is held.
+/// switch_to_kernel_page_table), so it must not do any logging, and it must
+/// not take a lock. Logging from interrupt context can deadlock on the logger
+/// lock; a lock here deadlocks on the ordinary thread-context readers, which
+/// hold it with interrupts enabled. One relaxed-cost Acquire load, no lock, no
+/// allocation, no formatting.
 pub fn master_kernel_pml4() -> Option<PhysFrame> {
-    MASTER_KERNEL_PML4.lock().clone()
+    let phys = MASTER_KERNEL_PML4_PHYS.load(Ordering::Acquire);
+    if phys == 0 {
+        None
+    } else {
+        Some(PhysFrame::containing_address(PhysAddr::new(phys)))
+    }
 }

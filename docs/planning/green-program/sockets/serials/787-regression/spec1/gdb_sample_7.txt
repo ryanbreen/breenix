@@ -1,0 +1,173 @@
+The target architecture is set to "i386:x86-64".
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000100002cd482 in ?? ()
+add symbol table from file "/root/breenix-787/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961" at
+	.text_addr = 0x100000be6e0
+	.rodata_addr = 0x1000007dc78
+	.data_addr = 0x10000421e00
+	.bss_addr = 0x10000457500
+loaded 50 ranges
+  0x1000039bc50-0x1000039bc6d _ZN4core3ptr117drop_in_place$LT$alloc..vec..Vec$LT$alloc..boxed..Box$LT$kernel..memory..process_memory..ProcessPageTable$GT$$GT$$GT$17h088d237e88cc2903E
+  0x1000039be00-0x1000039be2e _ZN4core3ptr122drop_in_place$LT$core..option..Option$LT$alloc..boxed..Box$LT$kernel..memory..process_memory..ProcessPageTable$GT$$GT$$GT$17h5ade34131f51f6f7E
+  0x1000039bef0-0x1000039befc _ZN4core3ptr124drop_in_place$LT$alloc..raw_vec..RawVec$LT$alloc..boxed..Box$LT$kernel..memory..process_memory..ProcessPageTable$GT$$GT$$GT$17h5a92d5516dc84187E
+  0x1000039bf70-0x1000039bf7c _ZN4core3ptr126drop_in_place$LT$alloc..vec..drain..Drain$LT$alloc..boxed..Box$LT$kernel..memory..process_memory..ProcessPageTable$GT$$GT$$GT$17h81fe9f8bdebd1453E
+  0x1000039c1e0-0x1000039c1ec _ZN4core3ptr133drop_in_place$LT$alloc..vec..into_iter..IntoIter$LT$alloc..boxed..Box$LT$kernel..memory..process_memory..ProcessPageTable$GT$$GT$$GT$17h1b92b200963da8a6E
+  0x1000039cae0-0x1000039caec _ZN4core3ptr220drop_in_place$LT$$LT$alloc..vec..drain..Drain$LT$T$C$A$GT$$u20$as$u20$core..ops..drop..Drop$GT$..drop..DropGuard$LT$alloc..boxed..Box$LT$kernel..memory..process_memory..ProcessPageTable$GT$$C$alloc..alloc..Global$GT$$GT$17h3569730cec514199E
+  0x1000039cb10-0x1000039cb1c _ZN4core3ptr227drop_in_place$LT$$LT$alloc..vec..into_iter..IntoIter$LT$T$C$A$GT$$u20$as$u20$core..ops..drop..Drop$GT$..drop..DropGuard$LT$alloc..boxed..Box$LT$kernel..memory..process_memory..ProcessPageTable$GT$$C$alloc..alloc..Global$GT$$GT$17h4bca0adc374c27c8E
+  0x1000039cc00-0x1000039cc0c _ZN4core3ptr358drop_in_place$LT$alloc..vec..Vec$LT$x86_64..structures..paging..frame..PhysFrame$GT$..extend_trusted$LT$core..iter..adapters..map..Map$LT$core..slice..iter..Iter$LT$kernel..memory..frame_allocator..FrameLease$GT$$C$kernel..memory..process_memory..ProcessPageTable..custody_frames_for_gate..$u7b$$u7b$closure$u7d$$u7d$$GT$$GT$..$u7b$$u7b$closure$u7d$$u7d$$GT$17h785e7113f24ad9ecE
+  0x1000039cf60-0x1000039cf6c _ZN4core3ptr496drop_in_place$LT$core..iter..traits..iterator..Iterator..for_each..call$LT$x86_64..structures..paging..frame..PhysFrame$C$alloc..vec..Vec$LT$x86_64..structures..paging..frame..PhysFrame$GT$..extend_trusted$LT$core..iter..adapters..map..Map$LT$core..slice..iter..Iter$LT$kernel..memory..frame_allocator..FrameLease$GT$$C$kernel..memory..process_memory..ProcessPageTable..custody_frames_for_gate..$u7b$$u7b$closure$u7d$$u7d$$GT$$GT$..$u7b$$u7b$closure$u7d$$u7d$$GT$..$u7b$$u7b$closure$u7d$$u7d$$GT$17h6bd4285f593cb0d9E
+  0x1000039d9f0-0x1000039da1e _ZN4core3ptr69drop_in_place$LT$kernel..memory..process_memory..ProcessPageTable$GT$17h2980a29a9889a0cdE
+  0x1000039e020-0x1000039e02c _ZN4core3ptr781drop_in_place$LT$core..iter..adapters..map..map_fold$LT$$RF$kernel..memory..frame_allocator..FrameLease$C$x86_64..structures..paging..frame..PhysFrame$C$$LP$$RP$$C$kernel..memory..process_memory..ProcessPageTable..custody_frames_for_gate..$u7b$$u7b$closure$u7d$$u7d$$C$core..iter..traits..iterator..Iterator..for_each..call$LT$x86_64..structures..paging..frame..PhysFrame$C$alloc..vec..Vec$LT$x86_64..structures..paging..frame..PhysFrame$GT$..extend_trusted$LT$core..iter..adapters..map..Map$LT$core..slice..iter..Iter$LT$kernel..memory..frame_allocator..FrameLease$GT$$C$kernel..memory..process_memory..ProcessPageTable..custody_frames_for_gate..$u7b$$u7b$closure$u7d$$u7d$$GT$$GT$..$u7b$$u7b$closure$u7d$$u7d$$GT$..$u7b$$u7b$closure$u7d$$u7d$$GT$..$u7b$$u7b$closure$u7d$$u7d$$GT$17hccab119a0b151d32E
+  0x1000039ec30-0x1000039ec50 _ZN4core3ptr94drop_in_place$LT$alloc..boxed..Box$LT$kernel..memory..process_memory..ProcessPageTable$GT$$GT$17hebf66106a2a92608E
+  0x10000354710-0x1000035495f _ZN6kernel6memory14process_memory16ProcessPageTable10unmap_page17ha92163c64ecb0bdaE
+  0x10000354960-0x100003549bc _ZN6kernel6memory14process_memory16ProcessPageTable10unmap_page28_$u7b$$u7b$closure$u7d$$u7d$17h2d709d3ac78dbb82E
+  0x100003549c0-0x100003549cd _ZN6kernel6memory14process_memory16ProcessPageTable10unmap_page28_$u7b$$u7b$closure$u7d$$u7d$17h851f1c0dda960db9E
+  0x100003552d0-0x100003556d9 _ZN6kernel6memory14process_memory16ProcessPageTable13get_page_info17h98e97384ba010fd5E
+  0x10000351ab0-0x10000351abf _ZN6kernel6memory14process_memory16ProcessPageTable13level_4_frame17h2f68ca9e5696394dE
+  0x10000351eb0-0x10000351fee _ZN6kernel6memory14process_memory16ProcessPageTable14gate_sentinels17ha04197de54a07390E
+  0x10000356320-0x10000357c0f _ZN6kernel6memory14process_memory16ProcessPageTable14retire_bounded17h50a33e58cbbb968fE
+  0x100003556e0-0x100003558f3 _ZN6kernel6memory14process_memory16ProcessPageTable14translate_page17hac86fddc935ecd72E
+  0x10000357c10-0x10000357c41 _ZN6kernel6memory14process_memory16ProcessPageTable16cleanup_for_exec17he34fa00c617b3d8cE
+  0x10000355bd0-0x100003561ec _ZN6kernel6memory14process_memory16ProcessPageTable16unmap_user_pages17h25d2829481c21bc8E
+  0x10000351b70-0x10000351bc9 _ZN6kernel6memory14process_memory16ProcessPageTable17root_slot_custody17hc017887821c16626E
+  0x10000354ca0-0x1000035529e _ZN6kernel6memory14process_memory16ProcessPageTable17update_page_flags17hef625a2dc5d38c7fE
+  0x100003552b0-0x100003552bd _ZN6kernel6memory14process_memory16ProcessPageTable17update_page_flags28_$u7b$$u7b$closure$u7d$$u7d$17h18f04bd7475eae40E
+  0x100003552c0-0x100003552cd _ZN6kernel6memory14process_memory16ProcessPageTable17update_page_flags28_$u7b$$u7b$closure$u7d$$u7d$17h681f1d4f187b45c0E
+  0x100003552a0-0x100003552ad _ZN6kernel6memory14process_memory16ProcessPageTable17update_page_flags28_$u7b$$u7b$closure$u7d$$u7d$17hd7f24cdc8f6f208fE
+  0x10000352210-0x10000352893 _ZN6kernel6memory14process_memory16ProcessPageTable17walk_mapped_pages17h7b20c9d9baa84b24E
+  0x100003528a0-0x10000352f23 _ZN6kernel6memory14process_memory16ProcessPageTable17walk_mapped_pages17hbcff56ac3402c20eE
+  0x10000355900-0x10000355bc3 _ZN6kernel6memory14process_memory16ProcessPageTable18clear_user_entries17hc4de2532512cca5cE
+  0x10000351bd0-0x10000351ea6 _ZN6kernel6memory14process_memory16ProcessPageTable18gate_sentinel_cost17h29c14a6a28f24d57E
+  0x100003549d0-0x10000354aff _ZN6kernel6memory14process_memory16ProcessPageTable19release_leaf_record17hcbd80d150990abefE
+  0x10000351ad0-0x10000351b6f _ZN6kernel6memory14process_memory16ProcessPageTable19root_slot_populated17h9c125f189b9fef22E
+  0x10000351ff0-0x10000352045 _ZN6kernel6memory14process_memory16ProcessPageTable21gate_page_is_unmapped17hbc430881fa879fe6E
+  0x10000354b00-0x10000354b45 _ZN6kernel6memory14process_memory16ProcessPageTable21release_mapped_leaves17hca4b165de37a6987E
+  0x10000354b50-0x10000354c89 _ZN6kernel6memory14process_memory16ProcessPageTable21release_mapped_leaves28_$u7b$$u7b$closure$u7d$$u7d$17hf7dd2aefd1760cb4E
+  0x10000354c90-0x10000354c94 _ZN6kernel6memory14process_memory16ProcessPageTable21release_mapped_leaves28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17hc8840635071f9c56E
+  0x100003520d0-0x100003521cd _ZN6kernel6memory14process_memory16ProcessPageTable23custody_frames_for_gate17he67985a4d3197eb8E
+  0x100003521d0-0x10000352208 _ZN6kernel6memory14process_memory16ProcessPageTable23custody_frames_for_gate28_$u7b$$u7b$closure$u7d$$u7d$17hd82d4ec283641607E
+  0x10000352050-0x1000035208b _ZN6kernel6memory14process_memory16ProcessPageTable27gate_inherited_slot_address17h4bc4adb8b84c77dfE
+  0x100003520c0-0x100003520ce _ZN6kernel6memory14process_memory16ProcessPageTable27gate_inherited_slot_address28_$u7b$$u7b$closure$u7d$$u7d$17h9b79ace3baaa3f16E
+  0x10000352090-0x100003520c0 _ZN6kernel6memory14process_memory16ProcessPageTable27gate_inherited_slot_address28_$u7b$$u7b$closure$u7d$$u7d$17hf1850897056a7aecE
+  0x10000351ac0-0x10000351acc _ZN6kernel6memory14process_memory16ProcessPageTable30recorded_table_frames_for_gate17hedb3025e73e0fe50E
+  0x1000034b700-0x10000351aab _ZN6kernel6memory14process_memory16ProcessPageTable3new17hc17dd5bdcb744b60E
+  0x100003561f0-0x1000035631e _ZN6kernel6memory14process_memory16ProcessPageTable7abandon17hbd71d6f575455d3eE
+  0x10000352f30-0x100003546f2 _ZN6kernel6memory14process_memory16ProcessPageTable8map_page17h959199a4883d8f51E
+  0x10000354700-0x1000035470d _ZN6kernel6memory14process_memory16ProcessPageTable8map_page28_$u7b$$u7b$closure$u7d$$u7d$17hc4b3378d1af84945E
+  0x100003416b0-0x10000342c4f _ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE
+  0x10000342c50-0x100003435e2 _ZN6kernel6memory17kernel_page_table17unmap_kernel_page17h51bdf7ac934db517E
+  0x10000357c50-0x10000357d20 _ZN90_$LT$kernel..memory..process_memory..ProcessPageTable$u20$as$u20$core..ops..drop..Drop$GT$4drop17h71591f2bb7adaf6bE
+
+===== disassemble map_kernel_page lock region =====
+   0x100003416b0 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE>:	sub    $0x6a8,%rsp
+   0x100003416b7 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+7>:	mov    %rdi,0x80(%rsp)
+   0x100003416bf <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+15>:	mov    %rsi,0x88(%rsp)
+   0x100003416c7 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+23>:	mov    %rdx,0x90(%rsp)
+   0x100003416cf <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+31>:	mov    0x80(%rsp),%rdi
+   0x100003416d7 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+39>:	call   0x1000028d670 <_ZN6x86_644addr8VirtAddr6as_u6417h41097e8a77e4d51dE>
+   0x100003416dc <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+44>:	movabs $0xffff800000000000,%rcx
+   0x100003416e6 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+54>:	cmp    %rcx,%rax
+   0x100003416e9 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+57>:	jb     0x10000341751 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+161>
+   0x100003416eb <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+59>:	mov    0x1726de(%rip),%rsi        # 0x100004b3dd0 <_ZN6kernel6memory17kernel_page_table15PHYS_MEM_OFFSET17hac623e772735fdf2E>
+   0x100003416f2 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+66>:	mov    0x1726df(%rip),%rdx        # 0x100004b3dd8 <_ZN6kernel6memory17kernel_page_table15PHYS_MEM_OFFSET17hac623e772735fdf2E+8>
+   0x100003416f9 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+73>:	lea    -0x291321(%rip),%rcx        # 0x100000b03df
+   0x10000341700 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+80>:	mov    0xd3621(%rip),%rax        # 0x10000414d28
+   0x10000341707 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+87>:	lea    0xb8(%rsp),%rdi
+   0x1000034170f <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+95>:	mov    $0x26,%r8d
+   0x10000341715 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+101>:	call   *%rax
+   0x10000341717 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+103>:	mov    0xd3612(%rip),%rax        # 0x10000414d30
+   0x1000034171e <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+110>:	lea    0xa8(%rsp),%rdi
+   0x10000341726 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+118>:	lea    0xb8(%rsp),%rsi
+   0x1000034172e <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+126>:	call   *%rax
+   0x10000341730 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+128>:	mov    0xa8(%rsp),%rdx
+   0x10000341738 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+136>:	mov    $0x1,%eax
+   0x1000034173d <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+141>:	xor    %ecx,%ecx
+   0x1000034173f <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+143>:	cmp    $0x0,%rdx
+   0x10000341743 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+147>:	cmove  %rcx,%rax
+   0x10000341747 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+151>:	test   $0x1,%rax
+   0x1000034174d <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+157>:	jne    0x10000341771 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+193>
+   0x1000034174f <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+159>:	jmp    0x100003417a6 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+246>
+   0x10000341751 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+161>:	lea    -0x2910c0(%rip),%rax        # 0x100000b0698
+   0x10000341758 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+168>:	mov    %rax,0x98(%rsp)
+   0x10000341760 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+176>:	movq   $0x2e,0xa0(%rsp)
+   0x1000034176c <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+188>:	jmp    0x10000341dae <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+1790>
+   0x10000341771 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+193>:	mov    0xa8(%rsp),%rdi
+   0x10000341779 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+201>:	mov    0xb0(%rsp),%rsi
+   0x10000341781 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+209>:	lea    0xbff50(%rip),%rdx        # 0x100004016d8
+   0x10000341788 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+216>:	mov    0xd2899(%rip),%rax        # 0x10000414028
+   0x1000034178f <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+223>:	call   *%rax
+   0x10000341791 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+225>:	mov    %rax,0x98(%rsp)
+   0x10000341799 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+233>:	mov    %rdx,0xa0(%rsp)
+   0x100003417a1 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+241>:	jmp    0x10000341dae <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+1790>
+   0x100003417a6 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+246>:	mov    0xb0(%rsp),%rax
+   0x100003417ae <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+254>:	mov    %rax,0x78(%rsp)
+   0x100003417b3 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+259>:	movb   $0x2,0x6a0(%rsp)
+   0x100003417bb <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+267>:	movb   $0x0,0x6a1(%rsp)
+   0x100003417c3 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+275>:	mov    0x6a0(%rsp),%cl
+   0x100003417ca <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+282>:	mov    0x6a1(%rsp),%al
+   0x100003417d1 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+289>:	movzbl %cl,%ecx
+   0x100003417d4 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+292>:	movzbl %al,%r8d
+   0x100003417d8 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+296>:	lea    0x1725c1(%rip),%rdi        # 0x100004b3da0 <_ZN6kernel6memory17kernel_page_table17KERNEL_PDPT_FRAME17h7918455cb1b7e137E>
+   0x100003417df <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+303>:	xor    %esi,%esi
+   0x100003417e1 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+305>:	mov    $0x1,%edx
+   0x100003417e6 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+310>:	call   0x100002cc310 <_ZN4core4sync6atomic10AtomicBool21compare_exchange_weak17ha43c502886d625e2E>
+   0x100003417eb <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+315>:	and    $0x1,%al
+   0x100003417ed <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+317>:	mov    %al,0x69e(%rsp)
+   0x100003417f4 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+324>:	mov    %dl,0x69f(%rsp)
+   0x100003417fb <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+331>:	mov    0xceaee(%rip),%rax        # 0x100004102f0
+   0x10000341802 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+338>:	lea    0x69e(%rsp),%rdi
+   0x1000034180a <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+346>:	call   *%rax
+   0x1000034180c <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+348>:	test   $0x1,%al
+   0x1000034180e <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+350>:	jne    0x10000341812 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+354>
+   0x10000341810 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+352>:	jmp    0x10000341840 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+400>
+   0x10000341812 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+354>:	movb   $0x0,0x6a7(%rsp)
+   0x1000034181a <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+362>:	mov    0x6a7(%rsp),%al
+   0x10000341821 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+369>:	movzbl %al,%esi
+   0x10000341824 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+372>:	lea    0x172575(%rip),%rdi        # 0x100004b3da0 <_ZN6kernel6memory17kernel_page_table17KERNEL_PDPT_FRAME17h7918455cb1b7e137E>
+   0x1000034182b <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+379>:	call   0x100002cc3a0 <_ZN4core4sync6atomic10AtomicBool4load17h59b145113212549eE>
+   0x10000341830 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+384>:	test   $0x1,%al
+   0x10000341832 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+386>:	jne    0x10000341839 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+393>
+   0x10000341834 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+388>:	jmp    0x100003417b3 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+259>
+   0x10000341839 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+393>:	call   0x100002cd480 <_ZN4core4sync6atomic14spin_loop_hint17h19d6744cfe35825dE>
+   0x1000034183e <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+398>:	jmp    0x10000341812 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+354>
+   0x10000341840 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+400>:	lea    0x172559(%rip),%rcx        # 0x100004b3da0 <_ZN6kernel6memory17kernel_page_table17KERNEL_PDPT_FRAME17h7918455cb1b7e137E>
+   0x10000341847 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+407>:	lea    0x17255a(%rip),%rax        # 0x100004b3da8 <_ZN6kernel6memory17kernel_page_table17KERNEL_PDPT_FRAME17h7918455cb1b7e137E+8>
+   0x1000034184e <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+414>:	mov    %rcx,0xf8(%rsp)
+   0x10000341856 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+422>:	mov    %rax,0x100(%rsp)
+   0x1000034185e <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+430>:	mov    0xda533(%rip),%rax        # 0x1000041bd98
+   0x10000341865 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+437>:	lea    0xf8(%rsp),%rdi
+   0x1000034186d <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+445>:	call   *%rax
+   0x1000034186f <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+447>:	mov    (%rax),%rcx
+   0x10000341872 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+450>:	mov    %rcx,0xe8(%rsp)
+   0x1000034187a <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+458>:	mov    0x8(%rax),%rax
+   0x1000034187e <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+462>:	mov    %rax,0xf0(%rsp)
+   0x10000341886 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+470>:	lea    -0x291488(%rip),%rdx        # 0x100000b0405
+   0x1000034188d <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+477>:	mov    0xd247c(%rip),%rax        # 0x10000413d10
+   0x10000341894 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+484>:	lea    0xd8(%rsp),%rdi
+   0x1000034189c <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+492>:	lea    0xe8(%rsp),%rsi
+   0x100003418a4 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+500>:	mov    $0x1b,%ecx
+   0x100003418a9 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+505>:	call   *%rax
+   0x100003418ab <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+507>:	mov    0xd2466(%rip),%rax        # 0x10000413d18
+   0x100003418b2 <_ZN6kernel6memory17kernel_page_table15map_kernel_page17h400891db09db17faE+514>:	lea    0xc8(%rsp),%rdi
+
+
+===== whole-RAM scan for saved RIPs in those ranges =====
+  hit @physmap 0x280001071e0 -> 0x1000039cc00 (core::ptr::drop_in_place<alloc::vec::Vec<x86_64::structures::paging::frame::PhysFrame>::extend_trusted<core::iter::adapters::map::Map<core::slice::iter::Iter<kernel::memory::frame_allocator::FrameLease>,kernel::memory::process_memory::ProcessPageTable::custody_frames_for_gate::{{closure}}>>::{{closure}}> in section .text)
+  hit @physmap 0x28000107268 -> 0x1000039cf60 (core::ptr::drop_in_place<core::iter::traits::iterator::Iterator::for_each::call<x86_64::structures::paging::frame::PhysFrame,alloc::vec::Vec<x86_64::structures::paging::frame::PhysFrame>::extend_trusted<core::iter::adapters::map::Map<core::slice::iter::Iter<kernel::memory::frame_allocator::FrameLease>,kernel::memory::process_memory::ProcessPageTable::custody_frames_for_gate::{{closure}}>>::{{closure}}>::{{closure}}> in section .text)
+  hit @physmap 0x280001a8360 -> 0x1000039c1e0 (core::ptr::drop_in_place<alloc::vec::into_iter::IntoIter<alloc::boxed::Box<kernel::memory::process_memory::ProcessPageTable>>> in section .text)
+  hit @physmap 0x280001a8ae8 -> 0x1000039ec30 (core::ptr::drop_in_place<alloc::boxed::Box<kernel::memory::process_memory::ProcessPageTable>> in section .text)
+  hit @physmap 0x280001a9d30 -> 0x100003416b0 (kernel::memory::kernel_page_table::map_kernel_page in section .text)
+  hit @physmap 0x280001aa010 -> 0x1000034b700 (kernel::memory::process_memory::ProcessPageTable::new in section .text)
+  hit @physmap 0x280001aa060 -> 0x100003556e0 (kernel::memory::process_memory::ProcessPageTable::translate_page in section .text)
+  hit @physmap 0x280001aa070 -> 0x1000039be00 (core::ptr::drop_in_place<core::option::Option<alloc::boxed::Box<kernel::memory::process_memory::ProcessPageTable>>> in section .text)
+  hit @physmap 0x280001aa0d0 -> 0x10000352f30 (kernel::memory::process_memory::ProcessPageTable::map_page in section .text)
+  hit @physmap 0x280001aa310 -> 0x10000351ab0 (kernel::memory::process_memory::ProcessPageTable::level_4_frame in section .text)
+  hit @physmap 0x280001aa450 -> 0x10000355900 (kernel::memory::process_memory::ProcessPageTable::clear_user_entries in section .text)
+  hit @physmap 0x280001aa458 -> 0x10000355bd0 (kernel::memory::process_memory::ProcessPageTable::unmap_user_pages in section .text)
+  hit @physmap 0x280001aae08 -> 0x10000354710 (kernel::memory::process_memory::ProcessPageTable::unmap_page in section .text)
+  hit @physmap 0x280001ad528 -> 0x1000039bef0 (core::ptr::drop_in_place<alloc::raw_vec::RawVec<alloc::boxed::Box<kernel::memory::process_memory::ProcessPageTable>>> in section .text)
+  hit @physmap 0x280001ad948 -> 0x1000039cb10 (core::ptr::drop_in_place<<alloc::vec::into_iter::IntoIter<T,A> as core::ops::drop::Drop>::drop::DropGuard<alloc::boxed::Box<kernel::memory::process_memory::ProcessPageTable>,alloc::alloc::Global>> in section .text)
+  hit @physmap 0x280001adc88 -> 0x100003552d0 (kernel::memory::process_memory::ProcessPageTable::get_page_info in section .text)
+  hit @physmap 0x280001adc98 -> 0x10000354ca0 (kernel::memory::process_memory::ProcessPageTable::update_page_flags in section .text)
+  hit @physmap 0x280001ade88 -> 0x10000352210 (kernel::memory::process_me

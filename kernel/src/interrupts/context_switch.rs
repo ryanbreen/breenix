@@ -1268,12 +1268,31 @@ fn setup_kernel_thread_return(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    // Get thread info - restore ALL saved registers, not just a few
-    let thread_info = scheduler::with_thread_mut(thread_id, |thread| {
-        (thread.name.clone(), thread.context.clone())
-    });
+    // Get thread info - restore the 15 saved general-purpose registers plus the
+    // frame, not just a few.
+    //
+    // The name is deliberately NOT read here. Cloning it allocated a `String`
+    // on each kernel-thread dispatch -- a heap-allocator lock taken from
+    // interrupt context, which ordinary thread context holds with interrupts
+    // enabled -- for a value this function then dropped unused. `Context` is
+    // plain registers, so cloning it performs no allocation.
+    //
+    // This function is NOT lock-free, and an earlier revision of the #791 record
+    // wrongly said the dispatch path had "no lock left to spin on". The call
+    // below takes SCHEDULER.lock() -- a spin::Mutex -- through
+    // scheduler::with_thread_mut. What keeps that acquisition out of the #791
+    // failure class is the interrupt state of its holders, not their absence:
+    // with_thread_mut takes the lock inside without_interrupts, so no holder can
+    // be preempted while holding it and the byte spun on here always has a
+    // runnable owner. The hazard #791 hit was the opposite shape -- a mutex this
+    // path reads with IF=0 that ordinary thread context holds with interrupts
+    // ENABLED. Any future lock added to this path must have the masked-holder
+    // property or it re-arms #791.
+    // claim-lint:ok: the deadlock this hazard class produced is issue #791 and
+    // docs/planning/green-program/sockets/787-REGRESSION-RCA-2026-09-04.md.
+    let thread_info = scheduler::with_thread_mut(thread_id, |thread| thread.context.clone());
 
-    if let Some((_name, context)) = thread_info {
+    if let Some(context) = thread_info {
         unsafe {
             interrupt_frame.as_mut().update(|frame| {
                 frame.instruction_pointer = x86_64::VirtAddr::new(context.rip);

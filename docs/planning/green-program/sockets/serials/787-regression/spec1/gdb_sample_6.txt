@@ -1,0 +1,112 @@
+The target architecture is set to "i386:x86-64".
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000100002cd482 in ?? ()
+add symbol table from file "/root/breenix-787/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961" at
+	.text_addr = 0x100000be6e0
+	.rodata_addr = 0x1000007dc78
+	.data_addr = 0x10000421e00
+	.bss_addr = 0x10000457500
+master_kernel_pml4 = 0x10000348540
+
+===== disassembly 0x10000348540 .. 0x100003485e0 =====
+   0x10000348540 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E>:	sub    $0x28,%rsp
+   0x10000348544 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+4>:	mov    %rdi,(%rsp)
+   0x10000348548 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+8>:	mov    %rdi,0x8(%rsp)
+   0x1000034854d <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+13>:	movb   $0x2,0x25(%rsp)
+   0x10000348552 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+18>:	movb   $0x0,0x26(%rsp)
+   0x10000348557 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+23>:	mov    0x25(%rsp),%cl
+   0x1000034855b <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+27>:	mov    0x26(%rsp),%al
+   0x1000034855f <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+31>:	movzbl %cl,%ecx
+   0x10000348562 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+34>:	movzbl %al,%r8d
+   0x10000348566 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+38>:	lea    0x16b84b(%rip),%rdi        # 0x100004b3db8 <_ZN6kernel6memory17kernel_page_table18MASTER_KERNEL_PML417h7582772580ac190aE>
+   0x1000034856d <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+45>:	xor    %esi,%esi
+   0x1000034856f <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+47>:	mov    $0x1,%edx
+   0x10000348574 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+52>:	call   0x100002cc310 <_ZN4core4sync6atomic10AtomicBool21compare_exchange_weak17ha43c502886d625e2E>
+   0x10000348579 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+57>:	and    $0x1,%al
+   0x1000034857b <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+59>:	mov    %al,0x23(%rsp)
+   0x1000034857f <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+63>:	mov    %dl,0x24(%rsp)
+   0x10000348583 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+67>:	mov    0xc7d66(%rip),%rax        # 0x100004102f0
+   0x1000034858a <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+74>:	lea    0x23(%rsp),%rdi
+   0x1000034858f <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+79>:	call   *%rax
+   0x10000348591 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+81>:	test   $0x1,%al
+   0x10000348593 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+83>:	jne    0x10000348597 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+87>
+   0x10000348595 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+85>:	jmp    0x100003485bc <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+124>
+   0x10000348597 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+87>:	movb   $0x0,0x27(%rsp)
+   0x1000034859c <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+92>:	mov    0x27(%rsp),%al
+   0x100003485a0 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+96>:	movzbl %al,%esi
+   0x100003485a3 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+99>:	lea    0x16b80e(%rip),%rdi        # 0x100004b3db8 <_ZN6kernel6memory17kernel_page_table18MASTER_KERNEL_PML417h7582772580ac190aE>
+   0x100003485aa <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+106>:	call   0x100002cc3a0 <_ZN4core4sync6atomic10AtomicBool4load17h59b145113212549eE>
+   0x100003485af <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+111>:	test   $0x1,%al
+   0x100003485b1 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+113>:	jne    0x100003485b5 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+117>
+   0x100003485b3 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+115>:	jmp    0x1000034854d <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+13>
+   0x100003485b5 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+117>:	call   0x100002cd480 <_ZN4core4sync6atomic14spin_loop_hint17h19d6744cfe35825dE>
+   0x100003485ba <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+122>:	jmp    0x10000348597 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+87>
+   0x100003485bc <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+124>:	lea    0x16b7f5(%rip),%rcx        # 0x100004b3db8 <_ZN6kernel6memory17kernel_page_table18MASTER_KERNEL_PML417h7582772580ac190aE>
+   0x100003485c3 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+131>:	lea    0x16b7f6(%rip),%rax        # 0x100004b3dc0 <_ZN6kernel6memory17kernel_page_table18MASTER_KERNEL_PML417h7582772580ac190aE+8>
+   0x100003485ca <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+138>:	mov    %rcx,0x10(%rsp)
+   0x100003485cf <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+143>:	mov    %rax,0x18(%rsp)
+   0x100003485d4 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+148>:	mov    0xd37bd(%rip),%rax        # 0x1000041bd98
+   0x100003485db <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+155>:	lea    0x10(%rsp),%rdi
+   0x100003485e0 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+160>:	call   *%rax
+   0x100003485e2 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+162>:	mov    (%rsp),%rdi
+   0x100003485e6 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+166>:	mov    %rax,%rsi
+   0x100003485e9 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+169>:	mov    0xce8b8(%rip),%rax        # 0x10000416ea8
+   0x100003485f0 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+176>:	call   *%rax
+   0x100003485f2 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+178>:	mov    0xd710f(%rip),%rax        # 0x1000041f708
+   0x100003485f9 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+185>:	lea    0x10(%rsp),%rdi
+   0x100003485fe <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+190>:	call   *%rax
+   0x10000348600 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+192>:	mov    0x8(%rsp),%rax
+   0x10000348605 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+197>:	add    $0x28,%rsp
+   0x10000348609 <_ZN6kernel6memory17kernel_page_table18master_kernel_pml417h1d0fa35e22799a82E+201>:	ret
+   0x1000034860a:	int3
+
+
+===== switch_to_kernel_page_table disassembly =====
+   0x10000359e00 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE>:	sub    $0x178,%rsp
+   0x10000359e07 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+7>:	mov    0xbe37a(%rip),%rax        # 0x10000418188
+   0x10000359e0e <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+14>:	lea    0x10(%rsp),%rdi
+   0x10000359e13 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+19>:	call   *%rax
+   0x10000359e15 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+21>:	testq  $0x1,0x10(%rsp)
+   0x10000359e1e <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+30>:	je     0x10000359e61 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+97>
+   0x10000359e20 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+32>:	mov    0x18(%rsp),%rax
+   0x10000359e25 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+37>:	mov    %rax,0x20(%rsp)
+   0x10000359e2a <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+42>:	lea    0x30(%rsp),%rdi
+   0x10000359e2f <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+47>:	call   0x1000019c700 <_ZN6x86_649registers7control6x86_6449_$LT$impl$u20$x86_64..registers..control..Cr3$GT$4read17h6560c50a2a29a2f4E>
+   0x10000359e34 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+52>:	mov    0x30(%rsp),%rax
+   0x10000359e39 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+57>:	mov    %rax,0x28(%rsp)
+   0x10000359e3e <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+62>:	mov    0x38(%rsp),%rax
+   0x10000359e43 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+67>:	mov    %rax,0x8(%rsp)
+   0x10000359e48 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+72>:	mov    0xc3999(%rip),%rax        # 0x1000041d7e8
+   0x10000359e4f <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+79>:	lea    0x28(%rsp),%rdi
+   0x10000359e54 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+84>:	lea    0x20(%rsp),%rsi
+   0x10000359e59 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+89>:	call   *%rax
+   0x10000359e5b <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+91>:	test   $0x1,%al
+   0x10000359e5d <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+93>:	jne    0x10000359e95 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+149>
+   0x10000359e5f <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+95>:	jmp    0x10000359e8d <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+141>
+   0x10000359e61 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+97>:	movq   $0x1,0xf8(%rsp)
+   0x10000359e6d <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+109>:	lea    -0x2dc104(%rip),%rsi        # 0x1000007dd70
+   0x10000359e74 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+116>:	mov    0xb5ced(%rip),%rax        # 0x1000040fb68
+   0x10000359e7b <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+123>:	lea    0xf8(%rsp),%rdi
+   0x10000359e83 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+131>:	call   *%rax
+   0x10000359e85 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+133>:	test   $0x1,%al
+   0x10000359e87 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+135>:	jne    0x1000035a03a <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+570>
+   0x10000359e8d <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+141>:	add    $0x178,%rsp
+   0x10000359e94 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+148>:	ret
+   0x10000359e95 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+149>:	movq   $0x5,0x40(%rsp)
+   0x10000359e9e <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+158>:	lea    -0x2dc135(%rip),%rsi        # 0x1000007dd70
+   0x10000359ea5 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+165>:	mov    0xb5cbc(%rip),%rax        # 0x1000040fb68
+   0x10000359eac <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+172>:	lea    0x40(%rsp),%rdi
+   0x10000359eb1 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+177>:	call   *%rax
+   0x10000359eb3 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+179>:	test   $0x1,%al
+   0x10000359eb5 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+181>:	jne    0x10000359eed <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+237>
+   0x10000359eb7 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+183>:	mov    0x8(%rsp),%rsi
+   0x10000359ebc <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+188>:	mov    0x20(%rsp),%rax
+   0x10000359ec1 <_ZN6kernel6memory14process_memory27switch_to_kernel_page_table17haf273ad214dc5efdE+193>:	mov    %rax,0x160(%rsp)
+
+
+===== whole-RAM scan via direct physmap for RIPs in master_kernel_pml4 =====
+  hit @phys 0x1ae188 (physmap 0x280001ae188) -> 0x10000348540 (kernel::memory::kernel_page_table::master_kernel_pml4 in section .text)
+  hit @phys 0x489ab58 (physmap 0x2800489ab58) -> 0x100003485ba (kernel::memory::kernel_page_table::master_kernel_pml4 + 122 in section .text)
+scan done, hits=2
+[Inferior 1 (process 1) detached]

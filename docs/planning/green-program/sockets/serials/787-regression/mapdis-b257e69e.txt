@@ -1,0 +1,1850 @@
+elf=/root/breenix-ab-main/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
+00000000003416c0 <kernel::memory::kernel_page_table::map_kernel_page>:
+  3416c0:	48 81 ec a8 06 00 00 	sub    $0x6a8,%rsp
+  3416c7:	48 89 bc 24 80 00 00 	mov    %rdi,0x80(%rsp)
+  3416ce:	00 
+  3416cf:	48 89 b4 24 88 00 00 	mov    %rsi,0x88(%rsp)
+  3416d6:	00 
+  3416d7:	48 89 94 24 90 00 00 	mov    %rdx,0x90(%rsp)
+  3416de:	00 
+  3416df:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+  3416e6:	00 
+  3416e7:	e8 94 bf f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  3416ec:	48 b9 00 00 00 00 00 	movabs $0xffff800000000000,%rcx
+  3416f3:	80 ff ff 
+  3416f6:	48 39 c8             	cmp    %rcx,%rax
+  3416f9:	72 66                	jb     341761 <kernel::memory::kernel_page_table::map_kernel_page+0xa1>
+  3416fb:	48 8b 35 ce 26 17 00 	mov    0x1726ce(%rip),%rsi        # 4b3dd0 <kernel::memory::kernel_page_table::PHYS_MEM_OFFSET>
+  341702:	48 8b 15 cf 26 17 00 	mov    0x1726cf(%rip),%rdx        # 4b3dd8 <kernel::memory::kernel_page_table::PHYS_MEM_OFFSET+0x8>
+  341709:	48 8d 0d df ec d6 ff 	lea    -0x291321(%rip),%rcx        # b03ef <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x3473>
+  341710:	48 8b 05 21 36 0d 00 	mov    0xd3621(%rip),%rax        # 414d38 <_DYNAMIC+0x58f0>
+  341717:	48 8d bc 24 b8 00 00 	lea    0xb8(%rsp),%rdi
+  34171e:	00 
+  34171f:	41 b8 26 00 00 00    	mov    $0x26,%r8d
+  341725:	ff d0                	call   *%rax
+  341727:	48 8b 05 12 36 0d 00 	mov    0xd3612(%rip),%rax        # 414d40 <_DYNAMIC+0x58f8>
+  34172e:	48 8d bc 24 a8 00 00 	lea    0xa8(%rsp),%rdi
+  341735:	00 
+  341736:	48 8d b4 24 b8 00 00 	lea    0xb8(%rsp),%rsi
+  34173d:	00 
+  34173e:	ff d0                	call   *%rax
+  341740:	48 8b 94 24 a8 00 00 	mov    0xa8(%rsp),%rdx
+  341747:	00 
+  341748:	b8 01 00 00 00       	mov    $0x1,%eax
+  34174d:	31 c9                	xor    %ecx,%ecx
+  34174f:	48 83 fa 00          	cmp    $0x0,%rdx
+  341753:	48 0f 44 c1          	cmove  %rcx,%rax
+  341757:	48 a9 01 00 00 00    	test   $0x1,%rax
+  34175d:	75 22                	jne    341781 <kernel::memory::kernel_page_table::map_kernel_page+0xc1>
+  34175f:	eb 55                	jmp    3417b6 <kernel::memory::kernel_page_table::map_kernel_page+0xf6>
+  341761:	48 8d 05 40 ef d6 ff 	lea    -0x2910c0(%rip),%rax        # b06a8 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x372c>
+  341768:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  34176f:	00 
+  341770:	48 c7 84 24 a0 00 00 	movq   $0x2e,0xa0(%rsp)
+  341777:	00 2e 00 00 00 
+  34177c:	e9 3d 06 00 00       	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  341781:	48 8b bc 24 a8 00 00 	mov    0xa8(%rsp),%rdi
+  341788:	00 
+  341789:	48 8b b4 24 b0 00 00 	mov    0xb0(%rsp),%rsi
+  341790:	00 
+  341791:	48 8d 15 50 ff 0b 00 	lea    0xbff50(%rip),%rdx        # 4016e8 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd758>
+  341798:	48 8b 05 99 28 0d 00 	mov    0xd2899(%rip),%rax        # 414038 <_DYNAMIC+0x4bf0>
+  34179f:	ff d0                	call   *%rax
+  3417a1:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  3417a8:	00 
+  3417a9:	48 89 94 24 a0 00 00 	mov    %rdx,0xa0(%rsp)
+  3417b0:	00 
+  3417b1:	e9 08 06 00 00       	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  3417b6:	48 8b 84 24 b0 00 00 	mov    0xb0(%rsp),%rax
+  3417bd:	00 
+  3417be:	48 89 44 24 78       	mov    %rax,0x78(%rsp)
+  3417c3:	c6 84 24 a0 06 00 00 	movb   $0x2,0x6a0(%rsp)
+  3417ca:	02 
+  3417cb:	c6 84 24 a1 06 00 00 	movb   $0x0,0x6a1(%rsp)
+  3417d2:	00 
+  3417d3:	8a 8c 24 a0 06 00 00 	mov    0x6a0(%rsp),%cl
+  3417da:	8a 84 24 a1 06 00 00 	mov    0x6a1(%rsp),%al
+  3417e1:	0f b6 c9             	movzbl %cl,%ecx
+  3417e4:	44 0f b6 c0          	movzbl %al,%r8d
+  3417e8:	48 8d 3d b1 25 17 00 	lea    0x1725b1(%rip),%rdi        # 4b3da0 <kernel::memory::kernel_page_table::KERNEL_PDPT_FRAME>
+  3417ef:	31 f6                	xor    %esi,%esi
+  3417f1:	ba 01 00 00 00       	mov    $0x1,%edx
+  3417f6:	e8 25 ab f8 ff       	call   2cc320 <core::sync::atomic::AtomicBool::compare_exchange_weak>
+  3417fb:	24 01                	and    $0x1,%al
+  3417fd:	88 84 24 9e 06 00 00 	mov    %al,0x69e(%rsp)
+  341804:	88 94 24 9f 06 00 00 	mov    %dl,0x69f(%rsp)
+  34180b:	48 8b 05 ee ea 0c 00 	mov    0xceaee(%rip),%rax        # 410300 <_DYNAMIC+0xeb8>
+  341812:	48 8d bc 24 9e 06 00 	lea    0x69e(%rsp),%rdi
+  341819:	00 
+  34181a:	ff d0                	call   *%rax
+  34181c:	a8 01                	test   $0x1,%al
+  34181e:	75 02                	jne    341822 <kernel::memory::kernel_page_table::map_kernel_page+0x162>
+  341820:	eb 2e                	jmp    341850 <kernel::memory::kernel_page_table::map_kernel_page+0x190>
+  341822:	c6 84 24 a7 06 00 00 	movb   $0x0,0x6a7(%rsp)
+  341829:	00 
+  34182a:	8a 84 24 a7 06 00 00 	mov    0x6a7(%rsp),%al
+  341831:	0f b6 f0             	movzbl %al,%esi
+  341834:	48 8d 3d 65 25 17 00 	lea    0x172565(%rip),%rdi        # 4b3da0 <kernel::memory::kernel_page_table::KERNEL_PDPT_FRAME>
+  34183b:	e8 70 ab f8 ff       	call   2cc3b0 <core::sync::atomic::AtomicBool::load>
+  341840:	a8 01                	test   $0x1,%al
+  341842:	75 05                	jne    341849 <kernel::memory::kernel_page_table::map_kernel_page+0x189>
+  341844:	e9 7a ff ff ff       	jmp    3417c3 <kernel::memory::kernel_page_table::map_kernel_page+0x103>
+  341849:	e8 42 bc f8 ff       	call   2cd490 <core::sync::atomic::spin_loop_hint>
+  34184e:	eb d2                	jmp    341822 <kernel::memory::kernel_page_table::map_kernel_page+0x162>
+  341850:	48 8d 0d 49 25 17 00 	lea    0x172549(%rip),%rcx        # 4b3da0 <kernel::memory::kernel_page_table::KERNEL_PDPT_FRAME>
+  341857:	48 8d 05 4a 25 17 00 	lea    0x17254a(%rip),%rax        # 4b3da8 <kernel::memory::kernel_page_table::KERNEL_PDPT_FRAME+0x8>
+  34185e:	48 89 8c 24 f8 00 00 	mov    %rcx,0xf8(%rsp)
+  341865:	00 
+  341866:	48 89 84 24 00 01 00 	mov    %rax,0x100(%rsp)
+  34186d:	00 
+  34186e:	48 8b 05 33 a5 0d 00 	mov    0xda533(%rip),%rax        # 41bda8 <_DYNAMIC+0xc960>
+  341875:	48 8d bc 24 f8 00 00 	lea    0xf8(%rsp),%rdi
+  34187c:	00 
+  34187d:	ff d0                	call   *%rax
+  34187f:	48 8b 08             	mov    (%rax),%rcx
+  341882:	48 89 8c 24 e8 00 00 	mov    %rcx,0xe8(%rsp)
+  341889:	00 
+  34188a:	48 8b 40 08          	mov    0x8(%rax),%rax
+  34188e:	48 89 84 24 f0 00 00 	mov    %rax,0xf0(%rsp)
+  341895:	00 
+  341896:	48 8d 15 78 eb d6 ff 	lea    -0x291488(%rip),%rdx        # b0415 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x3499>
+  34189d:	48 8b 05 7c 24 0d 00 	mov    0xd247c(%rip),%rax        # 413d20 <_DYNAMIC+0x48d8>
+  3418a4:	48 8d bc 24 d8 00 00 	lea    0xd8(%rsp),%rdi
+  3418ab:	00 
+  3418ac:	48 8d b4 24 e8 00 00 	lea    0xe8(%rsp),%rsi
+  3418b3:	00 
+  3418b4:	b9 1b 00 00 00       	mov    $0x1b,%ecx
+  3418b9:	ff d0                	call   *%rax
+  3418bb:	48 8b 05 66 24 0d 00 	mov    0xd2466(%rip),%rax        # 413d28 <_DYNAMIC+0x48e0>
+  3418c2:	48 8d bc 24 c8 00 00 	lea    0xc8(%rsp),%rdi
+  3418c9:	00 
+  3418ca:	48 8d b4 24 d8 00 00 	lea    0xd8(%rsp),%rsi
+  3418d1:	00 
+  3418d2:	ff d0                	call   *%rax
+  3418d4:	48 8b 94 24 c8 00 00 	mov    0xc8(%rsp),%rdx
+  3418db:	00 
+  3418dc:	b8 01 00 00 00       	mov    $0x1,%eax
+  3418e1:	31 c9                	xor    %ecx,%ecx
+  3418e3:	48 83 fa 00          	cmp    $0x0,%rdx
+  3418e7:	48 0f 44 c1          	cmove  %rcx,%rax
+  3418eb:	48 a9 01 00 00 00    	test   $0x1,%rax
+  3418f1:	74 46                	je     341939 <kernel::memory::kernel_page_table::map_kernel_page+0x279>
+  3418f3:	48 8b bc 24 c8 00 00 	mov    0xc8(%rsp),%rdi
+  3418fa:	00 
+  3418fb:	48 8b b4 24 d0 00 00 	mov    0xd0(%rsp),%rsi
+  341902:	00 
+  341903:	48 8d 15 c6 fd 0b 00 	lea    0xbfdc6(%rip),%rdx        # 4016d0 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd740>
+  34190a:	48 8b 05 27 27 0d 00 	mov    0xd2727(%rip),%rax        # 414038 <_DYNAMIC+0x4bf0>
+  341911:	ff d0                	call   *%rax
+  341913:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  34191a:	00 
+  34191b:	48 89 94 24 a0 00 00 	mov    %rdx,0xa0(%rsp)
+  341922:	00 
+  341923:	48 8b 05 ee dd 0d 00 	mov    0xdddee(%rip),%rax        # 41f718 <_DYNAMIC+0x102d0>
+  34192a:	48 8d bc 24 f8 00 00 	lea    0xf8(%rsp),%rdi
+  341931:	00 
+  341932:	ff d0                	call   *%rax
+  341934:	e9 85 04 00 00       	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  341939:	48 8b 84 24 d0 00 00 	mov    0xd0(%rsp),%rax
+  341940:	00 
+  341941:	48 89 84 24 08 01 00 	mov    %rax,0x108(%rsp)
+  341948:	00 
+  341949:	48 8b 05 c8 dd 0d 00 	mov    0xdddc8(%rip),%rax        # 41f718 <_DYNAMIC+0x102d0>
+  341950:	48 8d bc 24 f8 00 00 	lea    0xf8(%rsp),%rdi
+  341957:	00 
+  341958:	ff d0                	call   *%rax
+  34195a:	c6 84 24 a4 06 00 00 	movb   $0x2,0x6a4(%rsp)
+  341961:	02 
+  341962:	c6 84 24 a5 06 00 00 	movb   $0x0,0x6a5(%rsp)
+  341969:	00 
+  34196a:	8a 8c 24 a4 06 00 00 	mov    0x6a4(%rsp),%cl
+  341971:	8a 84 24 a5 06 00 00 	mov    0x6a5(%rsp),%al
+  341978:	0f b6 c9             	movzbl %cl,%ecx
+  34197b:	44 0f b6 c0          	movzbl %al,%r8d
+  34197f:	48 8d 3d 32 24 17 00 	lea    0x172432(%rip),%rdi        # 4b3db8 <kernel::memory::kernel_page_table::MASTER_KERNEL_PML4>
+  341986:	31 f6                	xor    %esi,%esi
+  341988:	ba 01 00 00 00       	mov    $0x1,%edx
+  34198d:	e8 8e a9 f8 ff       	call   2cc320 <core::sync::atomic::AtomicBool::compare_exchange_weak>
+  341992:	24 01                	and    $0x1,%al
+  341994:	88 84 24 a2 06 00 00 	mov    %al,0x6a2(%rsp)
+  34199b:	88 94 24 a3 06 00 00 	mov    %dl,0x6a3(%rsp)
+  3419a2:	48 8b 05 57 e9 0c 00 	mov    0xce957(%rip),%rax        # 410300 <_DYNAMIC+0xeb8>
+  3419a9:	48 8d bc 24 a2 06 00 	lea    0x6a2(%rsp),%rdi
+  3419b0:	00 
+  3419b1:	ff d0                	call   *%rax
+  3419b3:	a8 01                	test   $0x1,%al
+  3419b5:	75 02                	jne    3419b9 <kernel::memory::kernel_page_table::map_kernel_page+0x2f9>
+  3419b7:	eb 2e                	jmp    3419e7 <kernel::memory::kernel_page_table::map_kernel_page+0x327>
+  3419b9:	c6 84 24 a6 06 00 00 	movb   $0x0,0x6a6(%rsp)
+  3419c0:	00 
+  3419c1:	8a 84 24 a6 06 00 00 	mov    0x6a6(%rsp),%al
+  3419c8:	0f b6 f0             	movzbl %al,%esi
+  3419cb:	48 8d 3d e6 23 17 00 	lea    0x1723e6(%rip),%rdi        # 4b3db8 <kernel::memory::kernel_page_table::MASTER_KERNEL_PML4>
+  3419d2:	e8 d9 a9 f8 ff       	call   2cc3b0 <core::sync::atomic::AtomicBool::load>
+  3419d7:	a8 01                	test   $0x1,%al
+  3419d9:	75 05                	jne    3419e0 <kernel::memory::kernel_page_table::map_kernel_page+0x320>
+  3419db:	e9 7a ff ff ff       	jmp    34195a <kernel::memory::kernel_page_table::map_kernel_page+0x29a>
+  3419e0:	e8 ab ba f8 ff       	call   2cd490 <core::sync::atomic::spin_loop_hint>
+  3419e5:	eb d2                	jmp    3419b9 <kernel::memory::kernel_page_table::map_kernel_page+0x2f9>
+  3419e7:	48 8d 0d ca 23 17 00 	lea    0x1723ca(%rip),%rcx        # 4b3db8 <kernel::memory::kernel_page_table::MASTER_KERNEL_PML4>
+  3419ee:	48 8d 05 cb 23 17 00 	lea    0x1723cb(%rip),%rax        # 4b3dc0 <kernel::memory::kernel_page_table::MASTER_KERNEL_PML4+0x8>
+  3419f5:	48 89 8c 24 28 01 00 	mov    %rcx,0x128(%rsp)
+  3419fc:	00 
+  3419fd:	48 89 84 24 30 01 00 	mov    %rax,0x130(%rsp)
+  341a04:	00 
+  341a05:	48 8b 05 9c a3 0d 00 	mov    0xda39c(%rip),%rax        # 41bda8 <_DYNAMIC+0xc960>
+  341a0c:	48 8d bc 24 28 01 00 	lea    0x128(%rsp),%rdi
+  341a13:	00 
+  341a14:	ff d0                	call   *%rax
+  341a16:	48 89 c6             	mov    %rax,%rsi
+  341a19:	48 8b 05 98 54 0d 00 	mov    0xd5498(%rip),%rax        # 416eb8 <_DYNAMIC+0x7a70>
+  341a20:	48 8d bc 24 18 01 00 	lea    0x118(%rsp),%rdi
+  341a27:	00 
+  341a28:	ff d0                	call   *%rax
+  341a2a:	48 f7 84 24 18 01 00 	testq  $0x1,0x118(%rsp)
+  341a31:	00 01 00 00 00 
+  341a36:	74 3a                	je     341a72 <kernel::memory::kernel_page_table::map_kernel_page+0x3b2>
+  341a38:	48 8b 84 24 20 01 00 	mov    0x120(%rsp),%rax
+  341a3f:	00 
+  341a40:	48 89 84 24 38 01 00 	mov    %rax,0x138(%rsp)
+  341a47:	00 
+  341a48:	48 c7 84 24 40 01 00 	movq   $0x5,0x140(%rsp)
+  341a4f:	00 05 00 00 00 
+  341a54:	48 8d 35 15 c3 d3 ff 	lea    -0x2c3ceb(%rip),%rsi        # 7dd70 <kernel::_::__BOOTLOADER_CONFIG+0x180>
+  341a5b:	48 8b 05 16 e1 0c 00 	mov    0xce116(%rip),%rax        # 40fb78 <_DYNAMIC+0x730>
+  341a62:	48 8d bc 24 40 01 00 	lea    0x140(%rsp),%rdi
+  341a69:	00 
+  341a6a:	ff d0                	call   *%rax
+  341a6c:	a8 01                	test   $0x1,%al
+  341a6e:	75 65                	jne    341ad5 <kernel::memory::kernel_page_table::map_kernel_page+0x415>
+  341a70:	eb 4e                	jmp    341ac0 <kernel::memory::kernel_page_table::map_kernel_page+0x400>
+  341a72:	48 8d bc 24 b0 01 00 	lea    0x1b0(%rsp),%rdi
+  341a79:	00 
+  341a7a:	e8 91 ac e5 ff       	call   19c710 <x86_64::registers::control::x86_64::<impl x86_64::registers::control::Cr3>::read>
+  341a7f:	48 8b 84 24 b0 01 00 	mov    0x1b0(%rsp),%rax
+  341a86:	00 
+  341a87:	48 89 84 24 a8 01 00 	mov    %rax,0x1a8(%rsp)
+  341a8e:	00 
+  341a8f:	48 c7 84 24 c0 01 00 	movq   $0x5,0x1c0(%rsp)
+  341a96:	00 05 00 00 00 
+  341a9b:	48 8d 35 ce c2 d3 ff 	lea    -0x2c3d32(%rip),%rsi        # 7dd70 <kernel::_::__BOOTLOADER_CONFIG+0x180>
+  341aa2:	48 8b 05 cf e0 0c 00 	mov    0xce0cf(%rip),%rax        # 40fb78 <_DYNAMIC+0x730>
+  341aa9:	48 8d bc 24 c0 01 00 	lea    0x1c0(%rsp),%rdi
+  341ab0:	00 
+  341ab1:	ff d0                	call   *%rax
+  341ab3:	a8 01                	test   $0x1,%al
+  341ab5:	0f 85 ee 01 00 00    	jne    341ca9 <kernel::memory::kernel_page_table::map_kernel_page+0x5e9>
+  341abb:	e9 d4 01 00 00       	jmp    341c94 <kernel::memory::kernel_page_table::map_kernel_page+0x5d4>
+  341ac0:	48 8b 84 24 38 01 00 	mov    0x138(%rsp),%rax
+  341ac7:	00 
+  341ac8:	48 89 84 24 10 01 00 	mov    %rax,0x110(%rsp)
+  341acf:	00 
+  341ad0:	e9 ca 00 00 00       	jmp    341b9f <kernel::memory::kernel_page_table::map_kernel_page+0x4df>
+  341ad5:	c6 84 24 5f 06 00 00 	movb   $0x0,0x65f(%rsp)
+  341adc:	00 
+  341add:	8a 84 24 5f 06 00 00 	mov    0x65f(%rsp),%al
+  341ae4:	0f b6 f0             	movzbl %al,%esi
+  341ae7:	48 8b 3d 92 e0 0c 00 	mov    0xce092(%rip),%rdi        # 40fb80 <_DYNAMIC+0x738>
+  341aee:	e8 dd a9 f8 ff       	call   2cc4d0 <core::sync::atomic::AtomicUsize::load>
+  341af3:	48 89 84 24 48 01 00 	mov    %rax,0x148(%rsp)
+  341afa:	00 
+  341afb:	48 8b 05 76 e0 0c 00 	mov    0xce076(%rip),%rax        # 40fb78 <_DYNAMIC+0x730>
+  341b02:	48 8d bc 24 40 01 00 	lea    0x140(%rsp),%rdi
+  341b09:	00 
+  341b0a:	48 8d b4 24 48 01 00 	lea    0x148(%rsp),%rsi
+  341b11:	00 
+  341b12:	ff d0                	call   *%rax
+  341b14:	a8 01                	test   $0x1,%al
+  341b16:	75 02                	jne    341b1a <kernel::memory::kernel_page_table::map_kernel_page+0x45a>
+  341b18:	eb a6                	jmp    341ac0 <kernel::memory::kernel_page_table::map_kernel_page+0x400>
+  341b1a:	48 8d 35 07 f9 0b 00 	lea    0xbf907(%rip),%rsi        # 401428 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd498>
+  341b21:	48 8b 05 60 e0 0c 00 	mov    0xce060(%rip),%rax        # 40fb88 <_DYNAMIC+0x740>
+  341b28:	48 8d bc 24 50 01 00 	lea    0x150(%rsp),%rdi
+  341b2f:	00 
+  341b30:	ff d0                	call   *%rax
+  341b32:	48 8d 3d ff f8 0b 00 	lea    0xbf8ff(%rip),%rdi        # 401438 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd4a8>
+  341b39:	48 8b 05 50 e0 0c 00 	mov    0xce050(%rip),%rax        # 40fb90 <_DYNAMIC+0x748>
+  341b40:	ff d0                	call   *%rax
+  341b42:	48 8d 0d e4 e7 d6 ff 	lea    -0x29181c(%rip),%rcx        # b032d <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x33b1>
+  341b49:	48 89 8c 24 80 01 00 	mov    %rcx,0x180(%rsp)
+  341b50:	00 
+  341b51:	48 c7 84 24 88 01 00 	movq   $0x21,0x188(%rsp)
+  341b58:	00 21 00 00 00 
+  341b5d:	48 89 8c 24 90 01 00 	mov    %rcx,0x190(%rsp)
+  341b64:	00 
+  341b65:	48 c7 84 24 98 01 00 	movq   $0x21,0x198(%rsp)
+  341b6c:	00 21 00 00 00 
+  341b71:	48 89 84 24 a0 01 00 	mov    %rax,0x1a0(%rsp)
+  341b78:	00 
+  341b79:	48 8b b4 24 40 01 00 	mov    0x140(%rsp),%rsi
+  341b80:	00 
+  341b81:	48 8b 05 10 e0 0c 00 	mov    0xce010(%rip),%rax        # 40fb98 <_DYNAMIC+0x750>
+  341b88:	48 8d bc 24 50 01 00 	lea    0x150(%rsp),%rdi
+  341b8f:	00 
+  341b90:	48 8d 94 24 80 01 00 	lea    0x180(%rsp),%rdx
+  341b97:	00 
+  341b98:	ff d0                	call   *%rax
+  341b9a:	e9 21 ff ff ff       	jmp    341ac0 <kernel::memory::kernel_page_table::map_kernel_page+0x400>
+  341b9f:	48 8b 05 72 db 0d 00 	mov    0xddb72(%rip),%rax        # 41f718 <_DYNAMIC+0x102d0>
+  341ba6:	48 8d bc 24 28 01 00 	lea    0x128(%rsp),%rdi
+  341bad:	00 
+  341bae:	ff d0                	call   *%rax
+  341bb0:	48 8b 84 24 10 01 00 	mov    0x110(%rsp),%rax
+  341bb7:	00 
+  341bb8:	48 89 84 24 28 02 00 	mov    %rax,0x228(%rsp)
+  341bbf:	00 
+  341bc0:	48 8b 84 24 28 02 00 	mov    0x228(%rsp),%rax
+  341bc7:	00 
+  341bc8:	48 89 84 24 a8 05 00 	mov    %rax,0x5a8(%rsp)
+  341bcf:	00 
+  341bd0:	48 8b bc 24 a8 05 00 	mov    0x5a8(%rsp),%rdi
+  341bd7:	00 
+  341bd8:	48 8b 05 59 21 0d 00 	mov    0xd2159(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  341bdf:	ff d0                	call   *%rax
+  341be1:	48 89 c7             	mov    %rax,%rdi
+  341be4:	e8 57 b9 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  341be9:	48 8b 7c 24 78       	mov    0x78(%rsp),%rdi
+  341bee:	48 89 c6             	mov    %rax,%rsi
+  341bf1:	e8 ca bb f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  341bf6:	48 89 c7             	mov    %rax,%rdi
+  341bf9:	48 8b 05 d8 60 0d 00 	mov    0xd60d8(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  341c00:	ff d0                	call   *%rax
+  341c02:	48 89 44 24 60       	mov    %rax,0x60(%rsp)
+  341c07:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+  341c0e:	00 
+  341c0f:	e8 6c ba f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  341c14:	48 c1 e8 27          	shr    $0x27,%rax
+  341c18:	48 25 ff 01 00 00    	and    $0x1ff,%rax
+  341c1e:	48 89 84 24 30 02 00 	mov    %rax,0x230(%rsp)
+  341c25:	00 
+  341c26:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+  341c2d:	00 
+  341c2e:	e8 4d ba f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  341c33:	48 c1 e8 1e          	shr    $0x1e,%rax
+  341c37:	48 25 ff 01 00 00    	and    $0x1ff,%rax
+  341c3d:	48 89 44 24 68       	mov    %rax,0x68(%rsp)
+  341c42:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+  341c49:	00 
+  341c4a:	e8 31 ba f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  341c4f:	48 c1 e8 15          	shr    $0x15,%rax
+  341c53:	48 25 ff 01 00 00    	and    $0x1ff,%rax
+  341c59:	48 89 44 24 70       	mov    %rax,0x70(%rsp)
+  341c5e:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+  341c65:	00 
+  341c66:	e8 15 ba f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  341c6b:	48 c1 e8 0c          	shr    $0xc,%rax
+  341c6f:	48 25 ff 01 00 00    	and    $0x1ff,%rax
+  341c75:	48 89 84 24 38 02 00 	mov    %rax,0x238(%rsp)
+  341c7c:	00 
+  341c7d:	48 81 bc 24 30 02 00 	cmpq   $0x100,0x230(%rsp)
+  341c84:	00 00 01 00 00 
+  341c89:	0f 83 01 01 00 00    	jae    341d90 <kernel::memory::kernel_page_table::map_kernel_page+0x6d0>
+  341c8f:	e9 df 00 00 00       	jmp    341d73 <kernel::memory::kernel_page_table::map_kernel_page+0x6b3>
+  341c94:	48 8b 84 24 a8 01 00 	mov    0x1a8(%rsp),%rax
+  341c9b:	00 
+  341c9c:	48 89 84 24 10 01 00 	mov    %rax,0x110(%rsp)
+  341ca3:	00 
+  341ca4:	e9 f6 fe ff ff       	jmp    341b9f <kernel::memory::kernel_page_table::map_kernel_page+0x4df>
+  341ca9:	c6 84 24 5e 06 00 00 	movb   $0x0,0x65e(%rsp)
+  341cb0:	00 
+  341cb1:	8a 84 24 5e 06 00 00 	mov    0x65e(%rsp),%al
+  341cb8:	0f b6 f0             	movzbl %al,%esi
+  341cbb:	48 8b 3d be de 0c 00 	mov    0xcdebe(%rip),%rdi        # 40fb80 <_DYNAMIC+0x738>
+  341cc2:	e8 09 a8 f8 ff       	call   2cc4d0 <core::sync::atomic::AtomicUsize::load>
+  341cc7:	48 89 84 24 c8 01 00 	mov    %rax,0x1c8(%rsp)
+  341cce:	00 
+  341ccf:	48 8b 05 a2 de 0c 00 	mov    0xcdea2(%rip),%rax        # 40fb78 <_DYNAMIC+0x730>
+  341cd6:	48 8d bc 24 c0 01 00 	lea    0x1c0(%rsp),%rdi
+  341cdd:	00 
+  341cde:	48 8d b4 24 c8 01 00 	lea    0x1c8(%rsp),%rsi
+  341ce5:	00 
+  341ce6:	ff d0                	call   *%rax
+  341ce8:	a8 01                	test   $0x1,%al
+  341cea:	75 02                	jne    341cee <kernel::memory::kernel_page_table::map_kernel_page+0x62e>
+  341cec:	eb a6                	jmp    341c94 <kernel::memory::kernel_page_table::map_kernel_page+0x5d4>
+  341cee:	48 8d 35 5b f7 0b 00 	lea    0xbf75b(%rip),%rsi        # 401450 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd4c0>
+  341cf5:	48 8b 05 8c de 0c 00 	mov    0xcde8c(%rip),%rax        # 40fb88 <_DYNAMIC+0x740>
+  341cfc:	48 8d bc 24 d0 01 00 	lea    0x1d0(%rsp),%rdi
+  341d03:	00 
+  341d04:	ff d0                	call   *%rax
+  341d06:	48 8d 3d 53 f7 0b 00 	lea    0xbf753(%rip),%rdi        # 401460 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd4d0>
+  341d0d:	48 8b 05 7c de 0c 00 	mov    0xcde7c(%rip),%rax        # 40fb90 <_DYNAMIC+0x748>
+  341d14:	ff d0                	call   *%rax
+  341d16:	48 8d 0d 10 e6 d6 ff 	lea    -0x2919f0(%rip),%rcx        # b032d <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x33b1>
+  341d1d:	48 89 8c 24 00 02 00 	mov    %rcx,0x200(%rsp)
+  341d24:	00 
+  341d25:	48 c7 84 24 08 02 00 	movq   $0x21,0x208(%rsp)
+  341d2c:	00 21 00 00 00 
+  341d31:	48 89 8c 24 10 02 00 	mov    %rcx,0x210(%rsp)
+  341d38:	00 
+  341d39:	48 c7 84 24 18 02 00 	movq   $0x21,0x218(%rsp)
+  341d40:	00 21 00 00 00 
+  341d45:	48 89 84 24 20 02 00 	mov    %rax,0x220(%rsp)
+  341d4c:	00 
+  341d4d:	48 8b b4 24 c0 01 00 	mov    0x1c0(%rsp),%rsi
+  341d54:	00 
+  341d55:	48 8b 05 3c de 0c 00 	mov    0xcde3c(%rip),%rax        # 40fb98 <_DYNAMIC+0x750>
+  341d5c:	48 8d bc 24 d0 01 00 	lea    0x1d0(%rsp),%rdi
+  341d63:	00 
+  341d64:	48 8d 94 24 00 02 00 	lea    0x200(%rsp),%rdx
+  341d6b:	00 
+  341d6c:	ff d0                	call   *%rax
+  341d6e:	e9 21 ff ff ff       	jmp    341c94 <kernel::memory::kernel_page_table::map_kernel_page+0x5d4>
+  341d73:	48 8d 05 1d e7 d6 ff 	lea    -0x2918e3(%rip),%rax        # b0497 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x351b>
+  341d7a:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  341d81:	00 
+  341d82:	48 c7 84 24 a0 00 00 	movq   $0x2b,0xa0(%rsp)
+  341d89:	00 2b 00 00 00 
+  341d8e:	eb 2e                	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  341d90:	48 8b 7c 24 60       	mov    0x60(%rsp),%rdi
+  341d95:	48 8b b4 24 30 02 00 	mov    0x230(%rsp),%rsi
+  341d9c:	00 
+  341d9d:	48 8d 15 d4 f6 0b 00 	lea    0xbf6d4(%rip),%rdx        # 401478 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd4e8>
+  341da4:	e8 97 58 fc ff       	call   307640 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::IndexMut<usize>>::index_mut>
+  341da9:	48 89 44 24 58       	mov    %rax,0x58(%rsp)
+  341dae:	48 81 bc 24 30 02 00 	cmpq   $0x192,0x230(%rsp)
+  341db5:	00 92 01 00 00 
+  341dba:	74 1a                	je     341dd6 <kernel::memory::kernel_page_table::map_kernel_page+0x716>
+  341dbc:	eb 2c                	jmp    341dea <kernel::memory::kernel_page_table::map_kernel_page+0x72a>
+  341dbe:	48 8b 84 24 98 00 00 	mov    0x98(%rsp),%rax
+  341dc5:	00 
+  341dc6:	48 8b 94 24 a0 00 00 	mov    0xa0(%rsp),%rdx
+  341dcd:	00 
+  341dce:	48 81 c4 a8 06 00 00 	add    $0x6a8,%rsp
+  341dd5:	c3                   	ret
+  341dd6:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  341ddb:	e8 30 0b fd ff       	call   312910 <x86_64::structures::paging::page_table::PageTableEntry::is_unused>
+  341de0:	a8 01                	test   $0x1,%al
+  341de2:	0f 85 b3 00 00 00    	jne    341e9b <kernel::memory::kernel_page_table::map_kernel_page+0x7db>
+  341de8:	eb 25                	jmp    341e0f <kernel::memory::kernel_page_table::map_kernel_page+0x74f>
+  341dea:	48 81 bc 24 30 02 00 	cmpq   $0x193,0x230(%rsp)
+  341df1:	00 93 01 00 00 
+  341df6:	74 de                	je     341dd6 <kernel::memory::kernel_page_table::map_kernel_page+0x716>
+  341df8:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  341dfd:	e8 0e 0b fd ff       	call   312910 <x86_64::structures::paging::page_table::PageTableEntry::is_unused>
+  341e02:	a8 01                	test   $0x1,%al
+  341e04:	0f 85 da 01 00 00    	jne    341fe4 <kernel::memory::kernel_page_table::map_kernel_page+0x924>
+  341e0a:	e9 2c 01 00 00       	jmp    341f3b <kernel::memory::kernel_page_table::map_kernel_page+0x87b>
+  341e0f:	48 8b 74 24 58       	mov    0x58(%rsp),%rsi
+  341e14:	48 8d bc 24 48 02 00 	lea    0x248(%rsp),%rdi
+  341e1b:	00 
+  341e1c:	e8 9f 09 fd ff       	call   3127c0 <x86_64::structures::paging::page_table::PageTableEntry::frame>
+  341e21:	8a 84 24 48 02 00 00 	mov    0x248(%rsp),%al
+  341e28:	a8 01                	test   $0x1,%al
+  341e2a:	75 02                	jne    341e2e <kernel::memory::kernel_page_table::map_kernel_page+0x76e>
+  341e2c:	eb 3b                	jmp    341e69 <kernel::memory::kernel_page_table::map_kernel_page+0x7a9>
+  341e2e:	8a 84 24 49 02 00 00 	mov    0x249(%rsp),%al
+  341e35:	24 01                	and    $0x1,%al
+  341e37:	88 84 24 9d 06 00 00 	mov    %al,0x69d(%rsp)
+  341e3e:	48 8d 3d e5 da d6 ff 	lea    -0x29251b(%rip),%rdi        # af92a <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x29ae>
+  341e45:	48 8d 0d dc e9 0b 00 	lea    0xbe9dc(%rip),%rcx        # 400828 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xc898>
+  341e4c:	4c 8d 05 3d f6 0b 00 	lea    0xbf63d(%rip),%r8        # 401490 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd500>
+  341e53:	48 8b 05 16 6a 0d 00 	mov    0xd6a16(%rip),%rax        # 418870 <_DYNAMIC+0x9428>
+  341e5a:	be 2b 00 00 00       	mov    $0x2b,%esi
+  341e5f:	48 8d 94 24 9d 06 00 	lea    0x69d(%rsp),%rdx
+  341e66:	00 
+  341e67:	ff d0                	call   *%rax
+  341e69:	48 8b 84 24 50 02 00 	mov    0x250(%rsp),%rax
+  341e70:	00 
+  341e71:	48 89 84 24 90 06 00 	mov    %rax,0x690(%rsp)
+  341e78:	00 
+  341e79:	48 8b 84 24 90 06 00 	mov    0x690(%rsp),%rax
+  341e80:	00 
+  341e81:	48 89 84 24 b0 05 00 	mov    %rax,0x5b0(%rsp)
+  341e88:	00 
+  341e89:	48 8b 84 24 b0 05 00 	mov    0x5b0(%rsp),%rax
+  341e90:	00 
+  341e91:	48 89 84 24 40 02 00 	mov    %rax,0x240(%rsp)
+  341e98:	00 
+  341e99:	eb 20                	jmp    341ebb <kernel::memory::kernel_page_table::map_kernel_page+0x7fb>
+  341e9b:	48 8d 05 20 e6 d6 ff 	lea    -0x2919e0(%rip),%rax        # b04c2 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x3546>
+  341ea2:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  341ea9:	00 
+  341eaa:	48 c7 84 24 a0 00 00 	movq   $0x33,0xa0(%rsp)
+  341eb1:	00 33 00 00 00 
+  341eb6:	e9 03 ff ff ff       	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  341ebb:	48 8b 84 24 40 02 00 	mov    0x240(%rsp),%rax
+  341ec2:	00 
+  341ec3:	48 89 84 24 70 02 00 	mov    %rax,0x270(%rsp)
+  341eca:	00 
+  341ecb:	48 8b 84 24 70 02 00 	mov    0x270(%rsp),%rax
+  341ed2:	00 
+  341ed3:	48 89 84 24 d0 05 00 	mov    %rax,0x5d0(%rsp)
+  341eda:	00 
+  341edb:	48 8b bc 24 d0 05 00 	mov    0x5d0(%rsp),%rdi
+  341ee2:	00 
+  341ee3:	48 8b 05 4e 1e 0d 00 	mov    0xd1e4e(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  341eea:	ff d0                	call   *%rax
+  341eec:	48 89 c7             	mov    %rax,%rdi
+  341eef:	e8 4c b6 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  341ef4:	48 8b 7c 24 78       	mov    0x78(%rsp),%rdi
+  341ef9:	48 89 c6             	mov    %rax,%rsi
+  341efc:	e8 bf b8 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  341f01:	48 89 c7             	mov    %rax,%rdi
+  341f04:	48 8b 05 cd 5d 0d 00 	mov    0xd5dcd(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  341f0b:	ff d0                	call   *%rax
+  341f0d:	48 8b 74 24 68       	mov    0x68(%rsp),%rsi
+  341f12:	48 89 c7             	mov    %rax,%rdi
+  341f15:	48 89 7c 24 50       	mov    %rdi,0x50(%rsp)
+  341f1a:	48 8d 15 9f f5 0b 00 	lea    0xbf59f(%rip),%rdx        # 4014c0 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd530>
+  341f21:	e8 1a 55 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  341f26:	48 89 c7             	mov    %rax,%rdi
+  341f29:	e8 e2 09 fd ff       	call   312910 <x86_64::structures::paging::page_table::PageTableEntry::is_unused>
+  341f2e:	a8 01                	test   $0x1,%al
+  341f30:	0f 85 a7 01 00 00    	jne    3420dd <kernel::memory::kernel_page_table::map_kernel_page+0xa1d>
+  341f36:	e9 02 01 00 00       	jmp    34203d <kernel::memory::kernel_page_table::map_kernel_page+0x97d>
+  341f3b:	48 8b 74 24 58       	mov    0x58(%rsp),%rsi
+  341f40:	48 8d bc 24 60 02 00 	lea    0x260(%rsp),%rdi
+  341f47:	00 
+  341f48:	e8 73 08 fd ff       	call   3127c0 <x86_64::structures::paging::page_table::PageTableEntry::frame>
+  341f4d:	8a 84 24 60 02 00 00 	mov    0x260(%rsp),%al
+  341f54:	a8 01                	test   $0x1,%al
+  341f56:	75 02                	jne    341f5a <kernel::memory::kernel_page_table::map_kernel_page+0x89a>
+  341f58:	eb 3b                	jmp    341f95 <kernel::memory::kernel_page_table::map_kernel_page+0x8d5>
+  341f5a:	8a 84 24 61 02 00 00 	mov    0x261(%rsp),%al
+  341f61:	24 01                	and    $0x1,%al
+  341f63:	88 84 24 8f 06 00 00 	mov    %al,0x68f(%rsp)
+  341f6a:	48 8d 3d b9 d9 d6 ff 	lea    -0x292647(%rip),%rdi        # af92a <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x29ae>
+  341f71:	48 8d 0d b0 e8 0b 00 	lea    0xbe8b0(%rip),%rcx        # 400828 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xc898>
+  341f78:	4c 8d 05 29 f5 0b 00 	lea    0xbf529(%rip),%r8        # 4014a8 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd518>
+  341f7f:	48 8b 05 ea 68 0d 00 	mov    0xd68ea(%rip),%rax        # 418870 <_DYNAMIC+0x9428>
+  341f86:	be 2b 00 00 00       	mov    $0x2b,%esi
+  341f8b:	48 8d 94 24 8f 06 00 	lea    0x68f(%rsp),%rdx
+  341f92:	00 
+  341f93:	ff d0                	call   *%rax
+  341f95:	48 8b 84 24 68 02 00 	mov    0x268(%rsp),%rax
+  341f9c:	00 
+  341f9d:	48 89 84 24 80 06 00 	mov    %rax,0x680(%rsp)
+  341fa4:	00 
+  341fa5:	48 8b 84 24 80 06 00 	mov    0x680(%rsp),%rax
+  341fac:	00 
+  341fad:	48 89 84 24 b8 05 00 	mov    %rax,0x5b8(%rsp)
+  341fb4:	00 
+  341fb5:	48 8b 84 24 b8 05 00 	mov    0x5b8(%rsp),%rax
+  341fbc:	00 
+  341fbd:	48 89 84 24 58 02 00 	mov    %rax,0x258(%rsp)
+  341fc4:	00 
+  341fc5:	48 8b 05 2c b8 0d 00 	mov    0xdb82c(%rip),%rax        # 41d7f8 <_DYNAMIC+0xe3b0>
+  341fcc:	48 8d bc 24 58 02 00 	lea    0x258(%rsp),%rdi
+  341fd3:	00 
+  341fd4:	48 8d b4 24 08 01 00 	lea    0x108(%rsp),%rsi
+  341fdb:	00 
+  341fdc:	ff d0                	call   *%rax
+  341fde:	a8 01                	test   $0x1,%al
+  341fe0:	75 02                	jne    341fe4 <kernel::memory::kernel_page_table::map_kernel_page+0x924>
+  341fe2:	eb 44                	jmp    342028 <kernel::memory::kernel_page_table::map_kernel_page+0x968>
+  341fe4:	bf 01 00 00 00       	mov    $0x1,%edi
+  341fe9:	be 02 00 00 00       	mov    $0x2,%esi
+  341fee:	e8 0d 0a fd ff       	call   312a00 <x86_64::structures::paging::page_table::_::<impl core::ops::bit::BitOr for x86_64::structures::paging::page_table::PageTableFlags>::bitor>
+  341ff3:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  341ff8:	48 89 c2             	mov    %rax,%rdx
+  341ffb:	48 8b 84 24 08 01 00 	mov    0x108(%rsp),%rax
+  342002:	00 
+  342003:	48 89 84 24 c0 05 00 	mov    %rax,0x5c0(%rsp)
+  34200a:	00 
+  34200b:	48 8b 84 24 c0 05 00 	mov    0x5c0(%rsp),%rax
+  342012:	00 
+  342013:	48 89 84 24 c8 05 00 	mov    %rax,0x5c8(%rsp)
+  34201a:	00 
+  34201b:	48 8b b4 24 c8 05 00 	mov    0x5c8(%rsp),%rsi
+  342022:	00 
+  342023:	e8 38 09 fd ff       	call   312960 <x86_64::structures::paging::page_table::PageTableEntry::set_frame>
+  342028:	48 8b 84 24 08 01 00 	mov    0x108(%rsp),%rax
+  34202f:	00 
+  342030:	48 89 84 24 40 02 00 	mov    %rax,0x240(%rsp)
+  342037:	00 
+  342038:	e9 7e fe ff ff       	jmp    341ebb <kernel::memory::kernel_page_table::map_kernel_page+0x7fb>
+  34203d:	48 8b 74 24 68       	mov    0x68(%rsp),%rsi
+  342042:	48 8b 7c 24 50       	mov    0x50(%rsp),%rdi
+  342047:	48 8d 15 8a f4 0b 00 	lea    0xbf48a(%rip),%rdx        # 4014d8 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd548>
+  34204e:	e8 ed 53 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  342053:	48 89 c6             	mov    %rax,%rsi
+  342056:	48 8d bc 24 d8 02 00 	lea    0x2d8(%rsp),%rdi
+  34205d:	00 
+  34205e:	e8 5d 07 fd ff       	call   3127c0 <x86_64::structures::paging::page_table::PageTableEntry::frame>
+  342063:	8a 84 24 d8 02 00 00 	mov    0x2d8(%rsp),%al
+  34206a:	a8 01                	test   $0x1,%al
+  34206c:	75 02                	jne    342070 <kernel::memory::kernel_page_table::map_kernel_page+0x9b0>
+  34206e:	eb 3b                	jmp    3420ab <kernel::memory::kernel_page_table::map_kernel_page+0x9eb>
+  342070:	8a 84 24 d9 02 00 00 	mov    0x2d9(%rsp),%al
+  342077:	24 01                	and    $0x1,%al
+  342079:	88 84 24 7f 06 00 00 	mov    %al,0x67f(%rsp)
+  342080:	48 8d 3d a3 d8 d6 ff 	lea    -0x29275d(%rip),%rdi        # af92a <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x29ae>
+  342087:	48 8d 0d 9a e7 0b 00 	lea    0xbe79a(%rip),%rcx        # 400828 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xc898>
+  34208e:	4c 8d 05 5b f4 0b 00 	lea    0xbf45b(%rip),%r8        # 4014f0 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd560>
+  342095:	48 8b 05 d4 67 0d 00 	mov    0xd67d4(%rip),%rax        # 418870 <_DYNAMIC+0x9428>
+  34209c:	be 2b 00 00 00       	mov    $0x2b,%esi
+  3420a1:	48 8d 94 24 7f 06 00 	lea    0x67f(%rsp),%rdx
+  3420a8:	00 
+  3420a9:	ff d0                	call   *%rax
+  3420ab:	48 8b 84 24 e0 02 00 	mov    0x2e0(%rsp),%rax
+  3420b2:	00 
+  3420b3:	48 89 84 24 70 06 00 	mov    %rax,0x670(%rsp)
+  3420ba:	00 
+  3420bb:	48 8b 84 24 70 06 00 	mov    0x670(%rsp),%rax
+  3420c2:	00 
+  3420c3:	48 89 84 24 d8 05 00 	mov    %rax,0x5d8(%rsp)
+  3420ca:	00 
+  3420cb:	48 8b 84 24 d8 05 00 	mov    0x5d8(%rsp),%rax
+  3420d2:	00 
+  3420d3:	48 89 84 24 78 02 00 	mov    %rax,0x278(%rsp)
+  3420da:	00 
+  3420db:	eb 77                	jmp    342154 <kernel::memory::kernel_page_table::map_kernel_page+0xa94>
+  3420dd:	48 8b 05 34 1c 0d 00 	mov    0xd1c34(%rip),%rax        # 413d18 <_DYNAMIC+0x48d0>
+  3420e4:	48 8d bc 24 a0 02 00 	lea    0x2a0(%rsp),%rdi
+  3420eb:	00 
+  3420ec:	ff d0                	call   *%rax
+  3420ee:	48 8d 15 00 e4 d6 ff 	lea    -0x291c00(%rip),%rdx        # b04f5 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x3579>
+  3420f5:	48 8b 05 24 1c 0d 00 	mov    0xd1c24(%rip),%rax        # 413d20 <_DYNAMIC+0x48d8>
+  3420fc:	48 8d bc 24 90 02 00 	lea    0x290(%rsp),%rdi
+  342103:	00 
+  342104:	48 8d b4 24 a0 02 00 	lea    0x2a0(%rsp),%rsi
+  34210b:	00 
+  34210c:	b9 14 00 00 00       	mov    $0x14,%ecx
+  342111:	ff d0                	call   *%rax
+  342113:	48 8b 05 0e 1c 0d 00 	mov    0xd1c0e(%rip),%rax        # 413d28 <_DYNAMIC+0x48e0>
+  34211a:	48 8d bc 24 80 02 00 	lea    0x280(%rsp),%rdi
+  342121:	00 
+  342122:	48 8d b4 24 90 02 00 	lea    0x290(%rsp),%rsi
+  342129:	00 
+  34212a:	ff d0                	call   *%rax
+  34212c:	48 8b 94 24 80 02 00 	mov    0x280(%rsp),%rdx
+  342133:	00 
+  342134:	b8 01 00 00 00       	mov    $0x1,%eax
+  342139:	31 c9                	xor    %ecx,%ecx
+  34213b:	48 83 fa 00          	cmp    $0x0,%rdx
+  34213f:	48 0f 44 c1          	cmove  %rcx,%rax
+  342143:	48 a9 01 00 00 00    	test   $0x1,%rax
+  342149:	0f 85 85 00 00 00    	jne    3421d4 <kernel::memory::kernel_page_table::map_kernel_page+0xb14>
+  34214f:	e9 b5 00 00 00       	jmp    342209 <kernel::memory::kernel_page_table::map_kernel_page+0xb49>
+  342154:	48 8b 84 24 78 02 00 	mov    0x278(%rsp),%rax
+  34215b:	00 
+  34215c:	48 89 84 24 e8 02 00 	mov    %rax,0x2e8(%rsp)
+  342163:	00 
+  342164:	48 8b 84 24 e8 02 00 	mov    0x2e8(%rsp),%rax
+  34216b:	00 
+  34216c:	48 89 84 24 00 06 00 	mov    %rax,0x600(%rsp)
+  342173:	00 
+  342174:	48 8b bc 24 00 06 00 	mov    0x600(%rsp),%rdi
+  34217b:	00 
+  34217c:	48 8b 05 b5 1b 0d 00 	mov    0xd1bb5(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  342183:	ff d0                	call   *%rax
+  342185:	48 89 c7             	mov    %rax,%rdi
+  342188:	e8 b3 b3 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  34218d:	48 8b 7c 24 78       	mov    0x78(%rsp),%rdi
+  342192:	48 89 c6             	mov    %rax,%rsi
+  342195:	e8 26 b6 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  34219a:	48 89 c7             	mov    %rax,%rdi
+  34219d:	48 8b 05 34 5b 0d 00 	mov    0xd5b34(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  3421a4:	ff d0                	call   *%rax
+  3421a6:	48 8b 74 24 70       	mov    0x70(%rsp),%rsi
+  3421ab:	48 89 c7             	mov    %rax,%rdi
+  3421ae:	48 89 7c 24 48       	mov    %rdi,0x48(%rsp)
+  3421b3:	48 8d 15 66 f3 0b 00 	lea    0xbf366(%rip),%rdx        # 401520 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd590>
+  3421ba:	e8 81 52 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  3421bf:	48 89 c7             	mov    %rax,%rdi
+  3421c2:	e8 49 07 fd ff       	call   312910 <x86_64::structures::paging::page_table::PageTableEntry::is_unused>
+  3421c7:	a8 01                	test   $0x1,%al
+  3421c9:	0f 85 2b 02 00 00    	jne    3423fa <kernel::memory::kernel_page_table::map_kernel_page+0xd3a>
+  3421cf:	e9 86 01 00 00       	jmp    34235a <kernel::memory::kernel_page_table::map_kernel_page+0xc9a>
+  3421d4:	48 8b bc 24 80 02 00 	mov    0x280(%rsp),%rdi
+  3421db:	00 
+  3421dc:	48 8b b4 24 88 02 00 	mov    0x288(%rsp),%rsi
+  3421e3:	00 
+  3421e4:	48 8d 15 cd f4 0b 00 	lea    0xbf4cd(%rip),%rdx        # 4016b8 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd728>
+  3421eb:	48 8b 05 46 1e 0d 00 	mov    0xd1e46(%rip),%rax        # 414038 <_DYNAMIC+0x4bf0>
+  3421f2:	ff d0                	call   *%rax
+  3421f4:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  3421fb:	00 
+  3421fc:	48 89 94 24 a0 00 00 	mov    %rdx,0xa0(%rsp)
+  342203:	00 
+  342204:	e9 b5 fb ff ff       	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  342209:	48 8b 84 24 88 02 00 	mov    0x288(%rsp),%rax
+  342210:	00 
+  342211:	48 89 84 24 b0 02 00 	mov    %rax,0x2b0(%rsp)
+  342218:	00 
+  342219:	48 8b 84 24 b0 02 00 	mov    0x2b0(%rsp),%rax
+  342220:	00 
+  342221:	48 89 84 24 e0 05 00 	mov    %rax,0x5e0(%rsp)
+  342228:	00 
+  342229:	48 8b 84 24 e0 05 00 	mov    0x5e0(%rsp),%rax
+  342230:	00 
+  342231:	48 89 84 24 e8 05 00 	mov    %rax,0x5e8(%rsp)
+  342238:	00 
+  342239:	48 8b bc 24 e8 05 00 	mov    0x5e8(%rsp),%rdi
+  342240:	00 
+  342241:	48 8b 05 f0 1a 0d 00 	mov    0xd1af0(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  342248:	ff d0                	call   *%rax
+  34224a:	48 89 c7             	mov    %rax,%rdi
+  34224d:	e8 ee b2 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  342252:	48 8b 7c 24 78       	mov    0x78(%rsp),%rdi
+  342257:	48 89 c6             	mov    %rax,%rsi
+  34225a:	e8 61 b5 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  34225f:	48 89 c7             	mov    %rax,%rdi
+  342262:	48 8b 05 6f 5a 0d 00 	mov    0xd5a6f(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  342269:	ff d0                	call   *%rax
+  34226b:	48 89 44 24 40       	mov    %rax,0x40(%rsp)
+  342270:	31 c0                	xor    %eax,%eax
+  342272:	48 8b 05 8f 1a 0d 00 	mov    0xd1a8f(%rip),%rax        # 413d08 <_DYNAMIC+0x48c0>
+  342279:	31 c9                	xor    %ecx,%ecx
+  34227b:	89 cf                	mov    %ecx,%edi
+  34227d:	be 00 02 00 00       	mov    $0x200,%esi
+  342282:	ff d0                	call   *%rax
+  342284:	48 89 84 24 b8 02 00 	mov    %rax,0x2b8(%rsp)
+  34228b:	00 
+  34228c:	48 89 94 24 c0 02 00 	mov    %rdx,0x2c0(%rsp)
+  342293:	00 
+  342294:	48 8b 05 75 1a 0d 00 	mov    0xd1a75(%rip),%rax        # 413d10 <_DYNAMIC+0x48c8>
+  34229b:	48 8d bc 24 b8 02 00 	lea    0x2b8(%rsp),%rdi
+  3422a2:	00 
+  3422a3:	ff d0                	call   *%rax
+  3422a5:	48 89 84 24 c8 02 00 	mov    %rax,0x2c8(%rsp)
+  3422ac:	00 
+  3422ad:	48 89 94 24 d0 02 00 	mov    %rdx,0x2d0(%rsp)
+  3422b4:	00 
+  3422b5:	48 f7 84 24 c8 02 00 	testq  $0x1,0x2c8(%rsp)
+  3422bc:	00 01 00 00 00 
+  3422c1:	74 23                	je     3422e6 <kernel::memory::kernel_page_table::map_kernel_page+0xc26>
+  3422c3:	48 8b 7c 24 40       	mov    0x40(%rsp),%rdi
+  3422c8:	48 8b b4 24 d0 02 00 	mov    0x2d0(%rsp),%rsi
+  3422cf:	00 
+  3422d0:	48 8d 15 c9 f3 0b 00 	lea    0xbf3c9(%rip),%rdx        # 4016a0 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd710>
+  3422d7:	e8 64 53 fc ff       	call   307640 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::IndexMut<usize>>::index_mut>
+  3422dc:	48 89 c7             	mov    %rax,%rdi
+  3422df:	e8 7c 04 fd ff       	call   312760 <x86_64::structures::paging::page_table::PageTableEntry::set_unused>
+  3422e4:	eb ae                	jmp    342294 <kernel::memory::kernel_page_table::map_kernel_page+0xbd4>
+  3422e6:	48 8b 74 24 68       	mov    0x68(%rsp),%rsi
+  3422eb:	48 8b 7c 24 50       	mov    0x50(%rsp),%rdi
+  3422f0:	48 8d 15 11 f2 0b 00 	lea    0xbf211(%rip),%rdx        # 401508 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd578>
+  3422f7:	e8 44 53 fc ff       	call   307640 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::IndexMut<usize>>::index_mut>
+  3422fc:	48 89 44 24 38       	mov    %rax,0x38(%rsp)
+  342301:	bf 01 00 00 00       	mov    $0x1,%edi
+  342306:	be 02 00 00 00       	mov    $0x2,%esi
+  34230b:	e8 f0 06 fd ff       	call   312a00 <x86_64::structures::paging::page_table::_::<impl core::ops::bit::BitOr for x86_64::structures::paging::page_table::PageTableFlags>::bitor>
+  342310:	48 8b 7c 24 38       	mov    0x38(%rsp),%rdi
+  342315:	48 89 c2             	mov    %rax,%rdx
+  342318:	48 8b 84 24 b0 02 00 	mov    0x2b0(%rsp),%rax
+  34231f:	00 
+  342320:	48 89 84 24 f0 05 00 	mov    %rax,0x5f0(%rsp)
+  342327:	00 
+  342328:	48 8b 84 24 f0 05 00 	mov    0x5f0(%rsp),%rax
+  34232f:	00 
+  342330:	48 89 84 24 f8 05 00 	mov    %rax,0x5f8(%rsp)
+  342337:	00 
+  342338:	48 8b b4 24 f8 05 00 	mov    0x5f8(%rsp),%rsi
+  34233f:	00 
+  342340:	e8 1b 06 fd ff       	call   312960 <x86_64::structures::paging::page_table::PageTableEntry::set_frame>
+  342345:	48 8b 84 24 b0 02 00 	mov    0x2b0(%rsp),%rax
+  34234c:	00 
+  34234d:	48 89 84 24 78 02 00 	mov    %rax,0x278(%rsp)
+  342354:	00 
+  342355:	e9 fa fd ff ff       	jmp    342154 <kernel::memory::kernel_page_table::map_kernel_page+0xa94>
+  34235a:	48 8b 74 24 70       	mov    0x70(%rsp),%rsi
+  34235f:	48 8b 7c 24 48       	mov    0x48(%rsp),%rdi
+  342364:	48 8d 15 cd f1 0b 00 	lea    0xbf1cd(%rip),%rdx        # 401538 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd5a8>
+  34236b:	e8 d0 50 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  342370:	48 89 c6             	mov    %rax,%rsi
+  342373:	48 8d bc 24 50 03 00 	lea    0x350(%rsp),%rdi
+  34237a:	00 
+  34237b:	e8 40 04 fd ff       	call   3127c0 <x86_64::structures::paging::page_table::PageTableEntry::frame>
+  342380:	8a 84 24 50 03 00 00 	mov    0x350(%rsp),%al
+  342387:	a8 01                	test   $0x1,%al
+  342389:	75 02                	jne    34238d <kernel::memory::kernel_page_table::map_kernel_page+0xccd>
+  34238b:	eb 3b                	jmp    3423c8 <kernel::memory::kernel_page_table::map_kernel_page+0xd08>
+  34238d:	8a 84 24 51 03 00 00 	mov    0x351(%rsp),%al
+  342394:	24 01                	and    $0x1,%al
+  342396:	88 84 24 6f 06 00 00 	mov    %al,0x66f(%rsp)
+  34239d:	48 8d 3d 86 d5 d6 ff 	lea    -0x292a7a(%rip),%rdi        # af92a <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x29ae>
+  3423a4:	48 8d 0d 7d e4 0b 00 	lea    0xbe47d(%rip),%rcx        # 400828 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xc898>
+  3423ab:	4c 8d 05 9e f1 0b 00 	lea    0xbf19e(%rip),%r8        # 401550 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd5c0>
+  3423b2:	48 8b 05 b7 64 0d 00 	mov    0xd64b7(%rip),%rax        # 418870 <_DYNAMIC+0x9428>
+  3423b9:	be 2b 00 00 00       	mov    $0x2b,%esi
+  3423be:	48 8d 94 24 6f 06 00 	lea    0x66f(%rsp),%rdx
+  3423c5:	00 
+  3423c6:	ff d0                	call   *%rax
+  3423c8:	48 8b 84 24 58 03 00 	mov    0x358(%rsp),%rax
+  3423cf:	00 
+  3423d0:	48 89 84 24 60 06 00 	mov    %rax,0x660(%rsp)
+  3423d7:	00 
+  3423d8:	48 8b 84 24 60 06 00 	mov    0x660(%rsp),%rax
+  3423df:	00 
+  3423e0:	48 89 84 24 08 06 00 	mov    %rax,0x608(%rsp)
+  3423e7:	00 
+  3423e8:	48 8b 84 24 08 06 00 	mov    0x608(%rsp),%rax
+  3423ef:	00 
+  3423f0:	48 89 84 24 f0 02 00 	mov    %rax,0x2f0(%rsp)
+  3423f7:	00 
+  3423f8:	eb 73                	jmp    34246d <kernel::memory::kernel_page_table::map_kernel_page+0xdad>
+  3423fa:	48 8b 05 17 19 0d 00 	mov    0xd1917(%rip),%rax        # 413d18 <_DYNAMIC+0x48d0>
+  342401:	48 8d bc 24 18 03 00 	lea    0x318(%rsp),%rdi
+  342408:	00 
+  342409:	ff d0                	call   *%rax
+  34240b:	48 8d 15 f7 e0 d6 ff 	lea    -0x291f09(%rip),%rdx        # b0509 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x358d>
+  342412:	48 8b 05 07 19 0d 00 	mov    0xd1907(%rip),%rax        # 413d20 <_DYNAMIC+0x48d8>
+  342419:	48 8d bc 24 08 03 00 	lea    0x308(%rsp),%rdi
+  342420:	00 
+  342421:	48 8d b4 24 18 03 00 	lea    0x318(%rsp),%rsi
+  342428:	00 
+  342429:	b9 14 00 00 00       	mov    $0x14,%ecx
+  34242e:	ff d0                	call   *%rax
+  342430:	48 8b 05 f1 18 0d 00 	mov    0xd18f1(%rip),%rax        # 413d28 <_DYNAMIC+0x48e0>
+  342437:	48 8d bc 24 f8 02 00 	lea    0x2f8(%rsp),%rdi
+  34243e:	00 
+  34243f:	48 8d b4 24 08 03 00 	lea    0x308(%rsp),%rsi
+  342446:	00 
+  342447:	ff d0                	call   *%rax
+  342449:	48 8b 94 24 f8 02 00 	mov    0x2f8(%rsp),%rdx
+  342450:	00 
+  342451:	b8 01 00 00 00       	mov    $0x1,%eax
+  342456:	31 c9                	xor    %ecx,%ecx
+  342458:	48 83 fa 00          	cmp    $0x0,%rdx
+  34245c:	48 0f 44 c1          	cmove  %rcx,%rax
+  342460:	48 a9 01 00 00 00    	test   $0x1,%rax
+  342466:	75 7e                	jne    3424e6 <kernel::memory::kernel_page_table::map_kernel_page+0xe26>
+  342468:	e9 ae 00 00 00       	jmp    34251b <kernel::memory::kernel_page_table::map_kernel_page+0xe5b>
+  34246d:	48 8b 84 24 f0 02 00 	mov    0x2f0(%rsp),%rax
+  342474:	00 
+  342475:	48 89 84 24 60 03 00 	mov    %rax,0x360(%rsp)
+  34247c:	00 
+  34247d:	48 8b 84 24 60 03 00 	mov    0x360(%rsp),%rax
+  342484:	00 
+  342485:	48 89 84 24 30 06 00 	mov    %rax,0x630(%rsp)
+  34248c:	00 
+  34248d:	48 8b bc 24 30 06 00 	mov    0x630(%rsp),%rdi
+  342494:	00 
+  342495:	48 8b 05 9c 18 0d 00 	mov    0xd189c(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  34249c:	ff d0                	call   *%rax
+  34249e:	48 89 c7             	mov    %rax,%rdi
+  3424a1:	e8 9a b0 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  3424a6:	48 8b 7c 24 78       	mov    0x78(%rsp),%rdi
+  3424ab:	48 89 c6             	mov    %rax,%rsi
+  3424ae:	e8 0d b3 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  3424b3:	48 89 c7             	mov    %rax,%rdi
+  3424b6:	48 8b 05 1b 58 0d 00 	mov    0xd581b(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  3424bd:	ff d0                	call   *%rax
+  3424bf:	48 89 44 24 30       	mov    %rax,0x30(%rsp)
+  3424c4:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+  3424cb:	00 
+  3424cc:	e8 af b1 f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  3424d1:	48 89 c7             	mov    %rax,%rdi
+  3424d4:	e8 17 8b 00 00       	call   34aff0 <kernel::memory::kernel_stack::is_kernel_stack_va>
+  3424d9:	a8 01                	test   $0x1,%al
+  3424db:	0f 85 18 02 00 00    	jne    3426f9 <kernel::memory::kernel_page_table::map_kernel_page+0x1039>
+  3424e1:	e9 86 01 00 00       	jmp    34266c <kernel::memory::kernel_page_table::map_kernel_page+0xfac>
+  3424e6:	48 8b bc 24 f8 02 00 	mov    0x2f8(%rsp),%rdi
+  3424ed:	00 
+  3424ee:	48 8b b4 24 00 03 00 	mov    0x300(%rsp),%rsi
+  3424f5:	00 
+  3424f6:	48 8d 15 8b f1 0b 00 	lea    0xbf18b(%rip),%rdx        # 401688 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd6f8>
+  3424fd:	48 8b 05 34 1b 0d 00 	mov    0xd1b34(%rip),%rax        # 414038 <_DYNAMIC+0x4bf0>
+  342504:	ff d0                	call   *%rax
+  342506:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  34250d:	00 
+  34250e:	48 89 94 24 a0 00 00 	mov    %rdx,0xa0(%rsp)
+  342515:	00 
+  342516:	e9 a3 f8 ff ff       	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  34251b:	48 8b 84 24 00 03 00 	mov    0x300(%rsp),%rax
+  342522:	00 
+  342523:	48 89 84 24 28 03 00 	mov    %rax,0x328(%rsp)
+  34252a:	00 
+  34252b:	48 8b 84 24 28 03 00 	mov    0x328(%rsp),%rax
+  342532:	00 
+  342533:	48 89 84 24 10 06 00 	mov    %rax,0x610(%rsp)
+  34253a:	00 
+  34253b:	48 8b 84 24 10 06 00 	mov    0x610(%rsp),%rax
+  342542:	00 
+  342543:	48 89 84 24 18 06 00 	mov    %rax,0x618(%rsp)
+  34254a:	00 
+  34254b:	48 8b bc 24 18 06 00 	mov    0x618(%rsp),%rdi
+  342552:	00 
+  342553:	48 8b 05 de 17 0d 00 	mov    0xd17de(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  34255a:	ff d0                	call   *%rax
+  34255c:	48 89 c7             	mov    %rax,%rdi
+  34255f:	e8 dc af f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  342564:	48 8b 7c 24 78       	mov    0x78(%rsp),%rdi
+  342569:	48 89 c6             	mov    %rax,%rsi
+  34256c:	e8 4f b2 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  342571:	48 89 c7             	mov    %rax,%rdi
+  342574:	48 8b 05 5d 57 0d 00 	mov    0xd575d(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  34257b:	ff d0                	call   *%rax
+  34257d:	48 89 44 24 28       	mov    %rax,0x28(%rsp)
+  342582:	31 c0                	xor    %eax,%eax
+  342584:	48 8b 05 7d 17 0d 00 	mov    0xd177d(%rip),%rax        # 413d08 <_DYNAMIC+0x48c0>
+  34258b:	31 c9                	xor    %ecx,%ecx
+  34258d:	89 cf                	mov    %ecx,%edi
+  34258f:	be 00 02 00 00       	mov    $0x200,%esi
+  342594:	ff d0                	call   *%rax
+  342596:	48 89 84 24 30 03 00 	mov    %rax,0x330(%rsp)
+  34259d:	00 
+  34259e:	48 89 94 24 38 03 00 	mov    %rdx,0x338(%rsp)
+  3425a5:	00 
+  3425a6:	48 8b 05 63 17 0d 00 	mov    0xd1763(%rip),%rax        # 413d10 <_DYNAMIC+0x48c8>
+  3425ad:	48 8d bc 24 30 03 00 	lea    0x330(%rsp),%rdi
+  3425b4:	00 
+  3425b5:	ff d0                	call   *%rax
+  3425b7:	48 89 84 24 40 03 00 	mov    %rax,0x340(%rsp)
+  3425be:	00 
+  3425bf:	48 89 94 24 48 03 00 	mov    %rdx,0x348(%rsp)
+  3425c6:	00 
+  3425c7:	48 f7 84 24 40 03 00 	testq  $0x1,0x340(%rsp)
+  3425ce:	00 01 00 00 00 
+  3425d3:	74 23                	je     3425f8 <kernel::memory::kernel_page_table::map_kernel_page+0xf38>
+  3425d5:	48 8b 7c 24 28       	mov    0x28(%rsp),%rdi
+  3425da:	48 8b b4 24 48 03 00 	mov    0x348(%rsp),%rsi
+  3425e1:	00 
+  3425e2:	48 8d 15 87 f0 0b 00 	lea    0xbf087(%rip),%rdx        # 401670 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd6e0>
+  3425e9:	e8 52 50 fc ff       	call   307640 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::IndexMut<usize>>::index_mut>
+  3425ee:	48 89 c7             	mov    %rax,%rdi
+  3425f1:	e8 6a 01 fd ff       	call   312760 <x86_64::structures::paging::page_table::PageTableEntry::set_unused>
+  3425f6:	eb ae                	jmp    3425a6 <kernel::memory::kernel_page_table::map_kernel_page+0xee6>
+  3425f8:	48 8b 74 24 70       	mov    0x70(%rsp),%rsi
+  3425fd:	48 8b 7c 24 48       	mov    0x48(%rsp),%rdi
+  342602:	48 8d 15 5f ef 0b 00 	lea    0xbef5f(%rip),%rdx        # 401568 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd5d8>
+  342609:	e8 32 50 fc ff       	call   307640 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::IndexMut<usize>>::index_mut>
+  34260e:	48 89 44 24 20       	mov    %rax,0x20(%rsp)
+  342613:	bf 01 00 00 00       	mov    $0x1,%edi
+  342618:	be 02 00 00 00       	mov    $0x2,%esi
+  34261d:	e8 de 03 fd ff       	call   312a00 <x86_64::structures::paging::page_table::_::<impl core::ops::bit::BitOr for x86_64::structures::paging::page_table::PageTableFlags>::bitor>
+  342622:	48 8b 7c 24 20       	mov    0x20(%rsp),%rdi
+  342627:	48 89 c2             	mov    %rax,%rdx
+  34262a:	48 8b 84 24 28 03 00 	mov    0x328(%rsp),%rax
+  342631:	00 
+  342632:	48 89 84 24 20 06 00 	mov    %rax,0x620(%rsp)
+  342639:	00 
+  34263a:	48 8b 84 24 20 06 00 	mov    0x620(%rsp),%rax
+  342641:	00 
+  342642:	48 89 84 24 28 06 00 	mov    %rax,0x628(%rsp)
+  342649:	00 
+  34264a:	48 8b b4 24 28 06 00 	mov    0x628(%rsp),%rsi
+  342651:	00 
+  342652:	e8 09 03 fd ff       	call   312960 <x86_64::structures::paging::page_table::PageTableEntry::set_frame>
+  342657:	48 8b 84 24 28 03 00 	mov    0x328(%rsp),%rax
+  34265e:	00 
+  34265f:	48 89 84 24 f0 02 00 	mov    %rax,0x2f0(%rsp)
+  342666:	00 
+  342667:	e9 01 fe ff ff       	jmp    34246d <kernel::memory::kernel_page_table::map_kernel_page+0xdad>
+  34266c:	48 8b bc 24 88 00 00 	mov    0x88(%rsp),%rdi
+  342673:	00 
+  342674:	48 8b 05 0d 15 0d 00 	mov    0xd150d(%rip),%rax        # 413b88 <_DYNAMIC+0x4740>
+  34267b:	ff d0                	call   *%rax
+  34267d:	48 8b 7c 24 30       	mov    0x30(%rsp),%rdi
+  342682:	48 89 84 24 38 06 00 	mov    %rax,0x638(%rsp)
+  342689:	00 
+  34268a:	48 8b 84 24 38 06 00 	mov    0x638(%rsp),%rax
+  342691:	00 
+  342692:	48 89 84 24 70 03 00 	mov    %rax,0x370(%rsp)
+  342699:	00 
+  34269a:	48 8b b4 24 38 02 00 	mov    0x238(%rsp),%rsi
+  3426a1:	00 
+  3426a2:	48 8d 15 ef ee 0b 00 	lea    0xbeeef(%rip),%rdx        # 401598 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd608>
+  3426a9:	e8 92 4f fc ff       	call   307640 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::IndexMut<usize>>::index_mut>
+  3426ae:	48 89 c7             	mov    %rax,%rdi
+  3426b1:	48 8b 84 24 70 03 00 	mov    0x370(%rsp),%rax
+  3426b8:	00 
+  3426b9:	48 89 84 24 40 06 00 	mov    %rax,0x640(%rsp)
+  3426c0:	00 
+  3426c1:	48 8b 84 24 40 06 00 	mov    0x640(%rsp),%rax
+  3426c8:	00 
+  3426c9:	48 89 84 24 48 06 00 	mov    %rax,0x648(%rsp)
+  3426d0:	00 
+  3426d1:	48 8b b4 24 48 06 00 	mov    0x648(%rsp),%rsi
+  3426d8:	00 
+  3426d9:	48 8b 94 24 90 00 00 	mov    0x90(%rsp),%rdx
+  3426e0:	00 
+  3426e1:	e8 7a 02 fd ff       	call   312960 <x86_64::structures::paging::page_table::PageTableEntry::set_frame>
+  3426e6:	48 81 bc 24 30 02 00 	cmpq   $0x192,0x230(%rsp)
+  3426ed:	00 92 01 00 00 
+  3426f2:	74 6e                	je     342762 <kernel::memory::kernel_page_table::map_kernel_page+0x10a2>
+  3426f4:	e9 93 00 00 00       	jmp    34278c <kernel::memory::kernel_page_table::map_kernel_page+0x10cc>
+  3426f9:	48 8b 7c 24 30       	mov    0x30(%rsp),%rdi
+  3426fe:	48 8b b4 24 38 02 00 	mov    0x238(%rsp),%rsi
+  342705:	00 
+  342706:	48 8d 15 73 ee 0b 00 	lea    0xbee73(%rip),%rdx        # 401580 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd5f0>
+  34270d:	e8 2e 4d fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  342712:	48 89 c7             	mov    %rax,%rdi
+  342715:	e8 76 00 fd ff       	call   312790 <x86_64::structures::paging::page_table::PageTableEntry::flags>
+  34271a:	48 89 84 24 68 03 00 	mov    %rax,0x368(%rsp)
+  342721:	00 
+  342722:	48 8d bc 24 68 03 00 	lea    0x368(%rsp),%rdi
+  342729:	00 
+  34272a:	be 01 00 00 00       	mov    $0x1,%esi
+  34272f:	e8 1c 04 fd ff       	call   312b50 <x86_64::structures::paging::page_table::_::<impl x86_64::structures::paging::page_table::PageTableFlags>::contains>
+  342734:	a8 01                	test   $0x1,%al
+  342736:	75 05                	jne    34273d <kernel::memory::kernel_page_table::map_kernel_page+0x107d>
+  342738:	e9 2f ff ff ff       	jmp    34266c <kernel::memory::kernel_page_table::map_kernel_page+0xfac>
+  34273d:	e8 8e 69 00 00       	call   3490d0 <kernel::memory::kernel_stack::note_kernel_stack_pte_overwrite_refused>
+  342742:	48 8d 05 1e df d6 ff 	lea    -0x2920e2(%rip),%rax        # b0667 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x36eb>
+  342749:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  342750:	00 
+  342751:	48 c7 84 24 a0 00 00 	movq   $0x41,0xa0(%rsp)
+  342758:	00 41 00 00 00 
+  34275d:	e9 5c f6 ff ff       	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  342762:	48 c7 84 24 78 03 00 	movq   $0x5,0x378(%rsp)
+  342769:	00 05 00 00 00 
+  34276e:	48 8d 35 fb b5 d3 ff 	lea    -0x2c4a05(%rip),%rsi        # 7dd70 <kernel::_::__BOOTLOADER_CONFIG+0x180>
+  342775:	48 8b 05 fc d3 0c 00 	mov    0xcd3fc(%rip),%rax        # 40fb78 <_DYNAMIC+0x730>
+  34277c:	48 8d bc 24 78 03 00 	lea    0x378(%rsp),%rdi
+  342783:	00 
+  342784:	ff d0                	call   *%rax
+  342786:	a8 01                	test   $0x1,%al
+  342788:	75 4e                	jne    3427d8 <kernel::memory::kernel_page_table::map_kernel_page+0x1118>
+  34278a:	eb 0e                	jmp    34279a <kernel::memory::kernel_page_table::map_kernel_page+0x10da>
+  34278c:	48 81 bc 24 30 02 00 	cmpq   $0x193,0x230(%rsp)
+  342793:	00 93 01 00 00 
+  342798:	74 c8                	je     342762 <kernel::memory::kernel_page_table::map_kernel_page+0x10a2>
+  34279a:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+  3427a1:	00 
+  3427a2:	e8 99 76 da ff       	call   e9e40 <x86_64::instructions::tlb::flush>
+  3427a7:	48 c7 84 24 c8 04 00 	movq   $0x5,0x4c8(%rsp)
+  3427ae:	00 05 00 00 00 
+  3427b3:	48 8d 35 b6 b5 d3 ff 	lea    -0x2c4a4a(%rip),%rsi        # 7dd70 <kernel::_::__BOOTLOADER_CONFIG+0x180>
+  3427ba:	48 8b 05 b7 d3 0c 00 	mov    0xcd3b7(%rip),%rax        # 40fb78 <_DYNAMIC+0x730>
+  3427c1:	48 8d bc 24 c8 04 00 	lea    0x4c8(%rsp),%rdi
+  3427c8:	00 
+  3427c9:	ff d0                	call   *%rax
+  3427cb:	a8 01                	test   $0x1,%al
+  3427cd:	0f 85 df 02 00 00    	jne    342ab2 <kernel::memory::kernel_page_table::map_kernel_page+0x13f2>
+  3427d3:	e9 c9 02 00 00       	jmp    342aa1 <kernel::memory::kernel_page_table::map_kernel_page+0x13e1>
+  3427d8:	c6 84 24 5d 06 00 00 	movb   $0x0,0x65d(%rsp)
+  3427df:	00 
+  3427e0:	8a 84 24 5d 06 00 00 	mov    0x65d(%rsp),%al
+  3427e7:	0f b6 f0             	movzbl %al,%esi
+  3427ea:	48 8b 3d 8f d3 0c 00 	mov    0xcd38f(%rip),%rdi        # 40fb80 <_DYNAMIC+0x738>
+  3427f1:	e8 da 9c f8 ff       	call   2cc4d0 <core::sync::atomic::AtomicUsize::load>
+  3427f6:	48 89 84 24 80 03 00 	mov    %rax,0x380(%rsp)
+  3427fd:	00 
+  3427fe:	48 8b 05 73 d3 0c 00 	mov    0xcd373(%rip),%rax        # 40fb78 <_DYNAMIC+0x730>
+  342805:	48 8d bc 24 78 03 00 	lea    0x378(%rsp),%rdi
+  34280c:	00 
+  34280d:	48 8d b4 24 80 03 00 	lea    0x380(%rsp),%rsi
+  342814:	00 
+  342815:	ff d0                	call   *%rax
+  342817:	a8 01                	test   $0x1,%al
+  342819:	75 05                	jne    342820 <kernel::memory::kernel_page_table::map_kernel_page+0x1160>
+  34281b:	e9 7a ff ff ff       	jmp    34279a <kernel::memory::kernel_page_table::map_kernel_page+0x10da>
+  342820:	48 8b bc 24 80 00 00 	mov    0x80(%rsp),%rdi
+  342827:	00 
+  342828:	e8 53 ae f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  34282d:	48 89 84 24 e0 03 00 	mov    %rax,0x3e0(%rsp)
+  342834:	00 
+  342835:	48 8b bc 24 88 00 00 	mov    0x88(%rsp),%rdi
+  34283c:	00 
+  34283d:	e8 fe ac f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  342842:	48 89 84 24 e8 03 00 	mov    %rax,0x3e8(%rsp)
+  342849:	00 
+  34284a:	48 8b 84 24 f0 02 00 	mov    0x2f0(%rsp),%rax
+  342851:	00 
+  342852:	48 89 84 24 f8 03 00 	mov    %rax,0x3f8(%rsp)
+  342859:	00 
+  34285a:	48 8b 84 24 f8 03 00 	mov    0x3f8(%rsp),%rax
+  342861:	00 
+  342862:	48 89 84 24 50 06 00 	mov    %rax,0x650(%rsp)
+  342869:	00 
+  34286a:	48 8b bc 24 50 06 00 	mov    0x650(%rsp),%rdi
+  342871:	00 
+  342872:	48 8b 05 bf 14 0d 00 	mov    0xd14bf(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  342879:	ff d0                	call   *%rax
+  34287b:	48 89 c7             	mov    %rax,%rdi
+  34287e:	e8 bd ac f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  342883:	48 89 84 24 f0 03 00 	mov    %rax,0x3f0(%rsp)
+  34288a:	00 
+  34288b:	48 8d 84 24 30 02 00 	lea    0x230(%rsp),%rax
+  342892:	00 
+  342893:	48 89 84 24 b8 03 00 	mov    %rax,0x3b8(%rsp)
+  34289a:	00 
+  34289b:	48 8d 84 24 e0 03 00 	lea    0x3e0(%rsp),%rax
+  3428a2:	00 
+  3428a3:	48 89 84 24 c0 03 00 	mov    %rax,0x3c0(%rsp)
+  3428aa:	00 
+  3428ab:	48 8d 84 24 e8 03 00 	lea    0x3e8(%rsp),%rax
+  3428b2:	00 
+  3428b3:	48 89 84 24 c8 03 00 	mov    %rax,0x3c8(%rsp)
+  3428ba:	00 
+  3428bb:	48 8d 84 24 f0 03 00 	lea    0x3f0(%rsp),%rax
+  3428c2:	00 
+  3428c3:	48 89 84 24 d0 03 00 	mov    %rax,0x3d0(%rsp)
+  3428ca:	00 
+  3428cb:	48 8d 84 24 38 02 00 	lea    0x238(%rsp),%rax
+  3428d2:	00 
+  3428d3:	48 89 84 24 d8 03 00 	mov    %rax,0x3d8(%rsp)
+  3428da:	00 
+  3428db:	48 8b b4 24 b8 03 00 	mov    0x3b8(%rsp),%rsi
+  3428e2:	00 
+  3428e3:	48 8b 05 8e d4 0c 00 	mov    0xcd48e(%rip),%rax        # 40fd78 <_DYNAMIC+0x930>
+  3428ea:	48 89 44 24 18       	mov    %rax,0x18(%rsp)
+  3428ef:	48 8d bc 24 50 04 00 	lea    0x450(%rsp),%rdi
+  3428f6:	00 
+  3428f7:	ff d0                	call   *%rax
+  3428f9:	48 8b b4 24 c0 03 00 	mov    0x3c0(%rsp),%rsi
+  342900:	00 
+  342901:	48 8b 05 30 d3 0c 00 	mov    0xcd330(%rip),%rax        # 40fc38 <_DYNAMIC+0x7f0>
+  342908:	48 89 44 24 10       	mov    %rax,0x10(%rsp)
+  34290d:	48 8d bc 24 60 04 00 	lea    0x460(%rsp),%rdi
+  342914:	00 
+  342915:	ff d0                	call   *%rax
+  342917:	48 8b 44 24 10       	mov    0x10(%rsp),%rax
+  34291c:	48 8b b4 24 c8 03 00 	mov    0x3c8(%rsp),%rsi
+  342923:	00 
+  342924:	48 8d bc 24 70 04 00 	lea    0x470(%rsp),%rdi
+  34292b:	00 
+  34292c:	ff d0                	call   *%rax
+  34292e:	48 8b 44 24 10       	mov    0x10(%rsp),%rax
+  342933:	48 8b b4 24 d0 03 00 	mov    0x3d0(%rsp),%rsi
+  34293a:	00 
+  34293b:	48 8d bc 24 80 04 00 	lea    0x480(%rsp),%rdi
+  342942:	00 
+  342943:	ff d0                	call   *%rax
+  342945:	48 8b 44 24 18       	mov    0x18(%rsp),%rax
+  34294a:	48 8b b4 24 d8 03 00 	mov    0x3d8(%rsp),%rsi
+  342951:	00 
+  342952:	48 8d bc 24 90 04 00 	lea    0x490(%rsp),%rdi
+  342959:	00 
+  34295a:	ff d0                	call   *%rax
+  34295c:	48 8b 84 24 50 04 00 	mov    0x450(%rsp),%rax
+  342963:	00 
+  342964:	48 8b 8c 24 58 04 00 	mov    0x458(%rsp),%rcx
+  34296b:	00 
+  34296c:	48 89 8c 24 08 04 00 	mov    %rcx,0x408(%rsp)
+  342973:	00 
+  342974:	48 89 84 24 00 04 00 	mov    %rax,0x400(%rsp)
+  34297b:	00 
+  34297c:	48 8b 84 24 60 04 00 	mov    0x460(%rsp),%rax
+  342983:	00 
+  342984:	48 8b 8c 24 68 04 00 	mov    0x468(%rsp),%rcx
+  34298b:	00 
+  34298c:	48 89 8c 24 18 04 00 	mov    %rcx,0x418(%rsp)
+  342993:	00 
+  342994:	48 89 84 24 10 04 00 	mov    %rax,0x410(%rsp)
+  34299b:	00 
+  34299c:	48 8b 84 24 70 04 00 	mov    0x470(%rsp),%rax
+  3429a3:	00 
+  3429a4:	48 8b 8c 24 78 04 00 	mov    0x478(%rsp),%rcx
+  3429ab:	00 
+  3429ac:	48 89 8c 24 28 04 00 	mov    %rcx,0x428(%rsp)
+  3429b3:	00 
+  3429b4:	48 89 84 24 20 04 00 	mov    %rax,0x420(%rsp)
+  3429bb:	00 
+  3429bc:	48 8b 84 24 80 04 00 	mov    0x480(%rsp),%rax
+  3429c3:	00 
+  3429c4:	48 8b 8c 24 88 04 00 	mov    0x488(%rsp),%rcx
+  3429cb:	00 
+  3429cc:	48 89 8c 24 38 04 00 	mov    %rcx,0x438(%rsp)
+  3429d3:	00 
+  3429d4:	48 89 84 24 30 04 00 	mov    %rax,0x430(%rsp)
+  3429db:	00 
+  3429dc:	48 8b 84 24 90 04 00 	mov    0x490(%rsp),%rax
+  3429e3:	00 
+  3429e4:	48 8b 8c 24 98 04 00 	mov    0x498(%rsp),%rcx
+  3429eb:	00 
+  3429ec:	48 89 8c 24 48 04 00 	mov    %rcx,0x448(%rsp)
+  3429f3:	00 
+  3429f4:	48 89 84 24 40 04 00 	mov    %rax,0x440(%rsp)
+  3429fb:	00 
+  3429fc:	48 89 e0             	mov    %rsp,%rax
+  3429ff:	48 c7 00 05 00 00 00 	movq   $0x5,(%rax)
+  342a06:	48 8d 35 a3 eb 0b 00 	lea    0xbeba3(%rip),%rsi        # 4015b0 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd620>
+  342a0d:	4c 8d 0d 44 db d6 ff 	lea    -0x2924bc(%rip),%r9        # b0558 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x35dc>
+  342a14:	48 8d bc 24 88 03 00 	lea    0x388(%rsp),%rdi
+  342a1b:	00 
+  342a1c:	ba 06 00 00 00       	mov    $0x6,%edx
+  342a21:	48 8d 8c 24 00 04 00 	lea    0x400(%rsp),%rcx
+  342a28:	00 
+  342a29:	41 b8 05 00 00 00    	mov    $0x5,%r8d
+  342a2f:	e8 dc 4a ff ff       	call   337510 <core::fmt::rt::<impl core::fmt::Arguments>::new_v1_formatted>
+  342a34:	48 8d 3d d5 eb 0b 00 	lea    0xbebd5(%rip),%rdi        # 401610 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd680>
+  342a3b:	48 8b 05 4e d1 0c 00 	mov    0xcd14e(%rip),%rax        # 40fb90 <_DYNAMIC+0x748>
+  342a42:	ff d0                	call   *%rax
+  342a44:	48 8d 0d e2 d8 d6 ff 	lea    -0x29271e(%rip),%rcx        # b032d <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x33b1>
+  342a4b:	48 89 8c 24 a0 04 00 	mov    %rcx,0x4a0(%rsp)
+  342a52:	00 
+  342a53:	48 c7 84 24 a8 04 00 	movq   $0x21,0x4a8(%rsp)
+  342a5a:	00 21 00 00 00 
+  342a5f:	48 89 8c 24 b0 04 00 	mov    %rcx,0x4b0(%rsp)
+  342a66:	00 
+  342a67:	48 c7 84 24 b8 04 00 	movq   $0x21,0x4b8(%rsp)
+  342a6e:	00 21 00 00 00 
+  342a73:	48 89 84 24 c0 04 00 	mov    %rax,0x4c0(%rsp)
+  342a7a:	00 
+  342a7b:	48 8b b4 24 78 03 00 	mov    0x378(%rsp),%rsi
+  342a82:	00 
+  342a83:	48 8b 05 0e d1 0c 00 	mov    0xcd10e(%rip),%rax        # 40fb98 <_DYNAMIC+0x750>
+  342a8a:	48 8d bc 24 88 03 00 	lea    0x388(%rsp),%rdi
+  342a91:	00 
+  342a92:	48 8d 94 24 a0 04 00 	lea    0x4a0(%rsp),%rdx
+  342a99:	00 
+  342a9a:	ff d0                	call   *%rax
+  342a9c:	e9 f9 fc ff ff       	jmp    34279a <kernel::memory::kernel_page_table::map_kernel_page+0x10da>
+  342aa1:	48 c7 84 24 98 00 00 	movq   $0x0,0x98(%rsp)
+  342aa8:	00 00 00 00 00 
+  342aad:	e9 0c f3 ff ff       	jmp    341dbe <kernel::memory::kernel_page_table::map_kernel_page+0x6fe>
+  342ab2:	c6 84 24 5c 06 00 00 	movb   $0x0,0x65c(%rsp)
+  342ab9:	00 
+  342aba:	8a 84 24 5c 06 00 00 	mov    0x65c(%rsp),%al
+  342ac1:	0f b6 f0             	movzbl %al,%esi
+  342ac4:	48 8b 3d b5 d0 0c 00 	mov    0xcd0b5(%rip),%rdi        # 40fb80 <_DYNAMIC+0x738>
+  342acb:	e8 00 9a f8 ff       	call   2cc4d0 <core::sync::atomic::AtomicUsize::load>
+  342ad0:	48 89 84 24 d0 04 00 	mov    %rax,0x4d0(%rsp)
+  342ad7:	00 
+  342ad8:	48 8b 05 99 d0 0c 00 	mov    0xcd099(%rip),%rax        # 40fb78 <_DYNAMIC+0x730>
+  342adf:	48 8d bc 24 c8 04 00 	lea    0x4c8(%rsp),%rdi
+  342ae6:	00 
+  342ae7:	48 8d b4 24 d0 04 00 	lea    0x4d0(%rsp),%rsi
+  342aee:	00 
+  342aef:	ff d0                	call   *%rax
+  342af1:	a8 01                	test   $0x1,%al
+  342af3:	75 02                	jne    342af7 <kernel::memory::kernel_page_table::map_kernel_page+0x1437>
+  342af5:	eb aa                	jmp    342aa1 <kernel::memory::kernel_page_table::map_kernel_page+0x13e1>
+  342af7:	48 8d 84 24 80 00 00 	lea    0x80(%rsp),%rax
+  342afe:	00 
+  342aff:	48 89 84 24 08 05 00 	mov    %rax,0x508(%rsp)
+  342b06:	00 
+  342b07:	48 8d 84 24 88 00 00 	lea    0x88(%rsp),%rax
+  342b0e:	00 
+  342b0f:	48 89 84 24 10 05 00 	mov    %rax,0x510(%rsp)
+  342b16:	00 
+  342b17:	48 8d 84 24 90 00 00 	lea    0x90(%rsp),%rax
+  342b1e:	00 
+  342b1f:	48 89 84 24 18 05 00 	mov    %rax,0x518(%rsp)
+  342b26:	00 
+  342b27:	48 8b b4 24 08 05 00 	mov    0x508(%rsp),%rsi
+  342b2e:	00 
+  342b2f:	48 8b 05 32 12 0d 00 	mov    0xd1232(%rip),%rax        # 413d68 <_DYNAMIC+0x4920>
+  342b36:	48 8d bc 24 50 05 00 	lea    0x550(%rsp),%rdi
+  342b3d:	00 
+  342b3e:	ff d0                	call   *%rax
+  342b40:	48 8b b4 24 10 05 00 	mov    0x510(%rsp),%rsi
+  342b47:	00 
+  342b48:	48 8b 05 f9 9e 0d 00 	mov    0xd9ef9(%rip),%rax        # 41ca48 <_DYNAMIC+0xd600>
+  342b4f:	48 8d bc 24 60 05 00 	lea    0x560(%rsp),%rdi
+  342b56:	00 
+  342b57:	ff d0                	call   *%rax
+  342b59:	48 8b b4 24 18 05 00 	mov    0x518(%rsp),%rsi
+  342b60:	00 
+  342b61:	48 8b 05 f8 9b 0d 00 	mov    0xd9bf8(%rip),%rax        # 41c760 <_DYNAMIC+0xd318>
+  342b68:	48 8d bc 24 70 05 00 	lea    0x570(%rsp),%rdi
+  342b6f:	00 
+  342b70:	ff d0                	call   *%rax
+  342b72:	48 8b 84 24 50 05 00 	mov    0x550(%rsp),%rax
+  342b79:	00 
+  342b7a:	48 8b 8c 24 58 05 00 	mov    0x558(%rsp),%rcx
+  342b81:	00 
+  342b82:	48 89 8c 24 28 05 00 	mov    %rcx,0x528(%rsp)
+  342b89:	00 
+  342b8a:	48 89 84 24 20 05 00 	mov    %rax,0x520(%rsp)
+  342b91:	00 
+  342b92:	48 8b 84 24 60 05 00 	mov    0x560(%rsp),%rax
+  342b99:	00 
+  342b9a:	48 8b 8c 24 68 05 00 	mov    0x568(%rsp),%rcx
+  342ba1:	00 
+  342ba2:	48 89 8c 24 38 05 00 	mov    %rcx,0x538(%rsp)
+  342ba9:	00 
+  342baa:	48 89 84 24 30 05 00 	mov    %rax,0x530(%rsp)
+  342bb1:	00 
+  342bb2:	48 8b 84 24 70 05 00 	mov    0x570(%rsp),%rax
+  342bb9:	00 
+  342bba:	48 8b 8c 24 78 05 00 	mov    0x578(%rsp),%rcx
+  342bc1:	00 
+  342bc2:	48 89 8c 24 48 05 00 	mov    %rcx,0x548(%rsp)
+  342bc9:	00 
+  342bca:	48 89 84 24 40 05 00 	mov    %rax,0x540(%rsp)
+  342bd1:	00 
+  342bd2:	48 8d 35 4f ea 0b 00 	lea    0xbea4f(%rip),%rsi        # 401628 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd698>
+  342bd9:	48 8b 05 50 15 0d 00 	mov    0xd1550(%rip),%rax        # 414130 <_DYNAMIC+0x4ce8>
+  342be0:	48 8d bc 24 d8 04 00 	lea    0x4d8(%rsp),%rdi
+  342be7:	00 
+  342be8:	48 8d 94 24 20 05 00 	lea    0x520(%rsp),%rdx
+  342bef:	00 
+  342bf0:	ff d0                	call   *%rax
+  342bf2:	48 8d 3d 5f ea 0b 00 	lea    0xbea5f(%rip),%rdi        # 401658 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd6c8>
+  342bf9:	48 8b 05 90 cf 0c 00 	mov    0xccf90(%rip),%rax        # 40fb90 <_DYNAMIC+0x748>
+  342c00:	ff d0                	call   *%rax
+  342c02:	48 8d 0d 24 d7 d6 ff 	lea    -0x2928dc(%rip),%rcx        # b032d <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x33b1>
+  342c09:	48 89 8c 24 80 05 00 	mov    %rcx,0x580(%rsp)
+  342c10:	00 
+  342c11:	48 c7 84 24 88 05 00 	movq   $0x21,0x588(%rsp)
+  342c18:	00 21 00 00 00 
+  342c1d:	48 89 8c 24 90 05 00 	mov    %rcx,0x590(%rsp)
+  342c24:	00 
+  342c25:	48 c7 84 24 98 05 00 	movq   $0x21,0x598(%rsp)
+  342c2c:	00 21 00 00 00 
+  342c31:	48 89 84 24 a0 05 00 	mov    %rax,0x5a0(%rsp)
+  342c38:	00 
+  342c39:	48 8b b4 24 c8 04 00 	mov    0x4c8(%rsp),%rsi
+  342c40:	00 
+  342c41:	48 8b 05 50 cf 0c 00 	mov    0xccf50(%rip),%rax        # 40fb98 <_DYNAMIC+0x750>
+  342c48:	48 8d bc 24 d8 04 00 	lea    0x4d8(%rsp),%rdi
+  342c4f:	00 
+  342c50:	48 8d 94 24 80 05 00 	lea    0x580(%rsp),%rdx
+  342c57:	00 
+  342c58:	ff d0                	call   *%rax
+  342c5a:	e9 42 fe ff ff       	jmp    342aa1 <kernel::memory::kernel_page_table::map_kernel_page+0x13e1>
+  342c5f:	cc                   	int3
+0000000000342c60 <kernel::memory::kernel_page_table::unmap_kernel_page>:
+  342c60:	48 81 ec 48 02 00 00 	sub    $0x248,%rsp
+  342c67:	48 89 74 24 58       	mov    %rsi,0x58(%rsp)
+  342c6c:	48 89 f8             	mov    %rdi,%rax
+  342c6f:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  342c74:	48 89 44 24 60       	mov    %rax,0x60(%rsp)
+  342c79:	48 89 44 24 68       	mov    %rax,0x68(%rsp)
+  342c7e:	e8 fd a9 f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  342c83:	48 b9 00 00 00 00 00 	movabs $0xffff800000000000,%rcx
+  342c8a:	80 ff ff 
+  342c8d:	48 39 c8             	cmp    %rcx,%rax
+  342c90:	72 60                	jb     342cf2 <kernel::memory::kernel_page_table::unmap_kernel_page+0x92>
+  342c92:	48 8b 35 37 11 17 00 	mov    0x171137(%rip),%rsi        # 4b3dd0 <kernel::memory::kernel_page_table::PHYS_MEM_OFFSET>
+  342c99:	48 8b 15 38 11 17 00 	mov    0x171138(%rip),%rdx        # 4b3dd8 <kernel::memory::kernel_page_table::PHYS_MEM_OFFSET+0x8>
+  342ca0:	48 8d 0d 48 d7 d6 ff 	lea    -0x2928b8(%rip),%rcx        # b03ef <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x3473>
+  342ca7:	48 8b 05 8a 20 0d 00 	mov    0xd208a(%rip),%rax        # 414d38 <_DYNAMIC+0x58f0>
+  342cae:	48 8d bc 24 80 00 00 	lea    0x80(%rsp),%rdi
+  342cb5:	00 
+  342cb6:	41 b8 26 00 00 00    	mov    $0x26,%r8d
+  342cbc:	ff d0                	call   *%rax
+  342cbe:	48 8b 05 7b 20 0d 00 	mov    0xd207b(%rip),%rax        # 414d40 <_DYNAMIC+0x58f8>
+  342cc5:	48 8d 7c 24 70       	lea    0x70(%rsp),%rdi
+  342cca:	48 8d b4 24 80 00 00 	lea    0x80(%rsp),%rsi
+  342cd1:	00 
+  342cd2:	ff d0                	call   *%rax
+  342cd4:	48 8b 54 24 70       	mov    0x70(%rsp),%rdx
+  342cd9:	b8 01 00 00 00       	mov    $0x1,%eax
+  342cde:	31 c9                	xor    %ecx,%ecx
+  342ce0:	48 83 fa 00          	cmp    $0x0,%rdx
+  342ce4:	48 0f 44 c1          	cmove  %rcx,%rax
+  342ce8:	48 a9 01 00 00 00    	test   $0x1,%rax
+  342cee:	75 26                	jne    342d16 <kernel::memory::kernel_page_table::unmap_kernel_page+0xb6>
+  342cf0:	eb 48                	jmp    342d3a <kernel::memory::kernel_page_table::unmap_kernel_page+0xda>
+  342cf2:	48 8b 44 24 60       	mov    0x60(%rsp),%rax
+  342cf7:	48 8d 0d 05 da d6 ff 	lea    -0x2925fb(%rip),%rcx        # b0703 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x3787>
+  342cfe:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  342d02:	48 c7 40 10 30 00 00 	movq   $0x30,0x10(%rax)
+  342d09:	00 
+  342d0a:	48 c7 00 01 00 00 00 	movq   $0x1,(%rax)
+  342d11:	e9 12 04 00 00       	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  342d16:	48 8b 7c 24 60       	mov    0x60(%rsp),%rdi
+  342d1b:	48 8b 74 24 70       	mov    0x70(%rsp),%rsi
+  342d20:	48 8b 54 24 78       	mov    0x78(%rsp),%rdx
+  342d25:	48 8d 0d c4 ea 0b 00 	lea    0xbeac4(%rip),%rcx        # 4017f0 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd860>
+  342d2c:	48 8b 05 f5 c9 0d 00 	mov    0xdc9f5(%rip),%rax        # 41f728 <_DYNAMIC+0x102e0>
+  342d33:	ff d0                	call   *%rax
+  342d35:	e9 ee 03 00 00       	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  342d3a:	48 8b 44 24 78       	mov    0x78(%rsp),%rax
+  342d3f:	48 89 44 24 50       	mov    %rax,0x50(%rsp)
+  342d44:	c6 84 24 40 02 00 00 	movb   $0x2,0x240(%rsp)
+  342d4b:	02 
+  342d4c:	c6 84 24 41 02 00 00 	movb   $0x0,0x241(%rsp)
+  342d53:	00 
+  342d54:	8a 8c 24 40 02 00 00 	mov    0x240(%rsp),%cl
+  342d5b:	8a 84 24 41 02 00 00 	mov    0x241(%rsp),%al
+  342d62:	0f b6 c9             	movzbl %cl,%ecx
+  342d65:	44 0f b6 c0          	movzbl %al,%r8d
+  342d69:	48 8d 3d 30 10 17 00 	lea    0x171030(%rip),%rdi        # 4b3da0 <kernel::memory::kernel_page_table::KERNEL_PDPT_FRAME>
+  342d70:	31 f6                	xor    %esi,%esi
+  342d72:	ba 01 00 00 00       	mov    $0x1,%edx
+  342d77:	e8 a4 95 f8 ff       	call   2cc320 <core::sync::atomic::AtomicBool::compare_exchange_weak>
+  342d7c:	24 01                	and    $0x1,%al
+  342d7e:	88 84 24 3e 02 00 00 	mov    %al,0x23e(%rsp)
+  342d85:	88 94 24 3f 02 00 00 	mov    %dl,0x23f(%rsp)
+  342d8c:	48 8b 05 6d d5 0c 00 	mov    0xcd56d(%rip),%rax        # 410300 <_DYNAMIC+0xeb8>
+  342d93:	48 8d bc 24 3e 02 00 	lea    0x23e(%rsp),%rdi
+  342d9a:	00 
+  342d9b:	ff d0                	call   *%rax
+  342d9d:	a8 01                	test   $0x1,%al
+  342d9f:	75 02                	jne    342da3 <kernel::memory::kernel_page_table::unmap_kernel_page+0x143>
+  342da1:	eb 2e                	jmp    342dd1 <kernel::memory::kernel_page_table::unmap_kernel_page+0x171>
+  342da3:	c6 84 24 47 02 00 00 	movb   $0x0,0x247(%rsp)
+  342daa:	00 
+  342dab:	8a 84 24 47 02 00 00 	mov    0x247(%rsp),%al
+  342db2:	0f b6 f0             	movzbl %al,%esi
+  342db5:	48 8d 3d e4 0f 17 00 	lea    0x170fe4(%rip),%rdi        # 4b3da0 <kernel::memory::kernel_page_table::KERNEL_PDPT_FRAME>
+  342dbc:	e8 ef 95 f8 ff       	call   2cc3b0 <core::sync::atomic::AtomicBool::load>
+  342dc1:	a8 01                	test   $0x1,%al
+  342dc3:	75 05                	jne    342dca <kernel::memory::kernel_page_table::unmap_kernel_page+0x16a>
+  342dc5:	e9 7a ff ff ff       	jmp    342d44 <kernel::memory::kernel_page_table::unmap_kernel_page+0xe4>
+  342dca:	e8 c1 a6 f8 ff       	call   2cd490 <core::sync::atomic::spin_loop_hint>
+  342dcf:	eb d2                	jmp    342da3 <kernel::memory::kernel_page_table::unmap_kernel_page+0x143>
+  342dd1:	48 8d 0d c8 0f 17 00 	lea    0x170fc8(%rip),%rcx        # 4b3da0 <kernel::memory::kernel_page_table::KERNEL_PDPT_FRAME>
+  342dd8:	48 8d 05 c9 0f 17 00 	lea    0x170fc9(%rip),%rax        # 4b3da8 <kernel::memory::kernel_page_table::KERNEL_PDPT_FRAME+0x8>
+  342ddf:	48 89 8c 24 c0 00 00 	mov    %rcx,0xc0(%rsp)
+  342de6:	00 
+  342de7:	48 89 84 24 c8 00 00 	mov    %rax,0xc8(%rsp)
+  342dee:	00 
+  342def:	48 8b 05 b2 8f 0d 00 	mov    0xd8fb2(%rip),%rax        # 41bda8 <_DYNAMIC+0xc960>
+  342df6:	48 8d bc 24 c0 00 00 	lea    0xc0(%rsp),%rdi
+  342dfd:	00 
+  342dfe:	ff d0                	call   *%rax
+  342e00:	48 8b 08             	mov    (%rax),%rcx
+  342e03:	48 89 8c 24 b0 00 00 	mov    %rcx,0xb0(%rsp)
+  342e0a:	00 
+  342e0b:	48 8b 40 08          	mov    0x8(%rax),%rax
+  342e0f:	48 89 84 24 b8 00 00 	mov    %rax,0xb8(%rsp)
+  342e16:	00 
+  342e17:	48 8d 15 f7 d5 d6 ff 	lea    -0x292a09(%rip),%rdx        # b0415 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x3499>
+  342e1e:	48 8b 05 fb 0e 0d 00 	mov    0xd0efb(%rip),%rax        # 413d20 <_DYNAMIC+0x48d8>
+  342e25:	48 8d bc 24 a0 00 00 	lea    0xa0(%rsp),%rdi
+  342e2c:	00 
+  342e2d:	48 8d b4 24 b0 00 00 	lea    0xb0(%rsp),%rsi
+  342e34:	00 
+  342e35:	b9 1b 00 00 00       	mov    $0x1b,%ecx
+  342e3a:	ff d0                	call   *%rax
+  342e3c:	48 8b 05 e5 0e 0d 00 	mov    0xd0ee5(%rip),%rax        # 413d28 <_DYNAMIC+0x48e0>
+  342e43:	48 8d bc 24 90 00 00 	lea    0x90(%rsp),%rdi
+  342e4a:	00 
+  342e4b:	48 8d b4 24 a0 00 00 	lea    0xa0(%rsp),%rsi
+  342e52:	00 
+  342e53:	ff d0                	call   *%rax
+  342e55:	48 8b 94 24 90 00 00 	mov    0x90(%rsp),%rdx
+  342e5c:	00 
+  342e5d:	b8 01 00 00 00       	mov    $0x1,%eax
+  342e62:	31 c9                	xor    %ecx,%ecx
+  342e64:	48 83 fa 00          	cmp    $0x0,%rdx
+  342e68:	48 0f 44 c1          	cmove  %rcx,%rax
+  342e6c:	48 a9 01 00 00 00    	test   $0x1,%rax
+  342e72:	74 3b                	je     342eaf <kernel::memory::kernel_page_table::unmap_kernel_page+0x24f>
+  342e74:	48 8b 7c 24 60       	mov    0x60(%rsp),%rdi
+  342e79:	48 8b b4 24 90 00 00 	mov    0x90(%rsp),%rsi
+  342e80:	00 
+  342e81:	48 8b 94 24 98 00 00 	mov    0x98(%rsp),%rdx
+  342e88:	00 
+  342e89:	48 8d 0d 48 e9 0b 00 	lea    0xbe948(%rip),%rcx        # 4017d8 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd848>
+  342e90:	48 8b 05 91 c8 0d 00 	mov    0xdc891(%rip),%rax        # 41f728 <_DYNAMIC+0x102e0>
+  342e97:	ff d0                	call   *%rax
+  342e99:	48 8b 05 78 c8 0d 00 	mov    0xdc878(%rip),%rax        # 41f718 <_DYNAMIC+0x102d0>
+  342ea0:	48 8d bc 24 c0 00 00 	lea    0xc0(%rsp),%rdi
+  342ea7:	00 
+  342ea8:	ff d0                	call   *%rax
+  342eaa:	e9 79 02 00 00       	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  342eaf:	48 8b 84 24 98 00 00 	mov    0x98(%rsp),%rax
+  342eb6:	00 
+  342eb7:	48 89 84 24 d0 00 00 	mov    %rax,0xd0(%rsp)
+  342ebe:	00 
+  342ebf:	48 8b 05 52 c8 0d 00 	mov    0xdc852(%rip),%rax        # 41f718 <_DYNAMIC+0x102d0>
+  342ec6:	48 8d bc 24 c0 00 00 	lea    0xc0(%rsp),%rdi
+  342ecd:	00 
+  342ece:	ff d0                	call   *%rax
+  342ed0:	c6 84 24 44 02 00 00 	movb   $0x2,0x244(%rsp)
+  342ed7:	02 
+  342ed8:	c6 84 24 45 02 00 00 	movb   $0x0,0x245(%rsp)
+  342edf:	00 
+  342ee0:	8a 8c 24 44 02 00 00 	mov    0x244(%rsp),%cl
+  342ee7:	8a 84 24 45 02 00 00 	mov    0x245(%rsp),%al
+  342eee:	0f b6 c9             	movzbl %cl,%ecx
+  342ef1:	44 0f b6 c0          	movzbl %al,%r8d
+  342ef5:	48 8d 3d bc 0e 17 00 	lea    0x170ebc(%rip),%rdi        # 4b3db8 <kernel::memory::kernel_page_table::MASTER_KERNEL_PML4>
+  342efc:	31 f6                	xor    %esi,%esi
+  342efe:	ba 01 00 00 00       	mov    $0x1,%edx
+  342f03:	e8 18 94 f8 ff       	call   2cc320 <core::sync::atomic::AtomicBool::compare_exchange_weak>
+  342f08:	24 01                	and    $0x1,%al
+  342f0a:	88 84 24 42 02 00 00 	mov    %al,0x242(%rsp)
+  342f11:	88 94 24 43 02 00 00 	mov    %dl,0x243(%rsp)
+  342f18:	48 8b 05 e1 d3 0c 00 	mov    0xcd3e1(%rip),%rax        # 410300 <_DYNAMIC+0xeb8>
+  342f1f:	48 8d bc 24 42 02 00 	lea    0x242(%rsp),%rdi
+  342f26:	00 
+  342f27:	ff d0                	call   *%rax
+  342f29:	a8 01                	test   $0x1,%al
+  342f2b:	75 02                	jne    342f2f <kernel::memory::kernel_page_table::unmap_kernel_page+0x2cf>
+  342f2d:	eb 2e                	jmp    342f5d <kernel::memory::kernel_page_table::unmap_kernel_page+0x2fd>
+  342f2f:	c6 84 24 46 02 00 00 	movb   $0x0,0x246(%rsp)
+  342f36:	00 
+  342f37:	8a 84 24 46 02 00 00 	mov    0x246(%rsp),%al
+  342f3e:	0f b6 f0             	movzbl %al,%esi
+  342f41:	48 8d 3d 70 0e 17 00 	lea    0x170e70(%rip),%rdi        # 4b3db8 <kernel::memory::kernel_page_table::MASTER_KERNEL_PML4>
+  342f48:	e8 63 94 f8 ff       	call   2cc3b0 <core::sync::atomic::AtomicBool::load>
+  342f4d:	a8 01                	test   $0x1,%al
+  342f4f:	75 05                	jne    342f56 <kernel::memory::kernel_page_table::unmap_kernel_page+0x2f6>
+  342f51:	e9 7a ff ff ff       	jmp    342ed0 <kernel::memory::kernel_page_table::unmap_kernel_page+0x270>
+  342f56:	e8 35 a5 f8 ff       	call   2cd490 <core::sync::atomic::spin_loop_hint>
+  342f5b:	eb d2                	jmp    342f2f <kernel::memory::kernel_page_table::unmap_kernel_page+0x2cf>
+  342f5d:	48 8d 0d 54 0e 17 00 	lea    0x170e54(%rip),%rcx        # 4b3db8 <kernel::memory::kernel_page_table::MASTER_KERNEL_PML4>
+  342f64:	48 8d 05 55 0e 17 00 	lea    0x170e55(%rip),%rax        # 4b3dc0 <kernel::memory::kernel_page_table::MASTER_KERNEL_PML4+0x8>
+  342f6b:	48 89 8c 24 f0 00 00 	mov    %rcx,0xf0(%rsp)
+  342f72:	00 
+  342f73:	48 89 84 24 f8 00 00 	mov    %rax,0xf8(%rsp)
+  342f7a:	00 
+  342f7b:	48 8b 05 26 8e 0d 00 	mov    0xd8e26(%rip),%rax        # 41bda8 <_DYNAMIC+0xc960>
+  342f82:	48 8d bc 24 f0 00 00 	lea    0xf0(%rsp),%rdi
+  342f89:	00 
+  342f8a:	ff d0                	call   *%rax
+  342f8c:	48 89 c6             	mov    %rax,%rsi
+  342f8f:	48 8b 05 22 3f 0d 00 	mov    0xd3f22(%rip),%rax        # 416eb8 <_DYNAMIC+0x7a70>
+  342f96:	48 8d bc 24 e0 00 00 	lea    0xe0(%rsp),%rdi
+  342f9d:	00 
+  342f9e:	ff d0                	call   *%rax
+  342fa0:	48 f7 84 24 e0 00 00 	testq  $0x1,0xe0(%rsp)
+  342fa7:	00 01 00 00 00 
+  342fac:	74 22                	je     342fd0 <kernel::memory::kernel_page_table::unmap_kernel_page+0x370>
+  342fae:	48 8b 84 24 e8 00 00 	mov    0xe8(%rsp),%rax
+  342fb5:	00 
+  342fb6:	48 89 84 24 00 01 00 	mov    %rax,0x100(%rsp)
+  342fbd:	00 
+  342fbe:	48 8b 84 24 00 01 00 	mov    0x100(%rsp),%rax
+  342fc5:	00 
+  342fc6:	48 89 84 24 d8 00 00 	mov    %rax,0xd8(%rsp)
+  342fcd:	00 
+  342fce:	eb 2d                	jmp    342ffd <kernel::memory::kernel_page_table::unmap_kernel_page+0x39d>
+  342fd0:	48 8d bc 24 10 01 00 	lea    0x110(%rsp),%rdi
+  342fd7:	00 
+  342fd8:	e8 33 97 e5 ff       	call   19c710 <x86_64::registers::control::x86_64::<impl x86_64::registers::control::Cr3>::read>
+  342fdd:	48 8b 84 24 10 01 00 	mov    0x110(%rsp),%rax
+  342fe4:	00 
+  342fe5:	48 89 84 24 08 01 00 	mov    %rax,0x108(%rsp)
+  342fec:	00 
+  342fed:	48 8b 84 24 08 01 00 	mov    0x108(%rsp),%rax
+  342ff4:	00 
+  342ff5:	48 89 84 24 d8 00 00 	mov    %rax,0xd8(%rsp)
+  342ffc:	00 
+  342ffd:	48 8b 05 14 c7 0d 00 	mov    0xdc714(%rip),%rax        # 41f718 <_DYNAMIC+0x102d0>
+  343004:	48 8d bc 24 f0 00 00 	lea    0xf0(%rsp),%rdi
+  34300b:	00 
+  34300c:	ff d0                	call   *%rax
+  34300e:	48 8b 84 24 d8 00 00 	mov    0xd8(%rsp),%rax
+  343015:	00 
+  343016:	48 89 84 24 20 01 00 	mov    %rax,0x120(%rsp)
+  34301d:	00 
+  34301e:	48 8b 84 24 20 01 00 	mov    0x120(%rsp),%rax
+  343025:	00 
+  343026:	48 89 84 24 c0 01 00 	mov    %rax,0x1c0(%rsp)
+  34302d:	00 
+  34302e:	48 8b bc 24 c0 01 00 	mov    0x1c0(%rsp),%rdi
+  343035:	00 
+  343036:	48 8b 05 fb 0c 0d 00 	mov    0xd0cfb(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  34303d:	ff d0                	call   *%rax
+  34303f:	48 89 c7             	mov    %rax,%rdi
+  343042:	e8 f9 a4 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  343047:	48 8b 7c 24 50       	mov    0x50(%rsp),%rdi
+  34304c:	48 89 c6             	mov    %rax,%rsi
+  34304f:	e8 6c a7 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  343054:	48 89 c7             	mov    %rax,%rdi
+  343057:	48 8b 05 7a 4c 0d 00 	mov    0xd4c7a(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  34305e:	ff d0                	call   *%rax
+  343060:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  343065:	48 89 44 24 28       	mov    %rax,0x28(%rsp)
+  34306a:	e8 11 a6 f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  34306f:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  343074:	48 c1 e8 27          	shr    $0x27,%rax
+  343078:	48 25 ff 01 00 00    	and    $0x1ff,%rax
+  34307e:	48 89 44 24 40       	mov    %rax,0x40(%rsp)
+  343083:	e8 f8 a5 f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  343088:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  34308d:	48 c1 e8 1e          	shr    $0x1e,%rax
+  343091:	48 25 ff 01 00 00    	and    $0x1ff,%rax
+  343097:	48 89 44 24 30       	mov    %rax,0x30(%rsp)
+  34309c:	e8 df a5 f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  3430a1:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  3430a6:	48 c1 e8 15          	shr    $0x15,%rax
+  3430aa:	48 25 ff 01 00 00    	and    $0x1ff,%rax
+  3430b0:	48 89 44 24 38       	mov    %rax,0x38(%rsp)
+  3430b5:	e8 c6 a5 f4 ff       	call   28d680 <x86_64::addr::VirtAddr::as_u64>
+  3430ba:	48 89 c1             	mov    %rax,%rcx
+  3430bd:	48 8b 44 24 40       	mov    0x40(%rsp),%rax
+  3430c2:	48 c1 e9 0c          	shr    $0xc,%rcx
+  3430c6:	48 81 e1 ff 01 00 00 	and    $0x1ff,%rcx
+  3430cd:	48 89 4c 24 48       	mov    %rcx,0x48(%rsp)
+  3430d2:	48 3d 00 01 00 00    	cmp    $0x100,%rax
+  3430d8:	73 21                	jae    3430fb <kernel::memory::kernel_page_table::unmap_kernel_page+0x49b>
+  3430da:	48 8b 44 24 60       	mov    0x60(%rsp),%rax
+  3430df:	48 8d 0d f0 d5 d6 ff 	lea    -0x292a10(%rip),%rcx        # b06d6 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x375a>
+  3430e6:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  3430ea:	48 c7 40 10 2d 00 00 	movq   $0x2d,0x10(%rax)
+  3430f1:	00 
+  3430f2:	48 c7 00 01 00 00 00 	movq   $0x1,(%rax)
+  3430f9:	eb 2d                	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  3430fb:	48 8b 74 24 40       	mov    0x40(%rsp),%rsi
+  343100:	48 8b 7c 24 28       	mov    0x28(%rsp),%rdi
+  343105:	48 8d 15 f4 e5 0b 00 	lea    0xbe5f4(%rip),%rdx        # 401700 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd770>
+  34310c:	e8 2f 43 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  343111:	48 89 c1             	mov    %rax,%rcx
+  343114:	48 8b 44 24 40       	mov    0x40(%rsp),%rax
+  343119:	48 89 4c 24 20       	mov    %rcx,0x20(%rsp)
+  34311e:	48 3d 92 01 00 00    	cmp    $0x192,%rax
+  343124:	74 0f                	je     343135 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4d5>
+  343126:	eb 21                	jmp    343149 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4e9>
+  343128:	48 8b 44 24 68       	mov    0x68(%rsp),%rax
+  34312d:	48 81 c4 48 02 00 00 	add    $0x248,%rsp
+  343134:	c3                   	ret
+  343135:	48 8b 7c 24 20       	mov    0x20(%rsp),%rdi
+  34313a:	e8 d1 f7 fc ff       	call   312910 <x86_64::structures::paging::page_table::PageTableEntry::is_unused>
+  34313f:	a8 01                	test   $0x1,%al
+  343141:	0f 85 b0 00 00 00    	jne    3431f7 <kernel::memory::kernel_page_table::unmap_kernel_page+0x597>
+  343147:	eb 22                	jmp    34316b <kernel::memory::kernel_page_table::unmap_kernel_page+0x50b>
+  343149:	48 8b 44 24 40       	mov    0x40(%rsp),%rax
+  34314e:	48 3d 93 01 00 00    	cmp    $0x193,%rax
+  343154:	74 df                	je     343135 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4d5>
+  343156:	48 8b 84 24 d0 00 00 	mov    0xd0(%rsp),%rax
+  34315d:	00 
+  34315e:	48 89 84 24 28 01 00 	mov    %rax,0x128(%rsp)
+  343165:	00 
+  343166:	e9 b0 00 00 00       	jmp    34321b <kernel::memory::kernel_page_table::unmap_kernel_page+0x5bb>
+  34316b:	48 8b 74 24 20       	mov    0x20(%rsp),%rsi
+  343170:	48 8d bc 24 30 01 00 	lea    0x130(%rsp),%rdi
+  343177:	00 
+  343178:	e8 43 f6 fc ff       	call   3127c0 <x86_64::structures::paging::page_table::PageTableEntry::frame>
+  34317d:	8a 84 24 30 01 00 00 	mov    0x130(%rsp),%al
+  343184:	a8 01                	test   $0x1,%al
+  343186:	75 02                	jne    34318a <kernel::memory::kernel_page_table::unmap_kernel_page+0x52a>
+  343188:	eb 3b                	jmp    3431c5 <kernel::memory::kernel_page_table::unmap_kernel_page+0x565>
+  34318a:	8a 84 24 31 01 00 00 	mov    0x131(%rsp),%al
+  343191:	24 01                	and    $0x1,%al
+  343193:	88 84 24 3d 02 00 00 	mov    %al,0x23d(%rsp)
+  34319a:	48 8d 3d 89 c7 d6 ff 	lea    -0x293877(%rip),%rdi        # af92a <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x29ae>
+  3431a1:	48 8d 0d 80 d6 0b 00 	lea    0xbd680(%rip),%rcx        # 400828 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xc898>
+  3431a8:	4c 8d 05 69 e5 0b 00 	lea    0xbe569(%rip),%r8        # 401718 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd788>
+  3431af:	48 8b 05 ba 56 0d 00 	mov    0xd56ba(%rip),%rax        # 418870 <_DYNAMIC+0x9428>
+  3431b6:	be 2b 00 00 00       	mov    $0x2b,%esi
+  3431bb:	48 8d 94 24 3d 02 00 	lea    0x23d(%rsp),%rdx
+  3431c2:	00 
+  3431c3:	ff d0                	call   *%rax
+  3431c5:	48 8b 84 24 38 01 00 	mov    0x138(%rsp),%rax
+  3431cc:	00 
+  3431cd:	48 89 84 24 30 02 00 	mov    %rax,0x230(%rsp)
+  3431d4:	00 
+  3431d5:	48 8b 84 24 30 02 00 	mov    0x230(%rsp),%rax
+  3431dc:	00 
+  3431dd:	48 89 84 24 c8 01 00 	mov    %rax,0x1c8(%rsp)
+  3431e4:	00 
+  3431e5:	48 8b 84 24 c8 01 00 	mov    0x1c8(%rsp),%rax
+  3431ec:	00 
+  3431ed:	48 89 84 24 28 01 00 	mov    %rax,0x128(%rsp)
+  3431f4:	00 
+  3431f5:	eb 24                	jmp    34321b <kernel::memory::kernel_page_table::unmap_kernel_page+0x5bb>
+  3431f7:	48 8b 44 24 60       	mov    0x60(%rsp),%rax
+  3431fc:	48 8d 0d bf d2 d6 ff 	lea    -0x292d41(%rip),%rcx        # b04c2 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x3546>
+  343203:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  343207:	48 c7 40 10 33 00 00 	movq   $0x33,0x10(%rax)
+  34320e:	00 
+  34320f:	48 c7 00 01 00 00 00 	movq   $0x1,(%rax)
+  343216:	e9 0d ff ff ff       	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  34321b:	48 8b 84 24 28 01 00 	mov    0x128(%rsp),%rax
+  343222:	00 
+  343223:	48 89 84 24 40 01 00 	mov    %rax,0x140(%rsp)
+  34322a:	00 
+  34322b:	48 8b 84 24 40 01 00 	mov    0x140(%rsp),%rax
+  343232:	00 
+  343233:	48 89 84 24 d0 01 00 	mov    %rax,0x1d0(%rsp)
+  34323a:	00 
+  34323b:	48 8b bc 24 d0 01 00 	mov    0x1d0(%rsp),%rdi
+  343242:	00 
+  343243:	48 8b 05 ee 0a 0d 00 	mov    0xd0aee(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  34324a:	ff d0                	call   *%rax
+  34324c:	48 89 c7             	mov    %rax,%rdi
+  34324f:	e8 ec a2 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  343254:	48 8b 7c 24 50       	mov    0x50(%rsp),%rdi
+  343259:	48 89 c6             	mov    %rax,%rsi
+  34325c:	e8 5f a5 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  343261:	48 89 c7             	mov    %rax,%rdi
+  343264:	48 8b 05 6d 4a 0d 00 	mov    0xd4a6d(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  34326b:	ff d0                	call   *%rax
+  34326d:	48 8b 74 24 30       	mov    0x30(%rsp),%rsi
+  343272:	48 89 c7             	mov    %rax,%rdi
+  343275:	48 89 7c 24 18       	mov    %rdi,0x18(%rsp)
+  34327a:	48 8d 15 af e4 0b 00 	lea    0xbe4af(%rip),%rdx        # 401730 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd7a0>
+  343281:	e8 ba 41 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  343286:	48 89 c7             	mov    %rax,%rdi
+  343289:	e8 82 f6 fc ff       	call   312910 <x86_64::structures::paging::page_table::PageTableEntry::is_unused>
+  34328e:	a8 01                	test   $0x1,%al
+  343290:	0f 85 1b 01 00 00    	jne    3433b1 <kernel::memory::kernel_page_table::unmap_kernel_page+0x751>
+  343296:	48 8b 74 24 30       	mov    0x30(%rsp),%rsi
+  34329b:	48 8b 7c 24 18       	mov    0x18(%rsp),%rdi
+  3432a0:	48 8d 15 a1 e4 0b 00 	lea    0xbe4a1(%rip),%rdx        # 401748 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd7b8>
+  3432a7:	e8 94 41 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  3432ac:	48 89 c6             	mov    %rax,%rsi
+  3432af:	48 8d bc 24 60 01 00 	lea    0x160(%rsp),%rdi
+  3432b6:	00 
+  3432b7:	e8 04 f5 fc ff       	call   3127c0 <x86_64::structures::paging::page_table::PageTableEntry::frame>
+  3432bc:	8a 84 24 60 01 00 00 	mov    0x160(%rsp),%al
+  3432c3:	a8 01                	test   $0x1,%al
+  3432c5:	75 02                	jne    3432c9 <kernel::memory::kernel_page_table::unmap_kernel_page+0x669>
+  3432c7:	eb 3b                	jmp    343304 <kernel::memory::kernel_page_table::unmap_kernel_page+0x6a4>
+  3432c9:	8a 84 24 61 01 00 00 	mov    0x161(%rsp),%al
+  3432d0:	24 01                	and    $0x1,%al
+  3432d2:	88 84 24 2f 02 00 00 	mov    %al,0x22f(%rsp)
+  3432d9:	48 8d 3d 4a c6 d6 ff 	lea    -0x2939b6(%rip),%rdi        # af92a <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x29ae>
+  3432e0:	48 8d 0d 41 d5 0b 00 	lea    0xbd541(%rip),%rcx        # 400828 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xc898>
+  3432e7:	4c 8d 05 72 e4 0b 00 	lea    0xbe472(%rip),%r8        # 401760 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd7d0>
+  3432ee:	48 8b 05 7b 55 0d 00 	mov    0xd557b(%rip),%rax        # 418870 <_DYNAMIC+0x9428>
+  3432f5:	be 2b 00 00 00       	mov    $0x2b,%esi
+  3432fa:	48 8d 94 24 2f 02 00 	lea    0x22f(%rsp),%rdx
+  343301:	00 
+  343302:	ff d0                	call   *%rax
+  343304:	48 8b 84 24 68 01 00 	mov    0x168(%rsp),%rax
+  34330b:	00 
+  34330c:	48 89 84 24 20 02 00 	mov    %rax,0x220(%rsp)
+  343313:	00 
+  343314:	48 8b 84 24 20 02 00 	mov    0x220(%rsp),%rax
+  34331b:	00 
+  34331c:	48 89 84 24 d8 01 00 	mov    %rax,0x1d8(%rsp)
+  343323:	00 
+  343324:	48 8b 84 24 d8 01 00 	mov    0x1d8(%rsp),%rax
+  34332b:	00 
+  34332c:	48 89 84 24 58 01 00 	mov    %rax,0x158(%rsp)
+  343333:	00 
+  343334:	48 8b 84 24 58 01 00 	mov    0x158(%rsp),%rax
+  34333b:	00 
+  34333c:	48 89 84 24 e0 01 00 	mov    %rax,0x1e0(%rsp)
+  343343:	00 
+  343344:	48 8b 84 24 e0 01 00 	mov    0x1e0(%rsp),%rax
+  34334b:	00 
+  34334c:	48 89 84 24 e8 01 00 	mov    %rax,0x1e8(%rsp)
+  343353:	00 
+  343354:	48 8b bc 24 e8 01 00 	mov    0x1e8(%rsp),%rdi
+  34335b:	00 
+  34335c:	48 8b 05 d5 09 0d 00 	mov    0xd09d5(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  343363:	ff d0                	call   *%rax
+  343365:	48 89 c7             	mov    %rax,%rdi
+  343368:	e8 d3 a1 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  34336d:	48 8b 7c 24 50       	mov    0x50(%rsp),%rdi
+  343372:	48 89 c6             	mov    %rax,%rsi
+  343375:	e8 46 a4 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  34337a:	48 89 c7             	mov    %rax,%rdi
+  34337d:	48 8b 05 54 49 0d 00 	mov    0xd4954(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  343384:	ff d0                	call   *%rax
+  343386:	48 8b 74 24 38       	mov    0x38(%rsp),%rsi
+  34338b:	48 89 c7             	mov    %rax,%rdi
+  34338e:	48 89 7c 24 10       	mov    %rdi,0x10(%rsp)
+  343393:	48 8d 15 de e3 0b 00 	lea    0xbe3de(%rip),%rdx        # 401778 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd7e8>
+  34339a:	e8 a1 40 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  34339f:	48 89 c7             	mov    %rax,%rdi
+  3433a2:	e8 69 f5 fc ff       	call   312910 <x86_64::structures::paging::page_table::PageTableEntry::is_unused>
+  3433a7:	a8 01                	test   $0x1,%al
+  3433a9:	0f 85 52 01 00 00    	jne    343501 <kernel::memory::kernel_page_table::unmap_kernel_page+0x8a1>
+  3433af:	eb 35                	jmp    3433e6 <kernel::memory::kernel_page_table::unmap_kernel_page+0x786>
+  3433b1:	48 8b 44 24 60       	mov    0x60(%rsp),%rax
+  3433b6:	48 c7 84 24 48 01 00 	movq   $0x0,0x148(%rsp)
+  3433bd:	00 00 00 00 00 
+  3433c2:	48 8b 8c 24 48 01 00 	mov    0x148(%rsp),%rcx
+  3433c9:	00 
+  3433ca:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  3433ce:	48 8b 8c 24 50 01 00 	mov    0x150(%rsp),%rcx
+  3433d5:	00 
+  3433d6:	48 89 48 10          	mov    %rcx,0x10(%rax)
+  3433da:	48 c7 00 00 00 00 00 	movq   $0x0,(%rax)
+  3433e1:	e9 42 fd ff ff       	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  3433e6:	48 8b 74 24 38       	mov    0x38(%rsp),%rsi
+  3433eb:	48 8b 7c 24 10       	mov    0x10(%rsp),%rdi
+  3433f0:	48 8d 15 99 e3 0b 00 	lea    0xbe399(%rip),%rdx        # 401790 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd800>
+  3433f7:	e8 44 40 fc ff       	call   307440 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::Index<usize>>::index>
+  3433fc:	48 89 c6             	mov    %rax,%rsi
+  3433ff:	48 8d bc 24 88 01 00 	lea    0x188(%rsp),%rdi
+  343406:	00 
+  343407:	e8 b4 f3 fc ff       	call   3127c0 <x86_64::structures::paging::page_table::PageTableEntry::frame>
+  34340c:	8a 84 24 88 01 00 00 	mov    0x188(%rsp),%al
+  343413:	a8 01                	test   $0x1,%al
+  343415:	75 02                	jne    343419 <kernel::memory::kernel_page_table::unmap_kernel_page+0x7b9>
+  343417:	eb 3b                	jmp    343454 <kernel::memory::kernel_page_table::unmap_kernel_page+0x7f4>
+  343419:	8a 84 24 89 01 00 00 	mov    0x189(%rsp),%al
+  343420:	24 01                	and    $0x1,%al
+  343422:	88 84 24 1f 02 00 00 	mov    %al,0x21f(%rsp)
+  343429:	48 8d 3d fa c4 d6 ff 	lea    -0x293b06(%rip),%rdi        # af92a <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x29ae>
+  343430:	48 8d 0d f1 d3 0b 00 	lea    0xbd3f1(%rip),%rcx        # 400828 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xc898>
+  343437:	4c 8d 05 6a e3 0b 00 	lea    0xbe36a(%rip),%r8        # 4017a8 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd818>
+  34343e:	48 8b 05 2b 54 0d 00 	mov    0xd542b(%rip),%rax        # 418870 <_DYNAMIC+0x9428>
+  343445:	be 2b 00 00 00       	mov    $0x2b,%esi
+  34344a:	48 8d 94 24 1f 02 00 	lea    0x21f(%rsp),%rdx
+  343451:	00 
+  343452:	ff d0                	call   *%rax
+  343454:	48 8b 84 24 90 01 00 	mov    0x190(%rsp),%rax
+  34345b:	00 
+  34345c:	48 89 84 24 10 02 00 	mov    %rax,0x210(%rsp)
+  343463:	00 
+  343464:	48 8b 84 24 10 02 00 	mov    0x210(%rsp),%rax
+  34346b:	00 
+  34346c:	48 89 84 24 f0 01 00 	mov    %rax,0x1f0(%rsp)
+  343473:	00 
+  343474:	48 8b 84 24 f0 01 00 	mov    0x1f0(%rsp),%rax
+  34347b:	00 
+  34347c:	48 89 84 24 80 01 00 	mov    %rax,0x180(%rsp)
+  343483:	00 
+  343484:	48 8b 84 24 80 01 00 	mov    0x180(%rsp),%rax
+  34348b:	00 
+  34348c:	48 89 84 24 f8 01 00 	mov    %rax,0x1f8(%rsp)
+  343493:	00 
+  343494:	48 8b 84 24 f8 01 00 	mov    0x1f8(%rsp),%rax
+  34349b:	00 
+  34349c:	48 89 84 24 00 02 00 	mov    %rax,0x200(%rsp)
+  3434a3:	00 
+  3434a4:	48 8b bc 24 00 02 00 	mov    0x200(%rsp),%rdi
+  3434ab:	00 
+  3434ac:	48 8b 05 85 08 0d 00 	mov    0xd0885(%rip),%rax        # 413d38 <_DYNAMIC+0x48f0>
+  3434b3:	ff d0                	call   *%rax
+  3434b5:	48 89 c7             	mov    %rax,%rdi
+  3434b8:	e8 83 a0 f4 ff       	call   28d540 <x86_64::addr::PhysAddr::as_u64>
+  3434bd:	48 8b 7c 24 50       	mov    0x50(%rsp),%rdi
+  3434c2:	48 89 c6             	mov    %rax,%rsi
+  3434c5:	e8 f6 a2 f4 ff       	call   28d7c0 <<x86_64::addr::VirtAddr as core::ops::arith::Add<u64>>::add>
+  3434ca:	48 89 c7             	mov    %rax,%rdi
+  3434cd:	48 8b 05 04 48 0d 00 	mov    0xd4804(%rip),%rax        # 417cd8 <_DYNAMIC+0x8890>
+  3434d4:	ff d0                	call   *%rax
+  3434d6:	48 8b 74 24 48       	mov    0x48(%rsp),%rsi
+  3434db:	48 89 c7             	mov    %rax,%rdi
+  3434de:	48 8d 15 db e2 0b 00 	lea    0xbe2db(%rip),%rdx        # 4017c0 <kernel::tracing::providers::counters::DISPATCH_SAVE_CENSUS_COUNTERS+0xd830>
+  3434e5:	e8 56 41 fc ff       	call   307640 <<x86_64::structures::paging::page_table::PageTable as core::ops::index::IndexMut<usize>>::index_mut>
+  3434ea:	48 89 c7             	mov    %rax,%rdi
+  3434ed:	48 89 7c 24 08       	mov    %rdi,0x8(%rsp)
+  3434f2:	e8 19 f4 fc ff       	call   312910 <x86_64::structures::paging::page_table::PageTableEntry::is_unused>
+  3434f7:	a8 01                	test   $0x1,%al
+  3434f9:	0f 85 be 00 00 00    	jne    3435bd <kernel::memory::kernel_page_table::unmap_kernel_page+0x95d>
+  3434ff:	eb 35                	jmp    343536 <kernel::memory::kernel_page_table::unmap_kernel_page+0x8d6>
+  343501:	48 8b 44 24 60       	mov    0x60(%rsp),%rax
+  343506:	48 c7 84 24 70 01 00 	movq   $0x0,0x170(%rsp)
+  34350d:	00 00 00 00 00 
+  343512:	48 8b 8c 24 70 01 00 	mov    0x170(%rsp),%rcx
+  343519:	00 
+  34351a:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  34351e:	48 8b 8c 24 78 01 00 	mov    0x178(%rsp),%rcx
+  343525:	00 
+  343526:	48 89 48 10          	mov    %rcx,0x10(%rax)
+  34352a:	48 c7 00 00 00 00 00 	movq   $0x0,(%rax)
+  343531:	e9 f2 fb ff ff       	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  343536:	48 8b 7c 24 08       	mov    0x8(%rsp),%rdi
+  34353b:	e8 30 f2 fc ff       	call   312770 <x86_64::structures::paging::page_table::PageTableEntry::addr>
+  343540:	48 89 c7             	mov    %rax,%rdi
+  343543:	48 8b 05 3e 06 0d 00 	mov    0xd063e(%rip),%rax        # 413b88 <_DYNAMIC+0x4740>
+  34354a:	ff d0                	call   *%rax
+  34354c:	48 8b 7c 24 08       	mov    0x8(%rsp),%rdi
+  343551:	48 89 84 24 08 02 00 	mov    %rax,0x208(%rsp)
+  343558:	00 
+  343559:	48 8b 84 24 08 02 00 	mov    0x208(%rsp),%rax
+  343560:	00 
+  343561:	48 89 84 24 a8 01 00 	mov    %rax,0x1a8(%rsp)
+  343568:	00 
+  343569:	e8 f2 f1 fc ff       	call   312760 <x86_64::structures::paging::page_table::PageTableEntry::set_unused>
+  34356e:	48 8b 7c 24 58       	mov    0x58(%rsp),%rdi
+  343573:	e8 c8 68 da ff       	call   e9e40 <x86_64::instructions::tlb::flush>
+  343578:	48 8b 44 24 60       	mov    0x60(%rsp),%rax
+  34357d:	48 8b 8c 24 a8 01 00 	mov    0x1a8(%rsp),%rcx
+  343584:	00 
+  343585:	48 89 8c 24 b8 01 00 	mov    %rcx,0x1b8(%rsp)
+  34358c:	00 
+  34358d:	48 c7 84 24 b0 01 00 	movq   $0x1,0x1b0(%rsp)
+  343594:	00 01 00 00 00 
+  343599:	48 8b 8c 24 b0 01 00 	mov    0x1b0(%rsp),%rcx
+  3435a0:	00 
+  3435a1:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  3435a5:	48 8b 8c 24 b8 01 00 	mov    0x1b8(%rsp),%rcx
+  3435ac:	00 
+  3435ad:	48 89 48 10          	mov    %rcx,0x10(%rax)
+  3435b1:	48 c7 00 00 00 00 00 	movq   $0x0,(%rax)
+  3435b8:	e9 6b fb ff ff       	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  3435bd:	48 8b 44 24 60       	mov    0x60(%rsp),%rax
+  3435c2:	48 c7 84 24 98 01 00 	movq   $0x0,0x198(%rsp)
+  3435c9:	00 00 00 00 00 
+  3435ce:	48 8b 8c 24 98 01 00 	mov    0x198(%rsp),%rcx
+  3435d5:	00 
+  3435d6:	48 89 48 08          	mov    %rcx,0x8(%rax)
+  3435da:	48 8b 8c 24 a0 01 00 	mov    0x1a0(%rsp),%rcx
+  3435e1:	00 
+  3435e2:	48 89 48 10          	mov    %rcx,0x10(%rax)
+  3435e6:	48 c7 00 00 00 00 00 	movq   $0x0,(%rax)
+  3435ed:	e9 36 fb ff ff       	jmp    343128 <kernel::memory::kernel_page_table::unmap_kernel_page+0x4c8>
+  3435f2:	cc                   	int3
+  3435f3:	cc                   	int3
+  3435f4:	cc                   	int3
+  3435f5:	cc                   	int3
+  3435f6:	cc                   	int3
+  3435f7:	cc                   	int3
+  3435f8:	cc                   	int3
+  3435f9:	cc                   	int3
+  3435fa:	cc                   	int3
+  3435fb:	cc                   	int3
+  3435fc:	cc                   	int3
+  3435fd:	cc                   	int3
+  3435fe:	cc                   	int3
+  3435ff:	cc                   	int3

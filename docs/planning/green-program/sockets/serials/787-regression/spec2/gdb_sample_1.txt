@@ -1,0 +1,93 @@
+The target architecture is set to "i386:x86-64".
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000100002cd492 in ?? ()
+add symbol table from file "/root/breenix-ab-main/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961" at
+	.text_addr = 0x100000be6f0
+	.rodata_addr = 0x1000007dc78
+	.data_addr = 0x10000421e00
+	.bss_addr = 0x10000457500
+
+===== SAMPLE 1 registers =====
+rip            0x100002cd492       0x100002cd492 <core::sync::atomic::spin_loop_hint+2>
+rsp            0xffffc900000fcba8  0xffffc900000fcba8
+rbp            0x0                 0x0
+rax            0x100004b3d01       1099516558593
+rbx            0x1fe88ef0          535334640
+rcx            0x100004b3d00       1099516558592
+rdx            0x1                 1
+rsi            0x0                 0
+rdi            0x100004b3db8       1099516558776
+eflags         0x2                 [ IOPL=0 ]
+cs             0x8                 8
+ss             0x10                16
+
+===== gs_base / current-thread pointer =====
+$1 = 0x10000458900
+0x10000458900 <_ZN6kernel7per_cpu9CPU0_DATA17h067f5a570d389ac6E>:	0x0000000000000000	0x0000444444600d38
+0x10000458910 <_ZN6kernel7per_cpu9CPU0_DATA17h067f5a570d389ac6E+16>:	0xffffc90000285000	0x00004444444dfdd0
+
+===== symbol at rip =====
+core::sync::atomic::spin_loop_hint + 2 in section .text
+
+===== disassemble around rip =====
+=> 0x100002cd492 <_ZN4core4sync6atomic14spin_loop_hint17h19d6744cfe35825dE+2>:	ret
+   0x100002cd493:	int3
+   0x100002cd494:	int3
+   0x100002cd495:	int3
+   0x100002cd496:	int3
+   0x100002cd497:	int3
+   0x100002cd498:	int3
+   0x100002cd499:	int3
+   0x100002cd49a:	int3
+   0x100002cd49b:	int3
+   0x100002cd49c:	int3
+   0x100002cd49d:	int3
+   0x100002cd49e:	int3
+   0x100002cd49f:	int3
+   0x100002cd4a0 <_ZN4core4sync6atomic18AtomicPtr$LT$T$GT$4load17h080492880e62cdf6E>:	push   %rax
+   0x100002cd4a1 <_ZN4core4sync6atomic18AtomicPtr$LT$T$GT$4load17h080492880e62cdf6E+1>:	mov    %sil,%al
+   0x100002cd4a4 <_ZN4core4sync6atomic18AtomicPtr$LT$T$GT$4load17h080492880e62cdf6E+4>:	movzbl %al,%esi
+   0x100002cd4a7 <_ZN4core4sync6atomic18AtomicPtr$LT$T$GT$4load17h080492880e62cdf6E+7>:	mov    0x150d5a(%rip),%rax        # 0x1000041e208
+   0x100002cd4ae <_ZN4core4sync6atomic18AtomicPtr$LT$T$GT$4load17h080492880e62cdf6E+14>:	call   *%rax
+   0x100002cd4b0 <_ZN4core4sync6atomic18AtomicPtr$LT$T$GT$4load17h080492880e62cdf6E+16>:	pop    %rcx
+   0x100002cd4b1 <_ZN4core4sync6atomic18AtomicPtr$LT$T$GT$4load17h080492880e62cdf6E+17>:	ret
+   0x100002cd4b2:	int3
+   0x100002cd4b3:	int3
+   0x100002cd4b4:	int3
+
+===== backtrace =====
+#0  0x00000100002cd492 in core::sync::atomic::spin_loop_hint ()
+#1  0x00000100003485ca in kernel::memory::kernel_page_table::master_kernel_pml4 ()
+#2  0xffffc900000fcbf0 in ?? ()
+#3  0xffffc900000fcbf0 in ?? ()
+#4  0x000001000044d188 in kernel::gdt::TSS ()
+#5  0x0000000000000002 in ?? ()
+#6  0x0000020101000002 in ?? ()
+#7  0x0000010000359e25 in kernel::memory::process_memory::switch_to_kernel_page_table ()
+#8  0xffffc90000284ef0 in ?? ()
+#9  0x000000054c94a204 in ?? ()
+#10 0x0000000000000002 in ?? ()
+#11 0x0000000000000001 in ?? ()
+#12 0x0000000000000000 in ?? ()
+
+===== stack words =====
+0xffffc900000fcba8:	0x00000100003485ca	0xffffc900000fcbf0
+0xffffc900000fcbb8:	0xffffc900000fcbf0	0x000001000044d188
+0xffffc900000fcbc8:	0x0000000000000002	0x0000020101000002
+0xffffc900000fcbd8:	0x0000010000359e25	0xffffc90000284ef0
+0xffffc900000fcbe8:	0x000000054c94a204	0x0000000000000002
+0xffffc900000fcbf8:	0x0000000000000001	0x0000000000000000
+0xffffc900000fcc08:	0x0000000000000000	0x0000000000000000
+0xffffc900000fcc18:	0x0000000000000001	0x0000000000000000
+0xffffc900000fcc28:	0x00000100004007e0	0x0000000000000024
+0xffffc900000fcc38:	0x00000100000af904	0x0000000000000001
+0xffffc900000fcc48:	0x0000000000000000	0xffffc900000fcca8
+0xffffc900000fcc58:	0x0000010000336ed0	0x000001000044d188
+0xffffc900000fcc68:	0xffffc900000fcca8	0xffffc900000fcca8
+0xffffc900000fcc78:	0x0000000000000001	0xffff0200000fe328
+0xffffc900000fcc88:	0x0000010000336aea	0xffffc90000284ef0
+0xffffc900000fcc98:	0xffffc900000fccc0	0xffffc900000fe328
+
+===== end sample =====
+[Inferior 1 (process 1) detached]

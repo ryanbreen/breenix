@@ -1,0 +1,17 @@
+Guard: x86 kernel-thread dispatch allocation check (#791)
+  ELF:      /root/breenix-ab-main/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
+  sha256:   d3e2fa9424c971b917de778dc03ef87afea529ecc6f95825cb2350aa9002c9a3
+  objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
+  readelf:  readelf
+  function: setup_kernel_thread_return (its own body and its closures)
+  symbols in scope: 3
+  call targets resolved: 23
+[0;31mFAIL:[0m found 3 allocating call target(s) in setup_kernel_thread_return.
+[1;33mThis function runs with IF=0 on each kernel-thread dispatch.
+An allocation here takes the heap allocator's lock from interrupt
+context, which ordinary thread context holds with interrupts ENABLED --
+the shape that wedged the x86 boot-tests gate as issue #791.[0m
+  _ZN6kernel10interrupts14context_switch26setup_kernel_thread_return17h7bd831a7c4be541cE calls _ZN4core3ptr42drop_in_place$LT$alloc..string..String$GT$17h6bfcecea978ae9c9E
+  _ZN6kernel10interrupts14context_switch26setup_kernel_thread_return17h7bd831a7c4be541cE calls _ZN4core3ptr42drop_in_place$LT$alloc..string..String$GT$17h6bfcecea978ae9c9E
+  _ZN6kernel10interrupts14context_switch26setup_kernel_thread_return28_$u7b$$u7b$closure$u7d$$u7d$17h407e6749457a30b4E calls _ZN60_$LT$alloc..string..String$u20$as$u20$core..clone..Clone$GT$5clone17hc184e89fc1a0958bE
+exit=1

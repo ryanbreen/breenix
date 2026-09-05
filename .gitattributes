@@ -20,3 +20,9 @@ docs/planning/green-program/sockets/serials/693-fix/*.txt -text
 # guest console emits are part of the evidence, and a CRLF normalisation would
 # edit it.
 docs/planning/green-program/sockets/serials/775/**/*.txt -text
+
+# #791 regression serials: raw x86 console captures from the beast container,
+# plus the GDB dumps and objdump listing taken against them. Kept byte-exact for
+# the same reason as the 693/775 captures above -- the CR bytes the guest console
+# emits are part of the evidence, and a CRLF normalisation would edit it.
+docs/planning/green-program/sockets/serials/787-regression/** -text

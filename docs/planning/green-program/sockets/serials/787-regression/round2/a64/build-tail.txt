@@ -1,0 +1,20 @@
+   Compiling futures-task v0.3.34
+   Compiling conquer-util v0.3.0
+   Compiling futures-core v0.3.34
+   Compiling rlibc v1.0.0
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling log v0.4.34
+   Compiling lock_api v0.4.14
+   Compiling conquer-once v0.4.0
+   Compiling aarch64-cpu v9.4.0
+   Compiling futures-util v0.3.34
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.9
+   Compiling crossbeam-queue v0.3.13
+   Compiling linked_list_allocator v0.10.6
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+    Finished `release` profile [optimized] target(s) in 11.00s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
