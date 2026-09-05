@@ -1,0 +1,679 @@
+  RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
+   Compiling kernel v0.1.0 (/root/breenix-737-oracle/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-737-oracle)
+    Finished `release` profile [optimized] target(s) in 15.55s
+   Compiling kernel v0.1.0 (/root/breenix-737-oracle/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-737-oracle)
+    Finished `release` profile [optimized] target(s) in 16.07s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-737-oracle/target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img (7405568 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running `target/debug/xtask create-test-disk`
+Creating test disk image...
+  Including std test: hello_std_real (227184 bytes)
+  Found 150 test binaries
+  Added: access_test (177968 bytes, sectors 128-475)
+  Added: alarm_test (182784 bytes, sectors 476-832)
+  Added: argv_test (184360 bytes, sectors 833-1193)
+  Added: bcheck (299240 bytes, sectors 1194-1778)
+  Added: bfontpicker (346232 bytes, sectors 1779-2455)
+  Added: biconkit (248144 bytes, sectors 2456-2940)
+  Added: blauncher (325352 bytes, sectors 2941-3576)
+  Added: bless (185656 bytes, sectors 3577-3939)
+  Added: block_eintr_oracle (190032 bytes, sectors 3940-4311)
+  Added: blocking_recv_test (188136 bytes, sectors 4312-4679)
+  Added: blog (331080 bytes, sectors 4680-5326)
+  Added: blogd (181984 bytes, sectors 5327-5682)
+  Added: bounce (275136 bytes, sectors 5683-6220)
+  Added: brk_test (182512 bytes, sectors 6221-6577)
+  Added: bsh (579208 bytes, sectors 6578-7709)
+  Added: bssh (322496 bytes, sectors 7710-8339)
+  Added: bsshd (314256 bytes, sectors 8340-8953)
+  Added: bterm (338592 bytes, sectors 8954-9615)
+  Added: btop (184216 bytes, sectors 9616-9975)
+  Added: btrace (198960 bytes, sectors 9976-10364)
+  Added: burl (483344 bytes, sectors 10365-11309)
+  Added: bwm (331400 bytes, sectors 11310-11957)
+  Added: cat_test (183264 bytes, sectors 11958-12315)
+  Added: clock_gettime_test (184592 bytes, sectors 12316-12676)
+  Added: cloexec_test (192608 bytes, sectors 12677-13053)
+  Added: clonevm_exec_test (184680 bytes, sectors 13054-13414)
+  Added: concurrent_recv_stress (188968 bytes, sectors 13415-13784)
+  Added: confetti (189264 bytes, sectors 13785-14154)
+  Added: counter (177664 bytes, sectors 14155-14501)
+  Added: cow_cleanup_test (182560 bytes, sectors 14502-14858)
+  Added: cow_oom_test (186624 bytes, sectors 14859-15223)
+  Added: cow_readonly_test (187064 bytes, sectors 15224-15589)
+  Added: cow_signal_test (188336 bytes, sectors 15590-15957)
+  Added: cow_sole_owner_test (187032 bytes, sectors 15958-16323)
+  Added: cow_stress_test (187120 bytes, sectors 16324-16689)
+  Added: cp_mv_argv_test (182832 bytes, sectors 16690-17047)
+  Added: ctrl_c_test (188008 bytes, sectors 17048-17415)
+  Added: cwd_test (182648 bytes, sectors 17416-17772)
+  Added: demo (189728 bytes, sectors 17773-18143)
+  Added: devfs_test (182464 bytes, sectors 18144-18500)
+  Added: df_preempt_oracle (187504 bytes, sectors 18501-18867)
+  Added: dns_test (195264 bytes, sectors 18868-19249)
+  Added: dup_test (189176 bytes, sectors 19250-19619)
+  Added: echo_argv_test (182496 bytes, sectors 19620-19976)
+  Added: epoll_test (182856 bytes, sectors 19977-20334)
+  Added: exec_argv_test (178232 bytes, sectors 20335-20683)
+  Added: exec_from_ext2_test (188096 bytes, sectors 20684-21051)
+  Added: exec_smoke (178088 bytes, sectors 21052-21399)
+  Added: exec_smoke_target (185056 bytes, sectors 21400-21761)
+  Added: exec_stack_argv_test (183456 bytes, sectors 21762-22120)
+  Added: false_test (182584 bytes, sectors 22121-22477)
+  Added: fart (191712 bytes, sectors 22478-22852)
+  Added: fbinfo_test (187592 bytes, sectors 22853-23219)
+  Added: fcntl_test (188768 bytes, sectors 23220-23588)
+  Added: fifo_test (198472 bytes, sectors 23589-23976)
+  Added: file_read_test (182424 bytes, sectors 23977-24333)
+  Added: fork_memory_test (188688 bytes, sectors 24334-24702)
+  Added: fork_pending_signal_test (187768 bytes, sectors 24703-25069)
+  Added: fork_smoke (187632 bytes, sectors 25070-25436)
+  Added: fork_state_test (189200 bytes, sectors 25437-25806)
+  Added: fork_test (188120 bytes, sectors 25807-26174)
+  Added: fs_block_alloc_test (188632 bytes, sectors 26175-26543)
+  Added: fs_directory_test (183176 bytes, sectors 26544-26901)
+  Added: fs_large_file_test (182632 bytes, sectors 26902-27258)
+  Added: fs_link_test (182832 bytes, sectors 27259-27616)
+  Added: fs_rename_test (182736 bytes, sectors 27617-27973)
+  Added: fs_write_test (182920 bytes, sectors 27974-28331)
+  Added: futex_handoff_oracle (182944 bytes, sectors 28332-28689)
+  Added: getdents_test (184008 bytes, sectors 28690-29049)
+  Added: guskit (391552 bytes, sectors 29050-29814)
+  Added: head_test (183080 bytes, sectors 29815-30172)
+  Added: heartbeat (189128 bytes, sectors 30173-30542)
+  Added: hello_std_real (227184 bytes, sectors 30543-30986)
+  Added: hello_time (177656 bytes, sectors 30987-31333)
+  Added: hello_world (227184 bytes, sectors 31334-31777)
+  Added: http_fetch_test (464416 bytes, sectors 31778-32685)
+  Added: http_test (468568 bytes, sectors 32686-33601)
+  Added: init (187512 bytes, sectors 33602-33968)
+  Added: init_shell (262544 bytes, sectors 33969-34481)
+  Added: itimer_test (187320 bytes, sectors 34482-34847)
+  Added: job_control_test (187672 bytes, sectors 34848-35214)
+  Added: job_table_test (192256 bytes, sectors 35215-35590)
+  Added: kill_process_group_test (188504 bytes, sectors 35591-35959)
+  Added: loopback_wake_test (190464 bytes, sectors 35960-36331)
+  Added: ls_test (183320 bytes, sectors 36332-36690)
+  Added: lseek_test (182536 bytes, sectors 36691-37047)
+  Added: mkdir_argv_test (182696 bytes, sectors 37048-37404)
+  Added: net_test (191600 bytes, sectors 37405-37779)
+  Added: nonblock_eagain_test (183728 bytes, sectors 37780-38138)
+  Added: nonblock_test (188768 bytes, sectors 38139-38507)
+  Added: particles (193960 bytes, sectors 38508-38886)
+  Added: pause_test (188384 bytes, sectors 38887-39254)
+  Added: pipe2_test (188944 bytes, sectors 39255-39624)
+  Added: pipe_concurrent_test (188744 bytes, sectors 39625-39993)
+  Added: pipe_fork_test (188848 bytes, sectors 39994-40362)
+  Added: pipe_refcount_test (199976 bytes, sectors 40363-40753)
+  Added: pipe_test (188272 bytes, sectors 40754-41121)
+  Added: pipeline_test (191608 bytes, sectors 41122-41496)
+  Added: poll_tcp_oracle (207192 bytes, sectors 41497-41901)
+  Added: poll_test (189048 bytes, sectors 41902-42271)
+  Added: pty_test (187128 bytes, sectors 42272-42637)
+  Added: rectangles (197112 bytes, sectors 42638-43022)
+  Added: register_init_test (177120 bytes, sectors 43023-43368)
+  Added: resolution (191048 bytes, sectors 43369-43742)
+  Added: rm_argv_test (182504 bytes, sectors 43743-44099)
+  Added: select_test (188936 bytes, sectors 44100-44469)
+  Added: session_test (187992 bytes, sectors 44470-44837)
+  Added: shell_pipe_test (183152 bytes, sectors 44838-45195)
+  Added: sigaltstack_test (189032 bytes, sectors 45196-45565)
+  Added: sigchld_job_test (187552 bytes, sectors 45566-45932)
+  Added: sigchld_test (182464 bytes, sectors 45933-46289)
+  Added: sigkill_teardown_test (206736 bytes, sectors 46290-46693)
+  Added: signal_exec_check (177904 bytes, sectors 46694-47041)
+  Added: signal_exec_test (188744 bytes, sectors 47042-47410)
+  Added: signal_fork_test (188184 bytes, sectors 47411-47778)
+  Added: signal_handler_test (187920 bytes, sectors 47779-48146)
+  Added: signal_regs_test (188232 bytes, sectors 48147-48514)
+  Added: signal_return_test (188336 bytes, sectors 48515-48882)
+  Added: signal_test (187888 bytes, sectors 48883-49249)
+  Added: sigsuspend_test (188888 bytes, sectors 49250-49618)
+  Added: simple_exit (170600 bytes, sectors 49619-49952)
+  Added: simple_exit0 (170608 bytes, sectors 49953-50286)
+  Added: sleep_debug_test (188616 bytes, sectors 50287-50655)
+  Added: spawn_smoke_target (170616 bytes, sectors 50656-50989)
+  Added: spinner (177664 bytes, sectors 50990-51336)
+  Added: stdin_test (182304 bytes, sectors 51337-51693)
+  Added: syscall_diagnostic_test (170880 bytes, sectors 51694-52027)
+  Added: syscall_enosys (177552 bytes, sectors 52028-52374)
+  Added: tail_test (183080 bytes, sectors 52375-52732)
+  Added: tcp_blocking_test (203456 bytes, sectors 52733-53130)
+  Added: tcp_client_test (187640 bytes, sectors 53131-53497)
+  Added: tcp_cloexec_exec_test (189472 bytes, sectors 53498-53868)
+  Added: tcp_dup_listener_test (188856 bytes, sectors 53869-54237)
+  Added: tcp_socket_test (202312 bytes, sectors 54238-54633)
+  Added: telnetd (184096 bytes, sectors 54634-54993)
+  Added: test_mmap (182248 bytes, sectors 54994-55349)
+  Added: timer_test (182176 bytes, sectors 55350-55705)
+  Added: tones (184240 bytes, sectors 55706-56065)
+  Added: true_test (182584 bytes, sectors 56066-56422)
+  Added: tty_oracle (218424 bytes, sectors 56423-56849)
+  Added: tty_test (188112 bytes, sectors 56850-57217)
+  Added: udp_socket_test (193416 bytes, sectors 57218-57595)
+  Added: unix_named_socket_test (195360 bytes, sectors 57596-57977)
+  Added: unix_socket_test (205336 bytes, sectors 57978-58379)
+  Added: wait_stress (195584 bytes, sectors 58380-58761)
+  Added: waitpid_test (188168 bytes, sectors 58762-59129)
+  Added: wc_test (183656 bytes, sectors 59130-59488)
+  Added: which_test (182984 bytes, sectors 59489-59846)
+  Added: wnohang_timing_test (182560 bytes, sectors 59847-60203)
+  Added: xhci_counters (187232 bytes, sectors 60204-60569)
+
+Test disk created: target/test_binaries.img
+  Binaries: 150
+  Data size: 30908976 bytes (29.48 MB)
+  Disk size: 60570 sectors (29.58 MB)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-737-oracle/target/ext2.img
+  Size: 256MB
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 45 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 10708
+drwxr-xr-x  2 root root   4096 Sep  5 00:48 .
+drwxr-xr-x 12 root root   4096 Sep  5 00:48 ..
+-rwxr-xr-x  1 root root 299240 Sep  5 00:48 bcheck
+-rwxr-xr-x  1 root root 346232 Sep  5 00:48 bfontpicker
+-rwxr-xr-x  1 root root 248144 Sep  5 00:48 biconkit
+-rwxr-xr-x  1 root root 325352 Sep  5 00:48 blauncher
+-rwxr-xr-x  1 root root 185656 Sep  5 00:48 bless
+-rwxr-xr-x  1 root root 190032 Sep  5 00:48 block_eintr_oracle
+-rwxr-xr-x  1 root root 331080 Sep  5 00:48 blog
+-rwxr-xr-x  1 root root 275136 Sep  5 00:48 bounce
+-rwxr-xr-x  1 root root 579208 Sep  5 00:48 bsh
+-rwxr-xr-x  1 root root 322496 Sep  5 00:48 bssh
+-rwxr-xr-x  1 root root 314256 Sep  5 00:48 bsshd
+-rwxr-xr-x  1 root root 338592 Sep  5 00:48 bterm
+-rwxr-xr-x  1 root root 184216 Sep  5 00:48 btop
+-rwxr-xr-x  1 root root 198960 Sep  5 00:48 btrace
+-rwxr-xr-x  1 root root 483344 Sep  5 00:48 burl
+-rwxr-xr-x  1 root root 331400 Sep  5 00:48 bwm
+-rwxr-xr-x  1 root root 188968 Sep  5 00:48 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189264 Sep  5 00:48 confetti
+-rwxr-xr-x  1 root root 177664 Sep  5 00:48 counter
+-rwxr-xr-x  1 root root 189728 Sep  5 00:48 demo
+-rwxr-xr-x  1 root root 187504 Sep  5 00:48 df_preempt_oracle
+-rwxr-xr-x  1 root root 178088 Sep  5 00:48 exec_smoke
+-rwxr-xr-x  1 root root 185056 Sep  5 00:48 exec_smoke_target
+-rwxr-xr-x  1 root root 191712 Sep  5 00:48 fart
+-rwxr-xr-x  1 root root 187632 Sep  5 00:48 fork_smoke
+-rwxr-xr-x  1 root root 182944 Sep  5 00:48 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391552 Sep  5 00:48 guskit
+-rwxr-xr-x  1 root root 189128 Sep  5 00:48 heartbeat
+-rwxr-xr-x  1 root root 177656 Sep  5 00:48 hello_time
+-rwxr-xr-x  1 root root 227184 Sep  5 00:48 hello_world
+-rwxr-xr-x  1 root root 262544 Sep  5 00:48 init_shell
+-rwxr-xr-x  1 root root 193960 Sep  5 00:48 particles
+-rwxr-xr-x  1 root root 207192 Sep  5 00:48 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197112 Sep  5 00:48 rectangles
+-rwxr-xr-x  1 root root 191048 Sep  5 00:48 resolution
+-rwxr-xr-x  1 root root 177904 Sep  5 00:48 signal_exec_check
+-rwxr-xr-x  1 root root 170600 Sep  5 00:48 simple_exit
+-rwxr-xr-x  1 root root 170608 Sep  5 00:48 simple_exit0
+-rwxr-xr-x  1 root root 170616 Sep  5 00:48 spawn_smoke_target
+-rwxr-xr-x  1 root root 177664 Sep  5 00:48 spinner
+-rwxr-xr-x  1 root root 177552 Sep  5 00:48 syscall_enosys
+-rwxr-xr-x  1 root root 184240 Sep  5 00:48 tones
+-rwxr-xr-x  1 root root 218424 Sep  5 00:48 tty_oracle
+-rwxr-xr-x  1 root root 195584 Sep  5 00:48 wait_stress
+-rwxr-xr-x  1 root root 187232 Sep  5 00:48 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19584
+drwxr-xr-x 2 root root   4096 Sep  5 00:48 .
+drwxr-xr-x 3 root root   4096 Sep  5 00:48 ..
+-rwxr-xr-x 1 root root 177968 Sep  5 00:48 access_test
+-rwxr-xr-x 1 root root 182784 Sep  5 00:48 alarm_test
+-rwxr-xr-x 1 root root 184360 Sep  5 00:48 argv_test
+-rwxr-xr-x 1 root root 188136 Sep  5 00:48 blocking_recv_test
+-rwxr-xr-x 1 root root 182512 Sep  5 00:48 brk_test
+-rwxr-xr-x 1 root root 183264 Sep  5 00:48 cat_test
+-rwxr-xr-x 1 root root 184592 Sep  5 00:48 clock_gettime_test
+-rwxr-xr-x 1 root root 192608 Sep  5 00:48 cloexec_test
+-rwxr-xr-x 1 root root 184680 Sep  5 00:48 clonevm_exec_test
+-rwxr-xr-x 1 root root 182560 Sep  5 00:48 cow_cleanup_test
+-rwxr-xr-x 1 root root 186624 Sep  5 00:48 cow_oom_test
+-rwxr-xr-x 1 root root 187064 Sep  5 00:48 cow_readonly_test
+-rwxr-xr-x 1 root root 188336 Sep  5 00:48 cow_signal_test
+-rwxr-xr-x 1 root root 187032 Sep  5 00:48 cow_sole_owner_test
+-rwxr-xr-x 1 root root 187120 Sep  5 00:48 cow_stress_test
+-rwxr-xr-x 1 root root 182832 Sep  5 00:48 cp_mv_argv_test
+-rwxr-xr-x 1 root root 188008 Sep  5 00:48 ctrl_c_test
+-rwxr-xr-x 1 root root 182648 Sep  5 00:48 cwd_test
+-rwxr-xr-x 1 root root 182464 Sep  5 00:48 devfs_test
+-rwxr-xr-x 1 root root 195264 Sep  5 00:48 dns_test
+-rwxr-xr-x 1 root root 189176 Sep  5 00:48 dup_test
+-rwxr-xr-x 1 root root 182496 Sep  5 00:48 echo_argv_test
+-rwxr-xr-x 1 root root 182856 Sep  5 00:48 epoll_test
+-rwxr-xr-x 1 root root 178232 Sep  5 00:48 exec_argv_test
+-rwxr-xr-x 1 root root 188096 Sep  5 00:48 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183456 Sep  5 00:48 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182584 Sep  5 00:48 false_test
+-rwxr-xr-x 1 root root 187592 Sep  5 00:48 fbinfo_test
+-rwxr-xr-x 1 root root 188768 Sep  5 00:48 fcntl_test
+-rwxr-xr-x 1 root root 198472 Sep  5 00:48 fifo_test
+-rwxr-xr-x 1 root root 182424 Sep  5 00:48 file_read_test
+-rwxr-xr-x 1 root root 188688 Sep  5 00:48 fork_memory_test
+-rwxr-xr-x 1 root root 187768 Sep  5 00:48 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189200 Sep  5 00:48 fork_state_test
+-rwxr-xr-x 1 root root 188120 Sep  5 00:48 fork_test
+-rwxr-xr-x 1 root root 188632 Sep  5 00:48 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183176 Sep  5 00:48 fs_directory_test
+-rwxr-xr-x 1 root root 182632 Sep  5 00:48 fs_large_file_test
+-rwxr-xr-x 1 root root 182832 Sep  5 00:48 fs_link_test
+-rwxr-xr-x 1 root root 182736 Sep  5 00:48 fs_rename_test
+-rwxr-xr-x 1 root root 182920 Sep  5 00:48 fs_write_test
+-rwxr-xr-x 1 root root 184008 Sep  5 00:48 getdents_test
+-rwxr-xr-x 1 root root 183080 Sep  5 00:48 head_test
+-rwxr-xr-x 1 root root 464416 Sep  5 00:48 http_fetch_test
+-rwxr-xr-x 1 root root 468568 Sep  5 00:48 http_test
+-rwxr-xr-x 1 root root 187320 Sep  5 00:48 itimer_test
+-rwxr-xr-x 1 root root 187672 Sep  5 00:48 job_control_test
+-rwxr-xr-x 1 root root 192256 Sep  5 00:48 job_table_test
+-rwxr-xr-x 1 root root 188504 Sep  5 00:48 kill_process_group_test
+-rwxr-xr-x 1 root root 190464 Sep  5 00:48 loopback_wake_test
+-rwxr-xr-x 1 root root 183320 Sep  5 00:48 ls_test
+-rwxr-xr-x 1 root root 182536 Sep  5 00:48 lseek_test
+-rwxr-xr-x 1 root root 182696 Sep  5 00:48 mkdir_argv_test
+-rwxr-xr-x 1 root root 191600 Sep  5 00:48 net_test
+-rwxr-xr-x 1 root root 183728 Sep  5 00:48 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188768 Sep  5 00:48 nonblock_test
+-rwxr-xr-x 1 root root 188384 Sep  5 00:48 pause_test
+-rwxr-xr-x 1 root root 188944 Sep  5 00:48 pipe2_test
+-rwxr-xr-x 1 root root 188744 Sep  5 00:48 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188848 Sep  5 00:48 pipe_fork_test
+-rwxr-xr-x 1 root root 199976 Sep  5 00:48 pipe_refcount_test
+-rwxr-xr-x 1 root root 188272 Sep  5 00:48 pipe_test
+-rwxr-xr-x 1 root root 191608 Sep  5 00:48 pipeline_test
+-rwxr-xr-x 1 root root 189048 Sep  5 00:48 poll_test
+-rwxr-xr-x 1 root root 187128 Sep  5 00:48 pty_test
+-rwxr-xr-x 1 root root 177120 Sep  5 00:48 register_init_test
+-rwxr-xr-x 1 root root 182504 Sep  5 00:48 rm_argv_test
+-rwxr-xr-x 1 root root 188936 Sep  5 00:48 select_test
+-rwxr-xr-x 1 root root 187992 Sep  5 00:48 session_test
+-rwxr-xr-x 1 root root 183152 Sep  5 00:48 shell_pipe_test
+-rwxr-xr-x 1 root root 189032 Sep  5 00:48 sigaltstack_test
+-rwxr-xr-x 1 root root 187552 Sep  5 00:48 sigchld_job_test
+-rwxr-xr-x 1 root root 182464 Sep  5 00:48 sigchld_test
+-rwxr-xr-x 1 root root 206736 Sep  5 00:48 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188744 Sep  5 00:48 signal_exec_test
+-rwxr-xr-x 1 root root 188184 Sep  5 00:48 signal_fork_test
+-rwxr-xr-x 1 root root 187920 Sep  5 00:48 signal_handler_test
+-rwxr-xr-x 1 root root 188232 Sep  5 00:48 signal_regs_test
+-rwxr-xr-x 1 root root 188336 Sep  5 00:48 signal_return_test
+-rwxr-xr-x 1 root root 187888 Sep  5 00:48 signal_test
+-rwxr-xr-x 1 root root 188888 Sep  5 00:48 sigsuspend_test
+-rwxr-xr-x 1 root root 188616 Sep  5 00:48 sleep_debug_test
+-rwxr-xr-x 1 root root 182304 Sep  5 00:48 stdin_test
+-rwxr-xr-x 1 root root 170880 Sep  5 00:48 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183080 Sep  5 00:48 tail_test
+-rwxr-xr-x 1 root root 203456 Sep  5 00:48 tcp_blocking_test
+-rwxr-xr-x 1 root root 187640 Sep  5 00:48 tcp_client_test
+-rwxr-xr-x 1 root root 189472 Sep  5 00:48 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188856 Sep  5 00:48 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202312 Sep  5 00:48 tcp_socket_test
+-rwxr-xr-x 1 root root 182248 Sep  5 00:48 test_mmap
+-rwxr-xr-x 1 root root 182176 Sep  5 00:48 timer_test
+-rwxr-xr-x 1 root root 182584 Sep  5 00:48 true_test
+-rwxr-xr-x 1 root root 188112 Sep  5 00:48 tty_test
+-rwxr-xr-x 1 root root 193416 Sep  5 00:48 udp_socket_test
+-rwxr-xr-x 1 root root 195360 Sep  5 00:48 unix_named_socket_test
+-rwxr-xr-x 1 root root 205336 Sep  5 00:48 unix_socket_test
+-rwxr-xr-x 1 root root 188168 Sep  5 00:48 waitpid_test
+-rwxr-xr-x 1 root root 183656 Sep  5 00:48 wc_test
+-rwxr-xr-x 1 root root 182984 Sep  5 00:48 which_test
+-rwxr-xr-x 1 root root 182560 Sep  5 00:48 wnohang_timing_test
+-rwxr-xr-x 1 root root 184096 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/sbin/telnetd
+-rwxr-xr-x 1 root root 187512 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/sbin/init
+-rwxr-xr-x 1 root root 181984 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/sbin/blogd
+-rw-r--r-- 1 root root 17 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/hello.txt
+-rw-r--r-- 1 root root 19 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/trunctest.txt
+-rw-r--r-- 1 root root 205748 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 1887192 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 598060 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 111 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/lines.txt
+-rw-r--r-- 1 root root 679 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/etc/init.js
+-rw-r--r-- 1 root root 349 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/etc/hotkeys.conf
+-rw-r--r-- 1 root root 83 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/etc/passwd
+-rw-r--r-- 1 root root 26 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/etc/group
+-rw-r--r-- 1 root root 367 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/etc/bshrc
+-rw-r--r-- 1 root root 445 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/etc/fonts.conf
+-rw-r--r-- 1 root root 0 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/empty.txt
+-rw-r--r-- 1 root root 20 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 20 Sep  5 00:48 /tmp/tmp.CBqOHyJJvD/test/nested.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-737-oracle/target/ext2.img
+  /root/breenix-737-oracle/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+  PCI function facts (PCI_FN_TOTAL 9):
+    PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+    PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+    PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+    PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc100/0x80 irq=0x0b
+    PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0a
+    PCI_FN 00:06.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:699, exit 1)
+  failing command: test "$passed" = true
+--- serial tail (last 200 lines per file, /tmp/breenix_x86_boot_tests_1) ---
+==> /tmp/breenix_x86_boot_tests_1/serial_kernel.txt <==
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x2800061b000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x61c000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x61d000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x2800061bc98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x4d1a000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x61c000), copied=PhysFrame[4KiB](0x61c000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x61d000), copied=PhysFrame[4KiB](0x61d000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x61a000), copied=PhysFrame[4KiB](0x61a000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x202000), copied=PhysFrame[4KiB](0x202000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x61c000) != PML4[403]=PhysFrame[4KiB](0x61d000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x4d1b000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::process::manager: Forking process 3 'teardown_pairing_parent' -> child PID 52
+[ INFO] kernel::process::manager: fork_process_with_page_table: Set up 0 pages for CoW sharing
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 5
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 5 at 0xffffc90000286000-0xffffc90000306000 (guard at 0xffffc90000285000)
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+unblock_for_signal: Checking thread 5 (current=Some(1))
+unblock_for_signal: Thread 5 not found!
+[DEBUG] kernel::task::process_task: Process 52 'teardown_pairing_parent_child_52' (thread 102) exited with code 0
+unblock_for_signal: Checking thread 5 (current=Some(1))
+unblock_for_signal: Thread 5 not found!
+[DEBUG] kernel::task::process_task: Process 52 'teardown_pairing_parent_child_52' (thread 102) exited with code 0
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DISPATCH_STRAND_CENSUS:seq=66:tick=9185:ms=91233:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc900000fc098
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4d28000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x4d28000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28004d28000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28004d28000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28004d28000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28004d28000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x61b000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x2800061b000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x202000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x2800061b000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x61c000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x61d000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x2800061bc98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x4d27000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x61c000), copied=PhysFrame[4KiB](0x61c000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x61d000), copied=PhysFrame[4KiB](0x61d000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x61a000), copied=PhysFrame[4KiB](0x61a000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x202000), copied=PhysFrame[4KiB](0x202000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x61c000) != PML4[403]=PhysFrame[4KiB](0x61d000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x4d28000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::process::manager: Forking process 3 'teardown_pairing_parent' -> child PID 53
+[ INFO] kernel::process::manager: fork_process_with_page_table: Set up 0 pages for CoW sharing
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 5
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 5 at 0xffffc90000286000-0xffffc90000306000 (guard at 0xffffc90000285000)
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+unblock_for_signal: Checking thread 5 (current=Some(1))
+unblock_for_signal: Thread 5 not found!
+[DEBUG] kernel::task::process_task: Process 53 'teardown_pairing_parent_child_53' (thread 104) exited with code 0
+unblock_for_signal: Checking thread 5 (current=Some(1))
+unblock_for_signal: Thread 5 not found!
+[DEBUG] kernel::task::process_task: Process 53 'teardown_pairing_parent_child_53' (thread 104) exited with code 0
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DISPATCH_STRAND_CENSUS:seq=67:tick=9347:ms=92752:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc900000fc098
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4d35000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x4d35000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28004d35000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28004d35000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28004d35000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28004d35000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x61b000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x2800061b000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x202000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x2800061b000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x61c000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x61d000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x2800061bc98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x4d34000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x61c000), copied=PhysFrame[4KiB](0x61c000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x61d000), copied=PhysFrame[4KiB](0x61d000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x61a000), copied=PhysFrame[4KiB](0x61a000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x202000), copied=PhysFrame[4KiB](0x202000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x61c000) != PML4[403]=PhysFrame[4KiB](0x61d000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x4d35000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::process::manager: Forking process 3 'teardown_pairing_parent' -> child PID 54
+[ INFO] kernel::process::manager: fork_process_with_page_table: Set up 0 pages for CoW sharing
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 5
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 5 at 0xffffc90000286000-0xffffc90000306000 (guard at 0xffffc90000285000)
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+unblock_for_signal: Checking thread 5 (current=Some(1))
+unblock_for_signal: Thread 5 not found!
+[DEBUG] kernel::task::process_task: Process 54 'teardown_pairing_parent_child_54' (thread 106) exited with code 0
+unblock_for_signal: Checking thread 5 (current=Some(1))
+unblock_for_signal: Thread 5 not found!
+[DEBUG] kernel::task::process_task: Process 54 'teardown_pairing_parent_child_54' (thread 106) exited with code 0
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+[DISPATCH_STRAND_CENSUS:seq=68:tick=9504:ms=94216:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc900000fc098
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4d42000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x4d42000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28004d42000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28004d42000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28004d42000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28004d42000
+[DEBUG] kernel::memory::process_memory: About to clear the new page table
+[DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x61b000 for copying
+[DEBUG] kernel::memory::process_memory: Current L4 table virtual address: 0x2800061b000
+[DEBUG] kernel::memory::process_memory: Examining kernel page table upper half entries:
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[256]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[257]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[258]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[259]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[260]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[509]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[510]: phys=0x61a000, flags=PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::process_memory:   Kernel PML4[511]: phys=0x202000, flags=PageTableFlags(PRESENT | WRITABLE | GLOBAL)
+[DEBUG] kernel::memory::process_memory: Found 256 valid upper-half kernel PML4 entries (256-511)
+[DEBUG] kernel::memory::process_memory: Copied 256 upper-half kernel PML4 entries (256-511)
+[ INFO] kernel::memory::process_memory: PHASE2: Using master kernel PML4 for process creation
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Reading master PML4 from virtual address 0x2800061b000
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[402] = Ok(PhysFrame[4KiB](0x61c000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: Master PML4[403] = Ok(PhysFrame[4KiB](0x61d000))
+[ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x2800061bc98
+[ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
+[ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x4d41000
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x61c000), copied=PhysFrame[4KiB](0x61c000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x61d000), copied=PhysFrame[4KiB](0x61d000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x61a000), copied=PhysFrame[4KiB](0x61a000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[511] (kernel high-half): master=PhysFrame[4KiB](0x202000), copied=PhysFrame[4KiB](0x202000)
+[ INFO] kernel::memory::process_memory: PHASE2: Inherited 256 upper-half kernel mappings (256-511) from master PML4
+[ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x61c000) != PML4[403]=PhysFrame[4KiB](0x61d000)
+[ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
+[ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x4d42000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::process::manager: Forking process 3 'teardown_pairing_parent' -> child PID 55
+[ INFO] kernel::process::manager: fork_process_with_page_table: Set up 0 pages for CoW sharing
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 5
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 5 at 0xffffc90000286000-0xffffc90000306000 (guard at 0xffffc90000285000)
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+unblock_for_signal: Checking thread 5 (current=Some(1))
+unblock_for_signal: Thread 5 not found!
+[DEBUG] kernel::task::process_task: Process 55 'teardown_pairing_parent_child_55' (thread 108) exited with code 0
+unblock_for_signal: Checking thread 5 (current=Some(1))
+unblock_for_signal: Thread 5 not found!
+[DEBUG] kernel::task::process_task: Process 55 'teardown_pairing_parent_child_55' (thread 108) exited with code 0
+[DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
+
+==> /tmp/breenix_x86_boot_tests_1/serial_user.txt <==
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001d794000,
+    metadata: 5955064,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: bd80c, mem_size: bd80c, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: bd810, virtual_addr: be810, physical_addr: be810, file_size: 316c70, mem_size: 316c70, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3d4480, virtual_addr: 3d6480, physical_addr: 3d6480, file_size: 4ae60, mem_size: 4bb80, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 41f300, virtual_addr: 422300, physical_addr: 422300, file_size: 356d8, mem_size: 97aa0, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x100000d0aa0
+INFO : Creating GDT at PhysAddr(0x205000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x100000d0aa0)
+[TEST:process:frame_custody_refusal_gate:START]
+[TEST:process:frame_custody_refusal_gate:PASS]
+[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
+[TEST:process:page_table_custody_disposition_gate:START]
+[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=16502:used_after=16502:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0]
+[TEST:process:page_table_custody_disposition_gate:PASS]
+[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]
+PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc100/0x80 irq=0x0b
+PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0a
+PCI_FN 00:06.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+PCI_FN_TOTAL 9
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:reclaim_progress_gate:PASS]
+[TEST:process:x86_retire_cohort:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>GATE_EXIT=1

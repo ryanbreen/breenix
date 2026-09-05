@@ -1,0 +1,24 @@
+Running 1 parallel full boot tests (runner: native)...
+Image: /root/breenix-737-oracle/target/release/build/breenix-1ddb662735daef9c/out/breenix-uefi.img
+  Started test 1
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: FAIL (x86 userspace verdict rejected the run)
+    strand census: latest snapshot seq=5 tick=549 at 5010 ms; 5 valid snapshot(s), previous 1017 ms earlier, largest gap 1058 ms
+strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=5 at 5010 ms
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=2991
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+    stack_pointer: VirtAddr(
+        0xffffc90000e9c0b8,
+    ),
+    stack_segment: SegmentSelector {
+        index: 0,
+        rpl: Ring0,
+    },
+}
+[ERROR] kernel: KERNEL PANIC: panicked at kernel/src/interrupts.rs:1498:9:
+Kernel page fault at 0x0 (error: PageFaultErrorCode(0x0))
+
+=========================================
+Results: 0 passed, 1 failed out of 1
+=========================================
+BP_EXIT=1
