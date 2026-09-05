@@ -1368,13 +1368,23 @@ pub fn sys_sigsuspend_with_frame(
         // #796: this acquisition used to be `try_manager()`, whose failure arm
         // returned ESRCH. POSIX gives `sigsuspend()` exactly one error, EINTR
         // (Linux adds EFAULT); ESRCH is in neither list, and a momentarily
-        // contended process-manager lock is not a missing process. The blocking
-        // acquisition is safe for the same reason it is in `sys_fcntl`: this
-        // body runs on a trap taken from userspace, so this CPU cannot already
-        // own PROCESS_MANAGER, no asynchronous interrupt handler blocks on this
-        // lock, and the guard is dropped before the scheduler lock is taken
-        // below. See
-        // docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
+        // contended process-manager lock is not a missing process.
+        //
+        // Safe for the reasons written out at `sys_fcntl`'s acquisition
+        // (`syscall/handlers.rs`), which are NOT "no asynchronous handler blocks
+        // on this lock" -- one does, the NetRx softirq's `deliver_to_socket`.
+        // They are: this body runs on a trap taken from userspace, so this CPU
+        // cannot already own PROCESS_MANAGER; no bottom half can run on this CPU
+        // across the wait or the hold (aarch64 `manager()` masks DAIF, x86 runs
+        // the syscall preempt-disabled and only dispatches softirqs at
+        // `preempt_count() == 0`); and the guard is dropped before the scheduler
+        // lock is taken below.
+        //
+        // Cost, disclosed: x86's `manager()` masks no interrupts, so this window
+        // is preempt-disabled but IRQ-enabled; the `log::info!` calls in the
+        // block below are inside it, and the wait's worst case is the tree's
+        // longest PM hold (exec's ELF load), not a short one.
+        // See docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
         let mut manager_guard = crate::process::manager();
         {
             if let Some(ref mut manager) = *manager_guard {
@@ -2160,13 +2170,22 @@ pub fn sys_sigsuspend_with_frame_aarch64(
         // #796: this acquisition used to be `try_manager()`, whose failure arm
         // returned ESRCH. POSIX gives `sigsuspend()` exactly one error, EINTR
         // (Linux adds EFAULT); ESRCH is in neither list, and a momentarily
-        // contended process-manager lock is not a missing process. The blocking
-        // acquisition is safe for the same reason it is in `sys_fcntl`: this
-        // body runs on a trap taken from userspace, so this CPU cannot already
-        // own PROCESS_MANAGER, no asynchronous interrupt handler blocks on this
-        // lock, and the guard is dropped before the scheduler lock is taken
-        // below. See
-        // docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
+        // contended process-manager lock is not a missing process.
+        //
+        // Safe for the reasons written out at `sys_fcntl`'s acquisition
+        // (`syscall/handlers.rs`), which are NOT "no asynchronous handler blocks
+        // on this lock" -- one does, the NetRx softirq's `deliver_to_socket`.
+        // They are: this body runs on a trap taken from userspace, so this CPU
+        // cannot already own PROCESS_MANAGER; no bottom half can run on this CPU
+        // across the wait or the hold (aarch64 `manager()` masks DAIF, x86 runs
+        // the syscall preempt-disabled and only dispatches softirqs at
+        // `preempt_count() == 0`); and the guard is dropped before the scheduler
+        // lock is taken below.
+        //
+        // Cost, disclosed: on aarch64 the DAIF-masked window covers the
+        // `log::info!` calls in the block below as well as the wait, and the
+        // wait's worst case is the tree's longest PM hold (exec's ELF load).
+        // See docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
         let mut manager_guard = crate::process::manager();
         {
             if let Some(ref mut manager) = *manager_guard {

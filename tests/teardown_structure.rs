@@ -15540,6 +15540,49 @@ fn x86_production_profile_gate_verdict_discipline_holds() {
     );
 }
 
+
+/// Each element line of the shell array `name` in `script`, removed. The
+/// mutation this feeds must EMPTY the array; deriving the element lines from
+/// the script keeps it applying when the array grows, where a hardcoded list of
+/// element texts silently stops emptying it (R157, after #796 added a 20th
+/// marker the old list did not name).
+/// claim-lint:ok: R157 finding, recorded in
+/// docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md; the
+/// caller's `report_vacuity` asserts both that the mutation applies and that it
+/// reddens, so a mutation that stops applying fails this suite.
+fn empty_shell_array(script: &str, name: &str) -> String {
+    let mut opener = String::from(name);
+    opener.push_str("=");
+    opener.push('(');
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in script.lines() {
+        if !inside && line.trim_start().starts_with(&opener) {
+            inside = true;
+            out.push(line);
+            continue;
+        }
+        if inside {
+            if line.trim() == ")" {
+                inside = false;
+                out.push(line);
+            }
+            continue;
+        }
+        out.push(line);
+    }
+    assert!(
+        !inside,
+        "shell array {} in the gate script is never closed",
+        name
+    );
+    let mut joined = out.join("\n");
+    if script.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
 #[test]
 fn x86_production_profile_gate_ratchet_is_not_vacuous() {
     let gate = repo_text("docker/qemu/run-x86-prod-profile-boot-test.sh");
@@ -15660,29 +15703,17 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
             1,
         ),
     );
-    // The profile-fidelity negative control emptied.
+    // The profile-fidelity negative control emptied. Derived from the array in
+    // the script rather than from a literal list of its elements: R157 caught
+    // this mutation silently failing to apply after #796 added a 20th marker,
+    // which left the ratchet reporting a vacuity it had not actually driven. The
+    // campaign's standing rule -- census shapes, not name lists -- applies to
+    // the mutation as much as to the assertion.
+    // claim-lint:ok: #549, #551 and #527-r1 are the 3 prior instances of that
+    // rule; the R157 measurement is in the #796 doc's branch-defect section.
     report_vacuity(
         "profile-fidelity array emptied",
-        gate.replacen("    'TEST_TALLY:'\n", "", 1)
-            .replacen("    '[TEST:'\n", "", 1)
-            .replacen("    'TEST RUNNER:'\n", "", 1)
-            .replacen("    '[BOOT_TESTS:'\n", "", 1)
-            .replacen("    'RING3_SMOKE: creating'\n", "", 1)
-            .replacen("    '[TOMBSTONE_QUIESCE:'\n", "", 1)
-            .replacen("    '[RECLAIM_DRAIN:'\n", "", 1)
-            .replacen("    '[TOMBSTONE_JOIN_ORACLE:'\n", "", 1)
-            .replacen("    '[KSTACK_OWNER_ORACLE:'\n", "", 1)
-            .replacen("    '[KSTACK_QUIESCE_LEAK:'\n", "", 1)
-            .replacen("    '[PT_CUSTODY_COUNTERS:'\n", "", 1)
-            .replacen("    '[FRAME_CUSTODY_COUNTERS:'\n", "", 1)
-            .replacen("    '[PT_RETIRE_COHORT:'\n", "", 1)
-            .replacen("    '[PT_EXEC_COHORT:'\n", "", 1)
-            .replacen("    '[EXEC_DETACH_ORACLE:'\n", "", 1)
-            .replacen("    '[CLONE_ADMISSION_ORACLE:'\n", "", 1)
-            .replacen("    '[INIT_DESIGNATION_ORACLE:'\n", "", 1)
-            .replacen("    '[SCHED_STRAND_ORACLE:'\n", "", 1)
-            .replacen("    '[CENSUS_WIDEN_ORACLE:'\n", "", 1)
-            .replacen("    'Testing features enabled'\n", "", 1),
+        empty_shell_array(&gate, "TEST_ONLY_MARKERS"),
     );
     // The zero-count loop that spends the negative control removed.
     report_vacuity(

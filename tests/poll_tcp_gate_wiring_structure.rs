@@ -89,6 +89,27 @@ fn discover_files(root: &Path) -> Vec<PathBuf> {
 
 /// The derived set: each file under `docker/qemu/` or `scripts/` that
 /// contains the oracle's gate-failing FAIL literal. No name list -- this is
+/// The text of `path`, absent when the file is not UTF-8 text.
+///
+/// R157: both readers below used `read_to_string(...).unwrap_or_else(panic!)`,
+/// which made this suite fail on any non-text file that happened to sit under
+/// `docker/qemu/` or `scripts/`. That is reachable through this project's own
+/// mandated workflow: `python3 scripts/claim-lint.py` writes
+/// `scripts/__pycache__/claim-lint.cpython-*.pyc` (git-ignored, so it never
+/// shows in `git status`), and the next run of this suite panicked on
+/// `read script .../claim-lint.cpython-314.pyc`. A gate script is text by
+/// construction, so a file that is not text is not a member of the census and
+/// is skipped rather than fatal. The census shape is unchanged: every file is
+/// still visited, and every text file is still classified.
+/// claim-lint:ok: reproduced in R157 -- with the .pyc present this suite was
+/// 2 passed / 1 failed on that exact panic, and green with it removed; the
+/// round's record is in
+/// docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
+fn script_text(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    String::from_utf8(bytes).ok()
+}
+
 /// the computed census the R96 ratchet requires.
 fn scripts_asserting_oracle_fail() -> Vec<PathBuf> {
     let mut candidates = discover_files(&repo_root().join("docker/qemu"));
@@ -98,8 +119,9 @@ fn scripts_asserting_oracle_fail() -> Vec<PathBuf> {
     candidates
         .into_iter()
         .filter(|path| {
-            let text = fs::read_to_string(path)
-                .unwrap_or_else(|_| panic!("read script {}", path.display()));
+            let Some(text) = script_text(path) else {
+                return false;
+            };
             text.contains(ORACLE_FAIL_LITERAL)
         })
         .collect()
@@ -112,8 +134,9 @@ fn missing_ready_lost_wiring(scripts: &[PathBuf]) -> Vec<PathBuf> {
     scripts
         .iter()
         .filter(|path| {
-            let text = fs::read_to_string(path)
-                .unwrap_or_else(|_| panic!("read script {}", path.display()));
+            let Some(text) = script_text(path) else {
+                return false;
+            };
             !text.contains(READY_LOST_LITERAL)
         })
         .cloned()
