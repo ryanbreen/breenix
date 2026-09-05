@@ -21,6 +21,20 @@
 //! program removes the lottery: it *stays* in a DF=1 window across many timer
 //! ticks, so a from-userspace preempt that lands there is inside it.
 //!
+//! # The window has to outlast a scheduling quantum, not just a tick
+//!
+//! A timer tick alone is not enough. `kernel/src/interrupts/timer.rs` only
+//! sets `need_resched` when the thread's quantum expires (`TIME_QUANTUM` = 10
+//! ticks), and it is the reschedule -- not the tick -- that reaches
+//! `save_userspace_context` and its `log::trace!`. A DF=1 window shorter than
+//! one quantum takes ticks without ever taking the save path. So the window
+//! escalates until one of them measurably spans `MIN_WINDOW_MS`, which is set
+//! several quanta wide, and then repeats at that size.
+//! claim-lint:ok: measured -- a 32 ms window on the x86 gate host took 0
+//! from-userspace saves (0 `<S>` markers between this program's own begin and
+//! end markers on that boot); the quantum constant is
+//! `kernel/src/interrupts/timer.rs`'s `TIME_QUANTUM`. #737.
+//!
 //! # Two-sided by construction
 //!
 //! * On kernel bytes with the defect, this program is not expected to print
@@ -53,21 +67,32 @@
 //! own census loop runs; the gate's derivation is at
 //! `docker/qemu/run-x86-boot-tests.sh`. #737.
 //!
-//! # Marker
+//! # Markers
+//!
+//! Each window is bracketed, so a reader can count the kernel's own
+//! from-userspace save markers between the two lines and know whether the
+//! window was actually preempted:
+//!
+//! ```text
+//! [DF_PREEMPT] window <n> begin iterations=<k>
+//! [DF_PREEMPT] window <n> end elapsed_ms=<m> rflags_before_cld=0x<..> rflags_after_cld=0x<..>
+//! ```
+//!
+//! and the summary line is
 //!
 //! ```text
 //! [DF_PREEMPT] ticks_spanned=<n> df_after_cld=<0|1> df_roundtrip=<ok|bad>
 //! ```
 //!
-//! `ticks_spanned` is CLOCK_MONOTONIC milliseconds elapsed across the DF=1
-//! window; the timer runs at 1000 Hz, so it is also the number of timer ticks
-//! the window spanned. `df_roundtrip` is `ok` when DF was still set at the
-//! instant before this program cleared it, i.e. when every preemption inside
-//! the window returned the flag unchanged.
+//! `ticks_spanned` is the longest window's CLOCK_MONOTONIC milliseconds; the
+//! timer runs at a fixed rate, so it is also the number of timer ticks that
+//! window spanned. `df_roundtrip` is `ok` when DF was still set at the instant
+//! before this program cleared it in each window, i.e. when the preemptions it
+//! did take returned the flag unchanged.
 //! claim-lint:ok: the marker reports what this program measured on the boot
 //! that printed it -- 1 of 1 sampled RFLAGS value per window, sampled by the
-//! `pushfq` immediately preceding the `cld` -- and claims nothing about
-//! preemptions it did not observe. #737.
+//! `pushfq` immediately preceding that window's `cld` -- and claims nothing
+//! about preemptions it did not observe. #737.
 
 use std::process;
 
@@ -75,17 +100,25 @@ use std::process;
 #[cfg(target_arch = "x86_64")]
 const DF_BIT: u64 = 1 << 10;
 
-/// Loop iterations inside one DF=1 window. Sized to span far more than the
-/// several timer ticks the oracle needs on a TCG-emulated qemu64, and
-/// escalated below when a measurement says otherwise, so no calibration
-/// constant is load-bearing.
+/// Loop iterations in the first DF=1 window. Escalated below until a window
+/// measurably spans `MIN_WINDOW_MS`, so no calibration constant is
+/// load-bearing.
 #[cfg(target_arch = "x86_64")]
 const BASE_SPIN_ITERATIONS: u64 = 10_000_000;
 
-/// Minimum milliseconds a window has to span before the oracle stops
-/// escalating.
+/// Milliseconds a window has to span before the oracle stops escalating.
+/// Several scheduling quanta wide, so quantum expiry lands inside it.
 #[cfg(target_arch = "x86_64")]
-const MIN_WINDOW_MS: i64 = 10;
+const MIN_WINDOW_MS: i64 = 200;
+
+/// How many windows at the escalated size to run once the size is found.
+#[cfg(target_arch = "x86_64")]
+const LONG_WINDOWS_WANTED: u32 = 3;
+
+/// Ceiling on total windows, so a machine whose clock does not advance
+/// still terminates.
+#[cfg(target_arch = "x86_64")]
+const MAX_WINDOWS: u32 = 12;
 
 /// CLOCK_MONOTONIC in milliseconds.
 #[cfg(target_arch = "x86_64")]
@@ -131,36 +164,44 @@ fn main() {
 
     let mut iterations = BASE_SPIN_ITERATIONS;
     let mut windows = 0u32;
+    let mut long_windows = 0u32;
     let mut roundtrip_ok = true;
     let mut ticks_spanned: i64 = 0;
     let mut df_after_cld: u64 = 1;
 
-    // Escalate the window size until one window measurably spans at least
-    // MIN_WINDOW_MS. An early attempt that turns out to be too short is still
-    // a real exposure, not a wasted one.
-    for _ in 0..4 {
+    while windows < MAX_WINDOWS && long_windows < LONG_WINDOWS_WANTED {
+        windows += 1;
+        println!("[DF_PREEMPT] window {} begin iterations={}", windows, iterations);
+
         let start_ms = monotonic_ms();
         let (before, after) = df_window(iterations);
         let end_ms = monotonic_ms();
-        windows += 1;
+        let elapsed = end_ms - start_ms;
+
+        println!(
+            "[DF_PREEMPT] window {} end elapsed_ms={} rflags_before_cld=0x{:x} rflags_after_cld=0x{:x}",
+            windows, elapsed, before, after
+        );
 
         if before & DF_BIT == 0 {
             roundtrip_ok = false;
         }
         df_after_cld = (after & DF_BIT) >> 10;
-        ticks_spanned = end_ms - start_ms;
-
-        println!(
-            "[DF_PREEMPT] window {}: iterations={} elapsed_ms={} rflags_before_cld=0x{:x} rflags_after_cld=0x{:x}",
-            windows, iterations, ticks_spanned, before, after
-        );
-
-        if ticks_spanned >= MIN_WINDOW_MS {
-            break;
+        if elapsed > ticks_spanned {
+            ticks_spanned = elapsed;
         }
-        iterations = iterations.saturating_mul(8);
+
+        if elapsed >= MIN_WINDOW_MS {
+            long_windows += 1;
+        } else {
+            iterations = iterations.saturating_mul(8);
+        }
     }
 
+    println!(
+        "[DF_PREEMPT] windows={} long_windows={} iterations={}",
+        windows, long_windows, iterations
+    );
     println!(
         "[DF_PREEMPT] ticks_spanned={} df_after_cld={} df_roundtrip={}",
         ticks_spanned,
