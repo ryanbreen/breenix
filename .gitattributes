@@ -64,3 +64,11 @@ docs/planning/green-program/aarch64-testing/serials/slice3a/** -text
 # captures above -- the CR bytes the guest console emits are part of the
 # evidence, and a CRLF normalisation would edit it.
 docs/planning/green-program/aarch64-testing/serials/slice3d/** -text
+
+# Run Inspector fixture: byte-for-byte copy of the slice3d serial above
+# (Tests/Fixtures/FIXTURES.md names the exact source path and commit). Kept
+# byte-exact for the same reason as the slice3d captures it was copied from --
+# the CR bytes are part of the evidence the MarkerScannerTests assert against,
+# and a CRLF normalisation would silently make the fixture stop matching the
+# source it claims to be a byte-for-byte copy of.
+tools/breenix-runs/Tests/Fixtures/05-runtime-anti-vacuity-strict-serial.txt -text
