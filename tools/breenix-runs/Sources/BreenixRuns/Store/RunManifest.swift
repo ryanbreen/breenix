@@ -26,12 +26,20 @@ public struct KernelIdentity: Codable, Equatable, Sendable {
     }
 }
 
+// Hand-rolled Codable rather than the compiler-synthesized enum-with-payload
+// encoding: a `kind` discriminator plus flat, named fields (`reason`,
+// `command`, `exitCode`) keeps manifest.json greppable and stable across a
+// case being added later, instead of Swift's default single-key/single-value
+// wrapper shape.
 public enum Verdict: Codable, Equatable, Sendable {
     case pass
     case fail(String)
     case attributed(String)
     case running
     case unknown
+    // A run that never booted at all (e.g. the aarch64 strict gate's
+    // require_boot_tests_kernel preflight, docker/qemu/run-aarch64-boot-test-strict.sh:194-217)
+    // -- distinct from `.fail`, which is a run whose boots ran and failed.
     case refused(String)
     case gateScript(command: [String], exitCode: Int)
 

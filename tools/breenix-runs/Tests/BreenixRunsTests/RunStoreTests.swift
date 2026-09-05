@@ -47,6 +47,48 @@ final class RunStoreTests: XCTestCase {
         XCTAssertEqual(try store.rebuildIndex().runs, [])
     }
 
+    func testCorruptManifestIsSkippedRatherThanPoisoningRebuildOrFutureWrites() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+
+        let good = sampleManifest(id: "20260905T185233Z-aarch64-strict-good")
+        try store.writeManifest(good)
+
+        // Hand-write a corrupt manifest.json directly (not via writeManifest),
+        // simulating any corruption/partial-write/future-schema-mismatch.
+        let corruptDir = try store.createRunDirectory(id: "20260905T185300Z-aarch64-strict-corr")
+        try Data("{ this is not valid json at all".utf8).write(to: corruptDir.appendingPathComponent("manifest.json"))
+
+        // rebuildIndex must not throw and must still surface the good run.
+        let rebuilt = try store.rebuildIndex()
+        XCTAssertEqual(rebuilt.runs.map(\.id).sorted(), [good.id])
+
+        // A brand-new, perfectly valid third run must still record successfully:
+        // writeManifest's unconditional rebuildIndex() must not be poisoned by
+        // the corrupt manifest sitting alongside it.
+        let third = sampleManifest(id: "20260905T185400Z-aarch64-strict-third")
+        try store.writeManifest(third)
+        let indexAfterThird = try store.readIndex()
+        XCTAssertEqual(indexAfterThird.runs.map(\.id).sorted(), [good.id, third.id].sorted())
+        XCTAssertEqual(try store.readManifest(id: third.id), third)
+    }
+
+    func testManifestDateFieldsSurviveSubSecondRoundTrip() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+        var manifest = sampleManifest(id: "20260905T185233Z-aarch64-strict-subsec")
+        manifest.startedAt = Date(timeIntervalSince1970: 1_788_632_000.789)
+        manifest.endedAt = Date(timeIntervalSince1970: 1_788_632_060.123)
+
+        try store.writeManifest(manifest)
+        let reloaded = try store.readManifest(id: manifest.id)
+
+        XCTAssertEqual(reloaded.startedAt.timeIntervalSince1970, 1_788_632_000.789, accuracy: 0.001)
+        XCTAssertEqual(reloaded.endedAt?.timeIntervalSince1970 ?? 0, 1_788_632_060.123, accuracy: 0.001)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("breenix-runs-tests-\(UUID().uuidString)", isDirectory: true)

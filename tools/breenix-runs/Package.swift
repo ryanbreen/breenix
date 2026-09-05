@@ -21,5 +21,5 @@ let package = Package(
             dependencies: ["BreenixRuns"]
         )
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

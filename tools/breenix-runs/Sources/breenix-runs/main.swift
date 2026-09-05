@@ -7,6 +7,7 @@ struct CLIError: Error, CustomStringConvertible {
 
 struct RunArmArguments {
     var profile: ArmProfile = .strict
+    var profileWasSet = false
     var boots = 20
     var tags: [String] = []
     var persist = true
@@ -52,7 +53,14 @@ func parseRunArm(_ args: ArraySlice<String>) throws -> RunArmArguments {
             guard let profile = ArmProfile(rawValue: arg) else {
                 throw CLIError(description: "unknown arm profile \(arg)")
             }
+            // Mirrors parseFacts's duplicate-value guard below: a second
+            // profile-looking positional argument (`run arm strict prod`) must
+            // error, not silently overwrite the first and run the last one.
+            guard !parsed.profileWasSet else {
+                throw CLIError(description: "run arm accepts exactly one profile, got both \(parsed.profile.rawValue) and \(profile.rawValue)")
+            }
             parsed.profile = profile
+            parsed.profileWasSet = true
         }
     }
 
@@ -236,10 +244,18 @@ func main() -> Int32 {
             ))
             print("")
             printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, includeBootFactsNotice: false)
-            if case .gateScript(_, let exitCode) = result.manifest.verdict {
+            // A preflight refusal (LocalGateLauncher.bootTestsPreflightRefusalMarker)
+            // never ran a boot, but it is still not success: an unmapped verdict
+            // here fell through to `return 0`, which reported the CLI's exit
+            // status as success for a run that refused to even attempt a boot.
+            switch result.manifest.verdict {
+            case .gateScript(_, let exitCode):
                 return Int32(exitCode)
+            case .refused:
+                return 1
+            default:
+                return 0
             }
-            return 0
 
         case "facts":
             let parsed = try parseFacts(args.dropFirst())

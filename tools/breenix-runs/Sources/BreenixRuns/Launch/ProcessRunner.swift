@@ -43,7 +43,9 @@ public struct ProcessResult: Equatable {
 }
 
 public protocol ProcessRunner {
-    func run(_ request: ProcessRequest, outputHandler: ((Data) -> Void)?) throws -> ProcessResult
+    // `@Sendable`: the handler is invoked from Pipe's readabilityHandler, which
+    // fires on a GCD dispatch queue Foundation owns, never the caller's thread.
+    func run(_ request: ProcessRequest, outputHandler: (@Sendable (Data) -> Void)?) throws -> ProcessResult
 }
 
 public extension ProcessRunner {
@@ -55,7 +57,7 @@ public extension ProcessRunner {
 public final class RealProcessRunner: ProcessRunner {
     public init() {}
 
-    public func run(_ request: ProcessRequest, outputHandler: ((Data) -> Void)? = nil) throws -> ProcessResult {
+    public func run(_ request: ProcessRequest, outputHandler: (@Sendable (Data) -> Void)? = nil) throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: request.executable)
         process.arguments = request.arguments
@@ -113,7 +115,7 @@ public final class RealProcessRunner: ProcessRunner {
         )
     }
 
-    private func appendRemaining(from pipe: Pipe, to buffer: LockedBuffer, outputHandler: ((Data) -> Void)?) {
+    private func appendRemaining(from pipe: Pipe, to buffer: LockedBuffer, outputHandler: (@Sendable (Data) -> Void)?) {
         let data = pipe.fileHandleForReading.availableData
         if !data.isEmpty {
             buffer.append(data)
@@ -122,7 +124,11 @@ public final class RealProcessRunner: ProcessRunner {
     }
 }
 
-private final class LockedBuffer {
+// All mutable state (`storage`) is only ever touched while holding `lock`, in
+// both `append` and the `data` getter, so a `LockedBuffer` may be shared
+// across the readabilityHandler's GCD queue and the caller's thread without a
+// data race -- the precondition `@unchecked Sendable` exists for.
+private final class LockedBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = Data()
 

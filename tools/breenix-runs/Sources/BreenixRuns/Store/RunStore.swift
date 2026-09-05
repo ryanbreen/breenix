@@ -92,9 +92,21 @@ public struct RunStore: Sendable {
                 continue
             }
 
-            let data = try Data(contentsOf: manifestURL)
-            let manifest = try RunStore.decoder.decode(RunManifest.self, from: data)
-            entries.append(RunIndexEntry(manifest: manifest))
+            // Rebuildability is the whole safety property (DESIGN.md Sec 3.2 point 2):
+            // "Delete it, corrupt it, hand-edit it -- it regenerates." A single
+            // unreadable/corrupt manifest.json must never poison the index for
+            // every OTHER run (and, via writeManifest's unconditional rebuild,
+            // block recording of every future run too) -- skip it and keep going.
+            do {
+                let data = try Data(contentsOf: manifestURL)
+                let manifest = try RunStore.decoder.decode(RunManifest.self, from: data)
+                entries.append(RunIndexEntry(manifest: manifest))
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "warning: skipping unreadable manifest at \(manifestURL.path): \(error)\n".utf8
+                ))
+                continue
+            }
         }
 
         entries.sort { lhs, rhs in
@@ -126,16 +138,51 @@ public struct RunStore: Sendable {
         }
     }
 
+    // `.iso8601` (JSONEncoder's built-in strategy) formats without fractional
+    // seconds, so every persist/reload round trip through it truncated Date
+    // fields to whole seconds. `facts <run-id>` (reads the persisted manifest
+    // back from disk) then reported different host-fact wall-time/duration
+    // values than the in-process `run arm` output (which prints the
+    // pre-persistence in-memory manifest). ISO8601DateFormatter with
+    // `.withFractionalSeconds` preserves millisecond precision instead; the
+    // decoder falls back to a formatter without that option so a manifest
+    // written under the old whole-second strategy still parses.
+    //
+    // A fresh formatter is built per call rather than shared as `static let`
+    // state: ISO8601DateFormatter is not documented Sendable, and encode/decode
+    // can run concurrently (the CLI and the app both write, DESIGN.md Sec 3.2
+    // point 3). Constructing one is cheap relative to the JSON work already
+    // happening around it.
+    private static func iso8601Formatter(fractional: Bool) -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = fractional ? [.withInternetDateTime, .withFractionalSeconds] : [.withInternetDateTime]
+        return formatter
+    }
+
     public static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(RunStore.iso8601Formatter(fractional: true).string(from: date))
+        }
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return encoder
     }()
 
     public static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let string = try container.decode(String.self)
+            if let date = RunStore.iso8601Formatter(fractional: true).date(from: string)
+                ?? RunStore.iso8601Formatter(fractional: false).date(from: string) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected a fractional or whole-second ISO8601 date, got \(string)"
+            )
+        }
         return decoder
     }()
 }

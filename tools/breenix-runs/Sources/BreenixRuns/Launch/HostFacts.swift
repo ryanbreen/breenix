@@ -59,6 +59,12 @@ public struct HostFactsSample: Codable, Equatable, Sendable {
     }
 }
 
+// The launcher's OWN sample of the host at start/end of a run, kept distinct
+// from the guest-annotated GATE_BOOT_FACTS record a kernel emits into its own
+// serial (DESIGN.md Sec 5.3: "never merged into a GATE_BOOT_FACTS row"). Every
+// value is read through `runner` (an injected ProcessRunner) rather than a
+// native macOS API so HostFactsTests can assert against fixture strings with
+// no real processes spawned.
 public enum HostFacts {
     public static func sample(
         runner: ProcessRunner,
