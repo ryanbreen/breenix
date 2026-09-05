@@ -1365,7 +1365,18 @@ pub fn sys_sigsuspend_with_frame(
 
     // Save userspace context and set temporary mask atomically (under lock)
     {
-        if let Some(mut manager_guard) = crate::process::try_manager() {
+        // #796: this acquisition used to be `try_manager()`, whose failure arm
+        // returned ESRCH. POSIX gives `sigsuspend()` exactly one error, EINTR
+        // (Linux adds EFAULT); ESRCH is in neither list, and a momentarily
+        // contended process-manager lock is not a missing process. The blocking
+        // acquisition is safe for the same reason it is in `sys_fcntl`: this
+        // body runs on a trap taken from userspace, so this CPU cannot already
+        // own PROCESS_MANAGER, no asynchronous interrupt handler blocks on this
+        // lock, and the guard is dropped before the scheduler lock is taken
+        // below. See
+        // docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
+        let mut manager_guard = crate::process::manager();
+        {
             if let Some(ref mut manager) = *manager_guard {
                 if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
                     // Save the original mask
@@ -1407,9 +1418,6 @@ pub fn sys_sigsuspend_with_frame(
                 log::error!("sys_sigsuspend: process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
             }
-        } else {
-            log::error!("sys_sigsuspend: could not acquire process manager lock");
-            return SyscallResult::Err(3); // ESRCH
         }
     }
 
@@ -2149,7 +2157,18 @@ pub fn sys_sigsuspend_with_frame_aarch64(
 
     // Save userspace context and set temporary mask atomically
     {
-        if let Some(mut manager_guard) = crate::process::try_manager() {
+        // #796: this acquisition used to be `try_manager()`, whose failure arm
+        // returned ESRCH. POSIX gives `sigsuspend()` exactly one error, EINTR
+        // (Linux adds EFAULT); ESRCH is in neither list, and a momentarily
+        // contended process-manager lock is not a missing process. The blocking
+        // acquisition is safe for the same reason it is in `sys_fcntl`: this
+        // body runs on a trap taken from userspace, so this CPU cannot already
+        // own PROCESS_MANAGER, no asynchronous interrupt handler blocks on this
+        // lock, and the guard is dropped before the scheduler lock is taken
+        // below. See
+        // docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
+        let mut manager_guard = crate::process::manager();
+        {
             if let Some(ref mut manager) = *manager_guard {
                 if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
                     // Save the original mask
@@ -2190,9 +2209,6 @@ pub fn sys_sigsuspend_with_frame_aarch64(
                 log::error!("sys_sigsuspend_aarch64: process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
             }
-        } else {
-            log::error!("sys_sigsuspend_aarch64: could not acquire process manager lock");
-            return SyscallResult::Err(3); // ESRCH
         }
     }
 

@@ -3872,13 +3872,41 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
         }
     };
 
-    let mut manager_guard = match crate::process::try_manager() {
-        Some(guard) => guard,
-        None => {
-            log::error!("sys_fcntl: Failed to get process manager");
-            return SyscallResult::Err(11); // EAGAIN
-        }
-    };
+    // #796: this used to be `try_manager()` with an `EAGAIN` arm, which made a
+    // momentarily contended process-manager lock look to userspace like an fcntl
+    // error. POSIX permits `[EAGAIN]` from `fcntl()` only in the `F_SETLK`
+    // record-locking arm, which this kernel does not implement, so no command
+    // reachable through the dispatch below has a legal `EAGAIN`; the observed
+    // failure was `fcntl(F_SETFD)` reporting it before `set_fd_flags` -- whose
+    // only error is `EBADF` -- was ever reached.
+    //
+    // Blocking here is the discipline this file already follows: `sys_dup` and
+    // `sys_dup2` directly above take `crate::process::manager()` for the same
+    // `process.fd_table` mutation from the same context. The safety argument,
+    // re-derived at these bytes rather than cited:
+    //
+    //   * This function is reachable only from the syscall dispatcher, i.e. from
+    //     a trap taken at EL0/ring 3. That is the same context class in which
+    //     `arch_impl/aarch64/exception.rs:2331` takes the blocking `manager()`
+    //     for a CoW abort, with the same justification: a CPU that was running
+    //     userspace when it trapped cannot already own PROCESS_MANAGER.
+    //   * No asynchronous interrupt handler on either architecture blocks on
+    //     this lock. The IRQ-context accesses in `interrupts/context_switch.rs`
+    //     and `aarch64/context_switch.rs` are `try_manager()` and refuse the
+    //     dispatch rather than wait, so waiting here cannot wedge an ISR.
+    //   * A holder is not preempted away from under the waiter: aarch64's
+    //     `manager()` masks DAIF for the guard's lifetime, and x86's dispatch
+    //     path refuses to switch when it cannot get PM, "leaving the
+    //     lock-holding context -- the only one that can release it -- running"
+    //     (`interrupts/context_switch.rs:339-346`). The wait is bounded by the
+    //     holder's own window.
+    //   * The window opened here takes no scheduler lock and does no I/O, so it
+    //     cannot trip the PM->SCHEDULER order marker
+    //     (`SCHED_AFTER_PM_VIOLATIONS`).
+    //
+    // Census and per-site reasoning:
+    // docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md
+    let mut manager_guard = crate::process::manager();
 
     let process = match manager_guard
         .as_mut()
