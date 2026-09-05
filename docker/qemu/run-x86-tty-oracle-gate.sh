@@ -45,7 +45,22 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-OUTPUT_ROOT="/tmp/breenix_x86_tty_oracle"
+# #797: concurrent lanes sharing one host (e.g. the beast Incus container)
+# each invoking this script hardcode the identical /tmp/breenix_x86_tty_oracle
+# path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run.
+# Defaulting to /tmp keeps every existing caller byte-identical; a
+# concurrent-lane launcher sets this to a per-clone directory instead. Must
+# be absolute -- a relative value would resolve against whatever directory
+# happens to be current when each command runs (review finding F6 on #797).
+# claim-lint:ok: #797, diff-empty against origin/main except one line
+# (BUILD_LOG) that only gained quotes -- see
+# docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+esac
+OUTPUT_ROOT="$BREENIX_GATE_TMP/breenix_x86_tty_oracle"
 BOOTS=1
 REBUILD_USERSPACE=false
 QEMU_PID=""
@@ -135,6 +150,19 @@ case "$BOOTS" in
 esac
 [ "$BOOTS" -ge 1 ] || { echo "FAIL: --boots must be at least 1"; exit 1; }
 
+# AF_UNIX sun_path is 108 bytes on Linux including the terminating NUL, so a
+# console-socket path over 107 characters cannot be bound (review finding F7
+# on #797, carried here from the same guard in
+# run-x86-prod-profile-boot-test.sh). Checked here against the widest run
+# dir this invocation can produce ($BOOTS, its own last and longest boot
+# number) rather than inside the per-boot loop, so a too-long
+# BREENIX_GATE_TMP fails before the build below runs at all.
+WIDEST_CONSOLE_SOCK_PATH="$OUTPUT_ROOT/boot_$BOOTS/console.sock"
+if [ "${#WIDEST_CONSOLE_SOCK_PATH}" -gt 107 ]; then
+    echo "FAIL: console socket path exceeds the AF_UNIX sun_path limit of 107 chars: \"$WIDEST_CONSOLE_SOCK_PATH\" is ${#WIDEST_CONSOLE_SOCK_PATH} chars -- shorten BREENIX_GATE_TMP"
+    exit 1
+fi
+
 # Single-argument form, scoped to the current boot's run dir (matches
 # run-x86-prod-profile-boot-test.sh's own marker_count(), which greps the
 # same two-serial-stream layout this gate produces per boot).
@@ -159,7 +187,7 @@ echo "Building the shipped x86_64 production kernel profile..."
 # The absence of --features is the point: adding one would make this gate
 # measure a different profile than the one that ships.
 rm -f target/release/build/breenix-*/out/breenix-uefi.img
-BUILD_LOG=/tmp/breenix_x86_tty_oracle_build.log
+BUILD_LOG="$BREENIX_GATE_TMP/breenix_x86_tty_oracle_build.log"
 cargo build --release --bin qemu-uefi 2>&1 | tee "$BUILD_LOG"
 # Zero-warning law. grep exits 1 on the clean case, so the status is
 # swallowed in the group and awk -- which always exits 0 -- produces the

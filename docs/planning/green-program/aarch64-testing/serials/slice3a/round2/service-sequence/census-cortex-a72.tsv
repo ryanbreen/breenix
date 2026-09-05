@@ -1,0 +1,26 @@
+boot	bucket	end	seconds	ctx596_divergence	reason	serial	ret_dispatch_refusals	resume_pc_refusals	percpu_stack_aliens	cpu_identity_splits	ret_stage_refusals	lr_nontext
+1	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-1.txt	0	0	0	0	0	6
+2	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-2.txt	0	0	0	0	0	4
+3	GREEN	early	20	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-3.txt	0	0	0	0	0	4
+4	GREEN	early	21	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-4.txt	0	0	0	0	0	6
+5	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-5.txt	0	0	0	0	0	6
+6	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-6.txt	0	0	0	0	0	4
+7	GREEN	early	19	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-7.txt	0	0	0	0	0	4
+8	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-8.txt	0	0	0	0	0	4
+9	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-9.txt	0	0	0	0	0	6
+10	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-10.txt	0	0	0	0	0	6
+11	GREEN	early	19	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-11.txt	0	0	0	0	0	4
+12	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-12.txt	0	0	0	0	0	2
+13	GREEN	early	18	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-13.txt	0	0	0	0	0	8
+14	GREEN	early	21	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-14.txt	0	0	0	0	0	8
+15	GREEN	early	18	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-15.txt	0	0	0	0	0	4
+16	GREEN	early	20	1	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-16.txt	0	0	0	0	0	6
+17	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-17.txt	0	0	0	0	0	8
+18	GREEN	early	19	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-18.txt	0	0	0	0	0	6
+19	GREEN	early	18	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-19.txt	0	0	0	0	0	6
+20	GREEN	early	18	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-20.txt	0	0	0	0	0	8
+21	GREEN	early	21	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-21.txt	0	0	0	0	0	8
+22	GREEN	early	20	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-22.txt	0	0	0	0	0	4
+23	GREEN	early	18	2	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-23.txt	0	0	0	0	0	6
+24	GREEN	early	18	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-24.txt	0	0	0	0	0	4
+25	GREEN	early	19	0	all service-sequence and P5b markers observed (qemu_status=0)	/tmp/breenix_aarch64_service_sequence_gate_20260905T063554Z-51490/cortex-a72/serial-25.txt	0	0	0	0	0	8

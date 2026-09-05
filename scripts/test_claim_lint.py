@@ -433,6 +433,266 @@ class MechanicsTests(unittest.TestCase):
         self.assertFalse(cl.overlaps(f, [(1, 9)]))
 
 
+class AutoCloseKeywordTests(unittest.TestCase):
+    """The `auto-close-keyword` rule: a close/fix/resolve keyword bound to
+    "#N" (or an equivalent GitHub reference -- see
+    test_reference_forms_github_also_parses below) is not a claim that might
+    be true or false -- it is text GitHub itself reads and acts on at
+    merge/commit time, auto-closing the named issue regardless of anything a
+    human wrote next to it. #737 auto-closed at the exact moment PR #799
+    (2026-09-05) merged, ahead of the round's own, later, explicit close --
+    what mechanism fired is not fully recoverable after the fact (the PR
+    body as it reads today carries no such phrase, and GitHub does not
+    expose body-edit history via its API), so this rule guards the shape
+    rather than asserting which byte sequence caused that specific close.
+    The convention from here on is a plain "#N" with no such keyword
+    directly in front of it.
+
+    Every literal `close`/`fix`/`resolve` + issue-number fixture below uses
+    a number far outside this repo's real issue range (issue counts are in
+    the hundreds; these are 8-digit) precisely so that pasting this file's
+    bytes into a real PR body or commit message cannot re-trigger the
+    incident this rule exists to prevent (review F6) -- #737, #4, #10 and
+    #12 are real, merged issues/PRs in this repo, and the original fixtures
+    spelled them out directly.
+    """
+
+    FAKE = "99999737"    # stands in for the incident's own #737
+    FAKE2 = "99999912"   # stands in for #12
+    FAKE3 = "99999904"   # stands in for #4
+    FAKE4 = "99999910"   # stands in for #10
+    FAKE5 = "99999901"   # stands in for #9001
+
+    def test_vocabulary_and_shape(self):
+        cases = [
+            ("Fixes #%s\n" % self.FAKE, True),
+            ("This is #%s\n" % self.FAKE, False),
+            ("closes: #%s\n" % self.FAKE2, True),
+            ("Fixed #%s.\n" % self.FAKE3, True),
+            ("resolve #%s\n" % self.FAKE5, True),
+            ("Close #%s for tracking.\n" % self.FAKE4, True),
+            # a word that merely CONTAINS "close" is not the keyword --
+            # disclose/foreclose etc. must not fire on the substring.
+            ("This was disclosed #%s in the retro.\n" % self.FAKE, False),
+            # the keyword and the reference have to be adjacent (only
+            # whitespace/colon between); a keyword earlier in the sentence
+            # with other words before the issue number is not the shape
+            # GitHub's own parser recognizes.
+            ("The bug closes out a class of issues, tracked as #%s.\n"
+             % self.FAKE2, False),
+        ]
+        for text, expect_flag in cases:
+            findings = cl.lint_text("x.md", text)
+            hit = any(f.rule == "auto-close-keyword" for f in findings)
+            self.assertEqual(
+                hit, expect_flag,
+                "text=%r expected auto-close-keyword=%r, findings=%r"
+                % (text, expect_flag, [f.rule for f in findings]),
+            )
+
+    def test_reference_forms_github_also_parses(self):
+        # Review F5: GitHub's own "linking a pull request to an issue" docs
+        # also auto-close on a cross-repo `OWNER/REPO#N` reference and on a
+        # full issue/PR URL; `GH-N` is the legacy autolink form from
+        # GitHub's original closing-keywords announcement. These are live
+        # GitHub-parsed shapes on their own merits, even though this tree
+        # carried a different shape (a bare `#N`) when the rule shipped
+        # (`grep -rIn 'breenix#[0-9]'` comes up empty).
+        cases = [
+            ("closes ryanbreen/breenix#%s\n" % self.FAKE, True),
+            ("fixes https://github.com/ryanbreen/breenix/issues/%s\n"
+             % self.FAKE, True),
+            ("closes GH-%s\n" % self.FAKE, True),
+            ("resolved gh-%s\n" % self.FAKE, True),
+        ]
+        for text, expect_flag in cases:
+            findings = cl.lint_text("x.md", text)
+            hit = any(f.rule == "auto-close-keyword" for f in findings)
+            self.assertEqual(
+                hit, expect_flag,
+                "text=%r expected auto-close-keyword=%r, findings=%r"
+                % (text, expect_flag, [f.rule for f in findings]),
+            )
+
+    def test_negation_still_fires_and_the_documented_rewrite_does_not(self):
+        # Review F2: an honest-scoping negation ("this design does not
+        # resolve #N") is NOT exempted, on purpose -- GitHub's own matcher
+        # does not parse negation either (it looks for the keyword
+        # immediately before "#N", and stops there), so "does not resolve #N"
+        # is exactly as likely to auto-close on merge as "resolves #N"
+        # would be. Exempting the negated form would reopen the incident
+        # this rule exists to prevent, not close a false-positive gap.
+        negated = "This design does not resolve #%s.\n" % self.FAKE
+        findings = cl.lint_text("x.md", negated)
+        self.assertTrue(
+            any(f.rule == "auto-close-keyword" for f in findings),
+            "a negated claim must still fire -- GitHub does not read 'not'",
+        )
+        # The rewrite this rule's own message and claim-linting.md recommend
+        # -- break the keyword/number adjacency -- keeps the same meaning
+        # and is not a GitHub-parsed shape either, so it is a safe way to
+        # write the honest claim, not a way to dodge the linter.
+        safe_rewrites = [
+            "This design does not resolve issue #%s.\n" % self.FAKE,
+            "#%s is not resolved by this design.\n" % self.FAKE,
+        ]
+        for text in safe_rewrites:
+            findings = cl.lint_text("x.md", text)
+            self.assertFalse(
+                any(f.rule == "auto-close-keyword" for f in findings),
+                "documented rewrite %r must not fire" % text,
+            )
+
+    def test_not_dischargeable_by_claim_lint_ok(self):
+        # The annotation records that a human checked something; it does not
+        # stop GitHub from reading the merged bytes and auto-closing the
+        # issue. This rule must fire even with a citation-bearing annotation
+        # right above it, unlike the rest of the rules in this file.
+        text = ("<!-- claim-lint:ok: reviewed, see #728 -->\n"
+                "Fixes #%s\n" % self.FAKE)
+        findings = cl.lint_text("x.md", text)
+        self.assertTrue(
+            any(f.rule == "auto-close-keyword" for f in findings),
+            "a claim-lint:ok annotation must not discharge auto-close-keyword",
+        )
+
+    def test_not_exempted_by_nm_count_or_evidence_path(self):
+        # The other exemptions (N-of-M, a resolving evidence path) don't apply
+        # here either: there is no true-or-false claim here for them to
+        # exempt.
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "confirm"))
+            with open(os.path.join(tmp, "confirm", "run.txt"), "w") as fh:
+                fh.write("serial\n")
+            text = ("Fixes #%s -- 12/12 arms green, per "
+                    "`confirm/run.txt`.\n" % self.FAKE)
+            findings = cl.lint_text("EVIDENCE.md", text, tmp)
+            self.assertTrue(any(f.rule == "auto-close-keyword" for f in findings))
+
+    def test_fires_in_rust_and_shell_comments_too(self):
+        self.assertTrue(any(
+            f.rule == "auto-close-keyword"
+            for f in cl.lint_text(
+                "x.rs", "/// Fixes #%s once merged.\nfn f() {}\n" % self.FAKE)
+        ))
+        self.assertTrue(any(
+            f.rule == "auto-close-keyword"
+            for f in cl.lint_text(
+                "x.sh", "#!/bin/bash\n# closes: #%s\necho hi\n" % self.FAKE2)
+        ))
+
+    def test_extensionless_files_target_is_linted_not_skipped(self):
+        # Review F3: `--files` is the round checklist's own required step for
+        # a PR body or a scratchpad doc, and those surfaces do not
+        # reliably carry a recognized extension -- `git commit`'s own
+        # `COMMIT_EDITMSG` has no extension at all. Before the fix,
+        # `lint_file()` returned `[]` for any unrecognized extension before
+        # even opening the file, so a trigger phrase in an extensionless
+        # file silently passed.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "COMMIT_EDITMSG")
+            with open(path, "w") as fh:
+                fh.write("Fixes #%s\n" % self.FAKE)
+            out = subprocess.run(
+                [sys.executable, CLAIM_LINT_PATH, "--files", path],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(
+                out.returncode, 1,
+                "an extensionless --files target must be linted, not "
+                "silently skipped and reported clean; stdout=%s" % out.stdout,
+            )
+            self.assertIn("auto-close-keyword", out.stdout)
+            self.assertNotIn(
+                "SKIPPED", out.stdout,
+                "an explicit --files target must never be reported skipped",
+            )
+
+    def test_lint_file_distinguishes_skipped_from_clean(self):
+        # Unit-level check of the skip-vs-clean distinction lint_file() now
+        # makes: it signals a skip with a distinct return value, separate
+        # from the empty list it returns for a file that was opened and
+        # read clean. Folding the two together is exactly what let the
+        # extensionless COMMIT_EDITMSG case above report "clean (1 file(s)
+        # checked)" without the file being read.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "no_extension_here")
+            with open(path, "w") as fh:
+                fh.write("Fixes #%s\n" % self.FAKE)
+            self.assertIsNone(
+                cl.lint_file(path, tmp, assume_text=False),
+                "an unrecognized extension must be skipped (None), not "
+                "silently linted, unless the caller opts in",
+            )
+            found = cl.lint_file(path, tmp, assume_text=True)
+            self.assertIsNotNone(found)
+            self.assertTrue(any(f.rule == "auto-close-keyword" for f in found))
+
+    def test_skipped_targets_reported_separately_from_checked(self):
+        # Auto-discovered targets (whole-repo or diff mode) keep the strict
+        # extension allowlist -- but a skip must be REPORTED, not folded
+        # into "checked" (review F3's second half: the summary line used to
+        # count a skipped target as checked no matter which mode found it).
+        with tempfile.TemporaryDirectory() as tmp:
+            vc = "git"
+            subprocess.run([vc, "init", "-q"], cwd=tmp, check=True)
+            subprocess.run([vc, "config", "user.email", "t@example.com"],
+                            cwd=tmp, check=True)
+            subprocess.run([vc, "config", "user.name", "t"],
+                            cwd=tmp, check=True)
+            with open(os.path.join(tmp, "clean.md"), "w") as fh:
+                fh.write("This change is a small, targeted fix.\n")
+            with open(os.path.join(tmp, "notes.bin"), "w") as fh:
+                fh.write("Fixes #%s\n" % self.FAKE)
+            subprocess.run([vc, "add", "clean.md", "notes.bin"],
+                            cwd=tmp, check=True)
+            subprocess.run([vc, "commit", "-q", "-m", "seed"],
+                            cwd=tmp, check=True)
+            out = subprocess.run(
+                [sys.executable, CLAIM_LINT_PATH, "--all", "--repo-root", tmp],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(out.returncode, 0, out.stdout)
+            self.assertIn("1 file(s) checked", out.stdout)
+            self.assertIn("1 target(s) SKIPPED", out.stdout)
+            self.assertIn("notes.bin", out.stdout)
+
+    # ------------------------------------------------------------------
+    # ANTI-VACUITY: the real CLI, via `--files`, on three short one-line
+    # fixtures -- the shape a human actually runs, not just the in-process
+    # library call above. Asserts the literal process exit code.
+    # ------------------------------------------------------------------
+    def _cli_cases(self):
+        return [
+            ("Fixes #%s\n" % self.FAKE, 1),
+            ("This is #%s\n" % self.FAKE, 0),
+            ("closes: #%s\n" % self.FAKE2, 1),
+        ]
+
+    def test_cli_exit_codes_for_the_three_anti_vacuity_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, (text, expected_exit) in enumerate(self._cli_cases()):
+                path = os.path.join(tmp, "case%d.md" % i)
+                with open(path, "w") as fh:
+                    fh.write(text)
+                out = subprocess.run(
+                    [sys.executable, CLAIM_LINT_PATH, "--files", path],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(
+                    out.returncode, expected_exit,
+                    "text=%r expected exit %d, got %d; stdout=%s"
+                    % (text, expected_exit, out.returncode, out.stdout),
+                )
+                if expected_exit == 1:
+                    self.assertIn(
+                        "auto-close-keyword", out.stdout,
+                        "a rejecting case must name the rule that fired",
+                    )
+                else:
+                    self.assertNotIn("auto-close-keyword", out.stdout)
+
+
 class HistoricalCorpusInContextTests(unittest.TestCase):
     """Layer 2a (HEADLINE): the linter run over the whole file as it shipped.
 

@@ -15,6 +15,21 @@ set -e
 COUNT=${1:-5}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
+# invoking this script hardcode the identical /tmp/breenix_boot_$i path, so one
+# lane's rm -rf/mkdir can clobber another lane's in-flight run. Defaulting to
+# /tmp keeps every existing caller byte-identical; a concurrent-lane launcher
+# sets this to a per-clone directory instead.
+# claim-lint:ok: #797, diff-empty against origin/main -- see
+# docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value resolves against whatever directory is
+# current at the point each command runs, which this script does not pin to
+# BREENIX_ROOT the way the trap-bearing gates do (review finding F6 on #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)" >&2; exit 1 ;;
+esac
 # Re-pin consciously whenever this profile's launched test-program set changes.
 #
 # Measured on the x86 gate host with this runner, one boot each:
@@ -72,7 +87,7 @@ declare -a RUNNER_PIDS=()
 
 # Create output directories and launch the boots
 for i in $(seq 1 $COUNT); do
-    OUTPUT_DIR="/tmp/breenix_boot_$i"
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_boot_$i"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
@@ -131,7 +146,7 @@ PASSED=0
 FAILED=0
 
 for i in $(seq 1 $COUNT); do
-    OUTPUT_DIR="/tmp/breenix_boot_$i"
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_boot_$i"
     FOUND=false
 
     LAUNCH_FAILED=false
