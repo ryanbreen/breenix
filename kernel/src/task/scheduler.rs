@@ -891,40 +891,81 @@ pub struct SchedulerLivenessSnapshot {
 ///
 /// Returns `None` when the scheduler lock is busy or uninitialized; both are
 /// diagnostic for watchdog output.
+///
+/// Local interrupts are masked for the whole guard lifetime, and that is not
+/// decoration. `try_lock` does NOT make a scheduler acquisition safe against a
+/// same-CPU interrupt: it only removes the wait. If a timer IRQ lands while this
+/// CPU holds the guard and the handler reaches the scheduler, the handler's
+/// `try_lock` fails and it takes its failure path -- and any path that must have
+/// the lock instead deadlocks against a holder that cannot run again until the
+/// handler returns. Masking removes the interrupt, so it is the guard's WINDOW
+/// that has to be masked, not just its acquisition (#790, ruling R153).
+///
+/// `try_lock` is still right for the acquisition itself: a busy lock here means
+/// a peer CPU holds it, and a watchdog snapshot must not wait on that.
+///
+/// Callers: 0 in this tree today; this is the AArch64 soft-lockup watchdog's
+/// snapshot API, and `--gc-sections` drops it from the shipped kernel. The mask
+/// is here so the caller that lands does not have to rediscover R153.
+/// `tests/teardown_structure.rs::scheduler_lock_acquisitions_are_irq_safe_by_shape`
+/// reddens if it is removed.
+///
+/// Review round 2, finding m5. Retained for the same reason as
+/// `is_current_idle_thread` above: a named future caller (the watchdog), not
+/// `try_schedule`'s no-caller, no-plan case, which was deleted rather than
+/// annotated.
 pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot> {
-    let guard = try_lock_scheduler()?;
-    let sched = guard.as_ref()?;
-    let cpu = cpu_id.min(MAX_CPUS.saturating_sub(1));
+    without_interrupts(|| {
+        let guard = try_lock_scheduler()?;
+        let sched = guard.as_ref()?;
+        let cpu = cpu_id.min(MAX_CPUS.saturating_sub(1));
 
-    let mut per_cpu_ready_len = [0u64; 8];
-    let mut per_cpu_current = [0u64; 8];
-    for idx in 0..MAX_CPUS.min(8) {
-        per_cpu_ready_len[idx] = sched.per_cpu_queues[idx].len() as u64;
-        per_cpu_current[idx] = sched.cpu_state[idx].current_thread.unwrap_or(0);
-    }
+        let mut per_cpu_ready_len = [0u64; 8];
+        let mut per_cpu_current = [0u64; 8];
+        for idx in 0..MAX_CPUS.min(8) {
+            per_cpu_ready_len[idx] = sched.per_cpu_queues[idx].len() as u64;
+            per_cpu_current[idx] = sched.cpu_state[idx].current_thread.unwrap_or(0);
+        }
 
-    let ready_queue_len = sched.per_cpu_queues.iter().map(|q| q.len()).sum::<usize>() as u64;
-    let blocked_count = sched
-        .threads
-        .iter()
-        .filter(|t| {
-            t.state.is_blocked() // #673 review, m4
+        let ready_queue_len = sched.per_cpu_queues.iter().map(|q| q.len()).sum::<usize>() as u64;
+        let blocked_count = sched
+            .threads
+            .iter()
+            .filter(|t| {
+                t.state.is_blocked() // #673 review, m4
+            })
+            .count() as u64;
+
+        Some(SchedulerLivenessSnapshot {
+            current_thread_id: sched.cpu_state[cpu].current_thread.unwrap_or(0),
+            ready_queue_len,
+            total_threads: sched.threads.len() as u64,
+            blocked_count,
+            per_cpu_ready_len,
+            per_cpu_current,
         })
-        .count() as u64;
-
-    Some(SchedulerLivenessSnapshot {
-        current_thread_id: sched.cpu_state[cpu].current_thread.unwrap_or(0),
-        ready_queue_len,
-        total_threads: sched.threads.len() as u64,
-        blocked_count,
-        per_cpu_ready_len,
-        per_cpu_current,
     })
 }
 
 /// Try to get a snapshot of scheduler state without blocking.
 /// Returns None if the scheduler lock is held (which is itself diagnostic).
-/// Safe to call from interrupt context.
+///
+/// DELIBERATELY UNMASKED, unlike its sibling `try_liveness_snapshot` (review
+/// round 1, m1). This is a fatal-path diagnostic dump: it allocates two `Vec`s
+/// and walks the thread table while holding the guard, so wrapping it in
+/// `arch_without_interrupts` would put an unbounded allocating walk inside a
+/// no-interrupt window -- the same trade `release_reclaimed_threads` declines on
+/// x86_64. What makes it safe instead is its caller set: both callers today are
+/// interrupt or exception context (`arch_impl/aarch64/timer_interrupt.rs` and
+/// `arch_impl/aarch64/exception.rs`), where the hardware has already masked on
+/// entry.
+///
+/// That condition is machine-checked, not asserted: this is one of the 6 sites
+/// `tests/teardown_structure.rs::scheduler_lock_acquisitions_are_irq_safe_by_shape`
+/// admits by reverse-call-graph derivation rather than by a local mask, so
+/// adding a thread-context caller reddens that ratchet. If a thread-context
+/// caller is genuinely wanted, the answer is a masked wrapper at the call site,
+/// not a mask here.
 pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
     let guard = try_lock_scheduler()?;
     let sched = guard.as_ref()?;
@@ -4233,42 +4274,57 @@ impl Scheduler {
     }
 }
 
-/// Initialize the global scheduler
+/// Initialize the global scheduler.
+///
+/// The mask covers the whole guard lifetime for the reason spelled out on
+/// `try_liveness_snapshot`: a scheduler guard held on this CPU with interrupts
+/// enabled is a same-CPU self-deadlock window. `lock_scheduler` blocks, so here
+/// that window is a hang rather than a failed `try_lock` (#790, R153).
 #[allow(dead_code)]
 pub fn init(idle_thread: Box<Thread>) {
-    let mut scheduler_lock = lock_scheduler();
-    *scheduler_lock = Some(Scheduler::new(idle_thread));
-    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-    #[cfg(target_arch = "x86_64")]
-    log_serial_println!("Scheduler initialized");
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        *scheduler_lock = Some(Scheduler::new(idle_thread));
+        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+        #[cfg(target_arch = "x86_64")]
+        log_serial_println!("Scheduler initialized");
+    });
 }
 
-/// Initialize scheduler with the current thread as the idle task (Linux-style)
-/// This is used during boot where the boot thread becomes the idle task
+/// Initialize scheduler with the current thread as the idle task (Linux-style).
+/// This is used during boot where the boot thread becomes the idle task.
+///
+/// Masked for the whole guard lifetime, same reason as `init`. This is the one
+/// acquisition changed by #790's repair that a shipped AArch64 kernel actually
+/// executes -- it runs on the boot path -- so the masked window here is the one
+/// part of that repair with runtime coverage. See
+/// docs/planning/green-program/aarch64-testing/789-SLICE2-2026-09-04.md.
 pub fn init_with_current(current_thread: Box<Thread>) {
-    let mut scheduler_lock = lock_scheduler();
-    let thread_id = current_thread.id();
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        let thread_id = current_thread.id();
 
-    // Create scheduler with current thread as both idle and current
-    let mut scheduler = Scheduler::new(current_thread);
-    #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
-    install_ec0_fault_inject_thread(&mut scheduler);
-    #[cfg(target_arch = "aarch64")]
-    {
-        let old_val = scheduler.cpu_state[0].current_thread.unwrap_or(0xDEAD);
-        record_cpu_state_change(0, 5, old_val, thread_id);
-    }
-    scheduler.cpu_state[0].current_thread = Some(thread_id);
+        // Create scheduler with current thread as both idle and current
+        let mut scheduler = Scheduler::new(current_thread);
+        #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+        install_ec0_fault_inject_thread(&mut scheduler);
+        #[cfg(target_arch = "aarch64")]
+        {
+            let old_val = scheduler.cpu_state[0].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(0, 5, old_val, thread_id);
+        }
+        scheduler.cpu_state[0].current_thread = Some(thread_id);
 
-    *scheduler_lock = Some(scheduler);
-    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
-    #[cfg(target_arch = "x86_64")]
-    log_serial_println!(
-        "Scheduler initialized with current thread {} as idle task",
-        thread_id
-    );
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = thread_id;
+        *scheduler_lock = Some(scheduler);
+        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+        #[cfg(target_arch = "x86_64")]
+        log_serial_println!(
+            "Scheduler initialized with current thread {} as idle task",
+            thread_id
+        );
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = thread_id;
+    });
 }
 
 /// Register an idle thread for a secondary CPU.
@@ -4615,37 +4671,55 @@ pub fn preempt_schedule_irq() {
     // No-op: Let the assembly IRETQ path handle context switching
 }
 
-/// Non-blocking scheduling attempt (for interrupt context). Returns None if lock is busy.
-/// Note: Currently unused - the assembly interrupt return path handles scheduling.
-/// Kept as part of public API for potential future use in SMP context.
-#[allow(dead_code)]
-pub fn try_schedule() -> Option<(u64, u64)> {
-    // Do not disable interrupts; we only attempt a non-blocking lock here
-    if let Some(mut scheduler_lock) = try_lock_scheduler() {
-        if let Some(scheduler) = scheduler_lock.as_mut() {
-            return scheduler.schedule().map(|(old, new)| (old.id(), new.id()));
-        }
-    }
-    None
-}
-
-/// Check if the current thread is the idle thread (safe to call from IRQ context)
-/// Returns None if the scheduler lock can't be acquired (to avoid deadlock)
+/// Check whether the current thread is the idle thread.
+///
+/// The returned `Option` is `None` when the scheduler lock is busy or
+/// uninitialized. claim-lint:ok: `None` here is Rust's `Option` variant, not a
+/// universal claim (#790).
+///
+/// The comment that used to sit here claimed the `try_lock` was what made this
+/// "safe to call from IRQ context" and what avoided deadlock. That belief is the
+/// defect ruling R153 named, tracked as #790: a `try_lock` bounds the
+/// ACQUISITION and does not affect an interrupt arriving while this CPU holds
+/// the guard. The mask does, it covers the guard's whole lifetime, and it
+/// restores the caller's prior DAIF/IF state on the way out, so a caller that
+/// had already masked is unaffected.
+///
+/// Callers: 0 in this tree today, so `--gc-sections` drops this from the
+/// shipped kernel. Its live caller is `task::idle_sleep`'s idle-block refusal,
+/// which arrives in slice 3; landing the repair first means that caller arrives
+/// onto a masked function instead of re-deriving R153.
+///
+/// Review round 3. The mask delivers a SECOND repair beyond the self-deadlock
+/// R153 named. The comparison below reads the CPU index twice --
+/// `current_thread_id_inner()` and `idle_thread_id()` each index
+/// `cpu_state[Self::current_cpu_id()]` independently -- so with interrupts
+/// enabled a preemption and migration between the two reads could compare one
+/// CPU's current thread against another CPU's idle thread and answer about a
+/// pair that did not coexist. Masked, that window does not exist. No such
+/// mis-answer has been observed; this is a window closed by construction, not
+/// a bug reproduced and fixed.
+///
+/// Review round 2, finding m5. `try_schedule` was deleted outright for having
+/// no caller on `origin/main` and no named future one. This function differs
+/// in the one fact that matters: it has a named future caller already,
+/// `task::idle_sleep` per the paragraph above, so `#[allow(dead_code)]` here is a
+/// placeholder for slice 3, not a hiding place for incomplete work.
 #[allow(dead_code)]
 pub fn is_current_idle_thread() -> Option<bool> {
-    // Try to get the lock without blocking - if we can't, assume not idle
-    // to be safe. This prevents deadlock when timer fires during scheduler ops.
-    if let Some(scheduler_lock) = try_lock_scheduler() {
-        if let Some(scheduler) = scheduler_lock.as_ref() {
-            return Some(
-                scheduler
-                    .current_thread_id_inner()
-                    .map(|id| id == scheduler.idle_thread_id())
-                    .unwrap_or(false),
-            );
+    without_interrupts(|| {
+        if let Some(scheduler_lock) = try_lock_scheduler() {
+            if let Some(scheduler) = scheduler_lock.as_ref() {
+                return Some(
+                    scheduler
+                        .current_thread_id_inner()
+                        .map(|id| id == scheduler.idle_thread_id())
+                        .unwrap_or(false),
+                );
+            }
         }
-    }
-    None
+        None
+    })
 }
 
 /// Get access to the scheduler

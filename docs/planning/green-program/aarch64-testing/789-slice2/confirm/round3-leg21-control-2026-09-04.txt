@@ -1,0 +1,18 @@
+
+running 1 test
+test scheduler_lock_irq_shape_ratchet_is_not_vacuous ... FAILED
+
+failures:
+
+---- scheduler_lock_irq_shape_ratchet_is_not_vacuous stdout ----
+
+thread 'scheduler_lock_irq_shape_ratchet_is_not_vacuous' (69699204) panicked at ctrl2.rs:1391:5:
+a function sharing an entry symbol name must not inherit its admission
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    scheduler_lock_irq_shape_ratchet_is_not_vacuous
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 12.57s
+

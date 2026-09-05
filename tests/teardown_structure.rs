@@ -404,6 +404,1031 @@ fn module_function_bodies(source: &str) -> BTreeMap<String, Vec<&str>> {
     bodies
 }
 
+#[derive(Clone, Debug)]
+struct RustFunctionShape<'a> {
+    path: &'a str,
+    name: String,
+    body: &'a str,
+}
+
+fn kernel_function_shapes(sources: &[(String, String)]) -> Vec<RustFunctionShape<'_>> {
+    let mut functions = Vec::new();
+    for (path, contents) in sources {
+        for (name, bodies) in module_function_bodies(contents) {
+            for body in bodies {
+                functions.push(RustFunctionShape {
+                    path,
+                    name: name.clone(),
+                    body,
+                });
+            }
+        }
+    }
+    functions
+}
+
+fn direct_call_offsets(body: &str, callee: &str) -> Vec<usize> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    identifier_offsets(body, &mask, callee)
+        .into_iter()
+        .filter(|offset| {
+            let mut cursor = *offset + callee.len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            bytes.get(cursor) == Some(&b'(')
+        })
+        .collect()
+}
+
+fn module_stem(path: &str) -> &str {
+    path.rsplit('/')
+        .next()
+        .and_then(|file| file.strip_suffix(".rs"))
+        .unwrap_or(path)
+}
+
+fn call_names_module(body: &str, call: usize, module: &str) -> bool {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let mut cursor = call;
+    while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
+        cursor -= 1;
+    }
+    if cursor < 2 || &body[cursor - 2..cursor] != "::" {
+        return false;
+    }
+    cursor -= 2;
+    while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
+        cursor -= 1;
+    }
+    let end = cursor;
+    while cursor > 0 && mask[cursor - 1] && identifier_byte(bytes[cursor - 1]) {
+        cursor -= 1;
+    }
+    &body[cursor..end] == module
+}
+
+fn calls_to_function(
+    caller: &RustFunctionShape<'_>,
+    callee: &RustFunctionShape<'_>,
+) -> Vec<usize> {
+    direct_call_offsets(caller.body, &callee.name)
+        .into_iter()
+        .filter(|offset| {
+            let prefix = &caller.body[..*offset];
+            let qualified = prefix.trim_end().ends_with("::");
+            if qualified {
+                call_names_module(caller.body, *offset, module_stem(callee.path))
+            } else {
+                caller.path == callee.path
+            }
+        })
+        .collect()
+}
+
+fn closure_ranges(body: &str, wrapper: &str) -> Vec<(usize, usize)> {
+    let mask = code_mask(body);
+    identifier_offsets(body, &mask, wrapper)
+        .into_iter()
+        .filter_map(|offset| {
+            let block = braced_block(body, &mask, offset)?;
+            let open = (offset..body.len())
+                .find(|index| mask[*index] && body.as_bytes()[*index] == b'{')?;
+            if !normalized_code(&body[offset..open]).contains("||") {
+                return None;
+            }
+            Some((open, offset + block.len()))
+        })
+        .collect()
+}
+
+fn irq_disabled_else_ranges(body: &str) -> Vec<(usize, usize)> {
+    let mask = code_mask(body);
+    let mut ranges = Vec::new();
+    for enabled_call in code_offsets(body, &mask, "are_enabled()") {
+        let statement_start = body[..enabled_call]
+            .rmatch_indices([';', '{'])
+            .next()
+            .map(|(offset, _)| offset + 1)
+            .unwrap_or(0);
+        let assignment = &body[statement_start..enabled_call];
+        let Some(equals) = assignment.rfind('=') else {
+            continue;
+        };
+        let Some(binding) = assignment[..equals].split_whitespace().last() else {
+            continue;
+        };
+        if !assignment.split_whitespace().any(|token| token == "let")
+            || !binding.bytes().all(identifier_byte)
+        {
+            continue;
+        }
+
+        let if_needle = format!("if {binding}");
+        for if_offset in code_offsets(body, &mask, &if_needle)
+            .into_iter()
+            .filter(|offset| *offset > enabled_call)
+        {
+            let Some(then_block) = braced_block(body, &mask, if_offset) else {
+                continue;
+            };
+            let then_end = then_block.as_ptr() as usize - body.as_ptr() as usize + then_block.len();
+            let Some(else_relative) = identifier_offsets(&body[then_end..], &mask[then_end..], "else")
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            let else_offset = then_end + else_relative;
+            let Some(else_block) = braced_block(body, &mask, else_offset) else {
+                continue;
+            };
+            let start = else_block.as_ptr() as usize - body.as_ptr() as usize;
+            ranges.push((start, start + else_block.len()));
+            break;
+        }
+    }
+    ranges
+}
+
+/// Any architectural interrupt-enable in `body` between `from` and `site`, at
+/// any nesting depth. Used only to REJECT an otherwise-admitted shape, so being
+/// liberal here is the conservative direction: an enable that could not actually
+/// run still costs the site its admission and reddens the ratchet.
+fn enable_between(body: &str, mask: &[bool], from: usize, site: usize) -> bool {
+    ["enable_interrupts()", "interrupts::enable()"]
+        .iter()
+        .flat_map(|needle| code_offsets(body, mask, needle))
+        .any(|offset| from <= offset && offset < site)
+}
+
+/// The open-brace offset of each block lexically containing `target`,
+/// outermost first.
+fn enclosing_blocks(body: &str, mask: &[bool], target: usize) -> Vec<usize> {
+    let bytes = body.as_bytes();
+    let mut stack = Vec::new();
+    for index in 0..target.min(bytes.len()) {
+        if !mask[index] {
+            continue;
+        }
+        match bytes[index] {
+            b'{' => stack.push(index),
+            b'}' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    stack
+}
+
+/// The last `;`, `{` or `}` in code before `offset`: where the statement that
+/// `offset` belongs to starts, and therefore where its attributes sit.
+fn statement_start(body: &str, mask: &[bool], offset: usize) -> usize {
+    let bytes = body.as_bytes();
+    (0..offset)
+        .rev()
+        .find(|index| mask[*index] && matches!(bytes[*index], b';' | b'{' | b'}'))
+        .map_or(0, |index| index + 1)
+}
+
+/// Whether entering the block opened at `open` is unconditional.
+///
+/// Only a bare `{ … }` statement block whose preceding code byte is `;` or `{`,
+/// or which opens the body, and an `unsafe { … }` block, qualify. Everything
+/// else is treated as conditional -- `if`/`else`/`match` arms, `while`/`for`/
+/// `loop` bodies, closure bodies, and a labelled block a `break` can leave
+/// early -- because a mask placed inside one of those can be skipped on the way
+/// to a later acquisition. Unknown introducers fall on the conditional side by
+/// construction: the identifier scan admits the single literal `unsafe` and no
+/// other.
+///
+/// Review rounds 2 and 3, finding B2 (second half). A `}` sitting directly
+/// before `open` used to be admitted unconditionally, on the theory that it
+/// closes a separate, already-complete preceding statement. Round 2 confirmed
+/// that theory false and tried to keep the arm by matching the `}` back to its
+/// opening `{` and reading what introduced THAT block. Round 3 laundered the
+/// repaired arm twice more: in `if unsafe { .. } && unsafe { .. } { disable(); }`
+/// and in `if if flag { true } else { false } { disable(); }` that introducer
+/// resolves to text which is not one of `if`/`while`/`for`/`match`, so a
+/// still-conditional disable was admitted.
+///
+/// The admission is DELETED here rather than narrowed a third time: a block
+/// whose preceding code byte is `}` is conditional, full stop. That also
+/// refuses a genuinely unconditional bare block written directly after an `if`
+/// statement, which costs such a site its local admission and reddens the
+/// ratchet -- the conservative direction, and no site in the censused tree is
+/// in it: the census totals are unchanged across the deletion, 28 sites in 27
+/// functions, 22 local, 6 caller-derived, 0 unadmitted, before and after.
+/// Legs 16-20 of `scheduler_lock_irq_shape_ratchet_is_not_vacuous` are the five
+/// shapes shown to launder one of the two earlier spellings of this arm.
+fn block_is_unconditional(body: &str, mask: &[bool], open: usize) -> bool {
+    let bytes = body.as_bytes();
+    let mut cursor = open;
+    while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
+        cursor -= 1;
+    }
+    if cursor == 0 {
+        return true;
+    }
+    if bytes[cursor - 1] == b'}' {
+        return false;
+    }
+    if bytes[cursor - 1] == b';' || bytes[cursor - 1] == b'{' {
+        return true;
+    }
+    let end = cursor;
+    while cursor > 0 && mask[cursor - 1] && identifier_byte(bytes[cursor - 1]) {
+        cursor -= 1;
+    }
+    &body[cursor..end] == "unsafe"
+}
+
+/// Whether the interrupt disable at `disable` runs on each path from the top of
+/// `body` to `site`.
+///
+/// The disable dominates when each block it sits inside that the site does NOT
+/// also sit inside is entered unconditionally, and when neither that outermost
+/// non-shared construct nor the disable's own statement is `#[cfg]`-gated -- a
+/// text ratchet cannot see which target or feature profile compiles an
+/// attributed statement, so an attributed mask is not counted for any of them.
+fn disable_dominates_site(body: &str, mask: &[bool], disable: usize, site: usize) -> bool {
+    if disable >= site {
+        return false;
+    }
+    let disable_chain = enclosing_blocks(body, mask, disable);
+    let site_chain = enclosing_blocks(body, mask, site);
+    let unshared: Vec<usize> = disable_chain
+        .iter()
+        .copied()
+        .filter(|open| !site_chain.contains(open))
+        .collect();
+    if !unshared
+        .iter()
+        .all(|open| block_is_unconditional(body, mask, *open))
+    {
+        return false;
+    }
+    let construct = unshared.first().copied().unwrap_or(disable);
+    [construct, disable].into_iter().all(|offset| {
+        !body[statement_start(body, mask, offset)..offset].contains("#[cfg")
+    })
+}
+
+/// Whether the acquisition at `site` is masked by a shape visible in `body`.
+///
+/// Three admission shapes, each one SCOPED rather than positional -- the site
+/// must be reached only with interrupts already off:
+///
+/// * lexically inside a `without_interrupts` / `arch_without_interrupts`
+///   closure;
+/// * lexically inside the false arm of an `if` on a value read from
+///   `are_enabled()`;
+/// * after an architectural `disable_interrupts()` that DOMINATES the site (see
+///   `disable_dominates_site`).
+///
+/// In each of the three, an architectural enable between the shape and the site
+/// takes the admission away again.
+///
+/// Review round 1, finding B2. The third arm used to be a bare positional
+/// search: any textually earlier `disable_interrupts()` with no later
+/// `enable_interrupts()` admitted the site, at any nesting depth and under any
+/// condition. Two mutation probes laundered an unmasked
+/// `try_lock_scheduler()` -- #790's exact producer -- past it and the ratchet
+/// stayed green for both: `if false { disable(); }` prepended to the function,
+/// and a realistic guarded early return, `if … { unsafe { disable(); } return
+/// None; }`, whose mask a `Drop` guard would restore so that no textual enable
+/// ever follows. Deleting the arm outright was measured and rejected: it is
+/// load-bearing for `schedule_from_kernel` and `schedule_terminated_from_exit`,
+/// whose straight-line `unsafe { disable_interrupts(); }` at function entry is
+/// what admits `lock_for_context_switch` and `lock_scheduler` through the caller
+/// derivation. Dominance is what separates those two from the probes, so that is
+/// what the arm now requires. Both probes are permanent red legs, and both real
+/// shapes permanent green legs, in
+/// `scheduler_lock_irq_shape_ratchet_is_not_vacuous`. claim-lint:ok: #790 -- the
+/// `None` above is probe (b)'s Rust return value, not a universal claim, and 6 of
+/// 6 shapes this arm refuses are legs in that test.
+fn acquisition_is_locally_irq_safe(body: &str, site: usize) -> bool {
+    let mask = code_mask(body);
+    let in_range = |range: &(usize, usize)| range.0 <= site && site < range.1;
+    if ["without_interrupts", "arch_without_interrupts"]
+        .into_iter()
+        .flat_map(|wrapper| closure_ranges(body, wrapper))
+        .chain(irq_disabled_else_ranges(body))
+        .any(|range| in_range(&range) && !enable_between(body, &mask, range.0, site))
+    {
+        return true;
+    }
+
+    ["disable_interrupts()", "interrupts::disable()"]
+        .iter()
+        .flat_map(|needle| code_offsets(body, &mask, needle))
+        .any(|disable| {
+            disable_dominates_site(body, &mask, disable, site)
+                && !enable_between(body, &mask, disable, site)
+        })
+}
+
+fn assembly_branch_targets(section: &str) -> BTreeSet<String> {
+    section
+        .lines()
+        .filter_map(|line| {
+            let code = line.split("//").next()?.trim();
+            let mut fields = code.split_whitespace();
+            let branch = fields.next()?;
+            let target = fields.next()?.trim_end_matches(',');
+            (branch == "b"
+                && target
+                    .bytes()
+                    .all(|byte| identifier_byte(byte) || byte == b'.'))
+            .then(|| target.to_owned())
+        })
+        .collect()
+}
+
+fn assembly_label_body<'a>(assembly: &'a str, label: &str) -> Option<&'a str> {
+    let marker = format!("\n{label}:");
+    let start = assembly.find(&marker)? + 1;
+    let remainder = &assembly[start + label.len() + 1..];
+    let end = remainder
+        .match_indices('\n')
+        .filter_map(|(offset, _)| {
+            let line = remainder[offset + 1..].lines().next()?;
+            let candidate = line.strip_suffix(':')?;
+            (!candidate.is_empty()
+                && !candidate.starts_with('.')
+                && candidate
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                && candidate
+                    .bytes()
+                    .all(|byte| identifier_byte(byte)))
+            .then_some(offset + 1)
+        })
+        .next()
+        .unwrap_or(remainder.len());
+    Some(&assembly[start..start + label.len() + 1 + end])
+}
+
+fn assembly_external_calls(body: &str) -> BTreeSet<String> {
+    body.lines()
+        .filter_map(|line| {
+            let code = line.split("//").next()?.split(';').next()?.trim();
+            let mut fields = code.split_whitespace();
+            let instruction = fields.next()?;
+            let target = fields.next()?.trim_end_matches(',');
+            matches!(instruction, "bl" | "call").then(|| target.to_owned())
+        })
+        .collect()
+}
+
+/// `path::name` for each `#[no_mangle]`/`#[unsafe(no_mangle)]` function
+/// definition in `sources`, keyed by the exported symbol name.
+///
+/// Review round 3, finding n1. Assembly links by symbol, so a name an entry
+/// stub branches to can only be one of these definitions; an ordinary Rust
+/// function that happens to share the name is a different symbol and must not
+/// inherit the entry's admission.
+fn no_mangle_definitions(sources: &[(String, String)]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut definitions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (path, contents) in sources {
+        let mask = code_mask(contents);
+        let bytes = contents.as_bytes();
+        let mut in_file: Vec<(usize, String)> = Vec::new();
+        for offset in identifier_offsets(contents, &mask, "fn") {
+            let mut cursor = offset + "fn".len();
+            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            let start = cursor;
+            while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
+                cursor += 1;
+            }
+            if cursor > start {
+                in_file.push((offset, contents[start..cursor].to_owned()));
+            }
+        }
+        for attribute in identifier_offsets(contents, &mask, "no_mangle") {
+            let Some((offset, name)) = in_file.iter().find(|(offset, _)| *offset > attribute)
+            else {
+                continue;
+            };
+            // An attribute sits directly on its item, so a statement start may
+            // not lie between them. `statement_start` is the last statement or
+            // block boundary in code before the `fn` keyword: if it is past the
+            // attribute, this `no_mangle` belongs to an earlier item (a static,
+            // say) and not to the function found here.
+            if statement_start(contents, &mask, *offset) > attribute {
+                continue;
+            }
+            definitions
+                .entry(name.clone())
+                .or_default()
+                .insert(path.clone());
+        }
+    }
+    definitions
+}
+
+
+/// Review round 2, finding m7. The vector-table end used to be a prose-comment
+/// banner (`/*\n * Exception handlers`), pinned to the exact wording of a
+/// comment rather than to anything the assembler enforces -- reflowing that
+/// comment would panic this function. The table's own `.section
+/// .text.vectors` closes at the next `.section` directive, which is where
+/// the assembler's own section boundary sits, so anchoring there survives a
+/// comment edit the way the boot.S/interrupts.rs/breakpoint_entry.asm/
+/// timer_entry.asm PATH anchors already do -- loud panic on drift, but no
+/// longer wired to prose.
+///
+/// Review round 3, finding n1. This set used to be bare NAMES, so any
+/// function anywhere below `kernel/src` sharing a name with an entry symbol
+/// inherited its admission -- and `timer_interrupt_handler` really is defined
+/// twice in this tree, once per architecture. Each name is now resolved to the
+/// file that defines it: an assembly-branched symbol to its `#[no_mangle]`
+/// definitions, since that is the only kind of definition an assembly branch
+/// can reach, and an x86 IDT handler to the module whose `.set_handler_fn(..)`
+/// names it, which is where Rust resolves that unqualified identifier. A name
+/// the resolution cannot place contributes no identity at all, which costs its
+/// callers the derivation and reddens the ratchet rather than admitting them.
+fn derived_interrupt_entry_identities(sources: &[(String, String)]) -> BTreeSet<String> {
+    const X86_IDT_PATH: &str = "kernel/src/interrupts.rs";
+    let no_mangle = no_mangle_definitions(sources);
+    let mut identities = BTreeSet::new();
+    let mut names = BTreeSet::new();
+
+    let arm_vectors = repo_text("kernel/src/arch_impl/aarch64/boot.S");
+    let vector_start = arm_vectors
+        .find("exception_vectors:")
+        .expect("AArch64 vector table label");
+    let vector_end = arm_vectors[vector_start..]
+        .find("\n.section")
+        .map(|offset| vector_start + offset)
+        .expect("AArch64 vector table end");
+    for handler in assembly_branch_targets(&arm_vectors[vector_start..vector_end]) {
+        if let Some(body) = assembly_label_body(&arm_vectors, &handler) {
+            names.extend(assembly_external_calls(body));
+        }
+    }
+
+    for path in [
+        "kernel/src/interrupts/breakpoint_entry.asm",
+        "kernel/src/interrupts/timer_entry.asm",
+    ] {
+        let entry = repo_text(path);
+        let externs: BTreeSet<String> = entry
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("extern ").map(str::to_owned))
+            .collect();
+        names.extend(
+            assembly_external_calls(&entry)
+                .into_iter()
+                .filter(|target| externs.contains(target)),
+        );
+    }
+
+    for name in names {
+        for path in no_mangle.get(&name).into_iter().flatten() {
+            identities.insert(format!("{path}::{name}"));
+        }
+    }
+
+    let x86_idt = repo_text(X86_IDT_PATH);
+    let idt_mask = code_mask(&x86_idt);
+    for setter in code_offsets(&x86_idt, &idt_mask, ".set_handler_fn(") {
+        let start = setter + ".set_handler_fn(".len();
+        let end = x86_idt[start..]
+            .find(')')
+            .map(|offset| start + offset)
+            .expect("x86 IDT handler close parenthesis");
+        let handler = x86_idt[start..end].trim();
+        if handler.bytes().all(identifier_byte) {
+            identities.insert(format!("{X86_IDT_PATH}::{handler}"));
+        }
+    }
+
+    identities
+}
+
+fn function_is_entered_with_irqs_masked(
+    target: usize,
+    functions: &[RustFunctionShape<'_>],
+    entry_identities: &BTreeSet<String>,
+    memo: &mut BTreeMap<usize, bool>,
+    visiting: &mut BTreeSet<usize>,
+) -> bool {
+    if let Some(result) = memo.get(&target) {
+        return *result;
+    }
+    let identity = format!(
+        "{}::{}",
+        functions[target].path, functions[target].name
+    );
+    if entry_identities.contains(&identity) {
+        memo.insert(target, true);
+        return true;
+    }
+    if !visiting.insert(target) {
+        return false;
+    }
+
+    let mut saw_caller = false;
+    let mut safe = true;
+    for (caller_index, caller) in functions.iter().enumerate() {
+        let calls = calls_to_function(caller, &functions[target]);
+        if calls.is_empty() {
+            continue;
+        }
+        saw_caller = true;
+        for call in calls {
+            if !acquisition_is_locally_irq_safe(caller.body, call)
+                && !function_is_entered_with_irqs_masked(
+                    caller_index,
+                    functions,
+                    entry_identities,
+                    memo,
+                    visiting,
+                )
+            {
+                safe = false;
+            }
+        }
+    }
+    visiting.remove(&target);
+    let result = saw_caller && safe;
+    memo.insert(target, result);
+    result
+}
+
+/// One census row per scheduler-lock acquisition site, plus the failures.
+///
+/// The rows are what the ratchet prints under `--nocapture`, so the scope and
+/// the per-site reason a site is admitted are re-derivable from a single command
+/// instead of from an instrumented one-off copy of this file (review round 1,
+/// m4). `failures` is a subset by construction: a row with neither admission
+/// column set is a failure.
+struct SchedulerLockIrqCensus {
+    rows: Vec<String>,
+    failures: Vec<String>,
+}
+
+fn scheduler_lock_irq_shape_census(sources: &[(String, String)]) -> SchedulerLockIrqCensus {
+    let functions = kernel_function_shapes(sources);
+    let entry_identities = derived_interrupt_entry_identities(sources);
+    let raw_needles = ["SCHEDULER.lock()", "SCHEDULER.try_lock()"];
+    let mut primitive_names = BTreeSet::new();
+    for function in &functions {
+        let mask = code_mask(function.body);
+        if raw_needles
+            .iter()
+            .any(|needle| !code_offsets(function.body, &mask, needle).is_empty())
+        {
+            primitive_names.insert(function.name.clone());
+        }
+    }
+    if primitive_names.is_empty() {
+        return SchedulerLockIrqCensus {
+            rows: Vec::new(),
+            failures: vec!["scheduler lock primitive census is empty".to_owned()],
+        };
+    }
+
+    let mut rows = Vec::new();
+    let mut sites = 0usize;
+    let mut locally_masked = 0usize;
+    let mut caller_derived = 0usize;
+    let mut unadmitted = 0usize;
+    let mut censused_functions = BTreeSet::new();
+    let mut failures = BTreeSet::new();
+    let mut memo = BTreeMap::new();
+    for (function_index, function) in functions.iter().enumerate() {
+        let mask = code_mask(function.body);
+        let acquisitions: Vec<usize> = raw_needles
+            .iter()
+            .flat_map(|needle| code_offsets(function.body, &mask, needle))
+            .chain(
+                primitive_names
+                    .iter()
+                    .flat_map(|primitive| direct_call_offsets(function.body, primitive)),
+            )
+            .collect();
+        for site in acquisitions {
+            let identity = format!("{}::{}", function.path, function.name);
+            sites += 1;
+            censused_functions.insert(identity.clone());
+            let local = acquisition_is_locally_irq_safe(function.body, site);
+            if local {
+                locally_masked += 1;
+            }
+            let derived = !local
+                && function_is_entered_with_irqs_masked(
+                    function_index,
+                    &functions,
+                    &entry_identities,
+                    &mut memo,
+                    &mut BTreeSet::new(),
+                );
+            if derived {
+                caller_derived += 1;
+            }
+            rows.push(format!(
+                "site {identity} local_mask={local} caller_derived={derived}"
+            ));
+            if !local && !derived {
+                unadmitted += 1;
+                failures.insert(identity);
+            }
+        }
+    }
+    rows.sort();
+    rows.push(format!(
+        "derived primitive spellings: {}",
+        primitive_names.iter().cloned().collect::<Vec<_>>().join(", ")
+    ));
+    rows.push(format!(
+        "totals: {sites} acquisition sites in {} functions; {locally_masked} admitted by a local mask shape, {caller_derived} by caller derivation, {unadmitted} unadmitted",
+        censused_functions.len()
+    ));
+    SchedulerLockIrqCensus {
+        rows,
+        failures: failures.into_iter().collect(),
+    }
+}
+
+fn scheduler_lock_irq_shape_failures(sources: &[(String, String)]) -> Vec<String> {
+    scheduler_lock_irq_shape_census(sources).failures
+}
+
+/// Ratchet against same-CPU IRQ self-deadlock on the scheduler lock (#790).
+///
+/// Scope, as measured rather than asserted: the census reaches 28 acquisition
+/// sites in 27 functions below `kernel/src`, of which 22 are admitted by a
+/// local mask shape and 6 by reverse-call-graph derivation. The instrumented
+/// per-site classification is recorded at
+/// docs/planning/green-program/aarch64-testing/789-slice2/.
+///
+/// A site is admitted locally when it is lexically inside an
+/// `arch_without_interrupts`/`without_interrupts` closure, or inside the false
+/// arm of an `if` on a value read from `are_enabled()`, with no architectural
+/// interrupt-enable between the region's start and the site. Both shapes are
+/// scoped ranges: a mask that merely appears earlier in the function does not
+/// admit anything (review round 1, B2 — see `acquisition_is_locally_irq_safe`).
+/// An unwrapped callee is admitted only when each of its callers is itself
+/// admitted or the reverse call graph bottoms out at an interrupt/exception
+/// entry symbol, and those roots are derived from the AArch64 vector table and
+/// the x86 IDT and assembly stubs rather than a hand-maintained name list.
+/// Each root is path-qualified to the file that defines it, so a function that
+/// merely shares a name with an entry symbol is not admitted as one (review
+/// round 3, n1 -- see `derived_interrupt_entry_identities`).
+/// Functions holding raw `SCHEDULER.lock`/`try_lock` define the primitive set
+/// dynamically, so the caller derivation covers the raw mutex and both
+/// scheduler helper spellings; an empty primitive census fails rather than
+/// passing vacuously.
+///
+/// Limits of this ratchet (review round 3, findings n2-n4). It is a text
+/// ratchet over source shape, so it does not certify runtime lock ordering,
+/// and does not see a mask restored through a value it cannot name.
+/// Four narrowings are worth naming outright:
+///
+/// * The mask recognizer TRUSTS the identifiers `without_interrupts` and
+///   `arch_without_interrupts`. It does not resolve what those items name,
+///   so a same-named wrapper that did not in fact mask would be believed (n2).
+/// * The closure-range admission is LEXICAL. A closure created inside a mask
+///   and executed later, outside it, would be admitted anyway. No such site
+///   exists in the censused surface today: of the 28 sites, the 22 admitted
+///   locally sit either in an `arch_without_interrupts`/`without_interrupts`
+///   call, whose closure that API runs synchronously, or in one of the two
+///   non-closure shapes (n3).
+/// * SYNCHRONOUS exceptions are outside the model. On AArch64 the
+///   mask is `msr daifset, #3`, which sets I and F only, so a synchronous
+///   exception is still taken inside a masked window. What makes that safe
+///   today is not the mask: it is that
+///   `kernel/src/arch_impl/aarch64/exception.rs` reaches BLOCKING scheduler
+///   acquisitions only on EL0-sourced arms, and takes the try_lock-based
+///   `*_best_effort` spellings on the EL1-sourced arms precisely because EL1
+///   may have faulted while already holding SCHEDULER (n4).
+/// * No gate on this repository invokes it -- see
+///   `scripts/run-structure-tests.sh` and the review-round-1 section of the
+///   slice-2 evidence doc for the exact standing of that gap.
+///
+/// `scheduler_lock_irq_shape_ratchet_is_not_vacuous` carries the red legs that
+/// keep it from certifying by accident.
+#[test]
+fn scheduler_lock_acquisitions_are_irq_safe_by_shape() {
+    let sources = rust_sources_below("kernel/src");
+    let census = scheduler_lock_irq_shape_census(&sources);
+    for row in &census.rows {
+        eprintln!("{row}");
+    }
+    for failure in &census.failures {
+        eprintln!("scheduler lock acquired with interrupts enabled: {failure}");
+    }
+    assert!(
+        census.failures.is_empty(),
+        "{} scheduler-lock acquisition function(s) lack structural IRQ masking",
+        census.failures.len()
+    );
+}
+
+/// Red and green legs for `scheduler_lock_acquisitions_are_irq_safe_by_shape`.
+///
+/// Round 1's review (B2) reinstated #790's producer twice against the shipped
+/// ratchet and it stayed green both times, so the anti-vacuity evidence is not
+/// left as a one-off worktree run recorded in prose: both probe shapes are legs
+/// here, and each leg is asserted to move the census in the direction it
+/// claims. A leg whose mutation does not change the source text fails on its
+/// `assert_ne!` before it can pass vacuously.
+///
+/// Rounds 2 and 3 each reinstated it again through a further gap in the same
+/// dominance arm, so each shape shown to launder an unmasked acquisition is a
+/// permanent leg here: 21 legs and a control as of round 3, of which 7 legs are
+/// those laundering shapes (2 from round 1, 2 from round 2, 3 from round 3).
+#[test]
+fn scheduler_lock_irq_shape_ratchet_is_not_vacuous() {
+    let sources = rust_sources_below("kernel/src");
+    const SCHEDULER_PATH: &str = "kernel/src/task/scheduler.rs";
+    const PROBE_PATH: &str = "kernel/src/task/zz_probe_shape.rs";
+    const REPAIRED: &str = "pub fn is_current_idle_thread() -> Option<bool> {\n    without_interrupts(|| {\n        if let Some(scheduler_lock) = try_lock_scheduler() {";
+    const UNMASKED: &str = "pub fn is_current_idle_thread() -> Option<bool> {\n    {\n        if let Some(scheduler_lock) = try_lock_scheduler() {";
+
+    // Control leg. Without a green baseline the red legs below would be worth
+    // little: each could be reporting a failure the tree already had.
+    assert!(
+        scheduler_lock_irq_shape_failures(&sources).is_empty(),
+        "baseline census is not green, so no red leg below proves anything"
+    );
+
+    let scheduler = source(&sources, SCHEDULER_PATH);
+    assert!(
+        scheduler.contains(REPAIRED),
+        "the repaired mask anchor moved; re-derive these legs against the real body"
+    );
+
+    // Leg 1 -- R153/#790's producer, verbatim: an unmasked `try_lock_scheduler()`
+    // reached on a thread-context path. The mask is removed outright.
+    let bare = scheduler.replacen(REPAIRED, UNMASKED, 1);
+    assert_ne!(bare, *scheduler, "leg 1 mutation anchor");
+    let bare_sources = with_replaced_source(&sources, SCHEDULER_PATH, bare.clone());
+    assert!(
+        scheduler_lock_irq_shape_failures(&bare_sources)
+            .iter()
+            .any(|failure| failure.ends_with("::is_current_idle_thread")),
+        "an unmasked scheduler try_lock on a thread-context path must redden"
+    );
+
+    // Legs 2 and 3 -- review round 1, finding B2. Both take leg 1 and try to
+    // launder it past the deleted disable-with-no-later-enable arm: a dead
+    // disable, then a realistic guarded early return whose mask a `Drop` guard
+    // would restore, so no textual enable follows it anywhere in the body.
+    for (leg, laundering) in [
+        (
+            "B2 probe (a), dead disable",
+            "    if false { crate::arch_disable_interrupts(); }\n",
+        ),
+        (
+            "B2 probe (b), guarded early-return disable",
+            "    if cpu_count() == 0 { unsafe { crate::arch_disable_interrupts(); } return None; }\n",
+        ),
+    ] {
+        let laundered_body = format!(
+            "pub fn is_current_idle_thread() -> Option<bool> {{\n{laundering}    {{\n        if let Some(scheduler_lock) = try_lock_scheduler() {{"
+        );
+        let laundered = bare.replacen(UNMASKED, &laundered_body, 1);
+        assert_ne!(laundered, bare, "{leg} mutation anchor");
+        let laundered = with_replaced_source(&sources, SCHEDULER_PATH, laundered);
+        assert!(
+            scheduler_lock_irq_shape_failures(&laundered)
+                .iter()
+                .any(|failure| failure.ends_with("::is_current_idle_thread")),
+            "{leg} must not launder an unmasked acquisition"
+        );
+    }
+
+    // Leg 4 -- polarity. An `are_enabled()` read admits its FALSE arm only; an
+    // acquisition in the interrupts-still-on arm is the defect itself.
+    let wrong_polarity = with_synthetic_source(
+        &sources,
+        PROBE_PATH,
+        "pub fn probe_wrong_polarity() {\n    let irqs_on = are_enabled();\n    if irqs_on {\n        let _guard = SCHEDULER.lock();\n    } else {\n    }\n}\n",
+    );
+    assert!(
+        scheduler_lock_irq_shape_failures(&wrong_polarity)
+            .iter()
+            .any(|failure| failure.ends_with("::probe_wrong_polarity")),
+        "the interrupts-enabled arm of an are_enabled read must not be admitted"
+    );
+
+    // Leg 5 -- the same read's false arm IS admitted, so leg 4 is not passing
+    // for the wrong reason (a rule that matches no shape).
+    let right_polarity = with_synthetic_source(
+        &sources,
+        PROBE_PATH,
+        "pub fn probe_right_polarity() {\n    let irqs_on = are_enabled();\n    if irqs_on {\n    } else {\n        let _guard = SCHEDULER.lock();\n    }\n}\n",
+    );
+    assert!(
+        scheduler_lock_irq_shape_failures(&right_polarity).is_empty(),
+        "the interrupts-off arm of an are_enabled read must stay admitted"
+    );
+
+    // Leg 6 -- an enable inside an otherwise-admitted region costs the site its
+    // admission, so a mask cannot be dropped part-way through the held window.
+    let reopened = with_synthetic_source(
+        &sources,
+        PROBE_PATH,
+        "pub fn probe_reopened_window() {\n    without_interrupts(|| {\n        crate::arch_enable_interrupts();\n        let _guard = SCHEDULER.lock();\n    })\n}\n",
+    );
+    assert!(
+        scheduler_lock_irq_shape_failures(&reopened)
+            .iter()
+            .any(|failure| failure.ends_with("::probe_reopened_window")),
+        "an enable inside the masked window must not stay admitted"
+    );
+
+    // Leg 7 -- the wrapper is what admits: the same body, mask restored, green.
+    let wrapped = with_synthetic_source(
+        &sources,
+        PROBE_PATH,
+        "pub fn probe_wrapped() {\n    without_interrupts(|| {\n        let _guard = SCHEDULER.lock();\n    })\n}\n",
+    );
+    assert!(
+        scheduler_lock_irq_shape_failures(&wrapped).is_empty(),
+        "a masked acquisition must stay admitted"
+    );
+
+
+    // Legs 8-13 -- the dominance arm, which the caller derivation leans on: the
+    // two production shapes it admits must stay admitted, and the four it refuses
+    // include the two the old positional search let through.
+    for (leg, shape) in [
+        (
+            "dominating unsafe-block disable",
+            "pub fn probe_dominating_disable() {\n    unsafe { crate::arch_disable_interrupts(); }\n    let _guard = SCHEDULER.lock();\n}\n",
+        ),
+        (
+            "dominating straight-line disable",
+            "pub fn probe_straight_line_disable() {\n    crate::arch_disable_interrupts();\n    let _guard = SCHEDULER.lock();\n}\n",
+        ),
+    ] {
+        let admitted = with_synthetic_source(&sources, PROBE_PATH, shape);
+        assert!(
+            scheduler_lock_irq_shape_failures(&admitted).is_empty(),
+            "{leg} must stay admitted"
+        );
+    }
+    for (leg, shape, name) in [
+        (
+            "match-arm disable",
+            "pub fn probe_match_arm_disable(kind: u8) {\n    match kind {\n        0 => { crate::arch_disable_interrupts(); }\n        _ => {}\n    }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_match_arm_disable",
+        ),
+        (
+            "loop-body disable",
+            "pub fn probe_loop_disable(count: u8) {\n    for _ in 0..count {\n        crate::arch_disable_interrupts();\n    }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_loop_disable",
+        ),
+        (
+            "cfg-gated disable",
+            "pub fn probe_cfg_gated_disable() {\n    #[cfg(target_arch = \"x86_64\")]\n    unsafe { crate::arch_disable_interrupts(); }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_cfg_gated_disable",
+        ),
+        (
+            "disable then re-enable",
+            "pub fn probe_reenabled_disable() {\n    crate::arch_disable_interrupts();\n    crate::arch_enable_interrupts();\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_reenabled_disable",
+        ),
+    ] {
+        let refused = with_synthetic_source(&sources, PROBE_PATH, shape);
+        assert!(
+            scheduler_lock_irq_shape_failures(&refused)
+                .iter()
+                .any(|failure| failure.ends_with(name)),
+            "{leg} must not be admitted"
+        );
+    }
+
+    // Leg 14 -- the primitive set is derived, not enumerated. A new helper that
+    // holds the raw mutex joins it, and its unmasked thread-context caller
+    // reddens through the reverse-call-graph derivation.
+    let aliased = with_synthetic_source(
+        &sources,
+        PROBE_PATH,
+        "pub fn probe_lock_alias() {\n    let _guard = SCHEDULER.lock();\n}\n\npub fn probe_alias_caller() {\n    probe_lock_alias();\n}\n",
+    );
+    let aliased_failures = scheduler_lock_irq_shape_failures(&aliased);
+    for expected in ["::probe_lock_alias", "::probe_alias_caller"] {
+        assert!(
+            aliased_failures
+                .iter()
+                .any(|failure| failure.ends_with(expected)),
+            "a derived primitive spelling must be censused: missing {expected}"
+        );
+    }
+
+    // Leg 15 -- renaming the static away empties the primitive census. That must
+    // fail rather than certify a tree the ratchet can no longer see.
+    // The new name must not CONTAIN the old one: the primitive census matches
+    // the raw text `SCHEDULER.lock()`, which `RENAMED_SCHEDULER.lock()` still
+    // has as a substring -- a first draft of this leg failed for that reason.
+    let renamed = scheduler
+        .replace("SCHEDULER.lock()", "DISPATCH_TABLE.lock()")
+        .replace("SCHEDULER.try_lock()", "DISPATCH_TABLE.try_lock()");
+    assert_ne!(renamed, *scheduler, "primitive-rename mutation anchor");
+    let renamed = with_replaced_source(&sources, SCHEDULER_PATH, renamed);
+    assert!(
+        scheduler_lock_irq_shape_failures(&renamed)
+            .iter()
+            .any(|failure| failure.contains("primitive census is empty")),
+        "an empty primitive census must fail rather than pass vacuously"
+    );
+
+    // Legs 16-19 -- review rounds 2 and 3, finding B2 (second half).
+    // `block_is_unconditional` used to admit any block whose immediately
+    // preceding code byte was `}`, on the theory that it closes an
+    // already-finished sibling statement. Each probe below puts that `}`
+    // inside an if's OWN condition instead, so the disable is conditional
+    // even though a `}` sits directly in front of its enclosing block.
+    //
+    // Legs 16 and 17 are round 2's probes: a `match` expression and an
+    // `unsafe` block as the condition. Round 2 kept the arm and narrowed it
+    // by resolving the introducer of the block that `}` closes. Legs 18 and
+    // 19 are round 3's probes, which walked that narrowed arm back to green:
+    // with `&&` between two `unsafe` blocks, and with an `if`/`else`
+    // expression as the condition, the resolved introducer is not one of `if`,
+    // `while`, `for`, `match`, so the still-conditional disable was admitted
+    // again. The arm is deleted rather than narrowed a third time, and the
+    // four shapes stay as legs so any future re-introduction of it reddens.
+    for (leg, shape, name) in [
+        (
+            "match-as-condition disable",
+            "pub fn probe_if_match_condition_disable(kind: u8) {\n    if match kind {\n        0 => true,\n        _ => false,\n    } {\n        crate::arch_disable_interrupts();\n    }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_if_match_condition_disable",
+        ),
+        (
+            "unsafe-as-condition disable",
+            "pub fn probe_if_unsafe_condition_disable(flag: bool) {\n    if unsafe { core::ptr::read_volatile(&flag) } {\n        crate::arch_disable_interrupts();\n    }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_if_unsafe_condition_disable",
+        ),
+        (
+            "two unsafe conditions joined by &&, round 3 probe 3",
+            "pub fn probe_if_and_unsafe_condition_disable(a: bool, b: bool) {\n    if unsafe { core::ptr::read_volatile(&a) } && unsafe { core::ptr::read_volatile(&b) } {\n        crate::arch_disable_interrupts();\n    }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_if_and_unsafe_condition_disable",
+        ),
+        (
+            "if-else expression as condition, round 3 probe 4",
+            "pub fn probe_if_else_condition_disable(flag: bool) {\n    if if flag { true } else { false } {\n        crate::arch_disable_interrupts();\n    }\n    let _guard = SCHEDULER.lock();\n}\n",
+            "::probe_if_else_condition_disable",
+        ),
+    ] {
+        let refused = with_synthetic_source(&sources, PROBE_PATH, shape);
+        assert!(
+            scheduler_lock_irq_shape_failures(&refused)
+                .iter()
+                .any(|failure| failure.ends_with(name)),
+            "{leg} must not be admitted"
+        );
+    }
+
+    // Leg 20 -- round 3's laundering applied to the real function rather than
+    // to a synthetic probe. Leg 1's mask removal, then a disable whose
+    // enclosing `if` condition ends in `}`: the exact walk-back the reviewer
+    // used against round 2's narrowed arm, aimed at #790's own producer.
+    // The mutated text is scanned, not compiled, so the two statics it reads
+    // need to parse as shape and no more.
+    let round3_laundering = "    if unsafe { core::ptr::read_volatile(&crate::FLAG_A) } && unsafe { core::ptr::read_volatile(&crate::FLAG_B) } { crate::arch_disable_interrupts(); }\n";
+    let round3_body = format!(
+        "pub fn is_current_idle_thread() -> Option<bool> {{\n{round3_laundering}    {{\n        if let Some(scheduler_lock) = try_lock_scheduler() {{"
+    );
+    let round3 = bare.replacen(UNMASKED, &round3_body, 1);
+    assert_ne!(round3, bare, "leg 20 mutation anchor");
+    let round3 = with_replaced_source(&sources, SCHEDULER_PATH, round3);
+    assert!(
+        scheduler_lock_irq_shape_failures(&round3)
+            .iter()
+            .any(|failure| failure.ends_with("::is_current_idle_thread")),
+        "round 3's laundering must not admit an unmasked acquisition"
+    );
+
+    // Leg 21 -- review round 3, finding n1. Entry roots are path-qualified, so
+    // a function that merely SHARES a name with an interrupt entry symbol does
+    // not inherit its admission. `handle_irq` is the AArch64 vector table's own
+    // IRQ entry; the same name in another module, holding the raw mutex with no
+    // mask and no caller, must redden.
+    let name_squatter = with_synthetic_source(
+        &sources,
+        PROBE_PATH,
+        "pub fn handle_irq() {\n    let _guard = SCHEDULER.lock();\n}\n",
+    );
+    assert!(
+        scheduler_lock_irq_shape_failures(&name_squatter)
+            .iter()
+            .any(|failure| failure.ends_with("::handle_irq")),
+        "a function sharing an entry symbol name must not inherit its admission"
+    );
+}
+
 /// The transitive callee closure of `roots` within one module.
 ///
 /// R7's no-log/no-heap property must hold for everything `return_lease` reaches,
