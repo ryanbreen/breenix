@@ -811,9 +811,19 @@ pub struct Timespec {
     pub tv_nsec: i64,
 }
 
-/// sys_get_time implementation - returns ticks directly
+/// sys_get_time implementation - returns monotonic NANOSECONDS since boot.
+///
+/// This is the EL0-reachable `GET_TIME`: `rust_syscall_handler_aarch64` above
+/// dispatches `SyscallNumber::GetTime` here, and the `GET_TIME` arm in
+/// `exception.rs::handle_syscall` is reached only by an SVC issued from EL1.
+/// The two return different units, and this one is the one userspace sees.
+///
+/// #767: the doc comment here read "returns ticks directly" and the body
+/// comment "Return monotonic nanoseconds as ticks" while the function returned
+/// `secs * 1e9 + nanos`. That is the same unit falsehood #767 files against
+/// `get_monotonic_time()`, in the one `get_time` implementation userspace can
+/// actually reach, so it is corrected here rather than left standing.
 fn sys_get_time() -> u64 {
-    // Return monotonic nanoseconds as ticks
     let (secs, nanos) = crate::time::get_monotonic_time_ns();
     secs as u64 * 1_000_000_000 + nanos as u64
 }

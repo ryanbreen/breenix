@@ -459,6 +459,23 @@ PROD_BRACKET_RELEASE_PROD_LITERAL='[PROD_BRACKET_RELEASE_CENSUS:underflow=0]'
 # the observed-values count before re-running.
 TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX='[TIMER_RESOLUTION_WINDOW_EXCEEDED:'
 
+# #767 timer-scale oracle, in the profile that actually ships.
+# test_timer_resolution() (kernel/src/time_test.rs) runs from
+# kernel_main_continue() outside the test cfg blocks, so the shipped x86
+# kernel emits this line too. Three fixed substrings, counted with
+# marker_count: the emission count itself (one line per boot, so a FAIL
+# emission cannot hide behind a later PASS and a removed call site cannot
+# pass by silence), the arch-and-scale head (ms_per_tick=5 is x86's own
+# 1000 / PIT_HZ with PIT_HZ = 200), and the verdict tail, whose
+# ticks_nonzero=1 is the anti-vacuity term the kernel computes -- a tick
+# counter still at 0 satisfies any scale factor, so it is not scored as a
+# pass -- and whose in_range=1 is the conversion claim itself. With the
+# emission pinned at one line, the three substrings are facts about that
+# one line.
+TIMER_SCALE_ORACLE_PREFIX='[TIMER_SCALE_ORACLE:'
+TIMER_SCALE_ORACLE_HEAD_LITERAL='[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before='
+TIMER_SCALE_ORACLE_VERDICT_LITERAL=':ticks_nonzero=1:in_range=1:PASS]'
+
 # ---------------------------------------------------------------------------
 # #673 new evidence. Four independent signals, each a strictly stronger claim
 # than the last (construction, dispatch, execution, survival) -- see the
@@ -898,6 +915,9 @@ print_observed_values() {
     echo "  prod bracket release census:   $(marker_count "$PROD_BRACKET_RELEASE_PREFIX")"
     echo "  prod bracket release at rest:  $(marker_count "$PROD_BRACKET_RELEASE_PROD_LITERAL")"
     echo "  timer resolution window exceeded (#673 MA6/R3-m4): $(marker_count "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX")"
+    echo "  timer scale oracle emissions (#767):   $(marker_count "$TIMER_SCALE_ORACLE_PREFIX")"
+    echo "  timer scale oracle head (#767):        $(marker_count "$TIMER_SCALE_ORACLE_HEAD_LITERAL")"
+    echo "  timer scale oracle verdict (#767):     $(marker_count "$TIMER_SCALE_ORACLE_VERDICT_LITERAL")"
     echo "  init designation (#673):      $(marker_count "$INIT_DESIGNATION_X86_PREFIX")"
     echo "  ring3 syscall confirmed (#673): $(marker_count "$RING3_SYSCALL_LITERAL")"
     echo "  init first line (#673 M6):    $(marker_count "$INIT_FIRST_LINE_LITERAL")"
@@ -940,6 +960,7 @@ print_observed_values() {
     { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$PROD_BRACKET_RELEASE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -F -h -- "$TIMER_SCALE_ORACLE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
     { grep -F -h -- "$INIT_DESIGNATION_X86_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
 }
 
@@ -1174,6 +1195,12 @@ test "$(marker_count "$PROD_BRACKET_RELEASE_PROD_LITERAL")" -eq 1
 # #673 review, MA6/R3-m4: pin the demoted timer-resolution window overrun at
 # zero -- see its declaration comment above.
 test "$(marker_count "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX")" -eq 0
+
+# #767: the timer-scale oracle, emitted once and passing in the shipped
+# profile -- see its declaration comment above.
+test "$(marker_count "$TIMER_SCALE_ORACLE_PREFIX")" -eq 1
+test "$(marker_count "$TIMER_SCALE_ORACLE_HEAD_LITERAL")" -eq 1
+test "$(marker_count "$TIMER_SCALE_ORACLE_VERDICT_LITERAL")" -eq 1
 
 # #673: init designation and syscall-execution evidence -- construction,
 # dispatch, and execution, each proven independently. See the header.

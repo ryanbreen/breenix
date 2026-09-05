@@ -1249,6 +1249,9 @@ fn test_timer_ticks() -> TestResult {
 /// PIT path has no per-CPU interrupt counter with which to prove the premise
 /// the ARM64 attribution rests on; it is a knowingly unscreened measurement
 /// rather than an oversight.
+///
+/// #767: the x86 branch raises its own ceiling to `MAX_MS + 2 * MS_PER_TICK`,
+/// because the clock it reads moves in 5 ms steps; see the comment there.
 fn test_timer_delay() -> TestResult {
     // Target delay in milliseconds
     const TARGET_MS: u64 = 10;
@@ -1261,16 +1264,41 @@ fn test_timer_delay() -> TestResult {
         // Wait on the same clock the assertion below reads.
         //
         // This used to convert TARGET_MS into a tick count with a hardcoded
-        // "200 Hz PIT, 5ms per tick", giving `(10 / 5) + 1 = 3` ticks. The x86
-        // PIT runs at 1000 Hz - `get_monotonic_time()` is literally
-        // `get_ticks()`, one tick per millisecond - so the loop waited ~3ms and
-        // then asserted `elapsed >= 5`. The test could not pass. Nobody saw it
-        // because the x86 staged registry was never dispatched (#533); the
-        // first boot that did dispatch it reported
-        // `[TEST:timer:timer_delay:FAIL:delay too short on x86_64]`.
+        // "200 Hz PIT, 5ms per tick", giving `(10 / 5) + 1 = 3` ticks, while
+        // scoring the result on a clock that then returned raw ticks: the loop
+        // waited ~3 ticks and then asserted `elapsed >= 5`. The test could not
+        // pass. Nobody saw it because the x86 staged registry was not being
+        // dispatched (#533); the first boot that did dispatch it reported
+        // `[TEST:timer:timer_delay:FAIL:delay too short on x86_64]`. The
+        // repair for that was to read one clock at both ends, which is what
+        // this does; the comment written with it claimed the x86 PIT runs at
+        // 1000 Hz, which #767 records as false -- PIT_HZ is 200.
         //
-        // Reading one clock removes the conversion, and with it the chance of
-        // the two ends of this test disagreeing about what a tick is.
+        // Since #767 both ends read milliseconds, so TARGET_MS, MIN_MS and
+        // MAX_MS are milliseconds here -- but only at the resolution one PIT
+        // tick gives, and that is what the ceiling below is about.
+        //
+        // #767 (ruling R176): this clock advances in MS_PER_TICK steps (5 ms on
+        // x86), so `elapsed` can only ever be a multiple of 5. Scored against a
+        // flat MAX_MS = 20 the admissible set is {5, 10, 15, 20}: the loop exits
+        // at the first reading >= 10, the re-read below typically lands on 10 or
+        // 15, and ONE more tick of scheduling jitter past that is a
+        // "delay too long on x86_64" FAIL. A four-value band on a clock with
+        // one-value granularity is not a tolerance. The ceiling is therefore
+        // expressed at the granularity of the clock doing the measuring: the
+        // nominal 20 ms plus the two ticks the reading itself can contribute --
+        // one for the loop's overshoot past TARGET_MS, one for the sample taken
+        // after it.
+        //
+        // This widens the x86 ceiling from 20 ms to 30 ms. It is a tolerance
+        // change, not a budget change, and it is confined to this branch: the
+        // aarch64 arm reads CNTVCT at microsecond resolution and keeps the
+        // 5..=20 band it was measured with. 0 of the 5 gate runs in the #767
+        // round execute this arm: the x86 staged registry is off in each of the
+        // 3 x86 gate runs (#533), and the 2 aarch64 runs take the branch below.
+        // So the ceiling is argued from the arithmetic above, not from a boot.
+        const X86_MAX_MS: u64 = MAX_MS + 2 * crate::time::timer::MS_PER_TICK;
+
         let start = crate::time::get_monotonic_time();
 
         while crate::time::get_monotonic_time().saturating_sub(start) < TARGET_MS {
@@ -1279,7 +1307,7 @@ fn test_timer_delay() -> TestResult {
 
         let elapsed = crate::time::get_monotonic_time().saturating_sub(start);
 
-        if elapsed >= MIN_MS && elapsed <= MAX_MS {
+        if elapsed >= MIN_MS && elapsed <= X86_MAX_MS {
             TestResult::Pass
         } else if elapsed < MIN_MS {
             TestResult::Fail("delay too short on x86_64")
@@ -2262,6 +2290,23 @@ fn sleep_current_thread_ms(duration_ms: u64) {
     }
 }
 
+/// The wall-clock budget of the 4 loopback backstops in this module.
+///
+/// #767 (ruling R176). Each of those 4 backstops was written as `1_000`
+/// against `get_monotonic_time()` while that function returned the raw tick
+/// counter, and each was measured green at what `1_000` bought on the arch it
+/// ran on: 1_000 ticks, which is 1 s on aarch64 (`MS_PER_TICK` = 1) and 5 s on
+/// x86_64 (`MS_PER_TICK` = 5, the 200 Hz PIT). #767 scaled the producer to real
+/// milliseconds; leaving the literal at `1_000` would have cut the x86 budget to
+/// a fifth as a silent side effect of a units repair. Multiplying by
+/// `MS_PER_TICK` holds each arch at the budget it was measured at. Tightening
+/// either one is a separate change that owes its own evidence.
+///
+/// Each of the 4 is a timeout backstop on a loop that exits early on the
+/// success path, so the number is a ceiling on how long a *broken* boot spins,
+/// not a delay a passing run pays.
+const LOOPBACK_BACKSTOP_MS: u64 = 1_000 * crate::time::timer::MS_PER_TICK;
+
 fn setup_loopback_tcp_pair(
     listen_port: u16,
     client_port: u16,
@@ -2282,7 +2327,7 @@ fn setup_loopback_tcp_pair(
         }
     };
 
-    let deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+    let deadline = crate::time::get_monotonic_time().saturating_add(LOOPBACK_BACKSTOP_MS);
     let mut server = None;
     loop {
         crate::net::drain_loopback_queue();
@@ -2500,7 +2545,8 @@ fn run_loopback_recv_wake_test_inner(
         }
     };
 
-    let reader_tid_deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+    let reader_tid_deadline =
+        crate::time::get_monotonic_time().saturating_add(LOOPBACK_BACKSTOP_MS);
     let reader_tid = loop {
         let tid = LOOPBACK_READER_TID.load(AtomicOrdering::SeqCst);
         if tid != 0 {
@@ -2518,7 +2564,7 @@ fn run_loopback_recv_wake_test_inner(
         arch_halt_with_interrupts();
     };
 
-    if !wait_for_thread_blocked(reader_tid, 1_000) {
+    if !wait_for_thread_blocked(reader_tid, LOOPBACK_BACKSTOP_MS) {
         let _ = kthread::kthread_stop(&reader);
         let _ = kthread::kthread_join(&reader);
         tcp::tcp_unregister_recv_waiter(&client, reader_tid);
@@ -2556,7 +2602,8 @@ fn run_loopback_recv_wake_test_inner(
     };
 
     if with_load {
-        let load_start_deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+        let load_start_deadline =
+            crate::time::get_monotonic_time().saturating_add(LOOPBACK_BACKSTOP_MS);
         while !LOOPBACK_LOAD_STARTED.load(AtomicOrdering::SeqCst) {
             if crate::time::get_monotonic_time() >= load_start_deadline {
                 let _ = kthread::kthread_stop(&reader);
