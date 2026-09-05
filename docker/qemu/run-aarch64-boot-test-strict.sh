@@ -19,6 +19,23 @@ set -e
 ITERATIONS=${1:-20}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #825: two concurrent runs of this gate (e.g. two worktrees on the same host,
+# both native QEMU rather than the shared beast container #797/#801 covered)
+# each hardcoded the identical /tmp/breenix_aarch64_strict_$iteration and
+# /tmp/breenix_aarch64_strict_failures paths, so one run's rm -rf/mkdir could
+# delete and rewrite the serial another run's poll loop was mid-boot scoring,
+# and the first run then reported the second run's kernel as its own result --
+# the false 18/20 red this issue reports. Defaulting to /tmp keeps every
+# existing caller byte-identical; a concurrent-lane launcher sets this to a
+# per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever directory
+# happens to be current when each function below runs (the same F6 guard PR
+# #801 gave the x86 gate scripts for #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
+esac
 # construct_residual is the counted frame residue of the two construction-failure arms read off a measured green run, and it is architecture-specific (4 on x86, 2 on aarch64) because the two page-table constructors record different table-frame counts.
 INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
@@ -79,6 +96,34 @@ if fcntl_pm_oracle_sample 0 | grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN"; th
 fi
 if ! fcntl_pm_oracle_sample 8032 | grep -qE "$FCNTL_PM_CONTENTION_ORACLE_PATTERN"; then
     echo "FAIL: FCNTL_PM_CONTENTION_ORACLE_PATTERN rejects first_wait_us=8032, a wait the repaired oracle really records, so this gate can never pass"
+    exit 1
+fi
+# #812. The holder takes the same non-blocking PROCESS_MANAGER acquisition a
+# syscall body takes, with a preempt-disable and NetRx softirq work pending on
+# its own CPU, and stays there for longer than two timer ticks. Two of the
+# eleven fields are the anti-vacuity pair: masked_in_hold=1 is the reading that
+# the acquisition really masked this CPU, and netrx_pending_at_release=1 is the
+# reading that the softirq that would have deadlocked it really was pending for
+# the whole window. irqs_enabled_before=1 pins the precondition -- the holder
+# entered with interrupts live, the way an aarch64 syscall body does -- so a
+# window that was already masked by its caller cannot score. On origin/main the
+# holder's own IRQ exit runs that softirq inside the hold and wedges the CPU on
+# a lock it already owns, so no verdict line is printed at all.
+IRQ_HOLD_ORACLE_PATTERN='\[IRQ_HOLD_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:irqs_enabled_before=1:masked_in_hold=1:sends=[1-9][0-9]*:hold_us=[1-9][0-9]{3,}:netrx_pending_at_release=1:received=[1-9][0-9]*:stalled=0:hold_done=1:joined=1:PASS\]'
+# IRQ_HOLD_SELFCHECK. hold_us is this gate's only gate-side reading that the
+# window was actually wide enough for a timer tick to land in it, so check that
+# the pattern separates the two cases BEFORE it scores any boot -- the same
+# failure the #796 review found on first_wait_us, where a [0-9]+ pin accepted a
+# hold of 0 us and left the oracle's own floor as the sole authority.
+irq_hold_oracle_sample() {
+    printf '[IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=%s:netrx_pending_at_release=1:received=1:stalled=0:hold_done=1:joined=1:PASS]\n' "$1"
+}
+if irq_hold_oracle_sample 0 | grep -qE "$IRQ_HOLD_ORACLE_PATTERN"; then
+    echo "FAIL: IRQ_HOLD_ORACLE_PATTERN accepts hold_us=0, so this gate would score green on a hold no timer tick could land in"
+    exit 1
+fi
+if ! irq_hold_oracle_sample 12034 | grep -qE "$IRQ_HOLD_ORACLE_PATTERN"; then
+    echo "FAIL: IRQ_HOLD_ORACLE_PATTERN rejects hold_us=12034, a window the repaired oracle really records, so this gate can never pass"
     exit 1
 fi
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
@@ -160,7 +205,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -354,6 +399,16 @@ score_serial() {
         echo "fcntl process-manager contention oracle marker missing or failed"
         return 1
     fi
+    # #812, pinned as the same pair for the same reason.
+    if grep -qF "[IRQ_HOLD_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
+        && grep -q "IRQ_HOLD_ORACLE.*:FAIL\]" "$serial_file" 2>/dev/null; then
+        echo "IRQ-hold oracle reported failure ($(grep -aoE '\[IRQ_HOLD_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$IRQ_HOLD_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "IRQ-hold oracle marker missing or failed"
+        return 1
+    fi
     if ! grep -qF "[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]" "$serial_file" 2>/dev/null; then
         echo "Init designation marker missing"
         return 1
@@ -437,7 +492,7 @@ report_failure() {
     local iteration="$1"
     local reason="$2"
     local serial_file="$3"
-    local failure_dir="/tmp/breenix_aarch64_strict_failures"
+    local failure_dir="$BREENIX_GATE_TMP/breenix_aarch64_strict_failures"
     local timestamp
     local preserved_serial
     local lines
@@ -459,7 +514,7 @@ report_failure() {
 
 run_single_test() {
     local iteration=$1
-    local OUTPUT_DIR="/tmp/breenix_aarch64_strict_$iteration"
+    local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_strict_$iteration"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -594,6 +649,6 @@ else
     echo "========================================="
     echo ""
     echo "This indicates a regression or timing bug that needs investigation."
-    echo "Serial output from failed boots can be found in /tmp/breenix_aarch64_strict_N/"
+    echo "Serial output from failed boots can be found in $BREENIX_GATE_TMP/breenix_aarch64_strict_N/"
     exit 1
 fi

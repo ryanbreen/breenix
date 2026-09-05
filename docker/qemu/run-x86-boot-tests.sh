@@ -335,9 +335,33 @@ CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocess
 # line keeps the emitter alive on this arch -- deleting the oracle would
 # otherwise leave this gate green.
 FCNTL_PM_CONTENTION_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]'
+# #812. x86's irq_exit() runs do_softirq() only at preempt_count 0 and the
+# oracle's holder is preempt-disabled, so the aarch64 race has no way to fire
+# here; the oracle says so in its own marker rather than printing a PASS it did
+# not earn. Pinning the SKIP line keeps the emitter alive on this arch --
+# deleting the oracle would otherwise leave this gate green.
+IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
+# #767 timer-scale oracle (kernel/src/time_test.rs, report_timer_scale()).
+# The kernel prints exactly one of these per boot, carrying the two bracketing
+# tick reads and the millisecond read taken between them. In THIS profile it is
+# emitted by run_x86_timer_scale_gate(), dispatched first in the boot_tests gate
+# list in kernel/src/main.rs: a measured 900 s boot of this profile emitted 0 of
+# these lines in 1 of 1 such boots when the only call site was
+# test_timer_resolution() in
+# kernel_main_continue(), which the test userspace preempts before it is
+# reached. test_timer_resolution() is the shipped (zero-feature) profile's call
+# site, and is what run-x86-prod-profile-boot-test.sh pins. ms_per_tick=5 is x86's own
+# 1000 / PIT_HZ with PIT_HZ = 200; a nonzero ticks_before is the anti-vacuity
+# term (a tick counter still at 0 satisfies any scale factor, so it is not
+# scored as a pass); in_range=1 is the conversion claim itself. Pinning the
+# emission count at 1 as well as the PASS line means a FAIL emission cannot
+# hide behind a later PASS, and a deleted call site cannot pass this gate by
+# silence.
+TIMER_SCALE_ORACLE_PREFIX='[TIMER_SCALE_ORACLE:'
+TIMER_SCALE_ORACLE_PASS_PATTERN='\[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=[1-9][0-9]*:ms=[1-9][0-9]*:ticks_after=[0-9]+:ticks_nonzero=1:in_range=1:PASS\]'
 # Thirteen oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
 # Ten launched test programs, one smoke_hello_time (the RING3_SMOKE process
 # kernel_main_continue creates after the twelve disk-loaded ones), one
@@ -501,6 +525,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qF "$CENSUS_WIDEN_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$IRQ_HOLD_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -875,6 +901,11 @@ for i in $(seq 1 "$COUNT"); do
     INIT_GROUP_WALK_COUNT=$(awk 'index($0, "[INIT_GROUP_WALK") { count++ } END { print count + 0 }' \
         "$OUTPUT_DIR"/serial_*.txt)
     test "$INIT_GROUP_WALK_COUNT" -eq 0
+    # (4) #767: the timer-scale oracle, emitted once and passing.
+    test "$(grep -h -F -c -- "$TIMER_SCALE_ORACLE_PREFIX" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -E -c "$TIMER_SCALE_ORACLE_PASS_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
@@ -900,12 +931,18 @@ for i in $(seq 1 "$COUNT"); do
     # matched it. Until this echo existed the gate printed its sibling oracle
     # lines and not this one, so a gate log could not be read as a receipt for
     # what the uniprocessor arm said -- and a round doc cited a gate log for
-    # exactly that.
+    # exactly that. #796 and #812 both pass this gate by pinning a SKIP line
+    # the && chain above requires, but neither line was echoed here either,
+    # so a preserved copy of this driver's stdout showed the verdict and not
+    # the evidence behind it.
     # claim-lint:ok: the citation and its correction are recorded in
     # docs/planning/green-program/syscalls/819-ORACLE-ARMING-2026-09-05.md
     FCNTL_PM_CONTENTION_ORACLE_LINE=$(grep -h -F "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FCNTL_PM_CONTENTION_ORACLE_LINE"
+    IRQ_HOLD_ORACLE_LINE=$(grep -h -F "$IRQ_HOLD_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$IRQ_HOLD_ORACLE_LINE"
     FUTEX_HANDOFF_ORACLE_LINE=$(grep -h -E "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FUTEX_HANDOFF_ORACLE_LINE"
@@ -916,6 +953,9 @@ for i in $(seq 1 "$COUNT"); do
     echo "$TOMBSTONE_CENSUS_USERSPACE_END_LINE"
     echo "$QUIESCE_LINE"
     echo "$RECLAIM_DRAIN_LINE"
+    TIMER_SCALE_ORACLE_LINE=$(grep -h -F -- "$TIMER_SCALE_ORACLE_PREFIX" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$TIMER_SCALE_ORACLE_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (BOOT_TESTS:FAIL, KERNEL PANIC, or panic! marker present)"

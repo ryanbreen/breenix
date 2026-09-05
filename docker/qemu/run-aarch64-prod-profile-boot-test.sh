@@ -11,6 +11,22 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# #825: two concurrent runs of this gate (e.g. two worktrees on the same
+# host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
+# so one run's rm -rf/mkdir could delete and rewrite the serial another run
+# was mid-boot writing to, and both booted from the same ext2-writable.img
+# either could be rewriting. Defaulting to /tmp keeps a caller that leaves it unset
+# byte-identical; a concurrent-lane launcher sets this to a per-worktree
+# directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+# Must be absolute: a relative value would resolve against whatever
+# directory happens to be current when it is read (the same F6 guard PR
+# #801 gave the x86 gate scripts for #797).
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2; exit 1 ;;
+esac
+
 # -110 is -ETIMEDOUT. Exactly one occurrence proves the unarmed kernel honoured
 # the driver's probe timeout and that the seam-absent path actually executed.
 PROD_SEAM_ABSENT_LITERAL='[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]'
@@ -26,6 +42,12 @@ STRAND_INJECT_ORACLE_LITERAL='[STRAND_INJECT_ORACLE:'
 # same reason as the other 3: a count of 0 on the shipped profile is a reading,
 # where a silent absence would be an assumption.
 FCNTL_PM_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:'
+# #812's IRQ-hold oracle is boot_tests-only for the same reason: it holds the
+# process-manager lock on a peer CPU with interrupts masked on purpose. This is
+# the 5th boot_tests-only marker asserted absent here, and for the same reason
+# as the other 4 -- a count of 0 on the shipped profile is a reading, where a
+# silent absence would be an assumption.
+IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:'
 # This proves init resumed after waiting for the self-limiting driver.
 INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='
 # This proves init's earlier oracle also completes on the unarmed profile.
@@ -88,7 +110,7 @@ PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discard
 PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected'
 
-OUTPUT_DIR="/tmp/breenix_aarch64_prod_profile"
+OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_prod_profile"
 SERIAL_FILE="$OUTPUT_DIR/serial.txt"
 QEMU_PID=""
 
@@ -166,6 +188,7 @@ print_observed_values() {
     echo "Observed scheduler strand oracle marker count: $(marker_count "$serial_file" "$SCHED_STRAND_ORACLE_LITERAL")"
     echo "Observed strand injection oracle marker count: $(marker_count "$serial_file" "$STRAND_INJECT_ORACLE_LITERAL")"
     echo "Observed fcntl contention oracle marker count: $(marker_count "$serial_file" "$FCNTL_PM_ORACLE_LITERAL")"
+    echo "Observed IRQ-hold oracle marker count: $(marker_count "$serial_file" "$IRQ_HOLD_ORACLE_LITERAL")"
     echo "Observed init-resumed marker count: $(marker_count "$serial_file" "$INIT_EXIT_LITERAL")"
     echo "Observed block EINTR oracle marker count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_LITERAL")"
     echo "Observed block EINTR oracle failure count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")"
@@ -200,11 +223,11 @@ cleanup() {
 
     if [ "$status" -ne 0 ]; then
         timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-        failure_dir="/tmp/breenix_prod_profile_failures/$timestamp"
+        failure_dir="$BREENIX_GATE_TMP/breenix_prod_profile_failures/$timestamp"
         while [ -e "$failure_dir" ]; do
             sleep 1
             timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-            failure_dir="/tmp/breenix_prod_profile_failures/$timestamp"
+            failure_dir="$BREENIX_GATE_TMP/breenix_prod_profile_failures/$timestamp"
         done
         mkdir -p "$failure_dir"
         if [ -f "$SERIAL_FILE" ]; then
@@ -315,6 +338,7 @@ KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
 SCHED_STRAND_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$SCHED_STRAND_ORACLE_LITERAL")
 STRAND_INJECT_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$STRAND_INJECT_ORACLE_LITERAL")
 FCNTL_PM_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$FCNTL_PM_ORACLE_LITERAL")
+IRQ_HOLD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$IRQ_HOLD_ORACLE_LITERAL")
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
 BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
 BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
@@ -358,6 +382,10 @@ fi
 }
 [ "$FCNTL_PM_ORACLE_COUNT" -eq 0 ] || {
     echo "FAIL: boot_tests-only fcntl contention oracle marker was present"
+    exit 1
+}
+[ "$IRQ_HOLD_ORACLE_COUNT" -eq 0 ] || {
+    echo "FAIL: boot_tests-only IRQ-hold oracle marker was present"
     exit 1
 }
 [ "$INIT_EXIT_COUNT" -ge 1 ] || {
@@ -435,6 +463,7 @@ echo "Observed: $(grep -F -m 1 "$INIT_EXIT_LITERAL" "$SERIAL_FILE")"
 echo "Observed: $(grep -F -m 1 "$BSSHD_LITERAL" "$SERIAL_FILE")"
 echo "Observed kernel oracle marker count: $KERNEL_ORACLE_COUNT"
 echo "Observed fcntl contention oracle marker count: $FCNTL_PM_ORACLE_COUNT"
+echo "Observed IRQ-hold oracle marker count: $IRQ_HOLD_ORACLE_COUNT"
 echo "Observed block EINTR oracle marker count: $BLOCK_EINTR_ORACLE_COUNT"
 echo "Observed block EINTR oracle failure count: $BLOCK_EINTR_ORACLE_FAIL_COUNT"
 echo "Observed poll TCP oracle marker count: $POLL_TCP_ORACLE_COUNT"
