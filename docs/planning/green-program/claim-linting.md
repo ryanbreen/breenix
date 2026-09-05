@@ -20,7 +20,7 @@ PR #799, and documents the rewrite recipe for an honest-scoping negation.
 Detail is in the `auto-close-keyword` subsection below, not repeated here.
 
 **R21, 2026-09-05** adds a seventh mode, `--commit-msg`, its wrapper
-`scripts/lint-commit-msg.sh`, and its hook body `scripts/hooks/commit-msg` —
+`scripts/lint-commit-msg.sh`, and its hook body `scripts/hooks/commit-msg.sh` —
 see the "`--commit-msg` mode (R21)" section below, right after "Running it".
 
 The 2026-09-01 assessment found that 37 of 66 blocking review findings across
@@ -136,15 +136,23 @@ findings either way, so this did not move the 124.)
 
 **R21, 2026-09-05** adds a seventh way to run this tool:
 `scripts/claim-lint.py --commit-msg <file>` lints a git commit message as
-prose, running the full six-rule set, and it treats `auto-close-keyword` as
-fatal even when the phrase sits inside a fenced example or a quoted aside.
-The five claim-quality rules read the same fence-blanked extraction the diff/`--files`
-modes above use; `auto-close-keyword` alone is additionally checked against
-the UNFENCED text, because a commit message does not get markdown-rendered for
-GitHub's issue-closing parser — a ` ``` ` fence there is three backtick
-characters to that parser, not a boundary, and cannot shield the phrase the
-way a real doc's fenced code sample is shielded from the claim-quality rules.
-See `lint_commit_msg_text()` in `scripts/claim-lint.py` for the two-pass
+prose, running the full six-rule set against the
+UNFENCED text — a commit message does not get markdown-rendered anywhere it
+is read (not by GitHub's issue-closing parser, and not by `git log`, which
+shows the backticks literally), so a fenced ` ``` ` example does not shield
+a strong claim from the five claim-quality rules any more than it shields
+`auto-close-keyword` from GitHub's parser. (Review m3: R21's first cut
+fence-blanked the five claim-quality rules the same way the diff/`--files`
+modes above do, and only ran `auto-close-keyword` unfenced — an asymmetry
+this section did not disclose, and a universal or unproven claim hidden
+inside a ``` block in a commit message read as clean.) Before linting,
+`--commit-msg` also strips what git's own cleanup would remove from the
+message before it is committed — a `git commit -v` scissors cut line and
+everything after it, plus any comment-prefixed line above it — so a
+`commit-msg` hook does not fail a commit over bytes git itself discards
+(review M1: `commit-msg` hooks run on the raw message BEFORE that cleanup,
+per githooks(5)). See `lint_commit_msg_text()` and
+`_strip_git_cleanup_noise()` in `scripts/claim-lint.py` for the
 implementation and `CommitMsgModeTests` in `scripts/test_claim_lint.py` for
 the fixtures, including the fenced-vs-`--files` contrast.
 
@@ -170,13 +178,13 @@ not reproduced on this page — `git show -s --format=%B e6dd14a6` shows it —
 because reproducing it here would place the same
 keyword-adjacent-to-a-real-issue-number shape in this very document.
 
-**Installing it as a hook.** `scripts/hooks/commit-msg` is the hook *body*.
+**Installing it as a hook.** `scripts/hooks/commit-msg.sh` is the hook *body*.
 This repo's own setup does not put it into anyone's `.git` for them — a
 `.git` directory is per-checkout, and installing a hook there is a step you
 take yourself. Opt in from the repo root:
 
 ```bash
-ln -sf ../../scripts/hooks/commit-msg .git/hooks/commit-msg
+ln -sf ../../scripts/hooks/commit-msg.sh .git/hooks/commit-msg
 ```
 
 Git invokes a `commit-msg` hook as `<hook> <path-to-msg-file>` and aborts the
@@ -195,7 +203,7 @@ into this document, and `git grep claim-lint` outside the tool's own five files
 returned no other reference — an instruction inside a file nobody is required to
 open, which is the construction this tool's own thesis rejects (review M5).
 `CLAUDE.md` is loaded as this repo's standing instructions at the start of a
-session, and its "Claim Discipline" section now carries the two lines below
+session, and its "Claim Discipline" section now carries the three lines below
 and the rule that a round without them is a finding. This document stays the
 reference for what the tool reaches and what it does not.
 
@@ -206,7 +214,7 @@ reference for what the tool reaches and what it does not.
    assessment found much of the false prose (see "surfaces it cannot see").
 3. **(R21)** Lint each commit message before making the commit:
    `scripts/claim-lint.py --commit-msg <file>` (or the installed
-   `scripts/hooks/commit-msg` hook) exits 0 before `git commit -F <file>`
+   `scripts/hooks/commit-msg.sh` hook) exits 0 before `git commit -F <file>`
    runs. This is a third surface, not a restatement of steps 1–2: a commit
    message is neither the tree diff nor a PR body — see the "`--commit-msg`
    mode (R21)" section above for the incident this closes a gap against.

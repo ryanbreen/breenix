@@ -9,7 +9,7 @@
 #   2. A `.git/hooks/commit-msg` hook: git invokes a commit-msg hook as
 #      `<hook> <path-to-msg-file>` and aborts the commit if the hook exits
 #      nonzero — this script's exit code IS the hook's exit code. See
-#      scripts/hooks/commit-msg for the hook BODY to symlink; this script
+#      scripts/hooks/commit-msg.sh for the hook BODY to symlink; that file
 #      does not install anything into anyone's .git on its own.
 #
 # See docs/planning/green-program/claim-linting.md's "`--commit-msg` mode

@@ -810,13 +810,147 @@ class CommitMsgModeTests(unittest.TestCase):
         )
 
     def test_lint_commit_msg_text_no_duplicate_auto_close_finding(self):
-        # Pass 1 skips auto-close-keyword and pass 2 runs ONLY it, unfenced --
-        # an ordinary (unfenced) occurrence must be reported exactly once, not
-        # twice (1 of 1, not 2 of 1).
+        # A single unfenced pass runs every rule once per paragraph (review
+        # m3 retired the original two-pass split) -- an ordinary occurrence
+        # must be reported exactly once, not twice (1 of 1, not 2 of 1).
         findings = cl.lint_commit_msg_text(
             "Fixes #%s\n" % self.FAKE, REPO_ROOT)
         auto_close = [f for f in findings if f.rule == "auto-close-keyword"]
         self.assertEqual(len(auto_close), 1, auto_close)
+
+    def test_universal_claim_inside_a_fence_still_fires_in_commit_msg_mode(self):
+        # m3: R21's original two-pass split fence-blanked the five
+        # claim-quality rules the same way the diff/--files modes do, so a
+        # universal/unproven claim hidden inside a ``` block read as clean
+        # even here -- and --commit-msg mode does not get markdown-rendered
+        # anywhere it is displayed, so that shielding did not make sense.
+        text = (
+            "tooling: quote a bad example.\n\n"
+            "```\n"
+            "This change makes every code path safe and all counters exact.\n"
+            "```\n"
+        )
+        findings = cl.lint_commit_msg_text(text, REPO_ROOT)
+        fired = {f.rule for f in findings}
+        self.assertIn("universal-claim", fired, findings)
+
+    # ------------------------------------------------------------------
+    # M1: git's own cleanup noise (scissors cut line, `-v` diff, comment
+    # lines) is stripped before linting, since a `commit-msg` hook sees
+    # COMMIT_EDITMSG raw, before git removes any of it (githooks(5)).
+    # ------------------------------------------------------------------
+
+    def test_scissors_line_and_diff_region_are_stripped(self):
+        text = (
+            "tooling: real subject line.\n\n"
+            "Real body paragraph, unremarkable prose.\n\n"
+            "# Please enter the commit message for your changes. Lines\n"
+            "# starting with '#' will be ignored.\n"
+            "#\n"
+            "# ------------------------ >8 ------------------------\n"
+            "# Do not modify or remove the line above.\n"
+            "# Everything below it will be ignored.\n"
+            "diff --git a/foo.py b/foo.py\n"
+            "+# every single code path in this diff is airtight and proven.\n"
+        )
+        findings = cl.lint_commit_msg_text(text, REPO_ROOT)
+        self.assertEqual(findings, [], findings)
+
+    def test_comment_prefixed_lines_above_the_scissors_are_stripped(self):
+        text = (
+            "tooling: subject.\n\n"
+            "# On branch tooling/example\n"
+            "# Changes to be committed:\n"
+            "#\tmodified: every file, all of it, proven airtight and "
+            "demonstrated.\n"
+        )
+        findings = cl.lint_commit_msg_text(text, REPO_ROOT)
+        self.assertEqual(findings, [], findings)
+
+    def test_real_claim_above_the_scissors_still_fires(self):
+        # Anti-vacuity: stripping git's own noise must not silence a claim
+        # that is part of the actual message, above the cut line.
+        text = (
+            "tooling: subject.\n\n"
+            "Every close path is airtight.\n\n"
+            "# ------------------------ >8 ------------------------\n"
+            "diff --git a/foo.py b/foo.py\n"
+        )
+        findings = cl.lint_commit_msg_text(text, REPO_ROOT)
+        fired = {f.rule for f in findings}
+        self.assertIn("universal-claim", fired, findings)
+
+    # ------------------------------------------------------------------
+    # M2: PROVEN_RE must not fire on a fragment of a path or filename --
+    # "-" and "/" are regex word boundaries but not English ones.
+    # ------------------------------------------------------------------
+
+    def test_prove_inside_a_filename_does_not_fire(self):
+        text = (
+            "claim-lint: python3 scripts/claim-lint.py --files "
+            "docs/planning/green-program/aarch64-testing/"
+            "789-SLICE2-PROVE-2026-09-04.md -> exit 0\n"
+        )
+        findings = cl.lint_commit_msg_text(text, REPO_ROOT)
+        self.assertEqual(findings, [], findings)
+
+    def test_prove_inside_a_bare_directory_path_does_not_fire(self):
+        text = "See the evidence under serials/slice1b/prove/ for detail.\n"
+        findings = cl.lint_commit_msg_text(text, REPO_ROOT)
+        unproven = [f for f in findings if f.rule == "unproven-claim"]
+        self.assertEqual(unproven, [], unproven)
+
+    def test_real_proven_claim_beside_a_path_token_still_fires(self):
+        # Anti-vacuity: the path exclusion must not swallow a real claim
+        # sitting in the same paragraph as a path-shaped token.
+        text = (
+            "This was proven correct, see "
+            "docs/some/789-SLICE2-PROVE.md for the receipt.\n"
+        )
+        findings = cl.lint_commit_msg_text(text, REPO_ROOT)
+        unproven = [f for f in findings if f.rule == "unproven-claim"]
+        self.assertEqual(len(unproven), 1, unproven)
+
+    # ------------------------------------------------------------------
+    # m1: the auto-close-keyword-specific sentence in the CLI's failure
+    # summary must be gated on that rule actually having fired, like
+    # main()'s equivalent summary already is.
+    # ------------------------------------------------------------------
+
+    def test_auto_close_sentence_omitted_when_no_auto_close_finding(self):
+        out = self._run_cli(
+            "fix: every close path now decrements the refcount.\n")
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertNotIn("auto-close-keyword finding(s) above", out.stdout)
+
+    def test_auto_close_sentence_present_when_auto_close_finding_fires(self):
+        out = self._run_cli("Fixes #%s\n" % self.FAKE)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("auto-close-keyword finding(s) above", out.stdout)
+
+    # ------------------------------------------------------------------
+    # m2: an unreadable message file must exit 2 (usage/file-read error),
+    # like a missing file or a directory already do -- not a traceback.
+    # ------------------------------------------------------------------
+
+    @unittest.skipIf(hasattr(os, "getuid") and os.getuid() == 0,
+                      "root ignores file permission bits")
+    def test_unreadable_commit_msg_file_exits_2_not_a_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "unreadable.txt")
+            with open(path, "w") as fh:
+                fh.write("Fixes #%s\n" % self.FAKE)
+            os.chmod(path, 0o000)
+            try:
+                out = subprocess.run(
+                    [sys.executable, CLAIM_LINT_PATH, "--commit-msg", path],
+                    capture_output=True, text=True,
+                )
+            finally:
+                os.chmod(path, 0o644)
+        self.assertEqual(out.returncode, 2, out.stdout + out.stderr)
+        self.assertNotIn("Traceback", out.stderr)
+        self.assertIn("cannot read commit-message file", out.stdout)
 
     def test_extensionless_file_is_linted_as_prose(self):
         # A `git commit -F`-style temp file, and .git/COMMIT_EDITMSG itself,
