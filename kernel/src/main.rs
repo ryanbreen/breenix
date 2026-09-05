@@ -2548,8 +2548,10 @@ fn test_syscalls() {
         // Test sys_get_time
         let time_result = syscall::handlers::sys_get_time();
         match time_result {
-            SyscallResult::Ok(ticks) => {
-                log::info!("✓ sys_get_time: {} ticks", ticks);
+            SyscallResult::Ok(millis) => {
+                // #767: milliseconds, which is what handlers::sys_get_time is
+                // documented to return and what it now actually returns.
+                log::info!("✓ sys_get_time: {} ms", millis);
                 // Note: Timer may be 0 if very early in boot process
             }
             SyscallResult::Err(e) => log::error!("✗ sys_get_time failed: {:?}", e),
