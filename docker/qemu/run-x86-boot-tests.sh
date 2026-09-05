@@ -323,10 +323,15 @@ CENSUS_WIDEN_ORACLE_LITERAL='[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocess
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
-# #767 timer-scale oracle (kernel/src/time_test.rs, test_timer_resolution()).
-# The kernel prints exactly one of these per boot, from kernel_main_continue()
-# before userspace starts, carrying the two bracketing tick reads and the
-# millisecond read taken between them. ms_per_tick=5 is x86's own
+# #767 timer-scale oracle (kernel/src/time_test.rs, report_timer_scale()).
+# The kernel prints exactly one of these per boot, carrying the two bracketing
+# tick reads and the millisecond read taken between them. In THIS profile it is
+# emitted by run_x86_timer_scale_gate(), dispatched first in the boot_tests gate
+# list in kernel/src/main.rs: a measured 900 s boot of this profile emitted zero
+# of these lines when the only call site was test_timer_resolution() in
+# kernel_main_continue(), which the test userspace preempts before it is
+# reached. test_timer_resolution() is the shipped (zero-feature) profile's call
+# site, and is what run-x86-prod-profile-boot-test.sh pins. ms_per_tick=5 is x86's own
 # 1000 / PIT_HZ with PIT_HZ = 200; a nonzero ticks_before is the anti-vacuity
 # term (a tick counter still at 0 satisfies any scale factor, so it is not
 # scored as a pass); in_range=1 is the conversion claim itself. Pinning the
