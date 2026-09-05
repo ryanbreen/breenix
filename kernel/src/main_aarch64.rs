@@ -1349,8 +1349,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // because this point is reached in every profile: the production profile
     // has no boot-test sampling kthread, so without this line the production
     // gate would have nothing to assert on. The one-shot marker in
-    // `park_pinned_worker_without_home` is what covers a refusal that happens
-    // after this point.
+    // `hold_pinned_wake_for_home` is what covers a refusal that happens after
+    // this point.
     // claim-lint:ok: 4 of 4 census lines in a strict boot and 1 of 1 in a
     // production boot --
     // docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt

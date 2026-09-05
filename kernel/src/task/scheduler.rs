@@ -340,21 +340,30 @@ fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> 
     Some(guard)
 }
 
-/// Wakes refused because the woken thread is a per-CPU worker whose home CPU is
-/// not accepting wakeups.
+/// Wakes that could not be placed on a per-CPU worker's home CPU and were held
+/// for it instead.
 ///
 /// Gate-failing on both aarch64 boot gates. A per-CPU worker's local work is
 /// raised by the home CPU itself, so on a healthy boot that CPU is dispatching
 /// when the wake arrives and this stays zero. A non-zero value says a per-CPU
-/// worker's backlog is going undrained -- which is the thing to look at, not a
-/// reason to migrate the worker onto a peer's per-CPU state.
+/// worker's backlog is waiting on a CPU that stopped dispatching -- which is
+/// the thing to look at, not a reason to migrate the worker onto a peer's
+/// per-CPU state.
 /// claim-lint:ok: 3 of 3 strict boots and 3 of 3 production boots at this head
-/// read count=0 --
+/// read this field at 0 --
 /// docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt
 /// and 02-prod-boot1.txt with its 2 siblings
 ///
+/// A hold does not consume the wake. `hold_pinned_wake_for_home` takes `&self`
+/// and so writes no thread state and no queue: the `Ready` its caller published
+/// stands, the thread keeps whichever blocked kind it woke from having, and
+/// `deliver_pinned_wakes_for_this_cpu` re-drives the placement at the home
+/// CPU's next scheduler entry. This counter is cumulative and does not fall
+/// when a hold ends, which is what makes it a gate signal; `delivered` below is
+/// the field that says the hold ended.
+///
 /// It reads zero on every boot this round measured for a second reason too, and
-/// the honest one: no thread carries a `per_cpu_worker` pin yet, so the refusal
+/// the honest one: no thread carries a `per_cpu_worker` pin yet, so the hold
 /// arm is unreachable in the shipped profiles. Slice 3f is where a
 /// `ksoftirqd/N` first holds one.
 /// claim-lint:ok: 1 of 1 call site of `spawn_on_cpu` is `kthread_run_on_cpu`,
@@ -376,29 +385,53 @@ pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
 pub static PINNED_PUBLISH_DISCARDED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// Hold-pen pins overridden at wake time because the CPU they named could not
+/// take the wake.
+///
+/// The two pin kinds get opposite dispositions here, and this counter is the
+/// second one. A `per_cpu_worker` pin is a claim about one CPU's per-CPU state,
+/// so its wake is held for that CPU. A hold pen is placement only, released by
+/// whoever set it, and holding one would strand whatever the pen is holding --
+/// so its wake falls through to the least-loaded arm and the thread is placed
+/// where it can run. That fall-through is legal; doing it in silence is the
+/// state this round was asked to rule on, so it is counted and gate-failing.
+///
+/// Also unreachable today, for the same reason as the two counters above: no
+/// thread carries a pin of either kind.
+/// claim-lint:ok: 1 of 1 mutating writer of `Thread::cpu_affinity` is
+/// `spawn_on_cpu`, whose 1 call site has 0 callers -- counted by grep over
+/// kernel/src this round
+pub static PINNED_HOLD_PEN_MIGRATED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Held wakes that were later placed on the home CPU's ready queue.
+///
+/// This is the field that separates a hold that recovered from a hold that is
+/// still outstanding: `count` is only ever incremented, so `count` above
+/// `delivered` says a wake is still waiting for a CPU that has not come back.
+/// Gate-failing too -- a delivery can only follow a hold, which already failed
+/// the gate, so this reports the shape of that failure rather than adding a new
+/// one.
+/// claim-lint:ok: 1 of 1 writer of `PINNED_HOME_CPU_UNAVAILABLE` is the
+/// `fetch_add` in `hold_pinned_wake_for_home`, counted by grep over kernel/src
+/// this round
+pub static PINNED_WAKES_DELIVERED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
 /// Whether the one-shot `[PINNED_HOME_CPU_UNAVAILABLE:first:...]` serial marker
 /// has been emitted this boot.
 static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
 
-/// Read the running count of per-CPU-worker wakes refused for an unavailable
-/// home CPU. See `PINNED_HOME_CPU_UNAVAILABLE`.
-pub fn pinned_home_cpu_unavailable() -> u64 {
-    PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed)
-}
-
-/// Read the running count of pins discarded at publication. See
-/// `PINNED_PUBLISH_DISCARDED`.
-pub fn pinned_publish_discarded() -> u64 {
-    PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed)
-}
-
 /// Emit the pinned-placement census the two aarch64 boot gates read.
 ///
-/// Both fields must read zero. The gates assert three things rather than one:
-/// the line is present, no line reports a non-zero field, and the one-shot
+/// Every field must read zero. The gates assert three things rather than one:
+/// the line is present, no line reports a field above zero, and the one-shot
 /// marker is absent -- because a census emitted once before userspace cannot
-/// see a refusal that happens after it, and the one-shot marker can.
-/// claim-lint:ok: 4 of 4 gate legs -- green, refused, missing and late-park --
+/// see a hold that happens after it, and the one-shot marker can. The gates
+/// score the line against the all-zero literal rather than against a
+/// field-by-field pattern, so a field added later is gated on the day it
+/// appears rather than on the day someone remembers to widen a regex.
+/// claim-lint:ok: 4 of 4 gate legs -- green, refused, missing and late-hold --
 /// are in tests/loopback_pump_structure.rs
 ///
 /// Normal context only: this is a `serial_println!`, called from the boot
@@ -408,9 +441,11 @@ pub fn pinned_publish_discarded() -> u64 {
 /// the 4 gate legs that score it are in tests/loopback_pump_structure.rs
 pub fn emit_pinned_placement_census() {
     crate::serial_println!(
-        "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}]",
+        "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}:hold_pen_migrated={}:delivered={}]",
         PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
         PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
+        PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
+        PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
     );
 }
 
@@ -1910,6 +1945,7 @@ impl Scheduler {
         let current_cpu = Self::current_cpu_id();
         self.cpu_state[current_cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
+        self.deliver_pinned_wakes_for_this_cpu();
 
         // Count schedule calls - only log very sparingly to avoid timing issues
         // Serial output is ~960 bytes/sec, so each log line can take 50-100ms!
@@ -2417,6 +2453,7 @@ impl Scheduler {
         let cpu = Self::current_cpu_id();
         self.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
+        self.deliver_pinned_wakes_for_this_cpu();
         self.resolve_pending_next_locked(cpu);
 
         let current_is_idle =
@@ -3039,6 +3076,13 @@ impl Scheduler {
     /// This generic wake path only transitions `Blocked`, `BlockedOnSignal`,
     /// `BlockedOnTimer`, and `BlockedOnIO`. Other blocked states have dedicated
     /// wake paths and are reported as `UnblockOutcome::NotFound` here.
+    ///
+    /// A wake whose placement is refused -- a per-CPU worker whose home CPU is
+    /// not dispatching -- is still `Transitioned`, and the wake-site counters
+    /// that fired above it are still accurate. The thread was transitioned: it
+    /// is `Ready`, its wake is held for its home CPU, and that CPU's next
+    /// scheduler entry queues it. Reporting `NotFound` there would tell the
+    /// caller no wake happened while the thread sat woken.
     pub fn unblock(&mut self, thread_id: u64) -> UnblockOutcome {
         #[cfg(feature = "coreproof_component_a")]
         crate::proof_point!(UnblockEntry);
@@ -3116,8 +3160,7 @@ impl Scheduler {
                         #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
-                        self.park_pinned_worker_without_home(thread_id);
-                        outcome = UnblockOutcome::NotFound;
+                        self.hold_pinned_wake_for_home(thread_id);
                     }
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -3390,7 +3433,7 @@ impl Scheduler {
                         #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
-                        self.park_pinned_worker_without_home(thread_id);
+                        self.hold_pinned_wake_for_home(thread_id);
                     }
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -3503,7 +3546,7 @@ impl Scheduler {
                         #[cfg(target_arch = "aarch64")]
                         self.send_resched_ipi();
                     } else {
-                        self.park_pinned_worker_without_home(thread_id);
+                        self.hold_pinned_wake_for_home(thread_id);
                     }
                 } else if is_current_on_any_cpu || is_in_deferred {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -3792,7 +3835,7 @@ impl Scheduler {
                             ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                         }
                     } else {
-                        self.park_pinned_worker_without_home(tid);
+                        self.hold_pinned_wake_for_home(tid);
                     }
                 } else if published_ready && (wake.current_cpu.is_some() || is_in_deferred) {
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -3960,7 +4003,7 @@ impl Scheduler {
                         self.per_cpu_queues[target].push_back(tid);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     } else {
-                        self.park_pinned_worker_without_home(tid);
+                        self.hold_pinned_wake_for_home(tid);
                     }
                 } else if in_deferred_requeue {
                     trace_sched_diag(
@@ -4095,7 +4138,8 @@ impl Scheduler {
     ///
     /// A `None` result reports an unacceptable target: the thread is pinned to
     /// a CPU that is offline or has stopped dispatching, and its pin is the
-    /// kind that must not be honoured by migration. The caller parks it.
+    /// kind that must not be honoured by migration. The caller holds the wake
+    /// for that CPU; it does not discard it.
     /// claim-lint:ok: the placement rule, and the three mutation legs that
     /// redden on it, are in tests/loopback_pump_structure.rs
     fn find_target_cpu_for_wakeup(&self, tid: u64) -> Option<usize> {
@@ -4122,12 +4166,20 @@ impl Scheduler {
             {
                 return Some(pin.cpu);
             }
-            // The home CPU cannot take it. A per-CPU worker services that CPU's
-            // per-CPU state, so running it elsewhere would read the wrong
-            // state: refuse the placement and let the caller park it.
+            // The home CPU cannot take it, and here the two pin kinds part
+            // company. A per-CPU worker services that CPU's per-CPU state, so
+            // running it elsewhere would read the wrong state: refuse the
+            // placement, and the caller holds the wake FOR the home CPU rather
+            // than consuming it.
             if pin.per_cpu_worker {
                 return None;
             }
+            // A hold pen is placement only, released by whoever set it. Holding
+            // its wake would strand whatever the pen is holding, so the pin is
+            // overridden and the thread is placed where it can run. Doing that
+            // in silence is the state slice 3c left representable, so it is
+            // counted and both gates fail on it.
+            PINNED_HOLD_PEN_MIGRATED.fetch_add(1, Ordering::Relaxed);
         }
         // If the thread is still "current" on a CPU, use that CPU (affinity).
         for cpu in 0..MAX_CPUS {
@@ -4144,27 +4196,41 @@ impl Scheduler {
         )
     }
 
-    /// Leave a per-CPU worker parked because its home CPU is not dispatching.
+    /// Hold a per-CPU worker's wake for its home CPU, which is not dispatching.
     ///
-    /// Parked here means what a kthread park means: the thread's state is the
-    /// plain `Blocked` a block publishes, and it names no ready queue. The next
-    /// wake after its home CPU resumes dispatching finds an acceptable target
-    /// and queues it there, so the recovery needs no separate mechanism, and
-    /// the worker has not run on a foreign CPU in the meantime.
+    /// The receiver is `&self`, and that is the point rather than a detail: a
+    /// hold cannot write thread state and cannot write a queue, so it cannot
+    /// undo the `Ready` its caller has just published, cannot collapse the
+    /// blocked kind the thread woke from having, and cannot reverse a
+    /// publication some other path made.
     ///
-    /// It writes no pin. `Thread::cpu_affinity` exists in two copies -- the
-    /// process-table row and the scheduler's publication clone -- so a park
+    /// 5 of 5 callers reach this after establishing that the thread is `Ready`,
+    /// is current on no CPU, is not in a deferred requeue, and is on no per-CPU
+    /// queue -- so there is nothing to remove, and the wake is intact and
+    /// waiting.
+    /// claim-lint:ok: 5 of 5 call sites are the `else` arm of a placement whose
+    /// guard is `!already_queued` and whose current-CPU test has already
+    /// passed, counted by grep over this file in this round
+    ///
+    /// `deliver_pinned_wakes_for_this_cpu` is what ends the hold: the home CPU,
+    /// on its next scheduler entry, finds the thread in exactly that shape and
+    /// queues it. Until then the thread is genuinely unreachable, and the
+    /// strand oracle is left free to say so -- a per-CPU worker whose home CPU
+    /// has stopped dispatching IS stranded, and no reachability dimension is
+    /// added here to talk it out of reporting one.
+    ///
+    /// It writes no pin either. `Thread::cpu_affinity` exists in two copies --
+    /// the process-table row and the scheduler's publication clone -- so a hold
     /// that cleared one would leave the other naming a CPU the thread is not
-    /// pinned to. Parking changes queue membership and thread state, which the
-    /// scheduler's own copy is the authority for.
-    fn park_pinned_worker_without_home(&mut self, thread_id: u64) {
-        let parks = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
+    /// pinned to.
+    fn hold_pinned_wake_for_home(&self, thread_id: u64) {
+        let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
         if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
             // Raw serial, one shot: this runs under the scheduler lock with
             // interrupts masked, where the logger's lock would deadlock. The
-            // tid and its home CPU are on the line because "something got
-            // parked" is not actionable and "this worker's home stopped
-            // dispatching" is.
+            // tid and its home CPU are on the line because "something got held"
+            // is not actionable and "this worker's home stopped dispatching"
+            // is.
             let home = self
                 .get_thread(thread_id)
                 .and_then(|thread| thread.cpu_affinity)
@@ -4177,16 +4243,83 @@ impl Scheduler {
             crate::tracing::output::raw_serial_str(":cpu=");
             crate::tracing::output::raw_serial_dec(Self::current_cpu_id() as u64);
             crate::tracing::output::raw_serial_str(":count=");
-            crate::tracing::output::raw_serial_dec(parks);
+            crate::tracing::output::raw_serial_dec(holds);
             crate::tracing::output::raw_serial_str("]\r\n");
         }
-        for queue in self.per_cpu_queues.iter_mut() {
-            queue.retain(|&id| id != thread_id);
+    }
+
+    /// Whether `tid` is a wake this CPU is holding, in the exact shape
+    /// `hold_pinned_wake_for_home` leaves behind.
+    ///
+    /// Derived, not recorded. A held wake is not entered in a side list, so
+    /// there is no list to size, to overflow, or to leave stale when the thread
+    /// is woken, requeued or terminated by some other path in the meantime:
+    /// each of those changes the shape and the thread stops matching. The
+    /// predicate asks the same 5 reachability questions the strand oracle asks
+    /// -- queued, current, previous, pending_next, deferred -- plus the pin.
+    /// claim-lint:ok: 5 of 5 dimensions of `reachability_dimensions` in this
+    /// file are tested here, counted by reading both lists in this round
+    fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool {
+        let Some(thread) = self.get_thread(tid) else {
+            return false;
+        };
+        if thread.state != ThreadState::Ready {
+            return false;
         }
-        if let Some(thread) = self.get_thread_mut(thread_id) {
-            if thread.state == ThreadState::Ready {
-                thread.state = ThreadState::Blocked;
+        let Some(pin) = thread.cpu_affinity else {
+            return false;
+        };
+        if !pin.per_cpu_worker || pin.cpu != cpu {
+            return false;
+        }
+        if self.per_cpu_queues.iter().any(|queue| queue.contains(&tid)) {
+            return false;
+        }
+        if self.cpu_state.iter().any(|state| {
+            state.current_thread == Some(tid)
+                || state.previous_thread == Some(tid)
+                || state.pending_next == Some(tid)
+        }) {
+            return false;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if self.is_in_deferred_requeue(tid) {
+            return false;
+        }
+        true
+    }
+
+    /// Place any wake this CPU is holding for a per-CPU worker pinned to it.
+    ///
+    /// This is the re-arm. `hold_pinned_wake_for_home` refuses a placement
+    /// without consuming the wake; this runs at both scheduler entry points,
+    /// which is the event "the home CPU is dispatching again", and completes
+    /// the placement that was refused. A held wake therefore needs no later
+    /// wake to rescue it -- which matters, because the wake that was refused
+    /// may have been the only one its waiter was ever going to get.
+    ///
+    /// The early return reads a counter with 1 writer, a `fetch_add`, so it can
+    /// skip the scan only on a boot where 0 holds have happened -- which is
+    /// what a healthy boot is. Once one has, the scan runs on each scheduler
+    /// entry, and the gate is already red.
+    /// claim-lint:ok: 1 of 1 writer of `PINNED_HOME_CPU_UNAVAILABLE` is the
+    /// `fetch_add` in `hold_pinned_wake_for_home`; 3 of 3 strict boots and 3 of
+    /// 3 production boots at this head read it at 0
+    fn deliver_pinned_wakes_for_this_cpu(&mut self) {
+        if PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let cpu = Self::current_cpu_id();
+        let mut index = 0;
+        while index < self.threads.len() {
+            let tid = self.threads[index].id();
+            index += 1;
+            if !self.pinned_wake_is_waiting_here(tid, cpu) {
+                continue;
             }
+            self.per_cpu_queues[cpu].push_back(tid);
+            PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
+            ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
         }
     }
 
