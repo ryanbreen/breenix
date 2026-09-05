@@ -1,15 +1,16 @@
 # provenance
 # host: beast, Incus container `breenix-x86` (x86_64, TCG)
 # clone: /root/breenix-p767   BREENIX_GATE_TMP=/root/breenix-p767-tmp
-# commit: f4eab60a70c50fbeec18303beb0f0da562d2f6d8 (branch fix/767-timekeeping-x86)
-# captured: 2026-09-05 (UTC), driver /root/beast-p767-final.sh, log /root/p767r1f-phase.log
+# commit: ca8097d6ea783c4e0f7b8a541a9230d740bb3747 (branch fix/767-timekeeping-x86)
+# captured: 2026-09-05 (UTC), driver /root/beast-p767-final2.sh, log /root/p767r2-phase.log
 # profile: zero-feature (the shipped kernel)
-# command: ./docker/qemu/run-x86-prod-profile-boot-test.sh   (log /root/p767r1f-prod.log)
-# UEFI image sha256: b9597cfadf62697472153e4fd6cf70cd2cbe8151ba56291324a402116aa807b4
-#   (target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img, the image this
-#    gate built at 15:41Z and booted at 15:41-15:42Z. The x86 kernel prints no BUILD_ID.)
-# gate verdict: exit 0; "PASS: x86 production profile reached steady state with the teardown census at rest";
-#               [TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=56:ms=280:ticks_after=56:ticks_nonzero=1:in_range=1:PASS]
+# command: ./docker/qemu/run-x86-prod-profile-boot-test.sh   (gate log /root/p767r2-prod.log)
+# UEFI image sha256: 90a8bcc16cac6eb4ee7692cecf31beb0bddebdcf23e56b02b28bb35faaa72b32
+#   (target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img, hashed
+#    immediately after this run. The x86 kernel prints no BUILD_ID.)
+# gate verdict: exit 0
+#   PASS: x86 production profile reached steady state with the teardown census at rest
+#   [TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=53:ms=265:ticks_after=53:ticks_nonzero=1:in_range=1:PASS]
 # qemu slots before the boot (pgrep -f '^qemu-system-x86_64' | wc -l): 0
 # stream: serial_kernel.txt (COM2)
 #
@@ -398,11 +399,11 @@ BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x3,0x0)
 [ INFO] kernel: Initializing PIC...
 [ INFO] kernel: PIC initialized
 [ INFO] kernel::arch_impl::x86_64::timer: Calibrating TSC frequency using PIT...
-[ INFO] kernel::arch_impl::x86_64::timer: TSC calibration complete: 2402 MHz (2402400120 Hz)
-[ INFO] kernel::arch_impl::x86_64::timer: TSC cycles during 50ms calibration: 120120006
+[ INFO] kernel::arch_impl::x86_64::timer: TSC calibration complete: 2490 MHz (2490390960 Hz)
+[ INFO] kernel::arch_impl::x86_64::timer: TSC cycles during 50ms calibration: 124519548
 [ INFO] kernel::arch_impl::x86_64::timer: HAL_TIMER_CALIBRATED: TSC calibration via HAL complete
 [ INFO] kernel::time::timer: Timer initialized at 200 Hz (5ms per tick)
-[ INFO] kernel::time::rtc: RTC initialized: 2026-09-05 15:41:20 UTC
+[ INFO] kernel::time::rtc: RTC initialized: 2026-09-05 16:19:09 UTC
 [ INFO] kernel: Timer initialized
 [ INFO] kernel::tracing::core: Tracing subsystem initialized (16 per-CPU buffers)
 [ INFO] kernel::tracing::providers::counters: Tracing counters initialized: SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL, FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL
@@ -449,7 +450,7 @@ Switching from thread 1 to thread 2
 [ INFO] kernel::task::softirqd: KSOFTIRQD_SPAWN: ksoftirqd/0 started
 Next thread from queue: 3, cpu: 0
 Switching from thread 2 to thread 3
-[DISPATCH_STRAND_CENSUS:seq=1:tick=6:ms=769:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=1:tick=5:ms=757:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0]
 Next thread from queue: 4, cpu: 0
 Switching from thread 3 to thread 4
 Next thread from queue: 1, cpu: 0
@@ -553,7 +554,7 @@ RETIQ[ INFO] kernel: Breakpoint test completed!
 [ INFO] kernel:   The IDT entry for IRQ0 (vector 32) is properly configured
 [ INFO] kernel: PRECONDITION 3: Checking PIT counter is active...
 [ INFO] kernel: PRECONDITION 3: PIT counter ✓ PASS
-[ INFO] kernel:   Counter values: 0x72a -> 0x5f4
+[ INFO] kernel:   Counter values: 0x9e4 -> 0x886
 [ INFO] kernel:   Status: Counter is actively counting down
 [ INFO] kernel: PRECONDITION 4: Checking PIC IRQ0 mask bit...
 [ INFO] kernel: PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS
@@ -574,20 +575,20 @@ RETIQ[ INFO] kernel: Breakpoint test completed!
 [ INFO] kernel: ✓ ALL PRECONDITIONS PASSED - Safe to enable interrupts
 [ INFO] kernel: Testing timer resolution...
 [ INFO] kernel::time_test: === TIMER RESOLUTION TEST ===
-[ INFO] kernel::time_test: Current state: 56 ticks (before), 280 ms, 56 ticks (after)
-[ INFO] kernel::time_test: ✓ Timer conversion correct: 280 ms within scaled tick range [280, 280]
+[ INFO] kernel::time_test: Current state: 53 ticks (before), 265 ms, 53 ticks (after)
+[ INFO] kernel::time_test: ✓ Timer conversion correct: 265 ms within scaled tick range [265, 265]
 [ INFO] kernel::time_test: ✓ Timer resolution: 5 ms per tick
 [ INFO] kernel::time_test: === TIMER RESOLUTION TEST COMPLETE ===
 [ INFO] kernel: ✅ Timer resolution test passed
 [ INFO] kernel: Testing clock_gettime syscall implementation...
 [ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST ===
 [ INFO] kernel::clock_gettime_test: Test A: TSC Calibration Status
-[ INFO] kernel::clock_gettime_test:   TSC frequency: 2402400120 Hz (2.40 GHz)
+[ INFO] kernel::clock_gettime_test:   TSC frequency: 2490390960 Hz (2.49 GHz)
 [ INFO] kernel::clock_gettime_test: ✓ TSC calibrated with reasonable frequency
 [ INFO] kernel::clock_gettime_test: Test B: Verify TSC provides sub-millisecond precision
-[ INFO] kernel::clock_gettime_test:   First call:  1 s, 225071579 ns
-[ INFO] kernel::clock_gettime_test:   Second call: 1 s, 225150041 ns
-[ INFO] kernel::clock_gettime_test:   Elapsed: 78462 ns
+[ INFO] kernel::clock_gettime_test:   First call:  1 s, 197080451 ns
+[ INFO] kernel::clock_gettime_test:   Second call: 1 s, 197152008 ns
+[ INFO] kernel::clock_gettime_test:   Elapsed: 71557 ns
 [ INFO] kernel::clock_gettime_test: ✓ Sub-millisecond precision confirmed (TSC active)
 [ INFO] kernel::clock_gettime_test: Test C: Monotonic advancement
 [ INFO] kernel::clock_gettime_test:   Made 10 calls, time advanced 10 times
@@ -597,10 +598,10 @@ RETIQ[ INFO] kernel: Breakpoint test completed!
 [ INFO] kernel::clock_gettime_test:   Millisecond-aligned values: 0/20
 [ INFO] kernel::clock_gettime_test: ✓ Nanosecond precision confirmed (not PIT-granular)
 [ INFO] kernel::clock_gettime_test: Test E: CLOCK_MONOTONIC basic validation
-[ INFO] kernel::clock_gettime_test:   CLOCK_MONOTONIC: 1 s, 231116167 ns
+[ INFO] kernel::clock_gettime_test:   CLOCK_MONOTONIC: 1 s, 203194217 ns
 [ INFO] kernel::clock_gettime_test: ✓ Nanoseconds in valid range [0, 999999999]
 [ INFO] kernel::clock_gettime_test: Test F: CLOCK_REALTIME validation
-[ INFO] kernel::clock_gettime_test:   CLOCK_REALTIME: 2026-09-05 15:41:21.232354492
+[ INFO] kernel::clock_gettime_test:   CLOCK_REALTIME: 2026-09-05 16:19:10.204383688
 [ INFO] kernel::clock_gettime_test: ✓ CLOCK_REALTIME has valid timestamp and sub-second precision
 [ INFO] kernel::clock_gettime_test: Test G: Invalid clock ID handling
 [ INFO] kernel::clock_gettime_test: ✓ Invalid ID correctly returned EINVAL
@@ -625,7 +626,7 @@ Added thread 6 'console_executor' to scheduler (user: false, target_cpu: 0)
 [ INFO] kernel::syscall::handlers: sys_getpid called
 [ INFO] kernel::syscall::handlers: sys_getpid: scheduler_thread_id = Some(5)
 [ INFO] kernel::syscall::handlers: sys_getpid: Found process 1 for thread 5
-[DISPATCH_STRAND_CENSUS:seq=2:tick=145:ms=1787:saved=1:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=2:tick=149:ms=1773:saved=1:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000301150
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
 [DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4b40000
@@ -781,8 +782,8 @@ Thread 5 blocked waiting for child exit (blocked_in_syscall=true)
 [DEBUG] kernel::syscall::handlers: sys_fcntl: fd=4, cmd=3, arg=0
 [DEBUG] kernel::syscall::handlers: sys_fcntl F_GETFL: fd=4 flags=0x800
 [DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff032c90, count=64
-[DISPATCH_STRAND_CENSUS:seq=3:tick=431:ms=3337:saved=1:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::handlers: sys_read: fd=4, buf_ptr=0x7fffff032c90, count=64
+[DISPATCH_STRAND_CENSUS:seq=3:tick=452:ms=3363:saved=1:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::ioctl: sys_ioctl: fd=3, request=0x5401, arg=0x7fffff032a68
 [DEBUG] kernel::syscall::ioctl: sys_ioctl: fd=4, request=0x5401, arg=0x7fffff032a68
 [DEBUG] kernel::syscall::fs: sys_open: raw_path="/etc/passwd", flags=0x0, mode=0o0
@@ -962,10 +963,10 @@ Added thread 9 'tty_oracle_child_4_main' to scheduler (user: true, target_cpu: 0
 [ INFO] kernel::syscall::handlers: sys_execv: argc=2
 [DEBUG] kernel::syscall::handlers: sys_execv: argv[0] = 'tty_oracle'
 [DEBUG] kernel::syscall::handlers: sys_execv: argv[1] = '--cloexec-child'
-[DISPATCH_STRAND_CENSUS:seq=4:tick=528:ms=4523:saved=3:stranded=2:tids=5,9:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::handlers: sys_waitpid: pid=4, status_ptr=0x7fffff032c2c, options=0
 [DEBUG] kernel::syscall::handlers: sys_waitpid: Current process PID=3, has 1 children
 Thread 8 blocked waiting for child exit (blocked_in_syscall=true)
+[DISPATCH_STRAND_CENSUS:seq=4:tick=542:ms=4378:saved=3:stranded=3:tids=5,8,9:tid_overflow=0:ledger_overflow=0]
 [ INFO] kernel::syscall::handlers: sys_execv: Replacing process 4 (thread 9) with new program
 [ INFO] kernel::process::manager: exec_process_with_argv: Replacing process 4 with new program, argc=2
 [ INFO] kernel::process::manager: exec_process_with_argv: Preserving thread ID 9 for process 4
@@ -1049,9 +1050,9 @@ unblock_for_signal: Thread 8 not BlockedOnSignal, state=Ready
 [DEBUG] kernel::syscall::pipe: sys_close: thread 8 -> process 3 'tty_oracle', closing fd=5
 [DEBUG] kernel::syscall::pipe: sys_close: Closed PTY slave fd=5 (pty 1)
 [DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=5
+[DEBUG] kernel::syscall::handlers: sys_read: fd=4, buf_ptr=0x7fffff032ab8, count=32
 [DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 3, handler=0x0
 [DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 3
-[DEBUG] kernel::syscall::handlers: sys_read: fd=4, buf_ptr=0x7fffff032ab8, count=32
 [DEBUG] kernel::syscall::pipe: sys_close: Closing fd=4
 [DEBUG] kernel::syscall::pipe: sys_close: thread 8 -> process 3 'tty_oracle', closing fd=4
 [DEBUG] kernel::syscall::pipe: sys_close: PTY master fd=4 (pty 1) refcount 1 -> 0
@@ -1073,6 +1074,7 @@ unblock_for_signal: Thread 5 not BlockedOnSignal, state=Ready
 [DEBUG] kernel::syscall::handlers: complete_wait: child 3 exited with code 0, wstatus=0x0 (normal exit)
 [DEBUG] kernel::syscall::handlers: complete_wait: reap arm for child 3 (claimed)
 [DEBUG] kernel::syscall::handlers: complete_wait: Cleared blocked_in_syscall flag for thread 5
+[DISPATCH_STRAND_CENSUS:seq=5:tick=733:ms=5385:saved=3:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
 [DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000301150
@@ -1145,7 +1147,7 @@ Thread 5 blocked waiting for child exit (blocked_in_syscall=true)
 [ INFO] kernel::syscall::handlers: sys_execv: argc=2
 [DEBUG] kernel::syscall::handlers: sys_execv: argv[0] = 'exec_smoke_target'
 [DEBUG] kernel::syscall::handlers: sys_execv: argv[1] = 'smoke'
-[DISPATCH_STRAND_CENSUS:seq=5:tick=1070:ms=7366:saved=4:stranded=2:tids=5,11:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=6:tick=1114:ms=7280:saved=4:stranded=2:tids=5,11:tid_overflow=0:ledger_overflow=0]
 [ INFO] kernel::syscall::handlers: sys_execv: Replacing process 5 (thread 11) with new program
 [ INFO] kernel::process::manager: exec_process_with_argv: Replacing process 5 with new program, argc=2
 [ INFO] kernel::process::manager: exec_process_with_argv: Preserving thread ID 11 for process 5
@@ -1226,9 +1228,6 @@ unblock_for_signal: Thread 5 not BlockedOnSignal, state=Ready
 [DEBUG] kernel::syscall::handlers: complete_wait: child 5 exited with code 0, wstatus=0x0 (normal exit)
 [DEBUG] kernel::syscall::handlers: complete_wait: reap arm for child 5 (claimed)
 [DEBUG] kernel::syscall::handlers: complete_wait: Cleared blocked_in_syscall flag for thread 5
-[DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 1, handler=0x0
-[DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 1
-[DISPATCH_STRAND_CENSUS:seq=6:tick=1257:ms=8379:saved=4:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000301150
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
@@ -1353,7 +1352,7 @@ unblock_for_signal: Checking thread 12 (current=Some(13))
 unblock_for_signal: Thread 12 state is Ready, blocked_in_syscall=false
 unblock_for_signal: Thread 12 not BlockedOnSignal, state=Ready
 [DEBUG] kernel::task::process_task: Process 7 'fork_smoke_child_7' (thread 13) exited with code 37
-[DISPATCH_STRAND_CENSUS:seq=7:tick=1535:ms=10402:saved=4:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=7:tick=1539:ms=10008:saved=4:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::interrupts::context_switch: Signal delivery check: process 6 (thread 12) has deliverable signals
 [DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 6, handler=0x0
 [DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 6
@@ -1436,6 +1435,7 @@ Added thread 15 'bsshd' to scheduler (user: true, target_cpu: 0)
 [ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t15: zeroed all registers
 [ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 15
 [ INFO] kernel::interrupts::context_switch: First run: thread 15 entering userspace
+[DISPATCH_STRAND_CENSUS:seq=8:tick=1900:ms=11851:saved=4:stranded=1:tids=5:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::socket: sys_socket: called with domain=2, type=1
 [ INFO] kernel::syscall::socket: TCP: Socket created fd=3
 [DEBUG] kernel::syscall::socket: TCP socket: returning to userspace fd=3
@@ -1446,10 +1446,6 @@ Added thread 15 'bsshd' to scheduler (user: true, target_cpu: 0)
 [DEBUG] kernel::syscall::socket: sys_accept: fd=3
 [DEBUG] kernel::syscall::socket: TCP accept: fd=3 entering blocking path, thread=15
 [ INFO] kernel::syscall::socket: TCP_BLOCK: Thread 15 entering blocked state for accept on port 2222
-[DISPATCH_STRAND_CENSUS:seq=8:tick=1919:ms=12428:saved=5:stranded=1:tids=15:tid_overflow=0:ledger_overflow=0]
-[DEBUG] kernel::interrupts::context_switch: Signal delivery check: process 1 (thread 5) has deliverable signals
-[DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 1, handler=0x0
-[DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 1
 Next thread from queue: 6, cpu: 0
 Switching from thread 5 to thread 6
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000301150
@@ -1510,15 +1506,15 @@ Switching from thread 5 to thread 6
 [DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 7 at 0xffffc90000388000-0xffffc90000408000 (guard at 0xffffc90000387000)
 [ INFO] kernel::process::manager: create_process_with_argv: Created process bsh (PID 9) with argc=2
 Added thread 16 'bsh' to scheduler (user: true, target_cpu: 0)
+[DEBUG] kernel::syscall::handlers: sys_waitpid: pid=9, status_ptr=0x7fffff010e94, options=0
+[DEBUG] kernel::syscall::handlers: sys_waitpid: Current process PID=1, has 2 children
+Thread 5 blocked waiting for child exit (blocked_in_syscall=true)
 [ INFO] kernel::interrupts::context_switch: RING3_ENTRY: RIP=0x4003e8ec, RSP=0x7fffff07aed0, CS=0x33, SS=0x2b
 [ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t16: zeroed all registers
 [ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 16
 [ INFO] kernel::interrupts::context_switch: First run: thread 16 entering userspace
 [DEBUG] kernel::syscall::session: sys_setpgid: set pgid of process 9 to 9
-[DISPATCH_STRAND_CENSUS:seq=9:tick=2136:ms=13643:saved=5:stranded=1:tids=15:tid_overflow=0:ledger_overflow=0]
-[DEBUG] kernel::syscall::handlers: sys_waitpid: pid=9, status_ptr=0x7fffff010e94, options=0
-[DEBUG] kernel::syscall::handlers: sys_waitpid: Current process PID=1, has 2 children
-Thread 5 blocked waiting for child exit (blocked_in_syscall=true)
+[DISPATCH_STRAND_CENSUS:seq=9:tick=2117:ms=12994:saved=5:stranded=2:tids=5,15:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::fs: sys_open: raw_path="/etc/bshrc", flags=0x80000, mode=0o666
 [DEBUG] kernel::syscall::fs: sys_open: resolved path="/etc/bshrc"
 [ INFO] kernel::syscall::fs: sys_open: opened /etc/bshrc as fd 3 (inode 15)
@@ -1541,7 +1537,7 @@ Thread 5 blocked waiting for child exit (blocked_in_syscall=true)
 [DEBUG] kernel::syscall::pipe: sys_close: thread 16 -> process 9 'bsh', closing fd=3
 [DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
 [DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
-[DISPATCH_STRAND_CENSUS:seq=10:tick=2339:ms=14657:saved=6:stranded=3:tids=5,15,16:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=10:tick=2327:ms=14005:saved=6:stranded=3:tids=5,15,16:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000403150
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
 [DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4de2000
@@ -1676,7 +1672,7 @@ Added thread 18 'bwm' to scheduler (user: true, target_cpu: 0)
 [ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t18: zeroed all registers
 [ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 18
 [ INFO] kernel::interrupts::context_switch: First run: thread 18 entering userspace
-[DISPATCH_STRAND_CENSUS:seq=11:tick=2552:ms=15840:saved=8:stranded=4:tids=5,15,17,18:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=11:tick=2525:ms=15079:saved=8:stranded=4:tids=5,15,17,18:tid_overflow=0:ledger_overflow=0]
 [ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 1
 [DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 18
 [DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
@@ -1748,10 +1744,10 @@ Added thread 19 'bterm' to scheduler (user: true, target_cpu: 0)
 [ INFO] kernel::interrupts::context_switch: First run: thread 19 entering userspace
 [DEBUG] kernel::syscall::fs: sys_open: raw_path="/etc/fonts.conf", flags=0x80000, mode=0o666
 [DEBUG] kernel::syscall::fs: sys_open: resolved path="/etc/fonts.conf"
-[DISPATCH_STRAND_CENSUS:seq=12:tick=2848:ms=17379:saved=9:stranded=5:tids=5,15,16,17,19:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=12:tick=2772:ms=16337:saved=9:stranded=5:tids=5,15,16,17,19:tid_overflow=0:ledger_overflow=0]
 Next thread from queue: 6, cpu: 0
 Switching from thread 16 to thread 6
-[DISPATCH_STRAND_CENSUS:seq=13:tick=3053:ms=18418:saved=9:stranded=5:tids=5,15,16,17,19:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=13:tick=2985:ms=17368:saved=9:stranded=5:tids=5,15,16,17,19:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000403150
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
 [DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x4f73000
@@ -1814,59 +1810,30 @@ Added thread 20 'blog' to scheduler (user: true, target_cpu: 0)
 [ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t20: zeroed all registers
 [ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 20
 [ INFO] kernel::interrupts::context_switch: First run: thread 20 entering userspace
+[DISPATCH_STRAND_CENSUS:seq=14:tick=3197:ms=18444:saved=9:stranded=4:tids=5,15,17,19:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::interrupts::context_switch: Signal delivery check: process 9 (thread 16) has deliverable signals
 [DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 9, handler=0x0
 [DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 9
-[DISPATCH_STRAND_CENSUS:seq=14:tick=3244:ms=19476:saved=9:stranded=5:tids=5,15,16,17,19:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::fs: sys_open: raw_path="/etc/fonts.conf", flags=0x80000, mode=0o666
 [DEBUG] kernel::syscall::fs: sys_open: resolved path="/etc/fonts.conf"
 [ INFO] kernel::syscall::fs: sys_open: opened /etc/fonts.conf as fd 3 (inode 31)
-[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffd010, count=445
-[ INFO] kernel::syscall::fs: sys_open: opened /etc/fonts.conf as fd 3 (inode 31)
-[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffb010, count=445
-[DISPATCH_STRAND_CENSUS:seq=15:tick=3455:ms=20531:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DEBUG] kernel::syscall::handlers: sys_read: Read 445 bytes from regular file (inode 31)
-[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0bd1c8, count=32
-[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 31)
-[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
-[DEBUG] kernel::syscall::pipe: sys_close: thread 20 -> process 13 'blog', closing fd=3
-[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
-[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
-[DEBUG] kernel::syscall::handlers: sys_read: Read 445 bytes from regular file (inode 31)
-[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0ac2c8, count=32
-[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSansMono.ttf", flags=0x80000, mode=0o666
-[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSansMono.ttf"
-[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 31)
-[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
-[DEBUG] kernel::syscall::pipe: sys_close: thread 19 -> process 12 'bterm', closing fd=3
-[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
-[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
-[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSansMono.ttf", flags=0x80000, mode=0o666
-[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSansMono.ttf"
-[DISPATCH_STRAND_CENSUS:seq=16:tick=3666:ms=21584:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[ INFO] kernel::syscall::fs: sys_open: opened /usr/share/fonts/DejaVuSansMono.ttf as fd 3 (inode 32929)
-[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfa5010, count=340712
-[DISPATCH_STRAND_CENSUS:seq=17:tick=3875:ms=22643:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=18:tick=4041:ms=23683:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[ INFO] kernel::syscall::fs: sys_open: opened /usr/share/fonts/DejaVuSansMono.ttf as fd 3 (inode 32929)
-[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfa7010, count=340712
-[DISPATCH_STRAND_CENSUS:seq=19:tick=4241:ms=24701:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=20:tick=4459:ms=25788:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=21:tick=4679:ms=26887:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-Next thread from queue: 16, cpu: 0
-Switching from thread 19 to thread 16
-[DISPATCH_STRAND_CENSUS:seq=22:tick=4901:ms=27998:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=23:tick=5115:ms=29066:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=15:tick=3409:ms=19503:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=16:tick=3623:ms=20535:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=17:tick=3872:ms=21733:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=18:tick=4092:ms=22798:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=19:tick=4312:ms=23858:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=20:tick=4537:ms=24942:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=21:tick=4758:ms=26007:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000403150
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
-[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x50ff000
-[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x50ff000
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x5057000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x5057000
 [DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
-[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x280050ff000
-[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x280050ff000
-[DEBUG] kernel::memory::process_memory: Testing read access at 0x280050ff000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28005057000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28005057000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28005057000
 [DEBUG] kernel::memory::process_memory: Read test successful
-[DEBUG] kernel::memory::process_memory: Page table pointer: 0x280050ff000
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28005057000
 [DEBUG] kernel::memory::process_memory: About to clear the new page table
 [DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x4c6d000 for copying
@@ -1889,7 +1856,7 @@ Switching from thread 19 to thread 16
 [ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x28000607c98
 [ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
 [ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
-[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x5100000
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x5058000
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x608000), copied=PhysFrame[4KiB](0x608000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x609000), copied=PhysFrame[4KiB](0x609000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x606000), copied=PhysFrame[4KiB](0x606000)
@@ -1898,7 +1865,7 @@ Switching from thread 19 to thread 16
 [ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x608000) != PML4[403]=PhysFrame[4KiB](0x609000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
 [ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
-[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x50ff000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x5057000 and phys_offset 0x28000000000
 [DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
 [ INFO] kernel::elf: Loading ELF into process page table: entry=0x4001a97c, 7 program headers
 [ INFO] kernel::elf: ELF loaded: segments end at 0x40024170, heap will start at 0x40025000
@@ -1926,23 +1893,24 @@ unblock_for_signal: Checking thread 16 (current=Some(21))
 unblock_for_signal: Thread 16 state is Ready, blocked_in_syscall=true
 unblock_for_signal: Thread 16 not BlockedOnSignal, state=Ready
 [DEBUG] kernel::task::process_task: Process 14 'bounce' (thread 21) exited with code 1
-[DISPATCH_STRAND_CENSUS:seq=24:tick=5322:ms=30153:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=25:tick=5535:ms=31219:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=26:tick=5753:ms=32307:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=27:tick=5965:ms=33366:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=28:tick=6172:ms=34400:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=29:tick=6397:ms=35523:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=30:tick=6603:ms=36551:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+Next thread from queue: 6, cpu: 0
+Switching from thread 16 to thread 6
+[DISPATCH_STRAND_CENSUS:seq=22:tick=4967:ms=27070:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=23:tick=5187:ms=28131:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=24:tick=5403:ms=29173:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=25:tick=5616:ms=30203:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=26:tick=5828:ms=31224:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=27:tick=6047:ms=32284:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000403150
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
-[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x50ff000
-[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x50ff000
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x5057000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x5057000
 [DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
-[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x280050ff000
-[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x280050ff000
-[DEBUG] kernel::memory::process_memory: Testing read access at 0x280050ff000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28005057000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28005057000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28005057000
 [DEBUG] kernel::memory::process_memory: Read test successful
-[DEBUG] kernel::memory::process_memory: Page table pointer: 0x280050ff000
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28005057000
 [DEBUG] kernel::memory::process_memory: About to clear the new page table
 [DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x4c6d000 for copying
@@ -1965,7 +1933,7 @@ unblock_for_signal: Thread 16 not BlockedOnSignal, state=Ready
 [ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x28000607c98
 [ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
 [ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
-[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x5100000
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x5058000
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x608000), copied=PhysFrame[4KiB](0x608000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x609000), copied=PhysFrame[4KiB](0x609000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x606000), copied=PhysFrame[4KiB](0x606000)
@@ -1974,7 +1942,7 @@ unblock_for_signal: Thread 16 not BlockedOnSignal, state=Ready
 [ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x608000) != PML4[403]=PhysFrame[4KiB](0x609000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
 [ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
-[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x50ff000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x5057000 and phys_offset 0x28000000000
 [DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
 [ INFO] kernel::elf: Loading ELF into process page table: entry=0x4001d148, 7 program headers
 [ INFO] kernel::elf: ELF loaded: segments end at 0x40028170, heap will start at 0x40029000
@@ -1995,27 +1963,53 @@ Added thread 22 'bcheck' to scheduler (user: true, target_cpu: 0)
 [ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t22: zeroed all registers
 [ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 22
 [ INFO] kernel::interrupts::context_switch: First run: thread 22 entering userspace
+[DEBUG] kernel::interrupts::context_switch: Signal delivery check: process 9 (thread 16) has deliverable signals
+[DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 9, handler=0x0
+[DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 9
+[DISPATCH_STRAND_CENSUS:seq=28:tick=6256:ms=33393:saved=10:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::fs: sys_open: raw_path="/etc/fonts.conf", flags=0x80000, mode=0o666
 [DEBUG] kernel::syscall::fs: sys_open: resolved path="/etc/fonts.conf"
-[DISPATCH_STRAND_CENSUS:seq=31:tick=6811:ms=37634:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=32:tick=7011:ms=38654:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=33:tick=7231:ms=39754:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[ INFO] kernel::syscall::fs: sys_open: opened /etc/fonts.conf as fd 3 (inode 31)
+[DISPATCH_STRAND_CENSUS:seq=29:tick=6468:ms=34414:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[ INFO] kernel::syscall::fs: sys_open: opened /etc/fonts.conf as fd 3 (inode 31)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffa010, count=445
+[DEBUG] kernel::syscall::handlers: sys_read: Read 445 bytes from regular file (inode 31)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0e0308, count=32
+[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 31)
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 22 -> process 15 'bcheck', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=30:tick=6695:ms=35507:saved=11:stranded=6:tids=5,15,16,17,19,20:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffb010, count=445
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSansMono.ttf", flags=0x80000, mode=0o666
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSansMono.ttf"
+[DEBUG] kernel::syscall::handlers: sys_read: Read 445 bytes from regular file (inode 31)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0bd1c8, count=32
+[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 31)
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 20 -> process 13 'blog', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSansMono.ttf", flags=0x80000, mode=0o666
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSansMono.ttf"
+[DISPATCH_STRAND_CENSUS:seq=31:tick=6926:ms=36620:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=32:tick=7148:ms=37690:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
 Next thread from queue: 6, cpu: 0
 Switching from thread 16 to thread 6
-[DISPATCH_STRAND_CENSUS:seq=34:tick=7445:ms=40823:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=35:tick=7677:ms=41981:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=36:tick=7910:ms=43145:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=37:tick=8099:ms=44185:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=33:tick=7380:ms=38808:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=34:tick=7613:ms=39930:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=35:tick=7848:ms=41062:saved=11:stranded=7:tids=5,15,16,17,19,20,22:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0xffffc90000403150
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
-[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x51bd000
-[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x51bd000
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x5115000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x5115000
 [DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
-[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x280051bd000
-[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x280051bd000
-[DEBUG] kernel::memory::process_memory: Testing read access at 0x280051bd000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x28005115000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x28005115000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x28005115000
 [DEBUG] kernel::memory::process_memory: Read test successful
-[DEBUG] kernel::memory::process_memory: Page table pointer: 0x280051bd000
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x28005115000
 [DEBUG] kernel::memory::process_memory: About to clear the new page table
 [DEBUG] kernel::memory::process_memory: Successfully cleared new page table (all entries set to unused)
 [DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using current CR3: 0x4c6d000 for copying
@@ -2038,7 +2032,7 @@ Switching from thread 16 to thread 6
 [ INFO] kernel::memory::process_memory: PHASE2-DEBUG: &master_pml4[403] is at 0x28000607c98
 [ INFO] kernel::memory::process_memory: CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: PageTableFlags(PRESENT | WRITABLE | ACCESSED)
 [ INFO] kernel::memory::process_memory: PHASE2: Copied 6 kernel-only lower-half entries (skipped userspace), PML4[0] left empty
-[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x51bc000
+[ INFO] kernel::memory::process_memory: PHASE2: Created fresh PDPT for PML4[0] at frame 0x5114000
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[402] (kernel stacks): master=PhysFrame[4KiB](0x608000), copied=PhysFrame[4KiB](0x608000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[403] (IST stacks): master=PhysFrame[4KiB](0x609000), copied=PhysFrame[4KiB](0x609000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[510]: master=PhysFrame[4KiB](0x606000), copied=PhysFrame[4KiB](0x606000)
@@ -2047,7 +2041,7 @@ Switching from thread 16 to thread 6
 [ INFO] kernel::memory::process_memory: ✓ INVARIANT OK: PML4[402]=PhysFrame[4KiB](0x608000) != PML4[403]=PhysFrame[4KiB](0x609000)
 [ INFO] kernel::memory::process_memory: PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)
 [ INFO] kernel::memory::process_memory: PHASE3: Skipping manual identity mapping - PML4[0] already copied from master
-[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x51bd000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x5115000 and phys_offset 0x28000000000
 [DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
 [ INFO] kernel::elf: Loading ELF into process page table: entry=0x4000e81c, 7 program headers
 [ INFO] kernel::elf: ELF loaded: segments end at 0x40016170, heap will start at 0x40017000
@@ -2068,11 +2062,10 @@ Added thread 23 'blogd' to scheduler (user: true, target_cpu: 0)
 [ INFO] kernel::interrupts::context_switch: FIRST_ENTRY t23: zeroed all registers
 [ INFO] kernel::interrupts::context_switch: First userspace entry setup complete for thread 23
 [ INFO] kernel::interrupts::context_switch: First run: thread 23 entering userspace
+[DISPATCH_STRAND_CENSUS:seq=36:tick=8070:ms=42188:saved=11:stranded=6:tids=5,15,17,19,20,22:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::fs: sys_mkdir: path="/var", mode=0o755
-[DEBUG] kernel::interrupts::context_switch: Signal delivery check: process 9 (thread 16) has deliverable signals
-[DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 9, handler=0x0
-[DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 9
-[DISPATCH_STRAND_CENSUS:seq=38:tick=8314:ms=45358:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=37:tick=8290:ms=43248:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[ INFO] kernel::syscall::fs: sys_open: opened /usr/share/fonts/DejaVuSansMono.ttf as fd 3 (inode 32929)
 [ INFO] kernel::syscall::handlers: USERSPACE: sys_exit called with code: 0
 [DEBUG] kernel::syscall::handlers: sys_exit: Current thread ID from scheduler: 16
 [DEBUG] kernel::memory::stack: GuardedStack dropped (cleanup not yet implemented)
@@ -2081,10 +2074,10 @@ unblock_for_signal: Checking thread 5 (current=Some(16))
 unblock_for_signal: Thread 5 state is Ready, blocked_in_syscall=true
 unblock_for_signal: Thread 5 not BlockedOnSignal, state=Ready
 [DEBUG] kernel::task::process_task: Process 9 'bsh' (thread 16) exited with code 0
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffd010, count=445
 [DEBUG] kernel::syscall::handlers: complete_wait: child 9 exited with code 0, wstatus=0x0 (normal exit)
 [DEBUG] kernel::syscall::handlers: complete_wait: reap arm for child 9 (claimed)
 [DEBUG] kernel::syscall::handlers: complete_wait: Cleared blocked_in_syscall flag for thread 5
-[DEBUG] kernel::interrupts::context_switch: Signal delivery check: process 1 (thread 5) has deliverable signals
 [DEBUG] kernel::signal::delivery: Delivering signal 17 (SIGCHLD) to process 1, handler=0x0
 [DEBUG] kernel::signal::delivery: Signal 17 (SIGCHLD) ignored (default) by process 1
 [DEBUG] kernel::syscall::handlers: sys_waitpid: pid=-1, status_ptr=0x7fffff010e94, options=0
@@ -2097,16 +2090,320 @@ unblock_for_signal: Thread 5 not BlockedOnSignal, state=Ready
 [DEBUG] kernel::syscall::handlers: complete_wait: child 14 exited with code 1, wstatus=0x100 (normal exit)
 [DEBUG] kernel::ipc::fd: FdTable::drop() - closing all fds and decrementing pipe counts
 [DEBUG] kernel::syscall::handlers: complete_wait: reap arm for child 14 (claimed)
-[DISPATCH_STRAND_CENSUS:seq=39:tick=8630:ms=46999:saved=12:stranded=6:tids=15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::handlers: sys_waitpid: pid=-1, status_ptr=0x7fffff010e94, options=0
 [DEBUG] kernel::syscall::handlers: sys_waitpid: Current process PID=1, has 6 children
 Thread 5 blocked waiting for child exit (blocked_in_syscall=true)
-[DISPATCH_STRAND_CENSUS:seq=40:tick=8846:ms=48079:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=41:tick=9059:ms=49143:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=42:tick=9266:ms=50177:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=43:tick=9471:ms=51200:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
-[DISPATCH_STRAND_CENSUS:seq=44:tick=9683:ms=52260:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=38:tick=8503:ms=44309:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[ INFO] kernel::syscall::fs: sys_open: opened /usr/share/fonts/DejaVuSansMono.ttf as fd 3 (inode 32929)
+[DEBUG] kernel::syscall::fs: sys_mkdir: failed: Directory already exists
+[DEBUG] kernel::syscall::fs: sys_mkdir: path="/var/log", mode=0o755
+[DEBUG] kernel::syscall::fs: sys_mkdir: failed: Directory already exists
+[DEBUG] kernel::syscall::fs: sys_access: path="/var/log", mode=0o0
+[DISPATCH_STRAND_CENSUS:seq=39:tick=8728:ms=45394:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfa4010, count=340712
+[DEBUG] kernel::syscall::handlers: sys_read: Read 445 bytes from regular file (inode 31)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0ac2c8, count=32
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffc010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffcd78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 31)
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/var/log/kernel.log", flags=0x441, mode=0o644
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/var/log/kernel.log"
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 19 -> process 12 'bterm', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfa5010, count=340712
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSansMono.ttf", flags=0x80000, mode=0o666
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSansMono.ttf"
+[DISPATCH_STRAND_CENSUS:seq=40:tick=8942:ms=46454:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DISPATCH_STRAND_CENSUS:seq=41:tick=9161:ms=47562:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::handlers: sys_read: Read 340712 bytes from regular file (inode 32929)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0e0318, count=32
 Next thread from queue: 6, cpu: 0
-Switching from thread 19 to thread 6
-[DISPATCH_STRAND_CENSUS:seq=45:tick=9906:ms=53374:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+Switching from thread 23 to thread 6
+[DEBUG] kernel::syscall::fs: sys_open: creating new file /var/log/kernel.log
+[DISPATCH_STRAND_CENSUS:seq=42:tick=9375:ms=48592:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[ERROR] kernel::syscall::fs: sys_open: failed to create file: Failed to write inode bitmap
+[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 32929)
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 22 -> process 15 'bcheck', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSans.ttf", flags=0x80000, mode=0o666
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSans.ttf"
+[DISPATCH_STRAND_CENSUS:seq=43:tick=9595:ms=49686:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffa010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdffad78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff8010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff8d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[ INFO] kernel::syscall::fs: sys_open: opened /usr/share/fonts/DejaVuSansMono.ttf as fd 3 (inode 32929)
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff6010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff6d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfa7010, count=340712
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff4010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff4d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff2010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff2d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=44:tick=9821:ms=50789:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff0010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdff0d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfee010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfeed78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[ INFO] kernel::syscall::fs: sys_open: opened /usr/share/fonts/DejaVuSans.ttf as fd 3 (inode 32928)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffde8f010, count=757076
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfec010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfecd78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=45:tick=10032:ms=51845:saved=12:stranded=6:tids=5,15,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfea010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfead78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=46:tick=10255:ms=52920:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe8010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe8d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe6010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe6d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe4010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe4d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=47:tick=10464:ms=53938:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe2010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe2d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe0010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfe0d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfde010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfded78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=48:tick=10683:ms=54999:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfdc010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfdcd78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfda010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfdad78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd8010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd8d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=49:tick=10917:ms=56127:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd6010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd6d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd4010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd4d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DISPATCH_STRAND_CENSUS:seq=50:tick=11129:ms=57187:saved=12:stranded=6:tids=5,15,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd2010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd2d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd0010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfd0d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: Read 340712 bytes from regular file (inode 32929)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0bd1d8, count=32
+[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 32929)
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 20 -> process 13 'blog', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSans.ttf", flags=0x80000, mode=0o666
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSans.ttf"
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfce010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfced78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=51:tick=11347:ms=58252:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfcc010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfccd78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfca010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfcad78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+Next thread from queue: 23, cpu: 0
+Switching from thread 6 to thread 23
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfc8010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfc8d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=52:tick=11555:ms=59315:saved=12:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfc6010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfc6d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
 [?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h
