@@ -40,7 +40,7 @@ $(find docker/qemu scripts -name '*.sh')` over the current 91-script tree
 **Correction (review round 1, F6, MAJOR).** That grep pattern is itself an
 undercount of scripts that print a PASS/FAIL-shaped verdict: it misses any
 script phrased as `: PASS"`, `: FAILED (`, or `RATCHET: FAILED` instead of
-the exact shapes above. 18 such scripts exist, four of them gate scripts
+the exact shapes above. ~~18 such scripts exist, four of them gate scripts
 this campaign's own census gates invoke directly as sub-checks
 (`scripts/check-kernel-no-neon.sh`, called from
 `run-aarch64-tty-oracle-gate.sh`; `scripts/check-coreproof-production-clean.sh`,
@@ -53,12 +53,57 @@ this campaign's own census gates invoke directly as sub-checks
 `scripts/parallels/collect-hwdump.sh`,
 `scripts/parallels/collect-linux-cpu0-traces.sh`,
 `scripts/parallels/inject.sh`, `scripts/parallels/screenshot-vm.sh`,
-`scripts/run-arm64-keyboard-test.sh`, `scripts/test_fork_mcp.sh`). Checked
-each of the 18 directly for the shape that actually decides scope
-(`report_gate_failure() {` + an `ERR` trap that arms it, per the paragraph
-below) — 0 of 18 carry it, so the final answer (7 scripts, listed below)
-is unaffected. This corrects the doc's own undercounted candidate pool,
-not the repair's scope. For each,
+`scripts/run-arm64-keyboard-test.sh`, `scripts/test_fork_mcp.sh`).~~
+
+**Correction (landing re-derivation, F6 continued).** That 18 count is
+itself wrong — it is an overcount. Re-deriving it directly (grepping the 91
+`.sh` files under `docker/qemu/` and `scripts/` for the three phrasings
+named above, `: PASS"` / `: FAILED (` / `RATCHET: FAILED`, plus the eight
+original patterns from the Census section, then reading each of the 18
+named files in full) finds only **13 true positives**; the other **5 are
+false positives** that do not print any PASS/FAIL/verdict-shaped text at
+all, in any form, checked with a broad case-insensitive
+`pass|fail|verdict|success` sweep over each file's full body: all five are
+`scripts/parallels/` VM-manipulation utilities whose only `exit N`
+statements are argument/prerequisite validation (a missing arg, a missing
+tool, an unreachable VM), never a completion verdict —
+`scripts/parallels/build-efi.sh` (builds an EFI image; the sweep's one hit
+is the comment "newfs_msdos requires a block device and fails on plain
+files", describing `newfs_msdos`'s own limitation, not this script's
+verdict), `scripts/parallels/collect-breenix-cpu0-traces.sh` and
+`scripts/parallels/collect-hwdump.sh` (diagnostic collectors, zero hits),
+`scripts/parallels/collect-linux-cpu0-traces.sh` (zero verdict hits; the
+sweep's only hit is the `VM_PASSWORD`/`VM_SUDO_PASSWORD` variable names, a
+substring match on "pass" inside "password", not a verdict), and
+`scripts/parallels/screenshot-vm.sh` (zero hits). The other 13 are
+genuine: each prints a PASS/FAIL/SUCCESS/FAILURE-shaped line and has at
+least one bare `exit N` statement in the file. Two shapes account for all
+of the 13. Colored `PASS:`/`FAIL:` (`"${GREEN}PASS:${NC}"` etc.) — invisible to
+the original census's literal `"PASS:` pattern because a color-code
+variable sits between the opening quote and the word: `scripts/check-kernel-no-neon.sh`,
+`scripts/check-x86-dispatch-no-alloc.sh`,
+`scripts/check-coreproof-production-clean.sh`,
+`scripts/check-fs-fault-production-clean.sh`, `scripts/check-coreproof-seams.sh`
+(5 scripts — the four the doc already called out as census sub-checks,
+plus `check-coreproof-seams.sh`). A same-family but differently-worded
+banner: `docker/qemu/run-dns-test.sh` ("DNS TEST: ALL N STAGES PASSED" /
+"DNS TEST: TIMEOUT"), `docker/qemu/run-keyboard-test.sh` ("SUCCESS: Found
+N keyboard interrupt markers" / "FAILURE: No KEY:XX patterns found"),
+`docker/qemu/run-kthread-test.sh` ("=== KTHREAD JOIN TEST: PASS ==="),
+`scripts/ci/ring3_check.sh` ("=== RING3 CHECK: PASS ==="),
+`scripts/parallels/inject.sh` ("[inject.sh] prlctl send-key-event FAILED"
+on a dispatcher failure), `scripts/test_fork_mcp.sh` ("FAILED" / "❌
+FAILED" per sub-test), and `docker/qemu/run-blocking-recv-test.sh` /
+`scripts/run-arm64-keyboard-test.sh` (both match the task's own named
+phrasings directly) (8 scripts). 5 + 8 = 13. Checked
+each of these 13 (not 18, not 5) directly for the shape that actually
+decides scope (`report_gate_failure() {` + an `ERR` trap that arms it, per
+the paragraph below) — 0 of 13 carry it, the same null result the doc's
+own (wrong) 18-count already reported for its (wrong) superset, so the
+final answer (7 scripts carrying that architecture, 6 of them repaired
+below) is unaffected either way this count lands. This corrects the doc's
+own miscounted candidate pool a second time, not the repair's scope. For
+each,
 the question that matters is not "does it print PASS/FAIL text" —
 most of them do, in ad hoc ways — but "does it carry the specific
 `report_gate_failure`-via-`ERR`-trap backstop architecture that makes the
@@ -131,10 +176,16 @@ non-1 exit code without writing a bare `exit` statement.
 | `run-ext2-lock-race-gate.sh` | yes | yes — 1 preflight (**before its trap was even installed**) + 1 arg-parsing (`exit 64`, F10's own distinct code) + 1 build-warning + 1 `fail()` helper + 5-branch `--park-only` cascade (0/1/2 distinct codes) + 1 final `exit 0` (10 sites) | has-verdict-path-but-preempting-exits |
 | `run-coreproof-gate.sh` | yes | yes — 8 of 8 argument/validation `exit 2` sites reached before its trap was installed (the trap installed ~90 lines after the last of them) + 1 `exit 1` + 1 final `exit 0` (10 sites) | has-verdict-path-but-preempting-exits |
 
-The other 29 of the 36 are **no-verdict-path**: they
+~~The other 29 of the 36 are **no-verdict-path**~~ **Correction (landing,
+arithmetic).** `29 of the 36` is stale text left over from before this
+doc's own `36`→`37` census correction above; it was never updated to
+match. The itemized breakdown two paragraphs below (23 + 7) already totals
+30, matching `37 - 7 = 30` (37 candidates, 7 has-verdict-path, per the
+Classification table above), not `36 - 7 = 29`. The other 30 of the 37 are
+**no-verdict-path**: they
 print PASS/FAIL-shaped text (or a bisect/probe-shaped verdict) through their
 own ad hoc means, with no `report_gate_failure`/`ERR`-trap backstop behind
-it, so the #802/#805 idiom does not apply to them, and 0 of 29 were
+it, so the #802/#805 idiom does not apply to them, and 0 of 30 were
 touched. Two recognizable sub-shapes, listed rather than each individually
 audited (per the task's own instruction: a script that reports only via
 exit code is a different shape):
@@ -655,10 +706,12 @@ exit 1. Full output: `docs/planning/green-program/gates/serials/verdict-widened-
   userspace ELF set copied in from the main checkout rather than rebuilt in
   this worktree (see "Environment note"); the 2 x86 runs on beast built the
   kernel, userspace, and ext2 disk from source.
-- **Not a claim that the 29 no-verdict-path scripts are correct, complete,
+- **Not a claim that the 30 no-verdict-path scripts are correct, complete,
   or free of their own defects.** They were read only far enough to
-  classify them out of scope for this specific repair; 0 of the 29 were
-  modified.
+  classify them out of scope for this specific repair; 0 of the 30 were
+  modified. (This bullet said 29 before the landing arithmetic correction
+  above; the itemized 23 + 7 breakdown two sections up sums to 30, matching
+  37 - 7, the count this bullet now uses.)
 - **Not a claim that `redden()`'s exit-code preservation is exercised by
   the widened Rust ratchet.** `verdict_trap_has_no_preempting_exit` checks
   the absence of a pre-empting `exit` statement; it does not itself execute
