@@ -5,8 +5,8 @@ rank 1 in the bus/NIC/tracing scout brief
 (`scout-bus-nic-x86.md`, §6, "Reachable in one gate run — exact sequence for
 NIC + Bus", step 2). It runs `docker/qemu/run-x86-prod-profile-boot-test.sh`
 — the x86 zero-feature production-profile gate — 25 times on beast, at
-`main`, and reports what it measured. It does not close #702 and does not
-open a PR; it is evidence for the ruling slot.
+`main`, and reports what it measured. #702 stays open after this document,
+which does not open a PR either; it is evidence for the ruling slot.
 
 ## 0. Coordinator ruling R80 (binding context for this battery)
 
@@ -22,8 +22,8 @@ issue preserved, so the hang reads as inside the PCI scan loop, before
 `kernel/src/drivers/mod.rs:41`, after `drivers::init()`'s call to
 `pci::enumerate()` (`mod.rs:28`) has already returned, so
 `kernel/src/drivers/e1000/` reads as not entered on that one hung boot.
-Bus-x86 stays blocked on #702; that is not this document's finding, and this
-document does not attempt to close #702.
+Bus-x86 stays blocked on #702; that is not this document's finding, and
+closing #702 is not attempted here.
 claim-lint:ok: mechanism restated from the ruling's cited RCA,
 docs/planning/green-program/nic-bus/serials/702-rca/RCA-2026-08-31.md, one
 specimen boot, not re-derived independently in this document.
