@@ -5,6 +5,12 @@
 //! over the tree at large -- 3 of 3 `.asm` files under the two entry
 //! directories today -- and the count is recomputed and printed by
 //! `the_asm_entry_census_is_not_vacuous` on every run rather than frozen here.
+//! `the_asm_entry_census_covers_every_asm_file_in_the_kernel` additionally
+//! fails if any `.asm` file under `kernel/src` falls outside those two
+//! directories, so "the census" and "the tree's hand-written assembly" cannot
+//! silently diverge. Entries written inline in `global_asm!`/`naked_asm!`
+//! blocks remain outside both, and are disclosed under "Disclosed limits"
+//! below. #737.
 //!
 //! # Why this exists
 //!
@@ -41,9 +47,15 @@
 //!    if any `kernel/src/**/*.rs` pulls it in with `global_asm!` /
 //!    `include_str!` / `include!`. A `.asm` file that neither route reaches
 //!    is not in the image and is reported, not asserted on.
+//!    That two-directory scope is itself asserted, not assumed:
+//!    `the_asm_entry_census_covers_every_asm_file_in_the_kernel` globs
+//!    `kernel/src` whole and fails if any `.asm` file sits outside them, so an
+//!    entry added under a third directory reddens the suite instead of
+//!    silently leaving the census.
 //!    claim-lint:ok: 3 of 3 `.asm` files anywhere under `kernel/src` sit in
 //!    those two directories, and 3 of 3 are named by `kernel/build.rs`; both
-//!    counts are recomputed per run, not frozen here. #737.
+//!    counts are recomputed per run by the scope test and the reachability
+//!    filter respectively, not frozen here. #737.
 //!
 //! 2. **Which symbols in those files.** Every `global <symbol>` directive.
 //!    claim-lint:ok: the directive census is exactly what `global_symbols`
@@ -98,6 +110,20 @@
 //!   sit inside NASM comments (`kernel/src/syscall/entry.asm:118` and `:140`),
 //!   so 0 of 3 files carry a string literal at all; and a mis-cut would make
 //!   this check more lenient, never more strict. #737.
+//!
+//! * **It reads `.asm` files only.** An entry written inline in a
+//!   `global_asm!` or `naked_asm!` block in a `.rs` file is invisible to the
+//!   census, and no assertion in this file would notice one. Closing this
+//!   would mean parsing Rust inline-assembly literals, which the round that
+//!   wrote this ratchet did not do.
+//!   claim-lint:ok: measured -- `grep -rn 'global_asm!\|naked' kernel/src
+//!   --include='*.rs'` returns 6 inline-assembly blocks (`task/context.rs:10`
+//!   defining `switch_context`/`switch_to_thread`, `stack_switch.rs:26`,
+//!   `test_userspace.rs:339`, and three aarch64 blocks, where DF does not
+//!   exist). 0 of the 3 x86_64 blocks is hardware-entered: each is reached by
+//!   an ordinary Rust call, where the SysV ABI already guarantees DF=0 at
+//!   entry. So this is a coverage gap against a future inline entry, not a
+//!   live hole in this tree. #737.
 //!
 //! * The Rust-declaration probe in step 3 reads EVERY `fn <symbol>(`
 //!   occurrence under `kernel/src`, not only the first, and treats a symbol as
@@ -165,11 +191,10 @@ fn files_with_extension(root: &Path, extension: &str) -> Vec<PathBuf> {
 /// Step 1 of the census: hand-written assembly under the two entry
 /// directories.
 fn entry_asm_files() -> Vec<PathBuf> {
-    let mut files = files_with_extension(&repo_root().join("kernel/src/interrupts"), "asm");
-    files.extend(files_with_extension(
-        &repo_root().join("kernel/src/syscall"),
-        "asm",
-    ));
+    let mut files = Vec::new();
+    for directory in ENTRY_ASM_DIRECTORIES {
+        files.extend(files_with_extension(&repo_root().join(directory), "asm"));
+    }
     files.sort();
     files
 }
@@ -435,6 +460,55 @@ fn every_hand_written_entry_clears_df_before_its_first_call_or_string_op() {
         findings.len(),
         entries.len(),
         findings.join("\n  ")
+    );
+}
+
+/// The two directories `entry_asm_files` globs. The scope claim in this file's
+/// header -- that the tree's hand-written `.asm` files sit in one of them -- is
+/// asserted by `the_asm_entry_census_covers_every_asm_file_in_the_kernel`
+/// rather than left as prose.
+/// claim-lint:ok: 3 of 3 `.asm` files under `kernel/src` sit in these two
+/// directories today, and that count is re-derived per run by the scope test
+/// below rather than frozen here. #737.
+const ENTRY_ASM_DIRECTORIES: [&str; 2] = ["kernel/src/interrupts", "kernel/src/syscall"];
+
+/// The census globs two directories. That is only sound while those two hold
+/// each hand-written `.asm` file in the kernel tree -- otherwise an entry added
+/// under some third directory is silently unpoliced, and
+/// `the_asm_entry_census_is_not_vacuous` stays green while the ratchet's
+/// coverage quietly shrinks. Assert the scope instead of asserting it in prose.
+/// claim-lint:ok: what this test asserts is a set difference it computes on
+/// each run -- `.asm` files under `kernel/src` minus the censused set -- and it
+/// fails naming the leftovers, so the scope is measured, not claimed. It is 0
+/// leftovers of 3 files today. #737.
+#[test]
+fn the_asm_entry_census_covers_every_asm_file_in_the_kernel() {
+    let all = files_with_extension(&repo_root().join("kernel/src"), "asm");
+    assert!(
+        !all.is_empty(),
+        "found 0 .asm files anywhere under kernel/src; this scope check is reading nothing"
+    );
+
+    let censused = entry_asm_files();
+    let outside: Vec<String> = all
+        .iter()
+        .filter(|path| !censused.contains(path))
+        .map(|path| relative(path))
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "{} of {} .asm file(s) under kernel/src sit outside the two directories this ratchet          globs ({}), so their entry points are not censused and not policed for `cld`. Either          move the file under one of those directories or widen ENTRY_ASM_DIRECTORIES and          `entry_asm_files` to reach it:\n  {}",
+        outside.len(),
+        all.len(),
+        ENTRY_ASM_DIRECTORIES.join(", "),
+        outside.join("\n  ")
+    );
+
+    println!(
+        "scope: {} of {} .asm file(s) under kernel/src are inside the censused directories ({})",
+        censused.len(),
+        all.len(),
+        ENTRY_ASM_DIRECTORIES.join(", ")
     );
 }
 
