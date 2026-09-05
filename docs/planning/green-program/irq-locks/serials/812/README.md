@@ -1,10 +1,16 @@
 # #812 — captured runs
 
-Provenance for the 14 artifacts beside this file, all captured 2026-09-05 on
+Provenance for the 15 artifacts beside this file, all captured 2026-09-05 on
 branch `fix/812-try-manager-masked` off `origin/main` at `be412ee9`. The
 narrative that reads them is
 `docs/planning/green-program/irq-locks/812-FIX-2026-09-05.md`.
-claim-lint:ok: 14 of 14 files beside this README have a row below.
+claim-lint:ok: 15 of 15 files beside this README have a row below.
+
+Rows 10, 14 and 15 were captured in the review round that followed, at branch
+head `a0cb2e78`; the other 12 are from the first pass at `8b548faa`. The two
+heads differ in `tests/teardown_structure.rs` and
+`docker/qemu/run-x86-boot-tests.sh` and in 0 kernel sources, so the kernel that
+produced rows 01-06 and 11 is the kernel at `a0cb2e78`.
 
 Host: this Mac (aarch64, QEMU HVF), except rows 10-12, which ran in the
 `breenix-x86` Incus container on beast with
@@ -27,8 +33,9 @@ derived artifacts (07, 08, 09) carry their own header lines.
 | `07-score-red-and-green.txt` | the strict gate's scoring-only mode run over the committed copies of 01 and 02, with exit statuses |
 | `08-gate-mutations.txt` | the strict gate's scoring-only mode over 4 mutations of the green serial: verdict flipped, line deleted, `masked_in_hold` zeroed, `stalled` raised |
 | `09-ratchet-source-mutation.txt` | `cargo test --test teardown_structure try_manager_is_a_masked_acquisition_on_every_arch` with the `msr daifset, #0xf` line deleted from `try_manager()`'s aarch64 arm: exit 101 |
-| `10-x86-boot-tests-beast.txt` | `docker/qemu/run-x86-boot-tests.sh 1` on beast: `x86 frame-custody gate run 1: PASS`, `GATE_EXIT=0` |
+| `10-x86-boot-tests-beast.txt` | `docker/qemu/run-x86-boot-tests.sh 1` on beast: `x86 frame-custody gate run 1: PASS`, `GATE_EXIT=0`, and the `[FCNTL_PM_CONTENTION_ORACLE:...:SKIP]` and `[IRQ_HOLD_ORACLE:...:SKIP]` lines the gate's `&&` chain requires, echoed back from the serial |
 | `11-x86-prod-profile-beast.txt` | `docker/qemu/run-x86-prod-profile-boot-test.sh` on beast: PASS, `test-only marker '[IRQ_HOLD_ORACLE:': 0`, `PROD_GATE_EXIT=0` |
 | `12-x86-build-beast.txt` | the beast x86 build check: `cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi`, `BUILD_EXIT=0`, 0 `^(warning\|error)` lines |
 | `13-claim-lint-selftest.txt` | `scripts/test_claim_lint.py`: `Ran 72 tests`, `OK` |
-| `14-structure-suites.txt` | each `tests/*_structure.rs` suite run one at a time at the final head: 31 of 31 green, 569 cases |
+| `14-structure-suites.txt` | each `tests/*_structure.rs` suite run one at a time at `a0cb2e78`: 31 of 31 green, 569 cases |
+| `15-ordering-leg-anti-vacuity.txt` | `cargo test --test teardown_structure try_manager` with the ordering predicate in `try_manager_irq_shape()` weakened to `drop_body.find(restore).is_some()`, then restored: the reorder leg fails with `failures were []`, then the pair passes |
