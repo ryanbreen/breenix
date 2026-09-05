@@ -19,6 +19,7 @@ const TEST_REGISTRY_PATH: &str = "kernel/src/test_framework/registry.rs";
 const X86_BOOT_GATE_PATH: &str = "docker/qemu/run-x86-boot-tests.sh";
 const SERVICE_SEQUENCE_GATE_PATH: &str = "docker/qemu/run-aarch64-service-sequence-gate.sh";
 const STRICT_GATE_PATH: &str = "docker/qemu/run-aarch64-boot-test-strict.sh";
+const NATIVE_GATE_PATH: &str = "docker/qemu/run-aarch64-boot-test-native.sh";
 const FULL_TEST_PATH: &str = "docker/qemu/run-aarch64-full-test.sh";
 const MIN_REQUEUE_EARLY_RETURN_GUARDS: usize = 6;
 /// New instruction-abort refusal reasons are welcome; losing one is not.
@@ -1694,6 +1695,7 @@ fn boot_tests_gates_refuse_a_wrong_profile_kernel() {
         ("service-sequence gate", SERVICE_SEQUENCE_GATE_PATH),
         ("strict gate", STRICT_GATE_PATH),
         ("full test", FULL_TEST_PATH),
+        ("native gate", NATIVE_GATE_PATH),
     ] {
         let gate = repo_text(gate_path);
         let guard = shell_function_body(&gate, "require_boot_tests_kernel");
@@ -1775,20 +1777,25 @@ fn boot_tests_gates_refuse_a_wrong_profile_kernel() {
 }
 
 #[test]
-fn strict_gate_build_hint_enables_boot_tests() {
-    let gate = repo_text(STRICT_GATE_PATH);
-    let build_hints: Vec<_> = gate
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("echo ") && line.contains("cargo build"))
-        .collect();
-    assert!(!build_hints.is_empty(), "strict-gate build-hint census");
-    assert!(
-        build_hints
-            .iter()
-            .any(|line| line.contains("--features boot_tests")),
-        "strict gate build hint must enable --features boot_tests"
-    );
+fn boot_tests_gate_build_hints_enable_boot_tests() {
+    for (gate_name, gate_path) in [
+        ("strict gate", STRICT_GATE_PATH),
+        ("native gate", NATIVE_GATE_PATH),
+    ] {
+        let gate = repo_text(gate_path);
+        let build_hints: Vec<_> = gate
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("echo ") && line.contains("cargo build"))
+            .collect();
+        assert!(!build_hints.is_empty(), "{gate_name} build-hint census");
+        assert!(
+            build_hints
+                .iter()
+                .all(|line| line.contains("--features boot_tests")),
+            "{gate_name} every build hint must enable --features boot_tests (a gate with more than one build-hint echo line must not let any of them recommend a kernel this gate's own guard refuses)"
+        );
+    }
 }
 
 #[test]
