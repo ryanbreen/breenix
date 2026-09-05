@@ -1,0 +1,13 @@
+kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_8ba82c3f-e11-6/target/aarch64-breenix-kernel/release/kernel-aarch64
+profile: default features (production), aarch64-breenix-kernel.json
+
+ABSENT   task::scheduler::init   (eliminated by --gc-sections)
+PRESENT  task::scheduler::init_with_current
+ABSENT   task::scheduler::is_current_idle_thread   (eliminated by --gc-sections)
+ABSENT   task::scheduler::try_liveness_snapshot   (eliminated by --gc-sections)
+PRESENT  task::scheduler::try_dump_state
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_8ba82c3f-e11-6/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_8ba82c3f-e11-6/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
