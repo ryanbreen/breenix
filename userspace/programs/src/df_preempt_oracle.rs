@@ -78,11 +78,40 @@
 //! [DF_PREEMPT] window <n> end elapsed_ms=<m> rflags_before_cld=0x<..> rflags_after_cld=0x<..>
 //! ```
 //!
-//! and the summary line is
+//! and the summary lines are
 //!
 //! ```text
+//! [DF_PREEMPT] windows=<n> long_windows=<n> iterations=<k>
+//! [DF_PREEMPT] clock_stalled=<0|1> budget_exhausted=<0|1> spin_ceiling_hit=<0|1>
 //! [DF_PREEMPT] ticks_spanned=<n> df_after_cld=<0|1> df_roundtrip=<ok|bad>
 //! ```
+//!
+//! # Why this program terminates
+//!
+//! The escalation multiplies the spin by 8 per short window, so a window
+//! ceiling alone does not bound run time -- window 12 of a run that escalated
+//! on each of the 11 preceding windows would spin `10_000_000 * 8^11`
+//! register-only passes, which is years of wall clock, not a terminating run.
+//! Three bounds close that, and between them they cover 3 of 3 clock
+//! behaviours:
+//!
+//! * **a stopped clock** -- each window measures `elapsed_ms == 0`, and two
+//!   consecutive zero-length windows (`STALLED_WINDOWS`) end the run. Cost:
+//!   two windows, `10M + 80M` passes.
+//! * **the clock advances but no window reaches `MIN_WINDOW_MS`** -- the
+//!   run-total wall-clock budget (`TOTAL_BUDGET_MS`, read from the same
+//!   CLOCK_MONOTONIC, checked between windows) ends the run.
+//! * **either way** -- escalation stops at `MAX_SPIN_ITERATIONS`, so no single
+//!   window between two budget checks can cost more than 64x the base window.
+//!
+//! Whichever bound fires is printed, so a truncated run says so rather than
+//! looking like a healthy one. `MAX_WINDOWS` bounds the window count and
+//! nothing else; it is not the termination argument.
+//! claim-lint:ok: this is a statement about this file's own control flow --
+//! the loop condition, the three `break`/ceiling guards and the constants they
+//! read are all below in this file -- not a measurement of a host. The costs
+//! quoted for the stalled-clock case are `BASE_SPIN_ITERATIONS` and one x8
+//! escalation, arithmetic on the constants. #737.
 //!
 //! `ticks_spanned` is the longest window's CLOCK_MONOTONIC milliseconds; the
 //! timer runs at a fixed rate, so it is also the number of timer ticks that
@@ -115,10 +144,33 @@ const MIN_WINDOW_MS: i64 = 200;
 #[cfg(target_arch = "x86_64")]
 const LONG_WINDOWS_WANTED: u32 = 3;
 
-/// Ceiling on total windows, so a machine whose clock does not advance
-/// still terminates.
+/// Ceiling on total windows. This bounds the window *count* only -- on its own
+/// it does not bound run time, because each escalation multiplies the spin by
+/// 8, so a run that escalated all the way to window 12 would spin
+/// `BASE_SPIN_ITERATIONS * 8^11` times, which is not a run anybody sees end.
+/// The three bounds below are what actually make this program terminate.
 #[cfg(target_arch = "x86_64")]
 const MAX_WINDOWS: u32 = 12;
+
+/// Ceiling on the escalated spin size, so no single window can cost more than
+/// 64x the base window. Escalation stops here; the loop then keeps sampling at
+/// this size until one of the other bounds fires.
+#[cfg(target_arch = "x86_64")]
+const MAX_SPIN_ITERATIONS: u64 = BASE_SPIN_ITERATIONS * 64;
+
+/// Wall-clock budget across the run's windows, read from the same
+/// CLOCK_MONOTONIC and checked between windows. This is the bound that fires
+/// on a host whose clock advances but where no window reaches
+/// `MIN_WINDOW_MS`.
+#[cfg(target_arch = "x86_64")]
+const TOTAL_BUDGET_MS: i64 = 30_000;
+
+/// Consecutive windows reporting `elapsed_ms == 0` that end the run. A stopped
+/// clock reports 0 on each window, so the run stops here after two base-sized
+/// windows instead of escalating into a spin no one will see end. This is the
+/// bound `MAX_WINDOWS` was wrongly documented as providing.
+#[cfg(target_arch = "x86_64")]
+const STALLED_WINDOWS: u32 = 2;
 
 /// CLOCK_MONOTONIC in milliseconds.
 #[cfg(target_arch = "x86_64")]
@@ -168,6 +220,10 @@ fn main() {
     let mut roundtrip_ok = true;
     let mut ticks_spanned: i64 = 0;
     let mut df_after_cld: u64 = 1;
+    let mut stalled_windows = 0u32;
+    let mut clock_stalled = false;
+    let mut budget_exhausted = false;
+    let run_start_ms = monotonic_ms();
 
     while windows < MAX_WINDOWS && long_windows < LONG_WINDOWS_WANTED {
         windows += 1;
@@ -191,16 +247,41 @@ fn main() {
             ticks_spanned = elapsed;
         }
 
+        // A stopped clock makes each window measure 0 and each escalation
+        // meaningless. Stop rather than multiply the spin by 8 again -- that
+        // is the difference between terminating and appearing to hang for the
+        // rest of the boot's timeout.
+        if elapsed == 0 {
+            stalled_windows += 1;
+            if stalled_windows >= STALLED_WINDOWS {
+                clock_stalled = true;
+                break;
+            }
+        } else {
+            stalled_windows = 0;
+        }
+
         if elapsed >= MIN_WINDOW_MS {
             long_windows += 1;
-        } else {
-            iterations = iterations.saturating_mul(8);
+        } else if iterations < MAX_SPIN_ITERATIONS {
+            iterations = iterations.saturating_mul(8).min(MAX_SPIN_ITERATIONS);
+        }
+
+        if monotonic_ms() - run_start_ms >= TOTAL_BUDGET_MS {
+            budget_exhausted = true;
+            break;
         }
     }
 
     println!(
         "[DF_PREEMPT] windows={} long_windows={} iterations={}",
         windows, long_windows, iterations
+    );
+    println!(
+        "[DF_PREEMPT] clock_stalled={} budget_exhausted={} spin_ceiling_hit={}",
+        clock_stalled as u32,
+        budget_exhausted as u32,
+        (iterations >= MAX_SPIN_ITERATIONS) as u32
     );
     println!(
         "[DF_PREEMPT] ticks_spanned={} df_after_cld={} df_roundtrip={}",
