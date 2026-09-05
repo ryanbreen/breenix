@@ -5121,6 +5121,15 @@ impl Scheduler {
         let is_other_deferred =
             (0..MAX_CPUS).any(|c| c != cpu && self.cpu_state[c].previous_thread == Some(previous));
 
+        // The slot is cleared before the placement below, not after it. All 5
+        // predicates above are already read and `is_other_deferred` skips this
+        // CPU, so 0 of them change value -- but the guard's hold arm asks
+        // whether any reachability record still names the thread, and this slot
+        // is 1 of the 5 records it asks about. Clearing after the guard ran
+        // left this CPU's own about-to-be-cleared slot answering "yes" on 1 of
+        // 1 pass, so the hold could not be taken from this site.
+        self.cpu_state[cpu].previous_thread = None;
+
         if is_ready && !is_idle && !is_queued && !is_current && !is_other_deferred {
             // Slice 3e: the drain of this CPU's `previous_thread` slot places
             // the thread on this CPU by default. A per-CPU worker goes back to
@@ -5131,8 +5140,6 @@ impl Scheduler {
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             set_need_resched();
         }
-
-        self.cpu_state[cpu].previous_thread = None;
     }
 
     /// Repair stale cpu_state after an exception handler redirected to idle.

@@ -3205,6 +3205,60 @@ fn cpu_pin_mint_validator_rejects_a_struct_literal() {
     assert!(validate_every_cpu_pin_is_minted(&sources).is_err());
 }
 
+/// Site 9 drains its own handoff slot before it asks the guard where to place.
+///
+/// `resolve_exception_cleanup_previous_thread` reads 5 predicates, then places.
+/// The guard's hold arm asks whether any reachability record still names the
+/// thread, and this CPU's `previous_thread` slot is 1 of the 5 records it asks
+/// about -- so clearing the slot after the placement leaves this site's own
+/// about-to-be-cleared slot answering "yes" on 1 of 1 pass, and the hold can
+/// never be taken from here. 0 of the 5 predicates read this slot
+/// (`is_other_deferred` skips this CPU), so the clear is free to move ahead of
+/// them.
+fn validate_previous_thread_slot_clears_before_the_guard(source: &str) -> Result<(), String> {
+    let body = function_body(source, "resolve_exception_cleanup_previous_thread").ok_or(
+        "kernel/src/task/scheduler.rs defines no resolve_exception_cleanup_previous_thread",
+    )?;
+    let compact = compact_code(body);
+    let clear = compact
+        .find("self.cpu_state[cpu].previous_thread=None;")
+        .ok_or("the previous-thread drain never clears the slot it drained")?;
+    let guard = compact
+        .find("self.retain_cpu_affine_thread(previous,cpu)")
+        .ok_or("the previous-thread drain never consults the migration guard")?;
+    if clear > guard {
+        return Err(
+            "the previous-thread drain clears its slot after it consults the guard, so the \
+             guard's hold arm reads this CPU's own stale slot and 0 holds can be taken here"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn previous_thread_slot_clears_before_the_guard() {
+    validate_previous_thread_slot_clears_before_the_guard(&repo_text(
+        "kernel/src/task/scheduler.rs",
+    ))
+    .expect("site 9 drains its handoff slot before it consults the guard");
+}
+
+#[test]
+fn previous_thread_order_validator_rejects_a_late_clear() {
+    // The order round 1 of this branch shipped.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "resolve_exception_cleanup_previous_thread")
+        .expect("find the drain fixture");
+    let clear = "        self.cpu_state[cpu].previous_thread = None;\n";
+    assert!(body.contains(clear), "fixture statement must be present");
+    let without = body.replacen(clear, "", 1);
+    let close = without.rfind('}').expect("the drain's closing brace");
+    let mutated_body = format!("{}{}{}", &without[..close], clear, &without[close..]);
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_previous_thread_slot_clears_before_the_guard(&mutated).is_err());
+}
+
 #[test]
 fn thread_placement_honours_the_cpu_pin() {
     validate_thread_placement_honours_the_cpu_pin(&repo_text("kernel/src/task/scheduler.rs"))
