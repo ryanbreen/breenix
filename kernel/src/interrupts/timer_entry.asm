@@ -28,6 +28,11 @@ timer_interrupt_entry:
     ; atomicity by explicitly disabling interrupts for the entire register save sequence
     cli
 
+    ; Clear the direction flag: DF is inherited from the interrupted context
+    ; (an x86-64 interrupt gate clears IF, not DF), and IRETQ restores the
+    ; caller's RFLAGS, so userspace's own DF is preserved across this ISR (#737).
+    cld
+
     ; TEMPORARILY REMOVED: Push dummy error code for uniform stack frame (IRQs don't push error codes)
     ; push qword 0
 
