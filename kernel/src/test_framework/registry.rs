@@ -2266,6 +2266,23 @@ fn sleep_current_thread_ms(duration_ms: u64) {
     }
 }
 
+/// The wall-clock budget of every loopback backstop in this module.
+///
+/// #767 (ruling R176). Each of these four backstops was written as `1_000`
+/// against `get_monotonic_time()` while that function returned the raw tick
+/// counter, and each was measured green at what `1_000` bought on the arch it
+/// ran on: 1_000 ticks, which is 1 s on aarch64 (`MS_PER_TICK` = 1) and 5 s on
+/// x86_64 (`MS_PER_TICK` = 5, the 200 Hz PIT). #767 scaled the producer to real
+/// milliseconds; leaving the literal at `1_000` would have cut the x86 budget to
+/// a fifth as a silent side effect of a units repair. Multiplying by
+/// `MS_PER_TICK` holds each arch at the budget it was measured at. Tightening
+/// either one is a separate change that owes its own evidence.
+///
+/// All four are timeout backstops on a loop that normally exits early, so the
+/// number is a ceiling on how long a *broken* boot spins, not a delay any
+/// passing run pays.
+const LOOPBACK_BACKSTOP_MS: u64 = 1_000 * crate::time::timer::MS_PER_TICK;
+
 fn setup_loopback_tcp_pair(
     listen_port: u16,
     client_port: u16,
@@ -2286,7 +2303,7 @@ fn setup_loopback_tcp_pair(
         }
     };
 
-    let deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+    let deadline = crate::time::get_monotonic_time().saturating_add(LOOPBACK_BACKSTOP_MS);
     let mut server = None;
     loop {
         crate::net::drain_loopback_queue();
@@ -2504,7 +2521,8 @@ fn run_loopback_recv_wake_test_inner(
         }
     };
 
-    let reader_tid_deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+    let reader_tid_deadline =
+        crate::time::get_monotonic_time().saturating_add(LOOPBACK_BACKSTOP_MS);
     let reader_tid = loop {
         let tid = LOOPBACK_READER_TID.load(AtomicOrdering::SeqCst);
         if tid != 0 {
@@ -2522,7 +2540,7 @@ fn run_loopback_recv_wake_test_inner(
         arch_halt_with_interrupts();
     };
 
-    if !wait_for_thread_blocked(reader_tid, 1_000) {
+    if !wait_for_thread_blocked(reader_tid, LOOPBACK_BACKSTOP_MS) {
         let _ = kthread::kthread_stop(&reader);
         let _ = kthread::kthread_join(&reader);
         tcp::tcp_unregister_recv_waiter(&client, reader_tid);
@@ -2560,7 +2578,8 @@ fn run_loopback_recv_wake_test_inner(
     };
 
     if with_load {
-        let load_start_deadline = crate::time::get_monotonic_time().saturating_add(1_000);
+        let load_start_deadline =
+            crate::time::get_monotonic_time().saturating_add(LOOPBACK_BACKSTOP_MS);
         while !LOOPBACK_LOAD_STARTED.load(AtomicOrdering::SeqCst) {
             if crate::time::get_monotonic_time() >= load_start_deadline {
                 let _ = kthread::kthread_stop(&reader);

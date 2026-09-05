@@ -275,7 +275,21 @@ const MAX_LOOPBACK_QUEUE_SIZE: usize = 32;
 const MAX_DRAIN_ROUNDS: usize = 16;
 const LOOPBACK_TAKE_ATTEMPTS: usize = 64;
 const MAX_ARP_PENDING_QUEUE_SIZE: usize = 16;
-const ARP_PENDING_TTL_MS: u64 = 5_000;
+/// How long an IP packet may sit on the pending-ARP queue before
+/// `enqueue_arp_pending_packet` retains it away.
+///
+/// #767 (ruling R176). This was written as a flat `5_000` and compared against
+/// `get_monotonic_time()` while that function returned the raw tick counter, so
+/// the retention window it has actually enforced since it was introduced
+/// (efc2af57, 2026-05-31, long after PIT_HZ became 200 at c16faca1) is 5000
+/// ticks: 25 s on x86_64 and 5 s on aarch64. #767 made the producer return real
+/// milliseconds; keeping the bare literal would have cut the x86 window to a
+/// fifth of the one every green networking run on this tree was measured with.
+/// Scaling by `MS_PER_TICK` holds each arch at its measured window. Shortening
+/// it to the 5 s the name suggests is a defensible change, but it is a
+/// behaviour change with its own evidence to produce, not a side effect of a
+/// units repair.
+const ARP_PENDING_TTL_MS: u64 = 5_000 * crate::time::timer::MS_PER_TICK;
 
 /// Loopback packet queue for deferred delivery
 /// Packets sent to our own IP are queued here and delivered after the sender releases locks

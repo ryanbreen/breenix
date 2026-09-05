@@ -831,7 +831,16 @@ pub fn x86_settled_kstack_leak_census() {
 /// exact count.
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn x86_settled_tombstone_census() {
-    const SETTLE_MS: u64 = 2_000;
+    // #767 (ruling R176): written as `2_000` against a clock that returned raw
+    // 200 Hz PIT ticks, so this backstop has been 10 s of wall clock for its
+    // whole life (introduced at ca8e9f8f, 2026-08-25, long after PIT_HZ became
+    // 200 at c16faca1). Scaling by MS_PER_TICK keeps it at that 10 s instead of
+    // cutting it to 2 s as a side effect of the producer repair. It is the one
+    // shortened budget with no aarch64 twin to transfer evidence from -- this
+    // function is x86-only -- and an early expiry is directly gate-failing,
+    // because run-x86-boot-tests.sh pins parked=0 and resident=0 on the line it
+    // emits.
+    const SETTLE_MS: u64 = 2_000 * crate::time::timer::MS_PER_TICK;
     static BACKSTOP_AT_MS: AtomicU64 = AtomicU64::new(0);
     static EMITTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -1659,6 +1668,50 @@ fn retirement_oracle_clock_delta(milliseconds: u64) -> u64 {
     milliseconds
 }
 
+/// The quiesce/cleanup budget every retirement oracle below waits out, in the
+/// milliseconds `retirement_oracle_clock_delta` takes.
+///
+/// #767 (ruling R176). Every one of these loops was written as
+/// `retirement_oracle_clock_delta(5_000)` and every one of them was measured
+/// green at the wall-clock budget that expression actually bought at the time,
+/// which is not the same number on the two arches:
+///
+/// * aarch64: `retirement_oracle_clock_delta` is derived from the generic
+///   timer frequency, so 5_000 has always been 5 s of wall clock, and #767 does
+///   not touch that clock at all.
+/// * x86_64: the clock underneath is `get_monotonic_time()`, which returned raw
+///   200 Hz PIT ticks until #767 scaled it. `delta(5_000)` therefore bought
+///   5000 ticks -- 25 s of wall clock, and 5000 rounds of the inner one-tick
+///   wait. Leaving the literal at 5_000 once the producer is correct would cut
+///   both to a fifth as a silent side effect of a units repair.
+///
+/// Scaling by `MS_PER_TICK` keeps each arch at the budget its green runs were
+/// measured at: 25 s / 5000 rounds on x86, 5 s on aarch64. Tightening either is
+/// a separate change that owes its own evidence.
+///
+/// The inner `retirement_oracle_clock_delta(1)` pacing waits are deliberately
+/// not scaled: on x86 the clock advances in `MS_PER_TICK` steps, so `now + 1`
+/// resolves to the next tick both before and after #767 -- one tick, 5 ms,
+/// unchanged.
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+const RETIREMENT_ORACLE_QUIESCE_MS: u64 = 5_000 * crate::time::timer::MS_PER_TICK;
+
+/// aarch64's half of `RETIREMENT_ORACLE_QUIESCE_MS` above: 5 s, the value this
+/// arch's frequency-derived oracle clock has always given, unchanged by #767.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+const RETIREMENT_ORACLE_QUIESCE_MS: u64 = 5_000;
+
+/// `retirement_oracle_clock_now() + RETIREMENT_ORACLE_QUIESCE_MS`, in one place.
+///
+/// Thirteen loops in this module arm exactly this deadline; naming it keeps the
+/// budget above from having to be restated thirteen times, which is how the
+/// x86/aarch64 divergence it corrects went unnoticed.
+#[cfg(feature = "boot_tests")]
+fn retirement_oracle_quiesce_deadline() -> u64 {
+    retirement_oracle_clock_now()
+        .saturating_add(retirement_oracle_clock_delta(RETIREMENT_ORACLE_QUIESCE_MS))
+}
+
 #[cfg(feature = "boot_tests")]
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
     #[cfg(not(target_arch = "x86_64"))]
@@ -1923,8 +1976,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         core::mem::drop(child.2);
     }
 
-    let quiesce_deadline = retirement_oracle_clock_now()
-        .saturating_add(retirement_oracle_clock_delta(5_000));
+    let quiesce_deadline = retirement_oracle_quiesce_deadline();
     loop {
         crate::task::scheduler::nudge_retirement_grace_for_test();
         let boundary_deadline = retirement_oracle_clock_now()
@@ -2196,8 +2248,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             reclaim
         };
         crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
-        let cleanup_deadline = retirement_oracle_clock_now()
-            .saturating_add(retirement_oracle_clock_delta(5_000));
+        let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
             != (false, false)
         {
@@ -2339,8 +2390,7 @@ pub fn tombstone_join_oracle_test() -> crate::test_framework::registry::TestResu
     /// Drain until `record_reclaim` has run for one more receipt, or the deadline
     /// passes. Returns whether the retirement was observed.
     fn drain_one_retirement(reclaims_before: u64) -> bool {
-        let deadline =
-            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+        let deadline = retirement_oracle_quiesce_deadline();
         loop {
             crate::task::scheduler::nudge_retirement_grace_for_test();
             let boundary =
@@ -2855,8 +2905,7 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
         }
     }
 
-    let quiesce_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let quiesce_deadline = retirement_oracle_quiesce_deadline();
     loop {
         crate::task::scheduler::nudge_retirement_grace_for_test();
         let boundary_deadline =
@@ -3020,8 +3069,7 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
         reclaim
     };
     crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
-    let cleanup_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let cleanup_deadline = retirement_oracle_quiesce_deadline();
     while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64()) != (false, false) {
         crate::task::scheduler::nudge_retirement_grace_for_test();
         let boundary_deadline =
@@ -3236,8 +3284,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             reclaim
         };
         crate::task::process_task::enqueue_process_reclaim(reclaim);
-        let cleanup_deadline =
-            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+        let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false) {
             crate::task::scheduler::nudge_retirement_grace_for_test();
             let boundary_deadline =
@@ -3600,8 +3647,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         Err(_) => {}
     }
 
-    let quiesce_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let quiesce_deadline = retirement_oracle_quiesce_deadline();
     loop {
         crate::task::scheduler::nudge_retirement_grace_for_test();
         let boundary_deadline =
@@ -3965,8 +4011,7 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
         crate::arch_impl::aarch64::context_switch::userspace_dispatch_creating_refused();
     crate::task::scheduler::spawn_on_cpu_for_test(thread_box, 1);
 
-    let refusal_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let refusal_deadline = retirement_oracle_quiesce_deadline();
     let refusal_delta = loop {
         let observed =
             crate::arch_impl::aarch64::context_switch::userspace_dispatch_creating_refused()
@@ -3989,8 +4034,7 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
         process.set_ready();
     }
 
-    let dispatch_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let dispatch_deadline = retirement_oracle_quiesce_deadline();
     while (!PROBE_DISPATCHED.load(Ordering::Acquire)
         || PROBE_ROOT_RELEASE_OBSERVATION.load(Ordering::Acquire) & PROBE_ROOT_RELEASE_DONE == 0)
         && retirement_oracle_clock_now() < dispatch_deadline
@@ -4027,8 +4071,7 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
         }
     }
 
-    let cleanup_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let cleanup_deadline = retirement_oracle_quiesce_deadline();
     loop {
         crate::task::scheduler::nudge_retirement_grace_for_test();
         let boundary_deadline =
@@ -4057,8 +4100,7 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
     }
     crate::task::scheduler::clear_cpu_affinity_for_test(thread_id);
 
-    let settle_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let settle_deadline = retirement_oracle_quiesce_deadline();
     let mut settle_rounds = 0u64;
     let mut stable_rounds = 0u64;
     let mut settle_sample = reclaim_progress_sample();
@@ -4447,8 +4489,7 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
         }
     }
 
-    let quiesce_deadline =
-        retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+    let quiesce_deadline = retirement_oracle_quiesce_deadline();
     while [row_a_pid, row_b_pid].iter().any(|pid| {
         crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false)
     }) {
@@ -5494,8 +5535,7 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
             reclaim
         };
         crate::task::process_task::enqueue_process_reclaim(reclaim);
-        let cleanup_deadline =
-            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(5_000));
+        let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false) {
             crate::task::scheduler::nudge_retirement_grace_for_test();
             let boundary_deadline =
