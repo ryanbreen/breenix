@@ -2422,6 +2422,200 @@ fn unschedulable_reclaim_validator_rejects_missing_deferred_reclaim() {
     assert!(validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&mutated).is_err());
 }
 
+/// A `cpu_affinity` guard is what slice 3e still owes each migration site
+/// below: a function in `kernel/src/task/scheduler.rs` that pushes a thread onto a
+/// `per_cpu_queues` slot without reading the pin anywhere in its own body --
+/// neither the `cpu_affinity` field nor `CpuPin` directly, nor through
+/// either of the 2 functions that read the field on this file's behalf
+/// (`find_target_cpu_for_wakeup`, the wake path's placement rule, and
+/// `pinned_wake_is_waiting_here`, the hold's delivery predicate).
+///
+/// Census-shaped, not a name list: this walks each `.push_back(` /
+/// `.push_front(` call on a `per_cpu_queues[..]` slot in the file and
+/// classifies each one by what its own function body does, so a new
+/// pin-blind push added anywhere in the file changes the count and reddens
+/// `pin_blind_migration_census_matches_the_slice_3e_table` -- a table of
+/// today's sites by name would not catch that.
+///
+/// Two shapes are excluded because they provably cannot move a pinned
+/// thread anywhere its pin forbids:
+///   1. the pushed value is `current_id` or `next_thread_id` -- this file's
+///      two names for the thread the scheduling decision already concerns,
+///      going back onto the CPU it is already the current or next thread
+///      of, having stayed on it the whole time;
+///   2. the push is preceded, in the same function, by a `.pop_front()` on
+///      the textually identical `per_cpu_queues[<idx>]` slot -- a decline
+///      that puts a thread back exactly where it was just taken from.
+/// A third exclusion is scope, not shape: the 3 functions gated behind a
+/// test-only feature (`coreproof`, `ec0_fault_inject`, `boot_tests`)
+/// manufacture state for a different primitive's test and do not ship in a
+/// production kernel, so they are not counted.
+///
+/// `add_thread_inner` (the publish-time placement arm) and the 6 wake-path
+/// functions (`unblock`, `unblock_for_signal`, `unblock_for_child_exit`,
+/// `wake_io_thread_locked`, `wake_expired_timers`, and the hold's own
+/// delivery, `deliver_pinned_wakes_for_this_cpu`) are excluded by the pin
+/// check itself: each reads `cpu_affinity` in its own body or is the
+/// delivery predicate that does.
+#[derive(Debug)]
+struct PinBlindSite {
+    line: usize,
+    function: String,
+    index_expr: String,
+}
+
+fn pin_blind_migration_sites(source: &str) -> Vec<PinBlindSite> {
+    let mask = code_mask(source);
+    let masked_bytes: Vec<u8> = source
+        .bytes()
+        .zip(mask.iter().copied())
+        .map(|(byte, code)| if code { byte } else { b' ' })
+        .collect();
+    let masked =
+        String::from_utf8(masked_bytes).expect("scheduler.rs is ASCII outside comments/strings");
+
+    let spans = function_spans(source);
+    let test_only_features = [
+        "feature = \"coreproof\"",
+        "feature = \"ec0_fault_inject\"",
+        "feature = \"boot_tests\"",
+    ];
+
+    let mut sites = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = masked[search_from..].find("per_cpu_queues[") {
+        let bracket_open = search_from + rel + "per_cpu_queues[".len();
+        let Some(rel_close) = masked[bracket_open..].find(']') else {
+            break;
+        };
+        let idx_text = masked[bracket_open..bracket_open + rel_close]
+            .trim()
+            .to_string();
+        let after_bracket = bracket_open + rel_close + 1;
+        let tail = &masked[after_bracket..];
+        let trimmed_tail = tail.trim_start();
+        search_from = after_bracket + 1;
+
+        let call_kind_len = if trimmed_tail.starts_with(".push_back(") {
+            Some(".push_back(".len())
+        } else if trimmed_tail.starts_with(".push_front(") {
+            Some(".push_front(".len())
+        } else {
+            None
+        };
+        let Some(call_kind_len) = call_kind_len else {
+            continue;
+        };
+        let arg_text = trimmed_tail[call_kind_len..].trim_start();
+        let arg: String = arg_text
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+
+        let Some(span) = spans
+            .iter()
+            .filter(|s| s.open <= bracket_open && bracket_open <= s.close)
+            .min_by_key(|s| s.close - s.open)
+        else {
+            continue;
+        };
+
+        let body = normalized_code(&source[span.open..=span.close]);
+        let pin_aware = body.contains("cpu_affinity")
+            || body.contains("CpuPin")
+            || body.contains("find_target_cpu_for_wakeup(")
+            || body.contains("pinned_wake_is_waiting_here(");
+        if pin_aware {
+            continue;
+        }
+
+        // Scope exclusion: skip a function gated behind a test-only
+        // feature. The attribute region is the raw source between the end
+        // of the nearest earlier function (in file order) and this
+        // function's own open brace, which is where an item's
+        // `#[cfg(...)]` attributes live.
+        let prev_close = spans
+            .iter()
+            .filter(|s| s.close < span.open)
+            .map(|s| s.close)
+            .max()
+            .unwrap_or(0);
+        let attr_region = &source[prev_close..span.open];
+        if test_only_features
+            .iter()
+            .any(|marker| attr_region.contains(marker))
+        {
+            continue;
+        }
+
+        if arg == "current_id" || arg == "next_thread_id" {
+            continue;
+        }
+
+        // Same-index decline exclusion: any earlier `.pop_front()` in this
+        // same function on the textually identical `per_cpu_queues[<idx>]`
+        // slot means this push puts the thread back where it was just
+        // taken from.
+        let scan_region = &masked[span.open..bracket_open];
+        let mut declined = false;
+        let mut pop_search_from = 0usize;
+        while let Some(rel) = scan_region[pop_search_from..].find("per_cpu_queues[") {
+            let pop_bracket_open = pop_search_from + rel + "per_cpu_queues[".len();
+            let Some(pop_rel_close) = scan_region[pop_bracket_open..].find(']') else {
+                break;
+            };
+            let pop_idx =
+                scan_region[pop_bracket_open..pop_bracket_open + pop_rel_close].trim();
+            let pop_after = pop_bracket_open + pop_rel_close + 1;
+            if pop_idx == idx_text
+                && scan_region[pop_after..].trim_start().starts_with(".pop_front(")
+            {
+                declined = true;
+                break;
+            }
+            pop_search_from = pop_after + 1;
+        }
+        if declined {
+            continue;
+        }
+
+        let line = source[..bracket_open].matches('\n').count() + 1;
+        sites.push(PinBlindSite {
+            line,
+            function: span.name.clone(),
+            index_expr: idx_text,
+        });
+    }
+    sites
+}
+
+/// Slice 3d's own R157 ruling left the reclaim and steal sites unguarded
+/// (SLICE3D-2026-09-05.md section 13, "What is not claimed"). This is the
+/// census that section's table now enumerates by file:line. The count is
+/// slice 3e's scope, not a claim that any of it is fixed here -- 0 threads
+/// carry a `per_cpu_worker` pin at runtime today, so each of these 11
+/// sites is inert in the same sense the rest of this slice's new arms are
+/// (section 4).
+#[test]
+fn pin_blind_migration_census_matches_the_slice_3e_table() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let sites = pin_blind_migration_sites(&source);
+    assert_eq!(
+        sites.len(),
+        11,
+        "kernel/src/task/scheduler.rs now has {} pin-blind per_cpu_queues \
+         migration sites (found: {:?}) but SLICE3D-2026-09-05.md section 13's \
+         census table has 11 rows; slice 3e owes the cpu_affinity guard at \
+         every one of them -- update that table to match before changing \
+         this expectation",
+        sites.len(),
+        sites
+            .iter()
+            .map(|s| format!("{}:{}({})", s.function, s.line, s.index_expr))
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn thread_placement_honours_the_cpu_pin() {
     validate_thread_placement_honours_the_cpu_pin(&repo_text("kernel/src/task/scheduler.rs"))
