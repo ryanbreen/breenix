@@ -40,6 +40,14 @@ pub const MS_PER_TICK: u64 = 1;
 // A PIT_HZ that does not divide 1000 exactly would make MS_PER_TICK a
 // truncated integer and put a rounding error into the milliseconds this
 // module reports. Refuse to build in that case rather than round.
+//
+// Scope, so this is not read as more than it is: the assert covers the
+// nominal 1000 / PIT_HZ division only. The divisor programmed into the PIT
+// below truncates too -- 1_193_182 / 200 = 5965, so the hardware rate is
+// 200.0305 Hz and one tick is 4.99924 ms, not 5 -- and that ~0.015% residual
+// is outside what this assert can see. It also makes MS_PER_TICK == 0
+// unrepresentable: `a % b == 0` with `b > a` requires `a == 0`, so a rate
+// above 1000 Hz is rejected here rather than silently flooring to 0.
 #[cfg(target_arch = "x86_64")]
 const _: () = assert!(
     1_000 % PIT_HZ as u64 == 0,
