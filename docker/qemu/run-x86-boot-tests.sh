@@ -370,6 +370,16 @@ CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
 # silence.
 TIMER_SCALE_ORACLE_PREFIX='[TIMER_SCALE_ORACLE:'
 TIMER_SCALE_ORACLE_PASS_PATTERN='\[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=[1-9][0-9]*:ms=[1-9][0-9]*:ticks_after=[0-9]+:ticks_nonzero=1:in_range=1:PASS\]'
+# failure-trace-capture PR-2: TIMER_TICK ring-depth self-check
+# (kernel/src/tracing/providers/irq.rs). Same marker and floor as the
+# aarch64 strict gate (docker/qemu/run-aarch64-boot-test-strict.sh) --
+# x86's own PIT-driven tick rate (200 Hz) gives it a naturally larger
+# pre-sampling cap than aarch64's 1000 Hz, so this floor is comfortable
+# here without a separate x86-specific calibration: a beast boot measured
+# span_ms=3642 at this checkpoint. See
+# docs/planning/green-program/failure-capture/PR-2-2026-09-05.md.
+RING_SPAN_PATTERN='\[RING_SPAN:cpu=0:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+\]'
+RING_SPAN_FLOOR_MS=1100
 # Thirteen oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
 # Ten launched test programs, one smoke_hello_time (the RING3_SMOKE process
 # kernel_main_continue creates after the twelve disk-loaded ones), one
@@ -914,6 +924,14 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$TIMER_SCALE_ORACLE_PASS_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    # (5) the ring-span self-check: present, and its span_ms clears the floor.
+    RING_SPAN_LINE=$(grep -h -oE "$RING_SPAN_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    test -n "$RING_SPAN_LINE"
+    RING_SPAN_MS=$(printf '%s\n' "$RING_SPAN_LINE" | \
+        sed -n 's/^\[RING_SPAN:cpu=0:span_ms=\([0-9][0-9]*\):.*/\1/p')
+    test -n "$RING_SPAN_MS"
+    test "$RING_SPAN_MS" -ge "$RING_SPAN_FLOOR_MS"
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
@@ -964,6 +982,7 @@ for i in $(seq 1 "$COUNT"); do
     TIMER_SCALE_ORACLE_LINE=$(grep -h -F -- "$TIMER_SCALE_ORACLE_PREFIX" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TIMER_SCALE_ORACLE_LINE"
+    echo "$RING_SPAN_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (BOOT_TESTS:FAIL, KERNEL PANIC, or panic! marker present)"

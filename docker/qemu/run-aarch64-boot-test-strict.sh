@@ -480,6 +480,27 @@ score_serial() {
         echo "Pinned-placement census marker missing"
         return 1
     fi
+    # failure-trace-capture PR-2: TIMER_TICK ring-depth self-check. Fires once,
+    # ~1s into boot, before userspace bring-up traffic would otherwise swamp
+    # CPU 0's shared ring; span_ms is measured over TIMER_TICK-typed entries
+    # only (kernel/src/tracing/providers/irq.rs). Measured on this branch:
+    # unsampled (TICK_SAMPLE=1) reads ~800-870ms at this checkpoint (the ring
+    # wraps on TIMER_TICK volume alone); sampled (TICK_SAMPLE=20, the fix)
+    # reads ~1490-1535ms. RING_SPAN_FLOOR_MS sits with margin on both sides of
+    # that measured pair -- see
+    # docs/planning/green-program/failure-capture/PR-2-2026-09-05.md and its
+    # round doc.
+    RING_SPAN_FLOOR_MS=1100
+    ring_span_line=$(grep -aoE '\[RING_SPAN:cpu=0:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+\]' "$serial_file" 2>/dev/null | tail -1 || true)
+    if [ -z "$ring_span_line" ]; then
+        echo "Ring-span self-check marker missing"
+        return 1
+    fi
+    ring_span_ms=$(echo "$ring_span_line" | sed -n 's/^\[RING_SPAN:cpu=0:span_ms=\([0-9][0-9]*\):.*/\1/p')
+    if [ -z "$ring_span_ms" ] || [ "$ring_span_ms" -lt "$RING_SPAN_FLOOR_MS" ]; then
+        echo "Ring-span self-check span_ms ${ring_span_ms:-<unparsed>} below floor $RING_SPAN_FLOOR_MS ($ring_span_line)"
+        return 1
+    fi
     return 0
 }
 
