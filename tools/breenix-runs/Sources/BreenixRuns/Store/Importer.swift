@@ -60,6 +60,16 @@ public struct Importer {
         var destinationName: String
     }
 
+    private struct PreservedFailureEntry {
+        var sourceURL: URL
+        var serials: [SerialSource]
+        var captures: [CaptureSource]
+        var startedAt: Date
+        var arch: Arch
+        var profile: String
+        var verdict: Verdict
+    }
+
     private let store: RunStore
     private let fileManager: FileManager
     private let scanner: MarkerScanner
@@ -108,18 +118,39 @@ public struct Importer {
         }
 
         var treeResult = ImportPathResult(sourcePath: sourceURL.path)
-        for child in try childDirectories(of: sourceURL) {
+        let children = try childDirectories(of: sourceURL)
+        let preservedFailures = try preservedFailureEntries(in: children, into: &treeResult)
+        let preservedFailuresBySerialData = try indexByPrimarySerialData(preservedFailures)
+        var consumedPreservedFailures: Set<Int> = []
+
+        for child in children {
             if isPreservedFailureContainer(child) {
-                let childResult = try importPreservedFailures(in: child, sourcePath: sourceURL.path)
-                treeResult.imported.append(contentsOf: childResult.imported)
-                treeResult.skipped.append(contentsOf: childResult.skipped)
+                continue
             } else if child.lastPathComponent == "breenix_aarch64_testing_profile" {
                 for iteration in try childDirectories(of: child) where isIntegerName(iteration.lastPathComponent) {
-                    try importGateIteration(iteration, info: GateInfo(arch: .aarch64, profile: "testing"), into: &treeResult)
+                    try importGateIteration(
+                        iteration,
+                        info: GateInfo(arch: .aarch64, profile: "testing"),
+                        preservedFailures: preservedFailures,
+                        preservedFailuresBySerialData: preservedFailuresBySerialData,
+                        consumedPreservedFailures: &consumedPreservedFailures,
+                        into: &treeResult
+                    )
                 }
             } else if let gateInfo = gateInfo(for: child) {
-                try importGateIteration(child, info: gateInfo, into: &treeResult)
+                try importGateIteration(
+                    child,
+                    info: gateInfo,
+                    preservedFailures: preservedFailures,
+                    preservedFailuresBySerialData: preservedFailuresBySerialData,
+                    consumedPreservedFailures: &consumedPreservedFailures,
+                    into: &treeResult
+                )
             }
+        }
+
+        for (index, entry) in preservedFailures.enumerated() where !consumedPreservedFailures.contains(index) {
+            try importPreservedFailure(entry, into: &treeResult)
         }
 
         if !treeResult.imported.isEmpty || !treeResult.skipped.isEmpty {
@@ -160,52 +191,126 @@ public struct Importer {
         )
     }
 
+    private func importGateIteration(
+        _ directory: URL,
+        info: GateInfo,
+        preservedFailures: [PreservedFailureEntry],
+        preservedFailuresBySerialData: [Data: [Int]],
+        consumedPreservedFailures: inout Set<Int>,
+        into result: inout ImportPathResult
+    ) throws {
+        let serials = try serialSources(in: directory)
+        guard !serials.isEmpty else {
+            return
+        }
+
+        let firstSerialData = try Data(contentsOf: serials[0].url)
+        if let matchingIndexes = preservedFailuresBySerialData[firstSerialData],
+           let matchingIndex = matchingIndexes.first(where: { !consumedPreservedFailures.contains($0) }) {
+            consumedPreservedFailures.insert(matchingIndex)
+            let matchedFailure = preservedFailures[matchingIndex]
+            try importPreservedFailure(
+                matchedFailure,
+                captures: mergedCaptures(base: matchedFailure.captures, additional: try captureSources(in: directory)),
+                preloadedFirstSerialData: firstSerialData,
+                into: &result
+            )
+            return
+        }
+
+        try importRun(
+            sourceURL: directory,
+            serials: serials,
+            captures: try captureSources(in: directory),
+            startedAt: modificationDate(of: serials[0].url) ?? Date(),
+            arch: info.arch,
+            profile: info.profile,
+            verdict: .unknown,
+            preloadedFirstSerialData: firstSerialData,
+            into: &result
+        )
+    }
+
     private func importPreservedFailures(in directory: URL, sourcePath: String) throws -> ImportPathResult {
         var result = ImportPathResult(sourcePath: sourcePath)
-        let profile = profileForFailureContainer(directory)
-
-        for child in try directoryContents(of: directory) {
-            if isProdFailureRunDirectory(child) {
-                try importProdFailureRun(child, into: &result)
-            } else if isFlatPreservedFailureSerial(child) {
-                try importFlatPreservedFailure(child, profile: profile, into: &result)
-            }
+        for entry in try preservedFailureEntries(in: directory, into: &result) {
+            try importPreservedFailure(entry, into: &result)
         }
 
         return result
     }
 
     private func importFlatPreservedFailure(_ serialURL: URL, profile: String, into result: inout ImportPathResult) throws {
+        guard let entry = flatPreservedFailureEntry(serialURL, profile: profile, into: &result) else { return }
+        try importPreservedFailure(entry, into: &result)
+    }
+
+    private func importProdFailureRun(_ directory: URL, into result: inout ImportPathResult) throws {
+        guard let entry = prodFailureRunEntry(directory, into: &result) else { return }
+        try importPreservedFailure(entry, into: &result)
+    }
+
+    private func preservedFailureEntries(in directories: [URL], into result: inout ImportPathResult) throws -> [PreservedFailureEntry] {
+        var entries: [PreservedFailureEntry] = []
+        for directory in directories where isPreservedFailureContainer(directory) {
+            entries.append(contentsOf: try preservedFailureEntries(in: directory, into: &result))
+        }
+        return entries
+    }
+
+    private func preservedFailureEntries(in directory: URL, into result: inout ImportPathResult) throws -> [PreservedFailureEntry] {
+        let profile = profileForFailureContainer(directory)
+        var entries: [PreservedFailureEntry] = []
+
+        for child in try directoryContents(of: directory) {
+            if isProdFailureRunDirectory(child) {
+                if let entry = prodFailureRunEntry(child, into: &result) {
+                    entries.append(entry)
+                }
+            } else if isFlatPreservedFailureSerial(child) {
+                if let entry = flatPreservedFailureEntry(child, profile: profile, into: &result) {
+                    entries.append(entry)
+                }
+            }
+        }
+
+        return entries
+    }
+
+    private func flatPreservedFailureEntry(
+        _ serialURL: URL,
+        profile: String,
+        into result: inout ImportPathResult
+    ) -> PreservedFailureEntry? {
         guard let startedAt = timestampFromFlatFailureName(serialURL.lastPathComponent) else {
             result.skipped.append(ImportSkip(path: serialURL.path, reason: "timestamp undeterminable"))
-            return
+            return nil
         }
 
         let sidecar = serialURL.deletingPathExtension().appendingPathExtension("facts.txt")
         let captures = fileManager.fileExists(atPath: sidecar.path)
             ? [CaptureSource(url: sidecar, destinationName: sidecar.lastPathComponent)]
             : []
-        try importRun(
+        return PreservedFailureEntry(
             sourceURL: serialURL,
             serials: [SerialSource(url: serialURL, destinationName: serialURL.lastPathComponent, stream: .single)],
             captures: captures,
             startedAt: startedAt,
             arch: .aarch64,
             profile: profile,
-            verdict: .fail("imported"),
-            into: &result
+            verdict: .fail("imported")
         )
     }
 
-    private func importProdFailureRun(_ directory: URL, into result: inout ImportPathResult) throws {
+    private func prodFailureRunEntry(_ directory: URL, into result: inout ImportPathResult) -> PreservedFailureEntry? {
         guard let startedAt = parseTimestamp(directory.lastPathComponent) else {
             result.skipped.append(ImportSkip(path: directory.path, reason: "timestamp undeterminable"))
-            return
+            return nil
         }
 
         let serialURL = directory.appendingPathComponent("serial.txt")
         guard fileManager.fileExists(atPath: serialURL.path) else {
-            return
+            return nil
         }
 
         var captures: [CaptureSource] = []
@@ -214,16 +319,55 @@ public struct Importer {
             captures.append(CaptureSource(url: facts, destinationName: facts.lastPathComponent))
         }
 
-        try importRun(
+        return PreservedFailureEntry(
             sourceURL: directory,
             serials: [SerialSource(url: serialURL, destinationName: "serial.txt", stream: .single)],
             captures: captures,
             startedAt: startedAt,
             arch: .aarch64,
             profile: "prod",
-            verdict: .fail("imported"),
+            verdict: .fail("imported")
+        )
+    }
+
+    private func importPreservedFailure(
+        _ entry: PreservedFailureEntry,
+        captures: [CaptureSource]? = nil,
+        preloadedFirstSerialData: Data? = nil,
+        into result: inout ImportPathResult
+    ) throws {
+        try importRun(
+            sourceURL: entry.sourceURL,
+            serials: entry.serials,
+            captures: captures ?? entry.captures,
+            startedAt: entry.startedAt,
+            arch: entry.arch,
+            profile: entry.profile,
+            verdict: entry.verdict,
+            preloadedFirstSerialData: preloadedFirstSerialData,
             into: &result
         )
+    }
+
+    private func indexByPrimarySerialData(_ entries: [PreservedFailureEntry]) throws -> [Data: [Int]] {
+        var index: [Data: [Int]] = [:]
+        for (entryIndex, entry) in entries.enumerated() {
+            guard let primarySerial = entry.serials.first else {
+                continue
+            }
+            index[try Data(contentsOf: primarySerial.url), default: []].append(entryIndex)
+        }
+        return index
+    }
+
+    private func mergedCaptures(base: [CaptureSource], additional: [CaptureSource]) -> [CaptureSource] {
+        var destinationNames = Set(base.map(\.destinationName))
+        var captures = base
+        for capture in additional where !destinationNames.contains(capture.destinationName) {
+            destinationNames.insert(capture.destinationName)
+            captures.append(capture)
+        }
+        return captures
     }
 
     private func importLooseSerialDirectory(_ directory: URL) throws -> ImportPathResult {
@@ -429,10 +573,18 @@ public struct Importer {
     private func isPreservedFailureContainer(_ directory: URL) -> Bool {
         directory.lastPathComponent == "breenix_aarch64_strict_failures"
             || directory.lastPathComponent == "breenix_prod_profile_failures"
+            || directory.lastPathComponent == "breenix_testing_profile_failures"
     }
 
     private func profileForFailureContainer(_ directory: URL) -> String {
-        directory.lastPathComponent == "breenix_prod_profile_failures" ? "prod" : "strict"
+        switch directory.lastPathComponent {
+        case "breenix_prod_profile_failures":
+            return "prod"
+        case "breenix_testing_profile_failures":
+            return "testing"
+        default:
+            return "strict"
+        }
     }
 
     private func isFlatPreservedFailureSerial(_ url: URL) -> Bool {

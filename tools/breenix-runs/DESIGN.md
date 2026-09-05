@@ -508,7 +508,7 @@ disk.
 | Shape | Detection | Inferred |
 |---|---|---|
 | A gate tmp tree (`breenix_aarch64_strict_<i>/`, `breenix_x86_boot_tests_<i>/`, `breenix_gate_<i>/`) | directory name pattern + a `serial*.txt` inside | arch and profile from the directory name; one run per iteration directory |
-| A preserved-failure dir (`breenix_aarch64_strict_failures/`, `breenix_prod_profile_failures/<ts>/`) | `<utc>-boot<N>.txt` filename (`run-aarch64-boot-test-strict.sh:493`) | `startedAt` from the filename stamp; `verdict = .fail("imported")` |
+| A preserved-failure dir (`breenix_aarch64_strict_failures/`, `breenix_prod_profile_failures/<ts>/`, `breenix_testing_profile_failures/`) | `<utc>-boot<N>.txt` filename (`run-aarch64-boot-test-strict.sh:493`) | `startedAt` from the filename stamp; `verdict = .fail("imported")` |
 | A loose serials directory (`docs/planning/**/serials/`) | any `*.txt` | arch from banner (`Breenix ARM64 Kernel Starting`) or from `serial_kernel` naming; profile from marker presence (`boot_tests`-only markers ⇒ strict profile, per the census at `run-aarch64-boot-test-strict.sh:203`) |
 
 Import is **idempotent**: a run's id is derived from
