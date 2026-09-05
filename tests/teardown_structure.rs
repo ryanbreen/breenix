@@ -16538,7 +16538,39 @@ fn try_manager_mask_ratchet_is_not_vacuous() {
     let accessor = block_after(&process_mod, "fn try_manager").to_string();
     let drop_impl = block_after(&process_mod, "impl Drop for TryProcessManagerGuard").to_string();
 
-    let legs: [(&str, String, &str); 5] = [
+    // The ordering half of `restored_after_release` needs a leg that keeps the
+    // release call and moves it, not one that removes it: a mutation that loses
+    // the release reddens on "never releases the mutex" whatever the ordering
+    // is, so it would prove nothing about ordering. This one lifts the release
+    // block out and re-inserts it below both restores, which is the regression
+    // shape the guard's comment warns against.
+    let release_block = "        unsafe {\n            core::mem::ManuallyDrop::drop(&mut self.guard);\n        }\n\n";
+    let x86_restore_block = "        #[cfg(target_arch = \"x86_64\")]\n        if self.interrupts_were_enabled {\n            unsafe {\n                crate::arch_enable_interrupts();\n            }\n        }\n";
+    let reordered_drop = drop_impl
+        .replacen(release_block, "", 1)
+        .replacen(
+            x86_restore_block,
+            &format!("{x86_restore_block}\n{release_block}"),
+            1,
+        );
+    assert!(
+        reordered_drop.contains("core::mem::ManuallyDrop::drop"),
+        "the reorder leg lost the release call, so it would redden for the wrong reason"
+    );
+    let released_at = reordered_drop
+        .find("core::mem::ManuallyDrop::drop")
+        .expect("reordered drop still releases");
+    for restore in ["msr daif,", "crate::arch_enable_interrupts()"] {
+        let restored_at = reordered_drop
+            .find(restore)
+            .unwrap_or_else(|| panic!("reordered drop lost the `{restore}` restore"));
+        assert!(
+            restored_at < released_at,
+            "the reorder leg did not move the release below `{restore}`"
+        );
+    }
+
+    let legs: [(&str, String, &str); 6] = [
         (
             "aarch64 mask deleted from the acquisition",
             process_mod.replacen(
@@ -16584,13 +16616,18 @@ fn try_manager_mask_ratchet_is_not_vacuous() {
             "does not restore the x86_64 interrupt state",
         ),
         (
-            "guard drop restores before it releases",
+            "the release call renamed out of the guard drop",
             process_mod.replacen(
                 &drop_impl,
-                &drop_impl.replacen("ManuallyDrop::drop", "zz_release_moved_below", 1),
+                &drop_impl.replacen("ManuallyDrop::drop", "zz_not_a_release_call", 1),
                 1,
             ),
             "never releases the mutex",
+        ),
+        (
+            "the release moved below both restores in the guard drop",
+            process_mod.replacen(&drop_impl, &reordered_drop, 1),
+            "after releasing the mutex",
         ),
     ];
 
