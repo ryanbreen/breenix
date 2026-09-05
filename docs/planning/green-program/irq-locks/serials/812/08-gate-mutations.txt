@@ -1,0 +1,16 @@
+# Gate-side mutations of the strict gate's IRQ_HOLD_ORACLE pins
+# Captured 2026-09-05 on branch fix/812-try-manager-masked; each run is
+# BREENIX_STRICT_SCORE_ONLY=<mutated copy of the green serial> docker/qemu/run-aarch64-boot-test-strict.sh
+
+== mut-verdict
+SCORE: FAIL - IRQ-hold oracle reported failure ([IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12028:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:FAIL]) (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/p812-gate-tmp/mut-verdict.txt)
+
+== mut-absent
+SCORE: FAIL - IRQ-hold oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/p812-gate-tmp/mut-absent.txt)
+
+== mut-unmasked
+SCORE: FAIL - IRQ-hold oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/p812-gate-tmp/mut-unmasked.txt)
+
+== mut-stalled
+SCORE: FAIL - IRQ-hold oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/p812-gate-tmp/mut-stalled.txt)
+
