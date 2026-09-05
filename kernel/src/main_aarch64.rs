@@ -1345,6 +1345,17 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
     kernel::arch_impl::aarch64::ttbr0::emit_asid_census();
+    // The pinned-placement census both aarch64 boot gates fail on. Emitted here
+    // because this point is reached in every profile: the production profile
+    // has no boot-test sampling kthread, so without this line the production
+    // gate would have nothing to assert on. The one-shot marker in
+    // `hold_pinned_wake_for_home` is what covers a refusal that happens after
+    // this point.
+    // claim-lint:ok: 4 of 4 census lines in a strict boot and 1 of 1 in a
+    // production boot --
+    // docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt
+    // and 02-prod-boot1-serial.txt
+    kernel::task::scheduler::emit_pinned_placement_census();
 
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all

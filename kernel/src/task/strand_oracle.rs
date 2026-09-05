@@ -470,6 +470,12 @@ fn report_strand(
     // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/03-strict-boot1-serial.txt
     #[cfg(target_arch = "aarch64")]
     crate::arch_impl::aarch64::ttbr0::emit_asid_census();
+    // The pinned-placement census, on the same period and in the same sampling
+    // kthread context as the two lines above. The boot-path emission fires
+    // before userspace; this one keeps reporting while the gate's workload
+    // runs, so a refusal that happens late is visible in a count and not only
+    // in the one-shot marker.
+    crate::task::scheduler::emit_pinned_placement_census();
 }
 
 #[cfg(target_arch = "aarch64")]

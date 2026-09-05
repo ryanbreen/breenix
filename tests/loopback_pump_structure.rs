@@ -1186,6 +1186,123 @@ fn validate_wakeup_placement_is_bounded_by_online_cpus(source: &str) -> Result<(
         if compact.contains("(0..MAX_CPUS).min_by_key(") {
             return Err(format!("{name} selects from all MAX_CPUS queues"));
         }
+        // The pairing rule, which is what makes this validator see arms that
+        // did not exist when it was written. Each placement arm in these
+        // functions bounds a CPU choice by the online range AND filters it
+        // through scheduling liveness, so the two references come in pairs.
+        // Counting the pair rather than naming the arms is deliberate: the pin
+        // arm this slice adds is a second arm, and the 4 substring rules above
+        // describe the least-loaded arm only -- they stay green whatever the
+        // pin arm does. A new arm that brings one half of the pair reddens
+        // this, whatever it is called; a new arm that brings both passes.
+        let mask = code_mask(body);
+        let bounds = identifier_offsets(body, &mask, "online_cpu_count").len();
+        let liveness = identifier_offsets(body, &mask, "cpu_accepts_wakeups").len();
+        if bounds != liveness {
+            return Err(format!(
+                "{name} has {bounds} online-range test(s) but {liveness} scheduling-liveness test(s): every placement arm must consult both"
+            ));
+        }
+
+        // And the rule the pairing count alone cannot enforce: a placement made
+        // from a thread's stored CPU pin is a placement like any other, so the
+        // block that reads cpu_affinity must consult the online range and
+        // scheduling liveness BEFORE it returns a CPU. Deleting both halves of
+        // that condition together keeps the counts balanced, so without this
+        // the pairing rule stays green on exactly the shape the finding was
+        // about. Located by the cpu_affinity read, not by arm name.
+        for offset in identifier_offsets(body, &mask, "cpu_affinity") {
+            let block = braced_block(body, &mask, offset)
+                .ok_or_else(|| format!("{name} reads cpu_affinity outside any block"))?;
+            if !has_identifier(block, "online_cpu_count") {
+                return Err(format!(
+                    "{name} returns a pinned CPU without bounding it by the online range"
+                ));
+            }
+            if !has_identifier(block, "cpu_accepts_wakeups") {
+                return Err(format!(
+                    "{name} returns a pinned CPU without consulting scheduling liveness"
+                ));
+            }
+            let block_mask = code_mask(block);
+            let first_return = identifier_offsets(block, &block_mask, "return")
+                .into_iter()
+                .next();
+            let first_liveness = identifier_offsets(block, &block_mask, "cpu_accepts_wakeups")
+                .into_iter()
+                .next();
+            if let (Some(returned), Some(checked)) = (first_return, first_liveness) {
+                if returned < checked {
+                    return Err(format!(
+                        "{name} returns from the pin block before consulting scheduling liveness"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A refused pinned wake is HELD, not destroyed.
+///
+/// Three separate rules, because the finding this replaces was three defects
+/// wearing one shape. The refusal must not consume the wake (the hold writes no
+/// thread state, so the `Ready` its caller published stands and the blocked
+/// kind it woke from is not collapsed), it must not undo a publication some
+/// other path made (the hold writes no queue), and something must place the
+/// wake later (both scheduler entry points run the delivery, which enqueues).
+///
+/// The first two are enforced by the RECEIVER: `&self` cannot write a thread
+/// row or a queue, so those rules hold by type rather than by substring, and
+/// the leg for them mutates the receiver rather than the body. The pin rule is
+/// the one the earlier park carried: `Thread::cpu_affinity` exists in two
+/// copies, so writing it from here would leave the process-table row naming a
+/// CPU the scheduler's copy does not.
+/// claim-lint:ok: 6 of 6 legs for these rules -- the live source, a `&mut self`
+/// receiver, an injected state write, an injected queue write, a deleted
+/// enqueue, and a deleted delivery call -- are the tests below
+fn validate_pinned_hold_preserves_the_wake(source: &str) -> Result<(), String> {
+    if !source.contains("fn hold_pinned_wake_for_home(&self, thread_id: u64)") {
+        return Err(
+            "the hold must take &self, so that it cannot write a thread row or a queue".to_string(),
+        );
+    }
+    let body = function_body(source, "hold_pinned_wake_for_home")
+        .ok_or_else(|| "the pinned-wake hold disposition is missing".to_string())?;
+    let compact = compact_code(body);
+    if !compact.contains("PINNED_HOME_CPU_UNAVAILABLE.fetch_add(") {
+        return Err("the hold must count itself, or no gate can see it".to_string());
+    }
+    if compact.contains("ThreadState::") || compact.contains("set_ready(") {
+        return Err(
+            "the hold writes thread state; the wake it was given would be lost".to_string(),
+        );
+    }
+    if compact.contains("per_cpu_queues") {
+        return Err("the hold writes a ready queue; it may only refuse a placement".to_string());
+    }
+    if compact.contains("cpu_affinity=") {
+        return Err(
+            "the hold writes a pin; the two copies of the field would disagree".to_string(),
+        );
+    }
+
+    let delivery = function_body(source, "deliver_pinned_wakes_for_this_cpu")
+        .ok_or_else(|| "nothing places a held wake; the refusal would be permanent".to_string())?;
+    let delivery_compact = compact_code(delivery);
+    if !delivery_compact.contains("self.per_cpu_queues[cpu].push_back(") {
+        return Err("the delivery does not place the held wake on a ready queue".to_string());
+    }
+    if !delivery_compact.contains("PINNED_WAKES_DELIVERED.fetch_add(") {
+        return Err("the delivery does not count itself, so a recovery is invisible".to_string());
+    }
+    for name in ["schedule", "schedule_deferred_requeue"] {
+        let entry = function_body(source, name).ok_or_else(|| format!("missing {name}"))?;
+        if !compact_code(entry).contains("self.deliver_pinned_wakes_for_this_cpu()") {
+            return Err(format!(
+                "{name} does not place the wakes this CPU is holding, so entering the scheduler is not what ends a hold"
+            ));
+        }
     }
     Ok(())
 }
@@ -1968,6 +2085,325 @@ fn wakeup_placement_validator_rejects_missing_scheduling_liveness_check() {
 }
 
 #[test]
+fn wakeup_placement_validator_rejects_unfiltered_affinity_arm() {
+    // The arm as the parked branch first wrote it: a pinned CPU returned early,
+    // bounded by the online range with no scheduling-liveness check.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
+        .expect("find wakeup placement fixture");
+    let mutated_wakeup = wakeup.replacen(
+        "(home_is_this_cpu || self.cpu_accepts_wakeups(pin.cpu))",
+        "true",
+        1,
+    );
+    assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
+    let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
+    assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
+}
+
+#[test]
+fn wakeup_placement_validator_rejects_max_cpu_bound_on_the_affinity_arm() {
+    // The other half of the same arm: a pinned CPU judged against MAX_CPUS
+    // instead of the online range.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
+        .expect("find wakeup placement fixture");
+    let mutated_wakeup =
+        wakeup.replacen("pin.cpu < self.online_cpu_count()", "pin.cpu < MAX_CPUS", 1);
+    assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
+    let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
+    assert!(validate_wakeup_placement_is_bounded_by_online_cpus(&mutated).is_err());
+}
+
+#[test]
+fn wakeup_placement_validator_rejects_deleting_the_liveness_filter_alone() {
+    // The third leg, and the one the pairing rule exists for: the pin arm keeps
+    // its online bound and loses its liveness test, which no substring rule
+    // written against the least-loaded arm can see.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let wakeup = function_body(&source, "find_target_cpu_for_wakeup")
+        .expect("find wakeup placement fixture");
+    let mutated_wakeup = wakeup.replacen(
+        "(home_is_this_cpu || self.cpu_accepts_wakeups(pin.cpu))",
+        "home_is_this_cpu",
+        1,
+    );
+    assert_ne!(mutated_wakeup, wakeup, "fixture mutation must apply");
+    let mutated = source.replacen(wakeup, &mutated_wakeup, 1);
+    let error = validate_wakeup_placement_is_bounded_by_online_cpus(&mutated)
+        .expect_err("the pairing rule must see a pin arm that lost its liveness test");
+    assert!(error.contains("scheduling-liveness test(s)"), "{error}");
+}
+
+#[test]
+fn wakeup_placement_validator_accepts_the_live_source() {
+    // Anti-vacuity for the mutation legs above: they mean nothing unless the
+    // unmutated source passes, so that is asserted rather than implied.
+    // claim-lint:ok: 3 of 3 mutation legs above depend on this control
+    validate_wakeup_placement_is_bounded_by_online_cpus(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("live scheduler source passes the placement validator");
+}
+
+#[test]
+fn pinned_hold_preserves_the_wake() {
+    // Anti-vacuity for the five mutation legs below.
+    // claim-lint:ok: 5 of 5 mutation legs below depend on this control
+    validate_pinned_hold_preserves_the_wake(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("a refused pinned wake is held for its home CPU and later placed");
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_hold_that_can_write_scheduler_state() {
+    // The receiver IS the rule: `&mut self` is what a hold would need before it
+    // could publish a blocked state or empty a queue, so taking it away is the
+    // leg for both.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let mutated = source.replacen(
+        "fn hold_pinned_wake_for_home(&self, thread_id: u64)",
+        "fn hold_pinned_wake_for_home(&mut self, thread_id: u64)",
+        1,
+    );
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_hold_that_publishes_a_blocked_state() {
+    // The defect the earlier park shipped, as a leg: a refusal that writes
+    // `Blocked` consumes the wake its caller just published, and 0 of the paths
+    // in this tree re-arm it. Injected rather than deleted, because the repair
+    // is the ABSENCE of the write and a deletion leg cannot see an absence.
+    // claim-lint:ok: 1 of 1 injection, on 1 of 1 hold function
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+    let mutated_hold = hold.replacen(
+        "let holds = ",
+        "if let Some(thread) = self.get_thread_mut(thread_id) { thread.state = ThreadState::Blocked; }\n        let holds = ",
+        1,
+    );
+    assert_ne!(mutated_hold, hold, "fixture mutation must apply");
+    let mutated = source.replacen(hold, &mutated_hold, 1);
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_hold_that_empties_a_ready_queue() {
+    // The other half of the same defect: a refusal that empties each of the
+    // MAX_CPUS queues reverses a publication some other path may have made.
+    // claim-lint:ok: 1 of 1 injection, on 1 of 1 hold function
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+    let mutated_hold = hold.replacen(
+        "let holds = ",
+        "for queue in self.per_cpu_queues.iter_mut() { queue.retain(|&id| id != thread_id); }\n        let holds = ",
+        1,
+    );
+    assert_ne!(mutated_hold, hold, "fixture mutation must apply");
+    let mutated = source.replacen(hold, &mutated_hold, 1);
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_hold_that_rewrites_the_pin() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+    let mutated_hold = hold.replacen(
+        "let holds = ",
+        "if let Some(thread) = self.get_thread_mut(thread_id) { thread.cpu_affinity = None; }\n        let holds = ",
+        1,
+    );
+    assert_ne!(mutated_hold, hold, "fixture mutation must apply");
+    let mutated = source.replacen(hold, &mutated_hold, 1);
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_delivery_that_never_enqueues() {
+    // Without this leg the rules above describe a refusal that is polite about
+    // the thread's state and still leaves it in 0 ready queues for good.
+    // claim-lint:ok: 1 of 1 enqueue in the delivery is the mutation target
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let delivery = function_body(&source, "deliver_pinned_wakes_for_this_cpu")
+        .expect("find the delivery fixture");
+    let mutated_delivery =
+        delivery.replacen("self.per_cpu_queues[cpu].push_back(", "let _dropped = (", 1);
+    assert_ne!(mutated_delivery, delivery, "fixture mutation must apply");
+    let mutated = source.replacen(delivery, &mutated_delivery, 1);
+    assert!(validate_pinned_hold_preserves_the_wake(&mutated).is_err());
+}
+
+#[test]
+fn pinned_hold_validator_rejects_a_scheduler_entry_that_skips_the_delivery() {
+    // A delivery that 1 of the 2 entry points runs is a delivery the other
+    // path's CPUs do not make, so 2 of 2 are named and 2 of 2 are legged.
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    for name in ["schedule", "schedule_deferred_requeue"] {
+        let entry = function_body(&source, name).expect("find a scheduler entry fixture");
+        let mutated_entry = entry.replacen("self.deliver_pinned_wakes_for_this_cpu();", "", 1);
+        assert_ne!(
+            mutated_entry, entry,
+            "fixture mutation must apply for {name}"
+        );
+        let mutated = source.replacen(entry, &mutated_entry, 1);
+        let error = validate_pinned_hold_preserves_the_wake(&mutated)
+            .expect_err("a scheduler entry that skips the delivery must redden");
+        assert!(error.contains(name), "{error}");
+    }
+}
+
+/// Score `serial` with `gate`'s OWN verdict code, without booting.
+///
+/// Each aarch64 gate exposes a scoring-only entry point through an environment
+/// variable; setting it makes the script skip the QEMU boot and run its verdict
+/// block against the named serial. The `contains` check is a guard, not the
+/// assertion: if the entry point were removed, invoking the script here would
+/// boot QEMU out of a unit test, so this fails first instead.
+fn score_with_gate(gate: &str, variable: &str, serial: &Path) -> (bool, String) {
+    let script = repo_text(gate);
+    assert!(
+        script.contains(variable),
+        "{gate} has no {variable} scoring-only entry point, so its verdict rules cannot be run \
+         from a test -- and invoking it without one would boot QEMU"
+    );
+    let output = std::process::Command::new("bash")
+        .arg(repo_root().join(gate))
+        .env(variable, serial)
+        .current_dir(repo_root())
+        .output()
+        .unwrap_or_else(|error| panic!("run {gate} in scoring-only mode: {error}"));
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    (output.status.success(), text)
+}
+
+/// `serial` with every pinned-placement census line rewritten to `replacement`,
+/// or deleted when there is none.
+/// claim-lint:ok: 2 of 2 uses of this helper are legs C and B below
+fn rewrite_pinned_census_lines(serial: &str, replacement: Option<&str>) -> String {
+    let mut out = String::new();
+    for line in serial.lines() {
+        if line.contains("[PINNED_HOME_CPU_UNAVAILABLE:") {
+            if let Some(text) = replacement {
+                out.push_str(text);
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+#[test]
+fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
+    // The gates are RUN, not grepped: a script whose census assertions have
+    // been deleted still contains its pattern variables, so only the exit
+    // status measures the rule. Four legs against each gate.
+    let gates = [
+        (
+            "docker/qemu/run-aarch64-boot-test-strict.sh",
+            "BREENIX_STRICT_SCORE_ONLY",
+            "docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt",
+        ),
+        (
+            "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
+            "BREENIX_PROD_SCORE_ONLY",
+            "docs/planning/green-program/aarch64-testing/serials/slice3d/02-prod-boot1-serial.txt",
+        ),
+    ];
+    let scratch =
+        std::env::temp_dir().join(format!("breenix-pinned-gate-legs-{}", std::process::id()));
+    fs::create_dir_all(&scratch).expect("create the scratch directory for the gate legs");
+    for (gate, variable, baseline) in gates {
+        let serial = repo_text(baseline);
+        assert!(
+            serial.contains(
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]"
+            ),
+            "{baseline} is the green baseline for {gate} and must carry the census"
+        );
+        let leg = |name: &str, body: &str| {
+            let path = scratch.join(format!("{variable}-{name}.txt"));
+            fs::write(&path, body).expect("write a gate leg serial");
+            score_with_gate(gate, variable, &path)
+        };
+
+        // Leg A. Anti-vacuity for the four below: a gate that rejected every
+        // serial would satisfy them without scoring anything.
+        // claim-lint:ok: 1 of 5 legs is this one, and it is what keeps the
+        // other 4 from being satisfied by a gate that rejects everything
+        let (passed, output) = leg("green", &serial);
+        assert!(
+            passed,
+            "{gate} must pass the serial it was recorded green on, or the failing legs below \
+             say nothing: {output}"
+        );
+
+        // Leg B. One census line reports a refusal. That is the class the
+        // counter exists for.
+        let (passed, output) = leg(
+            "refused",
+            &serial.replacen(
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=3:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
+                1,
+            ),
+        );
+        assert!(
+            !passed,
+            "{gate} passed a serial reporting a pinned-placement refusal: {output}"
+        );
+
+        // Leg C. The census never printed. A gate that only fails on a non-zero
+        // reading is satisfied by a kernel that stopped reporting.
+        // claim-lint:ok: this leg deletes 4 of 4 census lines in the strict
+        // baseline and 1 of 1 in the production one
+        let (passed, output) = leg("missing", &rewrite_pinned_census_lines(&serial, None));
+        assert!(
+            !passed,
+            "{gate} passed a serial with no pinned-placement census at all: {output}"
+        );
+
+        // Leg D. A hold happened AFTER the last census emission, so every
+        // census line still reads zero and only the one-shot marker says so.
+        // Without this leg the production gate, whose census is emitted once
+        // before userspace, would score such a boot green.
+        // claim-lint:ok: 1 of 1 census line in the production baseline reads
+        // count=0, so only the appended marker distinguishes this leg
+        let mut late_hold = serial.clone();
+        late_hold.push_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=7:home=1:cpu=0:count=1]\n");
+        let (passed, output) = leg("late-hold", &late_hold);
+        assert!(
+            !passed,
+            "{gate} passed a serial whose one-shot marker reports a hold: {output}"
+        );
+
+        // Leg E. A hold-pen pin was overridden. The gate scores a census line
+        // by comparing it against the zero literal rather than by matching each
+        // field, so 1 of the 2 fields this round added is gated by the same
+        // rule as the 2 that were there before it -- which is what this leg
+        // measures.
+        // claim-lint:ok: 4 of 4 census fields are covered by the comparison,
+        // and 2 of them are varied by a leg here
+        let (passed, output) = leg(
+            "hold-pen",
+            &serial.replacen(
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]",
+                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=2:delivered=0]",
+                1,
+            ),
+        );
+        assert!(
+            !passed,
+            "{gate} passed a serial reporting a silently overridden hold-pen pin: {output}"
+        );
+    }
+
+    fs::remove_dir_all(&scratch).ok();
+}
+
+#[test]
 fn scheduling_paths_reclaim_unschedulable_cpu_queues() {
     validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&repo_text(
         "kernel/src/task/scheduler.rs",
@@ -1984,6 +2420,200 @@ fn unschedulable_reclaim_validator_rejects_missing_deferred_reclaim() {
     assert_ne!(mutated_deferred, deferred, "fixture mutation must apply");
     let mutated = source.replacen(deferred, &mutated_deferred, 1);
     assert!(validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&mutated).is_err());
+}
+
+/// A `cpu_affinity` guard is what slice 3e still owes each migration site
+/// below: a function in `kernel/src/task/scheduler.rs` that pushes a thread onto a
+/// `per_cpu_queues` slot without reading the pin anywhere in its own body --
+/// neither the `cpu_affinity` field nor `CpuPin` directly, nor through
+/// either of the 2 functions that read the field on this file's behalf
+/// (`find_target_cpu_for_wakeup`, the wake path's placement rule, and
+/// `pinned_wake_is_waiting_here`, the hold's delivery predicate).
+///
+/// Census-shaped, not a name list: this walks each `.push_back(` /
+/// `.push_front(` call on a `per_cpu_queues[..]` slot in the file and
+/// classifies each one by what its own function body does, so a new
+/// pin-blind push added anywhere in the file changes the count and reddens
+/// `pin_blind_migration_census_matches_the_slice_3e_table` -- a table of
+/// today's sites by name would not catch that.
+///
+/// Two shapes are excluded because they provably cannot move a pinned
+/// thread anywhere its pin forbids:
+///   1. the pushed value is `current_id` or `next_thread_id` -- this file's
+///      two names for the thread the scheduling decision already concerns,
+///      going back onto the CPU it is already the current or next thread
+///      of, having stayed on it the whole time;
+///   2. the push is preceded, in the same function, by a `.pop_front()` on
+///      the textually identical `per_cpu_queues[<idx>]` slot -- a decline
+///      that puts a thread back exactly where it was just taken from.
+/// A third exclusion is scope, not shape: the 3 functions gated behind a
+/// test-only feature (`coreproof`, `ec0_fault_inject`, `boot_tests`)
+/// manufacture state for a different primitive's test and do not ship in a
+/// production kernel, so they are not counted.
+///
+/// `add_thread_inner` (the publish-time placement arm) and the 6 wake-path
+/// functions (`unblock`, `unblock_for_signal`, `unblock_for_child_exit`,
+/// `wake_io_thread_locked`, `wake_expired_timers`, and the hold's own
+/// delivery, `deliver_pinned_wakes_for_this_cpu`) are excluded by the pin
+/// check itself: each reads `cpu_affinity` in its own body or is the
+/// delivery predicate that does.
+#[derive(Debug)]
+struct PinBlindSite {
+    line: usize,
+    function: String,
+    index_expr: String,
+}
+
+fn pin_blind_migration_sites(source: &str) -> Vec<PinBlindSite> {
+    let mask = code_mask(source);
+    let masked_bytes: Vec<u8> = source
+        .bytes()
+        .zip(mask.iter().copied())
+        .map(|(byte, code)| if code { byte } else { b' ' })
+        .collect();
+    let masked =
+        String::from_utf8(masked_bytes).expect("scheduler.rs is ASCII outside comments/strings");
+
+    let spans = function_spans(source);
+    let test_only_features = [
+        "feature = \"coreproof\"",
+        "feature = \"ec0_fault_inject\"",
+        "feature = \"boot_tests\"",
+    ];
+
+    let mut sites = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = masked[search_from..].find("per_cpu_queues[") {
+        let bracket_open = search_from + rel + "per_cpu_queues[".len();
+        let Some(rel_close) = masked[bracket_open..].find(']') else {
+            break;
+        };
+        let idx_text = masked[bracket_open..bracket_open + rel_close]
+            .trim()
+            .to_string();
+        let after_bracket = bracket_open + rel_close + 1;
+        let tail = &masked[after_bracket..];
+        let trimmed_tail = tail.trim_start();
+        search_from = after_bracket + 1;
+
+        let call_kind_len = if trimmed_tail.starts_with(".push_back(") {
+            Some(".push_back(".len())
+        } else if trimmed_tail.starts_with(".push_front(") {
+            Some(".push_front(".len())
+        } else {
+            None
+        };
+        let Some(call_kind_len) = call_kind_len else {
+            continue;
+        };
+        let arg_text = trimmed_tail[call_kind_len..].trim_start();
+        let arg: String = arg_text
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+
+        let Some(span) = spans
+            .iter()
+            .filter(|s| s.open <= bracket_open && bracket_open <= s.close)
+            .min_by_key(|s| s.close - s.open)
+        else {
+            continue;
+        };
+
+        let body = normalized_code(&source[span.open..=span.close]);
+        let pin_aware = body.contains("cpu_affinity")
+            || body.contains("CpuPin")
+            || body.contains("find_target_cpu_for_wakeup(")
+            || body.contains("pinned_wake_is_waiting_here(");
+        if pin_aware {
+            continue;
+        }
+
+        // Scope exclusion: skip a function gated behind a test-only
+        // feature. The attribute region is the raw source between the end
+        // of the nearest earlier function (in file order) and this
+        // function's own open brace, which is where an item's
+        // `#[cfg(...)]` attributes live.
+        let prev_close = spans
+            .iter()
+            .filter(|s| s.close < span.open)
+            .map(|s| s.close)
+            .max()
+            .unwrap_or(0);
+        let attr_region = &source[prev_close..span.open];
+        if test_only_features
+            .iter()
+            .any(|marker| attr_region.contains(marker))
+        {
+            continue;
+        }
+
+        if arg == "current_id" || arg == "next_thread_id" {
+            continue;
+        }
+
+        // Same-index decline exclusion: any earlier `.pop_front()` in this
+        // same function on the textually identical `per_cpu_queues[<idx>]`
+        // slot means this push puts the thread back where it was just
+        // taken from.
+        let scan_region = &masked[span.open..bracket_open];
+        let mut declined = false;
+        let mut pop_search_from = 0usize;
+        while let Some(rel) = scan_region[pop_search_from..].find("per_cpu_queues[") {
+            let pop_bracket_open = pop_search_from + rel + "per_cpu_queues[".len();
+            let Some(pop_rel_close) = scan_region[pop_bracket_open..].find(']') else {
+                break;
+            };
+            let pop_idx =
+                scan_region[pop_bracket_open..pop_bracket_open + pop_rel_close].trim();
+            let pop_after = pop_bracket_open + pop_rel_close + 1;
+            if pop_idx == idx_text
+                && scan_region[pop_after..].trim_start().starts_with(".pop_front(")
+            {
+                declined = true;
+                break;
+            }
+            pop_search_from = pop_after + 1;
+        }
+        if declined {
+            continue;
+        }
+
+        let line = source[..bracket_open].matches('\n').count() + 1;
+        sites.push(PinBlindSite {
+            line,
+            function: span.name.clone(),
+            index_expr: idx_text,
+        });
+    }
+    sites
+}
+
+/// Slice 3d's own R157 ruling left the reclaim and steal sites unguarded
+/// (SLICE3D-2026-09-05.md section 13, "What is not claimed"). This is the
+/// census that section's table now enumerates by file:line. The count is
+/// slice 3e's scope, not a claim that any of it is fixed here -- 0 threads
+/// carry a `per_cpu_worker` pin at runtime today, so each of these 11
+/// sites is inert in the same sense the rest of this slice's new arms are
+/// (section 4).
+#[test]
+fn pin_blind_migration_census_matches_the_slice_3e_table() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let sites = pin_blind_migration_sites(&source);
+    assert_eq!(
+        sites.len(),
+        11,
+        "kernel/src/task/scheduler.rs now has {} pin-blind per_cpu_queues \
+         migration sites (found: {:?}) but SLICE3D-2026-09-05.md section 13's \
+         census table has 11 rows; slice 3e owes the cpu_affinity guard at \
+         every one of them -- update that table to match before changing \
+         this expectation",
+        sites.len(),
+        sites
+            .iter()
+            .map(|s| format!("{}:{}({})", s.function, s.line, s.index_expr))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
