@@ -13,8 +13,8 @@ Requirement: 100% success rate (all 1 must pass)
 
 Running tests...
 
-qemu-system-aarch64: terminating on signal 15 from pid 71849 (<unknown process>)
-  [FAIL] Boot 1: Pinned-placement census reported a field above zero ([PINNED_HOME_CPU_UNAVAILABLE:count=1:publish_discarded=0:hold_pen_migrated=0:delivered=0]) (916 lines); serial: /tmp/breenix_aarch64_strict_failures/20260905T121116Z-boot1.txt
+qemu-system-aarch64: terminating on signal 15 from pid 70279 (<unknown process>)
+  [FAIL] Boot 1: Pinned-placement census reported a field above zero ([PINNED_HOME_CPU_UNAVAILABLE:count=1:publish_discarded=0:hold_pen_migrated=0:delivered=0]) (942 lines); serial: /tmp/breenix_aarch64_strict_failures/20260905T121041Z-boot1.txt
 
 =========================================
 RESULTS

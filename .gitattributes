@@ -59,7 +59,8 @@ docs/planning/green-program/aarch64-testing/serials/slice3a/** -text
 
 # Slice 3d serials: raw aarch64 QEMU serial captures from this Mac -- the strict
 # and production baselines the pinned-placement gate legs score, the three
-# production gate outputs, and the forced-park anti-vacuity boot. Kept
-# byte-exact for the same reason as the captures above -- the CR bytes the guest
-# console emits are part of the evidence, and a CRLF normalisation would edit it.
+# production gate outputs, the forced-hold anti-vacuity boot, and the x86 gate
+# and build captures from beast. Kept byte-exact for the same reason as the
+# captures above -- the CR bytes the guest console emits are part of the
+# evidence, and a CRLF normalisation would edit it.
 docs/planning/green-program/aarch64-testing/serials/slice3d/** -text

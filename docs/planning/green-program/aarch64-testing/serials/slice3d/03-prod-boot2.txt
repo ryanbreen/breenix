@@ -3,12 +3,12 @@ Building the shipped ARM64 production kernel profile...
 warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
 Guard: kernel FP/SIMD instruction check
-  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4fcf27e6-37f-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4fcf27e6-37f-5/target/aarch64-breenix-kernel/release/kernel-aarch64
   objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
-  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4fcf27e6-37f-1/scripts/kernel-neon-allowlist.txt
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4fcf27e6-37f-5/scripts/kernel-neon-allowlist.txt
 [0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
 Booting the ARM64 production profile...
-qemu-system-aarch64: terminating on signal 15 from pid 93185 (<unknown process>)
+qemu-system-aarch64: terminating on signal 15 from pid 61628 (<unknown process>)
 PASS: production profile reached bsshd with the futex oracle seam absent
 Observed: [FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
 Observed: [init] futex_handoff_oracle exited pid=6 code=0
@@ -24,8 +24,8 @@ Observed TTY oracle marker count: 2
 Observed TTY oracle failure count: 0
 Observed TTBR0 ASID census marker count: 13
 Observed TTBR0 ASID census untagged-publish line count: 0
-Observed: [TTBR0_ASID_CENSUS:untagged=0:tagged=21729:kernel=24304:cleared=45349]
+Observed: [TTBR0_ASID_CENSUS:untagged=0:tagged=22570:kernel=25436:cleared=47308]
 Observed pinned-placement census marker count: 1
-Observed pinned-placement refusal line count: 0
-Observed: [PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0]
+Observed pinned-placement non-zero census line count: 0
+Observed: [PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]
 Observed crash marker count: 0
