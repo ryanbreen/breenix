@@ -7,6 +7,14 @@ set -e
 COUNT=${1:-10}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
+# invoking this script hardcode the identical /tmp/breenix_kthread_$i path, so
+# one lane's rm -rf/mkdir can clobber another lane's in-flight run. Defaulting
+# to /tmp keeps every existing caller byte-identical; a concurrent-lane
+# launcher sets this to a per-clone directory instead.
+# claim-lint:ok: #797, diff-empty against origin/main -- see
+# docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 
 # Find the kthread_test_only image (build with: cargo build --release --features kthread_test_only --bin qemu-uefi)
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
@@ -21,7 +29,7 @@ echo "Image: $UEFI_IMG"
 
 # Create output directories and launch containers
 for i in $(seq 1 $COUNT); do
-    OUTPUT_DIR="/tmp/breenix_kthread_$i"
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_kthread_$i"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
@@ -51,7 +59,7 @@ PASSED=0
 FAILED=0
 
 for i in $(seq 1 $COUNT); do
-    OUTPUT_DIR="/tmp/breenix_kthread_$i"
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_kthread_$i"
 
     # Wait up to 60 seconds for this test
     for j in $(seq 1 60); do
