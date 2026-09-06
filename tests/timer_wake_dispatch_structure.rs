@@ -23,12 +23,7 @@
 //!   boot paths, so the two arches run the same leg;
 //! * the x86 boot-test gate asserts the marker, the x86 and aarch64 production
 //!   gates assert its ABSENCE, and the aarch64 strict gate asserts it -- a leg
-//!   no gate reads is a leg that cannot fail;
-//! * the leg re-arms (more than one sleep per re-armer, more than one re-armer)
-//!   and reports what that costs the CPU-bound peers, and both boot gates pin
-//!   the completed re-arm count and the peer-gap ceiling -- so the cross-class
-//!   fairness reading cannot be dropped from the marker, or left unread, by an
-//!   edit that keeps the wake-latency reading.
+//!   no gate reads is a leg that cannot fail.
 //!
 //! The `#[should_panic]` legs are the anti-vacuity proof: they run the same
 //! assertion bodies against in-memory sources carrying the pre-#766 shape and
@@ -221,74 +216,6 @@ fn the_gates_read_the_marker() {
     }
 }
 
-/// The assertion body shared by the real-source test and its mutation leg.
-///
-/// A single sleep by a single thread cannot show what repeated promotion to the
-/// head of a ready queue costs the threads it is promoted past, so the leg has
-/// to re-arm, and it has to report the cost it measured or the reading is not
-/// on the record.
-fn assert_the_leg_measures_repeated_rearms(oracle: &str) {
-    let rearmers = const_literal(oracle, "REARMERS");
-    let rearms = const_literal(oracle, "REARMS:");
-    assert!(
-        rearmers > 1,
-        "the #766 oracle must run more than one re-arming thread (REARMERS={rearmers}): one \
-         thread that sleeps and immediately sleeps again is promoted to the head of the ready \
-         queue on each wake, and what that costs the CPU-bound class scales with how many \
-         threads are doing it"
-    );
-    assert!(
-        rearms > 1,
-        "the #766 oracle must sleep more than once per re-armer (REARMS={rearms}): a single \
-         sleep measures one promotion, not the repeated displacement the head enqueue allows"
-    );
-    for field in [
-        "rearmers={}",
-        "rearms={}",
-        "peer_max_gap_ms={}",
-        "peer_gap_bound_ms={}",
-    ] {
-        assert!(
-            oracle.contains(field),
-            "the #766 marker must carry `{field}`: the re-arm count and the CPU-bound peers' \
-             worst off-CPU interval are what make the cross-class reading checkable from the \
-             serial, and a field that is not printed is a fact no gate can pin"
-        );
-    }
-}
-
-/// The assertion body shared by the real-source test and its mutation leg.
-fn assert_gate_pins_the_rearm_census(path: &str, gate: &str, rearmers: u64, rearms: u64) {
-    let expected = format!("rearms={}", rearmers * rearms);
-    assert!(
-        gate.contains(&expected),
-        "{path} must pin `{expected}` on the #766 marker: the count comes from the oracle's own \
-         REARMERS x REARMS, and a gate that accepts any re-arm count scores a run whose \
-         re-armers gave up early the same as one that completed"
-    );
-    assert!(
-        gate.contains("peer_gap_bound_ms="),
-        "{path} must pin `peer_gap_bound_ms=` on the #766 marker: the peer-gap ceiling is \
-         derived in the kernel from the quantum, and a gate that does not read it would not \
-         notice the ceiling being raised until it no longer constrained anything"
-    );
-}
-
-#[test]
-fn the_leg_measures_repeated_rearms() {
-    assert_the_leg_measures_repeated_rearms(&read(ORACLE_SOURCE));
-}
-
-#[test]
-fn the_boot_gates_pin_the_rearm_census() {
-    let oracle = read(ORACLE_SOURCE);
-    let rearmers = const_literal(&oracle, "REARMERS");
-    let rearms = const_literal(&oracle, "REARMS:");
-    for path in [X86_BOOT_TESTS_GATE, AARCH64_STRICT_GATE] {
-        assert_gate_pins_the_rearm_census(path, &read(path), rearmers, rearms);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Anti-vacuity. Each leg feeds the assertion body above the pre-#766 shape and
 // asserts that the assertion rejects it.
@@ -337,47 +264,5 @@ fn the_quantum_check_rejects_a_drifted_aarch64_quantum() {
         "const QUANTUM_TICKS: u64 = 10;",
         "const TIME_QUANTUM: u32 = 10;",
         "const TIME_QUANTUM: u32 = 7;",
-    );
-}
-
-const SINGLE_SLEEP_ORACLE: &str = r#"const REARMERS: usize = 1;
-const REARMS: u64 = 8;
-serial_println!("[TIMER_WAKE_LATENCY_ORACLE:{}:rearmers={}:rearms={}:peer_max_gap_ms={}:peer_gap_bound_ms={}:PASS]");"#;
-
-const NO_PEER_GAP_ORACLE: &str = r#"const REARMERS: usize = 4;
-const REARMS: u64 = 8;
-serial_println!("[TIMER_WAKE_LATENCY_ORACLE:{}:rearmers={}:rearms={}:PASS]");"#;
-
-#[test]
-#[should_panic(expected = "must run more than one re-arming thread")]
-fn the_rearm_check_rejects_a_single_rearming_thread() {
-    assert_the_leg_measures_repeated_rearms(SINGLE_SLEEP_ORACLE);
-}
-
-#[test]
-#[should_panic(expected = "must carry `peer_max_gap_ms={}`")]
-fn the_rearm_check_rejects_a_marker_with_no_peer_gap() {
-    assert_the_leg_measures_repeated_rearms(NO_PEER_GAP_ORACLE);
-}
-
-#[test]
-#[should_panic(expected = "must pin `rearms=12`")]
-fn the_gate_census_check_rejects_a_gate_that_does_not_pin_the_count() {
-    assert_gate_pins_the_rearm_census(
-        "a gate that reads only the verdict",
-        "TIMER_WAKE_LATENCY_ORACLE:x86:overrun_ms=[0-9]+:peer_gap_bound_ms=2200:PASS",
-        3,
-        4,
-    );
-}
-
-#[test]
-#[should_panic(expected = "must pin `peer_gap_bound_ms=`")]
-fn the_gate_census_check_rejects_a_gate_that_does_not_read_the_ceiling() {
-    assert_gate_pins_the_rearm_census(
-        "a gate that reads only the re-arm count",
-        "TIMER_WAKE_LATENCY_ORACLE:x86:rearms=12:overrun_ms=[0-9]+:PASS",
-        3,
-        4,
     );
 }

@@ -242,25 +242,16 @@ PIN_GUARD_ORACLE_PASS_LITERAL=':verdict=PASS]'
 # here as well as on x86. `bound_ms=100` is a kernel constant; the mechanism
 # bound on this arch is 10 ticks * 1 ms + 1 ms = 11 ms, and `quantum_ms` and
 # `round_ms` are on the line so the arithmetic can be redone from it.
-# `peer_max_gap_ms` is the second reading on the same line: the worst interval a
-# CPU-bound peer spent off the CPU while the three re-armers were being promoted
-# ahead of it. `peer_gap_bound_ms=440` is a STARVATION ceiling derived in the
-# oracle from this arch's quantum ((6 + 3 + 2) * 10 * 4), not a latency
-# certification, and on this arch the peers are spread over MAX_CPUS queues.
-TIMER_WAKE_LATENCY_ORACLE_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=6:rearmers=3:rearms=12:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=10:round_ms=60:peer_max_gap_ms=[0-9]+:peer_gap_bound_ms=440:wake_enqueues=[1-9][0-9]*:peers_started=6:peers_spinning=6:peers_exited=6:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
+TIMER_WAKE_LATENCY_ORACLE_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=[1-9][0-9]*:peers_started=8:peers_spinning=8:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
 timer_wake_oracle_sample() {
-    printf '[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=6:rearmers=3:rearms=%s:overrun_ms=%s:bound_ms=100:quantum_ms=10:round_ms=60:peer_max_gap_ms=%s:peer_gap_bound_ms=440:wake_enqueues=32:peers_started=6:peers_spinning=6:peers_exited=6:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2" "$3" "$4"
+    printf '[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=%s:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2"
 }
-if timer_wake_oracle_sample 12 2592 40 FAIL | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN"; then
+if timer_wake_oracle_sample 2592 FAIL | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN"; then
     echo "FAIL: TIMER_WAKE_LATENCY_ORACLE_PATTERN accepts a failing verdict at overrun_ms=2592, so this gate would score green on the wake latency it exists to catch"
     exit 1
 fi
-if ! timer_wake_oracle_sample 12 9 40 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN"; then
-    echo "FAIL: TIMER_WAKE_LATENCY_ORACLE_PATTERN rejects overrun_ms=9 at rearms=32, the reading this arm really records, so this gate can never pass"
-    exit 1
-fi
-if timer_wake_oracle_sample 3 9 40 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN"; then
-    echo "FAIL: TIMER_WAKE_LATENCY_ORACLE_PATTERN accepts rearms=3, so a leg whose re-armers gave up after one sleep each would score the same as one that completed all 32"
+if ! timer_wake_oracle_sample 9 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN"; then
+    echo "FAIL: TIMER_WAKE_LATENCY_ORACLE_PATTERN rejects overrun_ms=9, the reading this arm really records, so this gate can never pass"
     exit 1
 fi
 

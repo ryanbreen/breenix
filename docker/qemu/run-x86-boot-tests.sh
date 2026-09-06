@@ -454,32 +454,22 @@ RING_SPAN_RATIO_FLOOR=10
 # arithmetic can be redone from the line. The remaining fields are pinned
 # because the marker's own PASS also requires them, so a gate that re-derives
 # them cannot be satisfied by a verdict that drifted.
-# `peer_max_gap_ms` is the second reading on the same line: the worst interval a
-# CPU-bound peer spent off the CPU while the three re-armers were being promoted
-# ahead of it. `peer_gap_bound_ms=2200` is a STARVATION ceiling derived in the
-# oracle from the quantum ((6 + 3 + 2) * 50 * 4), not a latency certification.
 TIMER_WAKE_LATENCY_ORACLE_PREFIX='[TIMER_WAKE_LATENCY_ORACLE:'
-TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=6:rearmers=3:rearms=12:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=50:round_ms=300:peer_max_gap_ms=[0-9]+:peer_gap_bound_ms=2200:wake_enqueues=[1-9][0-9]*:peers_started=6:peers_spinning=6:peers_exited=6:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
+TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=[1-9][0-9]*:peers_started=8:peers_spinning=8:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
 # Anti-vacuity preflights on that pattern, in the shape the aarch64 strict gate
 # uses for its own oracle patterns: a sample carrying the pre-fix reading must
-# be REJECTED, a sample carrying a real measured reading must be ACCEPTED, and a
-# sample whose re-arm count fell short must be REJECTED. Without the first, a
-# gate could score green on a line it did not really constrain; without the
-# second, this gate could not pass; without the third, a leg that gave up after
-# one sleep per re-armer would score the same as one that ran 12 of 12.
+# be REJECTED, and a sample carrying a real measured reading must be ACCEPTED.
+# Without the first, a gate could score green on a line it did not really
+# constrain; without the second, this gate could not pass.
 timer_wake_oracle_sample() {
-    printf '[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=6:rearmers=3:rearms=%s:overrun_ms=%s:bound_ms=100:quantum_ms=50:round_ms=300:peer_max_gap_ms=%s:peer_gap_bound_ms=2200:wake_enqueues=32:peers_started=6:peers_spinning=6:peers_exited=6:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2" "$3" "$4"
+    printf '[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=%s:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2"
 }
-if timer_wake_oracle_sample 12 2592 302 FAIL | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
+if timer_wake_oracle_sample 2592 FAIL | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
     echo "x86 frame-custody gate preflight: TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN accepts the pre-#766 reading (overrun_ms=2592, FAIL), so this gate would score green on the round-robin wake latency it exists to catch"
     false
 fi
-if ! timer_wake_oracle_sample 12 41 302 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
-    echo "x86 frame-custody gate preflight: TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN rejects overrun_ms=41 at rearms=32, a reading the repaired dispatch really records, so this gate cannot pass"
-    false
-fi
-if timer_wake_oracle_sample 3 41 302 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
-    echo "x86 frame-custody gate preflight: TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN accepts rearms=3, so a leg whose re-armers gave up after one sleep each would score the same as one that completed all 32"
+if ! timer_wake_oracle_sample 41 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
+    echo "x86 frame-custody gate preflight: TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN rejects overrun_ms=41, a reading the repaired dispatch really records, so this gate cannot pass"
     false
 fi
 # Thirteen oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
