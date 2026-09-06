@@ -37,8 +37,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// 3000 ms satisfies both, measured on each architecture:
 ///
 /// * aarch64, `run-aarch64-boot-test-strict.sh` with
-///   `boot_tests,capture_selftest`: 13 of 13 boots produced an uncorrupted
-///   `[BXCAP:END ...]` line. 1100 ms was tried first and rejected -- of 4
+///   `boot_tests,capture_selftest`: 15 of 15 boots across this round produced
+///   an uncorrupted `[BXCAP:END ...]` line (those boots span intermediate
+///   revisions of the emitter; what the checkpoint is being judged on is the
+///   interleaving, which is a property of the boot's serial traffic). 1100 ms was tried first and rejected -- of 4
 ///   boots there, 1 had another CPU's `[TEST:...]` line spliced into the
 ///   middle of the `END` record and a second lost PR-2's `[RING_SPAN:` line
 ///   the same way. That gate is `-smp 4` and its boot-test output storm is

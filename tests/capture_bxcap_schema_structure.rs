@@ -12,6 +12,11 @@
 //! * `BEGIN`/`END` bracketing. A `BEGIN` with no `END` is the definition of
 //!   a truncated capture; this suite rejects it rather than scoring the
 //!   fragment.
+//! * That a record's own bytes are intact. A record may be PRECEDED on its
+//!   line by another writer's output -- on x86 the scheduler's raw `[SW]<K>`
+//!   markers share the port with no newline of their own -- but bytes
+//!   spliced INSIDE the record make it undecodable, which is the #847
+//!   interleaving shape.
 //! * The version gate. `v=` must be present on BOTH bracket lines and must
 //!   be a version this decoder knows. An unknown major version is REFUSED,
 //!   not best-effort decoded -- that is the whole point of carrying a
@@ -121,7 +126,19 @@ fn parse_scalar(raw: &str) -> Option<u64> {
 /// rule `records=` is written against.
 fn decode_line(line: &str) -> Option<Record> {
     let line = line.trim_end_matches(['\r', '\n']);
-    let rest = line.strip_prefix("[BXCAP:")?;
+    // A record may be PRECEDED on its line by bytes from another writer on
+    // the same UART. On x86 that is routine: the scheduler emits raw
+    // single-character `[SW]<K>` markers to the same port with no newline of
+    // their own, and `docker/qemu/run-x86-prod-profile-boot-test.sh` already
+    // requires its own marker matches to be substring matches for that
+    // reason. A leading prefix does not damage the record.
+    //
+    // Bytes spliced INSIDE the record do damage it, and are not accepted:
+    // the inner text must contain no further `[` or `]`. That is the #847
+    // interleaving shape, and rejecting it here is what makes the fixture
+    // check meaningful.
+    let start = line.find("[BXCAP:")?;
+    let rest = &line[start + "[BXCAP:".len()..];
     let inner = rest.strip_suffix(']')?;
     if inner.contains(']') || inner.contains('[') {
         return None;
@@ -183,7 +200,7 @@ struct Capture {
 fn assert_records_are_crlf_terminated(name: &str, serial: &str) {
     let mut checked = 0;
     for (i, line) in serial.split('\n').enumerate() {
-        if !line.trim_start().starts_with("[BXCAP:") {
+        if !line.contains("[BXCAP:") {
             continue;
         }
         checked += 1;
@@ -207,7 +224,7 @@ fn decode_capture(serial: &str) -> Capture {
     let begin_positions: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(_, line)| line.trim_start().starts_with("[BXCAP:BEGIN"))
+        .filter(|(_, line)| line.contains("[BXCAP:BEGIN"))
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
@@ -222,7 +239,7 @@ fn decode_capture(serial: &str) -> Capture {
         .iter()
         .enumerate()
         .skip(begin_at)
-        .find(|(_, line)| line.trim_start().starts_with("[BXCAP:END"))
+        .find(|(_, line)| line.contains("[BXCAP:END"))
         .map(|(i, _)| i)
         .unwrap_or_else(|| {
             panic!(
@@ -658,6 +675,42 @@ fn a_verdict_that_contradicts_its_accounting_is_caught() {
         fixture("aarch64-selftest-sched-lock-held.txt").replace("verdict=partial", "verdict=complete");
     let capture = decode_capture(&serial);
     assert_capture_contract("bad-verdict", &capture);
+}
+
+#[test]
+#[should_panic(expected = "well-formed records decode")]
+fn a_record_with_another_writers_bytes_spliced_into_it_is_not_decoded() {
+    // The #847 shape, reproduced against a fixture: a peer CPU's line lands
+    // inside a record rather than before it. The record stops decoding, so
+    // the count no longer matches what END declares.
+    let serial = fixture("aarch64-selftest-complete.txt").replacen(
+        "[BXCAP:CNT ",
+        "[BXCAP:C[TEST:process:some_test:PASS]NT ",
+        1,
+    );
+    let capture = decode_capture(&serial);
+    assert_capture_contract("spliced", &capture);
+}
+
+#[test]
+fn a_leading_prefix_from_another_writer_does_not_damage_a_record() {
+    // The x86 case, and the reason `decode_line` searches for `[BXCAP:`
+    // rather than requiring it at column 0: the scheduler's raw `[SW]<K>`
+    // markers share the UART with no newline of their own. The committed x86
+    // fixture carries exactly this on its BEGIN line.
+    let serial = fixture("x86_64-selftest-complete.txt");
+    let capture = decode_capture(&serial);
+    assert_capture_contract("x86-prefixed", &capture);
+    assert_eq!(capture.begin.text("arch"), "x86_64");
+    assert_eq!(capture.end.text("verdict"), "complete");
+    assert_untruncated_sections("x86-prefixed", &capture);
+    // -smp 1: there is no peer CPU to be holding the scheduler lock, so THR
+    // is emitted rather than refused.
+    assert!(
+        capture.records.iter().any(|r| r.token == "THR"),
+        "the x86 fixture is -smp 1, where the non-blocking scheduler read has \
+         no peer CPU to lose to"
+    );
 }
 
 #[test]
