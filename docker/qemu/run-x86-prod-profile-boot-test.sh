@@ -254,6 +254,18 @@ OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_prod_profile"
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
 CONSOLE_SOCK_PATH="$OUTPUT_DIR/console.sock"
 QEMU_PID=""
+# #884 review F9: PROMPT_BEFORE/PROMPT_AFTER are intentionally left
+# undeclared here, not pre-declared empty -- print_observed_values reads
+# them as ${PROMPT_BEFORE:-unsampled} (see that function's own comment),
+# and bash's `:-` form is unbound-variable-safe under this script's own
+# `set -u` on its own, on an unset name as much as an empty one. A prior
+# round of this fix pre-declared them anyway "for set -u safety" alongside
+# that same `:-` guard; the two were redundant, contradicted each other
+# about which one was load-bearing, and only the `:-` form actually is:
+# 5 of 5 bare, non-`:-` read sites of these two names below (grep-counted;
+# the liveness-verdict assertion and its branches, the FAIL line, and the
+# closing summary echo) sit after their real assignment further down, so
+# none of them needed pre-declaration either.
 # #673 anti-vacuity knob. Empty (default) builds the real shipped profile;
 # set to "disable_x86_prod_init" to build the pre-fix, zero-userspace kernel
 # and confirm this same gate discriminates the fix (see the header).
@@ -883,6 +895,19 @@ report_gate_failure() {
         mkdir -p "$failure_dir"
         cp "$OUTPUT_DIR"/serial_*.txt "$failure_dir/"
         printf '%s\n' "$capture_lines" >"$failure_dir/capture_drain.txt"
+        # #884 review F6: gate_boot_facts.txt lived only under OUTPUT_DIR,
+        # which the next run's `rm -rf "$OUTPUT_DIR"` (above, before this
+        # boot even started) deletes -- so the liveness-failure record this
+        # handler prints to stdout had no durable copy once OUTPUT_DIR was
+        # gone, unlike run-aarch64-prod-profile-boot-test.sh's failure_dir,
+        # which carries its own gate_boot_facts.txt (see that script,
+        # around line 435). Copy it alongside the serials when present; a
+        # pre-boot abort (e.g. a build failure, before the poll loop ever
+        # writes it) has no such file yet, so this is guarded rather than
+        # unconditional.
+        if [ -f "$OUTPUT_DIR/gate_boot_facts.txt" ]; then
+            cp "$OUTPUT_DIR/gate_boot_facts.txt" "$failure_dir/"
+        fi
         echo "  preserved failing serial: $failure_dir"
         echo "--- observed values ---"
         print_observed_values
@@ -985,6 +1010,14 @@ print_observed_values() {
     echo "  async executor started:       $(marker_count "$EXECUTOR_LITERAL")"
     echo "  steady state reached:         $(marker_count "$STEADY_STATE_LITERAL")"
     echo "  console prompt:               $(marker_count "$CONSOLE_PROMPT_LITERAL")"
+    # #884: the specific before/after liveness sample, not just today's total
+    # marker_count above -- ${VAR:-unsampled} rather than a bare $VAR because
+    # this function is also reachable from the one failure site (the
+    # steady-state poll verdict assertion) that runs before
+    # PROMPT_BEFORE/PROMPT_AFTER are ever assigned, where the bare form
+    # would abort this diagnosis itself under `set -u` instead of
+    # finishing it.
+    echo "  console prompt before/after liveness stimulus: ${PROMPT_BEFORE:-unsampled} -> ${PROMPT_AFTER:-unsampled} (expected 1 -> 2)"
     echo "  tombstone census lines:       $(marker_count "$TOMBSTONE_CENSUS_PREFIX")"
     echo "  tombstone census at rest:     $(marker_count "$TOMBSTONE_CENSUS_PROD_LITERAL")"
     echo "  root custody lines:           $(marker_count "$ROOT_CUSTODY_PREFIX")"
@@ -1240,6 +1273,10 @@ CAPTURE_LINES="$(gcd_pass_report)"
 # for why a bare byte-growth check is not available on a kernel with #672 and
 # #673 both fixed, and why counting THIS specific marker's growth is.
 PROMPT_BEFORE=$(marker_count "$CONSOLE_PROMPT_LITERAL")
+# #884 proof knob: forces the just-sampled PROMPT_BEFORE to 0, reproducing
+# the host-contention shape #884 reports on a real boot. Unset by default.
+# See docs/planning/green-program/gates/X86-PROD-GATE-884-ROUND-2026-09-06.md.
+[ -z "${BREENIX_X86_PROD_FORCE_PROMPT_ABSENT:-}" ] || PROMPT_BEFORE=0
 python3 - "$OUTPUT_DIR/console.sock" "$LIVENESS_STIMULUS_BYTE" <<'STIMULUS'
 import socket
 import sys
@@ -1261,18 +1298,67 @@ QEMU_PID=""
 # they run against the serial already captured above.
 qemu_host_lock_release
 
-test "$PROMPT_AFTER" -gt "$PROMPT_BEFORE"
+# #884: a bare `test "$PROMPT_BEFORE" -eq 1` here already routes a failure
+# through report_gate_failure the same way every other assertion in this
+# script does -- set -e + set -E + the ERR trap armed at the top cover a
+# failing top-level `test` regardless of which variable it names (see the
+# "VERDICT DISCIPLINE" header section, and
+# x86_prod_prompt_liveness_failure_names_its_cause in
+# tests/teardown_structure.rs, which proves this mechanically by mutation
+# rather than asserting it). What a bare `test` does NOT do is say which
+# liveness fact failed, or correct the GATE_BOOT_FACTS line already
+# written above (right after the steady-state poll loop, before this
+# liveness window even starts): that line's `ended_by` still reads
+# whatever the poll loop recorded (typically scored_pass) on a boot that
+# goes on to fail here, so a reader parsing GATE_BOOT_FACTS lines alone
+# cannot tell this run failed at all, let alone why -- reported as #884's
+# own "no ... ended_by marker" complaint. This block computes a distinct
+# `ended_by` naming the actual cause, re-emits GATE_BOOT_FACTS with it
+# (file and stdout) using a fresh host-clock/guest-heartbeat/QEMU-lane
+# sample (QEMU is already dead by this point, so these are cheap re-reads
+# of state already on disk, not a second boot), prints the pre-adjudicated
+# host-contention read on this shape (#826: a starved guest can reach
+# steady state -- the poll loop above already scored that -- without yet
+# having printed its first prompt, or without answering the liveness
+# stimulus, inside the sampling window, with no kernel regression
+# involved), and only then routes through the trap with the same bare
+# `false` every other guarded assertion in this script uses -- never
+# `exit`, which would pre-empt the verdict the way #802's class did.
+# claim-lint:ok: #884, proven by the mutation legs in
+# x86_production_profile_gate_prompt_liveness_ratchet_is_not_vacuous
+# (tests/teardown_structure.rs) -- reverting to a bare `test` or swapping
+# the terminal `false` for `exit` reddens that test.
+#
+# Strengthened from a bare presence pin (#673 review, B2) into a before/after
+# delta: PROMPT_BEFORE is the steady-state prompt printed once at start,
+# PROMPT_AFTER is that plus exactly the one the liveness stimulus earned.
+if ! test "$PROMPT_AFTER" -gt "$PROMPT_BEFORE" || ! test "$PROMPT_BEFORE" -eq 1 || ! test "$PROMPT_AFTER" -eq 2; then
+    if [ "$PROMPT_BEFORE" -eq 0 ]; then
+        PROMPT_LIVENESS_ENDED_BY="prompt_absent"
+    elif [ "$PROMPT_AFTER" -le "$PROMPT_BEFORE" ]; then
+        PROMPT_LIVENESS_ENDED_BY="prompt_stimulus_unanswered"
+    else
+        PROMPT_LIVENESS_ENDED_BY="prompt_count_unexpected"
+    fi
+    PROMPT_FAIL_HOST_MS_END="$(gbf_host_ms_now)"
+    PROMPT_FAIL_QEMU_AT_END="$(qemu_host_lock_count qemu-system-x86_64)"
+    PROMPT_FAIL_LOAD_AT_END="$(gbf_load_1m)"
+    PROMPT_FAIL_GUEST_UPTIME_MS="$(gbf_last_heartbeat_uptime_ms "$OUTPUT_DIR/serial_kernel.txt")"
+    PROMPT_FACTS_LINE="$(gbf_emit_line 1 "$HOST_MS_START" "$PROMPT_FAIL_HOST_MS_END" \
+        "$QEMU_AT_START" "$LOAD_AT_START" "$PROMPT_FAIL_QEMU_AT_END" "$PROMPT_FAIL_LOAD_AT_END" \
+        "$QEMU_CPU_S" "$PROMPT_FAIL_GUEST_UPTIME_MS" "$PROMPT_LIVENESS_ENDED_BY")"
+    printf '%s\n' "$PROMPT_FACTS_LINE" >"$OUTPUT_DIR/gate_boot_facts.txt"
+    echo "  $PROMPT_FACTS_LINE"
+    echo "x86 production-profile gate: console prompt liveness check failed -- before=$PROMPT_BEFORE after=$PROMPT_AFTER (expected before=1, after=2, after>before)"
+    echo "  Pre-adjudicated host-contention read (#826-style): the steady-state poll loop above already scored this boot's own progress a pass (STEADY_STATE_LITERAL was seen once), so a starved guest that reaches steady state late in its own sampling window, or that is too starved to answer the liveness stimulus inside ${LIVENESS_WINDOW_SECONDS}s, produces exactly this shape with no kernel regression involved. Elapsed host time from boot start to this failure: $((PROMPT_FAIL_HOST_MS_END - HOST_MS_START)) ms (host_ms=$HOST_MS_START-$PROMPT_FAIL_HOST_MS_END); guest's own last observed heartbeat: guest_uptime_ms=$PROMPT_FAIL_GUEST_UPTIME_MS; concurrent x86 QEMU lanes on this host: $QEMU_AT_START at boot start, $PROMPT_FAIL_QEMU_AT_END now; host 1-minute load average: $LOAD_AT_START at boot start, $PROMPT_FAIL_LOAD_AT_END now. A guest heartbeat far behind the elapsed host time, or an elevated concurrent-lane count or load figure, is the contention signature; crash markers or a disturbed teardown census (both still checked below -- this failure does not skip them) would instead point at a kernel regression."
+    false
+fi
 
 # Production milestones.
 test "$(marker_count "$EXT2_ROOT_LITERAL")" -eq 1
 test "$(marker_count "$KERNEL_INIT_LITERAL")" -eq 1
 test "$(marker_count "$EXECUTOR_LITERAL")" -eq 1
 test "$(marker_count "$STEADY_STATE_LITERAL")" -eq 1
-# Strengthened from a bare presence pin (#673 review, B2) into a before/after
-# delta: PROMPT_BEFORE is the steady-state prompt printed once at start,
-# PROMPT_AFTER is that plus exactly the one the liveness stimulus earned.
-test "$PROMPT_BEFORE" -eq 1
-test "$PROMPT_AFTER" -eq 2
 
 # Per-function PCI facts (see the derivation and the flag->identity table
 # above). drivers::init() runs long before the ext2 mount / kernel-init-complete

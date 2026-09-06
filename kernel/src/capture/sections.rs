@@ -19,16 +19,26 @@
 //! completed section, which is exactly the claim `sections_skipped=` exists
 //! to make truthfully.
 //!
-//! # THR is the inverse of the soft-lockup dump's failure arm
+//! # THR is the inverse of the soft-lockup dump's old failure arm
 //!
-//! `arch_impl/aarch64/timer_interrupt.rs`'s `dump_lockup_state` prints
-//! `HELD (possible deadlock)` and then skips the trace-buffer dump -- which
-//! needs no scheduler lock at all -- so it goes quiet in exactly the case it
+//! `arch_impl/aarch64/timer_interrupt.rs`'s `dump_lockup_state` USED TO print
+//! `HELD (possible deadlock)` and then skip the trace-buffer dump -- which
+//! needs no scheduler lock at all -- so it went quiet in exactly the case it
 //! exists to report. `THR` here is the inverse: it is emitted LAST, it uses
 //! the non-blocking `try_liveness_snapshot`, and a refusal costs only the
 //! `THR` rows. Everything above it has already been emitted by then, and the
-//! refusal itself is reported as `[BXCAP:NOTE sched_lock_held]`. Repairing
-//! that soft-lockup arm is PR-7 of the plan and is not attempted here.
+//! refusal itself is reported as `[BXCAP:NOTE sched_lock_held]`.
+//!
+//! PR-7 repaired that arm by deleting it: `dump_lockup_state` now calls
+//! `capture::emit(Edge::Lockup, ...)` and has no scheduler branch of its own,
+//! so a held scheduler lock during a soft lockup produces `EDGE`/`CPU`/`EV`/
+//! `CNT`/`RING` and that NOTE rather than one line. What the repair does not
+//! give back is the per-thread detail the old acquired-lock arm printed --
+//! ELR/x30/SP, the inline-schedule stack scan, ready-queue membership and
+//! per-thread flags. `THR`'s rows are per-CPU aggregates, and that regression
+//! is recorded in
+//! docs/planning/green-program/failure-capture/PR-7-2026-09-06.md rather than
+//! described as equivalent.
 
 use core::sync::atomic::Ordering;
 

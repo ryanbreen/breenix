@@ -123,6 +123,17 @@ capture_selftest = ["boot_tests"]
 # (scripts/check-critical-path-violations.sh) forbids `panic!`, and rightly:
 # the emitter must not panic, only the thing that summons it may.
 capture_panic_oracle = ["boot_tests"]
+# Failure-capture PR-7: the deterministic `edge=LOCKUP` oracle. Test profile
+# only, and NOT implied by `boot_tests` -- no gate builds with it. It strands
+# the REAL scheduler guard on a CPU1-pinned kernel thread, with interrupts
+# masked, for longer than the soft-lockup detector's own threshold, so the
+# detector's report can be observed on demand instead of waiting for a wedge.
+# It needs `boot_tests` for `kthread_run_on_cpu_for_test`'s aarch64 CPU pinning,
+# the same dependency `ext2_lock_race` carries. `kernel/src/capture_lockup_oracle.rs`
+# carries the reasoning; it lives OUTSIDE `kernel/src/capture/` for the same
+# reason `capture_oracle.rs` does -- that directory's denylist forbids what the
+# thing summoning a capture has to do.
+capture_lockup_oracle = ["boot_tests"]
 # Anti-vacuity leg for the emitter's byte budget: shrinks
 # `BXCAP_BUDGET_BYTES` to a size a normal capture cannot fit, so a boot built
 # with this must report `truncated=1` and a non-empty `sections_skipped=`. A

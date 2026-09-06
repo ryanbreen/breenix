@@ -988,3 +988,44 @@ fn shell_parity_validator_rejects_a_removed_critical_file() {
         ),
     }
 }
+
+/// Mutation 6 (failure-capture PR-7): a logging macro placed inside the
+/// soft-lockup dump.
+///
+/// `fn dump_lockup_state` has 0 rows in the anchor table and gets 0: its
+/// raw serial primitives match neither `SHARED_PATTERNS` nor
+/// `WIDER_EXTRA_PATTERNS`, so the census reports 0 calls there and that is
+/// correct. The risk that creates is the obvious one -- a function with no
+/// positive anchor can look like a function nobody is watching. This leg
+/// shows it is watched: a `serial_println!` newly placed inside that body
+/// produces a `+` row the table does not expect, and the census rejects it.
+///
+/// PR-7 deliberately adds no positive allowance for this site. The dump's
+/// output goes through the raw, lock-free primitives and the BXCAP writer,
+/// and the site where a lock-taking logger would matter most is exactly the
+/// one that must not acquire a lock.
+#[test]
+fn census_validator_rejects_a_logging_macro_inside_the_soft_lockup_dump() {
+    let timer = "kernel/src/arch_impl/aarch64/timer_interrupt.rs";
+    let anchor = "fn dump_lockup_state(stall_ticks: u64) {";
+    let mut injected = String::from(anchor);
+    injected.push_str("\n    crate::serial_println!(\"probe\");");
+    let mut sources = checked_sources();
+    let mut mutated = 0usize;
+    for entry in sources.iter_mut() {
+        if entry.0 != timer {
+            continue;
+        }
+        assert!(entry.1.contains(anchor), "the dump anchor moved in {timer}");
+        entry.1 = entry.1.replacen(anchor, &injected, 1);
+        mutated += 1;
+    }
+    assert_eq!(mutated, 1, "expected exactly one {timer} source entry");
+    let census = log_census(&sources, SHARED_PATTERNS);
+    assert_eq!(
+        validate_census(&census, CRITICAL_PATH_LOG_ANCHORS),
+        Err(vec![
+            "+ kernel/src/arch_impl/aarch64/timer_interrupt.rs :: fn dump_lockup_state  (1 occurrences, expected none)".to_owned()
+        ])
+    );
+}
