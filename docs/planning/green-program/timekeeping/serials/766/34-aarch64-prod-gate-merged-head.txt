@@ -1,0 +1,5 @@
+# docker/qemu/run-aarch64-prod-profile-boot-test.sh at merged head 436f476a (this Mac, native QEMU)
+11:PASS: 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+15:PASS: production profile reached bsshd with the futex oracle seam absent
+25:Observed timer wake latency oracle marker count: 0
+43:[GATE_BOOT_FACTS:boot=1:host_ms=1788724991766-1788725004975:qemu_at_start=0:load_at_start=3.96:qemu_at_end=1:load_at_end=3.43:qemu_cpu_s=19.18:guest_uptime_ms=12643:ended_by=scored_pass]

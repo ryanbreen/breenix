@@ -1013,7 +1013,21 @@ fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
 
     // Leg D. The entry completed, but only after waiting out the whole remote
     // hold -- the unrepaired reading this branch actually recorded.
-    let waited = green.replace(":entry_us=2:", ":entry_us=20022:");
+    //
+    // The value being replaced is READ OUT of the baseline rather than pinned
+    // as a literal. `entry_us` is a measurement, so it moves whenever the
+    // fixture is re-recorded -- which happens whenever a round adds an
+    // assertion the older baseline cannot carry (#766 re-recorded it, and the
+    // pinned `:entry_us=2:` from the boot before that silently stopped
+    // applying, which `assert_ne!` below caught).
+    let entry_us_field = green
+        .split(ORACLE_MARKER)
+        .nth(1)
+        .and_then(|rest| rest.split(":entry_us=").nth(1))
+        .and_then(|rest| rest.split(':').next())
+        .map(|value| format!(":entry_us={value}:"))
+        .expect("the baseline's #821 oracle line must carry an entry_us field");
+    let waited = green.replace(&entry_us_field, ":entry_us=20022:");
     assert_ne!(waited, green, "leg D's mutation must apply");
     let (passed, output) =
         score_with_gate(STRICT_GATE, "BREENIX_STRICT_SCORE_ONLY", &write("waited", &waited));

@@ -1365,6 +1365,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::scheduler::emit_pin_guard_oracle();
     kernel::task::scheduler::emit_pinned_placement_census();
 
+    // #766's wake-to-dispatch latency leg, aarch64 arm. Same leg, same marker
+    // shape, so the two architectures can be read against each other; this arm
+    // is a regression guard rather than evidence about the x86 mechanism,
+    // because aarch64 has MAX_CPUS ready queues and a 1 ms tick. Placed after
+    // the pinned-placement census so the 9 threads it creates and joins cannot
+    // move what that census reports.
+    #[cfg(feature = "boot_tests")]
+    kernel::task::timer_wake_oracle::run();
+
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all
     // registered test processes have completed.

@@ -1,0 +1,79 @@
+=== x86 production-profile gate, branch final bytes, 2026-09-06 ===
+PASS: x86 production profile reached steady state with the teardown census at rest
+  test-only marker '[TIMER_WAKE_LATENCY_ORACLE:': 0
+GATE_BOOT_FACTS:boot=1:host_ms=1788701501054-1788701513304:qemu_at_start=0:load_at_start=0.84:qemu_at_end=0:load_at_end=0.94:qemu_cpu_s=12.00:guest_uptime_ms=NA:ended_by=scored_pass]
+
+=== x86 SMP enumeration gate, branch final bytes, 2026-09-06 ===
+x86 SMP enumeration gate: booted image sha256 11f08b1349e54a1314b114660ef87cf245436de5876624cd95d9a58a65daef0c
+x86 SMP enumeration gate: PASS (1 leg(s): 1)
+
+=== check-x86-dispatch-no-alloc.sh, branch final bytes ===
+Guard: x86 kernel-thread dispatch allocation check (#791)
+  ELF:      /root/breenix-p766/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  sha256:   93dc4973365294d4403bd03e3be875898ef78e78ba88dd44780d5a3f0947e595
+  objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
+  readelf:  readelf
+  function: setup_kernel_thread_return (its own body and its closures)
+  symbols in scope: 3
+  call targets resolved: 19
+[0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
+
+=== clock_gettime_test, 3 boots of the fixed kernel ===
+Runner: docker/qemu/run-boot-parallel.sh 1 (a pure runner: it boots the
+breenix-uefi.img already in target/, which here is the
+boot_tests,testing,external_test_bins image the gates above built).
+--- cgt1 ---
+===== START cgt1 2026-09-06T13:41:43Z =====
+===== END cgt1 exit=0 2026-09-06T13:48:57Z =====
+Test 3: Sub-millisecond precision
+  Elapsed: 148010 ns
+  PASS: Sub-millisecond precision (TSC active)
+
+Test 4: Nanosecond precision (not millisecond-aligned)
+  Millisecond-aligned samples: 0/10
+  PASS: Nanosecond precision confirmed
+
+TEST_TALLY: exited=110 nonzero=0 failed=[]
+x86 userspace gate: PASS - exited=110 expected>=17 nonzero=0 allowlist=0
+--- cgt2 ---
+===== START cgt2 2026-09-06T13:48:57Z =====
+===== END cgt2 exit=0 2026-09-06T13:56:15Z =====
+Test 3: Sub-millisecond precision
+  Elapsed: 148921 ns
+  PASS: Sub-millisecond precision (TSC active)
+
+Test 4: Nanosecond precision (not millisecond-aligned)
+  Millisecond-aligned samples: 0/10
+  PASS: Nanosecond precision confirmed
+
+TEST_TALLY: exited=110 nonzero=0 failed=[]
+x86 userspace gate: PASS - exited=110 expected>=17 nonzero=0 allowlist=0
+--- cgt3 ---
+===== START cgt3 2026-09-06T13:56:15Z =====
+===== END cgt3 exit=0 2026-09-06T14:03:30Z =====
+Test 3: Sub-millisecond precision
+  Elapsed: 164233 ns
+  PASS: Sub-millisecond precision (TSC active)
+
+Test 4: Nanosecond precision (not millisecond-aligned)
+  Millisecond-aligned samples: 0/10
+  PASS: Nanosecond precision confirmed
+
+TEST_TALLY: exited=110 nonzero=0 failed=[]
+x86 userspace gate: PASS - exited=110 expected>=17 nonzero=0 allowlist=0
+
+=== run sequence timings ===
+===== START x86gate 2026-09-06T12:44:41Z =====
+===== END x86gate exit=0 2026-09-06T13:05:55Z =====
+check-x86-dispatch-no-alloc exit=0
+===== START x86prod 2026-09-06T13:05:57Z =====
+===== END x86prod exit=0 2026-09-06T13:32:55Z =====
+===== START x86smp 2026-09-06T13:32:55Z =====
+===== END x86smp exit=0 2026-09-06T13:41:43Z =====
+===== START cgt1 2026-09-06T13:41:43Z =====
+===== END cgt1 exit=0 2026-09-06T13:48:57Z =====
+===== START cgt2 2026-09-06T13:48:57Z =====
+===== END cgt2 exit=0 2026-09-06T13:56:15Z =====
+===== START cgt3 2026-09-06T13:56:15Z =====
+===== END cgt3 exit=0 2026-09-06T14:03:30Z =====
+ALL DONE 2026-09-06T14:03:30Z

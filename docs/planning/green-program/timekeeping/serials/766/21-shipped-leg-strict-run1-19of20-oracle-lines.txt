@@ -1,0 +1,48 @@
+=== aarch64 strict gate, branch final bytes (ff74f0d6), run 1 of 2: 19/20, 2026-09-06 ===
+--- one [TIMER_WAKE_LATENCY_ORACLE] line per boot, all 20 boots including the failing one ---
+boot1   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=5:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=24:measured=1:PASS]
+boot2   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=5:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=5:window_ms=34:measured=1:PASS]
+boot3   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=4:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=5:window_ms=28:measured=1:PASS]
+boot4   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=5:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=5:window_ms=29:measured=1:PASS]
+boot5   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=4:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=5:window_ms=20:measured=1:PASS]
+boot6   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=4:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=25:measured=1:PASS]
+boot7   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=3:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=27:measured=1:PASS]
+boot8   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=4:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=58:measured=1:PASS]
+boot9   [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=3:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=44:measured=1:PASS]
+boot10  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=6:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=38:measured=1:PASS]
+boot11  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=8:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=3:window_ms=29:measured=1:PASS]
+boot12  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=9:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=3:peers_started=8:peers_spinning=8:backstops=0:setup_ms=6:window_ms=45:measured=1:PASS]
+boot13  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=8:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=5:window_ms=32:measured=1:PASS]
+boot14  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=6:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=6:window_ms=41:measured=1:PASS]
+boot15  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=7:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=6:window_ms=35:measured=1:PASS]
+boot16  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=6:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=5:window_ms=44:measured=1:PASS]
+boot17  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=6:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=3:window_ms=48:measured=1:PASS]
+boot18  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=5:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=5:window_ms=31:measured=1:PASS]
+boot19  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=8:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=3:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=29:measured=1:PASS]
+boot20  [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=2:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=22:measured=1:PASS]
+--- gate verdict ---
+  [FAIL] Boot 3: Exec smoke did not complete (715 lines); serial: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/gate-final/breenix_aarch64_strict_failures/20260906T171247Z-boot3.txt
+Success rate: 95%
+Duration: 266s
+FAIL: Only 19/20 boots succeeded
+--- gate boot facts, all 20 ---
+GATE_BOOT_FACTS:boot=1:host_ms=1788714716688-1788714727884:qemu_at_start=0:load_at_start=4.43:qemu_at_end=1:load_at_end=6.05:qemu_cpu_s=21.68:guest_uptime_ms=10257:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=2:host_ms=1788714729510-1788714740745:qemu_at_start=0:load_at_start=6.05:qemu_at_end=1:load_at_end=7.04:qemu_cpu_s=21.72:guest_uptime_ms=11123:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=3:host_ms=1788714742512-1788714767007:qemu_at_start=0:load_at_start=7.12:qemu_at_end=0:load_at_end=22.99:qemu_cpu_s=NA:guest_uptime_ms=19156:ended_by=hard_timeout
+GATE_BOOT_FACTS:boot=4:host_ms=1788714768582-1788714778297:qemu_at_start=0:load_at_start=21.87:qemu_at_end=1:load_at_end=19.58:qemu_cpu_s=19.46:guest_uptime_ms=8951:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=5:host_ms=1788714779915-1788714791258:qemu_at_start=0:load_at_start=19.58:qemu_at_end=1:load_at_end=18.61:qemu_cpu_s=20.31:guest_uptime_ms=10860:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=6:host_ms=1788714792669-1788714802242:qemu_at_start=0:load_at_start=17.60:qemu_at_end=1:load_at_end=16.91:qemu_cpu_s=18.53:guest_uptime_ms=8996:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=7:host_ms=1788714803605-1788714813151:qemu_at_start=0:load_at_start=16.20:qemu_at_end=1:load_at_end=14.54:qemu_cpu_s=17.36:guest_uptime_ms=8728:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=8:host_ms=1788714814498-1788714825725:qemu_at_start=0:load_at_start=14.54:qemu_at_end=1:load_at_end=14.41:qemu_cpu_s=20.86:guest_uptime_ms=11074:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=9:host_ms=1788714827465-1788714843703:qemu_at_start=0:load_at_start=14.41:qemu_at_end=1:load_at_end=13.92:qemu_cpu_s=28.96:guest_uptime_ms=15716:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=10:host_ms=1788714845424-1788714858192:qemu_at_start=0:load_at_start=13.92:qemu_at_end=1:load_at_end=13.25:qemu_cpu_s=24.51:guest_uptime_ms=12188:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=11:host_ms=1788714859759-1788714869426:qemu_at_start=0:load_at_start=13.25:qemu_at_end=1:load_at_end=12.67:qemu_cpu_s=19.04:guest_uptime_ms=9259:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=12:host_ms=1788714870939-1788714882065:qemu_at_start=0:load_at_start=12.67:qemu_at_end=1:load_at_end=11.39:qemu_cpu_s=19.78:guest_uptime_ms=10888:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=13:host_ms=1788714883485-1788714893079:qemu_at_start=0:load_at_start=10.80:qemu_at_end=1:load_at_end=10.76:qemu_cpu_s=17.74:guest_uptime_ms=9160:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=14:host_ms=1788714894455-1788714904011:qemu_at_start=0:load_at_start=10.76:qemu_at_end=1:load_at_end=10.12:qemu_cpu_s=19.90:guest_uptime_ms=9276:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=15:host_ms=1788714905361-1788714916445:qemu_at_start=0:load_at_start=10.12:qemu_at_end=1:load_at_end=9.26:qemu_cpu_s=19.04:guest_uptime_ms=10290:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=16:host_ms=1788714917883-1788714930522:qemu_at_start=0:load_at_start=9.16:qemu_at_end=1:load_at_end=8.77:qemu_cpu_s=20.14:guest_uptime_ms=12320:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=17:host_ms=1788714931935-1788714944601:qemu_at_start=0:load_at_start=8.77:qemu_at_end=1:load_at_end=8.23:qemu_cpu_s=20.70:guest_uptime_ms=12378:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=18:host_ms=1788714946020-1788714955653:qemu_at_start=0:load_at_start=8.23:qemu_at_end=1:load_at_end=8.20:qemu_cpu_s=18.51:guest_uptime_ms=9292:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=19:host_ms=1788714957382-1788714968598:qemu_at_start=0:load_at_start=8.20:qemu_at_end=1:load_at_end=8.96:qemu_cpu_s=21.11:guest_uptime_ms=11026:ended_by=scored_pass
+GATE_BOOT_FACTS:boot=20:host_ms=1788714970161-1788714981386:qemu_at_start=0:load_at_start=8.96:qemu_at_end=1:load_at_end=8.89:qemu_cpu_s=21.59:guest_uptime_ms=10765:ended_by=scored_pass
