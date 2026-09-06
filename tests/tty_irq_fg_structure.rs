@@ -30,7 +30,14 @@
 //! name-plus-receiver resolver once attributed `ldisc.input_char(..)` -- a
 //! `LineDiscipline` method -- to `TtyDevice::input_char`.
 //!
-//! Each of the 6 rules is mutation-tested at the bottom of the file against
+//! Rule 7 is about the OTHER lock the signal hop took from interrupt context:
+//! no function reachable from a `_nonblock` entry may announce anything through
+//! a macro that acquires a serial or logger lock to print it. That rule was
+//! added by this round's fix pass, which found a `serial_println!` still live on
+//! the x86_64 arm of `send_signal_to_process_nonblock` -- reached on an ordinary
+//! Ctrl+C, with `PROCESS_MANAGER` still held.
+//!
+//! Each of the 7 rules is mutation-tested at the bottom of the file against
 //! in-memory copies, with a green control, so a rule that had quietly stopped
 //! matching cannot pass forever. 7 further legs run the aarch64 strict gate for
 //! real, in its scoring-only mode, over committed serials.
@@ -584,6 +591,88 @@ fn validate_the_sentinel_stays_unreachable(ioctl: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The macro calls in `body` that take a lock to say something: any macro whose
+/// name ends in `print` or `println` -- `serial_println!` reaches `SERIAL1`,
+/// `log_serial_println!` reaches `SERIAL2`, both blocking -- and any
+/// `log::<level>!`, which takes the logger's own mutex and then `SERIAL2`.
+/// The 3 spellings format a string as well as taking a lock.
+///
+/// The spellings are read by SHAPE, not from a list of known names, so a
+/// `foo_println!` added to this tree later is swept in without an edit here.
+fn locking_output_macros(body: &str) -> Vec<String> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let mut found = Vec::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if !mask[index] || !identifier_byte(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        if index > 0 && mask[index - 1] && identifier_byte(bytes[index - 1]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && mask[index] && identifier_byte(bytes[index]) {
+            index += 1;
+        }
+        // A macro CALL, not a mention: `name!` followed by one of its 3
+        // delimiters, with the bang immediately after the name.
+        if bytes.get(index) != Some(&b'!')
+            || !matches!(bytes.get(index + 1), Some(b'(') | Some(b'[') | Some(b'{'))
+        {
+            continue;
+        }
+        let name = &body[start..index];
+        let through_log = body[..start].ends_with("log::");
+        if name.ends_with("print") || name.ends_with("println") || through_log {
+            let prefix = if through_log { "log::" } else { "" };
+            found.push(format!("{prefix}{name}!"));
+        }
+    }
+    found
+}
+
+/// #822 rule 7. No function a TTY interrupt entry reaches announces anything
+/// through a macro that takes a lock to print it.
+///
+/// The defect this pins is the one the round's own review found still live in
+/// `send_signal_to_process_nonblock`: a `serial_println!` on the x86_64 arm,
+/// reached on an ordinary Ctrl+C, taking `SERIAL1` blocking from an interrupt
+/// entry while the `PROCESS_MANAGER` guard was still held -- the acquisition
+/// that function's own doc comment forbids, and the one `task/scheduler.rs`'s
+/// lock-order comment names.
+///
+/// What this rule reaches and what it measurably does not: it reads MACRO CALLS
+/// in the bodies `interrupt_reachable` returns. It does not reach
+/// `crate::serial::write_byte`, which `output_char_nonblock` calls on x86_64 to
+/// put an echoed character on the user's console. That call takes `SERIAL1`
+/// too, deliberately, with interrupts masked across the critical section, and
+/// it is the echo itself rather than an announcement about it. Rule 7 neither
+/// licenses nor measures it.
+fn validate_irq_entry_takes_no_locking_output(driver: &str) -> Result<(), String> {
+    let reachable = interrupt_reachable(driver)?;
+    let spans = function_spans(driver);
+    let mut failures = Vec::new();
+    for name in &reachable {
+        let Some(span) = spans.iter().find(|span| &span.name == name) else {
+            continue;
+        };
+        for macro_call in locking_output_macros(&driver[span.open..=span.close]) {
+            failures.push(format!(
+                "{name} is reachable from a TTY interrupt-context entry and calls {macro_call}, \
+                 which takes a serial or logger lock and formats on that path"
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
 /// #822 rule 6. The detector exists, reads the per-CPU scope depth, and is
 /// what `driver.rs` consults.
 fn validate_the_detector_is_wired(driver: &str, process: &str) -> Result<(), String> {
@@ -654,6 +743,11 @@ fn tiocspgrp_still_refuses_the_value_the_sentinel_uses() {
 #[test]
 fn the_foreground_pgrp_detector_is_wired_to_the_scope() {
     validate_the_detector_is_wired(&repo_text(DRIVER), &repo_text(PROCESS)).expect("#822 rule 6");
+}
+
+#[test]
+fn no_tty_interrupt_entry_prints_through_a_lock() {
+    validate_irq_entry_takes_no_locking_output(&repo_text(DRIVER)).expect("#822 rule 7");
 }
 
 #[test]
@@ -750,6 +844,7 @@ fn deliberately_broken_copies_redden_the_rules() {
     validate_irq_readers_use_the_snapshot(&driver).expect("control: rule 4 is green");
     validate_the_sentinel_stays_unreachable(&ioctl).expect("control: rule 5 is green");
     validate_the_detector_is_wired(&driver, &process).expect("control: rule 6 is green");
+    validate_irq_entry_takes_no_locking_output(&driver).expect("control: rule 7 is green");
 
     // Leg B -- the blocking acquisition restored in the interrupt-side signal
     // path. This is the census's own F4 shape, and the mutation this branch
@@ -882,6 +977,37 @@ fn deliberately_broken_copies_redden_the_rules() {
     assert!(
         error.contains("input_char_nonblock"),
         "leg J reddened for the wrong reason: {error}"
+    );
+
+    // Leg M -- the `serial_println!` restored on the interrupt-side signal
+    // path. This is the call the round's review found still live at that hop,
+    // and rule 7's own subject.
+    let printed = inject_into_function(
+        &driver,
+        "send_signal_to_process_nonblock",
+        "\n        crate::serial_println!(\"TTY: sig {}\", sig);\n",
+    );
+    assert_ne!(printed, driver, "leg M's mutation must apply");
+    let error = validate_irq_entry_takes_no_locking_output(&printed)
+        .expect_err("leg M: rule 7 has to redden on a restored serial_println!");
+    assert!(
+        error.contains("send_signal_to_process_nonblock") && error.contains("serial_println!"),
+        "leg M reddened for the wrong reason: {error}"
+    );
+
+    // Leg N -- the same property through the OTHER spelling: the logger, which
+    // reaches its own mutex and then SERIAL2, in the input entry itself.
+    let logged = inject_into_function(
+        &driver,
+        "input_char_nonblock",
+        "\n        log::info!(\"TTY: input {}\", c);\n",
+    );
+    assert_ne!(logged, driver, "leg N's mutation must apply");
+    let error = validate_irq_entry_takes_no_locking_output(&logged)
+        .expect_err("leg N: rule 7 has to redden on a restored log macro");
+    assert!(
+        error.contains("input_char_nonblock") && error.contains("log::info!"),
+        "leg N reddened for the wrong reason: {error}"
     );
 }
 
