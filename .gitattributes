@@ -89,3 +89,8 @@ tools/breenix-runs/Tests/Fixtures/05-runtime-anti-vacuity-strict-serial.txt -tex
 # fixture. A CRLF normalisation would delete the very byte the schema names,
 # and the suite would then be pinning a property its fixture no longer shows.
 docs/planning/green-program/failure-capture/serials/pr3/*.txt -text
+# PR-3 review-round gate serials: the preserved aarch64 strict-gate boots that
+# failed during this round's re-runs, at the fix head and at the pre-fix head.
+# Same treatment as the fixtures above -- these are raw QEMU captures whose
+# interleaved bytes ARE the evidence, and a CRLF normalisation would edit them.
+docs/planning/green-program/failure-capture/serials/pr3-gate/*.txt -text
