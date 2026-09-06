@@ -1031,3 +1031,42 @@ consumes them.
   in a different shape than described.
 * **No CI.** This repo has no GitHub Actions; "the test you can run" means a command
   the operator runs locally.
+
+## Landing re-smoke (2026-09-06, worktree ld-866)
+
+Before opening the landing PR, this branch's fork point was checked against
+`origin/main`: `git merge-base --is-ancestor origin/main HEAD` succeeded, so
+`origin/main` (`9a275007`) was already an ancestor of this branch — main had
+not advanced since the branch forked, so `git merge --no-ff origin/main`
+reported "Already up to date." with no new merge commit and no conflicts.
+The branch head (`98de2fa2`) was then re-smoked directly:
+
+- `swift build -c release` from a clean `.build/` (3 of 3 products —
+  `BreenixRuns`, `breenix-runs`, `BreenixRunInspector`): `Build complete!
+  (9.70s)`, 0 warnings, 0 errors — confirming the `RunShow.renderSubsystems`
+  restructuring above still avoids the Swift 6.3.3 `CopyPropagation` crash
+  on a fresh build tree, not just an incremental one.
+- `swift test`: 88 tests, 0 failures, 0 unexpected — warning-free (the only
+  `warning:` lines in the run's output are `RunStoreTests`' own deliberate
+  corrupt-manifest fixture log lines, not compiler warnings).
+- `make app` (release path): rebuilt `BreenixRunInspector` via `swift build
+  --product BreenixRunInspector -c release`, bundled `Breenix Run
+  Inspector.app`, and ad-hoc signed it. `codesign -dv` on the bundle
+  confirmed `Format=app bundle with Mach-O thin (arm64)`,
+  `Signature=adhoc`. `/usr/bin/open`'d the bundle and left it running;
+  `pgrep -fl BreenixRunInspector` confirmed a live process (pid 15844)
+  running the `.app`'s own executable path.
+- All 41 of 41 `tests/*_structure.rs` suites at the repo root, each compiled
+  and run individually via `scripts/run-structure-tests.sh <stem>` (a
+  symlinked `rust-fork/` in the worktree was not needed — these suites are
+  std-only per that script's own header comment): 41 passed, 0 failed.
+- `python3 scripts/test_claim_lint.py`: exit 0 — the tool's documented MISS
+  cases (known, disclosed exemption gaps in the historical corpus, not
+  regressions) are unchanged from its own baseline; the suite itself
+  reports success.
+
+```
+claim-lint: scripts/claim-lint.py -> exit 0
+claim-lint: scripts/claim-lint.py --files <this doc> -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <landing commit message> -> exit 0
+```
