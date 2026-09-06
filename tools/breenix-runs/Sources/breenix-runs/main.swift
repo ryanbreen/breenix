@@ -13,6 +13,18 @@ struct RunArmArguments {
     var persist = true
 }
 
+struct RunX86Arguments {
+    var profile: X86Profile = .gate
+    var profileWasSet = false
+    var boots = 1
+    var sha: String?
+    var mode: RemoteGateMode = .full
+    var host = "beast"
+    var dryRun = false
+    var tags: [String] = []
+    var persist = true
+}
+
 struct FactsJSONEnvelope: Codable {
     var id: String
     var arch: Arch
@@ -29,8 +41,11 @@ func usage() -> String {
     """
     Usage:
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
+      breenix-runs run x86 [gate] [--boots N] [--sha SHA] [--mode kthread|full] [--host HOST] [--dry-run] [--tag T] [--no-store]
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs facts <run-id|latest> [--json]
+      breenix-runs compare <run-id-a|latest|latest-fail> <run-id-b|latest|latest-fail>
+      breenix-runs tail [<run-id|latest|latest-fail>]
       breenix-runs import <path>...
     """
 }
@@ -65,6 +80,59 @@ func parseRunArm(_ args: ArraySlice<String>) throws -> RunArmArguments {
             // error, not silently overwrite the first and run the last one.
             guard !parsed.profileWasSet else {
                 throw CLIError(description: "run arm accepts exactly one profile, got both \(parsed.profile.rawValue) and \(profile.rawValue)")
+            }
+            parsed.profile = profile
+            parsed.profileWasSet = true
+        }
+    }
+
+    return parsed
+}
+
+func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
+    var parsed = RunX86Arguments()
+    var iterator = Array(args).makeIterator()
+
+    while let arg = iterator.next() {
+        switch arg {
+        case "--boots":
+            guard let value = iterator.next(), let boots = Int(value), boots > 0 else {
+                throw CLIError(description: "--boots requires a positive integer")
+            }
+            parsed.boots = boots
+        case "--sha":
+            guard let value = iterator.next(), !value.isEmpty else {
+                throw CLIError(description: "--sha requires a non-empty value")
+            }
+            parsed.sha = value
+        case "--mode":
+            guard let value = iterator.next(), let mode = RemoteGateMode(rawValue: value) else {
+                throw CLIError(description: "--mode requires one of: kthread, full")
+            }
+            parsed.mode = mode
+        case "--host":
+            guard let value = iterator.next(), !value.isEmpty else {
+                throw CLIError(description: "--host requires a non-empty value")
+            }
+            parsed.host = value
+        case "--dry-run":
+            parsed.dryRun = true
+        case "--tag":
+            guard let value = iterator.next(), !value.isEmpty else {
+                throw CLIError(description: "--tag requires a non-empty value")
+            }
+            parsed.tags.append(value)
+        case "--no-store":
+            parsed.persist = false
+        default:
+            guard !arg.hasPrefix("--") else {
+                throw CLIError(description: "unknown run x86 flag \(arg)")
+            }
+            guard let profile = X86Profile(rawValue: arg) else {
+                throw CLIError(description: "x86 \(arg) is not implemented in PR-5")
+            }
+            guard !parsed.profileWasSet else {
+                throw CLIError(description: "run x86 accepts exactly one profile, got both \(parsed.profile.rawValue) and \(profile.rawValue)")
             }
             parsed.profile = profile
             parsed.profileWasSet = true
@@ -195,6 +263,23 @@ func printFactsBlock(manifest: RunManifest, manifestPath: URL?, includeBootFacts
     }
 }
 
+func printDryRun(plan: RemoteCommand.Plan) {
+    print("x86 dry-run plan")
+    print("  sha: \(plan.sha)")
+    print("  boots: \(plan.boots)")
+    print("  mode: \(plan.mode.rawValue)")
+    print("  host: \(plan.paths.host)")
+    print("  clone: \(plan.paths.clonePath)")
+    print("  prepareClone: \(commandLine(plan.prepareClone))")
+    print("  runGate: \(commandLine(plan.runGate))")
+    print("  pullEvidence: \(commandLine(plan.pullEvidence))")
+    print("  removeClone: \(commandLine(plan.removeClone))")
+}
+
+func commandLine(_ request: ProcessRequest) -> String {
+    ([request.executable] + request.arguments).joined(separator: " ")
+}
+
 func printSample(_ label: String, _ sample: HostFactsSample) {
     print("\(label):")
     print("  wall: \(iso8601(sample.wallTime))")
@@ -269,31 +354,76 @@ func main() -> Int32 {
             guard args.count >= 2 else {
                 throw CLIError(description: "run requires an arch\n\(usage())")
             }
-            guard args[1] == "arm" else {
-                throw CLIError(description: "run \(args[1]) is not implemented in PR-1")
-            }
-            let runArgs = try parseRunArm(args.dropFirst(2))
-            let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
-            let launcher = LocalGateLauncher(store: store, repoRoot: root)
-            let result = try launcher.runArm(options: LocalGateLaunchOptions(
-                profile: runArgs.profile,
-                boots: runArgs.boots,
-                tags: runArgs.tags,
-                persist: runArgs.persist
-            ))
-            print("")
-            printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, includeBootFactsNotice: false)
-            // A preflight refusal (LocalGateLauncher.bootTestsPreflightRefusalMarker)
-            // never ran a boot, but it is still not success: an unmapped verdict
-            // here fell through to `return 0`, which reported the CLI's exit
-            // status as success for a run that refused to even attempt a boot.
-            switch result.manifest.verdict {
-            case .gateScript(_, let exitCode):
-                return Int32(exitCode)
-            case .refused:
-                return 1
+            switch args[1] {
+            case "arm":
+                let runArgs = try parseRunArm(args.dropFirst(2))
+                let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
+                let launcher = LocalGateLauncher(store: store, repoRoot: root)
+                let result = try launcher.runArm(options: LocalGateLaunchOptions(
+                    profile: runArgs.profile,
+                    boots: runArgs.boots,
+                    tags: runArgs.tags,
+                    persist: runArgs.persist
+                ))
+                print("")
+                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, includeBootFactsNotice: false)
+                // A preflight refusal (LocalGateLauncher.bootTestsPreflightRefusalMarker)
+                // never ran a boot, but it is still not success: an unmapped verdict
+                // here fell through to `return 0`, which reported the CLI's exit
+                // status as success for a run that refused to even attempt a boot.
+                switch result.manifest.verdict {
+                case .gateScript(_, let exitCode):
+                    return Int32(exitCode)
+                case .refused:
+                    return 1
+                default:
+                    return 0
+                }
+            case "x86":
+                let runArgs = try parseRunX86(args.dropFirst(2))
+                guard runArgs.host == "beast" else {
+                    throw CLIError(description: "unsupported x86 host \(runArgs.host); PR-5 supports only beast and does not fall back to local TCG on this Mac")
+                }
+                let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
+                let runner = RealProcessRunner()
+                let explicitSHA = runArgs.sha != nil
+                let git = try BeastLauncher.localGitIdentity(repoRoot: root, runner: runner)
+                guard let sha = runArgs.sha ?? git.sha else {
+                    throw CLIError(description: "could not resolve local git SHA; pass --sha explicitly")
+                }
+                if !explicitSHA, git.dirty == true {
+                    FileHandle.standardError.write(Data("warning: beast will test the pushed commit \(sha), not the dirty working tree\n".utf8))
+                }
+
+                let launcher = BeastLauncher(
+                    store: store,
+                    runner: runner,
+                    pathsTemplate: BeastPaths(host: runArgs.host, clonePath: "")
+                )
+                let options = BeastLaunchOptions(
+                    boots: runArgs.boots,
+                    mode: runArgs.mode,
+                    sha: sha,
+                    gitDirty: git.dirty,
+                    tags: runArgs.tags,
+                    persist: runArgs.persist
+                )
+                if runArgs.dryRun {
+                    printDryRun(plan: try launcher.plan(options: options))
+                    return 0
+                }
+
+                let result = try launcher.runX86(options: options)
+                print("")
+                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, includeBootFactsNotice: false)
+                switch result.manifest.verdict {
+                case .gateScript(_, let exitCode):
+                    return Int32(exitCode)
+                default:
+                    return 0
+                }
             default:
-                return 0
+                throw CLIError(description: "run \(args[1]) is not a recognized architecture (supported: arm, x86)")
             }
 
         case "facts":
@@ -310,6 +440,16 @@ func main() -> Int32 {
             let parsed = try parseShow(args.dropFirst())
             let manifest = try loadManifest(selector: parsed.selector, store: store)
             print(try RunShow.render(manifest: manifest, store: store, options: parsed.options))
+            return 0
+
+        case "compare":
+            let parsed = try parseCompare(args.dropFirst())
+            try runCompare(parsed, store: store)
+            return 0
+
+        case "tail":
+            let parsed = try parseTail(args.dropFirst())
+            try runTail(parsed, store: store)
             return 0
 
         case "import":

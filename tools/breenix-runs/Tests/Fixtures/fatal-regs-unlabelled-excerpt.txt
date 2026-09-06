@@ -1,0 +1,38 @@
+CLONEVM_EXEC_TEST: live sibling refused exec
+[syscall] exit(0) pid=95 name=thread-95
+CLONEVM_EXEC_TEST: child exited
+[heartbeat] tid=1204 uptime_ms=9046 kbd_nonzero=0
+[EXEC_LOCK_ORDER:commits=2:pm_held=0:unpinned=0:missing=0]
+CLONEVM_EXEC_TEST: second stage
+[syscall] exit(0) pid=96 name=thread-96
+CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+[syscall] exit(0) pid=94 name=/usr/local/test/bin/clonevm_exec_test
+[init] clonevm_exec_test exited pid=94 code=0
+[spawn] path='/bin/bsshd'
+[UNHANDLED_EC] cpu=2 EC=0xe ELR=0xffff00004059c2a8
+[EL1_FIRST_FAULT] instruction_word=0xeb080128 tpidr_el1=0xffff000040801780 mpidr_el1=0x80000002
+  sctlr_el1=0x30801805 vbar_el1=0xffff000040400000 ttbr1_el1=0x40203000
+  tcr_el1=0x2b5103510 cntvct_el0=0x250c79a2
+[FATAL_REGS] cpu=2 spsr=0x50100005 esr=0x3a000000 far=0x0 elr=0xffff00004059c2a8 sp=0xffff000054275010
+  x0=0x0 x1=0xffff0000544c5870 x2=0xfff8000201e6b138 x3=0xffff000054274ff8
+  x4=0xffff000040800008 x5=0x0 x6=0x0 x7=0xffff000040800008
+  x8=0x0 x9=0xffff0000544e3268 x10=0xffff00004040afa4 x11=0x0
+  x12=0x0 x13=0x0 x14=0x0 x15=0x0
+  x16=0x0 x17=0x0 x18=0x0 x19=0xffff000054274ff8
+  x20=0xffff000040419ed4 x21=0x4b1 x22=0x0 x23=0x1
+  x24=0xffff00004121c810 x25=0x3b9aca00 x26=0xffff000040898f54 x27=0xffff000054254e68
+  x28=0xffff0000405dc0e4 x29=0xffff000040898000 x30=0xffff000040576d5c
+  [0] I old=4->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043600000
+  [1] K old=7->tid=4 elr=0xffff00004041c3c8 spsr=0x80000005 x30=0xffff0000404513b8 sp=0xffff000054232e50
+  [2] K old=4->tid=1201 elr=0xffff00004045cb84 spsr=0x80000305 x30=0xffff00004049c3d0 sp=0xffff000054275010
+  [3] K old=1201->tid=4 elr=0xffff00004041c3c8 spsr=0x80000005 x30=0xffff0000404513b8 sp=0xffff000054232e50
+  [4] I old=4->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043600000
+  [5] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054275010
+  [6] I old=1201->tid=7 elr=0xffff00004049e5b4 spsr=0x5 x30=0x0 sp=0xffff000043600000
+  [7] K old=7->tid=1201 elr=0xffff00004049b2a8 spsr=0x60000305 x30=0xffff0000404cdaa4 sp=0xffff000054275010
+[SAVE_SKEW] none recorded on any cpu
+  cpu_state_history[2] (last 256 of 8441):
+    [8185] setter=1 7->4
+    [8186] setter=1 4->7

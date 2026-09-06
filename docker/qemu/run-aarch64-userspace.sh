@@ -26,6 +26,27 @@ case "$BREENIX_GATE_TMP" in
     *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
 esac
 
+# #829: CONTAINER_NAME is unique to this invocation (this script's own
+# PID), so the cleanup below targets the exact container this run started
+# instead of matching by ancestor image -- an ancestor-image filter can
+# kill a DIFFERENT running container from the same image, including one a
+# concurrent invocation of this same script (or of run-aarch64-test.sh,
+# which shares the image) legitimately owns. The trap fires on each exit
+# path this script can take (normal completion, an early `exit 1`, or a
+# signal) -- not only the
+# bottom-of-script cleanup line the pre-#829 version relied on -- so a
+# `set -e` exit partway through the boot-poll loop below still stops this
+# invocation's own container instead of leaking it.
+CONTAINER_NAME="breenix-aarch64-userspace-$$"
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+_cleanup_aarch64_userspace_container() {
+    # TERM then KILL after a bounded wait -- docker stop's own contract:
+    # SIGTERM to the container's PID 1, SIGKILL only if it has not exited
+    # within the timeout.
+    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap _cleanup_aarch64_userspace_container EXIT
+
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
@@ -34,27 +55,22 @@ if [ ! -f "$KERNEL" ]; then
     exit 1
 fi
 
-# Find or create ARM64 ext2 disk
+# Find or create ARM64 ext2 disk.
+#
+# #850: this used to pin a hardcoded 8MB size (both to pass --size and to
+# decide "size doesn't match, recreate"), which stopped fitting the real
+# aarch64 userspace binary + font payload (measured ~62MB) long before this
+# bug was filed -- create_ext2_disk.sh's own --size guard now rejects an
+# 8MB request outright rather than failing partway through the copy with
+# ENOSPC. The other 12 of 13 real call sites in this tree pass no --size
+# at all and just check whether the image already exists (census in
+# tests/ext2_disk_size_structure.rs); this caller now does the same instead
+# of carrying its own size-tracking magic number that can drift out of
+# sync with the payload again.
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
-EXT2_SIZE_BYTES=$((8 * 1024 * 1024))
-EXT2_SIZE_ACTUAL=0
-if [ -f "$EXT2_DISK" ]; then
-    if stat -f%z "$EXT2_DISK" >/dev/null 2>&1; then
-        EXT2_SIZE_ACTUAL=$(stat -f%z "$EXT2_DISK")
-    else
-        EXT2_SIZE_ACTUAL=$(stat -c %s "$EXT2_DISK")
-    fi
-fi
-
-if [ ! -f "$EXT2_DISK" ] || [ "$EXT2_SIZE_ACTUAL" -ne "$EXT2_SIZE_BYTES" ]; then
-    if [ -f "$EXT2_DISK" ]; then
-        echo "Recreating ARM64 ext2 disk (size mismatch: $EXT2_SIZE_ACTUAL bytes)"
-        rm -f "$EXT2_DISK"
-    else
-        echo "Creating ARM64 ext2 disk image..."
-    fi
-
-    "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64 --size 8
+if [ ! -f "$EXT2_DISK" ]; then
+    echo "Creating ARM64 ext2 disk image..."
+    "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
 
     if [ ! -f "$EXT2_DISK" ]; then
         echo "Error: Failed to create ext2 disk image at $EXT2_DISK"
@@ -90,6 +106,7 @@ cp "$EXT2_DISK" "$EXT2_WRITABLE"
 # Use writable disk copy (no readonly=on) to allow filesystem writes
 qemu_host_lock_acquire
 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -v "$KERNEL:/breenix/kernel:ro" \
     -v "$EXT2_WRITABLE:/breenix/ext2.img" \
     -v "$OUTPUT_DIR:/output" \
@@ -146,8 +163,9 @@ else
 fi
 echo "========================================="
 
-# Cleanup
-docker kill $(docker ps -q --filter ancestor=breenix-qemu-aarch64) 2>/dev/null || true
+# Cleanup: the container this invocation started is stopped by
+# _cleanup_aarch64_userspace_container above (chained onto this script's
+# own EXIT trap by qemu_host_lock_acquire), not by an ancestor-image match.
 qemu_host_lock_release
 
 if $FOUND; then

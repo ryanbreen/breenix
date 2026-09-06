@@ -84,6 +84,12 @@ echo "Running $COUNT parallel full boot tests (runner: $RUNNER)..."
 echo "Image: $UEFI_IMG"
 
 declare -a RUNNER_PIDS=()
+# #849: each docker-branch iteration gets its own container name (this
+# script's own PID plus the loop index), so cleanup below stops only the
+# container THIS invocation started -- an ancestor-image filter (the
+# pre-#849 shape) matches any breenix-qemu container currently running,
+# including a concurrent invocation's still-running one.
+declare -a CONTAINER_NAMES=()
 
 # Create output directories and launch the boots
 for i in $(seq 1 $COUNT); do
@@ -92,6 +98,7 @@ for i in $(seq 1 $COUNT); do
     mkdir -p "$OUTPUT_DIR"
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
+    CONTAINER_NAMES[$i]="breenix-boot-parallel-$$-$i"
 
     # Both branches pass byte-identical QEMU arguments; only the file paths
     # differ, because the container sees the images through bind mounts.
@@ -113,6 +120,7 @@ for i in $(seq 1 $COUNT); do
             >"$OUTPUT_DIR/runner.log" 2>&1 &
     else
         docker run --rm \
+            --name "${CONTAINER_NAMES[$i]}" \
             -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
             -v "$BREENIX_ROOT/target/test_binaries.img:/breenix/test_binaries.img:ro" \
             -v "$BREENIX_ROOT/target/ext2.img:/breenix/ext2.img:ro" \
@@ -234,7 +242,9 @@ if [ "$RUNNER" = native ]; then
         wait "${RUNNER_PIDS[$i]}" 2>/dev/null || true
     done
 else
-    docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true
+    for i in $(seq 1 $COUNT); do
+        docker stop -t 5 "${CONTAINER_NAMES[$i]}" >/dev/null 2>&1 || true
+    done
 fi
 
 echo ""

@@ -1,0 +1,12 @@
+# Synthesized fixture. Constructed by hand from FAILURE-TRACE-CAPTURE-PLAN-2026-09-05.md section 4.
+
+[BXCAP:BEGIN v=1 seq=1 edge=soft_lockup cpu=0 ts=100 tsfreq=24000000 uptime_ms=42 arch=aarch64 smp=4 build=0xabc]
+[BXCAP:EDGE reason=timer_silence threshold_ms=5000]
+[BXCAP:CPU cpu=0 cur=12 prev=7 pend=9 idle=0 rq=2 nr=1 preempt=0 hardirq=1 last_sched_tick=40 silence_ms=5001 sched_lock=held q=exact]
+[BXCAP:THR tid=12 pid=1 st=R onq=0 elr=0xffff000040001000 x30=0xffff000040002000 sp=0xffff000054000000 wake_site=sched_tick block_site=idle dwell_ms=12 q=derived]
+[BXCAP:DISP cpu=0 i=0 path=K old=7 new=12 elr=0xffff000040001000 spsr=0x5 x30=0xffff000040002000 sp=0xffff000054000000]
+[BXCAP:EV cpu=0 i=0 ts=99 type=0x0001 n=TIMER_TICK p=0 f=0x0]
+[BXCAP:CNT TIMER_TICKS=42 c0=42 c1=0]
+[BXCAP:RING cpu=0 writes=42 dropped=0 span_us=42000 kept=42]
+[BXCAP:NOTE scheduler snapshot used try_lock fallback]
+[BXCAP:END v=1 seq=1 edge=soft_lockup verdict=partial records=8 bytes=744 truncated=0 sections_skipped=0x02]

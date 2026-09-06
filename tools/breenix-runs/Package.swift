@@ -8,7 +8,8 @@ let package = Package(
     ],
     products: [
         .library(name: "BreenixRuns", targets: ["BreenixRuns"]),
-        .executable(name: "breenix-runs", targets: ["breenix-runs"])
+        .executable(name: "breenix-runs", targets: ["breenix-runs"]),
+        .executable(name: "BreenixRunInspector", targets: ["BreenixRunInspector"])
     ],
     targets: [
         .target(
@@ -17,6 +18,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "breenix-runs",
+            dependencies: ["BreenixRuns"]
+        ),
+        .executableTarget(
+            name: "BreenixRunInspector",
             dependencies: ["BreenixRuns"]
         ),
         .testTarget(
