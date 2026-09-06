@@ -912,6 +912,39 @@ fn the_aarch64_panic_capture_states_a_refused_scheduler_read() {
 }
 
 #[test]
+fn the_x86_panic_handler_capture_is_complete_and_precedes_exit_qemu() {
+    let serial = fixture_pr4("x86_64-panic-complete.txt");
+    assert_records_are_crlf_terminated("x86-panic", &serial);
+    let capture = decode_capture(&serial);
+    assert_terminal_edge_capture("x86-panic", &capture, "PANIC");
+    assert_untruncated_sections("x86-panic", &capture);
+    assert_eq!(capture.begin.text("arch"), "x86_64");
+    assert_eq!(capture.end.text("verdict"), "complete");
+    // The ordering claim, measured on the wire: `exit_qemu(Failed)` ends the
+    // QEMU process, so a capture emitted after it would not exist. The whole
+    // record is here, END included, which is only possible if it ran first.
+    let banner = serial
+        .find("KERNEL PANIC")
+        .expect("the fixture must carry the panic banner");
+    let record = serial
+        .find("[BXCAP:BEGIN")
+        .expect("the fixture must carry the capture");
+    let end = serial
+        .find("[BXCAP:END")
+        .expect("a capture cut short by exit_qemu would have no END");
+    assert!(
+        banner < record && record < end,
+        "expected banner -> BEGIN -> END, got offsets {banner} / {record} / {end}"
+    );
+    // -smp 1: no peer CPU to hold the scheduler lock, so THR is emitted.
+    assert!(
+        capture.records.iter().any(|r| r.token == "THR"),
+        "the x86 gate is -smp 1, where the non-blocking scheduler read has no peer \
+         CPU to lose to"
+    );
+}
+
+#[test]
 fn the_aarch64_fatal_postmortem_capture_is_complete_and_keeps_the_wide_dump() {
     let serial = fixture_pr4("aarch64-fault-postmortem-complete.txt");
     assert_records_are_crlf_terminated("fault", &serial);
