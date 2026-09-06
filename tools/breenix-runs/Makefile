@@ -6,7 +6,11 @@ APP_MACOS := $(APP_CONTENTS)/MacOS
 APP_RESOURCES := $(APP_CONTENTS)/Resources
 INFO_PLIST := $(APP_CONTENTS)/Info.plist
 
-.PHONY: build test catalog app
+# Overridden via `$(MAKE) bundle CONFIG=...` by the `app`/`app-debug` targets
+# below; not meant to be set directly on the command line.
+CONFIG ?= release
+
+.PHONY: build test catalog app app-debug bundle
 
 build:
 	swift build
@@ -18,18 +22,25 @@ catalog:
 	cd ../.. && cargo run -p xtask -- dump-boot-stages --arch aarch64 --json > tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-aarch64.json
 	cd ../.. && cargo run -p xtask -- dump-boot-stages --arch x86_64 --json > tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json
 
+# Ships a release build (issue #866). `swift build -c release` used to crash
+# this toolchain's swift-frontend (Swift 6.3.3, swiftlang-6.3.3.1.3) -- a
+# CopyPropagation SIL-pass ownership assertion while compiling
+# RunShow.renderSubsystems under -O. That function was restructured
+# (Sources/BreenixRuns/Show/RunShow.swift) to avoid the SIL shape that
+# tripped the pass, with no behavior change (`swift test` is still green);
+# see DESIGN.md Sec 2.4 for the crash signature and the fix.
 app:
-	# Debug, not release: `-c release` crashes this toolchain's swift-frontend
-	# (Swift 6.3.3, swiftlang-6.3.3.1.3) -- a CopyPropagation SIL-pass ownership
-	# assertion while compiling RunShow.renderSubsystems (PR-3,
-	# Sources/BreenixRuns/Show/RunShow.swift:89) under -O. That function's logic
-	# is correct (swift test covers it and is green) -- see DESIGN.md Sec 2.4
-	# for the reproduction and why this stays a debug build rather than a
-	# source change made only to dodge a compiler crash it did not cause.
-	swift build --product $(APP_EXECUTABLE) -c debug
+	$(MAKE) bundle CONFIG=release
+
+# Debug build of the same bundle, for a faster edit/build/launch loop.
+app-debug:
+	$(MAKE) bundle CONFIG=debug
+
+bundle:
+	swift build --product $(APP_EXECUTABLE) -c $(CONFIG)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_MACOS)" "$(APP_RESOURCES)"
-	cp ".build/debug/$(APP_EXECUTABLE)" "$(APP_MACOS)/$(APP_EXECUTABLE)"
+	cp ".build/$(CONFIG)/$(APP_EXECUTABLE)" "$(APP_MACOS)/$(APP_EXECUTABLE)"
 	{ \
 		printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'; \
 		printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'; \

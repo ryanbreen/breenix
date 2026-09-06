@@ -93,6 +93,21 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # docs/planning/green-program/failure-capture/PLAN-2026-09-05.md section 6.
 # shellcheck source=lib/gate-capture-drain.sh
 source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
+# #826/#834/#865/R181: this gate's qemu-system-x86_64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh (one lock domain per QEMU binary --
+# see that file's own ARCHITECTURE AWARENESS comment), so at most one
+# qemu-system-x86_64 is active on this host for each boot's duration. #865
+# is this lock's own report of the failure mode on the beast x86 host:
+# several TCG lanes running concurrently starve each other and hit the
+# gate's own timing ceilings on a healthy guest.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+# #827/#865: per-boot host-side facts (wall-clock window, host QEMU count
+# and load average at start/kill, QEMU's own CPU time, the guest's last
+# heartbeat, and which bound ended the boot) -- see that file's own header
+# for why a starved boot and a wedged boot could not be told apart before.
+# shellcheck source=lib/gate-boot-facts.sh
+source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_boot_tests_$i
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run and
@@ -374,6 +389,31 @@ FCNTL_PM_CONTENTION_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:rea
 # not earn. Pinning the SKIP line keeps the emitter alive on this arch --
 # deleting the oracle would otherwise leave this gate green.
 IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]'
+# #821. Unlike the two SKIPs above, this oracle has a real arm on x86: the
+# defect it measures is worse here than on aarch64, because `manager()`
+# performs no mask operation on this architecture, so the boot thread's
+# driver-test window holds PROCESS_MANAGER with IF=1 and an input interrupt
+# taken on top of it, on a machine that boots -smp 1, would wait for a lock its
+# own CPU owns.
+#
+# `pm_blocking_acquires=0` is the property: a production counter that each of
+# the 3 blocking PROCESS_MANAGER accessors bumps while the input IRQ entry's
+# no-blocking scope is open. `fg_unset_before=1` is the precondition, since the
+# deferring branch is only live while no foreground pgrp is set.
+# `pm_held_during_entry=1` and `irqs_enabled_before=1` are the pair that says
+# the injection really ran under a held, unmasked lock -- and on this
+# uniprocessor profile the entry's mere completion under that hold is the
+# reading, which is why the trailing arm is pinned to `local_hold`. The oracle
+# reports `handler_would_block` and refuses to drive that injection when its
+# own detector says the entry still reaches a blocking acquisition, so the
+# unrepaired kernel reddens this gate instead of hanging the boot.
+#
+# `entry_us` is deliberately pinned loosely here: this profile's monotonic
+# clock is TSC-backed only when the TSC is calibrated, and a millisecond-
+# resolution fallback would make a tight pin a flake rather than a reading.
+# The aarch64 gate carries the timed reading; this one carries the
+# completed-under-hold reading.
+TTY_IRQ_PM_ORACLE_PATTERN='\[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=[0-9]+:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold\]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -506,6 +546,15 @@ for i in $(seq 1 "$COUNT"); do
     cp target/ovmf/x64/code.fd "$OUTPUT_DIR/OVMF_CODE.fd"
     cp target/ovmf/x64/vars.fd "$OUTPUT_DIR/OVMF_VARS.fd"
 
+    qemu_host_lock_acquire qemu-system-x86_64
+    # #827/#865: "start" is sampled here, right after the lock is held and
+    # right before QEMU is launched -- this is when THIS boot's own
+    # wall-clock window actually begins, so time spent blocked on the host
+    # lock is not folded into the window the guest-uptime ratio is measured
+    # against.
+    HOST_MS_START="$(gbf_host_ms_now)"
+    QEMU_AT_START="$(qemu_host_lock_count qemu-system-x86_64)"
+    LOAD_AT_START="$(gbf_load_1m)"
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -522,6 +571,10 @@ for i in $(seq 1 "$COUNT"); do
         -serial "file:$OUTPUT_DIR/serial_kernel.txt" \
         >"$OUTPUT_DIR/qemu.log" 2>&1 &
     RUNNER_PID=$!
+    # F2 (#835 idiom): registers this PID with the lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this script's own PID during the poll
+    # below still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$RUNNER_PID"
 
     passed=false
     # failure-trace-capture PR-5: cleared here, alongside `passed`, and set
@@ -531,6 +584,10 @@ for i in $(seq 1 "$COUNT"); do
     # pins that read count at exactly 1) so whether this is still empty
     # after the loop is the drain decision.
     CAPTURE_LINES=""
+    # #865: which named branch of the poll loop below broke it, set inline
+    # at each existing break site rather than re-derived by re-grepping the
+    # same patterns afterward -- see the loop's own comment on why.
+    POLL_BREAK_REASON=""
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
     # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
     # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
@@ -606,6 +663,8 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$IRQ_HOLD_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$KSTACK_OWNER_ORACLE_PATTERN" \
@@ -631,28 +690,42 @@ for i in $(seq 1 "$COUNT"); do
             # `passed=true`, not read from it -- see the comment beside
             # `passed=false` above.
             CAPTURE_LINES="$(gcd_pass_report)"
+            POLL_BREAK_REASON="scored_pass"
             break
         fi
+        # #865: each branch below records its own name in POLL_BREAK_REASON
+        # right before the break that already existed here -- an annotation
+        # of which existing branch fired, not a new grep of the pattern it
+        # already checks. The GATE_BOOT_FACTS ended_by classification just
+        # below the loop reads this instead of re-grepping these same
+        # literal FAIL/PANIC patterns a second time, which would silently
+        # desync loopback_pump_structure.rs's and teardown_structure.rs's
+        # own exact-occurrence-count ratchets on this file's text.
         if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="crash_marker"
             break
         fi
         if grep -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="failure_marker"
             break
         fi
         # The scheduler publication seam emits this prefix if it publishes while
         # the process-manager lock is held on that CPU; fail early on any variant.
         if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="failure_marker"
             break
         fi
         if grep -qE '\[TEST:network:[^]]*:FAIL' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="failure_marker"
             break
         fi
         if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="failure_marker"
             break
         fi
         if ! kill -0 "$RUNNER_PID" 2>/dev/null; then
@@ -671,9 +744,44 @@ for i in $(seq 1 "$COUNT"); do
     if [ -z "$CAPTURE_LINES" ]; then
         CAPTURE_LINES="$(gcd_drain_and_report "$OUTPUT_DIR"/serial_*.txt)"
     fi
+    # #827/#865: sampled together, immediately before this boot's own kill --
+    # ps has no output for a PID already gone, so qemu_cpu_seconds and the
+    # aliveness check below must both run before the kill line, not after.
+    HOST_MS_END="$(gbf_host_ms_now)"
+    QEMU_AT_END="$(qemu_host_lock_count qemu-system-x86_64)"
+    LOAD_AT_END="$(gbf_load_1m)"
+    QEMU_ACTUAL_PID="$(gbf_resolve_qemu_pid "$RUNNER_PID" qemu-system-x86_64)"
+    QEMU_CPU_S="$(gbf_qemu_cpu_seconds "$QEMU_ACTUAL_PID")"
+    QEMU_STILL_ALIVE=1
+    kill -0 "$RUNNER_PID" 2>/dev/null || QEMU_STILL_ALIVE=0
 
     kill "$RUNNER_PID" 2>/dev/null || true
     wait "$RUNNER_PID" 2>/dev/null || true
+    qemu_host_lock_release
+
+    # #865: ended_by names which bound in the poll loop above actually ended
+    # this boot -- a read taken immediately after the loop already stopped
+    # (the same #827 idiom the aarch64 strict gate uses), not a new stop
+    # condition. POLL_BREAK_REASON is set inline inside the loop above, at
+    # the same existing branches (including the success branch, alongside
+    # `passed=true`) -- deriving ended_by from a fresh re-grep of those same
+    # literal patterns here, or from a second read of $passed, would
+    # silently add a bypass-worthy extra occurrence to text
+    # loopback_pump_structure.rs and teardown_structure.rs both pin the
+    # exact occurrence count of, which is what the first version of this
+    # change did (caught by both ratchets going red on this branch).
+    ENDED_BY="poll_exhausted"
+    if [ -n "$POLL_BREAK_REASON" ]; then
+        ENDED_BY="$POLL_BREAK_REASON"
+    elif [ "$QEMU_STILL_ALIVE" = "0" ]; then
+        ENDED_BY="qemu_exited_early"
+    fi
+    GUEST_UPTIME_MS="$(gbf_last_heartbeat_uptime_ms "$OUTPUT_DIR/serial_kernel.txt")"
+    FACTS_LINE="$(gbf_emit_line "$i" "$HOST_MS_START" "$HOST_MS_END" \
+        "$QEMU_AT_START" "$LOAD_AT_START" "$QEMU_AT_END" "$LOAD_AT_END" \
+        "$QEMU_CPU_S" "$GUEST_UPTIME_MS" "$ENDED_BY")"
+    printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
+    echo "  $FACTS_LINE"
 
     # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
     # BEFORE the passed-flag check below (and before the ~40 marker-count
@@ -1050,6 +1158,9 @@ for i in $(seq 1 "$COUNT"); do
     IRQ_HOLD_ORACLE_LINE=$(grep -h -F "$IRQ_HOLD_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$IRQ_HOLD_ORACLE_LINE"
+    TTY_IRQ_PM_ORACLE_LINE=$(grep -h -E "$TTY_IRQ_PM_ORACLE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$TTY_IRQ_PM_ORACLE_LINE"
     FUTEX_HANDOFF_ORACLE_LINE=$(grep -h -E "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FUTEX_HANDOFF_ORACLE_LINE"

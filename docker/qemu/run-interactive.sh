@@ -8,6 +8,14 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/#834/#865/R181: this script's qemu-system-x86_64 boot runs behind the
+# host-wide lock in lib/qemu-host-lock.sh (one lock domain per QEMU binary),
+# closing the gap the F1-review comment below used to disclose ("qemu-system-x86_64
+# has no such lock, and this script does not add one") -- it now cooperates
+# with a concurrent x86 gate lane the same way run-aarch64-interactive.sh
+# already cooperates with #826's own aarch64 lock.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # Build Docker image if needed
 IMAGE_NAME="breenix-qemu"
@@ -25,20 +33,17 @@ fi
 # container the `docker rm -f "$CONTAINER_NAME"` line below can now ever
 # remove.
 #
-# This is NOT the same tradeoff as #829's aarch64 precedent
-# (run-aarch64-interactive.sh): that script's second-invocation case is
-# safe because each aarch64 launcher in this tree cooperates with the
-# host-wide lock in lib/qemu-host-lock.sh, so a second invocation simply
-# waits its turn. qemu-system-x86_64 has no such lock, and this script
-# does not add one. So dropping the old preflight gives up more than the
-# same-PID crash-leftover case above: if an earlier run-interactive.sh
-# is still bound to host port 5900 (-p 5900:5900, fixed, below), this
-# invocation's own `docker run --name "$CONTAINER_NAME"` fails on that
-# port conflict rather than taking over. Because that `docker run` is
-# backgrounded, the failure is silent unless checked for explicitly --
-# the DOCKER_PID liveness check below (before opening TigerVNC) is that
-# check, so this now fails loudly with an actionable message instead of
-# silently opening TigerVNC onto the stale earlier session's screen.
+# #865 update: this is now the SAME tradeoff as #829's aarch64 precedent
+# (run-aarch64-interactive.sh), not a different one -- both scripts
+# cooperate with the host-wide lock in lib/qemu-host-lock.sh (one lock
+# domain per QEMU binary as of #865), so a second invocation blocks in
+# qemu_host_lock_acquire before it ever reaches `docker run`, rather than
+# racing straight into a port-5900 conflict. The DOCKER_PID liveness check
+# below (before opening TigerVNC) is kept as a second line of defense for a
+# failure this lock does not cover -- e.g. a stray container from outside
+# this script still holding host port 5900 -- so a `docker run` failure
+# still fails loudly with an actionable message instead of silently
+# opening TigerVNC onto some other session's screen.
 CONTAINER_NAME="breenix-interactive-$$"
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 _cleanup_interactive_container() {
@@ -78,6 +83,7 @@ echo "Press Ctrl+C to stop"
 echo ""
 
 # Run QEMU with VNC in background
+qemu_host_lock_acquire qemu-system-x86_64
 docker run --rm \
     --name "$CONTAINER_NAME" \
     -p 5900:5900 \
@@ -111,6 +117,10 @@ docker run --rm \
     &
 
 DOCKER_PID=$!
+# F2 (#835 idiom): registers this PID with the lock's own EXIT trap so a
+# SIGTERM/SIGINT delivered to just this script's own PID still stops the
+# container instead of orphaning it with the lock held.
+qemu_host_lock_track_pid "$DOCKER_PID"
 
 # Wait for VNC to be ready
 echo "Waiting for VNC server..."

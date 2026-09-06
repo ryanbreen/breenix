@@ -91,31 +91,47 @@ public enum RunShow {
         let states = StateMachine.evaluate(catalog: catalog, index: index)
         let reached = states.filter(\.isReached).count
         let stop = states.first { $0.isStoppedHere }
-        var lines: [String] = []
         let stopText = stop.map { " stopped at #\($0.index)" } ?? ""
 
-        lines.append("Subsystems - \(manifest.arch.rawValue), \(manifest.profile) reached \(reached) / \(states.count)\(stopText)")
+        var lines: [String] = [
+            "Subsystems - \(manifest.arch.rawValue), \(manifest.profile) reached \(reached) / \(states.count)\(stopText)"
+        ]
         for state in states {
-            let symbol: String
-            if state.isReached {
-                symbol = "✓"
-            } else if state.isStoppedHere {
-                symbol = "✗"
-            } else {
-                symbol = "○"
-            }
-
-            let lineText = state.reachedLine.map { "L\($0)" } ?? "-"
-            lines.append("\(symbol) \(padded(state.stage.name, to: stageNameColumnWidth)) \(lineText)")
-            if state.isStoppedHere {
-                lines.append("    means: \(state.stage.failureMeaning)")
-                lines.append("    check: \(state.stage.checkHint)")
-                if let arm = state.failureArm {
-                    lines.append("    failure arm: L\(arm.lineNumber) \(arm.text)")
-                }
-            }
+            lines.append(contentsOf: subsystemLines(for: state))
         }
         return lines.joined(separator: "\n")
+    }
+
+    // Split out of `renderSubsystems` (issue #866): the original loop body --
+    // one `for` loop mutating an outer `lines` array while switching on
+    // `state.outcome` repeatedly through the `isReached`/`isStoppedHere`/
+    // `reachedLine`/`failureArm` computed properties -- is the shape that
+    // trips the Swift 6.3.3 `swift-frontend`'s CopyPropagation SIL pass under
+    // `-O` (see DESIGN.md Sec 2.4 for the crash and its exact signature).
+    // Giving each `StageState` its own small, self-contained function that
+    // returns the lines for that one state -- instead of appending into a
+    // shared array from inside the loop -- avoids the pattern. The per-state
+    // logic itself is unchanged from before this split.
+    private static func subsystemLines(for state: StageState) -> [String] {
+        let symbol: String
+        if state.isReached {
+            symbol = "✓"
+        } else if state.isStoppedHere {
+            symbol = "✗"
+        } else {
+            symbol = "○"
+        }
+
+        let lineText = state.reachedLine.map { "L\($0)" } ?? "-"
+        var lines = ["\(symbol) \(padded(state.stage.name, to: stageNameColumnWidth)) \(lineText)"]
+        if state.isStoppedHere {
+            lines.append("    means: \(state.stage.failureMeaning)")
+            lines.append("    check: \(state.stage.checkHint)")
+            if let arm = state.failureArm {
+                lines.append("    failure arm: L\(arm.lineNumber) \(arm.text)")
+            }
+        }
+        return lines
     }
 
     // Pads `text` with trailing spaces to `width`; never truncates, so a

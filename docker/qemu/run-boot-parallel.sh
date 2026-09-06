@@ -15,6 +15,22 @@ set -e
 COUNT=${1:-5}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/#834/#865/R181: this script's own COUNT qemu-system-x86_64 boots are
+# deliberately launched concurrently WITH EACH OTHER (that internal
+# parallelism is the point of this script, unlike run-aarch64-kthread-
+# parallel.sh, which #826 rewrote from concurrent to serial launches for the
+# opposite reason) -- what #865's own host-wide lock adds here is exclusion
+# against a DIFFERENT script's x86 boot lane running at the same time on the
+# same host. The lock is acquired once, before the launch loop starts, and
+# released once, after the wait loop below has finished polling each
+# runner -- treating this script's whole COUNT-boot batch as one occupant of
+# the x86 lock domain rather than trying to interleave COUNT separate
+# acquire/release pairs around launches that already run concurrently by
+# design. Each runner PID (native or the docker-branch CLI client) is
+# tracked with the lock so a SIGTERM/SIGINT to just this script's own PID
+# still reaches each runner instead of orphaning them with the lock held.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_boot_$i path, so one
 # lane's rm -rf/mkdir can clobber another lane's in-flight run. Defaulting to
@@ -91,6 +107,8 @@ declare -a RUNNER_PIDS=()
 # including a concurrent invocation's still-running one.
 declare -a CONTAINER_NAMES=()
 
+qemu_host_lock_acquire qemu-system-x86_64
+
 # Create output directories and launch the boots
 for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_boot_$i"
@@ -143,6 +161,7 @@ for i in $(seq 1 $COUNT); do
             >"$OUTPUT_DIR/runner.log" 2>&1 &
     fi
     RUNNER_PIDS[$i]=$!
+    qemu_host_lock_track_pid "${RUNNER_PIDS[$i]}"
     echo "  Started test $i"
 done
 
@@ -246,6 +265,9 @@ else
         docker stop -t 5 "${CONTAINER_NAMES[$i]}" >/dev/null 2>&1 || true
     done
 fi
+# #865: this batch's own COUNT runners are each reaped above, so the x86
+# lock domain is freed here rather than deferred to script exit.
+qemu_host_lock_release
 
 echo ""
 echo "========================================="

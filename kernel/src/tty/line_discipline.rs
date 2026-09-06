@@ -422,6 +422,16 @@ impl LineDiscipline {
         self.column = 0;
     }
 
+    /// Bytes held in the canonical edit buffer, before the line is complete.
+    ///
+    /// Boot-test only: the #821 oracle needs a reading that an injected byte
+    /// reached the line discipline, and `bytes_available()` reports the cooked
+    /// queue, which stays empty in canonical mode until a newline arrives.
+    #[cfg(any(feature = "boot_tests", feature = "btrt"))]
+    pub fn pending_line_bytes(&self) -> usize {
+        self.line_buffer.len()
+    }
+
     /// Get the number of bytes available for reading
     pub fn bytes_available(&self) -> usize {
         if self.termios.is_canonical() {

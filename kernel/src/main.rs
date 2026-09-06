@@ -683,6 +683,16 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         // only a tick counter that is already advancing, which
         // interrupts::enable() above gives it.
         kernel::time_test::run_x86_timer_scale_gate();
+        // #821 second, for the same reason #767 is first: its footprint is
+        // two bytes pushed through the TTY input IRQ entry plus one brief
+        // PROCESS_MANAGER hold, with 0 heap allocations and 0 process rows
+        // created, so it does not move the frame, page-table or kernel-stack
+        // counts the gates below pin. It has to be HERE rather
+        // than later because this is the window where the boot thread runs
+        // with IF=1: an x86 `manager()` holder with interrupts live is exactly
+        // the exposed shape the #821 census names, and the oracle needs to be
+        // one.
+        kernel::test_framework::registry::run_tty_irq_pm_oracle();
         kernel::task::process_task::run_x86_retirement_fence_gate();
         kernel::task::process_task::run_x86_reclaim_progress_gate();
         kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();

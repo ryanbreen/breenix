@@ -11,6 +11,11 @@ set -e
 TIMEOUT=${1:-60}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# #826/#834/#865/R181: this script's qemu-system-x86_64 boot runs behind the
+# host-wide lock in ../docker/qemu/lib/qemu-host-lock.sh (one lock domain
+# per QEMU binary).
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 # Find the UEFI image
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
@@ -52,6 +57,7 @@ echo "Running workqueue test with ${TIMEOUT}s timeout..."
 echo "Image: $UEFI_IMG"
 
 # Start QEMU in Docker background
+qemu_host_lock_acquire qemu-system-x86_64
 docker run --rm \
     --name "$CONTAINER_NAME" \
     -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
@@ -68,6 +74,7 @@ docker run --rm \
         -serial file:/output/serial.txt \
     &>/dev/null &
 DOCKER_PID=$!
+qemu_host_lock_track_pid "$DOCKER_PID"
 
 # Wait for completion or timeout
 START_TIME=$(date +%s)
