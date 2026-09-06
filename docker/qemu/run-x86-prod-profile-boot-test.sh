@@ -1254,17 +1254,10 @@ CAPTURE_LINES="$(gcd_pass_report)"
 # for why a bare byte-growth check is not available on a kernel with #672 and
 # #673 both fixed, and why counting THIS specific marker's growth is.
 PROMPT_BEFORE=$(marker_count "$CONSOLE_PROMPT_LITERAL")
-# #884 anti-vacuity/proof knob: forces the just-sampled PROMPT_BEFORE to 0,
-# reproducing the exact host-contention shape #884 reports (a boot that
-# genuinely reaches steady state -- the poll loop above already scored
-# that -- but samples 0 console prompts before the liveness stimulus) on
-# a real boot, without needing to actually starve the host to observe it.
-# Unset by default; an ordinary run is unaffected. See
-# docs/planning/green-program/gates/X86-PROD-GATE-884-ROUND-2026-09-06.md
-# for the shell-level proof this knob makes possible.
-if [ -n "${BREENIX_X86_PROD_FORCE_PROMPT_ABSENT:-}" ]; then
-    PROMPT_BEFORE=0
-fi
+# #884 proof knob: forces the just-sampled PROMPT_BEFORE to 0, reproducing
+# the host-contention shape #884 reports on a real boot. Unset by default.
+# See docs/planning/green-program/gates/X86-PROD-GATE-884-ROUND-2026-09-06.md.
+[ -z "${BREENIX_X86_PROD_FORCE_PROMPT_ABSENT:-}" ] || PROMPT_BEFORE=0
 python3 - "$OUTPUT_DIR/console.sock" "$LIVENESS_STIMULUS_BYTE" <<'STIMULUS'
 import socket
 import sys
