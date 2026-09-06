@@ -33,6 +33,13 @@ fi
 echo "Running $COUNT parallel Docker kthread tests..."
 echo "Image: $UEFI_IMG"
 
+# #849: each iteration gets its own container name (this script's own PID
+# plus the loop index), so cleanup below stops only the containers THIS
+# invocation started -- an ancestor-image filter (the pre-#849 shape)
+# matches any breenix-qemu container currently running, including a
+# concurrent invocation's still-running one.
+declare -a CONTAINER_NAMES=()
+
 # Create output directories and launch containers
 for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_kthread_$i"
@@ -40,8 +47,10 @@ for i in $(seq 1 $COUNT); do
     mkdir -p "$OUTPUT_DIR"
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
+    CONTAINER_NAMES[$i]="breenix-kthread-parallel-$$-$i"
 
     docker run --rm \
+        --name "${CONTAINER_NAMES[$i]}" \
         -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
         -v "$OUTPUT_DIR:/output" \
         breenix-qemu \
@@ -83,8 +92,10 @@ for i in $(seq 1 $COUNT); do
     fi
 done
 
-# Cleanup
-docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true
+# Cleanup: stop only the containers this invocation started.
+for i in $(seq 1 $COUNT); do
+    docker stop -t 5 "${CONTAINER_NAMES[$i]}" >/dev/null 2>&1 || true
+done
 
 echo ""
 echo "========================================="
