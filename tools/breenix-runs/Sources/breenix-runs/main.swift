@@ -43,6 +43,7 @@ func usage() -> String {
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
       breenix-runs run x86 [gate] [--boots N] [--sha SHA] [--mode kthread|full] [--host HOST] [--dry-run] [--tag T] [--no-store]
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
+      breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
       breenix-runs facts <run-id|latest> [--json]
       breenix-runs compare <run-id-a|latest|latest-fail> <run-id-b|latest|latest-fail>
       breenix-runs tail [<run-id|latest|latest-fail>]
@@ -361,7 +362,7 @@ func main() -> Int32 {
             throw CLIError(description: usage())
         }
 
-        let commands = ["run", "show", "facts", "compare", "tail", "import"]
+        let commands = ["run", "show", "facts", "compare", "tail", "import", "list"]
         if subcommand == "--help" || subcommand == "-h"
             || (commands.contains(subcommand) && args.dropFirst().contains(where: { $0 == "--help" || $0 == "-h" })) {
             print(usage())
@@ -444,6 +445,10 @@ func main() -> Int32 {
             default:
                 throw CLIError(description: "run \(args[1]) is not a recognized architecture (supported: arm, x86)")
             }
+
+        case "list":
+            try runList(args.dropFirst(), store: store)
+            return 0
 
         case "facts":
             let parsed = try parseFacts(args.dropFirst())
