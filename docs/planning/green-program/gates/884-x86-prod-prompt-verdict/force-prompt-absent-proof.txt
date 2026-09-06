@@ -1,0 +1,613 @@
+[GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
+Building the shipped x86_64 production kernel profile...
+    Updating git repository `https://github.com/rust-osdev/bootloader.git`
+    Updating crates.io index
+     Locking 154 packages to latest compatible versions
+      Adding aarch64-cpu v9.4.0 (available: v11.2.0)
+      Adding acpi v5.2.0 (available: v6.1.1)
+      Adding az v1.2.1 (available: v1.3.0)
+      Adding pic8259 v0.10.4 (available: v0.11.0)
+      Adding spin v0.9.9 (available: v0.12.3)
+      Adding tock-registers v0.8.1 (available: v0.10.1)
+      Adding uart_16550 v0.3.2 (available: v0.8.0)
+      Adding uefi v0.33.0 (available: v0.37.0)
+      Adding x86_64 v0.15.4 (available: v0.15.5)
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling serde v1.0.229
+   Compiling serde_core v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling x86 v0.52.0
+   Compiling bit_field v0.10.3
+   Compiling const_fn v0.4.12
+   Compiling libc v0.2.189
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling bitflags v2.13.1
+   Compiling shlex v2.0.1
+   Compiling autocfg v1.5.1
+   Compiling scopeguard v1.2.0
+   Compiling find-msvc-tools v0.1.12
+   Compiling cfg-if v1.0.4
+   Compiling lock_api v0.4.14
+   Compiling cc v1.4.5
+   Compiling getrandom v0.4.3
+   Compiling volatile v0.4.6
+   Compiling num-traits v0.2.19
+   Compiling az v1.2.1
+   Compiling bitflags v1.3.2
+   Compiling raw-cpuid v10.7.0
+   Compiling syn v3.0.5
+   Compiling conquer-util v0.3.0
+   Compiling rand_core v0.6.4
+   Compiling crossbeam-utils v0.8.23
+   Compiling ring v0.17.14
+   Compiling spinning_top v0.2.5
+   Compiling zeroize v1.9.0
+   Compiling rustix v1.1.4
+   Compiling zmij v1.0.23
+   Compiling zero v0.1.3
+   Compiling byteorder v1.5.0
+   Compiling typenum v1.20.1
+   Compiling xmas-elf v0.8.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling rustls-pki-types v1.15.1
+   Compiling uart_16550 v0.3.2
+   Compiling float-cmp v0.9.0
+   Compiling getrandom v0.2.17
+   Compiling serde_derive v1.0.229
+   Compiling rand v0.8.8
+   Compiling hybrid-array v0.4.14
+   Compiling rand_hc v0.3.2
+   Compiling conquer-once v0.3.2
+   Compiling x86_64 v0.15.4
+   Compiling x86_64 v0.14.13
+   Compiling log v0.4.34
+   Compiling llvm-tools v0.1.1
+   Compiling anyhow v1.0.104
+   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
+   Compiling micromath v2.1.0
+   Compiling noto-sans-mono-bitmap v0.2.0
+   Compiling futures-core v0.3.34
+   Compiling serde_json v1.0.151
+   Compiling usize_conversions v0.2.0
+   Compiling slab v0.4.12
+   Compiling untrusted v0.9.0
+   Compiling crc-catalog v2.5.0
+   Compiling httparse v1.10.1
+   Compiling futures-task v0.3.34
+   Compiling pin-project-lite v0.2.17
+   Compiling linux-raw-sys v0.12.1
+   Compiling futures-util v0.3.34
+   Compiling crc v3.4.0
+   Compiling embedded-graphics v0.8.2
+   Compiling pic8259 v0.10.4
+   Compiling bootloader v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling crossbeam-queue v0.3.14
+   Compiling uuid v1.26.0
+   Compiling linked_list_allocator v0.10.6
+   Compiling conquer-once v0.4.0
+   Compiling spin v0.9.9
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling bootloader-boot-config v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling bytes v1.12.1
+   Compiling bootloader-x86_64-common v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling once_cell v1.21.4
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling fastrand v2.5.0
+   Compiling rustls v0.23.43
+   Compiling tempfile v3.27.0
+   Compiling fatfs v0.3.6
+   Compiling http v1.5.0
+   Compiling gpt v3.1.0
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling const-oid v0.10.2
+   Compiling subtle v2.6.1
+   Compiling base64 v0.23.1
+   Compiling ureq-proto v0.6.2
+   Compiling digest v0.11.3
+   Compiling xattr v1.6.1
+   Compiling webpki-roots v1.0.9
+   Compiling filetime v0.2.29
+   Compiling utf8-zero v0.8.1
+   Compiling cpufeatures v0.3.1
+   Compiling percent-encoding v2.3.2
+   Compiling lzma-rs v0.3.0
+   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling sha2 v0.11.0
+   Compiling tar v0.4.46
+   Compiling rustls-webpki v0.103.15
+   Compiling base16ct v1.0.0
+   Compiling ureq v3.4.1
+   Compiling ovmf-prebuilt v0.2.9
+    Finished `release` profile [optimized] target(s) in 2m 31s
+   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-884)
+    Finished `release` profile [optimized] target(s) in 14.16s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-884/target/release/build/breenix-03b3b4f3cd901e39/out/breenix-uefi.img (7405568 bytes)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-884/target/ext2.img
+  Size: 256MB
+  Payload: 45MB (userspace binaries + fonts)
+  Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 45 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 10688
+drwxr-xr-x  2 root root   4096 Sep  6 18:54 .
+drwxr-xr-x 12 root root   4096 Sep  6 18:54 ..
+-rwxr-xr-x  1 root root 299240 Sep  6 18:54 bcheck
+-rwxr-xr-x  1 root root 346224 Sep  6 18:54 bfontpicker
+-rwxr-xr-x  1 root root 248152 Sep  6 18:54 biconkit
+-rwxr-xr-x  1 root root 325352 Sep  6 18:54 blauncher
+-rwxr-xr-x  1 root root 185640 Sep  6 18:54 bless
+-rwxr-xr-x  1 root root 190032 Sep  6 18:54 block_eintr_oracle
+-rwxr-xr-x  1 root root 331080 Sep  6 18:54 blog
+-rwxr-xr-x  1 root root 275128 Sep  6 18:54 bounce
+-rwxr-xr-x  1 root root 579472 Sep  6 18:54 bsh
+-rwxr-xr-x  1 root root 322408 Sep  6 18:54 bssh
+-rwxr-xr-x  1 root root 314168 Sep  6 18:54 bsshd
+-rwxr-xr-x  1 root root 338592 Sep  6 18:54 bterm
+-rwxr-xr-x  1 root root 184200 Sep  6 18:54 btop
+-rwxr-xr-x  1 root root 198960 Sep  6 18:54 btrace
+-rwxr-xr-x  1 root root 483288 Sep  6 18:54 burl
+-rwxr-xr-x  1 root root 331384 Sep  6 18:54 bwm
+-rwxr-xr-x  1 root root 188968 Sep  6 18:54 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189264 Sep  6 18:54 confetti
+-rwxr-xr-x  1 root root 177664 Sep  6 18:54 counter
+-rwxr-xr-x  1 root root 189728 Sep  6 18:54 demo
+-rwxr-xr-x  1 root root 187664 Sep  6 18:54 df_preempt_oracle
+-rwxr-xr-x  1 root root 178088 Sep  6 18:54 exec_smoke
+-rwxr-xr-x  1 root root 185064 Sep  6 18:54 exec_smoke_target
+-rwxr-xr-x  1 root root 191712 Sep  6 18:54 fart
+-rwxr-xr-x  1 root root 187640 Sep  6 18:54 fork_smoke
+-rwxr-xr-x  1 root root 178856 Sep  6 18:54 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391472 Sep  6 18:54 guskit
+-rwxr-xr-x  1 root root 189128 Sep  6 18:54 heartbeat
+-rwxr-xr-x  1 root root 177656 Sep  6 18:54 hello_time
+-rwxr-xr-x  1 root root 227176 Sep  6 18:54 hello_world
+-rwxr-xr-x  1 root root 262528 Sep  6 18:54 init_shell
+-rwxr-xr-x  1 root root 193960 Sep  6 18:54 particles
+-rwxr-xr-x  1 root root 207176 Sep  6 18:54 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197112 Sep  6 18:54 rectangles
+-rwxr-xr-x  1 root root 186952 Sep  6 18:54 resolution
+-rwxr-xr-x  1 root root 177904 Sep  6 18:54 signal_exec_check
+-rwxr-xr-x  1 root root 170592 Sep  6 18:54 simple_exit
+-rwxr-xr-x  1 root root 170592 Sep  6 18:54 simple_exit0
+-rwxr-xr-x  1 root root 170600 Sep  6 18:54 spawn_smoke_target
+-rwxr-xr-x  1 root root 177664 Sep  6 18:54 spinner
+-rwxr-xr-x  1 root root 177552 Sep  6 18:54 syscall_enosys
+-rwxr-xr-x  1 root root 184248 Sep  6 18:54 tones
+-rwxr-xr-x  1 root root 214320 Sep  6 18:54 tty_oracle
+-rwxr-xr-x  1 root root 195584 Sep  6 18:54 wait_stress
+-rwxr-xr-x  1 root root 183144 Sep  6 18:54 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19556
+drwxr-xr-x 2 root root   4096 Sep  6 18:54 .
+drwxr-xr-x 3 root root   4096 Sep  6 18:54 ..
+-rwxr-xr-x 1 root root 177976 Sep  6 18:54 access_test
+-rwxr-xr-x 1 root root 182792 Sep  6 18:54 alarm_test
+-rwxr-xr-x 1 root root 184368 Sep  6 18:54 argv_test
+-rwxr-xr-x 1 root root 184040 Sep  6 18:54 blocking_recv_test
+-rwxr-xr-x 1 root root 182512 Sep  6 18:54 brk_test
+-rwxr-xr-x 1 root root 183264 Sep  6 18:54 cat_test
+-rwxr-xr-x 1 root root 184600 Sep  6 18:54 clock_gettime_test
+-rwxr-xr-x 1 root root 192608 Sep  6 18:54 cloexec_test
+-rwxr-xr-x 1 root root 184672 Sep  6 18:54 clonevm_exec_test
+-rwxr-xr-x 1 root root 182568 Sep  6 18:54 cow_cleanup_test
+-rwxr-xr-x 1 root root 182528 Sep  6 18:54 cow_oom_test
+-rwxr-xr-x 1 root root 187072 Sep  6 18:54 cow_readonly_test
+-rwxr-xr-x 1 root root 188344 Sep  6 18:54 cow_signal_test
+-rwxr-xr-x 1 root root 187032 Sep  6 18:54 cow_sole_owner_test
+-rwxr-xr-x 1 root root 183024 Sep  6 18:54 cow_stress_test
+-rwxr-xr-x 1 root root 182832 Sep  6 18:54 cp_mv_argv_test
+-rwxr-xr-x 1 root root 188008 Sep  6 18:54 ctrl_c_test
+-rwxr-xr-x 1 root root 182648 Sep  6 18:54 cwd_test
+-rwxr-xr-x 1 root root 182464 Sep  6 18:54 devfs_test
+-rwxr-xr-x 1 root root 195256 Sep  6 18:54 dns_test
+-rwxr-xr-x 1 root root 189184 Sep  6 18:54 dup_test
+-rwxr-xr-x 1 root root 182496 Sep  6 18:54 echo_argv_test
+-rwxr-xr-x 1 root root 182864 Sep  6 18:54 epoll_test
+-rwxr-xr-x 1 root root 178232 Sep  6 18:54 exec_argv_test
+-rwxr-xr-x 1 root root 188104 Sep  6 18:54 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183456 Sep  6 18:54 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182584 Sep  6 18:54 false_test
+-rwxr-xr-x 1 root root 187592 Sep  6 18:54 fbinfo_test
+-rwxr-xr-x 1 root root 188776 Sep  6 18:54 fcntl_test
+-rwxr-xr-x 1 root root 198480 Sep  6 18:54 fifo_test
+-rwxr-xr-x 1 root root 182432 Sep  6 18:54 file_read_test
+-rwxr-xr-x 1 root root 188696 Sep  6 18:54 fork_memory_test
+-rwxr-xr-x 1 root root 187768 Sep  6 18:54 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189208 Sep  6 18:54 fork_state_test
+-rwxr-xr-x 1 root root 188120 Sep  6 18:54 fork_test
+-rwxr-xr-x 1 root root 188632 Sep  6 18:54 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183176 Sep  6 18:54 fs_directory_test
+-rwxr-xr-x 1 root root 182640 Sep  6 18:54 fs_large_file_test
+-rwxr-xr-x 1 root root 182832 Sep  6 18:54 fs_link_test
+-rwxr-xr-x 1 root root 182736 Sep  6 18:54 fs_rename_test
+-rwxr-xr-x 1 root root 182920 Sep  6 18:54 fs_write_test
+-rwxr-xr-x 1 root root 184008 Sep  6 18:54 getdents_test
+-rwxr-xr-x 1 root root 183088 Sep  6 18:54 head_test
+-rwxr-xr-x 1 root root 464360 Sep  6 18:54 http_fetch_test
+-rwxr-xr-x 1 root root 468512 Sep  6 18:54 http_test
+-rwxr-xr-x 1 root root 183224 Sep  6 18:54 itimer_test
+-rwxr-xr-x 1 root root 187680 Sep  6 18:54 job_control_test
+-rwxr-xr-x 1 root root 192264 Sep  6 18:54 job_table_test
+-rwxr-xr-x 1 root root 188512 Sep  6 18:54 kill_process_group_test
+-rwxr-xr-x 1 root root 190456 Sep  6 18:54 loopback_wake_test
+-rwxr-xr-x 1 root root 183320 Sep  6 18:54 ls_test
+-rwxr-xr-x 1 root root 182536 Sep  6 18:54 lseek_test
+-rwxr-xr-x 1 root root 182696 Sep  6 18:54 mkdir_argv_test
+-rwxr-xr-x 1 root root 191608 Sep  6 18:54 net_test
+-rwxr-xr-x 1 root root 179632 Sep  6 18:54 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188768 Sep  6 18:54 nonblock_test
+-rwxr-xr-x 1 root root 188384 Sep  6 18:54 pause_test
+-rwxr-xr-x 1 root root 188944 Sep  6 18:54 pipe2_test
+-rwxr-xr-x 1 root root 188744 Sep  6 18:54 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188848 Sep  6 18:54 pipe_fork_test
+-rwxr-xr-x 1 root root 195880 Sep  6 18:54 pipe_refcount_test
+-rwxr-xr-x 1 root root 188272 Sep  6 18:54 pipe_test
+-rwxr-xr-x 1 root root 191608 Sep  6 18:54 pipeline_test
+-rwxr-xr-x 1 root root 189048 Sep  6 18:54 poll_test
+-rwxr-xr-x 1 root root 183032 Sep  6 18:54 pty_test
+-rwxr-xr-x 1 root root 177120 Sep  6 18:54 register_init_test
+-rwxr-xr-x 1 root root 182512 Sep  6 18:54 rm_argv_test
+-rwxr-xr-x 1 root root 188936 Sep  6 18:54 select_test
+-rwxr-xr-x 1 root root 188000 Sep  6 18:54 session_test
+-rwxr-xr-x 1 root root 183160 Sep  6 18:54 shell_pipe_test
+-rwxr-xr-x 1 root root 189032 Sep  6 18:54 sigaltstack_test
+-rwxr-xr-x 1 root root 187552 Sep  6 18:54 sigchld_job_test
+-rwxr-xr-x 1 root root 182464 Sep  6 18:54 sigchld_test
+-rwxr-xr-x 1 root root 206736 Sep  6 18:54 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188744 Sep  6 18:54 signal_exec_test
+-rwxr-xr-x 1 root root 188192 Sep  6 18:54 signal_fork_test
+-rwxr-xr-x 1 root root 187920 Sep  6 18:54 signal_handler_test
+-rwxr-xr-x 1 root root 188232 Sep  6 18:54 signal_regs_test
+-rwxr-xr-x 1 root root 188344 Sep  6 18:54 signal_return_test
+-rwxr-xr-x 1 root root 187888 Sep  6 18:54 signal_test
+-rwxr-xr-x 1 root root 188896 Sep  6 18:54 sigsuspend_test
+-rwxr-xr-x 1 root root 188616 Sep  6 18:54 sleep_debug_test
+-rwxr-xr-x 1 root root 182312 Sep  6 18:54 stdin_test
+-rwxr-xr-x 1 root root 170864 Sep  6 18:54 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183088 Sep  6 18:54 tail_test
+-rwxr-xr-x 1 root root 203456 Sep  6 18:54 tcp_blocking_test
+-rwxr-xr-x 1 root root 187648 Sep  6 18:54 tcp_client_test
+-rwxr-xr-x 1 root root 189472 Sep  6 18:54 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188856 Sep  6 18:54 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202312 Sep  6 18:54 tcp_socket_test
+-rwxr-xr-x 1 root root 182256 Sep  6 18:54 test_mmap
+-rwxr-xr-x 1 root root 182176 Sep  6 18:54 timer_test
+-rwxr-xr-x 1 root root 182584 Sep  6 18:54 true_test
+-rwxr-xr-x 1 root root 188112 Sep  6 18:54 tty_test
+-rwxr-xr-x 1 root root 193416 Sep  6 18:54 udp_socket_test
+-rwxr-xr-x 1 root root 195352 Sep  6 18:54 unix_named_socket_test
+-rwxr-xr-x 1 root root 205328 Sep  6 18:54 unix_socket_test
+-rwxr-xr-x 1 root root 188168 Sep  6 18:54 waitpid_test
+-rwxr-xr-x 1 root root 183656 Sep  6 18:54 wc_test
+-rwxr-xr-x 1 root root 182984 Sep  6 18:54 which_test
+-rwxr-xr-x 1 root root 182568 Sep  6 18:54 wnohang_timing_test
+-rwxr-xr-x 1 root root 181984 Sep  6 18:54 /tmp/tmp.keKkbNby8X/sbin/blogd
+-rwxr-xr-x 1 root root 184096 Sep  6 18:54 /tmp/tmp.keKkbNby8X/sbin/telnetd
+-rwxr-xr-x 1 root root 187512 Sep  6 18:54 /tmp/tmp.keKkbNby8X/sbin/init
+-rw-r--r-- 1 root root 20 Sep  6 18:54 /tmp/tmp.keKkbNby8X/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 19 Sep  6 18:54 /tmp/tmp.keKkbNby8X/trunctest.txt
+-rw-r--r-- 1 root root 367 Sep  6 18:54 /tmp/tmp.keKkbNby8X/etc/bshrc
+-rw-r--r-- 1 root root 445 Sep  6 18:54 /tmp/tmp.keKkbNby8X/etc/fonts.conf
+-rw-r--r-- 1 root root 26 Sep  6 18:54 /tmp/tmp.keKkbNby8X/etc/group
+-rw-r--r-- 1 root root 679 Sep  6 18:54 /tmp/tmp.keKkbNby8X/etc/init.js
+-rw-r--r-- 1 root root 349 Sep  6 18:54 /tmp/tmp.keKkbNby8X/etc/hotkeys.conf
+-rw-r--r-- 1 root root 83 Sep  6 18:54 /tmp/tmp.keKkbNby8X/etc/passwd
+-rw-r--r-- 1 root root 532636 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 744936 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 160316 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  6 18:54 /tmp/tmp.keKkbNby8X/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 111 Sep  6 18:54 /tmp/tmp.keKkbNby8X/lines.txt
+-rw-r--r-- 1 root root 20 Sep  6 18:54 /tmp/tmp.keKkbNby8X/test/nested.txt
+-rw-r--r-- 1 root root 0 Sep  6 18:54 /tmp/tmp.keKkbNby8X/empty.txt
+-rw-r--r-- 1 root root 17 Sep  6 18:54 /tmp/tmp.keKkbNby8X/hello.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-884/target/ext2.img
+  /root/breenix-884/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+Booting the x86_64 production profile...
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (30s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (60s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (90s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (120s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (150s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (180s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (210s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (240s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (270s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (300s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (330s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (360s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (390s elapsed, host qemu-system-x86_64 count=0)...
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788721287460-1788721299693:qemu_at_start=0:load_at_start=1.14:qemu_at_end=0:load_at_end=1.10:qemu_cpu_s=12.00:guest_uptime_ms=NA:ended_by=scored_pass]
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788721287460-1788721359977:qemu_at_start=0:load_at_start=1.14:qemu_at_end=0:load_at_end=0.64:qemu_cpu_s=12.00:guest_uptime_ms=NA:ended_by=prompt_absent]
+x86 production-profile gate: console prompt liveness check failed -- before=0 after=2 (expected before=1, after=2, after>before)
+  Pre-adjudicated host-contention read (#826-style): the steady-state poll loop above already scored this boot's own progress a pass (STEADY_STATE_LITERAL was seen once), so a starved guest that reaches steady state late in its own sampling window, or that is too starved to answer the liveness stimulus inside 60s, produces exactly this shape with no kernel regression involved. Elapsed host time from boot start to this failure: 72517 ms (host_ms=1788721287460-1788721359977); guest's own last observed heartbeat: guest_uptime_ms=NA; concurrent x86 QEMU lanes on this host: 0 at boot start, 0 now; host 1-minute load average: 1.14 at boot start, 0.64 now. A guest heartbeat far behind the elapsed host time, or an elevated concurrent-lane count or load figure, is the contention signature; crash markers or a disturbed teardown census (both still checked below -- this failure does not skip them) would instead point at a kernel regression.
+x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-profile-boot-test.sh:1335, exit 1)
+  failing command: false
+[CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=none]
+  preserved failing serial: /root/breenix-884-tmp/breenix_x86_prod_profile_failures/20260906T190240Z_2775915
+--- observed values ---
+  ext2 root mounted:            1
+  PCI_FN blk/e1000/total lines: 3/1/9
+  kernel init complete:         1
+  async executor started:       1
+  steady state reached:         1
+  console prompt:               2
+  console prompt before/after liveness stimulus: 0 -> 2 (expected 1 -> 2)
+  tombstone census lines:       1
+  tombstone census at rest:     1
+  root custody lines:           1
+  root custody at rest:         1
+  crash markers:                0
+  test-only marker 'TEST_TALLY:': 0
+  test-only marker '[TEST:': 0
+  test-only marker 'TEST RUNNER:': 0
+  test-only marker '[BOOT_TESTS:': 0
+  test-only marker 'RING3_SMOKE: creating': 0
+  test-only marker '[TOMBSTONE_QUIESCE:': 0
+  test-only marker '[RECLAIM_DRAIN:': 0
+  test-only marker '[TOMBSTONE_JOIN_ORACLE:': 0
+  test-only marker '[KSTACK_OWNER_ORACLE:': 0
+  test-only marker '[KSTACK_QUIESCE_LEAK:': 0
+  test-only marker '[PT_CUSTODY_COUNTERS:': 0
+  test-only marker '[FRAME_CUSTODY_COUNTERS:': 0
+  test-only marker '[PT_RETIRE_COHORT:': 0
+  test-only marker '[PT_EXEC_COHORT:': 0
+  test-only marker '[EXEC_DETACH_ORACLE:': 0
+  test-only marker '[CLONE_ADMISSION_ORACLE:': 0
+  test-only marker '[INIT_DESIGNATION_ORACLE:': 0
+  test-only marker '[SCHED_STRAND_ORACLE:': 0
+  test-only marker '[CENSUS_WIDEN_ORACLE:': 0
+  test-only marker '[FCNTL_PM_CONTENTION_ORACLE:': 0
+  test-only marker '[IRQ_HOLD_ORACLE:': 0
+  test-only marker '[TTY_IRQ_PM_ORACLE:': 0
+  test-only marker '[TTY_IRQ_FG_ORACLE:': 0
+  test-only marker '[RING_SPAN:': 0
+  test-only marker 'edge=SELFTEST': 0
+  test-only marker 'Testing features enabled': 0
+  fault marker '[PMGUARD]': 0
+  fault marker '[CREATION_LOCK_ORDER:VIOLATION': 0
+  fault marker 'DISK LOADING FAILED': 0
+  fixed PRECONDITION 5 fail (#673): 0
+  fixed PRECONDITION 5 pass (#673): 1
+  fixed PRECONDITION 7 fail (#672): 0
+  fixed PRECONDITION 7 pass (#672): 1
+  preempt census lines:          1
+  preempt census at rest:        1
+  prod bracket release census:   1
+  prod bracket release at rest:  1
+  timer resolution window exceeded (#673 MA6/R3-m4): 0
+  timer scale oracle emissions (#767):   1
+  timer scale oracle head (#767):        1
+  timer scale oracle verdict (#767):     1
+  init designation (#673):      1
+  ring3 syscall confirmed (#673): 1
+  init first line (#673 M6):    1
+  init bsshd-launch warning (must be absent, #713): 0
+  bsshd started (#713):          1
+  bsshd listening (#713):        1
+  spawn-smoke child reaped exit 0 (#713): 1
+  spawn-smoke reap failed (must be absent, #713 fix-round-2): 0
+  tty oracle exit record (TTY-x86 port): 1
+  tty oracle reap failed (must be absent, TTY-x86 port): 0
+  tty oracle failed (must be absent, TTY-x86 port): 0
+  exec smoke launch (#721):      1
+  exec smoke target enter argc=2 (#721): 1
+  exec smoke target ok (#721):   1
+  exec smoke launcher exit code=0 (#721): 1
+  exec smoke spawn failed (must be absent, #721): 0
+  exec smoke exec failed (must be absent, #721): 0
+  exec smoke target argv fail (must be absent, #721): 0
+  exec lock order first commit (#721 K7): 1
+  exec lock order PM-held violation (must be absent, #721 K7): 0
+  exec lock order unpinned violation (must be absent, #721 K7): 0
+  exec lock order no-sched-thread violation (must be absent, #721 K7): 0
+  fork smoke launch (#745):      1
+  fork smoke child (#745):       1
+  fork smoke CoW isolation OK (#745): 1
+  fork smoke CoW isolation corrupted (must be absent, #745): 0
+  fork smoke parent reaped (#745): 1
+  fork smoke launcher exit code=0 (#745): 1
+  fork smoke child exit code=37 (#745 review r2 B1): 1
+  first CoW fault taken (#745 precheck C3(2)): 1
+  fork smoke spawn failed (must be absent, #745): 0
+  fork smoke fork failed (must be absent, #745): 0
+  fork smoke child unexpected return (must be absent, #745): 0
+  fork smoke reap failed (must be absent, #745): 0
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[ INFO] kernel: [PREEMPT_BRACKET_CENSUS:underflow=0]
+[ INFO] kernel: [PROD_BRACKET_RELEASE_CENSUS:underflow=0]
+[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=52:ms=260:ticks_after=52:ticks_nonzero=1:in_range=1:PASS]
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+--- serial tail (last 60 lines per file) ---
+==> /root/breenix-884-tmp/breenix_x86_prod_profile/serial_kernel.txt <==
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfb2010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfb2d78, count=664
+[DISPATCH_STRAND_CENSUS:seq=49:tick=10661:ms=57309:saved=13:stranded=6:tids=5,15,17,19,20,22:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=50:tick=10872:ms=58363:saved=13:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfb0010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfb0d78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: Read 340712 bytes from regular file (inode 32929)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0bd1d8, count=32
+[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 32929)
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 20 -> process 13 'blog', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=51:tick=11093:ms=59470:saved=13:stranded=6:tids=5,15,17,19,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfae010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfaed78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSans.ttf", flags=0x80000, mode=0o666
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSans.ttf"
+[ INFO] kernel::syscall::fs: sys_open: opened /usr/share/fonts/DejaVuSans.ttf as fd 3 (inode 32928)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffde92010, count=757076
+[DISPATCH_STRAND_CENSUS:seq=52:tick=11295:ms=60528:saved=13:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/proc/kmsg"
+[DEBUG] kernel::syscall::fs: handle_procfs_open: opened /proc/kmsg as fd=3
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfac010, count=4096
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfacd78, count=664
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 23 -> process 16 'blogd', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DISPATCH_STRAND_CENSUS:seq=53:tick=11500:ms=61554:saved=13:stranded=7:tids=5,15,17,19,20,22,23:tid_overflow=0:ledger_overflow=0]
+[ INFO] kernel::syscall::fs: sys_open: opened /usr/share/fonts/DejaVuSans.ttf as fd 3 (inode 32928)
+[DEBUG] kernel::syscall::handlers: sys_read: Read 445 bytes from regular file (inode 31)
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7fffff0e0308, count=32
+[DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffde90010, count=757076
+[DEBUG] kernel::syscall::handlers: sys_read: Read 0 bytes from regular file (inode 31)
+[DEBUG] kernel::syscall::pipe: sys_close: Closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: thread 22 -> process 15 'bcheck', closing fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: Closed regular file fd=3
+[DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
+[DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSansMono.ttf", flags=0x80000, mode=0o666
+[DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSansMono.ttf"
+
+==> /root/breenix-884-tmp/breenix_x86_prod_profile/serial_user.txt <==
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=3:crossed_ends=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+<S>[SW]<K>[SW]<T><U><R>[pty] Unlocked PTY 1 (fd 4)
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+<S>[SW]<T><U><R>[COW FAULT #0] addr=0x7fffff032aa8 cr3=0x4bf0000
+[SW]<K>[SW]<K>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff032aa8 cr3=0x4b41000
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[COW FAULT #2] addr=0x4001c058 cr3=0x4b41000
+[COW FAULT #3] addr=0x7ffffdff7010 cr3=0x4b41000
+[COW FAULT #4] addr=0x7ffffdff8010 cr3=0x4b41000
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+<S>[SW]<K>[SW]<T><B>[init] tty_oracle exited pid=3 code=0
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>p02r1 [SW]<K>[SW]<T><U>[EXEC_SMOKE:LAUNCH]
+[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[EXEC_SMOKE:TARGET_ENTER argc=2]
+[SW]<K>[SW]<I>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[EXEC_SMOKE:TARGET_OK]
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[EXEC_SMOKE:LAUNCHER_EXIT code=0]
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U>[FORK_SMOKE:LAUNCH]
+<S>[SW]<T><U><R>[COW FAULT #5] addr=0x7fffff058d78 cr3=0x4d11000
+[COW FAULT #6] addr=0x40017011 cr3=0x4d11000
+[COW FAULT #7] addr=0x7ffffdffe010 cr3=0x4d11000
+[COW FAULT #8] addr=0x7ffffdfff010 cr3=0x4d11000
+[FORK_SMOKE:CHILD pid=7]
+<S>[SW]<K>[SW]<K>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff058d78 cr3=0x4c96000
+[COW FAULT #10] addr=0x40017008 cr3=0x4c96000
+[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[COW FAULT #11] addr=0x7ffffdffe010 cr3=0x4c96000
+[COW FAULT #12] addr=0x7ffffdfff010 cr3=0x4c96000
+[FORK_SMOKE:COW_ISOLATION_OK probe=0xfeedfeed child_only=0x0]
+[FORK_SMOKE:PARENT_REAPED child=7 code=37]
+<S>[SW]<K>[SW]<T><B>[FORK_SMOKE:LAUNCHER_EXIT code=0]
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>p02r1 [init] bsshd started (PID 8)
+[SW]<K>[SW]<T><U><S>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>bsshd: starting on port 2222
+bsshd: listening on 0.0.0.0:2222
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>Welcome to Breenix OS
+[bsh] init shell: loading /etc/init.js
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U>TELNETD_STARTING
+TELNETD_LISTENING
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><S>[SW]<T><B>[SW]<K>[SW]<T><U><R>[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[bwm] ERROR: fbinfo failed: EINVAL
+<S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><U>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>p00r0 [SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><U>[blog] Breenix Log Viewer starting
+[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>p00r0 [SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U>Bounce spheres demo starting (for Gus!) [boot_id=0000000619685342]
+[bounce] Window::new failed: EINVAL — falling back to mmap
+Error: Could not get framebuffer info
+<S>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>p00r0 [SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><U><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[bcheck] Breenix Self-Check starting
+<S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U>[blogd] Breenix log daemon starting
+EXT2_LOCK_PARK_FIRST lock=ROOT_EXT2_write parks=1
+[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[init] Boot script completed
+<S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[init] Process 11 exited (code 1)
+[init] Process 14 exited (code 1)
+[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>p00r0 [SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[blogd] /var/log ready, logging to /var/log/kernel.log
+[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>p00r0 [SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>p00r1 <S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>p00r0 [SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B><S>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>p00r0 [SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><U><R>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><B>[SW]<K>[SW]<T><B>
