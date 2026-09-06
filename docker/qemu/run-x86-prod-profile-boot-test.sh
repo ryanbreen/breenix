@@ -254,13 +254,18 @@ OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_prod_profile"
 # docs/planning/green-program/gates/GATE-TMP-BASEDIR-2026-09-05.md
 CONSOLE_SOCK_PATH="$OUTPUT_DIR/console.sock"
 QEMU_PID=""
-# #884: pre-declared (empty, not merely undeclared) so report_gate_failure's
-# print_observed_values can echo them under this script's own `set -u`
-# without an unbound-variable abort, even on the one failure path that
-# precedes their real assignment further down (the steady-state poll
-# verdict assertion) -- see print_observed_values' own comment.
-PROMPT_BEFORE=""
-PROMPT_AFTER=""
+# #884 review F9: PROMPT_BEFORE/PROMPT_AFTER are intentionally left
+# undeclared here, not pre-declared empty -- print_observed_values reads
+# them as ${PROMPT_BEFORE:-unsampled} (see that function's own comment),
+# and bash's `:-` form is unbound-variable-safe under this script's own
+# `set -u` on its own, on an unset name as much as an empty one. A prior
+# round of this fix pre-declared them anyway "for set -u safety" alongside
+# that same `:-` guard; the two were redundant, contradicted each other
+# about which one was load-bearing, and only the `:-` form actually is:
+# 5 of 5 bare, non-`:-` read sites of these two names below (grep-counted;
+# the liveness-verdict assertion and its branches, the FAIL line, and the
+# closing summary echo) sit after their real assignment further down, so
+# none of them needed pre-declaration either.
 # #673 anti-vacuity knob. Empty (default) builds the real shipped profile;
 # set to "disable_x86_prod_init" to build the pre-fix, zero-userspace kernel
 # and confirm this same gate discriminates the fix (see the header).
@@ -889,6 +894,19 @@ report_gate_failure() {
         mkdir -p "$failure_dir"
         cp "$OUTPUT_DIR"/serial_*.txt "$failure_dir/"
         printf '%s\n' "$capture_lines" >"$failure_dir/capture_drain.txt"
+        # #884 review F6: gate_boot_facts.txt lived only under OUTPUT_DIR,
+        # which the next run's `rm -rf "$OUTPUT_DIR"` (above, before this
+        # boot even started) deletes -- so the liveness-failure record this
+        # handler prints to stdout had no durable copy once OUTPUT_DIR was
+        # gone, unlike run-aarch64-prod-profile-boot-test.sh's failure_dir,
+        # which carries its own gate_boot_facts.txt (see that script,
+        # around line 435). Copy it alongside the serials when present; a
+        # pre-boot abort (e.g. a build failure, before the poll loop ever
+        # writes it) has no such file yet, so this is guarded rather than
+        # unconditional.
+        if [ -f "$OUTPUT_DIR/gate_boot_facts.txt" ]; then
+            cp "$OUTPUT_DIR/gate_boot_facts.txt" "$failure_dir/"
+        fi
         echo "  preserved failing serial: $failure_dir"
         echo "--- observed values ---"
         print_observed_values

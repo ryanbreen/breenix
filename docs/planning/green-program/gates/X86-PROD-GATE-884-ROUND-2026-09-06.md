@@ -28,7 +28,11 @@ itself failed to reach `report_gate_failure`. `set -E` (errtrace) plus the
 of the script cover a failing top-level `test` the same way they cover
 the ~40 other bare assertions in the file -- confirmed by a minimal
 isolated repro (same three lines: `set -euo pipefail; set -E; trap ...;
-test "$X" -eq 1`) and by the fact that this script's own
+test "$X" -eq 1`; script and captured output committed at
+`884-x86-prod-prompt-verdict/minimal-isolated-repro.sh` and
+`minimal-isolated-repro-output.txt` in this directory -- `TRAP_FIRED
+exit=1 line=11 cmd=[test "$X" -eq 1]`, not a silent `set -e` death) and by
+the fact that this script's own
 `gate_scripts_with_verdict_trap_have_no_preempting_exits` /
 `verdict_trap_has_no_preempting_exit` census (added by #818,
 `tests/teardown_structure.rs`) already covered this script and already
@@ -172,7 +176,7 @@ x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-prof
 ```
 
 This is the exact defect shape #884 reported (`PROMPT_BEFORE=0`, a real
-boot that reached steady state), and each of the four elements DELIVER
+boot that reached steady state), and each of the five elements DELIVER
 item (1) asked for is present in the quoted log above: the verdict trap
 fired
 (`failing command: false`, not a silent `set -e` death), a second
@@ -294,6 +298,144 @@ above (exit 0) is the fixed state.
 - `docker/qemu/run-x86-prod-profile-boot-test.sh`
 - `tests/teardown_structure.rs`
 - `docs/planning/green-program/gates/X86-PROD-GATE-884-ROUND-2026-09-06.md` (this file)
-- `docs/planning/green-program/gates/884-x86-prod-prompt-verdict/*.txt` (evidence)
+- `docs/planning/green-program/gates/884-x86-prod-prompt-verdict/*.txt`,
+  `.../minimal-isolated-repro.sh` (evidence)
 
 No `kernel/` changes.
+
+## Review fix round
+
+Closes four findings from the review of this round's own doc/script (F6,
+F8, F9 minors/nits; F12 nit). No finding required a behavior change to the
+liveness verdict logic itself -- in order, F6/F8/F9/F12 below sit in the
+failure-preservation plumbing, a doc evidence citation, a dead
+pre-declaration, and a doc miscount, respectively.
+
+**F6** (`docker/qemu/run-x86-prod-profile-boot-test.sh`, `report_gate_failure`'s
+preservation block): `gate_boot_facts.txt` lived only under `$OUTPUT_DIR`,
+which the next run's `rm -rf "$OUTPUT_DIR"` deletes, so the liveness-failure
+record this round added had no durable copy once a later run started --
+unlike `run-aarch64-prod-profile-boot-test.sh`'s own `failure_dir`, which
+already carries this file. Fixed by copying `$OUTPUT_DIR/gate_boot_facts.txt`
+into `$failure_dir` alongside the serials, guarded on the file existing (a
+pre-boot abort has none yet). Proved live, not just read: a beast run with
+`BREENIX_X86_PROD_FORCE_PROMPT_ABSENT=1` reproduced the exact `ended_by=
+prompt_absent` failure this round's fix names, and the preserved
+`failure_dir` (`/root/breenix-884-tmp/breenix_x86_prod_profile_failures/
+20260906T203911Z_2964142/`) now contains `gate_boot_facts.txt` reading
+`[GATE_BOOT_FACTS:boot=1:host_ms=1788727078348-1788727150935:qemu_at_start=
+0:load_at_start=1.00:qemu_at_end=0:load_at_end=0.53:qemu_cpu_s=12.00:
+guest_uptime_ms=NA:ended_by=prompt_absent]` alongside `serial_kernel.txt`,
+`serial_user.txt` and `capture_drain.txt` -- full log and the failure_dir
+listing committed at
+`884-x86-prod-prompt-verdict/f6-fix-proof-gate-boot-facts-preserved.txt`.
+
+**F8** (this doc, "What this round found" section): the claimed "minimal
+isolated repro" for a bare `test` failure reaching `report_gate_failure`
+under this script's `set -euo pipefail; set -E; trap ... ERR` shape did not
+trace to any file on the branch. Re-run for real (not merely asserted):
+`set -euo pipefail; set -E; trap 'echo "TRAP_FIRED exit=$? line=$LINENO
+cmd=[$BASH_COMMAND]"; exit 7' ERR; X=0; test "$X" -eq 1` produced
+`TRAP_FIRED exit=1 line=11 cmd=[test "$X" -eq 1]`, confirming the trap
+fires rather than a silent `set -e` death. Script and captured output now
+committed at `884-x86-prod-prompt-verdict/minimal-isolated-repro.sh` and
+`minimal-isolated-repro-output.txt`; the doc paragraph now cites both by
+path instead of asserting the repro existed.
+
+**F9** (`docker/qemu/run-x86-prod-profile-boot-test.sh`, around the
+`PROMPT_BEFORE`/`PROMPT_AFTER` declaration): two comments gave
+contradictory rationales for the same `set -u` safety, and the
+pre-declaration (`PROMPT_BEFORE=""` / `PROMPT_AFTER=""`) was dead code --
+`print_observed_values` already reads both names as `${VAR:-unsampled}`,
+and bash's `:-` form is unbound-variable-safe under `set -u` on an unset
+name exactly as it is on an empty one, so the pre-declaration changed
+nothing. Removed the pre-declaration and its comment; the one comment that
+remains (at `print_observed_values`) is now the sole, correct rationale.
+Re-verified by re-grepping every read site: 5 of 5 bare, non-`:-` reads of
+these two names sit after their real assignment further down (the
+liveness-verdict assertion and its branches, the FAIL line, and the
+closing summary echo), matching the comment's own claim.
+
+**F12** (this doc, the "Shell-level run" section's conclusion paragraph):
+"each of the four elements ... asked for" was followed by an enumeration
+of five (a)-(e). Corrected "four" to "five"; the enumeration itself
+(items a-e) was unchanged -- re-counted here: 5 items, matching the
+corrected word.
+
+### Oracle + mutation re-run (local, this worktree)
+
+```
+$ scripts/run-structure-tests.sh teardown_structure x86_production_profile_gate_prompt_liveness
+== compiling teardown_structure ==
+== running teardown_structure x86_production_profile_gate_prompt_liveness ==
+
+running 2 tests
+test x86_production_profile_gate_prompt_liveness_failure_routes_through_verdict ... ok
+test x86_production_profile_gate_prompt_liveness_ratchet_is_not_vacuous ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.01s
+```
+
+The whole `teardown_structure.rs` file (92 tests, this file's full count)
+also re-run clean after the F6/F9 script edits:
+`scripts/run-structure-tests.sh teardown_structure` ->
+`test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered
+out`.
+
+### x86 prod gate x1 (beast, `breenix-x86` container, `/root/breenix-884`)
+
+Beast's clone was synced to this branch's HEAD (`40ac73ed`) plus this fix
+round's working-tree diff; the two `git diff` outputs for
+`docker/qemu/run-x86-prod-profile-boot-test.sh` (local worktree vs. beast
+clone) hashed identically (`3674698eeaf4b591edb7872a986edc4d` both sides)
+before the gate ran, so the run below exercises the fixed script, not some
+other state.
+The x86 QEMU host lock was held by two other lanes (`breenix-p766`, an
+SMP-enum gate) in sequence during this run; both queue waits are the
+lock's own designed behavior (`docker/qemu/lib/qemu-host-lock.sh`), not a
+defect, and both are visible in the log as `QEMU HOST LOCK: waiting for
+...` lines.
+
+```
+$ BREENIX_GATE_TMP=/root/breenix-884-tmp bash docker/qemu/run-x86-prod-profile-boot-test.sh
+[GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
+...
+PASS: x86 production profile reached steady state with the teardown census at rest
+...
+[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=54:ms=270:ticks_after=54:ticks_nonzero=1:in_range=1:PASS]
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 222441
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+```
+
+Full 352-line log committed at
+`884-x86-prod-prompt-verdict/x86-prod-gate-fixround-pass.txt`. The 48/48
+structure-suite preflight count matches this doc's earlier
+`structure_suites=48/48` citation (same census, re-run against the fixed
+script). Not claimed: a second, independent x86 prod gate run beyond this
+one x1 -- the round's ask was x1, and the separate forced-failure run
+above (F6) is a different code path (the liveness-failure branch, not the
+liveness-pass branch this x1 run exercised), so it is evidence for F6
+specifically, not a second pass-path sample.
+
+### Claim-lint
+
+```
+claim-lint: scripts/claim-lint.py                                    -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg /tmp/g884-commit/commit-msg-884-r2.txt -> exit 0
+```
+
+Two intermediate runs of `scripts/claim-lint.py` alone (before this
+section reached its own final wording) found 1 and then 4 findings, both
+sets self-inflicted by this section's own draft text (a universal-claim
+quantifier word in the opening paragraph, and two word choices claim-lint
+treats as asserting verification without a discharge in the same
+paragraph) and closed by rewording, not by weakening the tool or adding a
+mute-button annotation. Final tree-wide run, clean:
+
+```
+claim-lint: clean (10 file(s) checked, changed hunks vs 266414292ac9).
+claim-lint: 192 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+```
