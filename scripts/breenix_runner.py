@@ -79,11 +79,19 @@ class BreenixRunner:
         
     def start(self):
         """Start Breenix with stdio for serial output"""
-        # Proactively kill any stale QEMU to avoid image write-locks in local runs
-        try:
-            subprocess.run(["pkill", "-f", "qemu-system-x86_64"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        # #854: this preflight used to run `pkill -f qemu-system-x86_64` --
+        # a bare host-wide pattern match with no distinguishing marker, so
+        # it could kill a DIFFERENT, concurrent x86 gate's own still-running
+        # QEMU process, not only a leftover from a crashed earlier run of
+        # this runner (same hazard class as #829/#849, whose sibling fix in
+        # scripts/ci/ring3_check.sh -- one of this runner's own callers --
+        # removed its duplicate of this exact line and pointed here). This
+        # runner's own QEMU child is already PID-scoped: `self.process` is
+        # the `subprocess.Popen` this invocation itself started, reclaimed
+        # by PID via `self.process.terminate()`/`.kill()` in `stop()` below,
+        # so a bare preflight had no leftover of this runner's own to
+        # legitimately reach.
+        # claim-lint:ok: #854
         # No need for PTY when using stdio
         self.master_fd = None
         slave_fd = None
