@@ -502,9 +502,18 @@ fn validate_snapshot_is_published_under_the_mutex(driver: &str) -> Result<(), St
             acquisitions.len()
         ));
     }
+    // The write is the DEREFERENCE through the guard, `*guard = ..`, and the
+    // `*` is load-bearing here: `guard = ` on its own also matches the
+    // acquisition line, `let mut guard = self.foreground_pgrp.lock();`, whose
+    // offset is the earliest in the body no matter where the real write ends
+    // up. A rule that took that offset would find `field_write < publication`
+    // true for a body that published BEFORE it wrote -- the exact ordering
+    // this rule exists to refuse. Leg K below mutates that shape.
     let field_write = identifier_offsets(writer, &mask, "guard")
         .into_iter()
-        .find(|offset| writer[*offset..].starts_with("guard = "))
+        .find(|offset| {
+            writer[*offset..].starts_with("guard = ") && writer[..*offset].trim_end().ends_with('*')
+        })
         .ok_or_else(|| {
             "store_foreground_pgrp does not write the field through the guard it took, so the \
              mutex is not what serialises its writers"
@@ -977,6 +986,25 @@ fn deliberately_broken_copies_redden_the_rules() {
     assert!(
         error.contains("input_char_nonblock"),
         "leg J reddened for the wrong reason: {error}"
+    );
+
+    // Leg K -- the field write moved AFTER the publication, both still inside
+    // the critical section. This is the ordering rule 3's own error message is
+    // about ("so the snapshot can lead the field"), and the shape a rule that
+    // read the acquisition line's offset instead of the write's would have
+    // passed: leg E moves the publication out of the section, which is a
+    // different mutation and was the only one this rule had.
+    let published_early = replace_once(
+        &driver,
+        "        *guard = pgrp;\n        self.foreground_pgrp_snapshot\n            .store(pgrp.unwrap_or(FOREGROUND_PGRP_UNSET), Ordering::Release);\n",
+        "        self.foreground_pgrp_snapshot\n            .store(pgrp.unwrap_or(FOREGROUND_PGRP_UNSET), Ordering::Release);\n        *guard = pgrp;\n",
+    );
+    assert_ne!(published_early, driver, "leg K's mutation must apply");
+    let error = validate_snapshot_is_published_under_the_mutex(&published_early)
+        .expect_err("leg K: rule 3 has to redden when the publication leads the field write");
+    assert!(
+        error.contains("in that order"),
+        "leg K reddened for the wrong reason: {error}"
     );
 
     // Leg M -- the `serial_println!` restored on the interrupt-side signal
