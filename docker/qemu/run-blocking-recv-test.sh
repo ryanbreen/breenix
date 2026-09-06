@@ -34,7 +34,28 @@ fi
 
 # Create output directory
 OUTPUT_DIR=$(mktemp -d)
-trap "rm -rf $OUTPUT_DIR" EXIT
+# #849: CONTAINER_NAME is unique to this invocation (this script's own
+# PID), so cleanup targets the exact container this run started instead of
+# matching by ancestor image -- an ancestor-image filter (the pre-#849
+# shape) can kill a DIFFERENT running container from the same image,
+# including one a concurrent invocation of this same script legitimately
+# owns. The trap fires on every exit path this script can take (a
+# success/timeout `exit 0`/`exit 1` below, or an early `set -e` exit), not
+# only a bottom-of-script cleanup line.
+#
+# F3-review: also `docker rm -f` this exact CONTAINER_NAME before
+# launch (matching run-interactive.sh's own preflight) -- PID-scoped,
+# so it can only ever remove a same-PID-numbered leftover container
+# from an earlier crashed run of this exact script, guarding against
+# `docker run --name` failing outright on a stale name collision.
+# claim-lint:ok: #849
+CONTAINER_NAME="breenix-blocking-recv-test-$$"
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+_cleanup_blocking_recv_test() {
+    rm -rf "$OUTPUT_DIR"
+    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap _cleanup_blocking_recv_test EXIT
 
 # Create empty output files
 touch "$OUTPUT_DIR/serial_kernel.txt"
@@ -52,6 +73,7 @@ cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
 # Run QEMU inside Docker
 # - Uses SLIRP networking (user mode) with UDP forward from host port 55556
 timeout 120 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -p 55556:55556/udp \
     -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
     -v "$BREENIX_ROOT/target/test_binaries.img:/breenix/test_binaries.img:ro" \
@@ -108,7 +130,6 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
             echo "========================================="
             echo "BLOCKING RECV TEST: PASS"
             echo "========================================="
-            docker kill $(docker ps -q --filter ancestor="$IMAGE_NAME") 2>/dev/null || true
             exit 0
         fi
     fi
@@ -125,5 +146,4 @@ echo ""
 echo "Last 20 lines of kernel output (COM2):"
 tail -20 "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null || echo "(no output)"
 
-docker kill $(docker ps -q --filter ancestor="$IMAGE_NAME") 2>/dev/null || true
 exit 1

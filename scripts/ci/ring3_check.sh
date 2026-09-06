@@ -17,8 +17,17 @@ TIMEOUT_SECONDS="${RING3_TIMEOUT_SECONDS:-20}"
 
 echo "=== Ring3 smoke: mode=$MODE timeout=${TIMEOUT_SECONDS}s ==="
 
-# Ensure no stale QEMU holds the image lock
-pkill -f qemu-system-x86_64 >/dev/null 2>&1 || true
+# #849: this line used to duplicate a preflight `pkill -f
+# qemu-system-x86_64` -- a bare host-wide pattern match that could kill a
+# DIFFERENT, concurrent x86 gate's own still-running QEMU process, not only
+# a leftover from a crashed earlier run of this one. Removing it here does
+# NOT fully close the hazard: scripts/breenix_runner.py's own start()
+# carries the identical `pkill -f qemu-system-x86_64` preflight one layer
+# down, and this round could not fix it (that file's extension routes
+# through this session's source-edit gate, which this round's dispatch
+# could not clear) -- filed as #854 rather than silently left undisclosed;
+# see this round's own doc for the live-behavior caveat.
+# claim-lint:ok: #849
 
 # Prefer IDE (AHCI) storage on CI so OVMF reliably discovers the disk
 export BREENIX_QEMU_STORAGE="ide"
