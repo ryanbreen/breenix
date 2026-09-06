@@ -28,6 +28,7 @@ fs_fault_disarm_corrupt_inode = ["fs_fault_inject", "kernel/fs_fault_disarm_corr
 ext2_lock_race = ["boot_tests", "kernel/ext2_lock_race"]  # #728 lock-discipline repro oracle, see kernel/Cargo.toml
 capture_selftest = ["boot_tests", "kernel/capture_selftest"]  # failure-capture PR-3, see kernel/Cargo.toml
 capture_panic_oracle = ["boot_tests", "kernel/capture_panic_oracle"]  # failure-capture PR-4, see kernel/Cargo.toml
+capture_lockup_oracle = ["boot_tests", "kernel/capture_lockup_oracle"]  # failure-capture PR-7, see kernel/Cargo.toml
 capture_selftest_budget_mutation = ["capture_selftest", "kernel/capture_selftest_budget_mutation"]
 capture_selftest_tiny_budget = ["capture_selftest_budget_mutation", "kernel/capture_selftest_tiny_budget"]
 capture_selftest_cut_in_record = ["capture_selftest_budget_mutation", "kernel/capture_selftest_cut_in_record"]

@@ -57,9 +57,10 @@
 //! and PR-7 wire panic, fault and soft-lockup edges, where a first terminal
 //! edge that faults mid-capture would silence the second one on that CPU. Whether
 //! those edges want a latch that survives the CPU (this one), a depth
-//! counter, or a reset at a known-good point is a decision for the PR that
-//! wires them; this module states the behaviour rather than leaving it to be
-//! discovered.
+//! counter, or a reset at a known-good point was left to the PR that wires
+//! them; PR-4 and PR-7 have each since recorded their answer below, and both
+//! kept this latch. This module states the behaviour rather than leaving it
+//! to be discovered.
 //!
 //! PR-4 wired the panic and fault edges and KEPT the one-way latch, without
 //! changing a byte of this file's logic. The reasoning is the trade-off
@@ -73,14 +74,33 @@
 //! clearing the latch itself. See
 //! docs/planning/green-program/failure-capture/PR-4-2026-09-05.md.
 //!
-//! # What is wired in this PR
+//! # What is wired, PR by PR
 //!
-//! One edge: `Edge::SelfTest`, behind `--features capture_selftest`, fired
+//! PR-3 wired `Edge::SelfTest`, behind `--features capture_selftest`, fired
 //! once per boot from the timer-tick provider. It exists to give a later PR
 //! a deterministic capture to test against instead of waiting for a rare
-//! fault. The terminal edges -- panic on both arches, the aarch64 fatal
-//! postmortem's section 7, the soft-lockup dump -- are PR-4 and PR-7 and are
-//! NOT wired here.
+//! fault. PR-4 wired the terminal edges: panic on both arches and the aarch64
+//! fatal postmortem's section 7.
+//!
+//! PR-7 wired `Edge::Lockup`, from the AArch64 soft-lockup detector's
+//! `dump_lockup_state` in `arch_impl/aarch64/timer_interrupt.rs`. It is the one
+//! wired edge that is NOT terminal: the detector returns to the timer handler,
+//! and a later stall episode (or a later panic) emits again. Its two `EDGE`
+//! words are `a0` = the stalled CPU0-local tick count and `a1` =
+//! `TARGET_TIMER_HZ`, the ticks-per-second `a0` is denominated in; a reader
+//! divides one by the other rather than assuming the tick rate.
+//!
+//! Being non-terminal is what makes the latch above worth re-reading for this
+//! edge rather than inheriting PR-4's argument wholesale. Ordinary completion
+//! clears `IN_CAPTURE`, so a returning lockup dump permits later episodes and
+//! later panic captures -- the two-episode oracle exercises exactly that. What
+//! the terminal-edge justification does NOT cover is the case where a fault
+//! inside a lockup capture abandons the outer frame while that CPU somehow
+//! keeps running: that CPU stays latched and emits no further capture. PR-7
+//! keeps the latch as it is and states that consequence rather than adding a
+//! depth counter or a timer-driven reset; no fault-containment redesign is
+//! claimed. See
+//! docs/planning/green-program/failure-capture/PR-7-2026-09-06.md.
 
 pub mod record;
 pub mod sections;
@@ -123,7 +143,10 @@ pub enum Edge {
     Panic,
     /// A terminal CPU exception. Wired by PR-4, not here.
     Fault,
-    /// The soft-lockup detector. Wired by PR-7, not here.
+    /// The AArch64 soft-lockup detector. Wired by PR-7 from
+    /// `arch_impl/aarch64/timer_interrupt.rs`'s `dump_lockup_state`, with
+    /// `a0` = stalled CPU0-local ticks and `a1` = ticks per second. The one
+    /// non-terminal edge: the detector returns and can fire again.
     Lockup,
 }
 
