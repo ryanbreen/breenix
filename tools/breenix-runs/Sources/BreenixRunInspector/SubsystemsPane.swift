@@ -21,11 +21,26 @@ struct SubsystemsPane: View {
                 }
             }
 
-            List(viewModel.rows) { row in
-                SubsystemRow(row: row)
+            if viewModel.rows.isEmpty {
+                emptyPlaceholder
+            } else {
+                List(viewModel.rows) { row in
+                    SubsystemRow(row: row)
+                }
+                .listStyle(.inset)
             }
-            .listStyle(.inset)
         }
+    }
+
+    private var emptyPlaceholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "checklist")
+                .font(.system(size: 24))
+                .foregroundStyle(.secondary)
+            Text("No subsystem stages for this run's architecture")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

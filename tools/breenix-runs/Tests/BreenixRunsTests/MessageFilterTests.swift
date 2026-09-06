@@ -55,6 +55,24 @@ final class MessageFilterTests: XCTestCase {
         XCTAssertEqual(selected.map(\.lineNumber), [3, 5])
     }
 
+    func testFilterPredicateWithEmptySelectionShowsNothing() {
+        // An empty selectedBuckets means every family checkbox in the
+        // Messages pane is unchecked, which must hide every line rather
+        // than fall back to "no restriction" (the opposite of what an
+        // all-unchecked filter bar looks like it should do).
+        let lines = [
+            line(number: 1, family: .bootStageAarch64, text: "[boot] Scheduler initialized"),
+            line(number: 2, family: .faultPanic, text: "thread 'main' panicked at kernel/src/main.rs"),
+            line(number: 3, family: nil, text: "plain serial")
+        ]
+
+        let selected = lines.filter {
+            MessageFilter.includes($0, selectedBuckets: [], searchText: nil)
+        }
+
+        XCTAssertEqual(selected.map(\.lineNumber), [])
+    }
+
     func testFilterPredicateAppliesSearchTextAfterBucketSelection() {
         let lines = [
             line(number: 1, family: .bootStageAarch64, text: "[boot] Scheduler initialized"),

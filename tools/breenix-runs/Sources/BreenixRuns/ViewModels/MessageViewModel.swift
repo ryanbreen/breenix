@@ -76,7 +76,11 @@ public enum MessageFilter {
         selectedBuckets: Set<MessageFamilyBucket>,
         searchText: String?
     ) -> Bool {
-        if !selectedBuckets.isEmpty, !selectedBuckets.contains(bucket(for: line)) {
+        // An empty selection means the caller has deliberately unchecked every
+        // family -- that is "show nothing", not "no restriction". Callers that
+        // want an unfiltered view pass Set(MessageFamilyBucket.allCases)
+        // explicitly (MessagesPane's default selectedBuckets).
+        guard selectedBuckets.contains(bucket(for: line)) else {
             return false
         }
 

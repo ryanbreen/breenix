@@ -42,11 +42,26 @@ struct MessagesPane: View {
                 }
             }
 
-            List(filteredMessages) { message in
-                MessageRow(message: message)
+            if filteredMessages.isEmpty {
+                emptyPlaceholder
+            } else {
+                List(filteredMessages) { message in
+                    MessageRow(message: message)
+                }
+                .listStyle(.inset)
             }
-            .listStyle(.inset)
         }
+    }
+
+    private var emptyPlaceholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 24))
+                .foregroundStyle(.secondary)
+            Text(messages.isEmpty ? "No messages in this run" : "No messages match the current filter")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func bucketBinding(_ bucket: MessageFamilyBucket) -> Binding<Bool> {

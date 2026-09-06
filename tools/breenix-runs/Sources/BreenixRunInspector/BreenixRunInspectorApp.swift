@@ -32,10 +32,12 @@ struct InspectorRootView: View {
             detailView
         }
         .task {
-            loadRuns()
+            await loadRuns()
         }
         .onChange(of: selectedRunID) { _, newValue in
-            loadDetail(id: newValue)
+            Task {
+                await loadDetail(id: newValue)
+            }
         }
     }
 
@@ -75,21 +77,10 @@ struct InspectorRootView: View {
         }
     }
 
-    private func loadRuns() {
+    private func loadRuns() async {
         do {
-            let index = try store.readIndex()
-            var manifests: [RunManifest] = []
-            for entry in index.runs {
-                manifests.append(try store.readManifest(id: entry.id))
-            }
-            let rows = SidebarViewModel.rows(for: manifests)
-            let manifestsByID = Dictionary(uniqueKeysWithValues: manifests.map { ($0.id, $0) })
-            runs = rows.compactMap { row in
-                guard let manifest = manifestsByID[row.id] else {
-                    return nil
-                }
-                return LoadedRun(row: row, manifest: manifest)
-            }
+            let loadedRuns = try await RunInspectorLoader.loadRuns(store: store)
+            runs = loadedRuns.map { LoadedRun(row: $0.row, manifest: $0.manifest) }
             loadError = nil
 
             if self.selectedRunID == nil {
@@ -97,7 +88,7 @@ struct InspectorRootView: View {
             } else if let currentSelection = self.selectedRunID, !runs.contains(where: { $0.id == currentSelection }) {
                 self.selectedRunID = runs.first?.id
             }
-            loadDetail(id: self.selectedRunID)
+            await loadDetail(id: self.selectedRunID)
         } catch {
             runs = []
             detail = nil
@@ -105,9 +96,15 @@ struct InspectorRootView: View {
         }
     }
 
-    private func loadDetail(id: String?) {
+    private func loadDetail(id: String?) async {
         guard let id else {
+            guard selectedRunID == nil else {
+                return
+            }
             detail = nil
+            return
+        }
+        guard selectedRunID == id else {
             return
         }
         guard let run = runs.first(where: { $0.id == id }) else {
@@ -116,9 +113,16 @@ struct InspectorRootView: View {
         }
 
         do {
-            detail = try RunDetailViewModel.load(manifest: run.manifest, store: store)
+            let loadedDetail = try await RunInspectorLoader.loadDetail(manifest: run.manifest, store: store)
+            guard selectedRunID == id else {
+                return
+            }
+            detail = loadedDetail
             loadError = nil
         } catch {
+            guard selectedRunID == id else {
+                return
+            }
             detail = nil
             loadError = String(describing: error)
         }
