@@ -5265,7 +5265,10 @@ const TTY_IRQ_PM_ARM_WAIT_US: u64 = 500_000;
 #[cfg(target_arch = "aarch64")]
 const TTY_IRQ_PM_JOIN_US: u64 = 1_000_000;
 /// Ceiling, in microseconds, for the measured entry. The aarch64 hold is 20 ms,
-/// so an entry that waited for it cannot come in under this.
+/// so an entry that waited for it cannot come in under this. Read by the
+/// aarch64 arm alone: see the x86 gate's comment for why that profile's
+/// monotonic clock is not pinned tightly.
+#[cfg(target_arch = "aarch64")]
 const TTY_IRQ_PM_ENTRY_CEILING_US: u64 = 1_000;
 
 #[cfg(target_arch = "aarch64")]
@@ -5422,7 +5425,13 @@ pub fn run_tty_irq_pm_oracle() -> bool {
     let entry_is_pm_free = blocking_a == 0 && deferred_a == 1 && pgrp_set_by_entry == 0;
 
     // Leg 2 -- the same entry with PROCESS_MANAGER genuinely held.
+    //
+    // aarch64 starts at the unarmed value because its arm depends on finding a
+    // live peer CPU; x86 assigns in both branches of its own detector test.
+    #[cfg(target_arch = "aarch64")]
     let mut arm = TTY_IRQ_PM_ARM_UNARMED;
+    #[cfg(not(target_arch = "aarch64"))]
+    let arm;
     let mut processed_b = 0u64;
     let mut entry_us = 0u64;
     let mut blocking_b = 0u64;
@@ -5612,6 +5621,7 @@ pub fn run_tty_irq_pm_oracle() -> bool {
 }
 
 /// Arm names, stamped into the verdict line's last field.
+#[cfg(target_arch = "aarch64")]
 const TTY_IRQ_PM_ARM_UNARMED: &str = "unarmed";
 #[cfg(target_arch = "aarch64")]
 const TTY_IRQ_PM_ARM_PEER_HOLD: &str = "peer_hold";
