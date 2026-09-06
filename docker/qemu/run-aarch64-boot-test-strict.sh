@@ -247,9 +247,9 @@ PIN_GUARD_ORACLE_PASS_LITERAL=':verdict=PASS]'
 # ahead of it. `peer_gap_bound_ms=560` is a STARVATION ceiling derived in the
 # oracle from this arch's quantum ((8 + 4 + 2) * 10 * 4), not a latency
 # certification, and on this arch the peers are spread over MAX_CPUS queues.
-TIMER_WAKE_LATENCY_ORACLE_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:rearmers=4:rearms=32:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=10:round_ms=80:peer_max_gap_ms=[0-9]+:peer_gap_bound_ms=560:wake_enqueues=[1-9][0-9]*:peers_started=8:peers_spinning=8:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
+TIMER_WAKE_LATENCY_ORACLE_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:rearmers=4:rearms=32:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=10:round_ms=80:peer_max_gap_ms=[0-9]+:peer_gap_bound_ms=560:wake_enqueues=[1-9][0-9]*:peers_started=8:peers_spinning=8:peers_exited=8:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
 timer_wake_oracle_sample() {
-    printf '[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:rearmers=4:rearms=%s:overrun_ms=%s:bound_ms=100:quantum_ms=10:round_ms=80:peer_max_gap_ms=%s:peer_gap_bound_ms=560:wake_enqueues=32:peers_started=8:peers_spinning=8:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2" "$3" "$4"
+    printf '[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:rearmers=4:rearms=%s:overrun_ms=%s:bound_ms=100:quantum_ms=10:round_ms=80:peer_max_gap_ms=%s:peer_gap_bound_ms=560:wake_enqueues=32:peers_started=8:peers_spinning=8:peers_exited=8:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2" "$3" "$4"
 }
 if timer_wake_oracle_sample 32 2592 40 FAIL | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN"; then
     echo "FAIL: TIMER_WAKE_LATENCY_ORACLE_PATTERN accepts a failing verdict at overrun_ms=2592, so this gate would score green on the wake latency it exists to catch"
