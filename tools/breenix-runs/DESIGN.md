@@ -185,6 +185,41 @@ above, so a field added or renamed while #827 lands shows up as a new row instea
 breaking the parse. The BXCAP decoder does the opposite — it *refuses* an unknown
 `v=`, because that is what the schema mandates.
 
+**Status: `GATE_BOOT_FACTS` landed (#827, PR #843) before PR-7 was built, and
+PR-7 corrects one assumption in this section against the merged code.**
+<!-- claim-lint:ok: verified live at both of gbf_emit_line's 2 call sites --
+     docker/qemu/run-aarch64-boot-test-strict.sh:814,818 and
+     docker/qemu/run-aarch64-prod-profile-boot-test.sh:336-337 -- neither
+     writes $FACTS_LINE to a file named serial.txt; each writes it to a
+     `gate_boot_facts.txt`-or-`*.facts.txt` sidecar (a filename the shell
+     script constructs at boot time, not a path committed in this tree) and
+     also echoes it to the script's own stdout, which
+     LocalGateLauncher.swift's runArm() already captures verbatim as the
+     `gate-stdout.txt` CaptureRef -->
+Read live from `docker/qemu/lib/gate-boot-facts.sh`'s `gbf_emit_line`
+(`:149`) and both of its 2 call sites: the `[GATE_BOOT_FACTS:boot=N:...]`
+line is written to a sidecar file the shell script names at boot time
+(`gate_boot_facts.txt` inside that boot's `OUTPUT_DIR`, or a
+`<ts>-bootN.facts.txt` beside a preserved failure — `run-aarch64-boot-test-strict.sh:814,616`,
+`run-aarch64-prod-profile-boot-test.sh:336,355`) and is also `echo`ed to the
+gate script's own stdout on every boot (`run-aarch64-boot-test-strict.sh:818`,
+`run-aarch64-prod-profile-boot-test.sh:337`) — not to `serial.txt` at either
+call site. PR-7's `BootFactsParser` is a pure text-in/records-out function,
+so it does not care which carrier fed it; the call sites in
+`RunShow.renderTraces` and `RunDetailViewModel.load` concatenate the merged
+serial text with the `gate-stdout.txt` `CaptureRef` `LocalGateLauncher`
+already captures for every `run arm`-launched run (§5.1), which is the real
+carrier today. PR-7 does not harvest the sidecar file into the run store —
+that is a `LocalGateLauncher` change and out of this PR's file list; a run
+whose `gate-stdout.txt` was not kept (an imported run, or one launched
+before this carrier existed) still correctly shows the "not present" state.
+`[BXCAP]` remains unimplemented in any gate as of this PR
+(`grep -rn '\[BXCAP' kernel/ docker/ scripts/` returns no hit); PR-7's
+`BXCAPDecoder` was built and tested against the schema in the
+operator-ratified `FAILURE-TRACE-CAPTURE-PLAN-2026-09-05.md` (not yet
+committed under `docs/planning/`) and a synthesized fixture labelled as such,
+per §4.4 below.
+
 ### 1.6 Host rules that constrain the launcher
 
 * **x86 builds and boots run on beast**, not this Mac
@@ -651,6 +686,38 @@ an unknown major `v=` ⇒ **refuse the record and say so**, not a best-effort de
 the UI, because a `derived` row is not a measured one and the app must not present
 it as though it were.
 
+**Status: implemented in PR-7** (`Sources/BreenixRuns/Parsing/{BootFactsParser,
+FatalRegsDecoder,BXCAPDecoder}.swift`), as three standalone decoders rather
+than new `MarkerFamily` cases — each is a stateless text/line-array-in,
+typed-record-out function, independent of `MarkerScanner`'s single-line hit
+model (§4.1), because a `FATAL_REGS` or `BXCAP` record spans many lines and
+that model has no way to represent one hit spanning several. `MarkerFamily`,
+`MarkerScanner.swift`, and `SerialIndex.swift` are unchanged by PR-7.
+
+One correction found while landing it, verified directly against
+`kernel/src/arch_impl/aarch64/exception.rs`: the **unlabelled** header shape
+(`dump_el1_first_fault`, around line 295) does **not** emit a `DISPATCH_TRACE
+cpu=<n>:` line before its trace entries — it falls straight from the register
+grid's trailing newline into `dump_dispatch_trace`, which on that call path
+prints only the `[k] ...` entry lines with no header of its own. Only the
+**labelled** shape (`dump_el1_fatal_frame_and_dispatch_trace`, around line
+224) prints that header line. `FatalRegsDecoder` treats the header line as
+optional — present or absent, it parses the same trace entries that follow —
+rather than requiring it, and `FatalRegsTests.swift`'s
+`testUnlabelledFatalRegsFixtureDoesNotRequireDispatchHeader` asserts
+`dispatchTraceCPU == nil` on that shape specifically so a future change
+cannot silently start assuming both shapes agree on this.
+
+Fixtures for both `FATAL_REGS` header shapes are real, committed-evidence
+excerpts (not synthesized): `Tests/Fixtures/fatal-regs-labelled-excerpt.txt`
+and `Tests/Fixtures/fatal-regs-unlabelled-excerpt.txt` — see
+`Tests/Fixtures/FIXTURES.md` for their exact source paths, commits, and line
+ranges. `BXCAP` has no real evidence anywhere in the tree at this commit
+(§1.5's status note above), so `Tests/Fixtures/bxcap-v1-synthesized.txt` is
+hand-built from the schema and its header comment says so; treating it as a
+real capture would be exactly the kind of claim this project's evidence
+discipline exists to prevent.
+
 ---
 
 ## 5. Launcher
@@ -838,12 +905,22 @@ consumes them.
 
 ## 7. Open questions
 
-1. **`GATE_BOOT_FACTS` final field set and carrier.** The task states the
-   colon-delimited bracketed form; the failure-capture plan's PR-1 describes a
-   space-delimited `.facts` sidecar with a partly different field set
-   (`qemu_peers_start` vs `qemu_at_start`, plus `clock_ratio`). The Inspector parses
-   generically (§4.2) so either lands cleanly, but **which is canonical, and does the
-   sidecar coexist with the serial line?** Worth one answer before PR-7.
+1. **`GATE_BOOT_FACTS` final field set and carrier — answered by #843, landing
+   before PR-7.**
+   <!-- claim-lint:ok: same 2 call sites cited in §1.5's PR-7 status note --
+        docker/qemu/run-aarch64-boot-test-strict.sh:814,616,818 and
+        docker/qemu/run-aarch64-prod-profile-boot-test.sh:336,355,337 -- both
+        call gbf_emit_line (gate-boot-facts.sh:149), neither builds a second
+        sidecar shape, and neither writes to serial.txt -->
+   `docker/qemu/lib/gate-boot-facts.sh`'s `gbf_emit_line`
+   (`:149`) is the one, shared, colon-delimited format both of its 2 call
+   sites use — neither call site builds a second, differently-shaped
+   sidecar. The carrier at both call sites is the gate's own stdout plus a
+   per-boot sidecar file the shell script names at boot time
+   (`gate_boot_facts.txt`, or `<ts>-bootN.facts.txt` on a preserved failure)
+   — not `serial.txt` at either site. PR-7's `BootFactsParser` stays generic
+   over the key set regardless, since a field can still be added or renamed
+   later.
 2. **Should the Inspector own the aarch64 host lock, or only consume it?** If
    `qemu-host-lock.sh` is advisory, an operator running `./run.sh` by hand still
    perturbs an Inspector run. Consuming it is planned; owning a broader policy is not.
@@ -856,10 +933,14 @@ consumes them.
 5. **Does the operator want the app to *launch* runs, or only read them?** The plan
    makes launching CLI-only (the app reads the store and can `tail` a live run).
    Adding a launch button is small but changes the app's permission surface.
-6. **Committed fixture size.** PR-2 and PR-7 commit real serials into
-   `Tests/Fixtures/`. Full files are up to 1.7 MB; excerpts are smaller but are no
-   longer byte-identical evidence. Proposed: commit whole files for the two primary
-   fixtures, excerpts for the rest, and say which is which in the test.
+6. **Committed fixture size — PR-7's choice, recorded.** PR-2's two fixtures are
+   whole files (21–51 KB). PR-7's two `FATAL_REGS` source serials are 400–800 KB;
+   PR-7 committed byte-exact **excerpts** (`sed -n 'START,ENDp'`, ~35–37 lines
+   each, spanning a `[heartbeat]` line of context through the fault and into
+   the next family marker) rather than the whole files, and says so in
+   `Tests/Fixtures/FIXTURES.md`'s copy-note column for each row. The one
+   whole-file PR-7 fixture (`boot2-hard-timeout-serial-no-gate-boot-facts.txt`,
+   44 KB / 805 lines) was small enough to copy in full.
 7. **`docs/planning/**/serials/` import default.** 2 725 files, 317 MB of
    `docs/planning`. Import on first launch by default, or only on explicit request?
    Proposed: explicit, with a first-run prompt.

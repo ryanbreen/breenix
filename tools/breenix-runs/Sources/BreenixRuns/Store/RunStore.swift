@@ -34,6 +34,30 @@ public struct RunStore: Sendable {
         runDirectory(id: id).appendingPathComponent("manifest.json")
     }
 
+    public func captureURL(_ capture: CaptureRef, manifest: RunManifest) -> URL {
+        if capture.path.hasPrefix("/") {
+            return URL(fileURLWithPath: capture.path)
+        }
+        return runDirectory(id: manifest.id).appendingPathComponent(capture.path)
+    }
+
+    // Shared by RunShow.render(traces:) and RunDetailViewModel.load(): both
+    // need the gate-stdout.txt CaptureRef's text to feed TracesViewModel.build
+    // (DESIGN.md Sec 1.5 -- gate-stdout.txt is the real GATE_BOOT_FACTS carrier
+    // today). One implementation so the two call sites cannot drift.
+    public func readGateStdoutText(manifest: RunManifest) throws -> String {
+        let chunks = try manifest.captures
+            .filter { $0.name == "gate-stdout.txt" }
+            .compactMap { capture -> String? in
+                let url = captureURL(capture, manifest: manifest)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    return nil
+                }
+                return String(decoding: try Data(contentsOf: url), as: UTF8.self)
+            }
+        return chunks.joined(separator: "\n")
+    }
+
     public func prepareRoot() throws {
         try FileManager.default.createDirectory(at: runsDirectory, withIntermediateDirectories: true)
         let schemaURL = root.appendingPathComponent("schema-version")
