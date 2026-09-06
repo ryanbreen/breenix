@@ -441,3 +441,57 @@ draft message both exited 0 after narrowing two initial prose findings
 claim-lint: python3 scripts/claim-lint.py                              -> exit 0
 
 claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/c890-fixpass-commit-msg.txt -> exit 0
+
+---
+
+## Landing
+
+Merged `origin/main` (`5bfc7077`) into this branch: `git merge --no-edit
+origin/main` at branch tip `e24d5fa6` (the prose review-fix commit above)
+produced merge commit `f7abbb7f` with **0 conflicts** (0 in `kernel/`, 0
+anywhere) -- `git merge-base HEAD origin/main` equals `5bfc7077`, confirming
+the merge incorporated main's tip in full. 62 files changed, 0 of them
+overlapping this round's own three touched files.
+
+**`scripts/run-structure-tests.sh`, called plain (no args, so the default
+`teardown_structure` stem), twice in a row at the merged head:**
+
+| Run | Cache | Result | Receipt |
+|---|---|---|---|
+| 1st (cache dir removed first) | `miss (no cached binary for teardown_structure yet)` | 92 passed, 0 failed | `890-preflight-cache-serials/landing-structure-run1-miss.txt` |
+| 2nd (immediately after) | `hit (reusing compiled teardown_structure)` | 92 passed, 0 failed | `890-preflight-cache-serials/landing-structure-run2-hit.txt` |
+
+Both runs' full stdout are the receipts named above; the cache directory
+was `${TMPDIR}/breenix-structure-cache`, cleared once before the first run
+only.
+
+**One gate call, `bash docker/qemu/run-aarch64-boot-test-strict.sh 1`, at
+the merged head** (kernel rebuilt first: `cargo build --release --features
+boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z
+build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`,
+clean build, no warnings; `target/ext2-aarch64.img` rebuilt via
+`scripts/create_ext2_disk.sh --arch aarch64` since this worktree's prior
+image predated the merge's userspace changes):
+
+```
+[GATE_PREFLIGHT:structure_suites=52/52:critical_path_lines=260:pinned=120]
+  [OK] Boot 1: SUCCESS
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788736319380-1788736330643:qemu_at_start=0:load_at_start=10.67:qemu_at_end=1:load_at_end=9.35:qemu_cpu_s=20.36:guest_uptime_ms=10785:ended_by=scored_pass]
+PASS: 1/1 boots succeeded
+```
+
+Full transcript: `890-preflight-cache-serials/landing-strict-gate-1boot.txt`.
+The structure-suite count grew from 51 (this round's own two timing
+sections above) to 52 at the merged head -- main added one `tests/
+*_structure.rs` file (`lockup_capture_guard_structure.rs`, part of the
+merged failure-capture PR-7 work) between this round's own measurements
+and landing; not this round's own doing.
+
+Not claimed: a re-run of the two isolated timing measurements (Mac/beast
+preflight-alone, per-suite hit/miss) at the merged head -- those numbers
+are unchanged by this merge (this round's own files are the only ones this
+merge could have affected them through, and 0 conflicts (per the merge
+section above) touched them), so they are not retaken.
+
+claim-lint: python3 scripts/claim-lint.py                                        -> exit 0
+claim-lint: git log -1 --format=%B <landing commit> > /tmp/890msg/landing.txt && python3 scripts/claim-lint.py --commit-msg /tmp/890msg/landing.txt -> exit 0
