@@ -58,6 +58,30 @@ final class RunInspectorLoaderTests: XCTestCase {
         XCTAssertEqual(loaded, expected)
     }
 
+    func testLoadDetailKeepsGateStdoutBootFactsLineNumbers() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+        let serialData = try Data(contentsOf: fixtureURL("boot2-hard-timeout-serial-no-gate-boot-facts.txt"))
+        let gateStdoutData = try Data(contentsOf: fixtureURL("gate-boot-facts-positive.txt"))
+        var manifest = sampleManifest(id: "20260905T200000Z-aarch64-testing-gate-stdout")
+        manifest.serials = [SerialRef(name: "serial.txt", path: "serial.txt", bytes: serialData.count, stream: .single)]
+        manifest.captures = [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutData.count)]
+
+        let runDirectory = try store.createRunDirectory(id: manifest.id)
+        try serialData.write(to: runDirectory.appendingPathComponent("serial.txt"))
+        try gateStdoutData.write(to: runDirectory.appendingPathComponent("gate-stdout.txt"))
+        try store.writeManifest(manifest)
+        let storedManifest = try store.readManifest(id: manifest.id)
+
+        let loaded = try await RunInspectorLoader.loadDetail(manifest: storedManifest, store: store)
+
+        let firstHostFact = try XCTUnwrap(loaded.traces.hostFacts.first)
+        XCTAssertEqual(firstHostFact.boot, 1)
+        XCTAssertEqual(firstHostFact.lineNumber, 2)
+        XCTAssertEqual(firstHostFact.sourceFile, "gate-stdout.txt")
+    }
+
     private func fixtureURL(_ name: String) -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

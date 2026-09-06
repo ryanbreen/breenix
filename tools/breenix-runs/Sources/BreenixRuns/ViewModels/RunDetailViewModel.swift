@@ -5,19 +5,22 @@ public struct RunDetailViewModel: Equatable, Sendable {
     public var sidebarRow: SidebarRowViewModel
     public var subsystems: SubsystemsViewModel
     public var messages: [MessageLineViewModel]
+    public var traces: TracesViewModel
 
-    public init(manifest: RunManifest, serialIndex: SerialIndex, catalog: [BootStage]) {
+    public init(manifest: RunManifest, serialIndex: SerialIndex, catalog: [BootStage], gateStdoutText: String = "") {
         let states = StateMachine.evaluate(catalog: catalog, index: serialIndex)
         self.manifest = manifest
         self.sidebarRow = SidebarViewModel.row(for: manifest)
         self.subsystems = SubsystemsViewModel(manifest: manifest, states: states)
         self.messages = MessageFilter.rows(for: serialIndex)
+        self.traces = TracesViewModel.build(serialIndex: serialIndex, gateStdoutText: gateStdoutText)
     }
 
     public static func load(manifest: RunManifest, store: RunStore) throws -> RunDetailViewModel {
         let serialIndex = try scanSerials(manifest: manifest, store: store)
         let catalog = try StageCatalog.load(for: manifest.arch)
-        return RunDetailViewModel(manifest: manifest, serialIndex: serialIndex, catalog: catalog)
+        let gateStdoutText = try store.readGateStdoutText(manifest: manifest)
+        return RunDetailViewModel(manifest: manifest, serialIndex: serialIndex, catalog: catalog, gateStdoutText: gateStdoutText)
     }
 
     public static func scanSerials(manifest: RunManifest, store: RunStore) throws -> SerialIndex {

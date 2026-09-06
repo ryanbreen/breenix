@@ -14,7 +14,7 @@ creates an ad-hoc signed `Breenix Run Inspector.app` bundle in this directory.
 
 ## CLI and App
 
-PR-1 through PR-5 implement:
+PR-1 through PR-7 implement:
 
 ```bash
 breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
@@ -45,12 +45,14 @@ make app
 
 `run x86` drives `docker/qemu/run-x86-gate.sh` on the beast Incus VM (`breenix-x86`, the only x86 build/boot host per `[[beast-x86-build-host]]`) rather than composing a QEMU command line locally: it makes a private `git clone --shared` of the container's canonical `/root/breenix` checkout at the sha under test (default: this repo's local HEAD; pass `--sha` to override), points `BREENIX_GATE_TMP` inside that clone, streams the gate's build+boot output back live, pulls the resulting evidence back over the same ssh channel, and removes the clone as its final teardown step on both a passing and a failing gate exit. `--sha` defaults to the local HEAD, so the branch under test must already be pushed to `origin` before running this — beast's canonical checkout fetches from GitHub, not from this Mac. A dirty local working tree prints a warning (beast tests the pushed commit, not uncommitted changes) rather than failing. `--dry-run` builds and prints that same plan (the four ssh/incus command lines) without running any of it: no ssh connection is opened and the run store's index is left unchanged. `--boots`/`--mode` map directly onto the gate script's own `[count] [mode]` arguments; `boot-tests` and `prod` (DESIGN.md 2.3's other two x86 CLI-surface entries) are not implemented by this PR.
 
-Host facts record QEMU peer counts separately for `qemu-system-aarch64` and `qemu-system-x86_64`, plus load average, host identity, QEMU version, thermal pressure when available, and git state. `[GATE_BOOT_FACTS]` serial ingestion is not wired up yet (lands in PR-7).
+Host facts record QEMU peer counts separately for `qemu-system-aarch64` and `qemu-system-x86_64`, plus load average, host identity, QEMU version, thermal pressure when available, and git state. This is the Inspector's own host-side sample (`HostFactsTrace`), distinct from the guest-annotated `[GATE_BOOT_FACTS]` records `--traces` reports below.
 
-`show` renders a section per flag given (`--subsystems`, `--messages`, `--traces` may be combined), and defaults to `--subsystems` alone with no flag given: `--subsystems` walks the committed boot-stage catalog against the run's serial and prints each stage's reached/stopped state, `--messages` dumps each scanned serial line tagged with its marker family, and `--traces` reports which structured trace records (`GATE_BOOT_FACTS`, `BXCAP`, `FATAL_REGS`) are not wired up yet. `latest-fail` selects the most recent run whose verdict is a failure (`.fail`, `.attributed`, `.refused`, or a `.gateScript` whose exit code is not 0).
+`show` renders a section per flag given (`--subsystems`, `--messages`, `--traces` may be combined), and defaults to `--subsystems` alone with no flag given: `--subsystems` walks the committed boot-stage catalog against the run's serial and prints each stage's reached/stopped state, `--messages` dumps each scanned serial line tagged with its marker family, and `--traces` decodes and prints three structured record families<!-- claim-lint:ok: #843 landed the first of these three families; DESIGN.md's §1.5 PR-7 status note and §4.4 PR-7 status note carry the file:line citations for all three decoders -->, each with an explicit "not present" line for a run that has zero of that family's records: `[GATE_BOOT_FACTS:boot=N:...]` host-facts records (read from the run's serial text plus its `gate-stdout.txt` capture — that second source is load-bearing today, per `DESIGN.md` §1.5's citation of exactly where the aarch64 gates write this line), `[FATAL_REGS]` postmortem records (both the labelled and unlabelled header shapes the aarch64 fault handlers emit, each with its full `x0`-`x30` register grid and dispatch trace), and `[BXCAP:...]` v1 kernel captures (no gate emits this yet, so this section reports "not present" on every run in this store at the time of writing; `truncated`/`refused`/interleaved-`seq` captures are exercised in `BXCAPTests.swift` against a fixture built by hand from the schema, labelled as synthesized there). `latest-fail` selects the most recent run whose verdict is a failure (`.fail`, `.attributed`, `.refused`, or a `.gateScript` whose exit code is not 0).
 
 `import` records existing gate-tmp trees, preserved failure directories, and loose serial directories in the run store. Imported loose serials keep `.unknown` verdicts because the importer does not replay gate scoring.
 
 `BreenixRunInspector` is a read-only macOS app for the same run store that the CLI
 uses. PR-6 renders the run sidebar, subsystem state-machine rows, and scanned
-serial messages; launching runs remains in the CLI.
+serial messages; PR-7 adds a third "Traces" tab rendering the same host-facts,
+`BXCAP`, and `FATAL_REGS` sections the CLI's `--traces` prints, each with its
+own "not present" empty state. Launching runs remains in the CLI.

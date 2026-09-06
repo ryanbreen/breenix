@@ -53,6 +53,10 @@ struct InspectorRootView: View {
                     .tabItem {
                         Label("Messages", systemImage: "text.alignleft")
                     }
+                TracesPane(viewModel: detail.traces)
+                    .tabItem {
+                        Label("Traces", systemImage: "waveform.path.ecg")
+                    }
             }
             .padding()
         } else if let loadError {
