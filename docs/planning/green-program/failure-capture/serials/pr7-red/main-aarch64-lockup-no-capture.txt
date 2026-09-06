@@ -1,24 +1,24 @@
 # Provenance
 # runner: scripts/run-lockup-capture-oracle.sh (GDB-supervised, no breakpoint in the detector)
 # host: this Mac, native aarch64 QEMU, -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 2
-# branch: capture/ftc-pr7-red-scaffold
+# branch: capture/ftc-pr7-red-scaffold at 32a33c3832ce5e0b5233a55d2cdd18174a2eccfc
 # base: 36acca6d50094d794f8ac07a5e675f00bb43edf1
 # kernel features: boot_tests,capture_lockup_oracle
-# note: THE RED BASELINE. This branch is origin/main's soft-lockup report with
+# note: THE RED BASELINE. That branch is origin/main's soft-lockup report with
 # note: ONLY the oracle scaffolding added -- the feature, the coordinator, the
-# note: CPU1 holder, the scheduler hold helper and the threshold accessor. The
-# note: one nonsemantic difference is #[cold]/#[inline(never)] on the original
-# note: dump, added so the optimiser keeps the symbol the binary guard needs as
-# note: a root; the body is main's, unchanged.
+# note: CPU1 holder, the scheduler hold helper and the two cfg-only accessors.
+# note: The one nonsemantic difference is the cold/out-of-line annotation on the
+# note: original dump, added so the optimiser keeps the symbol the binary guard
+# note: needs as a root; the body is main's, unchanged.
 # note: The same construction reaches the same two episodes -- receipts match
-# note: the green run's shape -- and produces ZERO capture bytes. It prints
+# note: the green run's shape -- and produces 0 capture records. It prints
 # note: "Scheduler lock: HELD (possible deadlock)" and, because the
 # note: trace-buffer dump lives inside the scheduler-SUCCESS arm, no trace
 # note: history at all.
 EOS
 ========================================
   Breenix ARM64 Kernel Starting
-  BUILD_ID: 006a9dbd7e1686
+  BUILD_ID: 006a9dcb9438e9
 ========================================
 
 [CTX596_ORACLE:ARMED:force_eret=0]
@@ -33,7 +33,7 @@ EOS
 [boot] Initializing Generic Timer...
 [boot] Timer frequency: 62500000 Hz (62 MHz)
 [boot] Initializing PL031 RTC...
-[boot] Current timestamp: 418000
+[boot] Current timestamp: 437875
 [boot] Initializing GIC...
 [gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
 [gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
@@ -175,14 +175,14 @@ NET: pre-primed NetRx softirq for bootstrap callback re-enable
 [boot] Timer interrupt initialized
 [smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
 [smp] Probing secondary CPUs via PSCI...
-[smp] CPU 1: PSCI CPU_ON success (raw_status=1@0)
-1AB[smp] CPU 2 attempt 1/4: HVC64C failed (ret=D-2), trying HVC32...
-EeFG1[smp] PSCI CPU_ON failed for CPU 2 after 1 attempts: ret=-2 (MPIDR=0x2 entry=0x400802b8)
-[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[smp]1 CPU@ 11: PSCI CPU_ON success (raw_status=A0)
+BC[smp] CPU 2 aDttempt 1/4: HVC64 failed (ret=Ee-F2), trying HVGC32...
+1[gic] EOImode=1 (split EOI/DIR) - non-VMware path
 [gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] PSCI CPU_ON failed for CPU 2 after 1 attempts: ret=-2 (MPIDR=0x2 entry=0x400802b8)
 [smp] CPU 2: PSCI CPU_ON failed (ret=-2), stopping probe
-T1[smp] 2 CPUs online
-T2T3T4T5T6T7T8T9T0
+[smp] 2 CPUs online
+T1T2T3T4T5T6T7T8T9T0
 
 !!! SOFT LOCKUP DETECTED !!!
 No context switch for ~5 seconds (5000 ticks)
@@ -248,10 +248,6 @@ Trace counters:
 [SUBSYSTEM:memory:early:START]
 [TEST:memory:framework_sanity:START]
 [TEST:memory:framework_sanity:PASS]
-[TEST:memory:heap_alloc_basic:START]
-[TEST:memory:heap_alloc_basic:PASS]
-[TEST:memory:frame_allocator:START]
-[TEST:memory:frame_allocator:PASS]
 [SUBSYSTEM:scheduler:early:START]
 [TEST:scheduler:wakes_are_placed_on_online_cpus:START]
 [TEST:scheduler:wakes_are_placed_on_online_cpus:PASS]
@@ -261,6 +257,3 @@ Trace counters:
 [SUBSYSTEM:filesystem:early:START]
 [TEST:filesystem:vfs_init:START]
 [TEST:filesystem:vfs_init:PASS]
-[SUBSYSTEM:network:early:START]
-[TEST:network:network_stack_init:START]
-[TEST:network:network_stack_init:PASS]

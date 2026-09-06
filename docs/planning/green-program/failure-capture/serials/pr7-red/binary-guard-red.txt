@@ -1,6 +1,6 @@
 Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
-  ELF:      scratchpad/cm/elf/kernel-red-scaffold.elf
-  sha256:   9d556c1401a9209f99af7a9f36e3fd7a6e83fb1c161693adcde6339f54b84e5e
+  ELF:      scratchpad/redwt2/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   a20d7ad055076722707fedec39082100de2acaf2d8b1a98b8c4e9fd224aa6868
   objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
   root:     dump_lockup_state (its own symbols and every reachable callee)
   roots:           1
