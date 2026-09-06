@@ -1,0 +1,3 @@
+   Compiling kernel v0.1.0 (/root/breenix-p821/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-p821)
+    Finished `release` profile [optimized] target(s) in 15.44s
