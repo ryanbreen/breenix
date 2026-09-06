@@ -2,6 +2,7 @@
 """Persist gate provenance, then attempt a bounded local import."""
 import datetime
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -40,7 +41,10 @@ def main():
     if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
         print("warning: Run Inspector importer unavailable; metadata retained", flush=True)
         return
-    limit = min(max(float(os.environ.get("BREENIX_RUNS_IMPORT_TIMEOUT", "15")), 0.1), 60)
+    raw_timeout = float(os.environ.get("BREENIX_RUNS_IMPORT_TIMEOUT", "15"))
+    if math.isnan(raw_timeout):
+        raw_timeout = 15.0
+    limit = min(max(raw_timeout, 0.1), 60)
     child = None
 
     def interrupted(signum, frame):

@@ -15,8 +15,8 @@ with tempfile.TemporaryDirectory(dir=root / "tools/breenix-runs/.build") as temp
 import os, signal, sys, time
 mode=os.environ['FAKE_MODE']
 if mode=='nonzero': sys.exit(42)
-if mode=='unwritable': open(os.environ['BREENIX_RUNS_STORE']+'/manifest.json','w')
-if mode=='interrupted': os.kill(os.getpid(),signal.SIGTERM)
+if mode=='store-is-file': open(os.environ['BREENIX_RUNS_STORE']+'/manifest.json','w')
+if mode=='child-signaled': os.kill(os.getpid(),signal.SIGTERM)
 if mode=='timeout': time.sleep(60)
 print('importer chatter must not reach gate stdout')
 """)
@@ -39,7 +39,14 @@ exit "$STATUS"
 """
     cases = 0
     for verdict, status in [("PASS", 0), ("FAIL", 3), ("PASS-WITH-ATTRIBUTED-LOCKUP", 0)]:
-        for mode in ["success", "missing", "nonzero", "unwritable", "interrupted", "timeout", "optout", "preflight"]:
+        # "child-signaled" kills the fake importer CHILD process; it exercises the
+        # supervisor's ordinary child-death path (child.wait() returns a signal
+        # status), NOT the supervisor's own SIGTERM/SIGINT -> InterruptedError
+        # handler in run-inspector-import.py. "store-is-file" points
+        # BREENIX_RUNS_STORE at a plain file, producing NotADirectoryError in the
+        # child -- a different failure shape than a permission-denied/read-only
+        # store. Both still check that the gate's exit code/stdout/stderr are unchanged.
+        for mode in ["success", "missing", "nonzero", "store-is-file", "child-signaled", "timeout", "optout", "preflight"]:
             evidence = work / (verdict + "-" + mode)
             evidence.mkdir()
             (evidence / "serial.txt").write_text("Breenix ARM64 Kernel Starting\n")

@@ -393,7 +393,8 @@ func main() -> Int32 {
                     persist: runArgs.persist
                 ))
                 print("")
-                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: [])
+                let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
+                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)
                 // A preflight refusal (LocalGateLauncher.bootTestsPreflightRefusalMarker)
                 // never ran a boot, but it is still not success: an unmapped verdict
                 // here fell through to `return 0`, which reported the CLI's exit
@@ -442,7 +443,8 @@ func main() -> Int32 {
 
                 let result = try launcher.runX86(options: options)
                 print("")
-                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: [])
+                let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
+                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)
                 switch result.manifest.verdict {
                 case .gateScript(_, let exitCode):
                     return Int32(exitCode)
