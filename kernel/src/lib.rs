@@ -75,6 +75,10 @@ pub mod trace;
 pub mod tracing;
 // BXCAP: bounded, lock-free failure-trace capture (see kernel/src/capture/mod.rs)
 pub mod capture;
+// The BXCAP `edge=PANIC` oracle. A sibling of `capture/` rather than a member
+// of it: that directory forbids `panic!` and this module's job is to raise one.
+#[cfg(feature = "capture_panic_oracle")]
+pub mod capture_oracle;
 // Kernel log ring buffer for /proc/kmsg
 pub mod log_buffer;
 // Parallel boot test framework and BTRT
