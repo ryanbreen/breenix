@@ -4,11 +4,13 @@
 #       the patch was reverted afterwards and git status came back clean.
 #       See PR-3-2026-09-05.md section 6.7 for why that patch is needed on x86.
 # host: beast, breenix-x86 Incus container, own clone /root/breenix-ftc
-# branch: capture/ftc-pr3-bxcap-emitter at 12026d6fb2f8df7f645618f9d209d946f6929683
-# base: b5b5fdeb78d73b63d28cd540a1d77d2f769fc6d0
+# branch: capture/ftc-pr3-bxcap-emitter at fe4390c904ef6ca89f1fc3ac35d9dab014e06ddf
+# base: ee48a4a132ebb97e4297141e0bf1fb1d85f31b39
 # kernel features: boot_tests,testing,external_test_bins,capture_selftest
 # note: -smp 1, so THR's non-blocking scheduler read has no peer CPU to lose to:
-#       verdict=complete sections_skipped=0x0
+#       verdict=complete sections_skipped=0x0. Re-taken at the review-fix head so
+#       one x86 measurement stands behind both places the round doc quotes it;
+#       bytes= is boot-dependent, see section 7.2.
 
 [2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
 BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
@@ -23,23 +25,23 @@ TRACE: switching to new level 4 table
 INFO : New page table at: PhysFrame[4KiB](0x101000)
 INFO : Elf file loaded at Pointer {
     addr: 0x000000001d78a000,
-    metadata: 5995136,
+    metadata: 5995640,
 }
 INFO : virtual_address_offset: 0x10000000000
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: be7cc, mem_size: be7cc, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: be7d0, virtual_addr: bf7d0, physical_addr: bf7d0, file_size: 31be61, mem_size: 31be61, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3da638, virtual_addr: 3dc638, physical_addr: 3dc638, file_size: 4b488, mem_size: 4b9c8, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: be854, mem_size: be854, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: be860, virtual_addr: bf860, physical_addr: bf860, file_size: 31bf81, mem_size: 31bf81, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3da7e8, virtual_addr: 3dc7e8, physical_addr: 3dc7e8, file_size: 4b498, mem_size: 4b818, align: 1000 })
 INFO : Mapping bss section
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 425b00, virtual_addr: 428b00, physical_addr: 428b00, file_size: 35670, mem_size: 97a88, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 425c80, virtual_addr: 428c80, physical_addr: 428c80, file_size: 35690, mem_size: 97ae0, align: 1000 })
 INFO : Mapping bss section
-INFO : Entry point at: 0x100000d1a70
+INFO : Entry point at: 0x100000d1b00
 INFO : Creating GDT at PhysAddr(0x205000)
 INFO : Map framebuffer
 INFO : Map physical memory
 INFO : Allocate bootinfo
 INFO : Create Memory Map
 INFO : Create bootinfo
-INFO : Jumping to kernel entry point at VirtAddr(0x100000d1a70)
+INFO : Jumping to kernel entry point at VirtAddr(0x100000d1b00)
 [TEST:process:frame_custody_refusal_gate:START]
 [TEST:process:frame_custody_refusal_gate:PASS]
 [FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
@@ -58,46 +60,46 @@ PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0a
 PCI_FN 00:06.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
 PCI_FN_TOTAL 9
 [ INFO] scheduler::schedule() returned (boot marker)
-[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=22:ms=110:ticks_after=22:ticks_nonzero=1:in_range=1:PASS]
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=20:ms=100:ticks_after=20:ticks_nonzero=1:in_range=1:PASS]
 [TEST:process:retirement_fence_gate:START]
 [TEST:process:retirement_fence_gate:PASS]
 [TEST:process:reclaim_progress_gate:START]
-[SW]<K>[SW]<1>[SW]<K>[SW]<1>[RING_SPAN:cpu=0:span_ms=2644:writes=31:dropped=0:ticks_total=200:tick_events=12]
-[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[BXCAP:BEGIN v=1 seq=0 edge=SELFTEST cpu=0 ts=52592580426 tsfreq=2400659520 uptime_ms=3000 arch=x86_64]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[RING_SPAN:cpu=0:span_ms=2963:writes=31:dropped=0:ticks_total=200:tick_events=12]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[BXCAP:BEGIN v=1 seq=0 edge=SELFTEST cpu=0 ts=56811354282 tsfreq=2400469080 uptime_ms=3000 arch=x86_64]
 [BXCAP:EDGE kind=SELFTEST a0=0xbb8 a1=0x258]
 [BXCAP:CPU cpu=0 preempt=65536 nr=0 hardirq=1 softirq=0 uptime_ms=3000 q=exact]
-[BXCAP:EV cpu=0 i=43 ts=46374725982 type=0x102 n=TIMER_TICK p=320 f=0x0]
-[BXCAP:EV cpu=0 i=44 ts=46566733818 type=0x102 n=TIMER_TICK p=336 f=0x0]
-[BXCAP:EV cpu=0 i=45 ts=46758853620 type=0x102 n=TIMER_TICK p=352 f=0x0]
-[BXCAP:EV cpu=0 i=46 ts=46950686628 type=0x102 n=TIMER_TICK p=368 f=0x0]
-[BXCAP:EV cpu=0 i=47 ts=46987487448 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
-[BXCAP:EV cpu=0 i=48 ts=46987829280 type=0x20 n=UNKNOWN p=2264760 f=0x4]
-[BXCAP:EV cpu=0 i=49 ts=46999300890 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
-[BXCAP:EV cpu=0 i=50 ts=46999422996 type=0x20 n=UNKNOWN p=2826898 f=0x85]
-[BXCAP:EV cpu=0 i=51 ts=47142559134 type=0x102 n=TIMER_TICK p=384 f=0x0]
-[BXCAP:EV cpu=0 i=52 ts=47334549663 type=0x102 n=TIMER_TICK p=400 f=0x0]
-[BXCAP:EV cpu=0 i=53 ts=47425060929 type=0xa01 n=UNKNOWN p=4294963210 f=0x0]
-[BXCAP:EV cpu=0 i=54 ts=47693061084 type=0x102 n=TIMER_TICK p=416 f=0x0]
-[BXCAP:EV cpu=0 i=55 ts=48364214229 type=0x102 n=TIMER_TICK p=432 f=0x0]
-[BXCAP:EV cpu=0 i=56 ts=49149291405 type=0x102 n=TIMER_TICK p=448 f=0x0]
-[BXCAP:EV cpu=0 i=57 ts=49411184520 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
-[BXCAP:EV cpu=0 i=58 ts=49411487898 type=0x20 n=UNKNOWN p=957952 f=0x4]
-[BXCAP:EV cpu=0 i=59 ts=49422689475 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
-[BXCAP:EV cpu=0 i=60 ts=49422810396 type=0x20 n=UNKNOWN p=2826898 f=0x85]
-[BXCAP:EV cpu=0 i=61 ts=49434222969 type=0x102 n=TIMER_TICK p=464 f=0x0]
-[BXCAP:EV cpu=0 i=62 ts=49626218313 type=0x102 n=TIMER_TICK p=480 f=0x0]
-[BXCAP:EV cpu=0 i=63 ts=49818177540 type=0x102 n=TIMER_TICK p=496 f=0x0]
-[BXCAP:EV cpu=0 i=64 ts=50010138453 type=0x102 n=TIMER_TICK p=512 f=0x0]
-[BXCAP:EV cpu=0 i=65 ts=50202092514 type=0x102 n=TIMER_TICK p=528 f=0x0]
-[BXCAP:EV cpu=0 i=66 ts=50394068841 type=0x102 n=TIMER_TICK p=544 f=0x0]
-[BXCAP:EV cpu=0 i=67 ts=50489481156 type=0xa01 n=UNKNOWN p=4294963211 f=0x0]
-[BXCAP:EV cpu=0 i=68 ts=50743033296 type=0x102 n=TIMER_TICK p=560 f=0x0]
-[BXCAP:EV cpu=0 i=69 ts=51410188779 type=0x102 n=TIMER_TICK p=576 f=0x0]
-[BXCAP:EV cpu=0 i=70 ts=51867155772 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
-[BXCAP:EV cpu=0 i=71 ts=51867572235 type=0x20 n=UNKNOWN p=946174 f=0x4]
-[BXCAP:EV cpu=0 i=72 ts=51882465669 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
-[BXCAP:EV cpu=0 i=73 ts=51882686805 type=0x20 n=UNKNOWN p=2826898 f=0x85]
-[BXCAP:EV cpu=0 i=74 ts=52312912623 type=0x102 n=TIMER_TICK p=592 f=0x0]
+[BXCAP:EV cpu=0 i=39 ts=49117332474 type=0x102 n=TIMER_TICK p=256 f=0x0]
+[BXCAP:EV cpu=0 i=40 ts=49309318659 type=0x102 n=TIMER_TICK p=272 f=0x0]
+[BXCAP:EV cpu=0 i=41 ts=49501285470 type=0x102 n=TIMER_TICK p=288 f=0x0]
+[BXCAP:EV cpu=0 i=42 ts=49693252179 type=0x102 n=TIMER_TICK p=304 f=0x0]
+[BXCAP:EV cpu=0 i=43 ts=49885216854 type=0x102 n=TIMER_TICK p=320 f=0x0]
+[BXCAP:EV cpu=0 i=44 ts=50077179477 type=0x102 n=TIMER_TICK p=336 f=0x0]
+[BXCAP:EV cpu=0 i=45 ts=50269154916 type=0x102 n=TIMER_TICK p=352 f=0x0]
+[BXCAP:EV cpu=0 i=46 ts=50461113739 type=0x102 n=TIMER_TICK p=368 f=0x0]
+[BXCAP:EV cpu=0 i=47 ts=50488994373 type=0xa01 n=UNKNOWN p=4294963210 f=0x0]
+[BXCAP:EV cpu=0 i=48 ts=52381705557 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
+[BXCAP:EV cpu=0 i=49 ts=52381903236 type=0x20 n=UNKNOWN p=2627718 f=0x4]
+[BXCAP:EV cpu=0 i=50 ts=52393273245 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
+[BXCAP:EV cpu=0 i=51 ts=52393394424 type=0x20 n=UNKNOWN p=1467586 f=0x85]
+[BXCAP:EV cpu=0 i=52 ts=52416801267 type=0x102 n=TIMER_TICK p=384 f=0x0]
+[BXCAP:EV cpu=0 i=53 ts=52608762699 type=0x102 n=TIMER_TICK p=400 f=0x0]
+[BXCAP:EV cpu=0 i=54 ts=52800741927 type=0x102 n=TIMER_TICK p=416 f=0x0]
+[BXCAP:EV cpu=0 i=55 ts=52992717480 type=0x102 n=TIMER_TICK p=432 f=0x0]
+[BXCAP:EV cpu=0 i=56 ts=53184669384 type=0x102 n=TIMER_TICK p=448 f=0x0]
+[BXCAP:EV cpu=0 i=57 ts=53376637911 type=0x102 n=TIMER_TICK p=464 f=0x0]
+[BXCAP:EV cpu=0 i=58 ts=53568574596 type=0x102 n=TIMER_TICK p=480 f=0x0]
+[BXCAP:EV cpu=0 i=59 ts=53760534864 type=0x102 n=TIMER_TICK p=496 f=0x0]
+[BXCAP:EV cpu=0 i=60 ts=53952504318 type=0x102 n=TIMER_TICK p=512 f=0x0]
+[BXCAP:EV cpu=0 i=61 ts=54055387701 type=0xa01 n=UNKNOWN p=4294963211 f=0x0]
+[BXCAP:EV cpu=0 i=62 ts=55955253351 type=0x102 n=TIMER_TICK p=528 f=0x0]
+[BXCAP:EV cpu=0 i=63 ts=55993197195 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
+[BXCAP:EV cpu=0 i=64 ts=55993436187 type=0x20 n=UNKNOWN p=2511485 f=0x4]
+[BXCAP:EV cpu=0 i=65 ts=56004992877 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
+[BXCAP:EV cpu=0 i=66 ts=56005199508 type=0x20 n=UNKNOWN p=1467586 f=0x85]
+[BXCAP:EV cpu=0 i=67 ts=56136255606 type=0x102 n=TIMER_TICK p=544 f=0x0]
+[BXCAP:EV cpu=0 i=68 ts=56328151581 type=0x102 n=TIMER_TICK p=560 f=0x0]
+[BXCAP:EV cpu=0 i=69 ts=56520285858 type=0x102 n=TIMER_TICK p=576 f=0x0]
+[BXCAP:EV cpu=0 i=70 ts=56712262800 type=0x102 n=TIMER_TICK p=592 f=0x0]
 [BXCAP:CNT NET_RX_FRAME_TOTAL=3]
 [BXCAP:CNT NET_RX_ARP_TOTAL=2]
 [BXCAP:CNT NET_RX_SOFTIRQ_ENTRY_TOTAL=12]
@@ -129,8 +131,8 @@ PCI_FN_TOTAL 9
 [BXCAP:CNT RECLAIM_PARKED=2]
 [BXCAP:CNT RECLAIM_UNPARKED_EPOCH=1]
 [BXCAP:CNT RECLAIM_UNPARKED_ROW=1]
-[BXCAP:CNT CTX_SWITCH_TOTAL=16]
-[BXCAP:RING cpu=0 writes=75 dropped=0 kept=75 span_us=6487257 enabled=1]
+[BXCAP:CNT CTX_SWITCH_TOTAL=14]
+[BXCAP:RING cpu=0 writes=71 dropped=0 kept=71 span_us=7963566 enabled=1]
 [BXCAP:THR cpu=0 cur=1 rq=0 threads=4 blocked=3 q=exact]
 [BXCAP:THR cpu=1 cur=0 rq=0 threads=4 blocked=3 q=exact]
 [BXCAP:THR cpu=2 cur=0 rq=0 threads=4 blocked=3 q=exact]
@@ -139,14 +141,14 @@ PCI_FN_TOTAL 9
 [BXCAP:THR cpu=5 cur=0 rq=0 threads=4 blocked=3 q=exact]
 [BXCAP:THR cpu=6 cur=0 rq=0 threads=4 blocked=3 q=exact]
 [BXCAP:THR cpu=7 cur=0 rq=0 threads=4 blocked=3 q=exact]
-[BXCAP:END v=1 seq=0 edge=SELFTEST verdict=complete records=76 bytes=4436 truncated=0 sections_skipped=0x0]
-[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:reclaim_progress_gate:PASS]
+[BXCAP:END v=1 seq=0 edge=SELFTEST verdict=complete records=76 bytes=4424 truncated=0 sections_skipped=0x0]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:reclaim_progress_gate:PASS]
 [TEST:process:x86_retire_cohort:START]
-[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:x86_retire_cohort:PASS]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:x86_retire_cohort:PASS]
 [PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
 [TEST:process:x86_exec_cohort:START]
-[SW]<K>[SW]<1>[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]
-[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
+[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
 [TEST:process:x86_exec_cohort:PASS]
 [TEST:process:exec_detach_oracle:START]
 manager.create_process: ENTRY - name='exec_detach_leader', elf_size=180
@@ -189,8 +191,8 @@ manager.create_process: Generated PID 1
 manager.create_process: Creating ProcessPageTable
 manager.create_process: ProcessPageTable created
 manager.create_process: Loading ELF into page table
-[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
-[SW]<K>[SW]<1>[TEST:process:init_designation_oracle:PASS]
+[SW]<K>[SW]<1>[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[TEST:process:init_designation_oracle:PASS]
 [TEST:process:init_group_refusal_oracle:START]
 [INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
 [TEST:process:init_group_refusal_oracle:PASS]
@@ -202,9 +204,9 @@ manager.create_process: Loading ELF into page table
 [PT_ROOT_CUSTODY:no_proof=0:no_arch=1:terminated=1:undecided=3:mid_retire=1:retired=152]
 [TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]
 [PIN_GUARD_ORACLE:x86_64:SKIP:reason=max_cpus_1_one_scheduling_cpu]
-[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:network:loopback_wake_loss_counters_are_zero:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:network:loopback_wake_loss_counters_are_zero:START]
 [TEST:network:loopback_wake_loss_counters_are_zero:PASS]
-[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>create_user_process: ENTRY - Creating 'smoke_hello_time'
+[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>create_user_process: ENTRY - Creating 'smoke_hello_time'
 create_user_process: Acquiring process manager lock
 create_user_process: Got process manager lock
 create_user_process: Calling manager.create_process
@@ -755,32 +757,33 @@ BP handler: About to call preempt_enable
 BP handler: Called preempt_enable, exiting handler
 [SW]<T><U>RING3_ENTER: CS=0x33
 [ OK ] RING3_SMOKE: userspace executed + syscall path verified
-<S>[SW]<T><U><S>[SW]<T><U>RING3_SYSCALL: First syscall from userspace
+<S>[SW]<T><U>RING3_SYSCALL: First syscall from userspace
 [ OK ] syscall path verified
 [STAGE:user:ADVANCE]
 [CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]
 [FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]
 [IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]
-[SCHED_STRAND_ORACLE:x86:samples=2:checked=34:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=2:worst_silence_cpu=0]
+[SCHED_STRAND_ORACLE:x86:samples=2:checked=34:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=1:worst_silence_cpu=0]
 [TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=1]
 [PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
 [TESTS_COMPLETE:0/0]
 [BOOT_TESTS:PASS]
-=== clock_gettime Userspace Test ===
+PASS: All x86_64 process-entry GPRs except RSP are zero
+<S>[SW]<T><U>=== clock_gettime Userspace Test ===
 
 Test 1: Basic syscall functionality
   Return value: 0
-  tv_sec:  379
-  tv_nsec: 411474638
+  tv_sec:  432
+  tv_nsec: 679036432
   PASS: Syscall returned valid time
 
 Test 2: Time advances between calls
-  First call:  379 s, 415694474 ns
-  Second call: 379 s, 416117267 ns
+  First call:  432 s, 683468572 ns
+  Second call: 432 s, 683651301 ns
   PASS: Time did not go backwards
 
 Test 3: Sub-millisecond precision
-  Elapsed: 422793 ns
+  Elapsed: 182729 ns
   PASS: Sub-millisecond precision (TSC active)
 
 Test 4: Nanosecond precision (not millisecond-aligned)
@@ -857,8 +860,8 @@ Test 41b: Multiple sys_write calls
 Test 41c: Single clock_gettime + verify memory
   Calling clock_gettime once...
   Return value: 0
-  tv_sec: 379
-  tv_nsec: 704629765
+  tv_sec: 432
+  tv_nsec: 944289034
   Result: PASS
 
 Test 41d: Register preservation across syscall
@@ -869,8 +872,8 @@ Test 41d: Register preservation across syscall
 Test 41e: Second clock_gettime call
   Calling clock_gettime again...
   Return value: 0
-  tv_sec: 379
-  tv_nsec: 714574494
+  tv_sec: 432
+  tv_nsec: 954222638
   Result: PASS
 
 === SUMMARY: 5/5 tests passed ===
@@ -897,7 +900,6 @@ TCP_TEST: listen OK
 TCP_TEST: client socket OK
 TCP_TEST: connect OK
 TCP_TEST: accept OK
-TCP_TEST: shutdown OK
 <S>[SW]<T><U>=== TCP Dup'd Listener Survival Test (#724 review M1) ===
 
 Step 1: bind + listen on port 9110...
@@ -968,14 +970,13 @@ HTTP_TEST: url_too_long OK
 HTTP_TEST: testing HTTPS URL parsing...
 <S>[SW]<T><U>UDP: Delivered packet to socket on port 49152
 [TEST:userspace:loopback_recv_wake:START]
-p00r0 <S>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff0f1e88 cr3=0x5263000
+<S>[SW]<T><U><R>[COW FAULT #1] addr=0x7fffff0f1e88 cr3=0x5263000
 [SW]<T><U>CLONEVM_EXEC_TEST: start
 <S>[SW]<T><U><S>[SW]<T><U>[DF_PREEMPT] start: entering DF=1 windows, no fork, no sleep
 [DF_PREEMPT] window 1 begin iterations=10000000
-[DF_PREEMPT] window 1 end elapsed_ms=32 rflags_before_cld=0x646 rflags_after_cld=0x246
+[DF_PREEMPT] window 1 end elapsed_ms=33 rflags_before_cld=0x646 rflags_after_cld=0x246
 [DF_PREEMPT] window 2 begin iterations=80000000
-<S>[SW]<K>[SW]<T><U><R>Hello from userspace! Current time: 383941732933 ticks
-<S>[SW]<T><U><R>PASS: All x86_64 process-entry GPRs except RSP are zero
+<S>[SW]<K>[SW]<T><U><R>Hello from userspace! Current time: 439258716293 ticks
 <S>[SW]<K>[SW]<T><U><R>UDP: Loopback packet sent, bytes=7
 UDP Socket Test: Attempting to receive packet...
 UDP: Received packet! bytes=7
@@ -993,7 +994,10 @@ UDP Multiple Packets Test: Starting...
 UDP: Multi-packet RX socket bound to port 54326
 UDP: Multi-packet TX socket bound to port 54327
 UDP: Delivered packet to socket on port 54326
-<S>[SW]<T><U><R>TCP_TEST: shutdown_unconnected OK
+UDP: Sent packet 1, bytes=4
+UDP: Delivered packet to socket on port 54326
+<S>[SW]<T><U><R>TCP_TEST: shutdown OK
+TCP_TEST: shutdown_unconnected OK
 TCP_TEST: eaddrinuse OK
 TCP_TEST: listen_unbound OK
 TCP_TEST: accept_nonlisten OK
@@ -1005,27 +1009,25 @@ TCP_DATA_TEST: accept OK
 TCP_DATA_TEST: recv OK
 TCP_DATA_TEST: data verified
 TCP_SHUTDOWN_WRITE_TEST: starting
-<S>[SW]<T><U><R>  PASS: accepted a connection through the dup'd fd after the original closed
-<S>[SW]<T><U><R>[COW FAULT #2] addr=0x7fffff0bee78 cr3=0x5481000
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #2] addr=0x7fffff0bee78 cr3=0x5481000
 [COW FAULT #3] addr=0x40018058 cr3=0x5481000
 [COW FAULT #4] addr=0x7ffffdffe010 cr3=0x5481000
 
 [COW FAULT #5] addr=0x7ffffdfff010 cr3=0x5481000
 Step 4: parent waiting for child (pid=121)...
 [SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #6] addr=0x7fffff0f1e88 cr3=0x56d5000
-<S>[SW]<T><U><R>[COW FAULT #7] addr=0x7fffff0f1e88 cr3=0x4ef1000
+<S>[SW]<T><U><R>[COW FAULT #7] addr=0x7fffff0f1e88 cr3=0x4e41000
 <S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child live
 CLONEVM_EXEC_TEST: SKIP live-sibling probe (no x86 guard, see #468)
-<S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>UDP: Sent packet 1, bytes=4
+<S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>UDP: Sent packet 2, bytes=4
 UDP: Delivered packet to socket on port 54326
-UDP: Sent packet 2, bytes=4
-UDP: Delivered packet to socket on port 54326
+UDP: Sent packet 3, bytes=4
 <S>[SW]<T><U><R>TCP_SHUTDOWN_WRITE_TEST: EPIPE OK
 TCP_SHUT_RD_TEST: starting
 TCP_SHUT_RD_TEST: EOF OK
 TCP_SHUT_WR_TEST: starting
-TCP_SHUT_WR_TEST: SHUT_WR write rejected OK
-<S>[SW]<T><U><R>
+<S>[SW]<T><U><R>  PASS: accepted a connection through the dup'd fd after the original closed
+
 Step 5: close the last fd; the listener must now actually retire...
   PASS: port 9110 was free after the last fd closed (listener genuinely retired)
 
@@ -1033,56 +1035,66 @@ Step 5: close the last fd; the listener must now actually retire...
 TCP_DUP_LISTENER_TEST_PASSED
 <S>[SW]<T><B>[SW]<T><U><R>DNS Test: Starting
 DNS_TEST: resolving www.google.com...
-<S>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8 -> <S>[SW]<K>[SW]<T><U><R>[COW FAULT #8] addr=0x7fffff0f1e88 cr3=0x56d5000
-<S>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff0f1e88 cr3=0x4fa0000
+<S>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8<S>[SW]<K>[SW]<T><U><R>[COW FAULT #8] addr=0x7fffff0f1e88 cr3=0x56d5000
+<S>[SW]<T><U><R>[COW FAULT #9] addr=0x7fffff0f1e88 cr3=0x4ef0000
 [SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: child exited
-[SW]<T><B>[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=1296:arm_delay_us=128:rescues=0:queue_residual=0:balance=0]
+[SW]<T><B>[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=1776:arm_delay_us=246:rescues=0:queue_residual=0:balance=0]
 [FUTEX_HANDOFF_ORACLE_DRIVER:s1=-11:s2=0:s3=-110]
-<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>UDP: Sent packet 3, bytes=4
-UDP: Received packet 1, bytes=4
+<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>UDP: Received packet 1, bytes=4
 UDP: Received packet 2, bytes=4
 UDP: Received packet 3, bytes=4
 UDP_MULTIPACKET_TEST: 3 packets OK
 UDP Socket Test: All tests passed!
-<S>[SW]<T><U><R>TCP_SHUT_WR_TEST: server saw FIN OK
+<S>[SW]<T><U><R>TCP_SHUT_WR_TEST: SHUT_WR write rejected OK
+TCP_SHUT_WR_TEST: server saw FIN OK
 TCP_BIDIR_TEST: starting
-<S>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49154
-<S>[SW]<T><U><R>104.20.23.154 (1115ms, total <S>[SW]<K>[SW]<T><U><R>[COW FAULT #10] addr=0x7fffff0f1e88 cr3=0x56d5000
+<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49154
+<S>[SW]<K>[SW]<T><U><R>[COW FAULT #10] addr=0x7fffff0f1e88 cr3=0x56d5000
 <S>[SW]<T><U><R>[COW FAULT #11] addr=0x7fffff0f1e88 cr3=0x5480000
 [SW]<T><B>[COW FAULT #12] addr=0x40017058 cr3=0x5263000
 [COW FAULT #13] addr=0x7ffffdffe010 cr3=0x5263000
 [COW FAULT #14] addr=0x7ffffdfff010 cr3=0x5263000
-LOOPBACK_WAKE_TEST: data latency_ms=1778 bytes=16
-LOOPBACK_WAKE_TEST: reader_stamps pid=122 w0=386785 acc=386765 pre=386766 data=388563 w0_to_pre=0 pre_to_data=1797 lat=1778
-[SW]<T><U><R>[COW FAULT #15] addr=0x40017058 cr3=0x4ef1000
-[COW FAULT #16] addr=0x7ffffdffe010 cr3=0x4ef1000
-[COW FAULT #17] addr=0x7ffffdfff010 cr3=0x4ef1000
-LOOPBACK_WAKE_TEST: peer_stamps pid=124 conn=386785 w0=386785 w1=388593 write_ms=1808
+LOOPBACK_WAKE_TEST: data latency_ms=2410 bytes=16
+LOOPBACK_WAKE_TEST: reader_stamps pid=122 w0=442611 acc=442592 pre=442592 data=445021 w0_to_pre=0 pre_to_data=2429 lat=2410
+[SW]<T><U><R>[COW FAULT #15] addr=0x40017058 cr3=0x4e41000
+[COW FAULT #16] addr=0x7ffffdffe010 cr3=0x4e41000
+[COW FAULT #17] addr=0x7ffffdfff010 cr3=0x4e41000
+LOOPBACK_WAKE_TEST: peer_stamps pid=124 conn=442611 w0=442611 w1=445046 write_ms=2435
 [SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: google_resolve SKIP (network unavailable)
 DNS_TEST: resolving example.com...
-<S>[SW]<T><U><R>1116ms)
-[http] DNS resolved 104.20.23.154<S>[SW]<K>[SW]<T><U><R>[COW FAULT #18] addr=0x7fffff0f1e88 cr3=0x56d5000
-[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BIDIR_TEST: server->client OK
+<S>[SW]<T><U><R> -> 172.66.147.243<S>[SW]<K>[SW]<T><U><R>[COW FAULT #18] addr=0x7fffff0f1e88 cr3=0x56d5000
+[SW]<T><B>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BIDIR_TEST: server->client OK
 TCP_LARGE_TEST: starting
-<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49155
- (5746ms)
-<S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R>[DF_PREEMPT] window 2 end elapsed_ms=5269 rflags_before_cld=0x646 rflags_after_cld=0x246
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49155
+<S>[SW]<T><U><R> (3745ms, total 3745ms)
+<S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[http] DNS resolved 172.66.147.243<S>[SW]<T><B>[SW]<T><B>LOOPBACK_WAKE_TEST: eof wait_ms=544 bytes=0
+LOOPBACK_WAKE_TEST: reader_eof_stamps ready=445029 eof=445573 eof_wait=544
+<S>[SW]<T><U><R><S>[SW]<T><U><R>[DF_PREEMPT] window 2 end elapsed_ms=6424 rflags_before_cld=0x646 rflags_after_cld=0x246
 [DF_PREEMPT] window 3 begin iterations=80000000
 <S>[SW]<K>[SW]<T><U><R>TCP_LARGE_TEST: 256 bytes verified OK
 TCP_BACKLOG_TEST: starting
-<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><B>[http] TCP connected (255ms)
-[SW]<T><B>[SW]<T><B>LOOPBACK_WAKE_TEST: eof wait_ms=774 bytes=0
-LOOPBACK_WAKE_TEST: reader_eof_stamps ready=388574 eof=389348 eof_wait=774
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: resolved ip=172.66.147.243
-<S>[SW]<T><B>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: example_resolve OK
-DNS_TEST: testing NXDOMAIN...
-<S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BACKLOG_TEST: overflow rejected OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R> (8087ms)
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: resolved ip=104.20.23.154
+DNS_TEST: example_resolve OK
+<S>[SW]<T><B>[http] TCP connected (190ms)
+[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: testing NXDOMAIN...
+<S>[SW]<T><B><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_BACKLOG_TEST: overflow rejected OK
 TCP_CONNREFUSED_TEST: starting
-<S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49156
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_CONNREFUSED_TEST: ECONNREFUSED OK
+<S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49156
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_CONNREFUSED_TEST: ECONNREFUSED OK
 TCP_MSS_TEST: starting
-<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: nxdomain OK (error=ServerError(3))
-<S>[SW]<T><U><R>[DIAG:PAGEFAULT] ==============================
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: nxdomain OK (error=ServerError(3))
+DNS_TEST: testing empty hostname...
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[DF_PREEMPT] window 3 end elapsed_ms=1273 rflags_before_cld=0x646 rflags_after_cld=0x246
+[DF_PREEMPT] window 4 begin iterations=80000000
+<S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: empty_hostname OK
+DNS_TEST: testing long hostname...
+DNS_TEST: long_hostname OK
+DNS_TEST: testing txid variation...
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MSS_TEST: 2000 bytes (>MSS) verified OK
+TCP_MULTI_TEST: starting
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49157
+<S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>[DIAG:PAGEFAULT] ==============================
 [DIAG:PAGEFAULT] Fault addr: 0x7fffff0ccf28
 [DIAG:PAGEFAULT] Error code: 0x6
 [DIAG:PAGEFAULT] RIP: 0x4000acef
@@ -1094,73 +1106,62 @@ TCP_MSS_TEST: starting
 [DIAG:PAGEFAULT] ==============================
 PF0?PF_ENTRY!
 PF @ 0x7fffff0ccf28 Error: 0x6 (P=0, W=1, U=1, I=0)
-F<S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: testing empty hostname...
-DNS_TEST: empty_hostname OK
-DNS_TEST: testing long hostname...
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[DF_PREEMPT] window 3 end elapsed_ms=1271 rflags_before_cld=0x646 rflags_after_cld=0x246
-[DF_PREEMPT] window 4 begin iterations=80000000
-<S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: long_hostname OK
-DNS_TEST: testing txid variation...
-<S>[SW]<T><U><R>UDP: Delivered packet to socket on port 49157
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_MSS_TEST: 2000 bytes (>MSS) verified OK
-TCP_MULTI_TEST: starting
-<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49158
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: txid_varies OK
-DNS Test: All tests passed!
-<S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[DF_PREEMPT] window 4 end elapsed_ms=949 rflags_before_cld=0x646 rflags_after_cld=0x246
+F<S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>UDP: Delivered packet to socket on port 49158
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R>[DF_PREEMPT] window 4 end elapsed_ms=965 rflags_before_cld=0x646 rflags_after_cld=0x246
 [DF_PREEMPT] windows=4 long_windows=3 iterations=80000000
 [DF_PREEMPT] clock_stalled=0 budget_exhausted=0 spin_ceiling_hit=0
-[DF_PREEMPT] ticks_spanned=5269 df_after_cld=0 df_roundtrip=ok
+[DF_PREEMPT] ticks_spanned=6424 df_after_cld=0 df_roundtrip=ok
 <S>[SW]<K>[SW]<T><U><R>TCP_MULTI_TEST: 3 messages verified OK
 TCP_ADDR_TEST: starting
-<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_ADDR_TEST: 10.x.x.x OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R>DNS_TEST: txid_varies OK
+DNS Test: All tests passed!
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_ADDR_TEST: 10.x.x.x OK
 TCP_SIMUL_CLOSE_TEST: starting
-<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SIMUL_CLOSE_TEST: simultaneous close OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_SIMUL_CLOSE_TEST: simultaneous close OK
 TCP_HALFCLOSE_TEST: starting
-<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r1 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_HALFCLOSE_TEST: read after SHUT_WR OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_HALFCLOSE_TEST: read after SHUT_WR OK
 TCP_FIRST_ACCEPT_TEST: starting
-<S>[SW]<T><B>[SW]<T><B>[EXEC_LOCK_ORDER:FIRST_COMMIT]
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP_FIRST_ACCEPT_TEST: accept OK
-<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>  PASS: child exec'd simple_exit0 and exited with code 0
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<K>[SW]<T><U><R>TCP_FIRST_ACCEPT_TEST: accept OK
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP Socket Test: PASSED
+<S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>p01r1 [EXEC_LOCK_ORDER:FIRST_COMMIT]
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><B>  PASS: child exec'd simple_exit0 and exited with code 0
 
 Step 5: close the parent's own listener fd...
-<S>[SW]<T><U><R>p00r1 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>TCP Socket Test: PASSED
-<S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><B>[SW]<T><U><R>  Parent's listener fd closed
+<S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>  Parent's listener fd closed
 
 Step 6: rebind port 9112 -- must succeed if the listener was genuinely retired...
   PASS: port 9112 was free after the parent's close -- the child's cloexec'd copy was genuinely released across exec()
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R>
+<S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R>
 === All TCP FD_CLOEXEC exec() tests passed! ===
 TCP_CLOEXEC_EXEC_TEST_PASSED
-<S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: second stage
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>p00r0 <S>[SW]<T><B><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: post-exec rendezvous complete
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r1 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: second stage
+<S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><B><S>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>CLONEVM_EXEC_TEST: post-exec rendezvous complete
 CLONEVM_EXEC_TEST: post-exec futex keys derived
 CLONEVM_EXEC_TEST: PASS
-<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 [COW FAULT #19] addr=0x40017058 cr3=0x4fa0000
-LOOPBACK_WAKE_TEST: load_stamps max_gap_ms=198 samples=25517 spin_ms=10000
-<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>p01r1 [SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>LOOPBACK_WAKE_TEST: watchdog_stamps target=413065 wake=413082 overrun_ms=17
+<S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<T><U><R><S>[SW]<T><U><R>[COW FAULT #19] addr=0x40017058 cr3=0x4ef0000
+LOOPBACK_WAKE_TEST: load_stamps max_gap_ms=392 samples=22700 spin_ms=10033
+<S>[SW]<T><U><R><S>[SW]<T><B>[SW]<T><U><R><S>[SW]<I>p01r1 [SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>p01r1 [SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<T><B>LOOPBACK_WAKE_TEST: watchdog_stamps target=467423 wake=467469 overrun_ms=46
 <S>[SW]<T><U><R><S>[SW]<T><B>[TEST:userspace:loopback_recv_wake:PASS]
-<S>[SW]<T><U><R><S>[SW]<I>p01r1 [SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)
+<S>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r0 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>HTTP_TEST: https_url OK (TLS attempted, failed as expected without network/certs)
 HTTP_TEST: testing error handling (invalid domain)...
-<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>UDP: Delivered packet to socket on port 49159
-[dns] '<S>[SW]<I>[SW]<T><U><R>this.domain.does.not.exist.invalid' via 8.8.8.8: ServerError(3) (24ms)
-<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 10.211.55.1: Timeout (511ms)
-<S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r1 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 172.16.45.2: Timeout (508ms)
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>UDP: Delivered packet to socket on port 49159
+[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 8.8.8.8<S>[SW]<I>[SW]<T><U><R>: ServerError(3) (29ms)
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>p00r1 <S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<K>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 10.211.55.1: Timeout (512ms)
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] 'this.domain.does.not.exist.invalid' via 172.16.45.2: Timeout (511ms)
 UDP: Delivered packet to socket on port 49162
-[dns] 'this.domain.does.not.exist.invalid' via 10.0.2.3: ServerError(3) (11ms)
-[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1077ms)
+[dns] 'this.domain.does.not.exist.invalid' via 10.0.2.3: ServerError(3) (15ms)
+[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1095ms)
 HTTP_TEST: invalid_domain OK
 HTTP_TEST: testing HTTP fetch (example.com)...
-<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R><S>[SW]<I>UDP: Delivered packet to socket on port 49163
-[SW]<T><U><R><S>[SW]<I>[SW]<T><U><R>[dns] resolved 'example.com' via 8.8.8.8 -> 104.20.23.154 (43ms, total 43ms)
-[http] DNS resolved 104.20.23.154 (48ms)
-[SW]<I>[SW]<T><B>[http] TCP connected (29ms)
-[SW]<I>[SW]<T><B>[http] response received: 868 bytes (recv 64ms, total 151ms)
-HTTP_TEST: received 868 bytes, status=200
+<S>[SW]<I>[SW]<T><U><R><S>[SW]<I>UDP: Delivered packet to socket on port 49163
+[SW]<T><U><R>[dns] resolved 'example.com<S>[SW]<I>[SW]<T><U><R>' via 8.8.8.8 -> 172.66.147.243 (26ms, total 26ms)
+[http] DNS resolved 172.66.147.243 (37ms)
+[SW]<I>[SW]<T><B>[http] TCP connected (28ms)
+[SW]<I>[SW]<T><B>[http] response received: 869 bytes (recv 65ms, total 140ms)
+HTTP_TEST: received 869 bytes, status=200
 HTTP_TEST: example_fetch OK (status 200, body contains HTML)
 HTTP Test: All tests passed!
 [TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1]
 <S>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[KSTACK_QUIESCE_LEAK:baseline_outstanding=5:outstanding=21:leaked=0]
 [TOMBSTONE_QUIESCE:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1:pending=1:parked=0]
 [RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=3:injected=1:pend_epoch=0:pend_hw=0:pend_shadow=1:pend_selectable=0]
-[SW]<K>[SW]<I>
