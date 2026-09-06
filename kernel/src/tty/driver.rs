@@ -54,6 +54,83 @@ pub fn tty_irq_pm_adopted_count() -> u64 {
     TTY_IRQ_PM_ADOPTED.load(Ordering::Relaxed)
 }
 
+/// #822. The value published for `TtyDevice::foreground_pgrp` while the field
+/// is unset.
+///
+/// 0 of the 3 production writers can produce this value. `tty/ioctl.rs`'s
+/// TIOCSPGRP returns EINVAL for a negative pgrp, so it publishes a value in
+/// `[0, i32::MAX]`; `process/creation.rs`'s 2 sites publish `pid.as_u64()`. A
+/// ratchet leg pins the TIOCSPGRP refusal for that reason.
+const FOREGROUND_PGRP_UNSET: u64 = u64::MAX;
+
+/// #822 census: 6 counters, read by the boot-test oracle as deltas across its
+/// own injections.
+///
+/// `TTY_IRQ_FG_LOCK_TOUCHES` counts each of the 5 acquisitions of a console
+/// `foreground_pgrp` mutex in this file -- blocking and `try_lock` alike --
+/// taken while a TTY interrupt entry's scope is open on this CPU;
+/// `TTY_IRQ_FG_BLOCKING_ACQUIRES` counts the blocking subset. Both reading 0 is
+/// the property this round establishes: the interrupt side answers
+/// foreground-pgrp questions from a snapshot and takes 0 acquisitions.
+///
+/// `TTY_IRQ_FG_SNAPSHOT_READS` counts the snapshot reads that replaced those
+/// acquisitions. The `SIGNAL_` three record the last interrupt-side signal
+/// dispatch: how many there have been, the pid it was aimed at, and the signal
+/// number. They are 3 separate relaxed cells rather than one transaction, so a
+/// reader that samples them while 2 CPUs are dispatching can pair a count with
+/// the other CPU's pid; the oracle reads them after a single injection with
+/// preemption disabled, where that cannot happen.
+static TTY_IRQ_FG_LOCK_TOUCHES: AtomicU64 = AtomicU64::new(0);
+static TTY_IRQ_FG_BLOCKING_ACQUIRES: AtomicU64 = AtomicU64::new(0);
+static TTY_IRQ_FG_SNAPSHOT_READS: AtomicU64 = AtomicU64::new(0);
+static TTY_IRQ_FG_SIGNAL_CALLS: AtomicU64 = AtomicU64::new(0);
+static TTY_IRQ_FG_SIGNAL_LAST_PID: AtomicU64 = AtomicU64::new(0);
+static TTY_IRQ_FG_SIGNAL_LAST_SIG: AtomicU64 = AtomicU64::new(0);
+
+/// Acquisitions of a console `foreground_pgrp` mutex taken inside a TTY
+/// interrupt entry (#822). A reading of 0 is the property.
+pub fn tty_irq_fg_lock_touches() -> u64 {
+    TTY_IRQ_FG_LOCK_TOUCHES.load(Ordering::Relaxed)
+}
+
+/// The blocking subset of `tty_irq_fg_lock_touches` (#822). A reading above 0
+/// is an interrupt entry waiting for a lock a thread can hold unmasked.
+pub fn tty_irq_fg_blocking_acquires() -> u64 {
+    TTY_IRQ_FG_BLOCKING_ACQUIRES.load(Ordering::Relaxed)
+}
+
+/// Times an interrupt-side path answered a foreground-pgrp question from the
+/// lock-free snapshot (#822).
+pub fn tty_irq_fg_snapshot_reads() -> u64 {
+    TTY_IRQ_FG_SNAPSHOT_READS.load(Ordering::Relaxed)
+}
+
+/// Interrupt-side signal dispatches, and the pid and signal number of the last
+/// one (#822).
+pub fn tty_irq_fg_signal_census() -> (u64, u64, u64) {
+    (
+        TTY_IRQ_FG_SIGNAL_CALLS.load(Ordering::Relaxed),
+        TTY_IRQ_FG_SIGNAL_LAST_PID.load(Ordering::Relaxed),
+        TTY_IRQ_FG_SIGNAL_LAST_SIG.load(Ordering::Relaxed),
+    )
+}
+
+/// Count an acquisition of a console `foreground_pgrp` mutex against an open
+/// TTY interrupt entry (#822).
+///
+/// Called immediately BEFORE each acquisition, so a call that waits on a lock
+/// its own CPU already owns is counted rather than lost -- the reading #821's
+/// detector takes for the same reason.
+#[inline(always)]
+fn note_foreground_pgrp_acquisition(blocking: bool) {
+    if crate::process::in_no_blocking_process_manager_scope() {
+        TTY_IRQ_FG_LOCK_TOUCHES.fetch_add(1, Ordering::Relaxed);
+        if blocking {
+            TTY_IRQ_FG_BLOCKING_ACQUIRES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Maximum UART bytes emitted while interrupts are masked for one TTY write.
 const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
 
@@ -129,6 +206,22 @@ pub struct TtyDevice {
     /// thread-context reader. Lock-free because the only writer that sets it
     /// runs in interrupt context.
     adopt_pending: AtomicBool,
+
+    /// #822: `foreground_pgrp`'s value, published for interrupt-context
+    /// readers, so that the 2 of them take 0 acquisitions of that mutex.
+    ///
+    /// # Ordering
+    ///
+    /// Both writes of the field go through `store_foreground_pgrp`, which
+    /// holds the mutex across the field write and this store, and writes the
+    /// field first. Writers are therefore serialised by the mutex, so this
+    /// cell's value sequence is the field's own value sequence, lagging it by
+    /// at most the remainder of one critical section and not leading it. An
+    /// interrupt reader loads it `Acquire` and gets a value the field held at
+    /// some instant -- during a `tcsetpgrp` window, the outgoing one. The
+    /// `try_lock` this replaced gave a busy lock no value at all, and dropped
+    /// the signal it was resolving.
+    foreground_pgrp_snapshot: AtomicU64,
 }
 
 impl TtyDevice {
@@ -143,6 +236,7 @@ impl TtyDevice {
             foreground_pgrp: Mutex::new(None),
             session: Mutex::new(None),
             adopt_pending: AtomicBool::new(false),
+            foreground_pgrp_snapshot: AtomicU64::new(FOREGROUND_PGRP_UNSET),
         }
     }
 
@@ -222,14 +316,14 @@ impl TtyDevice {
 
         // Owe a foreground process group to the next thread-context reader
         // while the field is unset. This lets signals work before a shell has
-        // called tcsetpgrp. The `try_lock` read keeps its degrade arm: a busy
-        // lock means some thread is already writing the field.
-        if self
-            .foreground_pgrp
-            .try_lock()
-            .map(|g| g.is_none())
-            .unwrap_or(false)
-        {
+        // called tcsetpgrp.
+        //
+        // #822: read from the lock-free snapshot rather than the mutex. The
+        // `try_lock` this replaced had a degrade arm that answered "set" when
+        // the lock was busy, so a keystroke that arrived during a `tcsetpgrp`
+        // silently skipped the deferral; the snapshot answers with the value
+        // the field last held instead.
+        if self.foreground_pgrp_snapshot().is_none() {
             self.adopt_pending.store(true, Ordering::Release);
             TTY_IRQ_PM_DEFERRED.fetch_add(1, Ordering::Relaxed);
         }
@@ -343,7 +437,36 @@ impl TtyDevice {
     /// The foreground process group receives signals generated by the TTY
     /// (e.g., SIGINT from Ctrl+C).
     pub fn set_foreground_pgrp(&self, pgrp: u64) {
-        *self.foreground_pgrp.lock() = Some(pgrp);
+        self.store_foreground_pgrp(Some(pgrp));
+    }
+
+    /// Write `foreground_pgrp` and publish its snapshot, both under the mutex
+    /// and in that order (#822).
+    ///
+    /// This is the sole writer of the field. Keeping the publication inside
+    /// the critical section is what makes the snapshot's value sequence the
+    /// field's own: 2 threads writing concurrently serialise here, so they
+    /// cannot publish out of the order in which they wrote.
+    fn store_foreground_pgrp(&self, pgrp: Option<u64>) {
+        note_foreground_pgrp_acquisition(true);
+        let mut guard = self.foreground_pgrp.lock();
+        *guard = pgrp;
+        self.foreground_pgrp_snapshot
+            .store(pgrp.unwrap_or(FOREGROUND_PGRP_UNSET), Ordering::Release);
+        drop(guard);
+    }
+
+    /// The foreground process group as last published, read without touching
+    /// the mutex (#822).
+    ///
+    /// This is what interrupt-context paths use. See the field's own comment
+    /// for the ordering it gives them.
+    fn foreground_pgrp_snapshot(&self) -> Option<u64> {
+        TTY_IRQ_FG_SNAPSHOT_READS.fetch_add(1, Ordering::Relaxed);
+        match self.foreground_pgrp_snapshot.load(Ordering::Acquire) {
+            FOREGROUND_PGRP_UNSET => None,
+            pgrp => Some(pgrp),
+        }
     }
 
     /// Get the foreground process group
@@ -351,6 +474,7 @@ impl TtyDevice {
     /// Used by TIOCGPGRP ioctl (Phase 4).
     #[allow(dead_code)]
     pub fn get_foreground_pgrp(&self) -> Option<u64> {
+        note_foreground_pgrp_acquisition(true);
         *self.foreground_pgrp.lock()
     }
 
@@ -391,7 +515,46 @@ impl TtyDevice {
     /// `adopt_deferred_foreground_pgrp`.
     #[cfg(any(feature = "boot_tests", feature = "btrt"))]
     pub fn set_foreground_pgrp_raw_for_test(&self, pgrp: Option<u64>) {
-        *self.foreground_pgrp.lock() = pgrp;
+        self.store_foreground_pgrp(pgrp);
+    }
+
+    /// The published snapshot, read raw (#822 oracle).
+    ///
+    /// Boot-test only, and deliberately not counted in
+    /// `TTY_IRQ_FG_SNAPSHOT_READS`: the oracle uses this to compare the
+    /// snapshot against the field, not to exercise the interrupt path.
+    #[cfg(any(feature = "boot_tests", feature = "btrt"))]
+    pub fn foreground_pgrp_snapshot_for_test(&self) -> Option<u64> {
+        match self.foreground_pgrp_snapshot.load(Ordering::Acquire) {
+            FOREGROUND_PGRP_UNSET => None,
+            pgrp => Some(pgrp),
+        }
+    }
+
+    /// Whether `foreground_pgrp` is held right now (#822 oracle).
+    ///
+    /// Boot-test only. This is the oracle's independent reading that the lock
+    /// really was owned at the instant of its injection, the way #821's
+    /// `pm_busy_probe` reads PROCESS_MANAGER.
+    #[cfg(any(feature = "boot_tests", feature = "btrt"))]
+    pub fn foreground_pgrp_busy_for_test(&self) -> bool {
+        note_foreground_pgrp_acquisition(false);
+        self.foreground_pgrp.try_lock().is_none()
+    }
+
+    /// Hold `foreground_pgrp` across `hold`, the way `tcsetpgrp` holds it: in
+    /// thread context, with interrupts unmasked (#822 oracle).
+    ///
+    /// Boot-test only. The mutex is a plain spin lock with no mask operation
+    /// of its own, so a thread-context holder is unmasked by construction --
+    /// which is the exposed shape the IRQ-context lock census names for this
+    /// lock, and the one the oracle drives an input byte against.
+    #[cfg(any(feature = "boot_tests", feature = "btrt"))]
+    pub fn hold_foreground_pgrp_for_test(&self, hold: &mut dyn FnMut()) {
+        note_foreground_pgrp_acquisition(true);
+        let guard = self.foreground_pgrp.lock();
+        hold();
+        drop(guard);
     }
 
     /// Bytes the line discipline is holding in its canonical edit buffer.
@@ -554,6 +717,7 @@ impl TtyDevice {
     /// (e.g., SIGINT from Ctrl+C).
     #[allow(dead_code)] // Used by input_char (conditionally compiled) and tests
     pub fn send_signal_to_foreground(&self, sig: u32) {
+        note_foreground_pgrp_acquisition(true);
         let pgrp = match *self.foreground_pgrp.lock() {
             Some(pgrp) => pgrp,
             None => {
@@ -584,25 +748,20 @@ impl TtyDevice {
     ///
     /// This runs from IRQ context so must NOT use serial_println! (acquires
     /// SERIAL1). Uses raw UART for any diagnostic output on ARM64.
+    ///
+    /// # #822
+    ///
+    /// The foreground pgrp comes from the lock-free snapshot, so this takes 0
+    /// acquisitions of a lock a thread can hold with interrupts unmasked. What
+    /// stood here was a `try_lock` whose degrade arm RETURNED: a Ctrl+C that
+    /// arrived while `tcsetpgrp` held the mutex was dropped, and the drop was
+    /// reported through `serial_println!` on x86 -- itself a lock, taken from
+    /// interrupt context. Both are gone: a snapshot load has an answer for
+    /// each of the 2 field states, so there is no arm to degrade into and no
+    /// diagnostic to print.
     #[allow(dead_code)]
     fn send_signal_to_foreground_nonblock(&self, sig: u32) {
-        let pgrp = match self.foreground_pgrp.try_lock() {
-            Some(guard) => *guard,
-            None => {
-                // Lock-free diagnostic: cannot acquire foreground_pgrp lock
-                #[cfg(target_arch = "aarch64")]
-                crate::serial_aarch64::raw_serial_str(b"[TTY] sig: fg_pgrp lock busy\n");
-                #[cfg(target_arch = "x86_64")]
-                crate::serial_println!(
-                    "TTY{}: Cannot send signal {} - foreground_pgrp lock busy",
-                    self.num,
-                    sig
-                );
-                return;
-            }
-        };
-
-        if let Some(pgrp) = pgrp {
+        if let Some(pgrp) = self.foreground_pgrp_snapshot() {
             let pid = ProcessId::new(pgrp);
             Self::send_signal_to_process_nonblock(pid, sig);
         }
@@ -667,10 +826,27 @@ impl TtyDevice {
     /// This runs from IRQ context and acquires PROCESS_MANAGER (level 2) and
     /// SCHEDULER (level 1) via `with_scheduler`. It must NOT use serial_println!
     /// (acquires SERIAL1, level 4) because SCHEDULER is a higher-priority lock.
-    /// Uses raw UART for diagnostic output on ARM64.
+    /// Its diagnostic is a raw UART write on both architectures.
+    ///
+    /// The x86_64 arm printed through `serial_println!` until this round --
+    /// `SERIAL1.lock()`, blocking, taken from an interrupt entry while the
+    /// `PROCESS_MANAGER` guard above it is still held, which is the acquisition
+    /// the paragraph above forbids and the one scheduler.rs's lock-order
+    /// comment names ("never acquire SERIAL1 while holding SCHEDULER or
+    /// PROCESS_MANAGER"). It also formatted a string on that path. Both are
+    /// gone; what is left writes bytes straight at the UART.
+    /// claim-lint:ok: kernel/src/task/scheduler.rs:21 is the quoted line.
     #[allow(dead_code)]
     fn send_signal_to_process_nonblock(pid: ProcessId, sig: u32) {
         use crate::process;
+
+        // #822 census, recorded before the lookup so it reads the dispatch the
+        // interrupt side actually made rather than only the ones that found a
+        // live row. See the statics' own comment for what a concurrent
+        // dispatch on another CPU can do to the triple.
+        TTY_IRQ_FG_SIGNAL_LAST_PID.store(pid.as_u64(), Ordering::Relaxed);
+        TTY_IRQ_FG_SIGNAL_LAST_SIG.store(u64::from(sig), Ordering::Relaxed);
+        TTY_IRQ_FG_SIGNAL_CALLS.fetch_add(1, Ordering::Relaxed);
 
         // Try to get the process manager without blocking
         if let Some(mut manager) = process::try_manager() {
@@ -678,25 +854,18 @@ impl TtyDevice {
                 if let Some(proc) = pm.get_process_mut(pid) {
                     proc.signals.set_pending(sig);
 
-                    // Lock-free diagnostic output
+                    // Lock-free diagnostic output, one write per architecture
+                    // and the same subject on both. The signal number and the
+                    // pid are NOT written here: they are already published
+                    // lock-free, by the census stores at the top of this
+                    // function, and read back from thread context.
                     #[cfg(target_arch = "aarch64")]
                     {
                         crate::serial_aarch64::raw_serial_str(b"[TTY] sig sent to PID\n");
                     }
                     #[cfg(target_arch = "x86_64")]
                     {
-                        let sig_name = match sig {
-                            SIGINT => "SIGINT",
-                            SIGQUIT => "SIGQUIT",
-                            SIGTSTP => "SIGTSTP",
-                            _ => "UNKNOWN",
-                        };
-                        crate::serial_println!(
-                            "TTY: Sent {} to process {} (PID {}) [nonblock]",
-                            sig_name,
-                            proc.name,
-                            pid.as_u64()
-                        );
+                        crate::tracing::output::raw_serial_str("[TTY] sig sent to PID\n");
                     }
 
                     // CRITICAL: Wake the thread if it's blocked so it can receive the signal.

@@ -1,0 +1,113 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ld-822/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ld-822/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ld-822/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ld-822/target/ext2-aarch64.img
+Iterations: 20
+Requirement: 100% success rate (all 20 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 12525 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788703687352-1788703700387:qemu_at_start=0:load_at_start=13.38:qemu_at_end=1:load_at_end=12.88:qemu_cpu_s=26.35:guest_uptime_ms=12424:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 13326 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+  [GATE_BOOT_FACTS:boot=2:host_ms=1788703701148-1788703714207:qemu_at_start=0:load_at_start=12.57:qemu_at_end=1:load_at_end=12.63:qemu_cpu_s=26.62:guest_uptime_ms=12917:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 14394 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+  [GATE_BOOT_FACTS:boot=3:host_ms=1788703714888-1788703726314:qemu_at_start=0:load_at_start=12.63:qemu_at_end=1:load_at_end=12.50:qemu_cpu_s=23.15:guest_uptime_ms=11281:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 17339 (<unknown process>)
+  [OK] Boot 4: SUCCESS
+  [GATE_BOOT_FACTS:boot=4:host_ms=1788703727026-1788703740208:qemu_at_start=0:load_at_start=12.50:qemu_at_end=1:load_at_end=11.73:qemu_cpu_s=26.45:guest_uptime_ms=13053:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 19071 (<unknown process>)
+  [OK] Boot 5: SUCCESS
+  [GATE_BOOT_FACTS:boot=5:host_ms=1788703740878-1788703755420:qemu_at_start=0:load_at_start=11.52:qemu_at_end=1:load_at_end=10.88:qemu_cpu_s=29.39:guest_uptime_ms=13851:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 20570 (<unknown process>)
+  [OK] Boot 6: SUCCESS
+  [GATE_BOOT_FACTS:boot=6:host_ms=1788703756034-1788703767326:qemu_at_start=0:load_at_start=11.85:qemu_at_end=1:load_at_end=11.09:qemu_cpu_s=22.10:guest_uptime_ms=10353:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 21763 (<unknown process>)
+  [FAIL] Boot 7: Boot test failure: [TEST:syscall:tty_irq_fg_oracle:FAIL:a TTY interrupt entry touched the console's foreground_pgrp mutex] (974 lines); serial: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-gate-tmp/strict/breenix_aarch64_strict_failures/20260906T140946Z-boot7.txt
+  [GATE_BOOT_FACTS:boot=7:host_ms=1788703767899-1788703786635:qemu_at_start=0:load_at_start=11.09:qemu_at_end=1:load_at_end=8.98:qemu_cpu_s=30.07:guest_uptime_ms=18292:ended_by=poll_exhausted]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 22690 (<unknown process>)
+  [OK] Boot 8: SUCCESS
+  [GATE_BOOT_FACTS:boot=8:host_ms=1788703787082-1788703798386:qemu_at_start=0:load_at_start=8.98:qemu_at_end=1:load_at_end=8.68:qemu_cpu_s=21.78:guest_uptime_ms=10793:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 23607 (<unknown process>)
+  [OK] Boot 9: SUCCESS
+  [GATE_BOOT_FACTS:boot=9:host_ms=1788703799004-1788703810325:qemu_at_start=0:load_at_start=8.68:qemu_at_end=1:load_at_end=8.49:qemu_cpu_s=22.16:guest_uptime_ms=10804:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 24421 (<unknown process>)
+  [OK] Boot 10: SUCCESS
+  [GATE_BOOT_FACTS:boot=10:host_ms=1788703810936-1788703824927:qemu_at_start=0:load_at_start=8.13:qemu_at_end=1:load_at_end=9.25:qemu_cpu_s=25.77:guest_uptime_ms=13703:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 25588 (<unknown process>)
+  [OK] Boot 11: SUCCESS
+  [GATE_BOOT_FACTS:boot=11:host_ms=1788703826246-1788703845937:qemu_at_start=0:load_at_start=9.95:qemu_at_end=1:load_at_end=11.25:qemu_cpu_s=40.54:guest_uptime_ms=18927:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 26904 (<unknown process>)
+  [OK] Boot 12: SUCCESS
+  [GATE_BOOT_FACTS:boot=12:host_ms=1788703846696-1788703859720:qemu_at_start=0:load_at_start=11.25:qemu_at_end=1:load_at_end=10.62:qemu_cpu_s=26.56:guest_uptime_ms=12550:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 27917 (<unknown process>)
+  [OK] Boot 13: SUCCESS
+  [GATE_BOOT_FACTS:boot=13:host_ms=1788703860487-1788703873295:qemu_at_start=0:load_at_start=10.65:qemu_at_end=1:load_at_end=10.02:qemu_cpu_s=24.37:guest_uptime_ms=12338:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 28748 (<unknown process>)
+  [OK] Boot 14: SUCCESS
+  [GATE_BOOT_FACTS:boot=14:host_ms=1788703873989-1788703885201:qemu_at_start=0:load_at_start=10.02:qemu_at_end=1:load_at_end=10.28:qemu_cpu_s=20.48:guest_uptime_ms=11147:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 29641 (<unknown process>)
+  [OK] Boot 15: SUCCESS
+  [GATE_BOOT_FACTS:boot=15:host_ms=1788703885717-1788703895292:qemu_at_start=0:load_at_start=9.77:qemu_at_end=1:load_at_end=9.63:qemu_cpu_s=17.59:guest_uptime_ms=8655:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 30362 (<unknown process>)
+  [OK] Boot 16: SUCCESS
+  [GATE_BOOT_FACTS:boot=16:host_ms=1788703895825-1788703905372:qemu_at_start=0:load_at_start=9.02:qemu_at_end=1:load_at_end=8.78:qemu_cpu_s=17.25:guest_uptime_ms=8853:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 31088 (<unknown process>)
+  [OK] Boot 17: SUCCESS
+  [GATE_BOOT_FACTS:boot=17:host_ms=1788703905838-1788703915580:qemu_at_start=0:load_at_start=8.24:qemu_at_end=1:load_at_end=7.96:qemu_cpu_s=18.62:guest_uptime_ms=8853:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 31788 (<unknown process>)
+  [OK] Boot 18: SUCCESS
+  [GATE_BOOT_FACTS:boot=18:host_ms=1788703916136-1788703927248:qemu_at_start=0:load_at_start=7.96:qemu_at_end=1:load_at_end=7.48:qemu_cpu_s=19.96:guest_uptime_ms=10420:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 32565 (<unknown process>)
+  [OK] Boot 19: SUCCESS
+  [GATE_BOOT_FACTS:boot=19:host_ms=1788703927712-1788703938916:qemu_at_start=0:load_at_start=7.48:qemu_at_end=1:load_at_end=7.11:qemu_cpu_s=20.29:guest_uptime_ms=10899:ended_by=scored_pass]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 33246 (<unknown process>)
+  [OK] Boot 20: SUCCESS
+  [GATE_BOOT_FACTS:boot=20:host_ms=1788703939478-1788703950744:qemu_at_start=0:load_at_start=7.11:qemu_at_end=1:load_at_end=6.79:qemu_cpu_s=21.67:guest_uptime_ms=11128:ended_by=scored_pass]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 20
+Successes: 19
+Failures: 1
+Success rate: 95%
+Duration: 265s
+
+Failed iterations: 7
+
+=========================================
+FAIL: Only 19/20 boots succeeded
+=========================================
+
+This indicates a regression or timing bug that needs investigation.
+Serial output from failed boots can be found in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-gate-tmp/strict/breenix_aarch64_strict_N/

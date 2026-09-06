@@ -286,6 +286,20 @@ pub fn no_blocking_pm_acquisitions() -> u64 {
     NO_BLOCKING_PM_ACQUISITIONS.load(Ordering::Relaxed)
 }
 
+/// Whether a `NoBlockingProcessManagerScope` is open on this CPU.
+///
+/// #822 reads this. The scope is entered at exactly one place --
+/// `TtyDevice::input_char_nonblock`, the body both architectures' input
+/// interrupts reach -- so an acquisition taken while it reads true was taken
+/// inside a TTY interrupt entry. #821 uses the same depth to count blocking
+/// `PROCESS_MANAGER` acquisitions; #822 uses it to count acquisitions of the
+/// console TTY's own `foreground_pgrp` mutex, which is a lock a thread holds
+/// with interrupts unmasked.
+#[inline(always)]
+pub fn in_no_blocking_process_manager_scope() -> bool {
+    NO_BLOCKING_PM_DEPTH[no_blocking_pm_slot_index()].load(Ordering::Relaxed) != 0
+}
+
 #[inline(always)]
 fn note_blocking_process_manager_acquisition() {
     if NO_BLOCKING_PM_DEPTH[no_blocking_pm_slot_index()].load(Ordering::Relaxed) != 0 {

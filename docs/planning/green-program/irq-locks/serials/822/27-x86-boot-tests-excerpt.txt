@@ -1,0 +1,31 @@
+strand census: latest snapshot seq=353 tick=45566 at 452592 ms; 353 valid snapshot(s), previous 1004 ms earlier, largest gap 7445 ms
+strand census: age at the completion marker: 687 ms (newest cadence snapshot seq=341 at 441547 ms, completion snapshot seq=342 at 442234 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=18724
+x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0
+[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
+[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]
+[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
+[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
+[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[SCHED_STRAND_ORACLE:x86:samples=2:checked=34:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=1:worst_silence_cpu=0]
+[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]
+[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]
+[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]
+[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=19:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold]
+[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:fg_busy_probe=1:entry_us=1104:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:local_hold]
+[SW]<T><B>[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=1513:arm_delay_us=129:rescues=0:queue_residual=0:balance=0]
+[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]
+[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=0:foreign_returned=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1082:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1074:pub_sched_owned=1074:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=3:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=0:reconciliation_skew_bound=0:balance=0]
+[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1]
+[TOMBSTONE_QUIESCE:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1:pending=1:parked=0]
+[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=3:injected=1:pend_epoch=0:pend_hw=0:pend_shadow=1:pend_selectable=0]
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=22:ms=110:ticks_after=22:ticks_nonzero=1:in_range=1:PASS]
+[RING_SPAN:cpu=0:span_ms=3140:writes=32:dropped=0:ticks_total=200:tick_events=12]
+x86 frame-custody gate run 1: PASS
+GATE_EXIT_RECORDED=0
+17619:[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=110 nonzero=0 failed=[]

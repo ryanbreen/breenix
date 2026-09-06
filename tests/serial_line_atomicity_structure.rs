@@ -1218,15 +1218,32 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     // NOT claimed: that the remaining anchors below are safe from the same
     // interleaving. They are the same accepted trade-off #847 describes; what
     // changed is one writer that did not have to make it.
-    (
-        "kernel/src/tty/driver.rs",
-        "impl TtyDevice::fn send_signal_to_foreground_nonblock",
-        1,
-    ),
+    // #822 removed the anchor that used to sit here:
+    // `impl TtyDevice::fn send_signal_to_foreground_nonblock`, 1 unlocked
+    // `raw_serial_str` call. It announced that the interrupt side could not
+    // acquire the console's `foreground_pgrp` mutex and was therefore dropping
+    // the Ctrl+C it had just resolved. That path reads a lock-free snapshot
+    // now, so there is no busy lock to degrade into and no drop to announce:
+    // the write is gone because its subject is gone, not because it was
+    // suppressed. The x86 arm of the same branch was a `serial_println!`,
+    // which this census does not count (it is the locked writer) but which was
+    // a lock taken from interrupt context; it is gone with it.
+    // The 69 -> 68 anchor count is deliberate; see
+    // docs/planning/green-program/irq-locks/822-TTY-IRQ-FG-2026-09-06.md.
+    //
+    // That same round's fix pass moved this anchor 1 -> 2. The x86_64 arm of
+    // the site below was the `serial_println!` the paragraph above says the
+    // census does not count: it was still there, reached on an ordinary
+    // Ctrl+C, taking SERIAL1 blocking from an interrupt entry with
+    // PROCESS_MANAGER held. It is now the same single unlocked
+    // `raw_serial_str` write the aarch64 arm makes, so the site trades 1 LOCKED
+    // formatted write for 1 unlocked 22-byte write and this census counts it. NOT claimed: that the unlocked write is free of the
+    // interleaving #847 measured -- it is the same accepted trade-off the
+    // anchors above make, and it is now made on both architectures.
     (
         "kernel/src/tty/driver.rs",
         "impl TtyDevice::fn send_signal_to_process_nonblock",
-        1,
+        2,
     ),
 ];
 
