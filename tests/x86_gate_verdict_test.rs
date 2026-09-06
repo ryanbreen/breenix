@@ -134,6 +134,30 @@ fn marker(seq: u32, tick: u32, ms: u32, saved: u32, stranded: u32, tids: &str) -
     )
 }
 
+/// The ten `DispatchLogFact` fields PR-1 of the critical-path logging drain
+/// appends after `ledger_overflow`, in the order
+/// `kernel/src/task/dispatch_strand_census.rs`'s `FACT_FIELD_NAMES` prints
+/// them.
+const FACT_TAIL: &str = ":save_no_thread=1:save_no_proc=1:save_no_pm=1\
+                         :sig_pending_blocked=1:sig_ctx_blocked=1\
+                         :sig_delivered_blocked=1:idle_no_stack=1\
+                         :kthread_no_info=1:user_no_kstack=1\
+                         :sig_deliverable_user=1";
+
+/// The same snapshot in the EIGHTEEN-field shape a kernel built after PR-1
+/// emits.
+fn marker_with_facts(
+    seq: u32,
+    tick: u32,
+    ms: u32,
+    saved: u32,
+    stranded: u32,
+    tids: &str,
+) -> String {
+    let eight = marker(seq, tick, ms, saved, stranded, tids);
+    format!("{}{FACT_TAIL}]", eight.trim_end_matches(']'))
+}
+
 /// The tail a capture that reaches the end of the userspace phase carries.
 /// `completion` is the snapshot `sys_userspace_test_complete` emits on the line
 /// after the marker: 4 of 4 committed captures that carry both a completion
@@ -834,5 +858,71 @@ fn a_census_that_exits_zero_without_a_summary_line_is_not_a_pass() {
     assert!(
         text.contains("did not run to completion"),
         "the silent census was not named as the cause: {text}"
+    );
+}
+
+/// PR-1 of the critical-path logging drain appends ten `DispatchLogFact`
+/// fields to the census line. This tool computes the STRAND verdict, which
+/// those 10 fields do not contribute to, so it accepts them and keeps reading
+/// the 8 fields it does own by name. Without the widening the whole
+/// eighteen-field population scores malformed and each post-PR-1 boot reports
+/// "census unavailable"; this test is what says the widening is load-bearing
+/// and that the 8 readings survive it unchanged.
+#[test]
+fn the_census_reads_the_eighteen_field_line_exactly_as_the_eight_field_one() {
+    let eight = format!(
+        "{}\n{}",
+        marker(1, 200, 1000, 11, 0, "-"),
+        tail_pass_with(&marker(2, 400, 2000, 11, 0, "-"))
+    );
+    let eighteen = format!(
+        "{}\n{}",
+        marker_with_facts(1, 200, 1000, 11, 0, "-"),
+        tail_pass_with(&marker_with_facts(2, 400, 2000, 11, 0, "-"))
+    );
+
+    let eight_fixture = SerialFixture::new(&eight, "");
+    let eighteen_fixture = SerialFixture::new(&eighteen, "");
+    let eight_output = eight_fixture.run(Some("10"));
+    let eighteen_output = eighteen_fixture.run(Some("10"));
+
+    let eight_text = output_text(&eight_output);
+    let eighteen_text = output_text(&eighteen_output);
+    assert!(
+        eighteen_output.status.success(),
+        "the eighteen-field census line was not accepted: {eighteen_text}"
+    );
+    assert!(
+        !eighteen_text.contains("malformed marker"),
+        "the appended fact fields were scored malformed: {eighteen_text}"
+    );
+    assert_eq!(
+        eight_text, eighteen_text,
+        "the appended fact fields changed a reading this tool owns"
+    );
+}
+
+/// The widening accepts `name=<digits>`, not anything at all. A trailing field
+/// whose value is not a decimal count is still a malformed marker, so the
+/// shape check has not been turned off.
+#[test]
+fn a_trailing_field_with_a_non_numeric_value_is_still_malformed() {
+    let kernel = format!(
+        "Added thread 23 'poll_tcp_oracle' to scheduler (user: true, target_cpu: 0)\n{}\n\
+         [DISPATCH_STRAND_CENSUS:seq=3:tick=600:ms=3000:saved=13:stranded=1:tids=23\
+         :tid_overflow=0:ledger_overflow=0:save_no_thread=lots]\n",
+        marker(2, 400, 2000, 13, 1, "23")
+    );
+    let fixture = SerialFixture::new(&kernel, "");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+
+    assert!(
+        text.contains("1 malformed marker(s) skipped"),
+        "a non-numeric trailing field was accepted as a snapshot: {text}"
+    );
+    assert!(
+        text.contains("latest snapshot seq=2"),
+        "the malformed marker was read as the newest snapshot: {text}"
     );
 }

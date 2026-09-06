@@ -702,6 +702,15 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         // with IF=1, and a thread-context holder of this lock with interrupts
         // live is exactly the exposed shape the census names.
         kernel::test_framework::registry::run_tty_irq_fg_oracle();
+        // Critical-path logging drain PR-1, fourth and for the same reason the
+        // three above are here: its footprint is ten relaxed atomic adds and
+        // three serial lines, with 0 heap allocations and 0 process rows
+        // created, so it cannot move the frame, page-table or kernel-stack
+        // counts the gates below pin. It has to be in this window because it
+        // asserts that it runs with interrupts enabled -- the census
+        // reporter's own emission boundary refuses otherwise -- and
+        // `interrupts::disable()` comes after this block.
+        kernel::test_framework::registry::run_x86_dispatch_fact_oracle();
         kernel::task::process_task::run_x86_retirement_fence_gate();
         kernel::task::process_task::run_x86_reclaim_progress_gate();
         kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();

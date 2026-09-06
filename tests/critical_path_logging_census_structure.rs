@@ -1,10 +1,13 @@
 //! Structural ratchet for `scripts/check-critical-path-violations.sh`.
 //!
 //! The shell script greps a fixed file list for a fixed spelling list and
-//! exits 1 today (135 distinct call sites across 9 files, `docs/planning/
-//! green-program/gates/CRITICAL-PATH-DEBT-2026-09-06.md` §1-4). It is not
+//! exits 1 today (119 distinct call sites across 9 files -- 135 at the
+//! classification snapshot in `docs/planning/green-program/gates/
+//! CRITICAL-PATH-DEBT-2026-09-06.md` §1-4, less the 16 PR-1 of that
+//! document's drain plan deleted from
+//! `kernel/src/interrupts/context_switch.rs`). It is not
 //! wired into any gate, so today the only thing that notices a NEW call
-//! creeping in is a human rereading 274 lines of grep output. This suite
+//! creeping in is a human rereading 259 lines of grep output. This suite
 //! pins the census in Rust so a per-`(file, item-path)` INCREASE fails a
 //! `cargo test` run, the same way `tests/serial_line_atomicity_structure.rs`
 //! pins the raw-serial-primitive census and `tests/
@@ -20,12 +23,13 @@
 //! # Two censuses, on purpose
 //!
 //! `CRITICAL_PATH_LOG_ANCHORS` pins the shell script's ORIGINAL twelve
-//! spellings at 135 -- the number the drain plan's PR ledger tracks PR by
-//! PR. A second, WIDER set adds three spellings the original denylist
+//! spellings at 119 -- the number the drain plan's PR ledger tracks PR by
+//! PR, 135 before PR-1. A second, WIDER set adds three spellings the
+//! original denylist
 //! misses by construction (`serial_print!`, `log_serial_print!`,
 //! `log::log!` -- each reaches the same blocking serial lock as the
 //! `serial_println!`/`log::*!` families the narrow list already denies).
-//! That wider census is 136 today: the 135 plus exactly one escaped site,
+//! That wider census is 120 today: the 119 plus exactly one escaped site,
 //! `kernel/src/arch_impl/aarch64/exception.rs :: fn sys_write`, a
 //! `crate::serial_print!` call inside a per-BYTE loop. This same PR widens
 //! `PROHIBITED_PATTERNS` in the shell script to carry the three new
@@ -47,7 +51,7 @@
 //!
 //! `arch_impl/aarch64/context.rs`, `interrupts/timer.rs` and
 //! `arch_impl/aarch64/percpu.rs` are three of the fourteen checked files
-//! that carry NO denylisted call today. 0 of the 135 rows in the anchor
+//! that carry NO denylisted call today. 0 of the 47 rows in the anchor
 //! table name them, so silence from the general census already catches a
 //! first print there as an unexpected `+` row -- but a `+` row buried in a
 //! sea of a 9-file diff is easy to misread as "one more example from an
@@ -615,11 +619,18 @@ fn log_census(sources: &[(String, String)], patterns: &[&str]) -> Census {
 }
 
 /// One row per `(file, item-path)` the narrow (pre-widen) denylist flags
-/// today, summing to 135. Regenerated from the tree at `783a6a53`
-/// (`docs/planning/green-program/gates/CRITICAL-PATH-DEBT-2026-09-06.md`'s
-/// snapshot) by the same `code_mask`/`item_spans`/`item_path_at` pipeline
-/// this file runs, so the anchors are provably what that pipeline computes
-/// against that tree -- not hand-transcribed from the round doc's table.
+/// today, summing to `CRITICAL_PATH_LOG_TOTAL`. Regenerated from the tree by
+/// the same `code_mask`/`item_spans`/`item_path_at` pipeline this file runs,
+/// so the anchors are provably what that pipeline computes against this tree
+/// -- not hand-transcribed from a round doc's table.
+///
+/// The eight `interrupts/context_switch.rs` rows were 30 calls across eight
+/// items at the classification snapshot (`783a6a53`). PR-1 of the drain plan
+/// deleted the sixteen H1 calls it names, which took
+/// `fn setup_kernel_thread_return` to 0 -- so that row is GONE rather than
+/// present with a count of 0, because a `(file, item)` key with no matching
+/// call is not a census row -- and left the other seven at 1, 5, 1, 1, 3, 1
+/// and 2.
 const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "#[cfg(feature=boot_tests)] fn report_user_rsp_scratch_el_census", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 1),
@@ -630,14 +641,13 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn handle_syscall", 8),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn dump_gic_state", 9),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn init", 9),
-    ("kernel/src/interrupts/context_switch.rs", "fn check_need_resched_and_switch", 2),
-    ("kernel/src/interrupts/context_switch.rs", "fn restore_userspace_thread_context", 8),
-    ("kernel/src/interrupts/context_switch.rs", "fn save_current_thread_context_with_guard", 4),
+    ("kernel/src/interrupts/context_switch.rs", "fn check_need_resched_and_switch", 1),
+    ("kernel/src/interrupts/context_switch.rs", "fn restore_userspace_thread_context", 5),
+    ("kernel/src/interrupts/context_switch.rs", "fn save_current_thread_context_with_guard", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn save_kthread_context", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn setup_first_userspace_entry", 3),
-    ("kernel/src/interrupts/context_switch.rs", "fn setup_idle_return", 2),
-    ("kernel/src/interrupts/context_switch.rs", "fn setup_kernel_thread_return", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn switch_to_thread", 9),
+    ("kernel/src/interrupts/context_switch.rs", "fn setup_idle_return", 1),
+    ("kernel/src/interrupts/context_switch.rs", "fn switch_to_thread", 2),
     ("kernel/src/per_cpu.rs", "fn can_schedule", 1),
     ("kernel/src/per_cpu.rs", "fn init", 9),
     ("kernel/src/per_cpu.rs", "fn set_kernel_cr3", 2),
@@ -687,6 +697,13 @@ const ESCAPED_SITE: (&str, &str, usize) = (
     "fn sys_write",
     1,
 );
+
+/// The number of distinct call sites `CRITICAL_PATH_LOG_ANCHORS` accounts
+/// for. This is the ledger column the drain plan's PR table tracks, and it is
+/// pinned as its own number so a PR that moves rows around without changing
+/// the total -- or changes the total without saying so -- fails on the number
+/// the plan is written in, not only on the per-row diff.
+const CRITICAL_PATH_LOG_TOTAL: usize = 119;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();
@@ -800,6 +817,41 @@ fn validate_shell_parity(script: &str) -> Result<(), String> {
 fn critical_path_log_census_is_pinned() {
     let census = log_census(&checked_sources(), SHARED_PATTERNS);
     assert_eq!(validate_census(&census, CRITICAL_PATH_LOG_ANCHORS), Ok(()));
+}
+
+/// The anchor table and the ledger number the drain plan is written in are
+/// the same number. Separate from the census assertion above on purpose: that
+/// one compares the table against the TREE, this one compares the table
+/// against the PLAN.
+#[test]
+fn the_anchor_table_sums_to_the_ledger_total() {
+    let table: usize = CRITICAL_PATH_LOG_ANCHORS
+        .iter()
+        .map(|(_, _, count)| *count)
+        .sum();
+    assert_eq!(
+        table, CRITICAL_PATH_LOG_TOTAL,
+        "CRITICAL_PATH_LOG_ANCHORS sums to {table}, the drain ledger says {CRITICAL_PATH_LOG_TOTAL}"
+    );
+
+    let census: usize = log_census(&checked_sources(), SHARED_PATTERNS)
+        .values()
+        .copied()
+        .sum();
+    assert_eq!(
+        census, CRITICAL_PATH_LOG_TOTAL,
+        "the tree carries {census} denylisted call sites, the drain ledger says {CRITICAL_PATH_LOG_TOTAL}"
+    );
+
+    let wider: usize = log_census(&checked_sources(), &wider_patterns())
+        .values()
+        .copied()
+        .sum();
+    assert_eq!(
+        wider,
+        CRITICAL_PATH_LOG_TOTAL + 1,
+        "the wider census is the narrow one plus the single escaped site"
+    );
 }
 
 #[test]
