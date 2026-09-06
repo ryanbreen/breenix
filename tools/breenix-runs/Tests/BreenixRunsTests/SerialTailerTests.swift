@@ -33,6 +33,24 @@ final class SerialTailerTests: XCTestCase {
         XCTAssertEqual(String(decoding: received, as: UTF8.self), "first\nsecond\nthird\n")
     }
 
+    func testFinalWriteAtCompletionIsDrainedBeforeReturning() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let serial = root.appendingPathComponent("serial.txt")
+        try Data().write(to: serial)
+        var completed = false
+        var received = Data()
+        try SerialTailer(pollInterval: 0.001, timeout: 1, stablePollsBeforeDone: 1)
+            .follow(fileURL: serial, isWriterDone: {
+                if !completed {
+                    try Data("last bytes\n".utf8).write(to: serial)
+                    completed = true
+                }
+                return true
+            }, sink: { received.append($0) })
+        XCTAssertEqual(String(decoding: received, as: UTF8.self), "last bytes\n")
+    }
+
     func testTailerTimeoutsWhenDonePredicateNeverTurnsTrue() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
