@@ -113,6 +113,18 @@ PROHIBITED_PATTERNS=(
     'writeln!'
     # These are the crate-level macros
     'crate::serial_println!'
+    # serial_print!/log_serial_print! are the non-`ln` siblings of
+    # serial_println!/log_serial_println! -- same blocking lock, no
+    # newline, so they escaped this list until the census in
+    # tests/critical_path_logging_census_structure.rs found the one live
+    # site (arch_impl/aarch64/exception.rs :: fn sys_write, a per-byte
+    # `crate::serial_print!` in an EL1-only fallback). log::log! is the
+    # fourth way to reach CombinedLogger::log alongside
+    # log::{debug,info,warn,error}! (already denied above) and log::trace!
+    # (already denied, though it emits 0 bytes today).
+    'serial_print!'
+    'log_serial_print!'
+    'log::log!'
 )
 
 # Allowed patterns (lock-free alternatives)
