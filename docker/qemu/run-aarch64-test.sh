@@ -30,6 +30,27 @@ case "$BREENIX_GATE_TMP" in
     *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
 esac
 
+# #829: CONTAINER_NAME is unique to this invocation (this script's own
+# PID), so the cleanup below targets the exact container this run started
+# instead of matching by ancestor image -- an ancestor-image filter can
+# kill a DIFFERENT running container from the same image, including one a
+# concurrent invocation of this same script (or of
+# run-aarch64-userspace.sh, which shares the image) legitimately owns. The
+# trap fires on each exit path this script can take (normal completion, an
+# early `exit 1`, or a signal) -- not only the bottom-of-script cleanup line the pre-#829
+# version relied on -- so a `set -e` exit partway through the boot-poll
+# loop below still stops this invocation's own container instead of
+# leaking it.
+CONTAINER_NAME="breenix-aarch64-test-$$"
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+_cleanup_aarch64_test_container() {
+    # TERM then KILL after a bounded wait -- docker stop's own contract:
+    # SIGTERM to the container's PID 1, SIGKILL only if it has not exited
+    # within the timeout.
+    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap _cleanup_aarch64_test_container EXIT
+
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
@@ -62,6 +83,7 @@ echo "Starting QEMU ARM64..."
 # -serial: Serial output to file
 qemu_host_lock_acquire
 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -v "$KERNEL:/breenix/kernel:ro" \
     -v "$OUTPUT_DIR:/output" \
     breenix-qemu-aarch64 \
@@ -112,8 +134,9 @@ else
 fi
 echo "========================================="
 
-# Cleanup
-docker kill $(docker ps -q --filter ancestor=breenix-qemu-aarch64) 2>/dev/null || true
+# Cleanup: the container this invocation started is stopped by
+# _cleanup_aarch64_test_container above (chained onto this script's own
+# EXIT trap by qemu_host_lock_acquire), not by an ancestor-image match.
 qemu_host_lock_release
 
 if $FOUND; then
