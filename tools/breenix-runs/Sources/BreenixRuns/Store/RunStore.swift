@@ -94,12 +94,12 @@ public struct RunStore: Sendable {
         return directory
     }
 
-    public func writeManifest(_ manifest: RunManifest) throws {
+    public func writeManifest(_ manifest: RunManifest, rebuildIndex: Bool = true) throws {
         try withWriterLock {
             _ = try createRunDirectory(id: manifest.id)
             let data = try RunStore.encoder.encode(manifest)
             try writeAtomically(data: data, to: manifestURL(id: manifest.id))
-            _ = try rebuildIndexUnlocked()
+            if rebuildIndex { _ = try rebuildIndexUnlocked() }
         }
     }
 

@@ -89,3 +89,8 @@ bundle:
 		printf '%s\n' '</plist>'; \
 	} > "$(INFO_PLIST)"
 	codesign --force --deep --sign - "$(APP_BUNDLE)"
+
+.PHONY: import-preserved
+import-preserved:
+	swift build --product breenix-runs -c release
+	bash scripts/import-preserved.sh

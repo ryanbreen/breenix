@@ -14,9 +14,11 @@ public enum ImporterError: Error, Equatable, CustomStringConvertible {
 public struct ImportedRun: Equatable {
     public var id: String
     public var sourcePath: String
+    public var alreadyExisted: Bool
 
-    public init(id: String, sourcePath: String) {
+    public init(id: String, sourcePath: String, alreadyExisted: Bool = false) {
         self.id = id
+        self.alreadyExisted = alreadyExisted
         self.sourcePath = sourcePath
     }
 }
@@ -81,6 +83,17 @@ public struct Importer {
     }
 
     public func importPath(_ url: URL) throws -> ImportPathResult {
+        do {
+            let result = try importPathContents(url)
+            _ = try store.rebuildIndex()
+            return result
+        } catch {
+            _ = try? store.rebuildIndex()
+            throw error
+        }
+    }
+
+    private func importPathContents(_ url: URL) throws -> ImportPathResult {
         let sourceURL = url.standardizedFileURL
         guard fileManager.fileExists(atPath: sourceURL.path),
               fileManager.isReadableFile(atPath: sourceURL.path) else {
@@ -507,6 +520,11 @@ public struct Importer {
         let provenance = try GateProvenance.read(from: sourceURL)
         let id = provenance.map { "gate-" + $0.id } ??
             RunManifest.makeImportedID(serialData: firstSerialData, sourcePath: sourceURL.standardizedFileURL.path)
+        if fileManager.fileExists(atPath: store.manifestURL(id: id).path),
+           (try? store.readManifest(id: id)) != nil {
+            result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path, alreadyExisted: true))
+            return
+        }
         let runDirectory = try store.createRunDirectory(id: id)
 
         var serialRefs: [SerialRef] = []
@@ -550,7 +568,7 @@ public struct Importer {
             notes: nil
         )
 
-        try store.writeManifest(manifest)
+        try store.writeManifest(manifest, rebuildIndex: false)
         result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path))
     }
 
