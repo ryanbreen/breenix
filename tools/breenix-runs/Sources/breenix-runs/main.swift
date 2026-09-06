@@ -47,6 +47,19 @@ func usage() -> String {
       breenix-runs compare <run-id-a|latest|latest-fail> <run-id-b|latest|latest-fail>
       breenix-runs tail [<run-id|latest|latest-fail>]
       breenix-runs import <path>...
+
+    Read existing evidence first (recursive import accepts serial directories):
+      breenix-runs import <dir>
+      breenix-runs show latest --messages
+
+    Selectors: exact run ID, latest (newest start time), latest-fail (newest failure).
+    Default store: ~/Library/Application Support/BreenixRuns
+    Override for CLI and app: BREENIX_RUNS_STORE=/absolute/store/path
+    show defaults to subsystems; combine flags to select panes.
+    run arm launches local QEMU; run x86 supports the remote gate profile only.
+    --no-store avoids persistence; --dry-run prints the x86 remote plan.
+    import preserves gate metadata when present; loose serial verdicts remain unknown.
+    Use --help or <command> --help to print this usage without accessing the store.
     """
 }
 
@@ -129,7 +142,7 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
                 throw CLIError(description: "unknown run x86 flag \(arg)")
             }
             guard let profile = X86Profile(rawValue: arg) else {
-                throw CLIError(description: "x86 \(arg) is not implemented in PR-5")
+                throw CLIError(description: "x86 \(arg) is not supported (supported x86 profile: gate)")
             }
             guard !parsed.profileWasSet else {
                 throw CLIError(description: "run x86 accepts exactly one profile, got both \(parsed.profile.rawValue) and \(profile.rawValue)")
@@ -292,7 +305,7 @@ func printSample(_ label: String, _ sample: HostFactsSample) {
     print("  qemu version: \(sample.qemuVersion ?? "unknown")")
     print("  git sha: \(sample.gitSHA ?? "unknown")")
     print("  git dirty: \(formatBool(sample.gitDirty))")
-    print("  clock ratio: not sampled in PR-1")
+    print("  clock ratio: unavailable (not sampled)")
 }
 
 func printDeltas(start: HostFactsSample, end: HostFactsSample) {
@@ -348,6 +361,12 @@ func main() -> Int32 {
             throw CLIError(description: usage())
         }
 
+        let commands = ["run", "show", "facts", "compare", "tail", "import"]
+        if subcommand == "--help" || subcommand == "-h"
+            || (commands.contains(subcommand) && args.dropFirst().contains(where: { $0 == "--help" || $0 == "-h" })) {
+            print(usage())
+            return 0
+        }
         let store = RunStore.defaultStore()
         switch subcommand {
         case "run":
@@ -382,7 +401,7 @@ func main() -> Int32 {
             case "x86":
                 let runArgs = try parseRunX86(args.dropFirst(2))
                 guard runArgs.host == "beast" else {
-                    throw CLIError(description: "unsupported x86 host \(runArgs.host); PR-5 supports only beast and does not fall back to local TCG on this Mac")
+                    throw CLIError(description: "unsupported x86 host \(runArgs.host); this command supports only beast and does not fall back to local TCG on this Mac")
                 }
                 let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
                 let runner = RealProcessRunner()
@@ -458,7 +477,7 @@ func main() -> Int32 {
             return 0
 
         default:
-            throw CLIError(description: "\(subcommand) is not implemented in PR-1\n\(usage())")
+            throw CLIError(description: "\(subcommand) is not a supported command\n\(usage())")
         }
     } catch {
         FileHandle.standardError.write(Data("error: \(error)\n".utf8))
