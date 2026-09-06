@@ -1,0 +1,49 @@
+# The source mutation the x86 red leg was built from: main's exact
+# uninstrumented `try_lock` text restored in both interrupt-side readers of
+# kernel/src/tty/driver.rs, and nothing else. Produced by `git diff` in the
+# beast clone after applying it, before the build.
+#
+diff --git a/kernel/src/tty/driver.rs b/kernel/src/tty/driver.rs
+index eb014aeec..314123b06 100644
+--- a/kernel/src/tty/driver.rs
++++ b/kernel/src/tty/driver.rs
+@@ -323,7 +323,12 @@ impl TtyDevice {
+         // the lock was busy, so a keystroke that arrived during a `tcsetpgrp`
+         // silently skipped the deferral; the snapshot answers with the value
+         // the field last held instead.
+-        if self.foreground_pgrp_snapshot().is_none() {
++        if self
++            .foreground_pgrp
++            .try_lock()
++            .map(|g| g.is_none())
++            .unwrap_or(false)
++        {
+             self.adopt_pending.store(true, Ordering::Release);
+             TTY_IRQ_PM_DEFERRED.fetch_add(1, Ordering::Relaxed);
+         }
+@@ -761,7 +766,23 @@ impl TtyDevice {
+     /// diagnostic to print.
+     #[allow(dead_code)]
+     fn send_signal_to_foreground_nonblock(&self, sig: u32) {
+-        if let Some(pgrp) = self.foreground_pgrp_snapshot() {
++        let pgrp = match self.foreground_pgrp.try_lock() {
++            Some(guard) => *guard,
++            None => {
++                // Lock-free diagnostic: cannot acquire foreground_pgrp lock
++                #[cfg(target_arch = "aarch64")]
++                crate::serial_aarch64::raw_serial_str(b"[TTY] sig: fg_pgrp lock busy\n");
++                #[cfg(target_arch = "x86_64")]
++                crate::serial_println!(
++                    "TTY{}: Cannot send signal {} - foreground_pgrp lock busy",
++                    self.num,
++                    sig
++                );
++                return;
++            }
++        };
++
++        if let Some(pgrp) = pgrp {
+             let pid = ProcessId::new(pgrp);
+             Self::send_signal_to_process_nonblock(pid, sig);
+         }
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h
