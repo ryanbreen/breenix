@@ -578,3 +578,81 @@ claim-lint: scripts/claim-lint.py --commit-msg /tmp/pr1msg/c3.txt  -> exit 0
 claim-lint: scripts/claim-lint.py --files docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md -> exit 0
 claim-lint: scripts/claim-lint.py --files /tmp/pr1msg/pr-body.md   -> exit 0
 ```
+
+---
+
+## 9. Landing re-smoke (merged head e99ab48ed293e9b58ab92b1366796f1eb4069a92)
+
+`git merge --no-ff origin/main` from `e99ab48e` was a genuine no-op --
+`origin/main` had not moved past `a0ec6cf8` (this branch's own base) since the
+branch was cut, so `git merge-base --is-ancestor origin/main HEAD` was already
+true and git reported `Already up to date.` with 0 commits created: 0 files in
+conflict, 0 doc-union hunks, 0 gate-script hunks to reconcile, and R182's
+fixture re-record does not apply because 0 of the 2 sides' scorer contracts
+changed in a merge that added 0 commits. The pushed head is therefore still
+`e99ab48e`.
+
+### 9.1 Host-side suites, at the pushed head
+
+| Suite | Result |
+|---|---|
+| `tests/*_structure.rs`, all 48 files via `scripts/run-structure-tests.sh` | **48/48 green, 734 total cases** |
+| `python3 scripts/test_claim_lint.py` | exit 0 |
+| `bash scripts/check-critical-path-violations.sh` | exit 1, **259** stdout lines, **9** `VIOLATION` headers -- identical to §5.6/§6.1's reading |
+| `python3 scripts/claim-lint.py` | exit 0 -- `clean (11 file(s) checked, changed hunks vs a0ec6cf8473d)` |
+
+### 9.2 x86, on beast (`breenix-x86`, clone `/root/breenix-chk1`, `BREENIX_GATE_TMP=/root/breenix-chk1-tmp`)
+
+Confirmed at `e99ab48ed293e9b58ab92b1366796f1eb4069a92`, clean working tree.
+
+| Gate | Result |
+|---|---|
+| build, `boot_tests,testing,external_test_bins` | exit 0, **0 lines matching `^(warning\|error)`** |
+| `./scripts/check-x86-dispatch-no-alloc.sh` | PASS -- `0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked` (identical to §6.1) |
+| `./docker/qemu/run-x86-boot-tests.sh 1` | exit 0 -- `x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0`, `x86 frame-custody gate run 1: PASS` |
+| oracle verdict (`serial_user.txt:53`) | `[DISPATCH_FACT_ORACLE:x86:facts=10:legs=10:moved_by_one=10:moved_wrong=0:irqs_enabled_before=1:PASS]` -- byte-identical to §6.2 |
+| census line (last, `seq=363`) | `[DISPATCH_STRAND_CENSUS:seq=363:tick=51052:ms=444116:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]` -- same shape as §6.3, 9 of the 9 defensive counters at the oracle's 1, `sig_deliverable_user` carries the oracle's 1 plus 3 natural site-16 firings |
+| 16-deleted-string grep, both capture files | **0, 0** |
+| `./docker/qemu/run-x86-prod-profile-boot-test.sh` | exit 0 -- `PASS: x86 production profile reached steady state with the teardown census at rest` |
+| prod census line (last, `seq=53`) | `stranded=7:tids=5,15,17,19,20,22,23`, `sig_deliverable_user=3`, other 9 counters at 0 -- same shape as §6.3's production reading; the `stranded` count (7 here vs 6 in §6.1) is the same not-scored, 1-boot-per-side reading §6.5 already declines to treat as a result |
+
+A first launch of the prod gate wrapped in `timeout 900` was killed by that
+wrapper while still queued on the host lock (840s+ waiting behind two other
+lanes' boots, 0s of it spent booting) -- a re-smoke sequencing artifact, not a
+reading about the branch. Re-launched without the wrapper once the lock was
+free; it ran to completion on the first attempt.
+
+### 9.3 aarch64, on this Mac
+
+Userspace ELFs and the aarch64 ext2 image did not exist in this fresh
+worktree and were built first (`userspace/programs/build.sh --arch aarch64`,
+`scripts/create_ext2_disk.sh --arch aarch64`) -- a worktree-freshness step,
+not a branch reading; the kernel diff that matters is still the empty one
+§6.6 already established.
+
+| Gate | Result |
+|---|---|
+| `cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | exit 0; 0 lines matching `unused\|error\[\|error:`. 1 unrelated nightly toolchain notice appears (`warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 ...`) -- a `-Z build-std` future-incompat notice about the `core` crate's own source, not kernel code; it is not gated on by the round doc's own check (§6.6) and is orthogonal to this PR's diff. |
+| `./scripts/check-kernel-no-neon.sh target/aarch64-breenix-kernel/release/kernel-aarch64` | PASS -- `0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0)` |
+| `./docker/qemu/run-aarch64-boot-test-strict.sh` (script default) | **PASS: 20/20 boots succeeded** |
+| `./docker/qemu/run-aarch64-prod-profile-boot-test.sh` | exit 0 -- `PASS: production profile reached bsshd with the futex oracle seam absent` |
+
+### 9.4 What this re-smoke does NOT claim
+
+* It does not claim a new fixture re-record. R182 applies when a scorer
+  contract changed on either side of the merge; the merge added 0 commits, so
+  0 of the 2 sides' scorer contracts changed.
+* It does not claim the one-TID production-strand variance (§6.5) means
+  anything different here. §9.2's prod-gate `stranded=7` sits inside the same
+  1-boot-per-side, not-scored reading the original round already declined to
+  interpret.
+* It does not re-run the 5-boot parallel gate or the mutations of §5.3/§5.4;
+  the land step's re-smoke scope is the suite list above, not a repeat of the
+  fix round's full gate table.
+
+### 9.5 Receipts
+
+```
+claim-lint: scripts/claim-lint.py --files docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md -> exit 0
+claim-lint: scripts/claim-lint.py                                                                                -> exit 0
+```
