@@ -1,0 +1,12 @@
+# Excerpt of the x86 boot-tests gate's own boot on beast, run 1.
+# serial_user.txt (COM1) carries the 2 TTY IRQ oracle lines;
+# serial_kernel.txt (COM2) carries the runner's tally.
+# The full pair is 1.7 MB and is not committed.
+
+--- serial_user.txt ---
+[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=20:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold]
+[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:fg_busy_probe=1:entry_us=1125:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:local_hold]
+
+--- serial_kernel.txt ---
+[ INFO] kernel::syscall::handlers: TEST_TALLY: exited=110 nonzero=0 failed=[]
+[ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁

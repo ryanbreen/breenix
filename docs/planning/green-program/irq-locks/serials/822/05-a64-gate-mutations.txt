@@ -1,0 +1,80 @@
+=== control_unmutated_green_serial
+SCORE: PASS - /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-serials/02-a64-green-repaired-serial.txt
+exit=0
+
+=== oracle_line_deleted
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/deleted.txt)
+exit=1
+
+=== PASS_to_FAIL
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle reported failure ([TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=118:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:FAIL:peer_hold]) (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/PASS_to_FAIL.txt)
+exit=1
+
+=== fg_lock_touches_0_to_1
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/fg_lock_touches_0_to_1.txt)
+exit=1
+
+=== fg_blocking_acquires_0_to_1
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/fg_blocking_acquires_0_to_1.txt)
+exit=1
+
+=== entry_us_to_20022
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/entry_us_to_20022.txt)
+exit=1
+
+=== sig_calls_1_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/sig_calls_1_to_0.txt)
+exit=1
+
+=== sig_pid_822_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/sig_pid_822_to_0.txt)
+exit=1
+
+=== sig_num_2_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/sig_num_2_to_0.txt)
+exit=1
+
+=== fg_busy_probe_1_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/fg_busy_probe_1_to_0.txt)
+exit=1
+
+=== hold_us_to_3
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/hold_us_to_3.txt)
+exit=1
+
+=== target_absent_1_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/target_absent_1_to_0.txt)
+exit=1
+
+=== snapshot_agrees_1_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/snapshot_agrees_1_to_0.txt)
+exit=1
+
+=== snapshot_reads_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/snapshot_reads_to_0.txt)
+exit=1
+
+=== restored_1_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/restored_1_to_0.txt)
+exit=1
+
+=== fg_known_822_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/fg_known_822_to_0.txt)
+exit=1
+
+=== processed_2_to_1
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/processed_2_to_1.txt)
+exit=1
+
+=== buffered_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/buffered_to_0.txt)
+exit=1
+
+=== joined_1_to_0
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/joined_1_to_0.txt)
+exit=1
+
+=== arm_peer_to_unarmed
+SCORE: FAIL - TTY input IRQ foreground-pgrp oracle marker missing or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/822-mut/arm_peer_to_unarmed.txt)
+exit=1
+
