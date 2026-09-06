@@ -23,6 +23,14 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # budget and a boot that genuinely wedged score identically no longer.
 # shellcheck source=lib/gate-boot-facts.sh
 source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
+# failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+# BXCAP capture (if one is open) before this gate's own kill line runs. This
+# profile builds with no features (see the BXCAP_SELFTEST_COUNT assertion
+# below, which requires that self-test edge stay ABSENT here), so a real
+# capture on this gate is categorically `absent` today -- it becomes
+# meaningful once PR-4 wires the panic/fault edges into the shipped kernel.
+# shellcheck source=lib/gate-capture-drain.sh
+source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
 
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same
 # host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
@@ -252,6 +260,20 @@ cleanup() {
     trap - EXIT
     set +e
     if [ -n "$QEMU_PID" ]; then
+        # failure-trace-capture PR-5: this branch is the ABNORMAL-abort kill
+        # site -- it only fires when something ended the script (a
+        # SIGTERM/SIGINT, or a set -e/ERR trip) DURING the boot-poll window,
+        # before the main flow below ever reached its own explicit kill (that
+        # kill clears QEMU_PID to "" right after it runs, so this branch
+        # being taken at all means that kill did not run).
+        # Reaching this branch IS the non-PASS outcome -- there is no
+        # "confirmed pass" reading to skip draining for here, unlike the
+        # main flow's own kill further down -- so this branch drains
+        # unconditionally, the same
+        # way run-x86-prod-profile-boot-test.sh's report_gate_failure does
+        # for the identical shape.
+        CAPTURE_LINES="$(gcd_drain_and_report "${SERIAL_FILE:-$OUTPUT_DIR/serial.txt}")"
+        printf '%s\n' "$CAPTURE_LINES"
         kill "$QEMU_PID" 2>/dev/null || true
         wait "$QEMU_PID" 2>/dev/null || true
     fi
@@ -343,9 +365,16 @@ cleanup() {
             "$PROD_QEMU_CPU_S" "$guest_uptime_ms" "$ended_by")"
         # Recorded into this boot's own evidence directory unconditionally --
         # not only on failure, so a passing boot's host-side reading is on
-        # the record too.
-        printf '%s\n' "$facts_line" > "$OUTPUT_DIR/gate_boot_facts.txt" 2>/dev/null || true
+        # the record too. failure-trace-capture PR-5: CAPTURE_LINES rides
+        # the same file, right below it -- capture=n/a on this profile's
+        # normal PASS path (gcd_pass_report's own contract), the real
+        # drained reading otherwise.
+        {
+            printf '%s\n' "$facts_line"
+            printf '%s\n' "${CAPTURE_LINES:-}"
+        } > "$OUTPUT_DIR/gate_boot_facts.txt" 2>/dev/null || true
         echo "$facts_line"
+        printf '%s\n' "${CAPTURE_LINES:-}" | sed 's/^/  /'
     fi
 
     if [ "$status" -ne 0 ]; then
@@ -363,7 +392,10 @@ cleanup() {
             : > "$failure_dir/serial.txt"
         fi
         if [ -n "$facts_line" ]; then
-            printf '%s\n' "$facts_line" > "$failure_dir/gate_boot_facts.txt"
+            {
+                printf '%s\n' "$facts_line"
+                printf '%s\n' "${CAPTURE_LINES:-}"
+            } > "$failure_dir/gate_boot_facts.txt"
         fi
         echo "Preserved failing serial: $failure_dir/serial.txt"
         print_observed_values "$failure_dir/serial.txt"
@@ -483,6 +515,25 @@ if [ -f "$SERIAL_FILE" ] && grep -F -q "$BSSHD_LITERAL" "$SERIAL_FILE" 2>/dev/nu
     PROD_ENDED_BY_LOOP="early_pass"
 elif [ -f "$SERIAL_FILE" ] && grep -qiE "$CRASH_MARKERS_PATTERN" "$SERIAL_FILE" 2>/dev/null; then
     PROD_ENDED_BY_LOOP="crash"
+fi
+# failure-trace-capture PR-5's own forced-fail knob (unset by default, so an
+# ordinary run is unaffected): forces the drain path below to run even on a
+# boot that reached bsshd, so a live boot can exercise it deterministically.
+if [ -n "${BREENIX_PROD_FORCE_FAIL:-}" ]; then
+    PROD_ENDED_BY_LOOP="forced_fail"
+fi
+
+# failure-trace-capture PR-5: on any outcome that does not already read as a
+# pass right here, drain the guest's BXCAP capture (if one is open) BEFORE
+# this boot's kill line runs, further down -- deliberately placed before the
+# "immediately before kill" sampling block that follows, for the same reason
+# the strict gate's own drain call is placed there (see that gate's own
+# comment). Plain (non-local) so cleanup(), a separate top-level function,
+# can read it below.
+if [ "$PROD_ENDED_BY_LOOP" = "early_pass" ]; then
+    CAPTURE_LINES="$(gcd_pass_report)"
+else
+    CAPTURE_LINES="$(gcd_drain_and_report "$SERIAL_FILE")"
 fi
 
 # #827: sampled together, immediately before this boot's own kill -- ps

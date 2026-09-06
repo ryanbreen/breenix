@@ -57,9 +57,28 @@ report_gate_failure() {
     fi
     echo "x86 frame-custody gate${i:+ run $i}: FAIL (set -e abort at ${BASH_SOURCE[0]}:${line_no}, exit ${exit_code})"
     echo "  failing command: ${failing_cmd}"
+    # failure-trace-capture PR-5: set once, right before this boot's own
+    # kill line (see the drain call above it), so it is already on the
+    # record if a later assertion aborts the script through this trap --
+    # empty on an abort before that point (a build failure, say), where
+    # there is no boot to report capture evidence about.
+    if [ -n "${CAPTURE_LINES:-}" ]; then
+        printf '%s\n' "$CAPTURE_LINES"
+    fi
     if [ -n "${OUTPUT_DIR:-}" ] && compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
         echo "--- serial tail (last 200 lines per file, $OUTPUT_DIR) ---"
         tail -n 200 "$OUTPUT_DIR"/serial_*.txt
+        # failure-trace-capture PR-5: preserve the serial pair and the
+        # capture-drain reading beside it in a durable evidence dir, the
+        # same shape run-aarch64-boot-test-strict.sh's report_failure keeps
+        # (this script previously only tailed to console and preserved no
+        # evidence dir).
+        local failure_dir
+        failure_dir="${BREENIX_GATE_TMP:-/tmp}/breenix_x86_boot_tests_failures/$(date -u +%Y%m%dT%H%M%SZ)_$$"
+        mkdir -p "$failure_dir" 2>/dev/null || true
+        cp "$OUTPUT_DIR"/serial_*.txt "$failure_dir/" 2>/dev/null || true
+        printf '%s\n' "${CAPTURE_LINES:-}" >"$failure_dir/capture_drain.txt" 2>/dev/null || true
+        echo "  preserved failing serial + capture reading: $failure_dir"
     fi
     exit "$exit_code"
 }
@@ -68,6 +87,12 @@ trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+# BXCAP capture (if one is open) before this gate's own kill line runs, and
+# reports what ended up on the wire. See that file's own header and
+# docs/planning/green-program/failure-capture/PLAN-2026-09-05.md section 6.
+# shellcheck source=lib/gate-capture-drain.sh
+source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_boot_tests_$i
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run and
@@ -499,6 +524,13 @@ for i in $(seq 1 "$COUNT"); do
     RUNNER_PID=$!
 
     passed=false
+    # failure-trace-capture PR-5: cleared here, alongside `passed`, and set
+    # at the SAME site `passed=true` is set below -- rather than read
+    # `$passed` a second time after the loop (this gate's own structural
+    # ratchet, tests/teardown_structure.rs::validate_x86_frame_custody_harness,
+    # pins that read count at exactly 1) so whether this is still empty
+    # after the loop is the drain decision.
+    CAPTURE_LINES=""
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
     # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
     # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
@@ -521,7 +553,14 @@ for i in $(seq 1 "$COUNT"); do
     # verdict marker itself; either polarity ends the wait, and the failing
     # polarity is still rejected downstream by scripts/x86-gate-verdict.sh.
     for _ in $(seq 1 900); do
-        if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
+        # failure-trace-capture PR-5's own forced-fail knob (unset by
+        # default, so an ordinary run is unaffected): keeps this
+        # conjunction from ever setting passed=true, so a live boot can
+        # exercise the drain path below deterministically instead of
+        # waiting on a rare fault. See
+        # docs/planning/green-program/failure-capture/PR-5-2026-09-06.md.
+        if [ -z "${BREENIX_X86_BOOT_FORCE_FAIL:-}" ] \
+            && grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$FRAME_CUSTODY_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -588,6 +627,10 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qE 'TEST RUNNER: (All tests passed|FAILED)' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
+            # failure-trace-capture PR-5: set at the same site as
+            # `passed=true`, not read from it -- see the comment beside
+            # `passed=false` above.
+            CAPTURE_LINES="$(gcd_pass_report)"
             break
         fi
         if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
@@ -617,6 +660,17 @@ for i in $(seq 1 "$COUNT"); do
         fi
         sleep 1
     done
+
+    # failure-trace-capture PR-5: on any outcome that is not already a
+    # confirmed pass, drain the guest's BXCAP capture (if one is open)
+    # BEFORE the kill line below runs. CAPTURE_LINES is still empty here
+    # exactly when the loop above did not reach its passed=true site -- the
+    # same condition, reached without a second read of `$passed` (see the
+    # comment beside `passed=false`). This gate's guest writes to two serial
+    # files, and BXCAP output can land on either.
+    if [ -z "$CAPTURE_LINES" ]; then
+        CAPTURE_LINES="$(gcd_drain_and_report "$OUTPUT_DIR"/serial_*.txt)"
+    fi
 
     kill "$RUNNER_PID" 2>/dev/null || true
     wait "$RUNNER_PID" 2>/dev/null || true
@@ -1038,4 +1092,5 @@ for i in $(seq 1 "$COUNT"); do
         false
     fi
     echo "x86 frame-custody gate run $i: PASS"
+    printf '%s\n' "$CAPTURE_LINES"
 done

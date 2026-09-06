@@ -94,3 +94,12 @@ docs/planning/green-program/failure-capture/serials/pr3/*.txt -text
 # Same treatment as the fixtures above -- these are raw QEMU captures whose
 # interleaved bytes ARE the evidence, and a CRLF normalisation would edit them.
 docs/planning/green-program/failure-capture/serials/pr3-gate/*.txt -text
+
+# PR-5 drain-oracle serials: raw aarch64 strict-gate captures (the
+# capture_selftest + BREENIX_STRICT_FORCE_FAIL boot this round's oracle is
+# measured against) and a fixture derived from it by a straight `sed`
+# byte-range cut, not a re-encoding. Same treatment as the pr3/pr3-gate
+# captures above -- these carry the BXCAP v1 CRLF terminator and the
+# scheduler trace stream's own interleaved bytes, and a CRLF normalisation
+# would edit the evidence the round doc quotes.
+docs/planning/green-program/failure-capture/serials/pr5/*.txt -text

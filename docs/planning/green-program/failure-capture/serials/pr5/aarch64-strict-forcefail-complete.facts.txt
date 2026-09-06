@@ -1,0 +1,3 @@
+[GATE_BOOT_FACTS:boot=1:host_ms=1788682854722-1788682873509:qemu_at_start=0:load_at_start=2.31:qemu_at_end=1:load_at_end=2.23:qemu_cpu_s=27.80:guest_uptime_ms=18311:ended_by=poll_exhausted]
+[CAPTURE_DRAIN:capture=complete:seq=0:edge=SELFTEST:cpu=0:records=76:drain_ms=300]
+[CAPTURE_DRAIN_EVENTS:last_events=SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0)]

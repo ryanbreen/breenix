@@ -30,6 +30,12 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # for why a starved boot and a wedged boot could not be told apart before.
 # shellcheck source=lib/gate-boot-facts.sh
 source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
+# failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+# BXCAP capture (if one is open) before this gate's own kill line runs, and
+# reports what ended up on the wire. See that file's own header and
+# docs/planning/green-program/failure-capture/PLAN-2026-09-05.md section 6.
+# shellcheck source=lib/gate-capture-drain.sh
+source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same host,
 # both native QEMU rather than the shared beast container #797/#801 covered)
 # each hardcoded the identical /tmp/breenix_aarch64_strict_$iteration and
@@ -325,6 +331,17 @@ score_serial() {
     local boot_test_fail_line
     local crash_type
 
+    # failure-trace-capture PR-5's own forced-fail knob: unset by default, so
+    # an ordinary run's control flow here is unchanged. Set, this process
+    # scores each boot it runs as FAIL regardless of what the serial
+    # actually contains -- which is what lets a real, live boot exercise the
+    # drain path below deterministically instead of waiting on a rare
+    # fault. See docs/planning/green-program/failure-capture/PR-5-2026-09-06.md.
+    if [ -n "${BREENIX_STRICT_FORCE_FAIL:-}" ]; then
+        echo "Forced failure (BREENIX_STRICT_FORCE_FAIL set)"
+        return 1
+    fi
+
     if [ ! -f "$serial_file" ]; then
         echo "Userspace not detected"
         return 1
@@ -593,6 +610,7 @@ report_failure() {
     local reason="$2"
     local serial_file="$3"
     local facts_line="$4"
+    local capture_lines="$5"
     local failure_dir="$BREENIX_GATE_TMP/breenix_aarch64_strict_failures"
     local timestamp
     local preserved_serial
@@ -612,10 +630,17 @@ report_failure() {
     fi
     # #827: the facts line is preserved alongside the serial it describes,
     # not only echoed to the console, so a failed boot's host-side reading
-    # is as durable as its serial capture.
-    printf '%s\n' "$facts_line" > "$failure_dir/${timestamp}-boot${iteration}.facts.txt"
+    # is as durable as its serial capture. failure-trace-capture PR-5: the
+    # two CAPTURE_DRAIN lines ride the same sidecar, right below it -- one
+    # record of what the drain step (above, in run_single_test, BEFORE this
+    # boot's kill) found on the wire.
+    {
+        printf '%s\n' "$facts_line"
+        printf '%s\n' "$capture_lines"
+    } > "$failure_dir/${timestamp}-boot${iteration}.facts.txt"
     echo "  [FAIL] Boot $iteration: $reason ($lines lines); serial: $preserved_serial"
     echo "  $facts_line"
+    printf '%s\n' "$capture_lines" | sed 's/^/  /'
 }
 
 run_single_test() {
@@ -719,6 +744,25 @@ run_single_test() {
         ENDED_BY_LOOP="early_pass"
     fi
 
+    # failure-trace-capture PR-5: on any outcome that does not already read
+    # as a pass right here, drain the guest's BXCAP capture (if one is open)
+    # BEFORE this boot's kill line runs, further down. This is deliberately
+    # placed BEFORE the "immediately before kill" sampling block that
+    # follows it -- gcd_drain_and_report can add up to
+    # (BREENIX_GATE_DRAIN_SETTLE_MS + BREENIX_GATE_DRAIN_MAX_MS) of real wall
+    # time while QEMU keeps running, and that time has to be inside the
+    # window HOST_MS_END/QEMU_CPU_S measure, not before it -- the whole point
+    # of "immediately before kill" is that it reads QEMU's true end-of-life
+    # state, which this drain step deliberately postpones. On an
+    # ENDED_BY_LOOP=early_pass boot this costs 0ms: gcd_pass_report does not
+    # read the file at all.
+    local CAPTURE_LINES
+    if [ "$ENDED_BY_LOOP" = "early_pass" ]; then
+        CAPTURE_LINES="$(gcd_pass_report)"
+    else
+        CAPTURE_LINES="$(gcd_drain_and_report "$OUTPUT_DIR/serial.txt")"
+    fi
+
     # #827: sampled together, immediately before this boot's own kill --
     # ps has no output for a PID already gone, so qemu_cpu_seconds and the
     # aliveness check below must both run before the kill line, not after.
@@ -810,16 +854,22 @@ run_single_test() {
         "$QEMU_CPU_S" "$GUEST_UPTIME_MS" "$ENDED_BY")"
     # Recorded into this boot's own evidence directory unconditionally --
     # not only on failure, so a passing boot's host-side reading is on the
-    # record too.
-    printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
+    # record too. failure-trace-capture PR-5: CAPTURE_LINES rides the same
+    # file, right below it, on each boot -- PASS included, reading
+    # capture=n/a there per gcd_pass_report's own contract.
+    {
+        printf '%s\n' "$FACTS_LINE"
+        printf '%s\n' "$CAPTURE_LINES"
+    } > "$OUTPUT_DIR/gate_boot_facts.txt"
 
     if [ "$SCORE_PASS" = "1" ]; then
         echo "  [OK] Boot $iteration: SUCCESS"
         echo "  $FACTS_LINE"
+        printf '%s\n' "$CAPTURE_LINES" | sed 's/^/  /'
         return 0
     fi
 
-    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE"
+    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE" "$CAPTURE_LINES"
     return 1
 }
 

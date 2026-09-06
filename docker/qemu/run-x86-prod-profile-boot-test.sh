@@ -191,6 +191,14 @@ set -E
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+# BXCAP capture (if one is open) before this gate's own kill line runs. This
+# profile builds with no features (the profile-fidelity block further down
+# asserts each test-only marker absent), so a real capture on this gate is
+# categorically `absent` today -- it becomes meaningful once PR-4 wires the
+# panic/fault edges into the shipped kernel.
+# shellcheck source=lib/gate-capture-drain.sh
+source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_prod_profile
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run.
@@ -803,6 +811,19 @@ report_gate_failure() {
     trap - ERR
     echo "x86 production-profile gate: FAIL (set -e abort at ${BASH_SOURCE[0]}:${line_no}, exit ${exit_code})"
     echo "  failing command: ${failing_cmd}"
+    # failure-trace-capture PR-5: reaching this handler at all IS the
+    # non-PASS outcome, so this branch drains unconditionally -- no
+    # early_pass branch is
+    # needed here the way the aarch64 gates need one, because a call that
+    # reads capture evidence after the poll loop confirms steady state is a
+    # separate kill site (the main-flow kill further down), not this one.
+    # Guarded on QEMU_PID being non-empty and a serial file existing: an
+    # abort before the boot ever launched (a build failure) has neither.
+    local capture_lines=""
+    if [ -n "$QEMU_PID" ] && compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
+        capture_lines="$(gcd_drain_and_report "$OUTPUT_DIR"/serial_*.txt)"
+        printf '%s\n' "$capture_lines"
+    fi
     if [ -n "$QEMU_PID" ]; then
         kill "$QEMU_PID" 2>/dev/null || true
         wait "$QEMU_PID" 2>/dev/null || true
@@ -813,6 +834,7 @@ report_gate_failure() {
         failure_dir="$BREENIX_GATE_TMP/breenix_x86_prod_profile_failures/$(date -u +%Y%m%dT%H%M%SZ)_$$"
         mkdir -p "$failure_dir"
         cp "$OUTPUT_DIR"/serial_*.txt "$failure_dir/"
+        printf '%s\n' "$capture_lines" >"$failure_dir/capture_drain.txt"
         echo "  preserved failing serial: $failure_dir"
         echo "--- observed values ---"
         print_observed_values
@@ -1069,6 +1091,14 @@ QEMU_PID=$!
 
 reached=false
 for _ in $(seq 1 "$POLL_BOUND_SECONDS"); do
+    # failure-trace-capture PR-5's own forced-fail knob (unset by default,
+    # so an ordinary run is unaffected): breaks before `reached` can ever be
+    # set true, driving control into report_gate_failure below (via the
+    # verdict assertion further down), which drains before its own kill --
+    # see docs/planning/green-program/failure-capture/PR-5-2026-09-06.md.
+    if [ -n "${BREENIX_X86_PROD_FORCE_FAIL:-}" ]; then
+        break
+    fi
     if grep -qF -- "$STEADY_STATE_LITERAL" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
         reached=true
         break
@@ -1085,6 +1115,13 @@ done
 # Explicit assertion, not a bare boolean variable: a bare boolean executed as a
 # command is silent under set -e and leaves a red with no verdict text.
 test "$reached" = true
+
+# failure-trace-capture PR-5: reaching this point means `reached` is
+# confirmed true, so the outcome already reads as a pass -- the drain is
+# skipped for the kill immediately below (contrast report_gate_failure
+# above, which drains unconditionally, because reaching it IS the non-PASS
+# outcome).
+CAPTURE_LINES="$(gcd_pass_report)"
 
 # Liveness. Both samples are taken with QEMU still running, after steady state,
 # with the stimulus written between them: a kernel that has wedged in its halt
@@ -1302,3 +1339,4 @@ fi
 print_observed_values
 echo "  console prompt count over ${LIVENESS_WINDOW_SECONDS}s: $PROMPT_BEFORE -> $PROMPT_AFTER"
 echo "  (informational) total serial bytes at exit: $(serial_bytes)"
+printf '%s\n' "$CAPTURE_LINES"
