@@ -695,6 +695,17 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::tracing::providers::teardown::run_x86_tombstone_join_gate();
     }
 
+    // #847 (ruling R188): the x86 print site for the ring-depth self-check's
+    // `[RING_SPAN:...]` marker, which the timer tick now publishes rather than
+    // writes. Placed AFTER the gate block above, not inside it: this call can
+    // spin (bounded) waiting for the publication, and the gates above pin
+    // absolute frame, page-table and kernel-stack counts that a preemption
+    // window opened between two of them could move. Interrupts are still
+    // enabled here -- `interrupts::disable()` comes below, after the oracles --
+    // which is what lets the publishing tick run.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    kernel::test_framework::registry::run_x86_ring_span_gate();
+
     // #728 ext2 lock-discipline repro oracle (test profile only, feature
     // `ext2_lock_race`). Needs a running scheduler/timer/preemption, so it
     // runs here rather than at the fault-injection leg's early insertion
