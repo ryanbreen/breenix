@@ -832,7 +832,7 @@ report_gate_failure() {
         # reaching this branch (QEMU_PID empty, serial files present) means
         # this handler fired from one of the ~40 assertions AFTER that
         # kill: the liveness/wedge check or the teardown census, not the
-        # earlier `test "$reached" = true` this function's other branch
+        # earlier reached-confirmation check this function's other branch
         # covers. The main flow already committed to capture=n/a on the
         # strength of steady state alone (its own CAPTURE_LINES=
         # gcd_pass_report() call, right after that check) before any of
