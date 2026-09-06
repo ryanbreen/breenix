@@ -29,11 +29,6 @@ struct GateProvenance: Codable {
     }
 
     var projectedVerdict: Verdict {
-        if verdict == "PASS-WITH-ATTRIBUTED-LOCKUP" { return .attributed(verdict) }
-        if verdict.hasPrefix("REFUSED") { return .refused(verdict) }
-        if exitCode != 0 { return .fail(verdict) }
-        if verdict == "PASS" { return .gateScript(command: command, exitCode: exitCode) }
-        // Keep qualified successes (e.g. feature-mutated builds) visibly qualified.
-        return .attributed(verdict)
+        Verdict.projectGateVerdict(verdict, exitCode: exitCode, command: command)
     }
 }
