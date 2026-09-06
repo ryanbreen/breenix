@@ -1,0 +1,11 @@
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      scratchpad/cm/elf/kernel-boottests.elf
+  sha256:   bc783fb698d847959e9d1135da63dded5a240cd0abf78d149b14506d295424fc
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h61ecf85f7d566472E
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.

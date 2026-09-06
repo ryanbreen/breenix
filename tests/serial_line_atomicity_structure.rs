@@ -1043,15 +1043,21 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn record_cpu_identity_split",
         6,
     ),
+    // Failure-capture PR-7 took this row from 60 to 5. The dump is now an
+    // opening banner, the stalled duration in seconds and in ticks, and a
+    // closing banner, around one `capture::emit` call; the emitter's own bytes
+    // are counted against `kernel/src/capture/record.rs`, not against this row.
+    // The `fn dump_trace_counters` row that sat beside this one (10) is GONE
+    // rather than present at 0: the helper was deleted with the hand-rolled
+    // counter list it printed, and a `(file, item)` key with no matching call is
+    // not a census row. That is a 65-site reduction in THIS census and a 0-row
+    // change to the logging census in
+    // tests/critical_path_logging_census_structure.rs, which carried 0 anchors
+    // for either function.
     (
         "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
         "fn dump_lockup_state",
-        60,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
-        "fn dump_trace_counters",
-        10,
+        5,
     ),
     (
         "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
