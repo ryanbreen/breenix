@@ -116,6 +116,10 @@ docs/planning/green-program/failure-capture/serials/pr5/*.txt -text
 # captures above -- the CR bytes the guest console emits are part of the
 # evidence, and a CRLF normalisation would edit a preserved boot.
 docs/planning/green-program/irq-locks/serials/821/*.txt -text
+# #822 serials: same directory family as #821 above, missed there and caught
+# while re-recording irq-locks/serials/822/02-a64-green-repaired-serial.txt
+# during the #766 merge landing -- same CR-preservation reason.
+docs/planning/green-program/irq-locks/serials/822/*.txt -text
 
 # #766 timer-wake-dispatch serials: raw aarch64 and x86 console captures and
 # gate stdout, kept byte-exact for the same reason as the captures above -- the
