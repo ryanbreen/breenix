@@ -24,4 +24,6 @@ time, are the record.
 | `x86-boot-tests-x1.txt` | `docker/qemu/run-x86-boot-tests.sh 1` at this head |
 | `x86-prod-profile.txt` | `docker/qemu/run-x86-prod-profile-boot-test.sh` at this head, and the enumeration marker as the zero-feature profile prints it |
 | `aarch64-strict-x1.txt` | `docker/qemu/run-aarch64-boot-test-strict.sh 1` at this head |
+| `resmoke-merged-head.txt` | The re-smoke after `origin/main` was merged in at `98ba6e64`: the zero-warning build, the three-leg gate, the boot-tests gate, the production-profile gate, and the marker in the zero-feature serial |
+| `aarch64-strict-merged-head.txt` | `docker/qemu/run-aarch64-boot-test-strict.sh 1` at the merged head |
 | `aarch64-section-comparison.txt` | The aarch64 kernel built from this branch against the same kernel built from its base, compared section by section, plus the two same-source builds that establish what a build-to-build difference looks like |

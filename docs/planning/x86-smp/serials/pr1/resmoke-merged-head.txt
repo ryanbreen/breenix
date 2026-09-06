@@ -1,0 +1,34 @@
+=== re-smoke at the merged head 98ba6e64, beast /root/breenix-smp1 (re-cloned) ===
+
+--- cargo build --release --features testing,external_test_bins --bin qemu-uefi ---
+warning/error lines in the build log: 0
+    Finished `release` profile [optimized] target(s) in 2m 42s
+
+--- docker/qemu/run-x86-smp-enum-gate.sh 1 2 4 ---
+x86 SMP enumeration gate: booted image sha256 0dc23304e505f34bb7cabc2b1875fa5caa50f6ee0f0ae7e2edf73cc84dcaa30a
+=== leg -smp 1 ===
+  leg -smp 1: marker [X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
+  leg -smp 1: PASS
+=== leg -smp 2 ===
+  leg -smp 2: marker [X86_SMP_ENUM:madt_cpus=2:enabled=2:x2apic=0:bsp_apic_id=0:cpuid_logical=2:present=1:online=1:max_cpus=1:src=madt:reason=none]
+  leg -smp 2: PASS
+=== leg -smp 4 ===
+  leg -smp 4: marker [X86_SMP_ENUM:madt_cpus=4:enabled=4:x2apic=0:bsp_apic_id=0:cpuid_logical=4:present=1:online=1:max_cpus=1:src=madt:reason=none]
+  leg -smp 4: PASS
+x86 SMP enumeration gate: PASS (3 leg(s): 1 2 4)
+GATE_EXIT=0
+
+--- docker/qemu/run-x86-boot-tests.sh 1 ---
+PASS: 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
+x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0
+x86 frame-custody gate run 1: PASS
+GATE_EXIT=0
+
+--- docker/qemu/run-x86-prod-profile-boot-test.sh ---
+PASS: x86 production profile reached steady state with the teardown census at rest
+GATE_EXIT=0
+
+--- the enumeration marker in the zero-feature profile at this head ---
+[X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
+/root/breenix-smp1-tmp/breenix_x86_prod_profile/serial_kernel.txt:1
+/root/breenix-smp1-tmp/breenix_x86_prod_profile/serial_user.txt:0
