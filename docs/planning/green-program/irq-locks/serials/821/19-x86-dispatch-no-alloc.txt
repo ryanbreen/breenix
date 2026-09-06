@@ -1,0 +1,20 @@
+== #821 review round: scripts/check-x86-dispatch-no-alloc.sh, re-run on beast ==
+host:   beast, incus container breenix-x86 (x86_64); BREENIX_GATE_TMP=/root/breenix-p821-tmp
+clone:  /root/breenix-p821, fresh, at 11f46eb27d7041e7c68a4ac1bb8bfb61327e62f1 (fix/821-tty-irq-no-pm-block)
+build:  cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
+        exit 0, 0 line(s) matching ^(warning|error)
+elf:    target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+        sha256 804bec249933352add0691b75368b02416b5f641fc8caf13e37e66d1aa684526
+note:   ANSI colour codes stripped from the capture below; bytes otherwise as emitted.
+
+$ bash scripts/check-x86-dispatch-no-alloc.sh
+Guard: x86 kernel-thread dispatch allocation check (#791)
+  ELF:      /root/breenix-p821/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  sha256:   804bec249933352add0691b75368b02416b5f641fc8caf13e37e66d1aa684526
+  objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
+  readelf:  readelf
+  function: setup_kernel_thread_return (its own body and its closures)
+  symbols in scope: 3
+  call targets resolved: 19
+PASS: 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
+EXIT=0
