@@ -1,0 +1,13 @@
+# docker/qemu/run-x86-prod-profile-boot-test.sh at branch head e2717b88, beast /root/breenix-smp1
+# zero-feature build; BREENIX_GATE_TMP=/root/breenix-smp1-tmp
+
+--- verdict lines ---
+250:PASS: x86 production profile reached steady state with the teardown census at rest
+341:GATE_EXIT=0
+
+--- the enumeration marker in the zero-feature profile ---
+[X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
+
+--- marker occurrences per serial file ---
+/root/breenix-smp1-tmp/breenix_x86_prod_profile/serial_kernel.txt:1
+/root/breenix-smp1-tmp/breenix_x86_prod_profile/serial_user.txt:0

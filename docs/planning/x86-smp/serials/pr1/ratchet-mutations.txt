@@ -1,0 +1,51 @@
+=== x86 SMP enumeration ratchet: mutation legs (host-side) ===
+HEAD e2717b8829c45472d29aefe723d72f143a8d00f3
+tree: 0 modified path(s) at the start of this run
+
+--- LEG 0 (baseline, unmutated): expect exit 0 ---
+$ CARGO_MANIFEST_DIR=$PWD rustc --edition=2021 --test tests/x86_smp_enum_structure.rs -o /tmp/rt-base   -> exit 0
+$ /tmp/rt-base   -> exit 0
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+--- LEG M2: the log::info! marker emission deleted from kernel/src/arch_impl/x86_64/smp.rs ---
+    assertion expected: the_enumeration_marker_has_exactly_one_emission_site, found 0
+$ CARGO_MANIFEST_DIR=$PWD rustc --edition=2021 --test tests/x86_smp_enum_structure.rs -o /tmp/rt-m2   -> exit 0
+$ /tmp/rt-m2   -> exit 101
+failures:
+
+---- the_enumeration_marker_has_exactly_one_emission_site stdout ----
+--
+thread 'the_enumeration_marker_has_exactly_one_emission_site' panicked at tests/x86_smp_enum_structure.rs:109:5:
+assertion `left == right` failed: expected exactly one [X86_SMP_ENUM:] emission site under kernel/src, found 0:
+
+--
+failures:
+    the_enumeration_marker_has_exactly_one_emission_site
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+--- LEG M3: the MAX_MADT_ENTRIES cap removed from census_of_madt's entry-walk loop ---
+    assertion expected: every_walk_in_the_madt_reader_is_bounded_by_a_constant
+$ CARGO_MANIFEST_DIR=$PWD rustc --edition=2021 --test tests/x86_smp_enum_structure.rs -o /tmp/rt-m3   -> exit 0
+$ /tmp/rt-m3   -> exit 101
+failures:
+
+---- every_walk_in_the_madt_reader_is_bounded_by_a_constant stdout ----
+--
+thread 'every_walk_in_the_madt_reader_is_bounded_by_a_constant' panicked at tests/x86_smp_enum_structure.rs:220:5:
+the MADT entry walk must be capped by a constant iteration bound, not only by the table's own declared length: while cursor + 2 <= end {
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--
+failures:
+    every_walk_in_the_madt_reader_is_bounded_by_a_constant
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+--- tree restored: 0 modified path(s) ---
+--- re-run after restore: expect exit 0 ---
+$ CARGO_MANIFEST_DIR=$PWD rustc --edition=2021 --test tests/x86_smp_enum_structure.rs -o /tmp/rt-restored   -> exit 0
+$ /tmp/rt-restored   -> exit 0
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s

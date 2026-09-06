@@ -1,0 +1,28 @@
+=== ORACLE red arm: main kernel bytes + this branch gate script ===
+HEAD: e2717b8829c45472d29aefe723d72f143a8d00f3
+--- git status ---
+ D kernel/src/arch_impl/x86_64/acpi.rs
+M  kernel/src/arch_impl/x86_64/mod.rs
+ D kernel/src/arch_impl/x86_64/smp.rs
+M  kernel/src/main.rs
+M  kernel/src/task/scheduler.rs
+--- git diff origin/main -- kernel/ (expect empty) ---
+[end diff]
+x86 SMP enumeration gate: booted image sha256 de02b2b92a5c1ba4cede957cb6b1d37be36dbc61c8f052e5ca765a69ccbf1f5b
+=== leg -smp 2 ===
+  leg -smp 2: FAIL (expected exactly 1 [X86_SMP_ENUM:] line, found 0)
+  leg -smp 2: FAIL (no marker matching madt_cpus=2:enabled=2:...:online=1)
+    found: 
+  leg -smp 2: serial at /root/breenix-smp1-tmp/breenix_x86_smp_enum_2
+x86 SMP enumeration gate: FAIL (1 of 1 leg(s) red)
+x86 SMP enumeration gate: FAIL (set -e abort at docker/qemu/run-x86-smp-enum-gate.sh:238, exit 1)
+  failing command: false
+--- serial tail (last 120 lines per file, /root/breenix-smp1-tmp/breenix_x86_smp_enum_2) ---
+
+--- the boot reached the three pass markers even on main: 0 pass-marker failures printed above ---
+1
+1
+1
+/root/breenix-smp1-tmp/breenix_x86_smp_enum_2/serial_kernel.txt:0
+/root/breenix-smp1-tmp/breenix_x86_smp_enum_2/serial_user.txt:0
+GATE_EXIT=1
