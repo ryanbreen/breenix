@@ -823,9 +823,9 @@ run_single_test() {
     # line runs, the DEADLINE_SERIAL rescore just above has disagreed with
     # (a scored_fail -- content written in the gap between that in-loop
     # check and this rescore flipped it). QEMU is already dead by this point
-    # (the kill above already ran), so there is nothing left to wait for --
-    # a full gcd_drain_and_report here would only add latency with nothing
-    # new to observe -- but the frozen file's ACTUAL capture state is real
+    # (the kill above already ran), so no further wait is useful -- a full
+    # gcd_drain_and_report here would only add latency with no new content
+    # to observe -- but the frozen file's ACTUAL capture state is real
     # evidence for what the deadline snapshot says is a genuine FAIL, and
     # reporting it honestly beats leaving the pass path's capture=n/a in
     # place for exactly the failure shape this PR exists to capture evidence

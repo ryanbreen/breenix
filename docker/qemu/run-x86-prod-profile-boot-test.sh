@@ -836,14 +836,14 @@ report_gate_failure() {
         # covers. The main flow already committed to capture=n/a on the
         # strength of steady state alone (its own CAPTURE_LINES=
         # gcd_pass_report() call, right after that check) before any of
-        # those later assertions could run -- but reaching this handler at
-        # all means one of them just rejected the boot, so it is a genuine
-        # non-PASS outcome after all. QEMU is already dead, so there is
-        # nothing left to wait for, but the frozen files' real capture
-        # state is real evidence for a non-PASS outcome -- report it
-        # honestly instead of leaving capture_lines blank (which, unlike
+        # those later assertions could run -- so reaching this handler
+        # here means one of them just rejected the boot, making this a
+        # genuine non-PASS outcome. QEMU is already dead, so no further
+        # wait is useful, but the frozen files' real capture state is
+        # real evidence for a non-PASS outcome -- report it honestly
+        # instead of leaving capture_lines blank (which, unlike
         # gcd_pass_report's explicit `n/a`, would write an empty
-        # capture_drain.txt with no marker at all for a confirmed FAIL).
+        # capture_drain.txt carrying no marker for a confirmed FAIL).
         capture_lines="$(gcd_classify_report "$OUTPUT_DIR"/serial_*.txt)"
         printf '%s\n' "$capture_lines"
     fi

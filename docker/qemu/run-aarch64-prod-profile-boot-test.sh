@@ -354,8 +354,8 @@ cleanup() {
                     # the assertion chain below it went on to reject the
                     # boot anyway -- a genuine scored_fail. QEMU is already
                     # dead here (the main flow's own kill, above, already
-                    # ran before any of those assertions could run), so
-                    # there is nothing left to wait for, but the frozen
+                    # ran before any of those assertions could run), so no
+                    # further wait is useful, but the frozen
                     # file's ACTUAL capture state is real evidence for what
                     # is, by definition, a non-PASS outcome -- report it
                     # honestly instead of leaving the pass path's
@@ -554,8 +554,8 @@ fi
 # still-live $SERIAL_FILE (the snapshot is not yet in play), so the capture
 # evidence it reports keeps benefiting from the extra wait; only once that
 # call returns does $SERIAL_FILE get repointed at the frozen snapshot, right
-# below, so every assertion further down that decides this boot's pass/fail
-# verdict -- unchanged text, still reading "$SERIAL_FILE" -- reads the
+# below, so the ~35 assertions further down that decide this boot's pass/fail
+# verdict -- unchanged text, still reading "$SERIAL_FILE" -- read the
 # snapshot rather than a file the drain step may have kept growing. Plain
 # (non-local), like PROD_ENDED_BY_LOOP and CAPTURE_LINES, so cleanup() can
 # also read it.
@@ -603,8 +603,10 @@ fi
 # review finding
 # aarch64-gates-drain-decision-uses-provisional-not-final-verdict: the
 # live-boot branch above repoints $SERIAL_FILE at the deadline snapshot;
-# BREENIX_PROD_SCORE_ONLY replay mode never runs that branch at all (no live
-# boot, no drain, nothing for a snapshot to protect against), so $SERIAL_FILE
+# that branch is the body of the top-level `if [ -z "$SCORE_ONLY_SERIAL" ]`
+# guard starting near line 424, and a BREENIX_PROD_SCORE_ONLY replay takes
+# the earlier, separate `if [ -n "$SCORE_ONLY_SERIAL" ]` branch instead (no
+# live boot, no drain, no snapshot involved), so $SERIAL_FILE
 # here is still exactly $SCORE_ONLY_SERIAL, unaffected, exactly as before
 # this fix.
 PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")
