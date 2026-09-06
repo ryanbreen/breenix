@@ -58,7 +58,7 @@ struct TracesPane: View {
     }
 }
 
-private struct EmptyTraceRow: View {
+struct EmptyTraceRow: View {
     var systemName: String
     var text: String
 
