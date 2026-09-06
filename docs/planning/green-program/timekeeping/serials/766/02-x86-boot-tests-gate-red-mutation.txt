@@ -1,0 +1,45 @@
+=== x86 boot-tests gate, MUTATION M2: push_front reverted to push_back at the producing line, 2026-09-06 ===
+--- commit / tree ---
+783a6a536 Merge pull request #878 from ryanbreen/fix/821-tty-irq-no-pm-block
+ M docker/qemu/run-aarch64-boot-test-strict.sh
+ M docker/qemu/run-aarch64-prod-profile-boot-test.sh
+ M docker/qemu/run-x86-boot-tests.sh
+ M docker/qemu/run-x86-prod-profile-boot-test.sh
+ M kernel/src/main.rs
+ M kernel/src/main_aarch64.rs
+ M kernel/src/task/mod.rs
+ M kernel/src/task/scheduler.rs
+?? docs/planning/green-program/timekeeping/766-TIMER-WAKE-DISPATCH-2026-09-06.md
+?? docs/planning/green-program/timekeeping/serials/766/
+?? kernel/src/task/timer_wake_oracle.rs
+?? tests/timer_wake_dispatch_structure.rs
+4094:                        self.per_cpu_queues[target].push_back(tid);
+4308:                        self.per_cpu_queues[target].push_back(tid);
+--- [TIMER_WAKE_LATENCY_ORACLE] ---
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=401:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=510:window_ms=1559:measured=1:FAIL]
+--- TEST_TALLY ---
+TEST_TALLY: exited=110 nonzero=0 failed=[]
+--- clock_gettime_test Test 3/4 ---
+Test 3: Sub-millisecond precision
+  Elapsed: 167017 ns
+  PASS: Sub-millisecond precision (TSC active)
+
+Test 4: Nanosecond precision (not millisecond-aligned)
+  Millisecond-aligned samples: 0/10
+  PASS: Nanosecond precision confirmed
+
+Test 5: Monotonicity over multiple calls
+--- t766 thread creation ---
+Added thread 1205 't766_peer' to scheduler (user: false, target_cpu: 0)
+Added thread 1206 't766_peer' to scheduler (user: false, target_cpu: 0)
+Added thread 1207 't766_peer' to scheduler (user: false, target_cpu: 0)
+Added thread 1208 't766_peer' to scheduler (user: false, target_cpu: 0)
+Added thread 1209 't766_peer' to scheduler (user: false, target_cpu: 0)
+Added thread 1210 't766_peer' to scheduler (user: false, target_cpu: 0)
+Added thread 1211 't766_peer' to scheduler (user: false, target_cpu: 0)
+Added thread 1212 't766_peer' to scheduler (user: false, target_cpu: 0)
+Added thread 1213 't766_sleeper' to scheduler (user: false, target_cpu: 0)
+--- gate verdict ---
+x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:951, exit 1)
+--- gate boot facts ---
+GATE_BOOT_FACTS:boot=1:host_ms=1788697561490-1788698564255:qemu_at_start=0:load_at_start=0.99:qemu_at_end=0:load_at_end=3.05:qemu_cpu_s=528.00:guest_uptime_ms=NA:ended_by=poll_exhausted]

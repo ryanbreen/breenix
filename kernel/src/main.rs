@@ -869,6 +869,20 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     ))]
     kernel::task::kthread_tests::test_kthread_stop_after_exit();
 
+    // #766's wake-to-dispatch latency leg. Placed HERE, and not in the IF=1
+    // driver-self-test window above, for two reasons. First, it creates 9
+    // kernel threads and lets them run, which moves the frame, page-table and
+    // kernel-stack counts the gates in that window pin absolutely. Second,
+    // #567 says a scheduling event in this x86 boot window can resume the boot
+    // thread on a corrupted context; the placement that survives it today is
+    // the one after the softirq self-test, which is where the kthread
+    // lifecycle tests immediately above already spawn, dispatch and join
+    // kernel threads. This leg needs preemption to measure anything at all, so
+    // it goes where preemption is already exercised. It restores the interrupt
+    // flag it finds, so the boot sequence below inherits the state it had.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    kernel::task::timer_wake_oracle::run();
+
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
     #[cfg(not(any(

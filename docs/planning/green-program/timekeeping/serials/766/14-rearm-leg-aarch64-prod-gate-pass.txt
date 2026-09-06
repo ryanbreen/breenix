@@ -1,0 +1,41 @@
+Building the shipped ARM64 production kernel profile...
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-766/kernel)
+    Finished `release` profile [optimized] target(s) in 6.97s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-766/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-766/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Booting the ARM64 production profile...
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 73280 (<unknown process>)
+PASS: production profile reached bsshd with the futex oracle seam absent
+Observed: [FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+Observed: [init] futex_handoff_oracle exited pid=6 code=0
+Observed: bsshd: listening on 0.0.0.0:2222
+Observed kernel oracle marker count: 0
+Observed fcntl contention oracle marker count: 0
+Observed IRQ-hold oracle marker count: 0
+Observed TTY input IRQ oracle marker count: 0
+Observed ring-span self-check marker count: 0
+Observed timer wake latency oracle marker count: 0
+Observed BXCAP self-test edge count: 0
+Observed block EINTR oracle marker count: 2
+Observed block EINTR oracle failure count: 0
+Observed poll TCP oracle marker count: 10
+Observed poll TCP oracle failure count: 0
+Observed kernel poll timeout report count: 2
+Observed kernel lost-readiness report count: 0
+Observed TTY oracle marker count: 2
+Observed TTY oracle failure count: 0
+Observed TTBR0 ASID census marker count: 14
+Observed TTBR0 ASID census untagged-publish line count: 0
+Observed: [TTBR0_ASID_CENSUS:untagged=0:tagged=22884:kernel=26412:cleared=48402]
+Observed pinned-placement census marker count: 1
+Observed pinned-placement non-zero census line count: 0
+Observed pin-guard oracle line count (must be 0 in this profile): 0
+Observed: [PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+Observed crash marker count: 0
+[GATE_BOOT_FACTS:boot=1:host_ms=1788706468248-1788706479521:qemu_at_start=0:load_at_start=8.75:qemu_at_end=1:load_at_end=10.58:qemu_cpu_s=20.93:guest_uptime_ms=10585:ended_by=scored_pass]

@@ -1,0 +1,8 @@
+=== x86 smp-enum gate red on the WITHDRAWN leg's bytes (8198ee9a), 2026-09-06 -- #562's assertion, not previously recorded on x86 ===
+It did not reproduce at the branch's final bytes: that run reads SMP_EXIT=0 (see 26-).
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: After do_softirq(): 10 iterations (limit=10)
+[ERROR] kernel: KERNEL PANIC: panicked at kernel/src/task/softirq_tests.rs:228:5:
+ksoftirqd should have processed deferred softirqs (tid=Some(2))
+KERNEL PANIC: panicked at kernel/src/task/softirq_tests.rs:228:5:
+ksoftirqd should have processed deferred softirqs (tid=Some(2))

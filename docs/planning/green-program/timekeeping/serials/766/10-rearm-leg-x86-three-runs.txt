@@ -1,0 +1,31 @@
+=== #766 re-arm leg: the three x86 runs it got, beast breenix-x86 (TCG), 2026-09-06 ===
+The leg's marker is emitted on COM1 (serial_user.txt), NOT COM2 (serial_kernel.txt).
+Both files are in the gate's output dir and the gate greps serial_*.txt, so the gate
+reads it either way; a hand check that looks only at serial_kernel.txt does not.
+
+--- (1) 8 peers + 4 re-armers x 8 sleeps, re-armers PARKED, at 3a8c90f8: gate PASS ---
+x86 frame-custody gate run 1: PASS
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:rearmers=4:rearms=32:overrun_ms=45:bound_ms=100:quantum_ms=50:round_ms=400:peer_max_gap_ms=525:peer_gap_bound_ms=2800:wake_enqueues=33:peers_started=8:peers_spinning=8:backstops=0:setup_ms=744:window_ms=984:measured=1:PASS]
+TEST_TALLY: exited=110 nonzero=0 failed=[]
+Elapsed: 149714 ns
+Added thread 1213 't766_rearmer'
+Added thread 1214 't766_rearmer'
+Added thread 1215 't766_rearmer'
+Added thread 1216 't766_rearmer'
+
+--- (2) the same leg under MUTATION M2 (push_front -> push_back) at 3a8c90f8: gate FAIL, exit 1 ---
+COM1 for this run was NOT preserved, so whether the leg emitted a FAIL verdict or no
+marker at all cannot be told from what is on disk. What is on disk, from COM2:
+  marker count in serial_kernel.txt: 0
+DISPATCH_STRAND_CENSUS:seq=310:tick=40788:ms=383418
+Added thread 1216 't766_rearmer'
+  last strand census in that run: DISPATCH_STRAND_CENSUS:seq=901:tick=160169:ms=990653
+
+--- (3) the same leg with the re-armers NOT parked, at 8198ee9a: gate FAIL, exit 1 ---
+GREEN_GATE_EXIT=1
+x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:961, exit 1)
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:rearmers=4:rearms=8:overrun_ms=46:bound_ms=100:quantum_ms=50:round_ms=400:peer_max_gap_ms=391:peer_gap_bound_ms=2800:wake_enqueues=8:peers_started=8:peers_spinning=8:peers_exited=8:backstops=10:setup_ms=301074:window_ms=894:measured=1:FAIL]
+  setup_ms=301074 is the cost of a halt-loop barrier wait on a 50 ms quantum: a thread
+  waiting in arch_halt_with_interrupts() does NOT leave the ready queue, so each of the
+  3 unparked re-armers holds a full quantum per turn while the boot thread creates the
+  rest. The module doc records the same shape costing 362 s with 8 threads.

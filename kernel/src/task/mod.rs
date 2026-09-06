@@ -39,6 +39,10 @@ pub mod percpu_stack_oracle;
 pub mod ret_zero_pc_oracle;
 #[cfg(feature = "boot_tests")]
 pub mod strand_oracle;
+/// #766's wake-to-dispatch latency leg. Boot-tests only: it makes 8 threads
+/// CPU-bound on purpose, which is not something a shipped kernel should do.
+#[cfg(feature = "boot_tests")]
+pub mod timer_wake_oracle;
 
 // Kernel threads and workqueues - work on both x86_64 and aarch64
 // Uses architecture-independent types and conditional interrupt control

@@ -1,0 +1,7 @@
+# run-x86-smp-enum-gate.sh 1 at merged head 436f476a (breenix-x86 Incus container)
+x86 SMP enumeration gate: booted image sha256 88bab892284103833befce923957fcb5a56af0d3e12f34e009d2f074ff0df9c8
+=== leg -smp 1 ===
+  leg -smp 1: marker [X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
+  leg -smp 1: PASS
+x86 SMP enumeration gate: PASS (1 leg(s): 1)
+No 'PANIC' or 'softirq_tests' string appears anywhere in the 415-line log (grep -c PANIC = 0), i.e. #891's ksoftirqd panic did not reproduce on this merged head.

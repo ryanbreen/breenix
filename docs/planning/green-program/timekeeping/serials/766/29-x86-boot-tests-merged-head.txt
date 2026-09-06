@@ -1,0 +1,9 @@
+# run-x86-boot-tests.sh 1 at merged head 436f476a (breenix-x86 Incus container, /root/breenix-p766)
+14:PASS: 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
+449:  [GATE_BOOT_FACTS:boot=1:host_ms=1788725647978-1788726137356:qemu_at_start=0:load_at_start=6.71:qemu_at_end=0:load_at_end=1.91:qemu_cpu_s=483.00:guest_uptime_ms=NA:ended_by=scored_pass]
+464:x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0
+477:[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=21:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold]
+478:[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:fg_busy_probe=1:entry_us=1242:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:local_hold]
+483:[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+489:[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=47:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=524:window_ms=517:measured=1:PASS]
+490:x86 frame-custody gate run 1: PASS
