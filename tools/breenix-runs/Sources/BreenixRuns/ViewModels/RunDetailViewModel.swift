@@ -20,7 +20,7 @@ public struct RunDetailViewModel: Equatable, Sendable {
         let serialIndex = try scanSerials(manifest: manifest, store: store)
         let catalog = try StageCatalog.load(for: manifest.arch)
         var detail = RunDetailViewModel(manifest: manifest, serialIndex: serialIndex, catalog: catalog)
-        detail.traces.hostFacts += try store.readGateFacts(manifest: manifest)
+        detail.traces.hostFacts = try store.readBootFacts(manifest: manifest)
         return detail
     }
 

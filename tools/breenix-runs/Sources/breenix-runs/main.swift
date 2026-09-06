@@ -30,6 +30,8 @@ struct FactsJSONEnvelope: Codable {
     var arch: Arch
     var profile: String
     var host: HostFactsTrace?
+    var kernel: KernelIdentity
+    var gateRecords: [BootFactsRecord]
 }
 
 struct ShowArguments {
@@ -236,17 +238,18 @@ func loadManifest(selector: String, store: RunStore) throws -> RunManifest {
     return try store.readManifest(id: selector)
 }
 
-func printJSONFacts(_ manifest: RunManifest) throws {
-    let envelope = FactsJSONEnvelope(id: manifest.id, arch: manifest.arch, profile: manifest.profile, host: manifest.host)
+func printJSONFacts(_ manifest: RunManifest, records: [BootFactsRecord]) throws {
+    let envelope = FactsJSONEnvelope(id: manifest.id, arch: manifest.arch, profile: manifest.profile, host: manifest.host, kernel: manifest.kernel, gateRecords: records)
     let data = try RunStore.encoder.encode(envelope)
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
-func printFactsBlock(manifest: RunManifest, manifestPath: URL?, includeBootFactsNotice: Bool) {
+func printFactsBlock(manifest: RunManifest, manifestPath: URL?, records: [BootFactsRecord] = []) {
     print("Run: \(manifest.id)")
     print("Arch: \(manifest.arch.rawValue)")
     print("Profile: \(manifest.profile)")
+    print("Kernel image SHA256: \(manifest.kernel.imageSHA256 ?? "unavailable (not captured)")")
     print("Kernel BUILD_ID: \(manifest.kernel.buildID ?? "none")")
     print("Git SHA: \(manifest.kernel.gitSHA ?? manifest.host?.start.gitSHA ?? "unknown")")
     print("Git dirty: \(formatBool(manifest.kernel.gitDirty ?? manifest.host?.start.gitDirty))")
@@ -262,9 +265,13 @@ func printFactsBlock(manifest: RunManifest, manifestPath: URL?, includeBootFacts
         print("Host facts trace: unknown")
     }
 
-    if includeBootFactsNotice {
-        print("")
-        print("[GATE_BOOT_FACTS] record ingestion from the serial is not wired up yet (lands in PR-7 BootFactsParser).")
+    print("")
+    print("Gate records (separate from Inspector host samples): \(records.count)")
+    for record in records {
+        print("  \(record.sourceFile ?? "unknown source"):L\(record.lineNumber.map(String.init) ?? "?") boot=\(record.boot)")
+        for key in record.fields.keys.sorted() {
+            print("    \(key)=\(record.fields[key]!)")
+        }
     }
 
     if let manifestPath {
@@ -386,7 +393,7 @@ func main() -> Int32 {
                     persist: runArgs.persist
                 ))
                 print("")
-                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, includeBootFactsNotice: false)
+                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: [])
                 // A preflight refusal (LocalGateLauncher.bootTestsPreflightRefusalMarker)
                 // never ran a boot, but it is still not success: an unmapped verdict
                 // here fell through to `return 0`, which reported the CLI's exit
@@ -435,7 +442,7 @@ func main() -> Int32 {
 
                 let result = try launcher.runX86(options: options)
                 print("")
-                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, includeBootFactsNotice: false)
+                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: [])
                 switch result.manifest.verdict {
                 case .gateScript(_, let exitCode):
                     return Int32(exitCode)
@@ -453,10 +460,11 @@ func main() -> Int32 {
         case "facts":
             let parsed = try parseFacts(args.dropFirst())
             let manifest = try loadManifest(selector: parsed.selector, store: store)
+            let records = try store.readBootFacts(manifest: manifest)
             if parsed.json {
-                try printJSONFacts(manifest)
+                try printJSONFacts(manifest, records: records)
             } else {
-                printFactsBlock(manifest: manifest, manifestPath: store.manifestURL(id: manifest.id), includeBootFactsNotice: true)
+                printFactsBlock(manifest: manifest, manifestPath: store.manifestURL(id: manifest.id), records: records)
             }
             return 0
 

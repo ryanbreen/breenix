@@ -55,7 +55,7 @@ public enum RunShow {
         }
         if options.traces {
             var traces = TracesViewModel.build(serialIndex: serialIndex, gateStdoutText: "")
-            traces.hostFacts += try store.readGateFacts(manifest: manifest)
+            traces.hostFacts = try store.readBootFacts(manifest: manifest)
             sections.append(renderTraces(traces))
         }
 
