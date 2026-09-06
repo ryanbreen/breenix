@@ -146,6 +146,81 @@ aarch64 the target queue is usually short or empty, so head-vs-tail is mostly
 indistinguishable there; keeping one behaviour keeps the two arches' dispatch
 rule readable as one rule, and the aarch64 gates are run against it (section 5).
 
+### 2.1 Cross-class fairness -- what the promoted thread costs the queue it jumps
+
+The `Not claimed` paragraph above is about order WITHIN one
+`wake_expired_timers` pass. This subsection is about the other question, raised
+by review as `unbounded-head-priority-for-rearming-timers`: what repeated
+promotion costs the threads a wake is promoted PAST. A thread that sleeps for a
+short period, wakes, and sleeps again is promoted on each of its wakes, so the
+question is not answered by looking at one pass.
+
+**What the change really does.** The ready queue stops being strict FIFO. Two
+classes now share it: the threads `wake_expired_timers` promotes (by
+construction, threads whose deadline has already passed) and everything else,
+which includes the outgoing thread `schedule()` re-enqueues at the tail. Before
+the change a waiting thread's position was monotonically non-increasing until
+it was dispatched, so its wait was bounded by the threads already ahead of it.
+After the change a promotion can insert ahead of it, and its position can grow.
+That is a real loss of a FIFO progress property and it is not bounded by the
+queue's length.
+
+**What bounds it instead, on a uniprocessor.** On x86 `MAX_CPUS` is 1
+(`kernel/src/task/scheduler.rs:1351`), and a promotion happens only inside a
+`schedule()` pass whose own selection loop then dispatches the promoted thread.
+So a thread that was jumped is delayed only by the promoted thread actually
+RUNNING. Take a CPU-bound thread T waiting with `j` threads ahead of it, a
+quantum `Q`, and let `u` be the fraction of a window of length `t` that the
+timer-wake class occupies the CPU. T is selected once the `j` threads ahead of
+it and the promotions interposed since have both had the CPU, which gives
+
+```
+j * Q + u * t = t        ->        t <= j * Q / (1 - u)
+```
+
+Under a tail enqueue the same thread waits at most `j * Q`, because promotions
+go behind it. So the head enqueue inflates a CPU-bound thread's worst-case wait
+by a factor of `1 / (1 - u)`, with `u` the CPU the timer-wake class consumes in
+the same window.
+
+Two things follow, and they are the answer to the review's "no kernel-side
+bound":
+
+* The inflation diverges only as `u` approaches 1. At `u = 1` the timer-wake
+  class occupies the CPU outright, and T gets no CPU under a TAIL enqueue
+  either, so a workload that starves T after this change starves it before the
+  change as well. What the head enqueue takes from T is its ORDER, not its
+  share.
+* `u` is workload-controlled and the kernel applies no admission control to it.
+  But a thread that sleeps and immediately sleeps again contributes to `u` only
+  the time between its wake and its next block, which for that shape is
+  microseconds; a thread that sleeps and then computes contributes its compute
+  and is a CPU-bound thread for most of the window anyway. The population the
+  review names -- many short-period re-armers -- is the population with the
+  smallest `u` per member.
+
+**No aging term was added, and this round does not claim one.** The inequality above is the
+whole of the bound, and it comes from the promoted thread having to run rather
+than from any fairness mechanism in the scheduler. A workload that needs T's
+ORDER protected rather than only its share needs a scheduler policy change with
+its own evidence; this round does not make one.
+
+**What is measured rather than derived.** The oracle in section 3 runs
+`REARMERS = 4` re-arming threads at a 10 ms period against `PEERS = 8`
+CPU-bound peers and reports `peer_max_gap_ms`: the worst interval any of those
+peers spent off the CPU during the window, measured by the peers themselves
+from consecutive clock reads in their own spin loops. The readings are in the
+round record. That is one point of the design space, not the sweep over
+re-armer counts and periods the inequality would need to be confirmed as a
+curve, and `peer_gap_bound_ms` is a starvation ceiling rather than a latency
+certification.
+
+**On aarch64 the argument is different and is not made.** With `MAX_CPUS = 8`
+the wake is routed by `find_target_cpu_for_wakeup` to a least-loaded CPU, so the
+displaced thread need not be on the promoting CPU at all. The serialization
+step above is the x86 one; the aarch64 arm of the oracle is read as a
+regression guard, as section 1.4 says of the latency reading.
+
 ---
 
 ## 3. The oracle
@@ -154,22 +229,36 @@ rule readable as one rule, and the aarch64 gates are run against it (section 5).
 `kernel/src/main.rs` (x86, after the kthread lifecycle tests) and
 `kernel/src/main_aarch64.rs` (after the pinned-placement census).
 
-One kthread sleeps 10 ms against an absolute monotonic deadline it computes
-itself; 8 CPU-bound kthreads are runnable while it does. The reported number is
-`wake_instant - deadline`, both read with `crate::time::get_monotonic_time_ns()`
-(post-#767 units), and `deadline` is the same value handed to
-`block_current_for_timer`, so the interval is anchored to the kernel's own
-deadline rather than to a later clock read.
+`REARMERS = 4` kthreads each sleep `REARMS = 8` times in a row, 10 ms at a
+time, against absolute monotonic deadlines they compute themselves; `PEERS = 8`
+CPU-bound kthreads are runnable while they do. Two numbers come out:
+
+* `overrun_ms` -- the worst `wake_instant - deadline` of those 32 sleeps, both
+  read with `crate::time::get_monotonic_time_ns()` (post-#767 units), with
+  `deadline` the same value handed to `block_current_for_timer`, so the interval
+  is anchored to the kernel's own deadline rather than to a later clock read.
+  This is #766's quantity.
+* `peer_max_gap_ms` -- the worst interval any of the 8 peers spent off the CPU
+  during the same window, each peer taking the maximum over consecutive clock
+  reads in its own spin loop and the leg reporting the maximum over the peers.
+  This is section 2.1's quantity. A peer is runnable throughout, so an interval
+  longer than a spin batch is time it did not have the CPU.
+
+The re-arming is what makes the second number mean anything: a thread that
+sleeps once is promoted once, and the displacement section 2.1 is about only
+accumulates across repeated wakes.
 
 Marker:
 
 ```
-[TIMER_WAKE_LATENCY_ORACLE:<arch>:sleep_ms=10:peers=8:overrun_ms=N:bound_ms=100:quantum_ms=Q:round_ms=R:wake_enqueues=N:peers_started=8:peers_spinning=8:backstops=0:measured=1:PASS|FAIL]
+[TIMER_WAKE_LATENCY_ORACLE:<arch>:sleep_ms=10:peers=8:rearmers=4:rearms=32:overrun_ms=N:bound_ms=100:quantum_ms=Q:round_ms=R:peer_max_gap_ms=G:peer_gap_bound_ms=B:wake_enqueues=N:peers_started=8:peers_spinning=8:backstops=0:setup_ms=S:window_ms=W:measured=1:PASS|FAIL]
 ```
 
-`PASS` requires each of: a wake was measured; the wake went through the
-timer-wake enqueue site (`wake_enqueues >= 1`); 8 of 8 peers were spinning when
-the sleep started; the backstop count is 0; and `overrun_ms <= bound_ms`.
+`PASS` requires each of: the window was measured; 4 of 4 re-armers finished and
+32 of 32 sleeps completed; the wakes went through the timer-wake enqueue site
+(`wake_enqueues >= 4`); 8 of 8 peers were spinning when the sleeps started; the
+backstop count is 0; `overrun_ms <= bound_ms`; and
+`peer_max_gap_ms <= peer_gap_bound_ms`.
 
 `bound_ms = 100` is a kernel constant. The **mechanism** bound is 55 ms on x86
 and 11 ms on aarch64 (section 2); the remainder is an allowance for an emulated
@@ -178,6 +267,12 @@ periodic timer being delivered late, and is not part of the mechanism claim.
 line: `round_ms = peers * quantum_ms` is the *arithmetic* cost of a tail enqueue
 (400 ms on x86, 80 ms on aarch64), not a measurement -- a real round also
 carries whatever else is runnable in that boot window.
+
+`peer_gap_bound_ms` is derived in the kernel the same way:
+`(PEERS + REARMERS + 2) * QUANTUM_MS * 4`, which is 2800 ms on x86 and 560 ms on
+aarch64. The factor of four is a deliberate allowance, so the field is a
+ceiling on a peer being dispatched AT ALL and no claim is made that a reading
+near it would be acceptable.
 
 ### The barrier
 
@@ -245,8 +340,8 @@ claimed).
 
 | Gate | What it asserts |
 |---|---|
-| `docker/qemu/run-x86-boot-tests.sh` | marker present exactly once, and matching the x86 PASS pattern exactly once; the pattern carries two anti-vacuity preflights (it must reject a `FAIL` line at `overrun_ms=2592`, and accept a real `PASS` line at `overrun_ms=41`) |
+| `docker/qemu/run-x86-boot-tests.sh` | marker present exactly once, and matching the x86 PASS pattern exactly once; the pattern carries three anti-vacuity preflights (it must reject a `FAIL` line at `overrun_ms=2592`, accept a real `PASS` line at `overrun_ms=41`, and reject a `PASS`-shaped line at `rearms=4`) |
 | `docker/qemu/run-x86-prod-profile-boot-test.sh` | `[TIMER_WAKE_LATENCY_ORACLE:` count 0 (`TEST_ONLY_MARKERS`) |
-| `docker/qemu/run-aarch64-boot-test-strict.sh` | marker matches the aarch64 PASS pattern; a `:FAIL` line is a separate, named red; the literal is also in `require_boot_tests_kernel`'s profile census |
+| `docker/qemu/run-aarch64-boot-test-strict.sh` | marker matches the aarch64 PASS pattern, which carries the same three anti-vacuity preflights; a `:FAIL` line is a separate, named red; the literal is also in `require_boot_tests_kernel`'s profile census |
 | `docker/qemu/run-aarch64-prod-profile-boot-test.sh` | `[TIMER_WAKE_LATENCY_ORACLE:` count 0 |
-| `tests/timer_wake_dispatch_structure.rs` | the shape: `push_front` and no `push_back` inside `wake_expired_timers`; the oracle's `QUANTUM_TICKS` equals the `TIME_QUANTUM` literal in both timer handlers; the oracle is `boot_tests`-only and called from both mains; the four gates above name the marker. 4 of 4 assertion bodies carry a `#[should_panic]` mutation leg that reddens them. |
+| `tests/timer_wake_dispatch_structure.rs` | the shape: `push_front` and no `push_back` inside `wake_expired_timers`; the oracle's `QUANTUM_TICKS` equals the `TIME_QUANTUM` literal in both timer handlers; the oracle is `boot_tests`-only and called from both mains; the four gates above name the marker; `REARMERS > 1` and `REARMS > 1`, the four fields section 2.1's reading is carried on, and both boot gates pinning the re-arm count computed from the oracle's own constants. 6 of 6 assertion bodies carry a `#[should_panic]` mutation leg that reddens them. |
