@@ -94,8 +94,14 @@ echo ""
 DISK_VOLUME=""
 DISK_OPTS="-device virtio-blk-device,drive=hd0 -drive if=none,id=hd0,format=raw,file=/dev/null"
 if [ -f "$EXT2_DISK" ]; then
-    # Create a writable copy in /tmp for container use
-    EXT2_WRITABLE="/tmp/breenix_aarch64_interactive_ext2.img"
+    # F1: the writable copy lives inside this invocation's own OUTPUT_DIR
+    # (mktemp -d above), not a bare fixed /tmp path -- the fixed path this
+    # replaced was shared by each concurrent invocation of this script, so
+    # a second interactive session's cp here would overwrite the first
+    # session's live, currently bind-mounted virtio-blk backing file out
+    # from under its still-running QEMU. OUTPUT_DIR is unique per process
+    # (mktemp -d), so two invocations now each get their own copy.
+    EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
     cp "$EXT2_DISK" "$EXT2_WRITABLE"
     DISK_VOLUME="-v $EXT2_WRITABLE:/breenix/ext2.img"
     DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,file=/breenix/ext2.img"
