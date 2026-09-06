@@ -54,6 +54,16 @@ use std::fs;
 use std::path::PathBuf;
 
 const SERIAL_DIR: &str = "docs/planning/green-program/failure-capture/serials/pr3";
+/// PR-4's fixtures: the terminal edges. Kept in their own directory rather
+/// than mixed into PR-3's, so a reader can see which round produced which
+/// capture and so the two rounds' anchored counts stay independent.
+const SERIAL_DIR_PR4: &str = "docs/planning/green-program/failure-capture/serials/pr4";
+/// PR-4's RED baselines: real boots that reach the same terminal edge and
+/// emit no capture at all. They are not captures and are not decoded; what
+/// they are checked for is the absence the green fixtures are measured
+/// against.
+const SERIAL_DIR_PR4_RED: &str =
+    "docs/planning/green-program/failure-capture/serials/pr4-red";
 const RECORD_SOURCE: &str = "kernel/src/capture/record.rs";
 
 /// The only schema major version this decoder understands.
@@ -531,6 +541,10 @@ fn fixture(name: &str) -> String {
     read(&format!("{SERIAL_DIR}/{name}"))
 }
 
+fn fixture_pr4(name: &str) -> String {
+    read(&format!("{SERIAL_DIR_PR4}/{name}"))
+}
+
 #[test]
 fn every_budget_arm_is_read_separately() {
     // Anti-vacuity for `budget_bytes`: if two arms resolved to the same
@@ -739,11 +753,11 @@ fn a_record_whose_terminator_the_budget_cut_is_still_counted() {
     );
 }
 
-#[test]
-fn every_committed_fixture_decodes() {
-    let dir = repo_path(SERIAL_DIR);
+/// Decode each `.txt` fixture in one directory, returning how many.
+fn decode_every_fixture_in(dir_rel: &str) -> usize {
+    let dir = repo_path(dir_rel);
     let mut checked = 0;
-    for entry in fs::read_dir(&dir).expect("serials/pr3 must exist") {
+    for entry in fs::read_dir(&dir).unwrap_or_else(|_| panic!("{dir_rel} must exist")) {
         let path = entry.expect("readable dir entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("txt") {
             continue;
@@ -755,12 +769,174 @@ fn every_committed_fixture_decodes() {
         assert_capture_contract(&name, &capture);
         checked += 1;
     }
-    // Census-anchored, not a literal list: a fixture added to the directory
-    // is decoded the moment it lands, and an empty directory is a failure
-    // rather than a silent pass.
+    checked
+}
+
+#[test]
+fn every_committed_fixture_decodes() {
+    // Census-anchored, not a literal list: a fixture added to either
+    // directory is decoded the moment it lands, and an empty directory is a
+    // failure rather than a silent pass.
+    let pr3 = decode_every_fixture_in(SERIAL_DIR);
     assert!(
-        checked >= 6,
-        "expected at least the six PR-3 fixtures under {SERIAL_DIR}, decoded {checked}"
+        pr3 >= 6,
+        "expected at least the six PR-3 fixtures under {SERIAL_DIR}, decoded {pr3}"
+    );
+    let pr4 = decode_every_fixture_in(SERIAL_DIR_PR4);
+    assert!(
+        pr4 >= 3,
+        "expected at least the three aarch64 PR-4 terminal-edge fixtures under \
+         {SERIAL_DIR_PR4}, decoded {pr4}"
+    );
+}
+
+#[test]
+fn the_red_baselines_carry_no_capture_at_all() {
+    // The other half of PR-4's red-to-green leg, and the half a decoder
+    // cannot check: these are real boots that reached the same terminal edge
+    // and emitted no capture. A single `[BXCAP:` byte in one of them would
+    // mean the baseline is not a baseline.
+    let dir = repo_path(SERIAL_DIR_PR4_RED);
+    let mut checked = 0;
+    for entry in fs::read_dir(&dir).expect("serials/pr4-red must exist") {
+        let path = entry.expect("readable dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let serial = fs::read_to_string(&path).expect("readable baseline");
+        let hits = serial.matches("[BXCAP:").count();
+        assert_eq!(
+            hits, 0,
+            "{name}: a RED baseline carries {hits} [BXCAP: occurrences. These files \
+             exist to show the terminal edge emitting nothing; one that emits \
+             something is evidence for the opposite claim."
+        );
+        // And each one must actually have REACHED a terminal edge, or it is
+        // a baseline for no edge at all.
+        assert!(
+            serial.contains("KERNEL PANIC") || serial.contains("[FATAL_POSTMORTEM]"),
+            "{name}: no terminal edge in this baseline -- neither a panic banner nor a \
+             fatal postmortem. An ordinary boot emits no capture either, and proves \
+             nothing."
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 2,
+        "expected at least the two aarch64 red baselines under {SERIAL_DIR_PR4_RED}, \
+         checked {checked}"
+    );
+}
+
+/// The contract PR-4's own oracle is written against: a complete bracketed
+/// record for the named edge, with a real event tail behind it.
+///
+/// `verdict=` is deliberately NOT part of this: the `THR` section asks the
+/// scheduler for a non-blocking read and a terminal edge taken in hard-IRQ
+/// context loses that race often (measured: 1 of 4 aarch64 panic boots this
+/// round came back `complete`). A capture that reports the refusal honestly
+/// is a working capture, and demanding `verdict=complete` would be demanding
+/// the race go one way.
+fn assert_terminal_edge_capture(name: &str, capture: &Capture, edge: &str) {
+    assert_capture_contract(name, capture);
+    assert_eq!(
+        capture.begin.text("edge"),
+        edge,
+        "{name}: this fixture is supposed to be the {edge} edge"
+    );
+    assert_eq!(
+        capture.end.u64("truncated"),
+        0,
+        "{name}: the capture was cut off by its own byte budget"
+    );
+    let events = capture.records.iter().filter(|r| r.token == "EV").count();
+    assert!(
+        events > 0,
+        "{name}: the EV section is empty. A terminal-edge capture with no event tail \
+         carries no pre-failure timeline, which is the thing it exists for."
+    );
+    let cpu_rows = capture.records.iter().filter(|r| r.token == "CPU").count();
+    assert_eq!(
+        cpu_rows, 1,
+        "{name}: expected exactly one [BXCAP:CPU] row -- the capturing CPU's own. A \
+         peer CPU's per-CPU block is reachable only through its own base register, so \
+         a row for it would be a guess; the scheduler-side view of the other CPUs is \
+         what THR carries."
+    );
+    assert!(
+        capture.records.iter().any(|r| r.token == "EDGE"),
+        "{name}: no EDGE record, so nothing says what fired this capture"
+    );
+}
+
+#[test]
+fn the_aarch64_panic_handler_capture_is_complete() {
+    let serial = fixture_pr4("aarch64-panic-complete.txt");
+    assert_records_are_crlf_terminated("panic-complete", &serial);
+    let capture = decode_capture(&serial);
+    assert_terminal_edge_capture("panic-complete", &capture, "PANIC");
+    assert_untruncated_sections("panic-complete", &capture);
+    assert_eq!(capture.begin.text("arch"), "aarch64");
+    assert_eq!(capture.end.text("verdict"), "complete");
+    // The record has to be BELOW the panic banner: that ordering is what
+    // makes the message and the state read as one block, and it is pinned
+    // from the source side by tests/terminal_edge_capture_structure.rs.
+    let banner = serial
+        .find("KERNEL PANIC")
+        .expect("the fixture must carry the panic banner");
+    let record = serial
+        .find("[BXCAP:BEGIN")
+        .expect("the fixture must carry the capture");
+    assert!(
+        banner < record,
+        "the capture must follow the panic banner on the wire"
+    );
+}
+
+#[test]
+fn the_aarch64_panic_capture_states_a_refused_scheduler_read() {
+    // The same edge, the other side of the THR race. This is not a defect:
+    // it is the capture reporting what it could not read.
+    let serial = fixture_pr4("aarch64-panic-sched-lock-held.txt");
+    let capture = decode_capture(&serial);
+    assert_terminal_edge_capture("panic-refused", &capture, "PANIC");
+    assert_eq!(capture.end.text("verdict"), "partial");
+    assert!(
+        capture
+            .records
+            .iter()
+            .any(|r| r.token == "NOTE" && r.body.contains("sched_lock_held")),
+        "the refused scheduler read must be stated, not merely absent"
+    );
+}
+
+#[test]
+fn the_aarch64_fatal_postmortem_capture_is_complete_and_keeps_the_wide_dump() {
+    let serial = fixture_pr4("aarch64-fault-postmortem-complete.txt");
+    assert_records_are_crlf_terminated("fault", &serial);
+    let capture = decode_capture(&serial);
+    assert_terminal_edge_capture("fault", &capture, "FAULT");
+    assert_untruncated_sections("fault", &capture);
+    assert_eq!(capture.begin.text("arch"), "aarch64");
+
+    // The capture is section 7's first act, and the unbounded per-CPU ring
+    // dump still follows it. PR-4 adds the bounded record beside the wide
+    // one rather than replacing it; this is that claim measured on the wire
+    // rather than read off the source.
+    let postmortem = serial
+        .find("[FATAL_POSTMORTEM]")
+        .expect("the fixture must carry the postmortem banner");
+    let record = serial
+        .find("[BXCAP:BEGIN")
+        .expect("the fixture must carry the capture");
+    let wide = serial
+        .find("[TRACE] ====== TRACE BUFFER DUMP ======")
+        .expect("section 7 must still emit the unbounded per-CPU ring dump");
+    assert!(
+        postmortem < record && record < wide,
+        "expected postmortem banner -> [BXCAP] record -> wide ring dump, got offsets \
+         {postmortem} / {record} / {wide}"
     );
 }
 
