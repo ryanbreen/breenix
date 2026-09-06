@@ -77,6 +77,13 @@ public enum StageCatalog {
     }
 
     private static var resourceBundle: Bundle {
-        Bundle.module
+        // macOS signing rejects resources beside Contents. Packaged apps use
+        // Contents/Resources; bare CLI and XCTest keep SwiftPM resolution.
+        if Bundle.main.bundleURL.pathExtension == "app",
+           let resources = Bundle.main.resourceURL,
+           let packaged = Bundle(url: resources.appendingPathComponent("breenix-runs_BreenixRuns.bundle")) {
+            return packaged
+        }
+        return Bundle.module
     }
 }

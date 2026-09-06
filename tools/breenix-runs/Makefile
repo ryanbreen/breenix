@@ -58,7 +58,9 @@ bundle:
 	swift build --product $(APP_EXECUTABLE) -c $(CONFIG)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_MACOS)" "$(APP_RESOURCES)"
-	cp ".build/$(CONFIG)/$(APP_EXECUTABLE)" "$(APP_MACOS)/$(APP_EXECUTABLE)"
+	bin_path="$$(swift build --show-bin-path -c $(CONFIG))" && \
+		cp "$$bin_path/$(APP_EXECUTABLE)" "$(APP_MACOS)/$(APP_EXECUTABLE)" && \
+		cp -R "$$bin_path/breenix-runs_BreenixRuns.bundle" "$(APP_RESOURCES)/breenix-runs_BreenixRuns.bundle"
 	cp "$(ICNS)" "$(APP_RESOURCES)/$(ICNS_NAME)"
 	{ \
 		printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'; \

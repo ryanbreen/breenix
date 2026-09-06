@@ -3,6 +3,23 @@ import SwiftUI
 
 @main
 struct BreenixRunInspectorApp: App {
+    init() {
+        // Packaging diagnostic: use the shipped executable and its Bundle.module.
+        if CommandLine.arguments.contains("--resource-probe") {
+            do {
+                print("Bundle.main=\(Bundle.main.bundleURL.path)")
+                for arch in [Arch.aarch64, .x86_64] {
+                    let stages = try StageCatalog.load(for: arch)
+                    print("catalog=\(arch.rawValue) stages=\(stages.count) path=\(StageCatalog.catalogURL(for: arch)!.path)")
+                }
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("resource probe: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             InspectorRootView()
