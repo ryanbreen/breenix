@@ -2059,8 +2059,32 @@ fn panic(info: &PanicInfo) -> ! {
     serial_println!("{}", info);
     serial_println!();
 
+    // Failure-capture PR-4: the bounded, lock-free BXCAP record.
+    //
+    // ORDER. It goes after the banner because a reader wants the panic
+    // message immediately above the state that explains it, and it goes
+    // BEFORE the `wfi` loop below, which does not return. It is emitted
+    // through `raw_serial_char`, which takes no lock, so it lands even when
+    // the counters dump beneath it would not.
+    //
+    // The two words are the panic site's line and column, which is what
+    // `[BXCAP:EDGE a0= a1=]` can carry without formatting anything.
+    let (panic_line, panic_column) = match info.location() {
+        Some(location) => (location.line() as u64, location.column() as u64),
+        None => (0, 0),
+    };
+    kernel::capture::emit(kernel::capture::Edge::Panic, panic_line, panic_column);
+
     // Turn 3 net triage: panic is the only reliable serial-side rendezvous
     // when the RX probe triggers the CPU0 regression before userspace can dump.
+    //
+    // KEPT, not replaced by the capture above. `[BXCAP:CNT]` emits at most
+    // 32 nonzero counters (kernel/src/capture/sections.rs) where this dumps
+    // the whole registry -- 196 of 196 on the aarch64 boot_tests profile, as
+    // the committed baseline serial
+    // docs/planning/green-program/failure-capture/serials/pr4-red/main-aarch64-panic-no-capture.txt
+    // shows -- so dropping it would narrow the evidence on the one path that
+    // has it today.
     kernel::tracing::output::trace_dump_counters();
 
     loop {

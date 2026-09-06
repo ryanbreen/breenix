@@ -114,6 +114,15 @@ ext2_lock_race = ["boot_tests"]
 # kernel while still giving later PRs a capture to test against on demand.
 # `kernel/src/capture/selftest.rs` carries the reasoning for where it fires.
 capture_selftest = ["boot_tests"]
+# Failure-capture PR-4: the deterministic `edge=PANIC` terminal-edge oracle.
+# Test profile only, and NOT implied by `boot_tests` -- no gate builds with
+# it. It panics from the timer tick at a fixed guest uptime so that the
+# panic handler's capture can be observed on demand instead of waiting for a
+# real panic. `kernel/src/capture_oracle.rs` carries the reasoning; it lives
+# OUTSIDE `kernel/src/capture/` because that directory's denylist
+# (scripts/check-critical-path-violations.sh) forbids `panic!`, and rightly:
+# the emitter must not panic, only the thing that summons it may.
+capture_panic_oracle = ["boot_tests"]
 # Anti-vacuity leg for the emitter's byte budget: shrinks
 # `BXCAP_BUDGET_BYTES` to a size a normal capture cannot fit, so a boot built
 # with this must report `truncated=1` and a non-empty `sections_skipped=`. A

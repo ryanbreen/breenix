@@ -1187,7 +1187,6 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/output.rs", "fn dump_counters", 11),
     ("kernel/src/tracing/output.rs", "fn dump_event_summary", 6),
     ("kernel/src/tracing/output.rs", "fn dump_latest_events", 3),
-    ("kernel/src/tracing/output.rs", "fn dump_on_panic", 2),
     ("kernel/src/tracing/output.rs", "fn dump_providers", 7),
     (
         "kernel/src/tracing/output.rs",
