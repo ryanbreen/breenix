@@ -3534,3 +3534,368 @@ fn loopback_drain_validator_rejects_a_dropped_rearm() {
     let mutated = source.replacen(rearm, &mutated_rearm, 1);
     assert!(validate_loopback_drain_exits_own_their_leftovers(&mutated).is_err());
 }
+
+/// The masked source with whitespace removed, plus the original byte offset of
+/// each kept byte, so a match in the compacted text can be reported as a line.
+fn masked_compact_with_offsets(text: &str) -> (String, Vec<usize>) {
+    let mask = code_mask(text);
+    let mut compact = String::new();
+    let mut offsets = Vec::new();
+    for (index, byte) in text.bytes().enumerate() {
+        if !mask[index] || (byte as char).is_whitespace() {
+            continue;
+        }
+        compact.push(byte as char);
+        offsets.push(index);
+    }
+    (compact, offsets)
+}
+
+fn line_at_offset(text: &str, offset: usize) -> usize {
+    text[..offset].matches('\n').count() + 1
+}
+
+/// The balanced parenthesised group opening at `open`, in compacted code.
+fn balanced_group(compact: &str, open: usize) -> Option<&str> {
+    let bytes = compact.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for index in open..bytes.len() {
+        if bytes[index] == b'(' {
+            depth += 1;
+        } else if bytes[index] == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&compact[open + 1..index]);
+            }
+        }
+    }
+    None
+}
+
+fn is_screaming_snake(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+/// The counters the pinned-placement census emits, discovered from that
+/// function's own format arguments rather than read off a literal name list --
+/// the #549 and #551 rule, so a counter added to the census later is policed on
+/// the day it appears rather than on the day someone widens a list.
+fn pinned_census_counters(scheduler: &str) -> Result<Vec<String>, String> {
+    let body = function_body(scheduler, "emit_pinned_placement_census")
+        .ok_or("kernel/src/task/scheduler.rs defines no emit_pinned_placement_census")?;
+    let compact = compact_code(body);
+    let mut counters: Vec<String> = Vec::new();
+    let mut searched = 0usize;
+    while let Some(relative) = compact[searched..].find(".load(") {
+        let offset = searched + relative;
+        searched = offset + ".load(".len();
+        let head = &compact[..offset];
+        let start = head
+            .rfind(|character: char| {
+                !(character.is_ascii_alphanumeric() || character == '_')
+            })
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let name = &head[start..];
+        if is_screaming_snake(name) && !counters.contains(&name.to_string()) {
+            counters.push(name.to_string());
+        }
+    }
+    if counters.len() < 2 {
+        return Err(format!(
+            "the census discovery found {} counters in emit_pinned_placement_census, so the \
+             two rules below would police almost nothing -- the discovery broke, not the kernel",
+            counters.len()
+        ));
+    }
+    Ok(counters)
+}
+
+fn scheduler_source(sources: &[(String, String)]) -> Result<&str, String> {
+    sources
+        .iter()
+        .find(|(path, _)| path == "kernel/src/task/scheduler.rs")
+        .map(|(_, text)| text.as_str())
+        .ok_or_else(|| "kernel/src/task/scheduler.rs is not among the kernel sources".to_string())
+}
+
+/// No counter the pinned-placement census emits has a decrementing writer.
+///
+/// The census is what the two aarch64 boot gates score, and it reports boot
+/// health: a writer that can take a counter back down can erase a real event
+/// the gates were meant to fail on. The pin-guard oracle used to do exactly
+/// that -- it subtracted the refusals its own probe manufactured, so a real
+/// refusal landing in the same window was subtracted with them.
+///
+/// Two decrement shapes are policed, not one: the atomic methods that lower a
+/// counter, and a `store` of an expression that subtracts. Matching the literal
+/// `fetch_sub` alone would be satisfied by writing the same defect longhand.
+fn validate_census_counters_have_no_decrementing_writer(
+    sources: &[(String, String)],
+) -> Result<(), String> {
+    let counters = pinned_census_counters(scheduler_source(sources)?)?;
+    let lowering = [
+        "fetch_sub(",
+        "fetch_min(",
+        "fetch_and(",
+        "fetch_nand(",
+        "fetch_xor(",
+    ];
+    let mut offenders = Vec::new();
+    for (path, text) in sources {
+        let (compact, offsets) = masked_compact_with_offsets(text);
+        for counter in &counters {
+            for method in lowering {
+                let needle = format!("{counter}.{method}");
+                let mut searched = 0usize;
+                while let Some(relative) = compact[searched..].find(&needle) {
+                    let offset = searched + relative;
+                    searched = offset + needle.len();
+                    let line = line_at_offset(text, offsets[offset]);
+                    offenders.push(format!("{path}:{line} ({counter}.{method})"));
+                }
+            }
+            let store = format!("{counter}.store(");
+            let mut searched = 0usize;
+            while let Some(relative) = compact[searched..].find(&store) {
+                let offset = searched + relative;
+                searched = offset + store.len();
+                let Some(argument) = balanced_group(&compact, offset + store.len() - 1) else {
+                    continue;
+                };
+                if argument.contains('-') || argument.contains("sub") {
+                    let line = line_at_offset(text, offsets[offset]);
+                    offenders.push(format!("{path}:{line} ({counter}.store of a subtraction)"));
+                }
+            }
+        }
+    }
+    if !offenders.is_empty() {
+        return Err(format!(
+            "a pinned-placement census counter is written downward at {offenders:?}; the census \
+             reports boot health to the 2 aarch64 gates, so a counter that can be taken back \
+             down can lose a real event the gates exist to fail on"
+        ));
+    }
+    Ok(())
+}
+
+/// Each census counter appears in both of the pin-guard oracle's snapshots.
+///
+/// `census_clean` is the oracle's own report that its probe moved 0 census
+/// fields. It compares a before tuple with an after tuple, so a field missing
+/// from the tuples is a field `census_clean` cannot see move -- and the field
+/// the tuples used to omit was the one the oracle was subtracting.
+fn validate_oracle_snapshots_cover_the_census(scheduler: &str) -> Result<(), String> {
+    let counters = pinned_census_counters(scheduler)?;
+    let body = function_body(scheduler, "run_pin_guard_oracle")
+        .ok_or("kernel/src/task/scheduler.rs defines no run_pin_guard_oracle")?;
+    let compact = compact_code(body);
+    for binding in ["census_before", "census_after"] {
+        let anchor = format!("let{binding}=(");
+        let offset = compact
+            .find(&anchor)
+            .ok_or_else(|| format!("run_pin_guard_oracle takes no {binding} snapshot"))?;
+        let group = balanced_group(&compact, offset + anchor.len() - 1)
+            .ok_or_else(|| format!("the {binding} snapshot is not a closed tuple"))?;
+        for counter in &counters {
+            if !group.contains(&format!("{counter}.load(")) {
+                return Err(format!(
+                    "{counter} is emitted by the pinned-placement census but absent from the \
+                     oracle's {binding} snapshot, so census_clean reports on fewer fields than \
+                     the gates score"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `emit_pin_guard_oracle` has exactly 1 call site per architecture.
+///
+/// Its `refused=` field reads a cumulative counter rather than a delta taken
+/// around the probe, which is only the probe's own count while the probe runs
+/// once. A second caller -- in either architecture entry point, or anywhere
+/// else -- would run the probe again and print the sum of both runs, and the
+/// oracle's `refused=3` would silently become `refused=6`.
+fn validate_pin_guard_oracle_call_sites(sources: &[(String, String)]) -> Result<(), String> {
+    const ENTRY_POINTS: [&str; 2] = ["kernel/src/main.rs", "kernel/src/main_aarch64.rs"];
+    let mut sites: Vec<(String, usize)> = Vec::new();
+    for (path, text) in sources {
+        let mask = code_mask(text);
+        for offset in identifier_offsets(text, &mask, "emit_pin_guard_oracle") {
+            // The 2 definitions are the 2 `fn emit_pin_guard_oracle` headers,
+            // one per architecture; the remaining appearances are calls.
+            if text[..offset].trim_end().ends_with("fn") {
+                continue;
+            }
+            sites.push((path.clone(), line_at_offset(text, offset)));
+        }
+    }
+    for (path, line) in &sites {
+        if !ENTRY_POINTS.contains(&path.as_str()) {
+            return Err(format!(
+                "emit_pin_guard_oracle is called at {path}:{line}, outside the 2 architecture \
+                 entry points; its refused= field is a cumulative total, so a second caller \
+                 prints the sum of two probe runs"
+            ));
+        }
+    }
+    for entry in ENTRY_POINTS {
+        let count = sites.iter().filter(|(path, _)| path == entry).count();
+        if count != 1 {
+            return Err(format!(
+                "{entry} holds {count} call sites of emit_pin_guard_oracle, not 1; its refused= \
+                 field is a cumulative total and is the probe's own count only while the probe \
+                 runs once per boot"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn census_counters_have_no_decrementing_writer() {
+    validate_census_counters_have_no_decrementing_writer(&kernel_sources())
+        .expect("no pinned-placement census counter is written downward");
+}
+
+#[test]
+fn census_decrement_validator_rejects_a_reintroduced_fetch_sub() {
+    let mut sources = kernel_sources();
+    let counter = pinned_census_counters(
+        scheduler_source(&sources).expect("find the scheduler source"),
+    )
+    .expect("discover the census counters")
+    .remove(0);
+    let scheduler = sources
+        .iter_mut()
+        .find(|(path, _)| path == "kernel/src/task/scheduler.rs")
+        .expect("find the scheduler source fixture");
+    scheduler.1.push_str(&format!(
+        "
+fn spare_refusal_correction(refused: u64) {{
+    {counter}.fetch_sub(refused, Ordering::Relaxed);
+}}
+"
+    ));
+    assert!(validate_census_counters_have_no_decrementing_writer(&sources).is_err());
+}
+
+#[test]
+fn census_decrement_validator_rejects_a_load_subtract_store() {
+    let mut sources = kernel_sources();
+    let counter = pinned_census_counters(
+        scheduler_source(&sources).expect("find the scheduler source"),
+    )
+    .expect("discover the census counters")
+    .remove(0);
+    let scheduler = sources
+        .iter_mut()
+        .find(|(path, _)| path == "kernel/src/task/scheduler.rs")
+        .expect("find the scheduler source fixture");
+    scheduler.1.push_str(&format!(
+        "
+fn spare_refusal_correction_longhand(refused: u64) {{
+    let previous = {counter}.load(Ordering::Relaxed);
+    {counter}.store(previous - refused, Ordering::Relaxed);
+}}
+"
+    ));
+    assert!(validate_census_counters_have_no_decrementing_writer(&sources).is_err());
+}
+
+#[test]
+fn census_rules_track_a_consistent_rename_of_every_counter() {
+    let counters = pinned_census_counters(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("discover the census counters");
+    let mut sources = kernel_sources();
+    for (_, text) in sources.iter_mut() {
+        for counter in &counters {
+            *text = text.replace(counter.as_str(), &format!("RENAMED_{counter}"));
+        }
+    }
+    validate_census_counters_have_no_decrementing_writer(&sources)
+        .expect("the decrement rule follows the census by shape, not by the names of the day");
+    let renamed = scheduler_source(&sources)
+        .expect("find the renamed scheduler source")
+        .to_string();
+    validate_oracle_snapshots_cover_the_census(&renamed)
+        .expect("the snapshot rule follows the census by shape, not by the names of the day");
+}
+
+#[test]
+fn oracle_snapshots_cover_the_census() {
+    validate_oracle_snapshots_cover_the_census(&repo_text("kernel/src/task/scheduler.rs"))
+        .expect("both oracle snapshots load every counter the census emits");
+}
+
+#[test]
+fn oracle_snapshot_validator_rejects_a_counter_dropped_from_census_before() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let anchor = "let census_before = (";
+    let start = source.find(anchor).expect("find the census_before snapshot");
+    let end = start
+        + source[start..]
+            .find(");")
+            .expect("find the end of the census_before snapshot");
+    let dropped = source[start..end]
+        .lines()
+        .find(|line| line.contains(".load(Ordering::Relaxed)"))
+        .expect("the census_before snapshot loads at least one counter")
+        .to_string();
+    let mutated = format!(
+        "{}{}{}",
+        &source[..start],
+        source[start..end].replacen(dropped.as_str(), "", 1),
+        &source[end..]
+    );
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_oracle_snapshots_cover_the_census(&mutated).is_err());
+}
+
+#[test]
+fn pin_guard_oracle_has_one_call_site_per_architecture() {
+    validate_pin_guard_oracle_call_sites(&kernel_sources())
+        .expect("emit_pin_guard_oracle has one call site per architecture");
+}
+
+#[test]
+fn pin_guard_oracle_call_site_validator_rejects_a_second_entry_point_caller() {
+    let mut sources = kernel_sources();
+    let main_aarch64 = sources
+        .iter_mut()
+        .find(|(path, _)| path == "kernel/src/main_aarch64.rs")
+        .expect("find the aarch64 entry point fixture");
+    main_aarch64.1.push_str(
+        "
+fn spare_oracle_rerun() {
+    kernel::task::scheduler::emit_pin_guard_oracle();
+}
+",
+    );
+    assert!(validate_pin_guard_oracle_call_sites(&sources).is_err());
+}
+
+#[test]
+fn pin_guard_oracle_call_site_validator_rejects_a_caller_outside_the_entry_points() {
+    let mut sources = kernel_sources();
+    let kthread = sources
+        .iter_mut()
+        .find(|(path, _)| path == "kernel/src/task/kthread.rs")
+        .expect("find the kthread source fixture");
+    kthread.1.push_str(
+        "
+fn spare_oracle_caller() {
+    crate::task::scheduler::emit_pin_guard_oracle();
+}
+",
+    );
+    assert!(validate_pin_guard_oracle_call_sites(&sources).is_err());
+}

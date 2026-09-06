@@ -443,6 +443,14 @@ pub static PINNED_WAKES_DELIVERED: core::sync::atomic::AtomicU64 =
 /// writer of `Thread::cpu_affinity` and its 1 call site has 0 callers.
 /// claim-lint:ok: 1 of 1 mutating writer of the field is `spawn_on_cpu`,
 /// counted by grep over kernel/src in this round
+///
+/// This counter moves in 1 direction. The pin-guard oracle used to subtract
+/// the refusals its own probe manufactured, which made this the 1 census field
+/// with a decrementing writer; the oracle now counts its probe's refusals into
+/// `PIN_GUARD_ORACLE_REFUSED` instead, so a refusal that reaches this counter
+/// stays in the census line the gates read.
+/// claim-lint:ok: 0 decrementing writers of any census counter is pinned by
+/// `tests/loopback_pump_structure.rs::census_counters_have_no_decrementing_writer`
 pub static PINNED_MIGRATION_REFUSED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
@@ -517,6 +525,59 @@ pub fn emit_pinned_placement_census() {
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 const PIN_GUARD_ORACLE_HELD: usize = 255;
 
+/// The tid of the pin-guard oracle's probe thread while the probe is live, and
+/// 0 outside that window.
+///
+/// Published and cleared inside `run_pin_guard_oracle`, which runs under the
+/// scheduler lock with interrupts masked, so no other CPU observes a partial
+/// state. It exists so that the refusal site can tell the probe's own
+/// manufactured refusals from a real one, rather than the oracle subtracting a
+/// delta after the fact -- leg 1 of the probe drives the *general* reclaim, so
+/// a real refusal can land inside the oracle's own critical section and a
+/// delta cannot tell the two apart.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+static PIN_GUARD_ORACLE_PROBE_TID: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Migrations the guard refused for the pin-guard oracle's own probe thread.
+///
+/// Read by `emit_pin_guard_oracle` for its `refused=` field, and never by the
+/// census: this is the oracle's own bookkeeping, so it is a cumulative total
+/// rather than a delta. That is correct only while `emit_pin_guard_oracle` has
+/// exactly 1 caller per architecture -- `main_aarch64::kernel_main` on aarch64
+/// and `kernel_main` in `kernel/src/main.rs` on x86_64 -- because a second
+/// caller would run the probe a second time and print the sum of both runs.
+/// claim-lint:ok: 1 of 1 call site per architecture is pinned by
+/// `tests/loopback_pump_structure.rs::pin_guard_oracle_has_one_call_site_per_architecture`
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+static PIN_GUARD_ORACLE_REFUSED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Count a refusal of a `per_cpu_worker` migration.
+///
+/// The pin-guard oracle's probe manufactures 3 refusals the boot did not ask
+/// for. Attributing them here, at the refusal itself, keeps the census counter
+/// the 2 aarch64 gates read untouched by the probe -- and, unlike a
+/// before/after delta taken around the probe, it does not swallow a real
+/// refusal that lands in the same window.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn count_pinned_migration_refusal(thread_id: u64) {
+    let probe = PIN_GUARD_ORACLE_PROBE_TID.load(Ordering::Relaxed);
+    if probe != 0 && probe == thread_id {
+        PIN_GUARD_ORACLE_REFUSED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    PINNED_MIGRATION_REFUSED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The same count where no pin-guard oracle probe exists: a refusal reaching
+/// this arm is a real one, and the parameter is carried only so the 1 call site
+/// reads the same in both profiles.
+#[cfg(not(all(target_arch = "aarch64", feature = "boot_tests")))]
+fn count_pinned_migration_refusal(_thread_id: u64) {
+    PINNED_MIGRATION_REFUSED.fetch_add(1, Ordering::Relaxed);
+}
+
 /// What the pin-guard oracle observed, one field per migration site it drove.
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 struct PinGuardOracleReport {
@@ -549,18 +610,24 @@ pub fn emit_pin_guard_oracle() {
         crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason=probe_thread_unavailable]");
         return;
     };
-    // The probe manufactures 3 migrations the boot did not ask for, and the
-    // guard counts each refusal into the census the 2 aarch64 gates read. The
-    // census reports boot health, so the probe subtracts exactly the delta it
-    // caused and prints it instead. 0 other writers can have moved the counter
-    // in between: 1 of 1 mutating writer of the pin is `spawn_on_cpu`, whose 1
-    // call site has 0 callers, so the probe's own thread is the only pinned one
-    // in the kernel, and the whole sequence runs under the scheduler lock with
-    // interrupts masked.
-    // claim-lint:ok: 20 of 20 strict boots at this head print refused=3 and an
-    // all-zero census --
-    // docs/planning/green-program/aarch64-testing/serials/slice3e/
-    let refused_before = PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed);
+    // The probe manufactures 3 migrations the boot did not ask for. Each
+    // refusal is attributed at the refusal site --
+    // `count_pinned_migration_refusal` routes a refusal of the published probe
+    // tid into `PIN_GUARD_ORACLE_REFUSED` and a refusal of any other tid into
+    // the census counter -- so the census the 2 aarch64 gates read is not
+    // perturbed here and needs no correction afterwards.
+    //
+    // Attribution rather than a before/after delta, because leg 1 of the probe
+    // calls the whole of `reclaim_unschedulable_cpu_queues`, which sweeps the
+    // 0..MAX_CPUS range: a real pinned thread on a stalled peer queue is refused
+    // *inside* the probe's own critical section, and a delta would subtract it
+    // as though the probe had caused it.
+    //
+    // `refused` is read after the probe returns and is the cumulative total,
+    // which reads the same as the probe's own count while
+    // `emit_pin_guard_oracle` has 1 caller per architecture.
+    // claim-lint:ok: 1 of 1 call site per architecture is pinned by
+    // `tests/loopback_pump_structure.rs::pin_guard_oracle_has_one_call_site_per_architecture`
     let outcome = without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         match scheduler_lock.as_mut() {
@@ -568,10 +635,7 @@ pub fn emit_pin_guard_oracle() {
             None => Err(("scheduler_not_initialised", thread)),
         }
     });
-    let refused = PINNED_MIGRATION_REFUSED
-        .load(Ordering::Relaxed)
-        .saturating_sub(refused_before);
-    PINNED_MIGRATION_REFUSED.fetch_sub(refused, Ordering::Relaxed);
+    let refused = PIN_GUARD_ORACLE_REFUSED.load(Ordering::Relaxed);
     match outcome {
         Err((reason, probe)) => {
             drop(probe);
@@ -4755,7 +4819,7 @@ impl Scheduler {
                 return false;
             }
         }
-        PINNED_MIGRATION_REFUSED.fetch_add(1, Ordering::Relaxed);
+        count_pinned_migration_refusal(thread_id);
         if self.cpu_accepts_wakeups(pin.cpu) {
             // The home CPU can take it. Place it there rather than where the
             // caller proposed: a placement needs no delivery, so a hold here
@@ -4844,6 +4908,9 @@ impl Scheduler {
 
         let tid = thread.id();
         thread.cpu_affinity = Some(super::thread::CpuPin::per_cpu_worker(home));
+        // Published beside the pin, inside this masked scheduler-lock window,
+        // so the refusal site can attribute the 3 refusals below to the probe.
+        PIN_GUARD_ORACLE_PROBE_TID.store(tid, Ordering::Relaxed);
         thread.set_ready();
         self.threads.push(thread);
 
@@ -4852,6 +4919,7 @@ impl Scheduler {
             PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
             PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
             PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+            PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed),
             PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
         );
 
@@ -4881,6 +4949,7 @@ impl Scheduler {
             PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
             PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
             PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+            PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed),
             PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
         );
 
@@ -4898,6 +4967,9 @@ impl Scheduler {
             .expect("the probe thread was published above");
         let mut probe = self.threads.remove(index);
         probe.cpu_affinity = None;
+        // Cleared beside the pin clear: past this point a refusal of any tid is
+        // a real one and belongs in the census.
+        PIN_GUARD_ORACLE_PROBE_TID.store(0, Ordering::Relaxed);
 
         Ok((
             PinGuardOracleReport {
