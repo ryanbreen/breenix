@@ -513,6 +513,45 @@ is why host facts and subsystem states live in the same store.
 detail tab after a second stored run is selected, and the CLI renders the same
 library diff text.
 
+### 2.6 App icon
+
+`Breenix Run Inspector.app` shipped with no `CFBundleIconFile` and no `.icns` --
+Finder and the Dock fell back to the generic app-icon glyph.
+
+`Icon/generate-icon.swift` draws the icon with CoreGraphics only (no
+downloaded artwork, no system font, no network fetch): a dark rounded-square
+background (a fixed vertical gradient, corner radius 22.37% of the edge --
+a standard approximation of the macOS Big Sur "squircle") behind a stroked
+pulse trace in the same green `SidebarView` already uses for a passing
+verdict, with a trailing dot. All 3 of 3 declared colors and all 8 of 8
+declared path coordinates (the 7 `pulsePoints` entries plus `dotCenter`) are
+literal constants (`grep -c '^\s*(0\.' Icon/generate-icon.swift` = 7, plus
+`dotCenter`'s own literal pair), so two consecutive runs of the script on
+this toolchain (Swift 6.3.3, swiftlang-6.3.3.1.3) produced byte-identical
+PNGs and an identical `Icon/AppIcon.icns` (`sha256`
+`29cf8f3f96e7c960ec42ea79e1e38b2c23222a58524430d3fefd7806adda66f2` both
+times) -- reproducible byte-for-byte, no stated tolerance needed.
+
+`make icon` runs the generator into a scratch `.iconset` (iconutil's ten
+required member names, 16px through 1024px), packs it with `iconutil -c icns`,
+and removes the scratch directory; the committed artifact is
+`Icon/AppIcon.icns` alone (`Icon/AppIcon.iconset/` is gitignored). `make
+bundle` (shared by `app` and `app-debug`) copies that file to
+`Contents/Resources/AppIcon.icns` and the Info.plist heredoc now emits a
+`CFBundleIconFile` key (`AppIcon`) alongside the existing keys. Verified
+end-to-end on a release build: `plutil -p` on the built bundle's Info.plist
+shows the new key, `Contents/Resources/AppIcon.icns` sha256-matches
+`Icon/AppIcon.icns`, and `codesign --verify --verbose` on the ad-hoc-signed
+bundle reports "valid on disk" / "satisfies its Designated Requirement".
+
+Legibility at the two sizes that matter most (Dock-minimized and Finder
+list view) was checked by rendering `icon_16x16.png` and
+`icon_32x32@2x.png` at native resolution, nearest-neighbor-upscaled for
+inspection: the pulse shape stays a distinct bright zigzag against the dark
+background at both sizes; the trailing dot reads clearly at 32px and blends
+into the trace's end at 16px (a legibility cost disclosed, not a defect --
+the icon is still unambiguous at 16px without it).
+
 ---
 
 ## 3. Data model and storage
