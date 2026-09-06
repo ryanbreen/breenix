@@ -397,7 +397,6 @@ fn the_shell_guard_and_this_suite_deny_the_same_shapes() {
     // two spellings -- `.lock()` and `try_dump_state` -- on the reasoning that
     // everything else overlapped the shared list. It did not: the shell denied
     // `to_string` and `expect(` and this suite's DENIED array carried neither,
-    // so the two guards had already drifted where nothing was looking.
     // so the two guards had drifted where neither was looking. This loop now
     // checks 11 of 11 spellings of the strict list in both directions.
     for needle in [

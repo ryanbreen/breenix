@@ -28,7 +28,6 @@ import gdb
 
 RECEIPT_PATH = os.environ["BXCAP_LOCKUP_RECEIPTS"]
 HOST_CEILING = float(os.environ.get("BXCAP_LOCKUP_HOST_CEILING", "60"))
-EPISODES = int(os.environ.get("BXCAP_LOCKUP_EPISODES", "2"))
 
 PHASE_PRE_ARM = 1
 PHASE_RELEASED = 4

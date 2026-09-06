@@ -1176,6 +1176,21 @@ fn split_captures(serial: &str) -> Vec<String> {
     blocks
 }
 
+/// Split `serial` and require exactly the two brackets the lockup oracle's
+/// two-episode run must carry. Shared by the real scorer test below and its
+/// `a_run_with_only_one_episode_is_rejected` mutation leg, so a scorer that
+/// stopped requiring two episodes fails the same way in both places instead
+/// of the leg re-implementing an assertion that could silently drift from it.
+fn assert_two_episode_run(serial: &str) -> Vec<String> {
+    let blocks = split_captures(serial);
+    assert_eq!(
+        blocks.len(),
+        2,
+        "the oracle ran two episodes; the serial must carry two brackets"
+    );
+    blocks
+}
+
 /// The `edge=LOCKUP` contract, applied to one capture.
 ///
 /// `verdict=partial` and `sections_skipped=0x20` are REQUIRED here, unlike the
@@ -1270,12 +1285,7 @@ fn assert_lockup_capture(name: &str, capture: &Capture) {
 fn the_lockup_edge_emits_one_capture_per_episode_in_one_boot() {
     let serial = fixture_pr7("aarch64-lockup-two-episodes.txt");
     assert_records_are_crlf_terminated("lockup-two-episodes", &serial);
-    let blocks = split_captures(&serial);
-    assert_eq!(
-        blocks.len(),
-        2,
-        "the oracle ran two episodes; the serial must carry two brackets"
-    );
+    let blocks = assert_two_episode_run(&serial);
     let first = decode_capture(&blocks[0]);
     let second = decode_capture(&blocks[1]);
     assert_lockup_capture("lockup-episode-0", &first);
@@ -1373,11 +1383,16 @@ fn a_lockup_capture_with_no_end_is_rejected() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "disagrees with its own accounting")]
 fn a_lockup_capture_whose_bitmap_contradicts_its_rows_is_rejected() {
     // The bitmap says THR completed while the NOTE says it was refused. This
     // is the shape a scorer must not accept: verdict and sections_skipped
-    // have to agree with the records actually present.
+    // have to agree with the records actually present. Clearing THR's bit
+    // makes sections_skipped=0 with truncated=0, so the fixture's own
+    // verdict=partial now disagrees with the "complete" that accounting
+    // implies -- the assertion this leg is about, narrowed with `expected=`
+    // so a differently-shaped panic (e.g. from the byte-bound check further
+    // down `assert_lockup_capture`) would not be mistaken for it.
     let block = lockup_episode_block();
     let damaged = block.replace("sections_skipped=0x20", "sections_skipped=0x0");
     assert_lockup_capture("contradictory-bitmap", &decode_capture(&damaged));
@@ -1387,16 +1402,14 @@ fn a_lockup_capture_whose_bitmap_contradicts_its_rows_is_rejected() {
 #[should_panic(expected = "must carry two brackets")]
 fn a_run_with_only_one_episode_is_rejected() {
     // Two episodes is the claim; a serial carrying one would be a boot that
-    // did not re-arm, and scoring it as a pass would hide exactly that.
-    // claim-lint:ok: a mutation leg -- the single-block serial is rejected here,
-    // which is what keeps the two-episode assertion from being decorative.
+    // did not re-arm, and scoring it as a pass would hide exactly that. This
+    // calls the SAME `assert_two_episode_run` the real scorer test above
+    // calls, not a re-implementation of its assertion -- so a scorer that
+    // stopped requiring two brackets would fail this leg too, not just leave
+    // it decorative.
     let serial = fixture_pr7("aarch64-lockup-two-episodes.txt");
     let single = split_captures(&serial)[0].clone();
-    assert_eq!(
-        split_captures(&single).len(),
-        2,
-        "the oracle ran two episodes; the serial must carry two brackets"
-    );
+    assert_two_episode_run(&single);
 }
 
 /// The receipts are evidence too, and they are the half a serial cannot carry:

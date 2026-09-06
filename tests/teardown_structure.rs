@@ -1073,11 +1073,13 @@ fn scheduler_lock_irq_shape_failures(sources: &[(String, String)]) -> Vec<String
 /// Those numbers are a running measurement, not a pin: nothing here asserts
 /// them, so a new masked acquisition is admitted by its SHAPE and this prose
 /// is what has to be re-read against the printed totals. It said 28/27/22/6
-/// when failure-capture PR-7 ran the suite, and the tree printed 30/29/24/6
-/// before that PR added one site -- so five of the six the sentence had drifted
-/// by were already there. PR-7's own site is
+/// when failure-capture PR-7 ran the suite; before that PR added its own site
+/// the tree already printed 30/29/24/6 -- sites, functions and locally-masked
+/// each two higher, for reasons unrelated to PR-7. PR-7's own site --
 /// `task::scheduler::with_lockup_oracle_hold`, admitted locally, with no
-/// exemption and no name in this file.
+/// exemption and no name in this file -- added one more to each of those same
+/// three counts, landing at the current 31/30/25/6. Caller-derived stayed 6
+/// throughout.
 ///
 /// A site is admitted locally when it is lexically inside an
 /// `arch_without_interrupts`/`without_interrupts` closure, or inside the false

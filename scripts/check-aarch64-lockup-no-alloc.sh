@@ -221,8 +221,15 @@ def main():
     while order:
         name = order.pop(0)
         spans = items.get(name)
-        if not spans or len(spans) != 1:
+        if not spans:
             continue
+        if len(spans) != 1:
+            sys.stderr.write(
+                "FAIL: `fn %s` is ambiguous in %s (%d definitions) -- reached as a "
+                "callee inside the strict scope, so which body belongs to the scope "
+                "cannot be decided\n" % (name, path, len(spans))
+            )
+            return 1
         start, end = spans[0]
         body = source[start:end]
         out.append("// ---- strict lockup scope: fn %s (%s) ----" % (name, path))
@@ -306,21 +313,32 @@ import sys
 # itself reach one of these, and is reported with the whole path. Naming the
 # alloc-crate types instead -- what the depth-1 x86 guard does -- would
 # misclassify read-only methods that merely live under `alloc::`.
+#
+# Dealloc entry points are named here too, not just alloc ones. The rationale
+# above this function ("An allocation there takes the heap allocator's lock
+# from interrupt context") is exactly as true of a `drop` that frees an owned
+# value: `IrqSafeLockedHeap` serialises dealloc through the same inner lock as
+# alloc. A reachable `Box`/`Vec`/`String` drop is caught here for that reason.
 ALLOC_SINK = (
     "__rust_alloc",
     "__rust_realloc",
     "__rust_alloc_zeroed",
+    "__rust_dealloc",
     "__rg_alloc",
     "__rg_realloc",
     "__rg_alloc_zeroed",
+    "__rg_dealloc",
     "__rdl_alloc",
     "__rdl_realloc",
     "__rdl_alloc_zeroed",
+    "__rdl_dealloc",
     "exchange_malloc",
     "handle_alloc_error",
     "5alloc5alloc5alloc",
     "5alloc5alloc7realloc",
     "5alloc5alloc12alloc_zeroed",
+    "5alloc5alloc7dealloc",
+    "5alloc5boxed8box_free",
 )
 
 
