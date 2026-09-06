@@ -552,6 +552,26 @@ background at both sizes; the trailing dot reads clearly at 32px and blends
 into the trace's end at 16px (a legibility cost disclosed, not a defect --
 the icon is still unambiguous at 16px without it).
 
+**Landing re-smoke.** On landing (branch `tools/breenix-runs-app-icon` at
+`8bcf3954`), `git merge --no-ff origin/main` found nothing to fold in --
+`origin/main` (`93309b6c`) was already an ancestor of the branch, so the
+merge reported "Already up to date." `make icon` regenerated `Icon/AppIcon.icns`
+and reproduced `sha256 29cf8f3f96e7c960ec42ea79e1e38b2c23222a58524430d3fefd7806adda66f2`,
+byte-identical to the committed file (`git status` reported no diff).
+`swift build -c release` built all 3 products with 0 warnings and 0 errors;
+`swift test` ran 88 of 88 tests with 0 failures. `make app` rebuilt the
+bundle; `plutil -p` on its `Info.plist` showed `CFBundleIconFile` =
+`AppIcon`, `Contents/Resources/AppIcon.icns` sha256-matched the committed
+`Icon/AppIcon.icns`, and `codesign --verify --verbose` reported "valid on
+disk" / "satisfies its Designated Requirement". `/usr/bin/open` launched the
+bundle; `ps aux` and `lsappinfo find name="Breenix Run Inspector"` both
+showed the process running, and `NSWorkspace`'s `iconForFile:` on the
+running bundle's path extracted the same dark-squircle-plus-green-pulse
+artwork described above. Separately, all 42 `tests/*_structure.rs` files ran
+via `scripts/run-structure-tests.sh` with 0 of their combined 630 sub-tests
+failing, and `scripts/test_claim_lint.py` ran 72 of 72 unit tests with 0
+failures (exit 0).
+
 ---
 
 ## 3. Data model and storage
