@@ -3,6 +3,25 @@ import Foundation
 import XCTest
 
 final class RunStoreTests: XCTestCase {
+    func testReadBootFactsDeduplicatesTheSameRecordAcrossSerialAndGateSidecar() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+        var manifest = sampleManifest(id: "duplicate-facts")
+        // Explicit duplicate: the archived strict serial has no GATE_BOOT_FACTS line.
+        let data = Data("[GATE_BOOT_FACTS:boot=1:host_ms=100-200:ended_by=scored_pass]\n".utf8)
+        let directory = try store.createRunDirectory(id: manifest.id)
+        try data.write(to: directory.appendingPathComponent("serial.txt"))
+        try data.write(to: directory.appendingPathComponent("gate_boot_facts.txt"))
+        manifest.serials = [SerialRef(name: "serial.txt", path: "serial.txt", bytes: data.count, stream: .single)]
+        manifest.captures = [CaptureRef(name: "gate_boot_facts.txt", path: "gate_boot_facts.txt", bytes: data.count)]
+        try store.writeManifest(manifest)
+        let stored = try store.readManifest(id: manifest.id)
+        let boot1 = try store.readBootFacts(manifest: stored).filter { $0.boot == 1 }
+        XCTAssertEqual(boot1.count, 1, "duplicate boot-1 facts must be deduplicated")
+        XCTAssertEqual(boot1.first?.sourceFile, "serial.txt")
+    }
+
     func testManifestWriteRoundTripsAndIndexRebuildsFromScratch() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
