@@ -54,7 +54,8 @@ public enum RunShow {
             sections.append(renderMessages(index: serialIndex))
         }
         if options.traces {
-            sections.append(renderTracesNotice())
+            let gateStdoutText = try readGateStdoutText(manifest: manifest, store: store)
+            sections.append(renderTraces(TracesViewModel.build(serialIndex: serialIndex, gateStdoutText: gateStdoutText)))
         }
 
         return sections.joined(separator: "\n\n")
@@ -136,12 +137,97 @@ public enum RunShow {
         return lines.joined(separator: "\n")
     }
 
-    private static func renderTracesNotice() -> String {
+    private static func renderTraces(_ viewModel: TracesViewModel) -> String {
         [
-            "Traces",
-            "[GATE_BOOT_FACTS] record ingestion from the serial is not wired up yet (lands in PR-7 BootFactsParser).",
-            "[BXCAP] record ingestion from the serial is not wired up yet (lands in PR-7 BXCAPDecoder).",
-            "[FATAL_REGS] record ingestion from the serial is not wired up yet (lands in PR-7 FatalRegsDecoder)."
-        ].joined(separator: "\n")
+            renderHostFacts(viewModel.hostFacts),
+            renderBXCAP(viewModel.bxcap),
+            renderFatalRegs(viewModel.fatalRegs)
+        ].joined(separator: "\n\n")
+    }
+
+    private static func renderHostFacts(_ records: [BootFactsRecord]) -> String {
+        var lines = ["Host facts (#827)"]
+        guard !records.isEmpty else {
+            lines.append("not present: no [GATE_BOOT_FACTS] records in serial text or gate-stdout.txt")
+            return lines.joined(separator: "\n")
+        }
+
+        for record in records {
+            let lineText = record.lineNumber.map { " L\($0)" } ?? ""
+            lines.append("boot \(record.boot)\(lineText)")
+            for key in record.fields.keys.sorted() {
+                lines.append("  \(key)=\(record.fields[key] ?? "")")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func renderBXCAP(_ result: BXCAPDecodeResult) -> String {
+        var lines = ["Kernel capture (BXCAP v1)"]
+        guard !result.captures.isEmpty || !result.refusals.isEmpty else {
+            lines.append("not present: no [BXCAP:...] records in serial text")
+            return lines.joined(separator: "\n")
+        }
+
+        for capture in result.captures {
+            let status = capture.truncated ? "truncated" : "complete"
+            let verdict = capture.verdict.map { " verdict=\($0)" } ?? ""
+            let skipped = capture.sectionsSkipped.map { " sections_skipped=\($0)" } ?? ""
+            lines.append("seq \(capture.seq) \(capture.edge ?? "edge?") \(status)\(verdict)\(skipped)")
+            lines.append("  rows=\(capture.rows.count) begin=L\(capture.beginLine) end=\(capture.endLine.map(String.init) ?? "-")")
+            let qualityRows = capture.rows.compactMap { row -> String? in
+                guard let quality = row.fields["q"] else {
+                    return nil
+                }
+                return "\(row.section.rawValue):\(quality)"
+            }
+            if !qualityRows.isEmpty {
+                lines.append("  q=\(qualityRows.joined(separator: ","))")
+            }
+        }
+        for refusal in result.refusals {
+            lines.append("refused L\(refusal.startLine): \(refusal.reason) v=\(refusal.version.map(String.init) ?? "?") seq=\(refusal.seq.map(String.init) ?? "?")")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func renderFatalRegs(_ records: [FatalRegsRecord]) -> String {
+        var lines = ["Fatal registers"]
+        guard !records.isEmpty else {
+            lines.append("not present: no [FATAL_REGS] records in serial text")
+            return lines.joined(separator: "\n")
+        }
+
+        for record in records {
+            let label = record.label ?? "unlabelled"
+            let grid = record.hasCompleteRegisterGrid ? "x0...x30 grid complete" : "x0...x30 grid truncated"
+            lines.append("\(label) cpu=\(record.cpu.map(String.init) ?? "?") L\(record.startLine)-L\(record.endLine) \(grid)")
+            let traceCPU = record.dispatchTraceCPU ?? record.cpu
+            lines.append("  DISPATCH_TRACE cpu=\(traceCPU.map(String.init) ?? "?") entries=\(record.dispatchEntries.count)")
+            if record.noDispatchesRecorded {
+                lines.append("  no dispatches recorded")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func readGateStdoutText(manifest: RunManifest, store: RunStore) throws -> String {
+        let chunks = try manifest.captures
+            .filter { $0.name == "gate-stdout.txt" }
+            .compactMap { capture -> String? in
+                let url = captureURL(capture, manifest: manifest, store: store)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    return nil
+                }
+                return String(decoding: try Data(contentsOf: url), as: UTF8.self)
+            }
+        return chunks.joined(separator: "\n")
+    }
+
+    private static func captureURL(_ capture: CaptureRef, manifest: RunManifest, store: RunStore) -> URL {
+        if capture.path.hasPrefix("/") {
+            return URL(fileURLWithPath: capture.path)
+        }
+        return store.runDirectory(id: manifest.id).appendingPathComponent(capture.path)
     }
 }
