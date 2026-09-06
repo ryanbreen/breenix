@@ -31,6 +31,7 @@ func usage() -> String {
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs facts <run-id|latest> [--json]
+      breenix-runs import <path>...
     """
 }
 
@@ -309,6 +310,11 @@ func main() -> Int32 {
             let parsed = try parseShow(args.dropFirst())
             let manifest = try loadManifest(selector: parsed.selector, store: store)
             print(try RunShow.render(manifest: manifest, store: store, options: parsed.options))
+            return 0
+
+        case "import":
+            let parsed = try parseImport(args.dropFirst())
+            try runImport(parsed, store: store)
             return 0
 
         default:
