@@ -61,6 +61,12 @@ FCNTL_PM_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:'
 # as the other 4 -- a count of 0 on the shipped profile is a reading, where a
 # silent absence would be an assumption.
 IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:'
+# failure-trace-capture PR-2's ring-span self-check is boot_tests-only for the
+# same reason as the oracles above -- it lives in
+# kernel/src/tracing/providers/irq.rs behind `#[cfg(feature = "boot_tests")]`
+# -- so this is the 6th boot_tests-only marker asserted absent here, and a
+# count of 0 on the shipped profile is a reading, not an assumption.
+RING_SPAN_LITERAL='[RING_SPAN:cpu='
 # This proves init resumed after waiting for the self-limiting driver.
 INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='
 # This proves init's earlier oracle also completes on the unarmed profile.
@@ -494,6 +500,7 @@ SCHED_STRAND_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$SCHED_STRAND_ORACLE_LI
 STRAND_INJECT_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$STRAND_INJECT_ORACLE_LITERAL")
 FCNTL_PM_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$FCNTL_PM_ORACLE_LITERAL")
 IRQ_HOLD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$IRQ_HOLD_ORACLE_LITERAL")
+RING_SPAN_COUNT=$(marker_count "$SERIAL_FILE" "$RING_SPAN_LITERAL")
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
 BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
 BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
@@ -542,6 +549,10 @@ fi
 }
 [ "$IRQ_HOLD_ORACLE_COUNT" -eq 0 ] || {
     echo "FAIL: boot_tests-only IRQ-hold oracle marker was present"
+    exit 1
+}
+[ "$RING_SPAN_COUNT" -eq 0 ] || {
+    echo "FAIL: boot_tests-only ring-span self-check marker was present"
     exit 1
 }
 [ "$INIT_EXIT_COUNT" -ge 1 ] || {

@@ -1198,6 +1198,20 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/output.rs", "fn raw_serial_hex", 2),
     ("kernel/src/tracing/output.rs", "fn raw_serial_hex16", 1),
     ("kernel/src/tracing/output.rs", "fn raw_serial_str", 1),
+    // failure-trace-capture PR-2's ring-span self-check. It fires at most
+    // once per boot (a relaxed-load latch guards it), from inside
+    // trace_timer_tick -- the same timer-tick path the dump functions above
+    // are exempted for -- and only in a `boot_tests` build, so a shipped
+    // kernel calls it 0 times. Count raised 4 -> 6 in this PR's fix round
+    // (PR-2-2026-09-05.md section 9): `report` gained two more
+    // `raw_serial_str` calls printing the new `ticks_total`/`tick_events`
+    // fields the jitter-immune sampling-ratio oracle reads. See
+    // docs/planning/green-program/failure-capture/PR-2-2026-09-05.md.
+    (
+        "kernel/src/tracing/providers/irq.rs",
+        "#[cfg(feature=boot_tests)] mod ring_span_self_check::fn report",
+        6,
+    ),
     (
         "kernel/src/tty/driver.rs",
         "impl TtyDevice::fn send_signal_to_foreground_nonblock",

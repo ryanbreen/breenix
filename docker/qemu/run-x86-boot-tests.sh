@@ -370,6 +370,37 @@ CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
 # silence.
 TIMER_SCALE_ORACLE_PREFIX='[TIMER_SCALE_ORACLE:'
 TIMER_SCALE_ORACLE_PASS_PATTERN='\[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=[1-9][0-9]*:ms=[1-9][0-9]*:ticks_after=[0-9]+:ticks_nonzero=1:in_range=1:PASS\]'
+# failure-trace-capture PR-2: TIMER_TICK ring-depth self-check
+# (kernel/src/tracing/providers/irq.rs). PR-2 fix round (2026-09-05,
+# PR-2-2026-09-05.md section 9) replaced the original span_ms-vs-floor check
+# here: at the shared 1000 ms checkpoint this gate used to fire at, x86's
+# 200 Hz PIT tick rate (5x slower than aarch64's) meant only ~200 nominal
+# ticks had elapsed and the ring had not come close to wrapping in EITHER
+# configuration -- measured `dropped=0` for both `TICK_SAMPLE=1` (the
+# mutation this gate exists to catch) and `TICK_SAMPLE=16` (the fix), with
+# unsampled `span_ms=2677` against sampled `span_ms=3642`-`3831`: both
+# numbers were just "elapsed wall time so far", not a ring-wrap signal, so
+# a build with the sampling guard deleted passed this gate anyway -- a
+# vacuous mutation leg. Retuning the checkpoint later (tried out to 13 s
+# nominal) traded that for the SAME wall-clock-jitter sensitivity the
+# aarch64 strict gate hit re-testing its own floor in this same round (a
+# confirmed real boot on this beast host read `span_ms=17043` against a
+# 20000 floor calibrated from a DIFFERENT boot's `span_ms=27742` -- a ~40%
+# swing between two otherwise-identical GREEN boots).
+#
+# The oracle now used instead does not depend on wall-clock timing:
+# `ticks_total` (irq.rs's `TIMER_TICK_TOTAL.aggregate()`, incremented
+# unconditionally on each tick with no sampling applied) against
+# `tick_events` (how many TIMER_TICK entries the ring currently holds) is a
+# pure count ratio. Measured on this beast host (x86_64, `-smp 1`): sampled
+# (`TICK_SAMPLE=16`, the fix) reads a ratio of 16.67; unsampled
+# (`TICK_SAMPLE=1`, the mutation) reads a ratio of 1.00 (each tick recorded,
+# and at this checkpoint the ring had not yet evicted any of them).
+# RING_SPAN_RATIO_FLOOR sits inside that gap with an order of magnitude of
+# margin on each side.
+# span_ms is kept as an informational, non-gating liveness print only.
+RING_SPAN_PATTERN='\[RING_SPAN:cpu=0:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+:ticks_total=[0-9]+:tick_events=[0-9]+\]'
+RING_SPAN_RATIO_FLOOR=10
 # Thirteen oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
 # Ten launched test programs, one smoke_hello_time (the RING3_SMOKE process
 # kernel_main_continue creates after the twelve disk-loaded ones), one
@@ -914,6 +945,20 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$TIMER_SCALE_ORACLE_PASS_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    # (5) the ring-span self-check: present, and its sampling ratio (a pure
+    # count relationship, immune to wall-clock jitter -- see the comment at
+    # this script's RING_SPAN_RATIO_FLOOR definition) clears the floor.
+    RING_SPAN_LINE=$(grep -h -oE "$RING_SPAN_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    test -n "$RING_SPAN_LINE"
+    RING_SPAN_TICKS_TOTAL=$(printf '%s\n' "$RING_SPAN_LINE" | \
+        sed -n 's/.*:ticks_total=\([0-9][0-9]*\):.*/\1/p')
+    RING_SPAN_TICK_EVENTS=$(printf '%s\n' "$RING_SPAN_LINE" | \
+        sed -n 's/.*:tick_events=\([0-9][0-9]*\)\].*/\1/p')
+    test -n "$RING_SPAN_TICKS_TOTAL"
+    test -n "$RING_SPAN_TICK_EVENTS"
+    test "$RING_SPAN_TICK_EVENTS" -gt 0
+    test "$RING_SPAN_TICKS_TOTAL" -ge "$((RING_SPAN_TICK_EVENTS * RING_SPAN_RATIO_FLOOR))"
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
@@ -964,6 +1009,7 @@ for i in $(seq 1 "$COUNT"); do
     TIMER_SCALE_ORACLE_LINE=$(grep -h -F -- "$TIMER_SCALE_ORACLE_PREFIX" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TIMER_SCALE_ORACLE_LINE"
+    echo "$RING_SPAN_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (BOOT_TESTS:FAIL, KERNEL PANIC, or panic! marker present)"
