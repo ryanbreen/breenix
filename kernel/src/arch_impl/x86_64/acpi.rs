@@ -40,6 +40,14 @@
 //! entry walk also refuses a self-declared entry length below the two-byte
 //! ACPI minimum, which is the shape that would otherwise not advance.
 //!
+//! A table's declared length bounds the reads INTO it as well as the walks
+//! OVER it: `census_of_madt` checks that the MADT's declared length reaches
+//! the fixed body-header fields at offsets 36..44 before reading them, so a
+//! table too short to contain them is refused rather than read past the extent
+//! its own checksum covers. `tests/x86_madt_reader_bounds.rs` compiles this
+//! module into a host test binary and runs it over synthetic tables that take
+//! that refusal.
+//!
 //! There is no allocation here: results travel in a `MadtCensus` value whose
 //! fields are fixed-size, and `tests/x86_smp_enum_structure.rs` pins that
 //! property and the bounds above at source level.
@@ -75,6 +83,19 @@ const MAX_MADT_ENTRIES: usize = 1024;
 
 /// Bytes of an ACPI System Description Table header.
 const SDT_HEADER_LENGTH: u32 = 36;
+
+/// Bytes of the MADT's own fixed body header: the 32-bit Local Interrupt
+/// Controller Address and the 32-bit Multiple APIC Flags word, which ACPI
+/// places between the SDT header and the first interrupt-controller structure.
+const MADT_BODY_HEADER_LENGTH: u32 = 8;
+
+/// Shortest MADT this reader will read a body header out of. `sdt_length`
+/// enforces only the 36-byte SDT-header minimum, which a MADT declaring a
+/// length in `[36, 44)` satisfies while not containing the two fixed fields
+/// `census_of_madt` consumes before its first entry. Such a table is refused,
+/// because reading those fields would read bytes outside the extent the
+/// table's own checksum covers.
+const MADT_MIN_LENGTH: u32 = SDT_HEADER_LENGTH + MADT_BODY_HEADER_LENGTH;
 
 /// MADT interrupt-controller structure types this reader decodes.
 const MADT_TYPE_LOCAL_APIC: u8 = 0;
@@ -157,7 +178,8 @@ pub enum MadtRefusal {
     RootTableHeader,
     /// The root table was walked and carried no `APIC` (MADT) entry.
     NoMadtInRootTable,
-    /// The MADT's own signature, length or checksum was refused.
+    /// The MADT's own signature, length or checksum was refused -- including
+    /// a declared length shorter than the fixed body header at offsets 36..44.
     MadtHeader,
     /// A MADT entry declared a length below the two-byte ACPI minimum.
     MadtEntryLength,
@@ -334,13 +356,23 @@ fn census_of_madt(
     madt_length: u32,
 ) -> Result<MadtCensus, MadtRefusal> {
     let mut census = MadtCensus::empty();
+
+    // Before either fixed body-header field is read: `sdt_length` checksummed
+    // exactly `madt_length` bytes and vouches for no byte past them, so a
+    // table whose declared length does not reach `MADT_MIN_LENGTH` is refused
+    // rather than read at offsets it does not cover.
+    if madt_length < MADT_MIN_LENGTH {
+        return Err(MadtRefusal::MadtHeader);
+    }
+
     census.local_apic_address = reader
         .u32_at(madt_phys + u64::from(SDT_HEADER_LENGTH))
         .ok_or(MadtRefusal::MadtHeader)?;
 
     // Body starts after the 36-byte header, the 4-byte local APIC address and
-    // the 4-byte multiple-APIC flags word.
-    let mut cursor = u64::from(SDT_HEADER_LENGTH) + 8;
+    // the 4-byte multiple-APIC flags word -- `MADT_MIN_LENGTH`, which the
+    // check above established this table declares at least.
+    let mut cursor = u64::from(MADT_MIN_LENGTH);
     let end = u64::from(madt_length);
     let mut decoded = 0usize;
     while cursor + 2 <= end && decoded < MAX_MADT_ENTRIES {

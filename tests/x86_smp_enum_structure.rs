@@ -8,10 +8,13 @@
 //!    site would make the gate's "exactly one line" count ambiguous; a gate
 //!    that stopped naming the legs could no longer tell a moving count from a
 //!    hardcoded one.
-//! 2. The MADT reader performs no allocation, and each walk in it is bounded
-//!    by a constant, not only by a length the table itself supplies. This is the
-//!    property that lets the reader run at boot on firmware-owned memory
-//!    without a heap and without a malformed table wedging it.
+//! 2. The MADT reader performs no allocation, each walk in it is bounded
+//!    by a constant, not only by a length the table itself supplies, and it
+//!    refuses a MADT whose declared length does not reach the fixed body
+//!    header it reads before that walk. Those are the properties that let the
+//!    reader run at boot on firmware-owned memory without a heap, without a
+//!    malformed table wedging it, and without reading past the extent a
+//!    table's own checksum covers.
 //! 3. `Scheduler::online_cpu_count()`'s x86 arm reads the enumeration's
 //!    atomic rather than the bare `MAX_CPUS` constant -- and `MAX_CPUS` on
 //!    x86 is still 1, which is this PR's own boundary: the enumeration became
@@ -22,7 +25,9 @@
 //! its allocation check is a DENYLIST of spellings (the same limitation
 //! `tests/dispatch_path_lock_free_structure.rs` documents for its own) -- a
 //! spelling it does not list, or an allocation reached through a callee, is
-//! invisible to it. The boot evidence for the reader is the gate.
+//! invisible to it. `tests/x86_madt_reader_bounds.rs` is where the reader's
+//! BEHAVIOUR over malformed tables is measured, by compiling it and running
+//! it; the boot evidence for the reader is the gate.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -227,6 +232,14 @@ fn every_walk_in_the_madt_reader_is_bounded_by_a_constant() {
         entry_walk.contains("MADT_MIN_ENTRY_LENGTH"),
         "the MADT entry walk must refuse an entry length below the ACPI minimum -- that \
          is the shape that would otherwise not advance the cursor"
+    );
+    assert!(
+        entry_walk.contains("if madt_length < MADT_MIN_LENGTH {"),
+        "census_of_madt must refuse a table whose declared length does not reach the \
+         fixed body header it reads at offsets 36..44, before reading it: a length in \
+         [36, 44) passes sdt_length's generic check and covers neither field. The \
+         refusal is measured, rather than pinned by spelling, in \
+         tests/x86_madt_reader_bounds.rs"
     );
 
     let root_walk = function_body(&acpi, "read_madt");
