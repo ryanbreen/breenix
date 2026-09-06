@@ -694,6 +694,10 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
+    // Slice 3e's oracle, x86_64 arm: MAX_CPUS is 1 here, so the arm reports a
+    // SKIP with that reason rather than a verdict it did not measure.
+    #[cfg(feature = "boot_tests")]
+    kernel::task::scheduler::emit_pin_guard_oracle();
 
     x86_64::instructions::interrupts::disable();
     log::info!("Driver post-init self-tests complete; interrupts disabled for remaining init");
