@@ -1,0 +1,32 @@
+== #821 gate-side mutations of the aarch64 strict-gate pin ==
+green baseline: docs/planning/green-program/irq-locks/serials/821/02-a64-green-repaired-serial.txt
+gate:           docker/qemu/run-aarch64-boot-test-strict.sh, scoring-only mode
+every sed below is anchored to the TTY_IRQ_PM_ORACLE line, so a leg cannot
+redden this gate through some other oracle's identically-named field.
+
+--- control (unmutated green serial) ---
+SCORE: PASS - control.txt
+--- PASS -> FAIL on the oracle line ---
+SCORE: FAIL - TTY input IRQ process-manager oracle reported failure ([TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:FAIL:peer_hold]) (verdict.txt)
+--- oracle line deleted ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (deleted.txt)
+--- pm_blocking_acquires=0 -> =1 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (blocking.txt)
+--- entry_us=2 -> =20022 (the unrepaired reading) ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (entry.txt)
+--- deferred=2 -> =0 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (deferred.txt)
+--- adopted=1 -> =0 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (adopted.txt)
+--- fg_unset_before=1 -> =0 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (fg.txt)
+--- pm_busy_probe=1 -> =0 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (busy.txt)
+--- hold_us=20000 -> =3 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (hold.txt)
+--- pgrp_set_by_entry=0 -> =1 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (pgrp.txt)
+--- adopted_pgrp=821 -> =0 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (apgrp.txt)
+--- restored=1 -> =0 ---
+SCORE: FAIL - TTY input IRQ process-manager oracle marker missing or failed (restored.txt)
