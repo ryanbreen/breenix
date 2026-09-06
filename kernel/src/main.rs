@@ -2486,6 +2486,27 @@ fn panic(info: &PanicInfo) -> ! {
     // Try to output panic info if possible
     serial_println!("KERNEL PANIC: {}", info);
     log::error!("KERNEL PANIC: {}", info);
+
+    // Failure-capture PR-4: the bounded, lock-free BXCAP record.
+    //
+    // ORDER. It goes after the banner because a reader wants the panic
+    // message immediately above the state that explains it, and it goes
+    // BEFORE `exit_qemu`, which ends the process at that line -- anything
+    // not on the wire by then is lost. 6 of this kernel's 7 terminal x86
+    // exceptions reach `panic!` (double fault, kernel page fault,
+    // stack-segment, GPF, divide-by-0, stack overflow), so this one call
+    // site carries those 6; `invalid_opcode_handler` does not panic and is
+    // NOT covered -- see
+    // docs/planning/green-program/failure-capture/PR-4-2026-09-05.md.
+    //
+    // The two words are the panic site's line and column, which is what
+    // `[BXCAP:EDGE a0= a1=]` can carry without formatting anything.
+    let (panic_line, panic_column) = match info.location() {
+        Some(location) => (location.line() as u64, location.column() as u64),
+        None => (0, 0),
+    };
+    kernel::capture::emit(kernel::capture::Edge::Panic, panic_line, panic_column);
+
     // In testing/CI builds, request QEMU to exit with failure for deterministic CI signal
     #[cfg(feature = "testing")]
     {

@@ -309,9 +309,26 @@ pub fn hlt_loop() -> ! {
     }
 }
 
+/// The library's own panic handler.
+///
+/// NOT COMPILED BY ANY PROFILE IN THIS TREE. `kernel/Cargo.toml`'s `[lib]`
+/// section sets `test = false`, so `cargo test` does not build this crate
+/// with `cfg(test)` and this item does not reach a compiler. It carries the
+/// capture call anyway, because the alternative -- a panic handler in
+/// `kernel/src` that is exempt from the rule the other two follow -- is the
+/// shape that goes stale the day the lib becomes testable.
+/// `tests/terminal_edge_capture_structure.rs` checks that `test = false` is
+/// still what makes this handler uncompiled, so the exemption is a measured
+/// fact rather than a comment, and PR-4's round doc lists this call among
+/// the things it does NOT claim to have executed.
 #[cfg(test)]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    let (panic_line, panic_column) = match info.location() {
+        Some(location) => (location.line() as u64, location.column() as u64),
+        None => (0, 0),
+    };
+    crate::capture::emit(crate::capture::Edge::Panic, panic_line, panic_column);
     test_panic_handler(info)
 }
 

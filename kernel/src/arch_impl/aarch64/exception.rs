@@ -589,7 +589,38 @@ fn dump_fatal_postmortem_once(label: &str) {
         crate::arch_impl::aarch64::context_switch::dump_all_eret_guard_records();
         crate::arch_impl::aarch64::context_switch::emit_resume_pc_census();
     });
+    // Section 7 is failure-capture PR-4's terminal edge on this architecture.
+    //
+    // The `[BXCAP]` record goes FIRST inside the section: it is bounded, it
+    // brackets itself with `BEGIN`/`END`, and a reader (or a gate's drain,
+    // PR-5) can tell a complete capture from a cut-off one. The unbounded
+    // `dump_all_buffers()` follows it, unchanged.
+    //
+    // KEPT RATHER THAN REPLACED, a deliberate departure from the plan's
+    // section 6. `[BXCAP:EV]` emits at most 32 events from the CAPTURING
+    // CPU's ring (kernel/src/capture/sections.rs); `dump_all_buffers()`
+    // emits up to 1024 from each of 8. Replacing the second with the first
+    // would narrow the evidence on the one path in this tree that already
+    // has the wide version, which is the opposite of what this program is
+    // for. The round doc records the departure and its reason.
+    //
+    // The two words are ESR_EL1 and FAR_EL1, read here rather than passed
+    // down: this runs inside the exception handler, so both still describe
+    // the fault, and two `mrs` reads add no lock, no allocation and no
+    // serial byte to a path that may not have any of them.
     dump_fatal_postmortem_section(cpu_id, 7, "\n  Trace buffers:\n", || {
+        let esr: u64;
+        let far: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {esr}, esr_el1",
+                "mrs {far}, far_el1",
+                esr = out(reg) esr,
+                far = out(reg) far,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        crate::capture::emit(crate::capture::Edge::Fault, esr, far);
         crate::tracing::dump_all_buffers();
     });
 }
