@@ -439,3 +439,158 @@ mute-button annotation. Final tree-wide run, clean:
 claim-lint: clean (10 file(s) checked, changed hunks vs 266414292ac9).
 claim-lint: 192 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
 ```
+
+## Landing re-smoke
+
+Landing this branch (`gate/884-x86-prod-prompt-verdict`, tip `4a378bd8`) into
+`main` (`a9d4bd3e`) via `git merge origin/main` produced a clean, conflict-free
+merge commit, `20b00edaa6a846b4387ad03b21a55b5b8bb27e5c`, 0 `kernel/`
+path conflicts and 0 conflict markers in the 60 files the merge touched
+(`git status` reports a clean working tree post-merge, `git diff --check`
+finds 0 conflict-marker lines). The only overlap with this round's own
+edited file, `docker/qemu/run-x86-prod-profile-boot-test.sh`, was `main`'s
+unrelated addition of the `#766` `[TIMER_WAKE_LATENCY_ORACLE:` marker to the
+`TEST_ONLY_MARKERS` array a few lines below this round's own edits; `git diff`
+of that file between `4a378bd8` and `HEAD` shows exactly that one added line,
+0 lines from this round's own script edits touched.
+
+`main` at `a9d4bd3e` brought in two new `tests/*_structure.rs` files
+(`dispatch_fact_census_structure.rs`, `timer_wake_dispatch_structure.rs`) and
+edited three existing ones (`critical_path_logging_census_structure.rs`,
+`dispatch_strand_census_structure.rs`, `tty_irq_pm_structure.rs`), plus a new
+`gate-structure-preflight.sh` wiring (R191/PR-1) that now runs each of the 50
+`tests/*_structure.rs` files as a preflight inside each of the four x86/aarch64
+boot gates before it builds or boots anything. 0 of these are a fixture
+replayed against a scorer that this branch's own changes touch -- this
+round's own `tests/teardown_structure.rs` additions are static-shape checks
+against `docker/qemu/run-x86-prod-profile-boot-test.sh`'s source text, not a
+captured-serial replay, and the two new `SerialFixture` structs in
+`tests/x86_gate_verdict_test.rs` (also from `main`) synthesize their fixture
+content in a temp directory at test run time rather than reading a committed
+capture -- so 0 committed fixtures needed re-recording at the merged head.
+
+### `scripts/run-structure-tests.sh` (50/50 suites), local worktree, merge commit `20b00edaa6a846b4387ad03b21a55b5b8bb27e5c`
+
+50 of 50 `tests/*_structure.rs` files present at the merged head, run one at a
+time via `scripts/run-structure-tests.sh <stem>` (the script's own per-file
+convention -- there is no single "all suites" invocation):
+
+```
+aarch64_testing_profile_structure:        ok. 2 passed; 0 failed
+block_request_lifetime_structure:         ok. 12 passed; 0 failed
+capture_bxcap_schema_structure:           ok. 24 passed; 0 failed
+capture_path_lock_free_structure:         ok. 14 passed; 0 failed
+context_restore_structure:                ok. 97 passed; 0 failed
+coreproof_component_h_structure:          ok. 5 passed; 0 failed
+coreproof_coverage_structure:             ok. 4 passed; 0 failed
+coreproof_mutation_register_structure:    ok. 5 passed; 0 failed
+coreproof_sites_structure:                ok. 4 passed; 0 failed
+critical_path_logging_census_structure:   ok. 10 passed; 0 failed
+degenerate_transfer_fd_validation_structure: ok. 4 passed; 0 failed
+dispatch_fact_census_structure:           ok. 7 passed; 0 failed
+dispatch_path_lock_free_structure:        ok. 4 passed; 0 failed
+dispatch_strand_census_structure:         ok. 7 passed; 0 failed
+dma_and_log_sink_structure:               ok. 4 passed; 0 failed
+entry_point_df_structure:                 ok. 5 passed; 0 failed
+exec_lock_order_structure:                ok. 44 passed; 0 failed
+exit_tally_structure:                     ok. 6 passed; 0 failed
+ext2_disk_size_structure:                 ok. 3 passed; 0 failed
+ext2_lock_structure:                      ok. 36 passed; 0 failed
+fcntl_pm_contention_gate_structure:       ok. 4 passed; 0 failed
+fork_lock_order_structure:                ok. 10 passed; 0 failed
+gate_boot_facts_pipefail_structure:       ok. 5 passed; 0 failed
+gate_boot_facts_structure:                ok. 5 passed; 0 failed
+gate_capture_drain_structure:             ok. 6 passed; 0 failed
+gate_structure_preflight_wiring_structure: ok. 4 passed; 0 failed
+green_program_envelope_structure:         ok. 14 passed; 0 failed
+loopback_pump_structure:                  ok. 104 passed; 0 failed
+masked_binary_load_structure:             ok. 4 passed; 0 failed
+mmap_floor_structure:                     ok. 9 passed; 0 failed
+net_lock_structure:                       ok. 19 passed; 0 failed
+parallels_kill_by_name_structure:         ok. 4 passed; 0 failed
+poll_tcp_gate_wiring_structure:           ok. 3 passed; 0 failed
+preempt_bracket_structure:                ok. 8 passed; 0 failed
+qemu_host_lock_structure:                 ok. 3 passed; 0 failed
+qemu_kill_by_name_structure:              ok. 2 passed; 0 failed
+ring_span_report_site_structure:          ok. 6 passed; 0 failed
+serial_line_atomicity_structure:          ok. 9 passed; 0 failed
+signal_eintr_predicate_structure:         ok. 2 passed; 0 failed
+strand_handoff_structure:                 ok. 38 passed; 0 failed
+syscall_return_register_structure:        ok. 6 passed; 0 failed
+teardown_structure:                       ok. 92 passed; 0 failed
+terminal_edge_capture_structure:          ok. 11 passed; 0 failed
+timer_wake_dispatch_structure:            ok. 8 passed; 0 failed
+trace_ring_depth_structure:               ok. 4 passed; 0 failed
+ttbr0_shadow_reconciliation_structure:    ok. 32 passed; 0 failed
+tty_irq_fg_structure:                     ok. 10 passed; 0 failed
+tty_irq_pm_structure:                     ok. 9 passed; 0 failed
+tty_oracle_structure:                     ok. 14 passed; 0 failed
+x86_smp_enum_structure:                   ok. 6 passed; 0 failed
+```
+
+50/50 files, 0 failures across every suite (this branch's own
+`x86_production_profile_gate_prompt_liveness_*` pair lives inside
+`teardown_structure`'s 92, already re-run individually in the "Review fix
+round" section above).
+
+### x86 prod gate x1 (beast, `breenix-x86` container, `/root/breenix-884`, merge commit `20b00edaa6a846b4387ad03b21a55b5b8bb27e5c`)
+
+Beast's `/root/breenix-884` clone had a stale, uncommitted working tree left
+over from an earlier round on `40ac73ed` (the F6/F8/F9/F12 fix content,
+already superseded by the pushed `4a378bd8` commit); it was reset to
+`origin/gate/884-x86-prod-prompt-verdict` (`4a378bd8`) and then merged against
+`origin/main` (`a9d4bd3e`) independently, reproducing the identical merge:
+`git rev-parse HEAD^{tree}` matched the local worktree's merge tree exactly
+(`ec07c02c37b5d0bddaf644e4c261c48dbc600bcb`, both sides). No `userspace/`
+source changed in the merge (`git diff a9d4bd3e 20b00eda --stat -- userspace/`
+is empty), so the clone's existing `*.elf`/font build artifacts (already
+present from prior rounds' setup) needed no refresh.
+
+```
+$ BREENIX_GATE_TMP=/root/breenix-884-tmp bash docker/qemu/run-x86-prod-profile-boot-test.sh
+[GATE_PREFLIGHT:structure_suites=50/50:critical_path_lines=259:pinned=120]
+...
+PASS: x86 production profile reached steady state with the teardown census at rest
+...
+[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=51:ms=255:ticks_after=51:ticks_nonzero=1:in_range=1:PASS]
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 227816
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+```
+
+`PROMPT_BEFORE=1`, `PROMPT_AFTER=2` -- the liveness assertion this round's
+fix targets, passing through the verdict trap rather than aborting. Full
+353-line log committed at
+`884-x86-prod-prompt-verdict/x86-prod-gate-merged-head-landing.txt`.
+
+### `run-x86-boot-tests.sh 1` (beast, `breenix-x86` container, `/root/breenix-884`, merge commit `20b00edaa6a846b4387ad03b21a55b5b8bb27e5c`)
+
+```
+$ BREENIX_GATE_TMP=/root/breenix-884-tmp bash docker/qemu/run-x86-boot-tests.sh 1
+[GATE_PREFLIGHT:structure_suites=50/50:critical_path_lines=259:pinned=120]
+...
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=45:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=547:window_ms=509:measured=1:PASS]
+x86 frame-custody gate run 1: PASS
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+```
+
+`x86 frame-custody gate run 1: PASS`, 1/1 boots. Full 465-line log committed
+at `884-x86-prod-prompt-verdict/x86-boot-tests-merged-head-landing.txt`.
+
+### Landing re-smoke summary
+
+| Gate | Where | Verdict | GATE_PREFLIGHT |
+|---|---|---|---|
+| `scripts/run-structure-tests.sh` (50 suites) | local worktree | 50/50 files, 0 failures | n/a (host-side rustc runner, not a booted gate) |
+| x86 prod profile gate x1 | beast, `breenix-x86`, `/root/breenix-884` | PASS | `structure_suites=50/50:critical_path_lines=259:pinned=120` |
+| `run-x86-boot-tests.sh 1` | beast, `breenix-x86`, `/root/breenix-884` | PASS (1/1) | `structure_suites=50/50:critical_path_lines=259:pinned=120` |
+
+Not claimed: a second independent run of either beast gate beyond the x1
+this landing step asked for; an aarch64 re-smoke (out of scope -- this
+branch and its merge touch no aarch64-only path); that the merge commit SHA
+above is what ends up on `main` after `gh pr merge` (a `--merge` merge keeps
+this exact commit, but that is confirmed in the PR body / issue comment, not
+here, since this doc is written before the push).
