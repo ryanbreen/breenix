@@ -86,24 +86,48 @@ pub const HEARTBEAT_MARKER: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_HEARTBEAT
 /// a sampled write, so no information is lost, only the spacing between
 /// samples.
 ///
-/// claim-lint:ok: measured on this branch, 3 boots per configuration,
-/// docs/planning/green-program/failure-capture/PR-2-2026-09-05.md.
+/// Must be a power of two: the guard below tests `tick_count & (TICK_SAMPLE
+/// - 1) == 0`, not `tick_count % TICK_SAMPLE == 0` -- a non-power-of-two
+/// divisor makes the compiler lower that test to its magic-number
+/// division-by-constant sequence (measured for the `= 20` this constant
+/// originally shipped as: a materialized 64-bit reciprocal constant, `mul`,
+/// `ror` and `cmp` in a release aarch64 `boot_tests` disassembly of
+/// `timer_interrupt_handler`, PR-2 fix round 2026-09-05). A bitwise AND
+/// against an immediate is one instruction; the const assertion below
+/// enforces the power-of-two invariant so a future edit picking a
+/// non-power-of-two value fails to build instead of silently
+/// reintroducing the division.
+///
+/// claim-lint:ok: measured on this branch -- PR-2's original round
+/// (docs/planning/green-program/failure-capture/PR-2-2026-09-05.md, 3 boots
+/// per configuration at `TICK_SAMPLE = 20`) and this file's fix round (same
+/// doc, section 9, at `TICK_SAMPLE = 16`).
 /// The shared per-CPU ring also carries other providers' traffic (scheduler,
 /// syscalls, ...), and once userspace bring-up starts that other traffic can
 /// dominate the ring's overall turnover regardless of this constant --
 /// observed at up to several hundred thousand non-timer writes within a few
 /// seconds in 2 of 2 configurations tried past that point. Before that
-/// point, at `boot_tests`' `RING_SPAN` self-check below (fired 1s into boot,
-/// ahead of where userspace bring-up traffic was observed to begin), this
-/// constant is what stands between an early fatal dump's `TIMER_TICK`
-/// history reaching back ~0.8-0.9s (3 boots, `TICK_SAMPLE` = 1) or
-/// ~1.49-1.54s (3 boots, `TICK_SAMPLE` = 20) -- both bounded by the same
-/// 1024-entry ring, so the ~20x sampling factor does not appear as a ~20x
-/// span factor once the ring is shared.
-/// See docs/planning/green-program/failure-capture/PR-2-2026-09-05.md,
-/// sections 2.2 and 6 (PR-2), and the open question on this constant's
-/// value in section 8 (Q1).
-pub const TICK_SAMPLE: u64 = 20;
+/// point, at `boot_tests`' `RING_SPAN` self-check below, this constant is
+/// what stands between an early fatal dump's `TIMER_TICK` history reaching
+/// back a checkpoint-and-arch-specific short span (unsampled) or several
+/// times that (sampled) -- both bounded by the same 1024-entry ring, so the
+/// sampling factor does not appear as an equal span factor once the ring is
+/// shared. The exact measured spans, which differ by checkpoint and by
+/// architecture, are recorded in
+/// docs/planning/green-program/failure-capture/PR-2-2026-09-05.md section 9
+/// (fix round, current) and section 2.2 (original calibration, at the prior
+/// `TICK_SAMPLE = 20` value, superseded by section 9's numbers but kept for
+/// the record of how the checkpoint was originally chosen). See also the
+/// open question on this constant's exact value in section 8 (Q1) -- still
+/// open; 16 is the nearest power of two to the original 20, not a new,
+/// independently re-derived target.
+pub const TICK_SAMPLE: u64 = 16;
+
+const _: () = assert!(
+    TICK_SAMPLE.is_power_of_two(),
+    "TICK_SAMPLE must be a power of two so the sampling guard can test it \
+     with a single bitwise AND instead of a runtime division"
+);
 
 // =============================================================================
 // Initialization
@@ -173,7 +197,7 @@ pub fn trace_timer_tick(tick_count: u64) {
     // information, only density between recorded points.
     if IRQ_PROVIDER.is_enabled()
         && crate::tracing::is_enabled()
-        && tick_count % TICK_SAMPLE == 0
+        && tick_count & (TICK_SAMPLE - 1) == 0
     {
         crate::tracing::record_event(TIMER_TICK, 0, tick_count as u32);
     }

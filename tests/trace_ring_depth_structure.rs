@@ -7,20 +7,26 @@
 //! plan and round doc for this PR are at
 //! docs/planning/green-program/failure-capture/PR-2-2026-09-05.md.
 //!
+//! The guard tests `tick_count & (TICK_SAMPLE - 1) == 0` (a bitwise AND, not
+//! `%`) -- PR-2's fix round (section 9) moved it off a runtime
+//! division-by-constant and onto a single-instruction mask, which requires
+//! `TICK_SAMPLE` to be a power of two (enforced by a `const` assertion in
+//! irq.rs itself, not by this suite).
+//!
 //! This suite pins the SHAPE of that guard, not a line number: the counter
 //! increment must sit outside any `TICK_SAMPLE` condition, and the ring-write
 //! call must sit textually after, and inside, an `if` whose condition
-//! mentions `% TICK_SAMPLE`. A future edit that records each tick again,
-//! unconditionally -- silently collapsing the ring back to its pre-fix span,
-//! the exact regression this PR closes -- fails here before it ever reaches
-//! a gate.
+//! mentions `& (TICK_SAMPLE - 1)`. A future edit that records each tick
+//! again, unconditionally -- silently collapsing the ring back to its
+//! pre-fix span, the exact regression this PR closes -- fails here before it
+//! ever reaches a gate.
 //!
 //! `tick_sample_guard_deletion_would_be_caught` is the anti-vacuity leg: it
 //! runs the same assertion body against a source string with the guard's
-//! `% TICK_SAMPLE` condition deleted (an in-memory mutation, not a rebuild)
-//! and asserts that mutation panics. The round doc also records the same
-//! mutation applied to the real file on disk and rebuilt, for the mutation
-//! table's cmd/exit/assertion record.
+//! `& (TICK_SAMPLE - 1)` condition deleted (an in-memory mutation, not a
+//! rebuild) and asserts that mutation panics. The round doc also records the
+//! same mutation applied to the real file on disk and rebuilt, for the
+//! mutation table's cmd/exit/assertion record.
 
 use std::fs;
 use std::path::PathBuf;
@@ -63,13 +69,13 @@ fn assert_record_is_sampling_guarded(body: &str) {
         .find("record_event(TIMER_TICK")
         .unwrap_or_else(|| panic!("trace_timer_tick must record a TIMER_TICK ring event:\n{body}"));
     let guard_pos = body
-        .find("% TICK_SAMPLE")
+        .find("& (TICK_SAMPLE - 1)")
         .unwrap_or_else(|| {
-            panic!("trace_timer_tick must gate its ring write on `tick_count % TICK_SAMPLE`:\n{body}")
+            panic!("trace_timer_tick must gate its ring write on `tick_count & (TICK_SAMPLE - 1)`:\n{body}")
         });
     assert!(
         guard_pos < record_pos,
-        "the `% TICK_SAMPLE` guard must appear before the record_event call it protects, not after:\n{body}"
+        "the `& (TICK_SAMPLE - 1)` guard must appear before the record_event call it protects, not after:\n{body}"
     );
 
     // The two must share one unterminated `if` block: no line between the
@@ -122,7 +128,7 @@ fn timer_tick_total_still_increments_unconditionally() {
         .find("TIMER_TICK_TOTAL.increment()")
         .expect("checked above");
     let guard_pos = body
-        .find("% TICK_SAMPLE")
+        .find("& (TICK_SAMPLE - 1)")
         .expect("checked by the sibling test in this module");
     assert!(
         increment_pos < guard_pos,
@@ -149,10 +155,10 @@ fn tick_sample_guard_deletion_would_be_caught() {
     let source = read(IRQ_PROVIDER_SOURCE);
     let body = function_body(&source, "trace_timer_tick");
     assert!(
-        body.contains(" && tick_count % TICK_SAMPLE == 0"),
+        body.contains(" && tick_count & (TICK_SAMPLE - 1) == 0"),
         "test fixture assumption broken -- the guard clause text this test \
          deletes no longer matches the real source:\n{body}"
     );
-    let mutated = body.replace(" && tick_count % TICK_SAMPLE == 0", "");
+    let mutated = body.replace(" && tick_count & (TICK_SAMPLE - 1) == 0", "");
     assert_record_is_sampling_guarded(&mutated);
 }
