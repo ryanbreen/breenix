@@ -450,3 +450,100 @@ claim-lint: scripts/claim-lint.py --commit-msg <msg3>                -> exit 0
    of guest time before the 1000 ms publication checkpoint. It is three times
    the checkpoint; a boot that misses it fails the test loudly rather than
    emitting a silent absence.
+
+## 10. Landing re-smoke (merged head d692bb92)
+
+The branch was landed from a fresh worktree at `origin/fix/847-ring-span-thread-print`
+(`dc81b48c`, review round 1). Between that push and the landing attempt, main
+advanced past this round's own prior merge base (`01cc56f1`) to `826f0c62`
+(PR #857, x86 SMP PR-1 MADT enumeration, plus PR #870, the Parallels VM reap
+fix). `git merge --no-ff origin/main` auto-merged cleanly to `d692bb92`: the
+only shared file was `kernel/src/main.rs`, where #814's `smp::init` call sits
+at line ~184 and this round's `run_x86_ring_span_gate` call sits at line ~685
+-- non-overlapping hunks, no conflict. `git diff` of the four gate scripts
+this round's fixtures are scored against
+(`run-aarch64-boot-test-strict.sh`, `run-aarch64-prod-profile-boot-test.sh`,
+`run-x86-boot-tests.sh`, `run-x86-prod-profile-boot-test.sh`) between the old
+and new merge-base is empty, so no scorer contract changed and no committed
+serial fixture needed re-recording.
+
+Re-smoke below, all at `d692bb92` (claim-lint:ok: #847 -- the merge commit
+this landing step certifies, named once here and cited by each command's own
+output that follows):
+
+```
+tests/*_structure.rs (39 files, incl. the 2 new from #814: x86_smp_enum_structure,
+  parallels_kill_by_name_structure)         -> 39/39 green, 637 cases total, 0 failed
+python3 scripts/test_claim_lint.py          -> Ran 72 tests, OK (exit 0)
+python3 scripts/claim-lint.py               -> clean (exit 0)
+scripts/check-critical-path-violations.sh   -> exit 1; content byte-identical to the
+  pre-merge run once line numbers are stripped (the pre-existing
+  kernel/src/task/scheduler.rs serial_println! sites this round does not touch
+  shifted by #814's +13 lines to that file). Same conclusion as §9.3: it did
+  not pass before this round, main, or this merge.
+```
+
+aarch64, rebuilt from the merged source (`touch kernel/src/main_aarch64.rs`
+first):
+
+```
+cargo build --release --features boot_tests --target aarch64-breenix-kernel.json \
+    -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
+    -p kernel --bin kernel-aarch64
+-> Finished, 0 kernel warnings (the only warning line is the pre-existing
+   nightly toolchain future-incompat notice on the `core` crate itself)
+scripts/check-kernel-no-neon.sh
+-> PASS: 0 FP/SIMD load/store instructions in kernel .text
+```
+
+`./docker/qemu/run-aarch64-boot-test-strict.sh`, script default, private
+`BREENIX_GATE_TMP`:
+
+```
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+```
+
+**RING_SPAN reds: 0 of 20** -- every boot's `serial.txt` carries exactly one
+well-formed `[RING_SPAN:cpu=0:span_ms=...:writes=...:dropped=0:ticks_total=...:tick_events=62]`
+line (`span_ms` 1475-1502, `ticks_total` 3878-3986, `dropped` 0 in all 20,
+ratios 62.5-64.6 against the gate's floor of 10). `./docker/qemu/run-aarch64-prod-profile-boot-test.sh`
+-> **PASS**, exit 0, 0 `RING_SPAN` lines observed.
+
+(A first re-smoke attempt at the branch's push head, before main's further
+advance was noticed and merged in, scored 19/20 with the same 0-RING_SPAN-red
+result; the one failure was boot 8, `ended_by=poll_exhausted`, `Exec smoke did
+not complete` with a well-formed `RING_SPAN` line present and 0 crash markers
+-- the #826 hard-timeout signature (a guest that reaches deep into the EarlyBoot
+cohort, past `futex_handoff_oracle` and `poll_tcp_oracle` and into the
+`tty_oracle` spawn that precedes `EXEC_SMOKE`, cut off by the gate's poll
+ceiling under host load). That serial was not preserved past this doc, since
+the immediately following full re-smoke at the merged head, run for the reason
+above, is the one this landing certifies against; it scored 20/20.)
+
+Beast (`/root/breenix-p847`, `BREENIX_GATE_TMP=/root/breenix-p847-tmp`), same
+merged commit `d692bb92`:
+
+```
+cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
+-> build exit=0, warning/error lines: 0
+./docker/qemu/run-x86-boot-tests.sh 1
+-> x86 frame-custody gate run 1: PASS; x86 userspace gate: PASS - exited=110
+   expected>=105 nonzero=0 allowlist=0
+-> [RING_SPAN:cpu=0:span_ms=3192:writes=35:dropped=0:ticks_total=200:tick_events=12]
+   (ratio 16.67 against the floor of 10), preceded by
+   [TEST:timer:ring_span_report:START]/:PASS] from the x86 direct call site
+./scripts/check-x86-dispatch-no-alloc.sh
+-> PASS: 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked
+./docker/qemu/run-x86-prod-profile-boot-test.sh
+-> exit=0; test-only marker '[RING_SPAN:' count: 0
+```
+
+Claim-discipline receipts for this landing step:
+
+```
+claim-lint: scripts/claim-lint.py (pre-merge)               -> exit 0
+claim-lint: scripts/claim-lint.py (post-merge, at d692bb92) -> exit 0
+```
