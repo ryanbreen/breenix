@@ -1,0 +1,25 @@
+=== round-2 x86 gates, beast breenix-x86, clone /root/breenix-smp1, BREENIX_GATE_TMP=/root/breenix-smp1-tmp ===
+head: 04c9a6ad22834d392555599a17a888bedfa51c56
+
+--- cargo build --release --features testing,external_test_bins --bin qemu-uefi ---
+warning/error lines in the build log: 0
+    Finished `release` profile [optimized] target(s) in 2m 25s
+
+--- docker/qemu/run-x86-smp-enum-gate.sh 2 ---
+x86 SMP enumeration gate: booted image sha256 d8d2762b7a7ebce8a863cb92bff573337ea37e5e560ef4ca6e57e1e9dfd78722
+=== leg -smp 2 ===
+  leg -smp 2: marker [X86_SMP_ENUM:madt_cpus=2:enabled=2:x2apic=0:bsp_apic_id=0:cpuid_logical=2:present=1:online=1:max_cpus=1:src=madt:reason=none]
+  leg -smp 2: PASS
+x86 SMP enumeration gate: PASS (1 leg(s): 2)
+GATE_EXIT=0
+
+--- docker/qemu/run-x86-boot-tests.sh 1 ---
+[0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
+x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0
+x86 frame-custody gate run 1: PASS
+GATE_EXIT=0
+
+--- the enumeration marker in the -smp 2 leg's own serials ---
+  serial_kernel.txt: 1 [X86_SMP_ENUM: line(s)
+  serial_user.txt: 0 [X86_SMP_ENUM: line(s)
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h
