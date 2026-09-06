@@ -7,6 +7,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/#834/#865/R181: this script's qemu-system-x86_64 boot runs behind the
+# host-wide lock in lib/qemu-host-lock.sh (one lock domain per QEMU binary).
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 cd "$PROJECT_ROOT"
 
@@ -40,6 +44,7 @@ echo "Capturing both COM1 and COM2 serial ports..."
 
 # Start QEMU in background with monitor on TCP socket
 # Capture BOTH serial ports (COM1 = user output, COM2 = boot stages)
+qemu_host_lock_acquire qemu-system-x86_64
 qemu-system-x86_64 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive format=raw,file="$UEFI_IMG" \
@@ -51,6 +56,7 @@ qemu-system-x86_64 \
     -monitor tcp:127.0.0.1:4444,server,nowait \
     &
 QEMU_PID=$!
+qemu_host_lock_track_pid "$QEMU_PID"
 
 echo "QEMU started with PID $QEMU_PID"
 
@@ -113,6 +119,9 @@ fi
 echo "quit" | nc -q 1 127.0.0.1 4444 2>/dev/null || echo "quit" | nc 127.0.0.1 4444 2>/dev/null || true
 sleep 1
 kill $QEMU_PID 2>/dev/null || true
+# #865: QEMU is dead now, so the x86 lock domain is freed here rather than
+# deferred to script exit.
+qemu_host_lock_release
 
 # Check results - look in BOTH serial outputs
 echo ""
