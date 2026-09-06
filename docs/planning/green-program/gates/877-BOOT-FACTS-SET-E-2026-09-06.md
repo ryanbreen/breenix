@@ -303,3 +303,105 @@ the fix landed on `main` via #878 (commit `3446eb16`) before this branch
 started, discovered and applied by that PR's own landing pass, independent
 of #877. This round adds the ratchet (`tests/gate_boot_facts_pipefail_structure.rs`)
 and this record; no `kernel/` file is touched.
+
+## Landing re-smoke
+
+`git merge --no-ff origin/main` from this branch's HEAD (`baab16f6d3a4e79f930270010c2c92086467fbd`)
+found `origin/main` (`783a6a53668d`) already an ancestor of HEAD -- `git merge`
+reported "Already up to date" and made no commit; no `kernel/` conflict, no
+merge to resolve.
+
+```
+python3 scripts/claim-lint.py -> exit 0
+```
+
+**Structure suites** (macOS, this branch's HEAD, via `scripts/run-structure-tests.sh
+<stem>` per file): all 43 of 43 `tests/*_structure.rs` files passed, 685 tests
+total, 0 failed (includes `gate_boot_facts_pipefail_structure`: 5 passed, and
+`gate_boot_facts_structure`, #827's own file, unaffected: 5 passed).
+
+**Claim-lint self-test**:
+```
+python3 scripts/test_claim_lint.py -> exit 0 (72 tests, "OK")
+```
+
+**Beast** (Incus container `breenix-x86`, Debian, Linux, GNU bash 5.2.21(1));
+own clone `/root/breenix-p877` at `baab16f6d`, `BREENIX_GATE_TMP=
+/root/breenix-p877-tmp`. `#871`'s disk fault independently confirmed still
+live in the same wall-clock window (`sudo journalctl -k --since "-15min" |
+grep sdh` on the host showed live `device offline error, dev sdh` / `task
+abort` entries immediately before and after both gate runs below).
+
+`docker/qemu/run-x86-boot-tests.sh 1`:
+```
+[GATE_BOOT_FACTS:boot=1:host_ms=1788695623452-1788696080468:qemu_at_start=0:load_at_start=0.37:qemu_at_end=0:load_at_end=1.01:qemu_cpu_s=453.00:guest_uptime_ms=NA:ended_by=scored_pass]
+x86 frame-custody gate run 1: PASS
+```
+
+`docker/qemu/run-x86-prod-profile-boot-test.sh`:
+```
+[GATE_BOOT_FACTS:boot=1:host_ms=1788696532839-1788696544075:qemu_at_start=0:load_at_start=1.16:qemu_at_end=0:load_at_end=1.14:qemu_cpu_s=11.00:guest_uptime_ms=NA:ended_by=scored_pass]
+PASS: x86 production profile reached steady state with the teardown census at rest
+```
+
+Both required x86 gates reached their own `QEMU_ACTUAL_PID=$(gbf_resolve_qemu_pid
+...)` line and their own verdict line with no ERR-trap `FAIL` output, on the
+first attempt each -- no #871 attribution or retry needed this round (a clean
+pass alongside an unrelated live fault, not the fault's absence). No new x86
+timing-signature reds (#631/#766) on either boot; neither gate needed a retry.
+Beast clone removed after this round (`rm -rf /root/breenix-p877 /root/breenix-p877-tmp`).
+
+**aarch64 strict** (native ARM64, this Mac, `docker/qemu/run-aarch64-boot-test-strict.sh`,
+script default of 20 iterations, 100% required): kernel rebuilt from this
+branch's HEAD (`cargo build --release --features boot_tests --target
+aarch64-breenix-kernel.json -Z build-std=core,alloc -Z
+build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`,
+0 warnings), `scripts/check-kernel-no-neon.sh` PASS (0 FP/SIMD instructions),
+`scripts/create_ext2_disk.sh --arch aarch64` rebuilt the disk fresh in this
+worktree. This Mac was running several other agents' concurrent QEMU
+workloads throughout this round (`ps aux` during the run showed a second,
+independent `qemu-system-aarch64 -M virt ... run-aarch64-boot-test-strict.sh`
+process from an unrelated worktree, plus an unrelated `qemu-system-x86_64`
+from another session), with host load averages measured at 2-9 across the
+three attempts below -- both `gate-boot-facts.sh`'s own load samples and
+`uptime` agree.
+
+Attempt 1: 18/20 (failed iterations 4, 9). Boot 4's serial cuts off mid-test
+with no FAIL line (ran past the per-boot 20s `timeout` budget under
+`load_at_start=4.64`-`9.75` across that attempt's own window). Boot 9 failed
+on `[IRQ_HOLD_ORACLE:aarch64:...:hold_us=12003:...:FAIL] [TEST:syscall:irq_hold_oracle:FAIL:a
+try_manager() holder was interruptible on its own CPU]`.
+
+Attempt 2: 19/20 (failed iteration 18), same
+`IRQ_HOLD_ORACLE`/`try_manager() holder was interruptible` signature, again
+under elevated host load (`load_at_start` 6.6-8.7 across that attempt's
+tail).
+
+Attempt 3, after the concurrent load eased (`load_at_start` 2.1-7.5, no
+`QEMU HOST LOCK` contention -- `count before acquire` 0 or 1 throughout):
+```
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+Duration: 261s
+
+PASS: 20/20 boots succeeded
+```
+
+This branch touches only `tests/gate_boot_facts_pipefail_structure.rs` and
+this doc -- no `kernel/` file, and `docker/qemu/lib/gate-boot-facts.sh` is
+byte-identical to `main`. The `IRQ_HOLD_ORACLE` failures on attempts 1-2 carry
+a `hold_us=12003` (12ms) timing budget and recurred only while this shared
+Mac's own measured load average was 5-9 (concurrent unrelated agent QEMU
+workloads independently observed via `ps aux`); attempt 3's clean 20/20 came
+immediately after that concurrent load eased, with no branch change between
+attempts. Recorded here rather than silently retried away: this is not a
+new-to-this-round finding to file (the signature is a live-timing budget on
+a shared host, and this round made no kernel change that could plausibly
+cause or fix it), but a plain attempt-by-attempt account per the project's
+testing-integrity rule against accepting weaker evidence than required.
+
+```
+python3 scripts/claim-lint.py -> exit 0
+```
