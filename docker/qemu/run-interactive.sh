@@ -16,12 +16,22 @@ if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
 fi
 
-# Kill any existing breenix-qemu containers (prevents port conflicts)
-EXISTING=$(docker ps -q --filter ancestor="$IMAGE_NAME" 2>/dev/null)
-if [ -n "$EXISTING" ]; then
-    echo "Stopping existing breenix-qemu containers..."
-    docker kill $EXISTING 2>/dev/null || true
-fi
+# #849: CONTAINER_NAME is unique to this invocation (this script's own
+# PID). This replaces the previous ancestor-image-filtered "kill any
+# existing container" preflight (docker ps -q --filter
+# ancestor="$IMAGE_NAME"), which could kill a DIFFERENT concurrent
+# invocation's own container from the same image -- not only a leftover
+# from a crashed earlier run of this exact script, which is the only
+# container this preflight rm can now ever remove.
+CONTAINER_NAME="breenix-interactive-$$"
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+_cleanup_interactive_container() {
+    # TERM then KILL after a bounded wait -- docker stop's own contract:
+    # SIGTERM to the container's PID 1, SIGKILL only if it has not exited
+    # within the timeout.
+    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap _cleanup_interactive_container EXIT
 
 # Find the UEFI image
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
@@ -53,6 +63,7 @@ echo ""
 
 # Run QEMU with VNC in background
 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -p 5900:5900 \
     -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
     -v "$BREENIX_ROOT/target/test_binaries.img:/breenix/test_binaries.img:ro" \

@@ -25,7 +25,21 @@ UEFI_IMG=$(ls "$BREENIX_ROOT/target/release/build/breenix-"*"/out/breenix-uefi.i
 
 # Create output directory for this run
 OUTPUT_DIR=$(mktemp -d)
-trap "rm -rf $OUTPUT_DIR" EXIT
+# #849: CONTAINER_NAME is unique to this invocation (this script's own
+# PID), so cleanup targets the exact container this run started instead of
+# matching by ancestor image -- an ancestor-image filter (the pre-#849
+# shape) can kill a DIFFERENT running container from the same image,
+# including one a concurrent invocation of this same script legitimately
+# owns. The trap fires on every exit path this script can take (the
+# success/timeout `exit 0`/`exit 1` below, or an early `set -e` exit), not
+# only a bottom-of-script cleanup line.
+# claim-lint:ok: #849
+CONTAINER_NAME="breenix-kthread-test-$$"
+_cleanup_kthread_test() {
+    rm -rf "$OUTPUT_DIR"
+    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap _cleanup_kthread_test EXIT
 
 # Create empty output files
 touch "$OUTPUT_DIR/serial_kernel.txt"
@@ -42,6 +56,7 @@ cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
 # Run QEMU inside Docker with 30 second timeout
 # Note: We use --rm to auto-cleanup the container
 timeout 90 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
     -v "$BREENIX_ROOT/target/test_binaries.img:/breenix/test_binaries.img:ro" \
     -v "$BREENIX_ROOT/target/ext2.img:/breenix/ext2.img:ro" \
@@ -99,8 +114,6 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
         # Both tests passed
         if $FOUND_LIFECYCLE && $FOUND_JOIN; then
             echo "=== KTHREAD JOIN TEST: PASS ==="
-            # Kill the container
-            docker kill $(docker ps -q --filter ancestor="$IMAGE_NAME") 2>/dev/null || true
             exit 0
         fi
     fi
@@ -110,6 +123,4 @@ echo "=== KTHREAD JOIN TEST: TIMEOUT ==="
 echo "Last 50 lines of output:"
 tail -50 "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null || echo "(no output)"
 
-# Kill any remaining container
-docker kill $(docker ps -q --filter ancestor="$IMAGE_NAME") 2>/dev/null || true
 exit 1

@@ -12,11 +12,6 @@ TIMEOUT=${1:-60}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Kill any existing QEMU processes first (as per CLAUDE.md guidance)
-pkill -9 qemu-system-x86_64 2>/dev/null || true
-docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true
-sleep 0.5
-
 # Find the UEFI image
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
 if [ -z "$UEFI_IMG" ]; then
@@ -27,7 +22,20 @@ fi
 
 # Setup temp directory for this run
 TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR; docker kill \$(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true" EXIT
+# #849: CONTAINER_NAME is unique to this invocation (this script's own
+# PID), so cleanup targets the exact container this run started instead of
+# matching by ancestor image -- an ancestor-image filter (the pre-#849
+# shape) can kill a DIFFERENT running container from the same image,
+# including one a concurrent invocation of this same script legitimately
+# owns. The trap fires on every exit path this script can take, not only a
+# bottom-of-script cleanup line.
+# claim-lint:ok: #849
+CONTAINER_NAME="breenix-workqueue-test-$$"
+_cleanup_workqueue_test() {
+    rm -rf "$TMPDIR"
+    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap _cleanup_workqueue_test EXIT
 
 cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$TMPDIR/OVMF_CODE.fd"
 cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$TMPDIR/OVMF_VARS.fd"
@@ -38,6 +46,7 @@ echo "Image: $UEFI_IMG"
 
 # Start QEMU in Docker background
 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
     -v "$TMPDIR:/output" \
     breenix-qemu \
@@ -93,7 +102,6 @@ while true; do
         echo "Serial output (last 50 lines):"
         tail -50 "$TMPDIR/serial.txt" 2>/dev/null || echo "(no output)"
         kill -9 $DOCKER_PID 2>/dev/null || true
-        docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true
         exit 1
     fi
 

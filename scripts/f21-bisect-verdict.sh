@@ -32,6 +32,14 @@ record() {
     fi
 }
 
+# #849: this cleanup used to also run `pkill -9 qemu-system-x86` and
+# `killall -9 qemu-system-x86_64` -- a bare host-wide pattern match that
+# could kill a DIFFERENT, unrelated x86 gate's own QEMU process running
+# concurrently on this host. This script never launches qemu-system-x86_64
+# itself (its own resources are the named Parallels VM below, stopped by
+# name, and $RUN_PID, this script's own `./run.sh` child, stopped by PID),
+# so those two lines had no legitimate target of their own to reach.
+# claim-lint:ok: #849
 cleanup() {
     if [ -n "${VM_NAME:-}" ]; then
         prlctl stop "$VM_NAME" --kill >/dev/null 2>&1 || true
@@ -40,8 +48,6 @@ cleanup() {
     if [ -n "${RUN_PID:-}" ]; then
         kill "$RUN_PID" >/dev/null 2>&1 || true
     fi
-    pkill -9 qemu-system-x86 >/dev/null 2>&1 || true
-    killall -9 qemu-system-x86_64 >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -73,13 +79,19 @@ rm -f "$RUN_LOG" "$CAPTURE_OUT" "${CAPTURE_OUT}.stats.json" "$SERIAL_COPY"
 log "testing ${SHA}"
 record "- ${SHA}: starting"
 
-# Best-effort cleanup before each VM run to avoid stale locks.
+# Best-effort cleanup before each VM run to avoid stale locks. Scoped to
+# breenix-* Parallels VMs by name (this script's own resource, launched via
+# ./run.sh --parallels below), not to bare qemu-system-x86* processes: this
+# script never launches qemu-system-x86_64 itself (Parallels is a
+# hypervisor, not QEMU), so the #849-removed `pkill -9 qemu-system-x86` /
+# `killall -9 qemu-system-x86_64` here could only ever have reached a
+# DIFFERENT, unrelated x86 gate's own QEMU process running concurrently on
+# the same host.
+# claim-lint:ok: #849
 for old_vm in $(prlctl list --all 2>/dev/null | awk '/breenix-/ {print $NF}'); do
     prlctl stop "$old_vm" --kill >/dev/null 2>&1 || true
     prlctl delete "$old_vm" >/dev/null 2>&1 || true
 done
-pkill -9 qemu-system-x86 >/dev/null 2>&1 || true
-killall -9 qemu-system-x86_64 >/dev/null 2>&1 || true
 
 RUN_ARGS=(--parallels)
 RUN_HELP="$(./run.sh --help 2>/dev/null || true)"
