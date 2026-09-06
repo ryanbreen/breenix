@@ -38,6 +38,29 @@
 //! extra capture-scoped denylist, and `tests/capture_path_lock_free_structure.rs`
 //! pins the same shape from the source side.
 //!
+//! # The re-entrancy latch is one-way, and that is a trade-off
+//!
+//! `IN_CAPTURE` is set on entry to `emit()` and cleared on the way out. A
+//! fault taken INSIDE a capture re-enters `emit()` on the same CPU, and that
+//! re-entry emits one `[BXCAP:NOTE reentrant]` line and returns rather than
+//! recursing -- but it does NOT clear the latch, and the outer frame is the
+//! one place that does. Should the inner fault carry the CPU away instead of
+//! returning, that CPU is left latched for the rest of the boot and emits no
+//! further capture.
+//!
+//! That is deliberate for the alternative it rules out -- a latch the inner
+//! call cleared would let a fault loop inside a capture recurse until the
+//! stack ran out, which is the failure the latch exists to prevent -- and it
+//! costs a capture only in a boot that has already taken two faults on one
+//! CPU. The one edge this PR wires is the self-test, which fires once per
+//! boot, so the latch is set and cleared once. It stops being free when PR-4
+//! and PR-7 wire panic, fault and soft-lockup edges, where a first terminal
+//! edge that faults mid-capture would silence the second one on that CPU. Whether
+//! those edges want a latch that survives the CPU (this one), a depth
+//! counter, or a reset at a known-good point is a decision for the PR that
+//! wires them; this module states the behaviour rather than leaving it to be
+//! discovered.
+//!
 //! # What is wired in this PR
 //!
 //! One edge: `Edge::SelfTest`, behind `--features capture_selftest`, fired
@@ -71,7 +94,10 @@ static CAPTURE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Per-CPU re-entrancy latch. A fault taken inside a capture re-enters
 /// `emit` on the same CPU; that re-entry emits one `[BXCAP:NOTE reentrant]`
-/// line and returns rather than recursing.
+/// line and returns rather than recursing. The outer `emit()` returning is
+/// what clears it, so a CPU whose capture does not get that far stays
+/// latched for the rest of the boot -- see the module comment for why that
+/// is the side to err on here, and for what PR-4 and PR-7 inherit.
 static IN_CAPTURE: [AtomicBool; CAPTURE_MAX_CPUS] =
     [const { AtomicBool::new(false) }; CAPTURE_MAX_CPUS];
 
