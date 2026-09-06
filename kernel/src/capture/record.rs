@@ -50,7 +50,7 @@ pub const BXCAP_VERSION: u64 = 1;
 /// docs/planning/green-program/failure-capture/serials/pr3/. 8 KiB leaves
 /// headroom for longer counter names without the ordinary case reaching the
 /// cap, and still bounds a runaway at a size a serial log absorbs.
-#[cfg(not(feature = "capture_selftest_tiny_budget"))]
+#[cfg(not(feature = "capture_selftest_budget_mutation"))]
 pub const BXCAP_BUDGET_BYTES: u32 = 8192;
 
 /// Anti-vacuity budget for the truncation leg. Small enough that a normal
@@ -60,6 +60,39 @@ pub const BXCAP_BUDGET_BYTES: u32 = 8192;
 /// suite goes red on the fixture it produces.
 #[cfg(feature = "capture_selftest_tiny_budget")]
 pub const BXCAP_BUDGET_BYTES: u32 = 512;
+
+/// Budget that ends INSIDE the first section's own record.
+///
+/// `EDGE` is the first budgeted record and its width is fixed: `[BXCAP:EDGE`
+/// + ` kind=SELFTEST` + two `a0=`/`a1=` hex words, 43 bytes before its `]`.
+/// The self-test passes `uptime_ms` and the tick count, and `MS_PER_TICK` is
+/// 1 on both architectures, so at the 3000 ms checkpoint both words are
+/// `0xbb8` -- 3 hex digits each. 30 bytes therefore stops the writer
+/// part-way through `a0=`, and
+/// claim-lint:ok: the 3-digit width was read off the 3 committed truncation
+/// fixtures under docs/planning/green-program/failure-capture/serials/pr3/,
+/// and it holds for any tick between 0x400 and 0xfff;
+/// `EDGE` -- a single-record section, whose loop-less shape means no later
+/// `open()` refusal can speak for it -- has to report that itself.
+///
+/// This is the leg for the case the section functions used to get wrong: the
+/// budget cut the record a section was mid-way through, and the section
+/// nevertheless claimed completion. A boot built with this feature must
+/// report `EDGE`'s bit SET in `sections_skipped=`.
+#[cfg(feature = "capture_selftest_cut_in_record")]
+pub const BXCAP_BUDGET_BYTES: u32 = 30;
+
+/// Budget that ends between a record's closing `]` and its CRLF.
+///
+/// 44 = the same `EDGE` record's 43 body bytes plus its `]`, so the bracket
+/// lands and the terminator does not. This is the one boundary where "the
+/// budget cut this record" and "a reader can parse this record" disagree:
+/// `close_dangling_record()` supplies the CRLF with the budget suspended, so
+/// the line decodes, and `records=` has to count it. A boot built with this
+/// feature must report `records=2` -- the `BEGIN` line and the `EDGE`
+/// record -- against the 2 records that decode before its `END`.
+#[cfg(feature = "capture_selftest_cut_at_terminator")]
+pub const BXCAP_BUDGET_BYTES: u32 = 44;
 
 /// Bounded writer over the raw serial primitive.
 ///

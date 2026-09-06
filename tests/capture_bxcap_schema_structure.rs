@@ -59,10 +59,48 @@ const RECORD_SOURCE: &str = "kernel/src/capture/record.rs";
 /// The only schema major version this decoder understands.
 const KNOWN_VERSION: u64 = 1;
 
-/// `sections_skipped` bit for `THR`, from `kernel/src/capture/sections.rs`'s
-/// `SECTION_THR`. Cross-checked against that source below so the two cannot
-/// drift apart silently.
+/// The `sections_skipped` bit each section token owns, from
+/// `kernel/src/capture/sections.rs`'s `SECTION_*` constants. Each row is
+/// cross-checked against that source below, so the two cannot drift apart
+/// silently.
+const SECTION_BITS: [(&str, u32); 6] = [
+    ("EDGE", 0),
+    ("CPU", 1),
+    ("EV", 2),
+    ("CNT", 3),
+    ("RING", 4),
+    ("THR", 5),
+];
+
+/// `sections_skipped` bit for `THR`.
 const THR_BIT: u64 = 1 << 5;
+
+/// The bit a section token owns, for a token that names a section;
+/// `BEGIN`, `END` and `NOTE` are not sections and own no bit.
+/// claim-lint:ok: the flagged word is Rust's `Option::None` in the return
+/// type below, not a claim; the token-to-bit mapping it returns is checked
+/// against kernel/src/capture/sections.rs by
+/// the_section_bit_table_matches_the_emitters_own_numbering.
+fn section_bit(token: &str) -> Option<u64> {
+    SECTION_BITS
+        .iter()
+        .find(|(name, _)| *name == token)
+        .map(|(_, bit)| 1u64 << bit)
+}
+
+/// The token of a line the decoder refused: the word after `[BXCAP:`, up to
+/// the first space. A fragment the byte budget cut keeps its token, because
+/// `Writer::open()` writes the token before any of the record's content.
+fn fragment_token(fragment: &str) -> String {
+    let start = fragment
+        .find("[BXCAP:")
+        .unwrap_or_else(|| panic!("not a BXCAP fragment: {fragment}"));
+    fragment[start + "[BXCAP:".len()..]
+        .split(|c: char| c == ' ' || c == ']' || c == '\r')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
 
 fn repo_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
@@ -343,6 +381,34 @@ fn assert_capture_contract(name: &str, capture: &Capture) {
 
     // verdict= must agree with the accounting beside it.
     let skipped = capture.end.u64("sections_skipped");
+
+    // A fragment on the wire belongs to the section that was mid-record when
+    // the budget ran out, and THAT section must not be claiming completion.
+    // `Writer::open()` only refuses a record that starts with the budget
+    // already spent; a record cut mid-write is reported by `close()`'s
+    // return value alone, and a section that dropped it would clear its own
+    // bit here over a fragment. `sections_skipped=` is the one field a
+    // reader has for learning which section a truncation ate, so this is the
+    // assertion that makes it worth reading.
+    for fragment in &capture.undecodable {
+        let token = fragment_token(fragment);
+        let Some(bit) = section_bit(&token) else {
+            // BEGIN/END/NOTE are not sections and own no bit. A cut BEGIN or
+            // END is caught by the bracket check above, and a cut NOTE by
+            // the THR contract below.
+            assert!(
+                matches!(token.as_str(), "BEGIN" | "END" | "NOTE"),
+                "{name}: fragment carries the unknown token `{token}`: {fragment}"
+            );
+            continue;
+        };
+        assert!(
+            skipped & bit != 0,
+            "{name}: the byte budget cut a `{token}` record ({fragment:?}) but \
+             sections_skipped={skipped:#x} does not carry {token}'s bit {bit:#x} -- \
+             the capture is claiming a fragment as a completed section"
+        );
+    }
     let verdict = capture.end.text("verdict");
     let expected = if skipped == 0 && truncated == 0 {
         "complete"
@@ -404,46 +470,48 @@ fn assert_untruncated_sections(name: &str, capture: &Capture) {
     }
 }
 
-/// `BXCAP_BUDGET_BYTES` for the two cfg arms, read out of the emitter's own
-/// source so this suite cannot pin a number the kernel no longer uses.
-fn budget_bytes(tiny: bool) -> u64 {
-    let source = read(RECORD_SOURCE);
-    // Matched on the WHOLE cfg attribute, not on the feature name: the
-    // ordinary arm is spelled `not(feature = "capture_selftest_tiny_budget")`
-    // and contains the tiny arm's feature name, so a substring match on the
-    // name alone silently returns the ordinary budget for both arms and the
-    // bound check becomes 16x too loose. Found by running this PR's own
-    // budget mutation on a real boot: the mutated capture overran the exact
-    // bound and this helper passed it anyway.
-    let wanted = if tiny {
-        "#[cfg(feature = \"capture_selftest_tiny_budget\")]"
-    } else {
-        "#[cfg(not(feature = \"capture_selftest_tiny_budget\"))]"
-    };
-    let mut pending = false;
-    for line in source.lines() {
-        if line.trim() == wanted {
-            pending = true;
-            continue;
-        }
-        if pending && line.contains("pub const BXCAP_BUDGET_BYTES: u32 =") {
-            let value = line
-                .split('=')
-                .nth(1)
-                .and_then(|rhs| rhs.trim().trim_end_matches(';').parse::<u64>().ok());
-            return value.unwrap_or_else(|| panic!("could not parse BXCAP_BUDGET_BYTES from: {line}"));
-        }
-        if pending && !line.trim().is_empty() && !line.trim_start().starts_with("//") {
-            pending = false;
-        }
-    }
-    panic!("no BXCAP_BUDGET_BYTES for the `{wanted}` arm in {RECORD_SOURCE}");
+/// The cfg attribute guarding each `BXCAP_BUDGET_BYTES` arm, spelled exactly
+/// as `record.rs` spells it.
+///
+/// Matched on the WHOLE cfg attribute, not on a feature name: an arm's
+/// attribute can contain another arm's feature name, and a substring match on
+/// the name alone silently returns one arm's budget for another, leaving the
+/// bound check many times too loose. Found by running this PR's own budget
+/// mutation on a real boot: the mutated capture overran the exact bound and
+/// this helper passed it anyway.
+const ARM_ORDINARY: &str = "#[cfg(not(feature = \"capture_selftest_budget_mutation\"))]";
+const ARM_TINY: &str = "#[cfg(feature = \"capture_selftest_tiny_budget\")]";
+const ARM_CUT_IN_RECORD: &str = "#[cfg(feature = \"capture_selftest_cut_in_record\")]";
+const ARM_CUT_AT_TERMINATOR: &str = "#[cfg(feature = \"capture_selftest_cut_at_terminator\")]";
+
+/// Whitespace runs collapsed to one space, so an attribute a formatter wrapped
+/// across lines still matches the single-line spelling above.
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `BXCAP_BUDGET_BYTES` for one cfg arm, read out of the emitter's own source
+/// so this suite cannot pin a number the kernel no longer uses.
+fn budget_bytes(arm: &str) -> u64 {
+    let source = collapse_whitespace(&read(RECORD_SOURCE));
+    let needle = format!(
+        "{} pub const BXCAP_BUDGET_BYTES: u32 = ",
+        collapse_whitespace(arm)
+    );
+    let at = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no BXCAP_BUDGET_BYTES guarded by `{arm}` in {RECORD_SOURCE}"));
+    let rest = &source[at + needle.len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits
+        .parse::<u64>()
+        .unwrap_or_else(|_| panic!("could not parse BXCAP_BUDGET_BYTES for `{arm}`: {rest:.40}"))
 }
 
 /// The emitter's stated bound: section content is capped by the budget, and
 /// the two bracket lines plus one line terminator sit outside it.
-fn assert_byte_bound(name: &str, capture: &Capture, tiny: bool) {
-    let budget = budget_bytes(tiny);
+fn assert_byte_bound(name: &str, capture: &Capture, arm: &str) {
+    let budget = budget_bytes(arm);
     let begin_len = capture.begin.body.len() as u64 + "[BXCAP:BEGIN ]\r\n".len() as u64;
     let bound = budget + begin_len + 2;
     let bytes = capture.end.u64("bytes");
@@ -464,27 +532,62 @@ fn fixture(name: &str) -> String {
 }
 
 #[test]
-fn the_two_budget_arms_are_read_separately() {
-    // Anti-vacuity for `budget_bytes`: if both arms resolved to the same
-    // constant, the tiny-budget fixture's bound check would be checking the
-    // ordinary budget and would pass on a capture 16x over its own limit.
-    let ordinary = budget_bytes(false);
-    let tiny = budget_bytes(true);
-    assert!(
-        tiny < ordinary,
-        "the capture_selftest_tiny_budget arm must be smaller than the ordinary one \
-         (read tiny={tiny}, ordinary={ordinary}); equal values mean the cfg arms are \
-         not being told apart"
-    );
+fn every_budget_arm_is_read_separately() {
+    // Anti-vacuity for `budget_bytes`: if two arms resolved to the same
+    // constant, one fixture's bound check would be checking another arm's
+    // budget and would pass on a capture far over its own limit.
+    let ordinary = budget_bytes(ARM_ORDINARY);
+    let arms = [
+        ("tiny", budget_bytes(ARM_TINY)),
+        ("cut-in-record", budget_bytes(ARM_CUT_IN_RECORD)),
+        ("cut-at-terminator", budget_bytes(ARM_CUT_AT_TERMINATOR)),
+    ];
+    for (name, value) in arms {
+        assert!(
+            value < ordinary,
+            "the {name} budget arm must be smaller than the ordinary one (read \
+             {value}, ordinary {ordinary}); equal values mean the cfg arms are not \
+             being told apart"
+        );
+    }
+    for (i, (left_name, left)) in arms.iter().enumerate() {
+        for (right_name, right) in &arms[i + 1..] {
+            assert_ne!(
+                left, right,
+                "the {left_name} and {right_name} budget arms read as the same number \
+                 ({left}); each one exists to stop the writer somewhere different"
+            );
+        }
+    }
 }
 
 #[test]
-fn thr_bit_matches_the_emitters_own_section_numbering() {
+fn the_section_bit_table_matches_the_emitters_own_numbering() {
     let sections = read("kernel/src/capture/sections.rs");
+    for (token, bit) in SECTION_BITS {
+        let decl = format!("pub const SECTION_{token}: u32 = {bit};");
+        assert!(
+            sections.contains(&decl),
+            "sections.rs no longer declares `{decl}`; this suite reads \
+             sections_skipped= through that numbering and would now be checking the \
+             wrong bit"
+        );
+    }
+    // The bitmap covers exactly these, so a section added without a row here
+    // would be invisible to the fragment cross-check.
+    let declared = sections.matches("pub const SECTION_").count();
+    assert_eq!(
+        declared,
+        SECTION_BITS.len(),
+        "sections.rs declares {declared} SECTION_* constants and this suite knows \
+         {}; a section the table does not carry is a section the fragment check \
+         cannot police",
+        SECTION_BITS.len()
+    );
     assert!(
-        sections.contains("pub const SECTION_THR: u32 = 5;"),
-        "SECTION_THR moved; THR_BIT in this suite is derived from it and would now \
-         be checking the wrong bit of sections_skipped"
+        sections.contains(&format!("pub const SECTIONS_ALL: u64 = (1 << {}) - 1;", SECTION_BITS.len())),
+        "SECTIONS_ALL must cover exactly the {} sections this suite knows about",
+        SECTION_BITS.len()
     );
 }
 
@@ -495,7 +598,7 @@ fn selftest_capture_with_the_scheduler_read_granted_is_complete() {
     let capture = decode_capture(&serial);
     assert_capture_contract("complete", &capture);
     assert_untruncated_sections("complete", &capture);
-    assert_byte_bound("complete", &capture, false);
+    assert_byte_bound("complete", &capture, ARM_ORDINARY);
 
     assert_eq!(capture.end.text("verdict"), "complete");
     assert_eq!(capture.end.u64("sections_skipped"), 0);
@@ -526,7 +629,7 @@ fn selftest_capture_with_the_scheduler_read_refused_still_reports_everything_els
     // The point of the section order: a refused THR costs THR alone, and
     // leaves the sections above it intact.
     assert_untruncated_sections("sched-lock-held", &capture);
-    assert_byte_bound("sched-lock-held", &capture, false);
+    assert_byte_bound("sched-lock-held", &capture, ARM_ORDINARY);
 
     assert_eq!(capture.end.u64("truncated"), 0);
     assert_eq!(capture.end.u64("sections_skipped"), THR_BIT);
@@ -545,7 +648,7 @@ fn the_byte_budget_binds_and_the_end_line_still_lands() {
     let serial = fixture("aarch64-selftest-tiny-budget.txt");
     let capture = decode_capture(&serial);
     assert_capture_contract("tiny-budget", &capture);
-    assert_byte_bound("tiny-budget", &capture, true);
+    assert_byte_bound("tiny-budget", &capture, ARM_TINY);
 
     assert_eq!(
         capture.end.u64("truncated"),
@@ -563,6 +666,76 @@ fn the_byte_budget_binds_and_the_end_line_still_lands() {
     assert!(
         capture.records.iter().any(|r| r.token == "EDGE"),
         "the cheapest sections must still have been emitted before the budget ran out"
+    );
+}
+
+/// The union of the six section bits: what `sections_skipped=` reads from a
+/// capture that completed no section at its own full width.
+/// claim-lint:ok: the count is the length of SECTION_BITS, which
+/// the_section_bit_table_matches_the_emitters_own_numbering checks against
+/// sections.rs's own SECTION_* census.
+fn all_section_bits() -> u64 {
+    SECTION_BITS.iter().map(|(_, bit)| 1u64 << bit).sum()
+}
+
+#[test]
+fn a_section_whose_own_record_the_budget_cut_does_not_claim_completion() {
+    let serial = fixture("aarch64-selftest-cut-in-record.txt");
+    assert_records_are_crlf_terminated("cut-in-record", &serial);
+    let capture = decode_capture(&serial);
+    assert_capture_contract("cut-in-record", &capture);
+    assert_byte_bound("cut-in-record", &capture, ARM_CUT_IN_RECORD);
+
+    assert_eq!(capture.end.u64("truncated"), 1);
+    assert_eq!(capture.end.text("verdict"), "partial");
+    // The budget ends inside `EDGE`, the first budgeted record. `EDGE` emits
+    // one record and then returns: no later `open()` refusal can speak for
+    // it, so its bit is set here only because the section carried
+    // `Writer::close()`'s verdict back out. This is the leg the emitter used
+    // to fail -- it reported `EDGE` complete over the fragment below.
+    assert_eq!(
+        capture.undecodable.len(),
+        1,
+        "expected the one cut EDGE record, got {:?}",
+        capture.undecodable
+    );
+    assert_eq!(fragment_token(&capture.undecodable[0]), "EDGE");
+    assert_eq!(
+        capture.end.u64("sections_skipped"),
+        all_section_bits(),
+        "the budget ran out in the first section, so no section completed"
+    );
+    // `records=1` is the BEGIN line alone: the EDGE fragment has no `]`.
+    assert_eq!(capture.end.u64("records"), 1);
+}
+
+#[test]
+fn a_record_whose_terminator_the_budget_cut_is_still_counted() {
+    let serial = fixture("aarch64-selftest-cut-at-terminator.txt");
+    assert_records_are_crlf_terminated("cut-at-terminator", &serial);
+    let capture = decode_capture(&serial);
+    assert_capture_contract("cut-at-terminator", &capture);
+    assert_byte_bound("cut-at-terminator", &capture, ARM_CUT_AT_TERMINATOR);
+
+    assert_eq!(capture.end.u64("truncated"), 1);
+    assert_eq!(capture.end.text("verdict"), "partial");
+    // The one boundary where "the budget cut this record" and "a reader can
+    // parse this record" disagree: `EDGE`'s `]` landed and its CRLF did not,
+    // `close_dangling_record()` supplied the terminator with the budget
+    // suspended, and the line decodes. So no fragment is left behind,
+    // `records=` counts BEGIN and EDGE, and EDGE does NOT appear in
+    // sections_skipped.
+    assert!(
+        capture.undecodable.is_empty(),
+        "the record kept its `]`, so nothing should have failed to decode: {:?}",
+        capture.undecodable
+    );
+    assert_eq!(capture.end.u64("records"), 2);
+    assert!(capture.records.iter().any(|r| r.token == "EDGE"));
+    assert_eq!(
+        capture.end.u64("sections_skipped"),
+        all_section_bits() & !section_bit("EDGE").expect("EDGE is a section"),
+        "EDGE's record is on the wire whole, so EDGE alone completed"
     );
 }
 
@@ -586,8 +759,8 @@ fn every_committed_fixture_decodes() {
     // is decoded the moment it lands, and an empty directory is a failure
     // rather than a silent pass.
     assert!(
-        checked >= 3,
-        "expected at least the three PR-3 fixtures under {SERIAL_DIR}, decoded {checked}"
+        checked >= 6,
+        "expected at least the six PR-3 fixtures under {SERIAL_DIR}, decoded {checked}"
     );
 }
 
@@ -714,9 +887,27 @@ fn a_leading_prefix_from_another_writer_does_not_damage_a_record() {
 }
 
 #[test]
+#[should_panic(expected = "claiming a fragment as a completed section")]
+fn a_section_that_claims_completion_over_its_own_fragment_is_caught() {
+    // The pre-fix shape, applied to the fixture that exercises it: the
+    // budget cut `EDGE` mid-record and the capture nevertheless clears
+    // EDGE's bit. `verdict=partial` still holds, and `records=` still
+    // matches the wire, so the rest of the contract does not notice -- which
+    // is why this assertion has to exist separately.
+    let all = all_section_bits();
+    let cleared = all & !section_bit("EDGE").expect("EDGE is a section");
+    let serial = fixture("aarch64-selftest-cut-in-record.txt").replace(
+        &format!("sections_skipped={all:#x}"),
+        &format!("sections_skipped={cleared:#x}"),
+    );
+    let capture = decode_capture(&serial);
+    assert_capture_contract("fragment-claimed", &capture);
+}
+
+#[test]
 #[should_panic(expected = "over the emitter's stated bound")]
 fn a_capture_that_overran_the_budget_is_caught() {
     let serial = fixture("aarch64-selftest-tiny-budget.txt").replace("bytes=616", "bytes=61600");
     let capture = decode_capture(&serial);
-    assert_byte_bound("overrun", &capture, true);
+    assert_byte_bound("overrun", &capture, ARM_TINY);
 }

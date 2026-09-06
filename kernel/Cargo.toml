@@ -119,7 +119,21 @@ capture_selftest = ["boot_tests"]
 # with this must report `truncated=1` and a non-empty `sections_skipped=`. A
 # budget that stopped being enforced would make this leg indistinguishable
 # from the ordinary one.
-capture_selftest_tiny_budget = ["capture_selftest"]
+# The budget-mutation family. Every arm below shrinks `BXCAP_BUDGET_BYTES` to
+# a size that stops the emitter at a chosen point, and each one exists to make
+# a truncation claim falsifiable on a real boot rather than by reading the
+# source. The umbrella feature is what `record.rs`'s ordinary arm is `not()`,
+# so adding another arm does not have to edit that attribute; two arms enabled
+# at once is a duplicate definition of the constant, which is a compile error
+# and is meant to be.
+capture_selftest_budget_mutation = ["capture_selftest"]
+capture_selftest_tiny_budget = ["capture_selftest_budget_mutation"]
+# Stops the writer INSIDE the EDGE record, so the section whose record was cut
+# has to report it: `sections_skipped=` must carry EDGE's bit.
+capture_selftest_cut_in_record = ["capture_selftest_budget_mutation"]
+# Stops the writer between EDGE's `]` and its CRLF: the line still decodes, so
+# `records=` must count it.
+capture_selftest_cut_at_terminator = ["capture_selftest_budget_mutation"]
 btrt = []  # Boot Test Result Table (structured test results)
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
 xhci_linux_harness = []  # Build and use the Linux C-based xHCI harness
