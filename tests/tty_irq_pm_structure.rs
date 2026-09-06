@@ -17,7 +17,7 @@
 //!   convention for the interrupt-context twins, 6 of them today -- so a
 //!   seventh one added later is swept in without an edit here;
 //! * the IRQ handlers are read out of `kernel/src` as the functions that call
-//!   `tty::push_char_nonblock`, 5 of them today, so a sixth input driver is
+//!   `tty::push_char_nonblock`, 4 of them today, so a fifth input driver is
 //!   swept in too.
 //!
 //! The call graph inside `driver.rs` is walked only through `self.` and `Self::`
@@ -592,7 +592,7 @@ fn validate_blocking_accessors_are_counted(process: &str) -> Result<(), String> 
     }
 }
 
-/// #821 rule 6. The 5 IRQ handlers that push a byte into the TTY take 0
+/// #821 rule 6. The 4 IRQ handlers that push a byte into the TTY take 0
 /// blocking process-manager acquisitions between them.
 ///
 /// `kernel/src/test_framework/` is excluded by name and on purpose: the #821
@@ -623,7 +623,8 @@ fn validate_tty_irq_handlers(sources: &[(String, String)]) -> Result<(), String>
     if callers < 4 {
         return Err(format!(
             "found {callers} interrupt-side callers of tty::push_char_nonblock; this rule was \
-             written against 5 and a census that shrank below 4 is a rule that stopped looking"
+             written against 4, and a census that fell below that is a rule that stopped \
+             looking"
         ));
     }
     if failures.is_empty() {
