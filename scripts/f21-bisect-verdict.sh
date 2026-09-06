@@ -135,6 +135,26 @@ if [ -f "$VM_STATE_FILE" ]; then
     rm -f "$VM_STATE_FILE" 2>/dev/null || true
 fi
 
+# #860 review round 1, finding F1: the reap above closes the
+# concurrent-VM-kill hazard only for the state-file-based path directly
+# above it. The `./run.sh` invocation a few lines below still calls
+# into run.sh's own two UN-fixed, unscoped
+# `for OLD_VM in $(prlctl list --all | grep 'breenix-' | awk '{print $NF}')`
+# sweep loops (run.sh's pre-build stop loop and its pre-launch
+# stop+delete loop) on every single invocation of this script -- there
+# is no flag or env var this script can pass to suppress them. So the
+# practical hazard #860 was filed to close -- a different, concurrent
+# Parallels-based gate, or a human's own long-running `breenix-dev` VM
+# sharing the `breenix-` name pattern, being stopped and deleted out
+# from under it -- remains live for this script's real end-to-end
+# behavior every time it runs, via that call, not only "elsewhere in
+# the tree." Tracked, not fixed here (small-PR mode, R157): #868.
+# claim-lint:ok: #860,#868 -- checked, not merely asserted, by
+# f21_bisect_verdict_sh_calls_run_sh_unconditionally in
+# tests/parallels_kill_by_name_structure.rs, which re-derives from this
+# script's own real text that the ./run.sh call below is present,
+# uncommented, and not gated behind any skip-sweep escape hatch.
+
 RUN_ARGS=(--parallels)
 RUN_HELP="$(./run.sh --help 2>/dev/null || true)"
 if [[ "$RUN_HELP" == *"--parallels --test"* ]]; then

@@ -56,7 +56,18 @@
 //! cleanup loop, both `for OLD_VM in $(prlctl list --all | grep 'breenix-'
 //! | awk '{print $NF}')`) -- #860's own issue body names this file as a
 //! second recurrence and explicitly says fixing the bisect script alone
-//! would not close the class. This ratchet does not assert `run.sh` clean
+//! would not close the class. More specifically and more consequentially
+//! (review round 1, finding F1): `scripts/f21-bisect-verdict.sh` itself
+//! calls `./run.sh` unconditionally on every single invocation (the
+//! statement immediately after its own scoped state-file reap), so
+//! run.sh's two un-fixed sweep loops execute as part of THIS script's
+//! own ordinary operation -- not merely as an unrelated recurrence
+//! sitting somewhere else in the tree. The concurrent-VM-kill scenario
+//! #860 was filed to close is therefore unchanged in practice for this
+//! script's real end-to-end behavior; only the isolated loop this round
+//! replaced is fixed. `f21_bisect_verdict_sh_calls_run_sh_unconditionally`
+//! below checks (not merely asserts) that the `./run.sh` call is present,
+//! uncommented, and ungated. This ratchet does not assert `run.sh` clean
 //! (it is not, and this round did not touch it); instead
 //! `census_reaches_the_known_unfixed_run_sh_instances` asserts the
 //! predicate DOES currently fire on `run.sh`'s real, live text -- proving
@@ -222,6 +233,61 @@ fn f21_bisect_verdict_sh_has_no_prlctl_pattern_sweep() {
     );
 }
 
+/// Grounds the F1 disclosure (review round 1) added to both this module
+/// doc and to `scripts/f21-bisect-verdict.sh` itself: that the script's
+/// `./run.sh` invocation -- the statement whose own two un-fixed sweep
+/// loops (#868) make the concurrent-VM-kill hazard practically live for
+/// this script's real end-to-end behavior -- is present, uncommented, and
+/// unconditional. Re-derived from the script's real text on every run so
+/// a future edit that removed, commented out, or gated that call behind a
+/// skip-sweep escape hatch would be caught rather than leaving the F1
+/// disclosure standing as a stale claim.
+/// claim-lint:ok: #860 -- "every run" describes this test function's own
+/// re-derivation from disk, which the assertions in the function body
+/// below are the resolving citation for.
+#[test]
+fn f21_bisect_verdict_sh_calls_run_sh_unconditionally() {
+    let path = "scripts/f21-bisect-verdict.sh";
+    let text = repo_text(path);
+
+    // Unconditional, in this file's own indentation convention (every
+    // `if`/`for` body below is indented 4 spaces -- see the reap block
+    // immediately above this call), means a live statement starting at
+    // column 0, not nested inside a conditional or loop body.
+    // claim-lint:ok: #860 -- structural: a visible, checkable convention
+    // of this one script's own text, not a measured claim about a
+    // population; the assert_eq! immediately below is what actually
+    // checks it.
+    let call_lines: Vec<&str> = text
+        .lines()
+        .filter(|line| *line == line.trim_start() && line.starts_with("./run.sh "))
+        .collect();
+
+    assert_eq!(
+        call_lines.len(),
+        1,
+        "{path} is expected to invoke `./run.sh` exactly once, as a live, \
+         top-level (unindented, uncommented) statement -- found {}: {:?}. If this \
+         changed, the F1 disclosure text in this file's module doc and in \
+         scripts/f21-bisect-verdict.sh's own comments needs updating to match.",
+        call_lines.len(),
+        call_lines
+    );
+
+    // No skip-sweep escape hatch exists yet that could let this call --
+    // and therefore run.sh's own un-fixed sweep loops, #868 -- be
+    // bypassed. If one is ever added, the "unconditional" claim in the
+    // F1 disclosure needs updating rather than standing stale.
+    for escape_hatch in ["SKIP_RUN_SH", "NO_CLEANUP", "SKIP_CLEANUP", "NO_SWEEP"] {
+        assert!(
+            !text.contains(escape_hatch),
+            "sanity: {path} was expected to contain no {escape_hatch} skip-sweep \
+             escape hatch; if one now exists, the F1 disclosure text needs updating \
+             to match"
+        );
+    }
+}
+
 /// ANTI-VACUITY: the predicate fires on the real shapes it claims to
 /// (positive, both synthetic and the real pre-fix text spliced back onto
 /// the real post-fix file) and stays quiet on the real safe shape the fix
@@ -332,7 +398,8 @@ fn census_reaches_the_known_unfixed_run_sh_instances() {
          prlctl-pattern-sweep loops (a stop-only pre-build loop, one offending line, and \
          a stop+delete pre-launch loop, two offending lines -- three offending lines \
          total) -- found {}: {:?}. If this now reads 0, run.sh has been fixed: update \
-         this test to assert it clean instead of asserting the gap, and close #868.",
+         this test to assert it clean instead of asserting the gap, and #868 tracks \
+         it.",
         run_sh_violations.len(),
         run_sh_violations
     );
