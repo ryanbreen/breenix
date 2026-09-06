@@ -31,6 +31,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const CAPTURE_DIR: &str = "kernel/src/capture";
+const GATE_DIR: &str = "docker/qemu";
 const CRITICAL_PATH_SCRIPT: &str = "scripts/check-critical-path-violations.sh";
 
 fn repo_path(rel: &str) -> PathBuf {
@@ -428,15 +429,20 @@ fn the_selftest_edge_is_feature_gated_and_no_gate_builds_it() {
          several lines above it"
     );
 
-    // And no gate script builds with it.
-    for gate in [
-        "docker/qemu/run-aarch64-boot-test-strict.sh",
-        "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
-        "docker/qemu/run-x86-boot-tests.sh",
-        "docker/qemu/run-x86-prod-profile-boot-test.sh",
-    ] {
-        let body = read(gate);
-        for (lineno, line) in code_lines(&body) {
+    // And no gate script builds with it. Census-anchored on
+    // `docker/qemu/**/*.sh` as it exists on disk, NOT a literal list: an
+    // earlier revision of this test named 4 scripts and the tree has 30-odd,
+    // so a gate that grew a `capture_selftest` build would have had to be one
+    // of the 4 named to be caught. An empty set is a failure, not a pass.
+    let gates = gate_scripts();
+    assert!(
+        gates.len() >= 20,
+        "expected the tree's gate scripts under {GATE_DIR}, found {} -- a census that \
+         collapsed to a handful of files is not checking the gates",
+        gates.len()
+    );
+    for (gate, body) in &gates {
+        for (lineno, line) in code_lines(body) {
             assert!(
                 !(line.contains("--features") && line.contains("capture_selftest")),
                 "{gate}:{lineno} builds with capture_selftest; the self-test capture is a \
@@ -445,4 +451,33 @@ fn the_selftest_edge_is_feature_gated_and_no_gate_builds_it() {
             );
         }
     }
+}
+
+/// The `.sh` files under `docker/qemu/`, recursively.
+fn gate_scripts() -> Vec<(String, String)> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("docker/qemu must exist") {
+            let path = entry.expect("readable dir entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("sh") {
+                out.push(path);
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    walk(&repo_path(GATE_DIR), &mut paths);
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let name = path
+                .strip_prefix(repo_path(""))
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            let body = fs::read_to_string(&path).expect("readable script");
+            (name, body)
+        })
+        .collect()
 }
