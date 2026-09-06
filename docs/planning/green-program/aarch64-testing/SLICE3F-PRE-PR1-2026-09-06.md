@@ -454,3 +454,140 @@ annotation in this paragraph then tripped a 7th finding against the word
 original round note describes for its own claim-lint passes), closed with a
 second copy of the same annotation.
 (claim-lint:ok: "None" is Rust's `Option` variant, kernel/src/task/scheduler.rs)
+
+## 9. Landing re-smoke, at the merged head
+
+`git fetch origin && git merge origin/main --no-edit` merged `origin/main`
+(`5bfc7077af7dfde2e0aa81189088cc838584dea3`) into this branch's tip
+(`ce56e44d0311e88c4c3381800c05392dfb817f4a`) as merge commit
+`2653a3739`, auto-resolved with 0 conflicts and 0 kernel/ path collisions.
+`git diff --stat` from the merge-base (`a9d4bd3e`) shows both sides touched
+`kernel/src/main_aarch64.rs` and `kernel/src/task/scheduler.rs` (main's side:
+PR #894's timer/wake-dispatch work and PR #896's failure-capture PR-7
+lockup-report changes; this branch's side: the pin-guard oracle attribution
+fix), and `git diff --name-only --diff-filter=U` after the merge is empty --
+`grep -n '^<<<<<<<\|^=======\|^>>>>>>>'` over both files returns 0 matches.
+
+Main also touched three aarch64 gate scripts since the merge-base
+(`run-aarch64-boot-test-strict.sh`, `run-aarch64-prod-profile-boot-test.sh`,
+`run-aarch64-service-sequence-gate.sh`), each adding one call to the new
+`scripts/check-aarch64-lockup-no-alloc.sh` guard (failure-capture PR-7). That
+call sits inside each script's real-boot branch, after the
+`SCORE_ONLY_SERIAL` early-exit the fixture-replay tests use
+(`run-aarch64-boot-test-strict.sh:314-316`) -- `tests/loopback_pump_structure.rs`'s
+`both_aarch64_gates_fail_on_a_pinned_placement_refusal` and
+`the_gates_score_the_pin_guard_oracle_in_opposite_directions`, plus
+`tests/ttbr0_shadow_reconciliation_structure.rs`'s own copy of the same
+scoring-only replay, invoke these two gates with `BREENIX_STRICT_SCORE_ONLY`
+/ `BREENIX_PROD_SCORE_ONLY` set, which takes that early-exit path instead of
+reaching the new guard call -- confirmed by reading both scripts' control
+flow (the guard call sits after the `SCORE_ONLY_SERIAL` branch's own
+early-return, at a line number strictly greater than it in both files). So
+R182 does not fire: no scorer requirement
+reaches the replayed `slice3e` fixtures, and no fixture was re-recorded. This
+was confirmed by running the suites, not only by reading the branch: both are
+green at the merged head (below).
+
+### 9.1 Structure suites
+
+`scripts/run-structure-tests.sh <stem>`, once per discovered
+`tests/*_structure.rs` file (the same discovery loop
+`docker/qemu/lib/gate-structure-preflight.sh` uses): **51/51 green**, 0
+failures. `tests/loopback_pump_structure.rs`: `113 passed; 0 failed`.
+`tests/ttbr0_shadow_reconciliation_structure.rs`: `32 passed; 0 failed`.
+`tests/teardown_structure.rs`: `92 passed; 0 failed`.
+
+### 9.2 aarch64 strict gate, `docker/qemu/run-aarch64-boot-test-strict.sh` (default 20 boots)
+
+**Run 1** (host load 8-10 from a concurrent lane's gate on this shared Mac):
+exit 1, 18/20. `[GATE_PREFLIGHT:structure_suites=51/51:critical_path_lines=260:pinned=120]`.
+Two failures:
+
+* Boot 9: `[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=14:armed=0:acquired=1:holder_cpu=2:pm_busy_probe=0:calls=0:eagain=0:first_errno=18446744073709551615:first_wait_us=0:hold_safety=1:hold_done=1:joined=1:FAIL:hold_safety_release]`
+  -- byte-identical `hold_safety_release` arm to the one already filed as
+  **#836** (`hold_safety=1`, same field shape). Serial preserved:
+  `docs/planning/green-program/aarch64-testing/serials/3f-pre-land/15-landing-strict-run1-boot9-fcntl-pm-contention-oracle-fail.txt`.
+* Boot 10: "Ring-span self-check marker missing" -- the raw serial shows the
+  `[RING_SPAN:...]` line byte-interleaved with another unlocked writer
+  (`[L[RING_SPAN:cpu=O0:span_ms=1300G:writes=480:dropGped=0:...]`), the exact
+  mechanism **#847** documents (unlocked multi-byte serial writers on an SMP
+  boot can interleave on the shared UART; fails safe by rejecting a good
+  boot). Serial preserved:
+  `docs/planning/green-program/aarch64-testing/serials/3f-pre-land/16-landing-strict-run1-boot10-ring-span-corruption-fail.txt`.
+
+Neither failure's marker or mechanism involves `scheduler.rs`, `main_aarch64.rs`,
+the pin-guard oracle, or the pinned-placement census -- the two files this
+branch's own diff touches. Both signatures are pre-existing and already filed
+(#836 opened 2026-09-06T06:27:59Z, #847 opened 2026-09-06T07:58:16Z, both
+before this landing round).
+
+**Run 2**, same merged-head kernel binary, lower host load (4-10, no
+concurrent gate for most of the run): exit 0, **20/20**, `Success rate: 100%`.
+`[GATE_PREFLIGHT:structure_suites=51/51:critical_path_lines=260:pinned=120]`.
+`PIN_GUARD_ORACLE` and the pinned-placement census, sampled from boots 1, 5,
+10, 15 and 20's serial (byte-identical across all five):
+
+```
+[PIN_GUARD_ORACLE:aarch64:home=1:here=0:reclaim=1:requeue=1:previous=1:on_home=3:refused=3:census_clean=1:verdict=PASS]
+[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+```
+
+Same shape as section 5's original gate run: `refused=3` sourced from
+`PIN_GUARD_ORACLE_REFUSED`, `census_clean=1` covering 6 fields,
+`migration_refused=0` in the census. Full logs for both runs:
+`docs/planning/green-program/aarch64-testing/serials/3f-pre-land/01-strict-gate-run1-2of20-failed.txt`,
+`.../02-strict-gate-run2-20of20-passed.txt`.
+
+### 9.3 aarch64 production-profile gate, `docker/qemu/run-aarch64-prod-profile-boot-test.sh`
+
+One run (the brief's command takes no iteration argument): exit 0, PASS.
+`[GATE_PREFLIGHT:structure_suites=51/51:critical_path_lines=260:pinned=120]`.
+`PASS: production profile reached bsshd with the futex oracle seam absent`.
+
+```
+Observed pin-guard oracle line count (must be 0 in this profile): 0
+Observed: [PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+```
+
+Same as section 5's original run: 0 pin-guard oracle lines in this
+no-`boot_tests` profile, and `migration_refused=0` in the census. Full log:
+`docs/planning/green-program/aarch64-testing/serials/3f-pre-land/03-prod-profile-gate-run1-passed.txt`.
+
+### 9.4 x86, beast, `docker/qemu/run-x86-boot-tests.sh 1`
+
+One run on beast (`breenix-x86` container, clone `/root/breenix-3fpre1`,
+reset to this branch's merge commit `2653a3739`): exit 0, no `FAIL` marker
+anywhere in the log (`grep -c 'TEST:.*:FAIL\|^FAIL\|:FAIL\]'` returns 0).
+`[GATE_PREFLIGHT:structure_suites=51/51:critical_path_lines=260:pinned=120]`
+at the top of the log; `x86 frame-custody gate run 1: PASS` at the bottom,
+with the script's five `FAIL` arms (`BOOT_TESTS:FAIL`/panic,
+`CENSUS_WIDEN_ORACLE:FAIL`, `TEST:network:*:FAIL`, `TEST:userspace:*:FAIL`,
+`CREATION_LOCK_ORDER:VIOLATION`) each guarded by a `false` that would have
+aborted the script under `set -e` before that PASS line printed. Wall-clock
+was long (roughly 20 minutes from `git reset --hard` to completion) because
+beast's host load averaged 20-27 from other lanes' concurrent builds/gates
+during this run (`breenix-slot1` had its own x86 boot-tests QEMU running
+throughout) and `accel=tcg` (no hardware virtualization in the container) is
+inherently slower than the Mac's HVF-accelerated aarch64 boots -- the boot
+itself ran to completion once it acquired the shared `x86-qemu.lock`, it was
+not stalled. Full log:
+`docs/planning/green-program/aarch64-testing/serials/3f-pre-land/04-x86-boot-tests-run1-passed.txt`.
+
+### 9.5 What this section does NOT claim
+
+* That #836 or #847 are fixed, or that this round investigated either beyond
+  matching the marker text and fields against the filed issue. Both stay open.
+* That the strict gate's 18/20 run-1 result and 20/20 run-2 result together
+  prove the gate's failure rate. Two runs of 20 is not a rate measurement; the
+  claim here is narrower -- both run-1 failures decode to signatures already
+  filed as pre-existing before this round started, and a same-binary re-run
+  reached 20/20.
+* That the aarch64 service-sequence gate ran. The brief's landing checklist
+  names the strict gate, the production-profile gate, the structure suites and
+  the x86 gate; it does not name `run-aarch64-service-sequence-gate.sh`, and
+  this section does not claim it was run.
+* That `origin/main` stayed at `5bfc7077a` for the rest of this round. A
+  `git fetch` partway through beast setup showed `origin/main` had already
+  advanced to `a012bcfbd` from other lanes landing concurrently; this branch's
+  merge and re-smoke are against `5bfc7077a`, and this branch was not
+  re-merged against the newer head.
