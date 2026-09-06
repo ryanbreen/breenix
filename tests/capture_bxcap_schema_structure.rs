@@ -389,14 +389,21 @@ fn assert_untruncated_sections(name: &str, capture: &Capture) {
 /// source so this suite cannot pin a number the kernel no longer uses.
 fn budget_bytes(tiny: bool) -> u64 {
     let source = read(RECORD_SOURCE);
+    // Matched on the WHOLE cfg attribute, not on the feature name: the
+    // ordinary arm is spelled `not(feature = "capture_selftest_tiny_budget")`
+    // and contains the tiny arm's feature name, so a substring match on the
+    // name alone silently returns the ordinary budget for both arms and the
+    // bound check becomes 16x too loose. Found by running this PR's own
+    // budget mutation on a real boot: the mutated capture overran the exact
+    // bound and this helper passed it anyway.
     let wanted = if tiny {
-        "capture_selftest_tiny_budget"
+        "#[cfg(feature = \"capture_selftest_tiny_budget\")]"
     } else {
-        "not(feature = \"capture_selftest_tiny_budget\")"
+        "#[cfg(not(feature = \"capture_selftest_tiny_budget\"))]"
     };
     let mut pending = false;
     for line in source.lines() {
-        if line.contains("#[cfg(") && line.contains(wanted) {
+        if line.trim() == wanted {
             pending = true;
             continue;
         }
@@ -435,6 +442,21 @@ fn assert_byte_bound(name: &str, capture: &Capture, tiny: bool) {
 
 fn fixture(name: &str) -> String {
     read(&format!("{SERIAL_DIR}/{name}"))
+}
+
+#[test]
+fn the_two_budget_arms_are_read_separately() {
+    // Anti-vacuity for `budget_bytes`: if both arms resolved to the same
+    // constant, the tiny-budget fixture's bound check would be checking the
+    // ordinary budget and would pass on a capture 16x over its own limit.
+    let ordinary = budget_bytes(false);
+    let tiny = budget_bytes(true);
+    assert!(
+        tiny < ordinary,
+        "the capture_selftest_tiny_budget arm must be smaller than the ordinary one \
+         (read tiny={tiny}, ordinary={ordinary}); equal values mean the cfg arms are \
+         not being told apart"
+    );
 }
 
 #[test]
