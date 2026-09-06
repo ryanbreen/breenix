@@ -21,6 +21,15 @@
 #
 # Depends on qemu_host_lock_count() from lib/qemu-host-lock.sh for the QEMU
 # count fields -- callers must source that file first.
+#
+# #865: arch-portable. gbf_resolve_qemu_pid takes the QEMU binary name as
+# its second argument (default qemu-system-aarch64, matching
+# qemu_host_lock_acquire's own default) so an x86 caller can pass
+# qemu-system-x86_64 and get the same "walk past a timeout(1) wrapper to
+# the real QEMU child" behavior the aarch64 gates already rely on.
+# gbf_qemu_cpu_seconds, gbf_last_heartbeat_uptime_ms and gbf_emit_line take
+# no binary name -- they operate on a PID or a serial file already resolved
+# to the right process by the caller, and carry no arch-specific text.
 
 # Host wall clock in whole milliseconds since the epoch. macOS `date` has no
 # %N (that is GNU-only), so this uses the same `python3 -c
@@ -65,17 +74,22 @@ gbf_load_1m() {
 # CPU time as "QEMU's CPU time" would silently misreport a boot at
 # ~0.00s regardless of how busy QEMU actually was. This walks one level
 # down via `pgrep -P` to find that child; a
-# caller that instead backgrounds qemu-system-aarch64 directly (no
+# caller that instead backgrounds the QEMU binary directly (no
 # `timeout` in front of it) has $QEMU_PID already pointing at the right
 # process, which the `comm=` check below detects and returns unchanged.
+# `$2` names which QEMU binary to look for (default qemu-system-aarch64,
+# matching qemu_host_lock_acquire's own default) -- an x86 caller passes
+# qemu-system-x86_64 so this resolves the right child under a `timeout`
+# wrapper there too (e.g. the fs-fault gate's x86 leg).
 gbf_resolve_qemu_pid() {
     local wrapper_pid="$1"
+    local qemu_bin="${2:-qemu-system-aarch64}"
     local comm child
     comm="$(ps -o comm= -p "$wrapper_pid" 2>/dev/null | tr -d ' ')"
     case "$comm" in
-        *qemu-system-aarch64) printf '%s' "$wrapper_pid"; return ;;
+        *"$qemu_bin") printf '%s' "$wrapper_pid"; return ;;
     esac
-    child="$(pgrep -P "$wrapper_pid" -x qemu-system-aarch64 2>/dev/null | head -1)"
+    child="$(pgrep -P "$wrapper_pid" -x "$qemu_bin" 2>/dev/null | head -1)"
     if [ -n "$child" ]; then
         printf '%s' "$child"
     else

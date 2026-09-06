@@ -191,6 +191,16 @@ set -E
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/#834/#865/R181: this gate's qemu-system-x86_64 boot runs behind the
+# host-wide lock in lib/qemu-host-lock.sh (one lock domain per QEMU binary),
+# so it cannot starve, or be starved by, a concurrent x86 boot lane on the
+# same host (#865's own report: several beast TCG lanes running at once hit
+# this gate's own timing ceilings on an otherwise healthy guest).
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+# #827/#865: per-boot host-side facts line -- see that file's own header.
+# shellcheck source=lib/gate-boot-facts.sh
+source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_prod_profile
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run.
@@ -1040,6 +1050,13 @@ cp target/ovmf/x64/vars.fd "$OUTPUT_DIR/OVMF_VARS.fd"
 dd if=/dev/zero of="$OUTPUT_DIR/placeholder.img" bs=1M count=16 status=none
 
 echo "Booting the x86_64 production profile..."
+qemu_host_lock_acquire qemu-system-x86_64
+# #827/#865: "start" is sampled here, right after the lock is held and
+# right before QEMU is launched -- see run-aarch64-boot-test-strict.sh's
+# identical placement and its own comment on why.
+HOST_MS_START="$(gbf_host_ms_now)"
+QEMU_AT_START="$(qemu_host_lock_count qemu-system-x86_64)"
+LOAD_AT_START="$(gbf_load_1m)"
 qemu-system-x86_64 \
     -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
     -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -1059,6 +1076,10 @@ qemu-system-x86_64 \
     -serial "file:$OUTPUT_DIR/serial_kernel.txt" \
     >"$OUTPUT_DIR/qemu.log" 2>&1 &
 QEMU_PID=$!
+# F2 (#835 idiom): registers this PID with the lock's own EXIT trap so a
+# SIGTERM/SIGINT delivered to just this script's own PID during the poll
+# below still kills QEMU instead of orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 reached=false
 for _ in $(seq 1 "$POLL_BOUND_SECONDS"); do
@@ -1074,6 +1095,38 @@ for _ in $(seq 1 "$POLL_BOUND_SECONDS"); do
     fi
     sleep 1
 done
+
+# #827/#865: sampled here, before this gate's own eventual kill (further
+# down, after the liveness window) -- ps has no output for a PID already
+# gone. This is the boot-to-steady-state window #826/#865's own timing
+# ceilings are about, so the facts line below is emitted at this point
+# (before the reached-assertion two lines down may abort the script) rather
+# than deferred to the final kill after the liveness window: the
+# `test "$reached" = true` assertion right below this block, under this
+# file's own `set -e`, is what stops a starved or wedged boot from reaching
+# that later kill at all -- deferring the facts line there would leave
+# exactly that boot with no facts line on record.
+HOST_MS_END="$(gbf_host_ms_now)"
+QEMU_AT_END="$(qemu_host_lock_count qemu-system-x86_64)"
+LOAD_AT_END="$(gbf_load_1m)"
+QEMU_ACTUAL_PID="$(gbf_resolve_qemu_pid "$QEMU_PID" qemu-system-x86_64)"
+QEMU_CPU_S="$(gbf_qemu_cpu_seconds "$QEMU_ACTUAL_PID")"
+QEMU_STILL_ALIVE=1
+kill -0 "$QEMU_PID" 2>/dev/null || QEMU_STILL_ALIVE=0
+ENDED_BY="poll_exhausted"
+if [ "$reached" = "true" ]; then
+    ENDED_BY="scored_pass"
+elif grep -qE -- "$CRASH_MARKERS_PATTERN" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+    ENDED_BY="crash_marker"
+elif [ "$QEMU_STILL_ALIVE" = "0" ]; then
+    ENDED_BY="qemu_exited_early"
+fi
+GUEST_UPTIME_MS="$(gbf_last_heartbeat_uptime_ms "$OUTPUT_DIR/serial_kernel.txt")"
+FACTS_LINE="$(gbf_emit_line 1 "$HOST_MS_START" "$HOST_MS_END" \
+    "$QEMU_AT_START" "$LOAD_AT_START" "$QEMU_AT_END" "$LOAD_AT_END" \
+    "$QEMU_CPU_S" "$GUEST_UPTIME_MS" "$ENDED_BY")"
+printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
+echo "  $FACTS_LINE"
 
 # Explicit assertion, not a bare boolean variable: a bare boolean executed as a
 # command is silent under set -e and leaves a red with no verdict text.
@@ -1101,6 +1154,11 @@ PROMPT_AFTER=$(marker_count "$CONSOLE_PROMPT_LITERAL")
 kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
 QEMU_PID=""
+# #865: this gate's own QEMU is dead now, so its lock domain is freed here
+# rather than deferred to script exit -- the ~40 marker-count assertions
+# still to come do not need another x86 boot lane held off the host while
+# they run against the serial already captured above.
+qemu_host_lock_release
 
 test "$PROMPT_AFTER" -gt "$PROMPT_BEFORE"
 

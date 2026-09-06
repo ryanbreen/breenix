@@ -68,6 +68,21 @@ trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/#834/#865/R181: this gate's qemu-system-x86_64 boot(s) run behind the
+# host-wide lock in lib/qemu-host-lock.sh (one lock domain per QEMU binary --
+# see that file's own ARCHITECTURE AWARENESS comment), so at most one
+# qemu-system-x86_64 is active on this host for each boot's duration. #865
+# is this lock's own report of the failure mode on the beast x86 host:
+# several TCG lanes running concurrently starve each other and hit the
+# gate's own timing ceilings on a healthy guest.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+# #827/#865: per-boot host-side facts (wall-clock window, host QEMU count
+# and load average at start/kill, QEMU's own CPU time, the guest's last
+# heartbeat, and which bound ended the boot) -- see that file's own header
+# for why a starved boot and a wedged boot could not be told apart before.
+# shellcheck source=lib/gate-boot-facts.sh
+source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_boot_tests_$i
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run and
@@ -481,6 +496,15 @@ for i in $(seq 1 "$COUNT"); do
     cp target/ovmf/x64/code.fd "$OUTPUT_DIR/OVMF_CODE.fd"
     cp target/ovmf/x64/vars.fd "$OUTPUT_DIR/OVMF_VARS.fd"
 
+    qemu_host_lock_acquire qemu-system-x86_64
+    # #827/#865: "start" is sampled here, right after the lock is held and
+    # right before QEMU is launched -- this is when THIS boot's own
+    # wall-clock window actually begins, so time spent blocked on the host
+    # lock is not folded into the window the guest-uptime ratio is measured
+    # against.
+    HOST_MS_START="$(gbf_host_ms_now)"
+    QEMU_AT_START="$(qemu_host_lock_count qemu-system-x86_64)"
+    LOAD_AT_START="$(gbf_load_1m)"
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -497,6 +521,10 @@ for i in $(seq 1 "$COUNT"); do
         -serial "file:$OUTPUT_DIR/serial_kernel.txt" \
         >"$OUTPUT_DIR/qemu.log" 2>&1 &
     RUNNER_PID=$!
+    # F2 (#835 idiom): registers this PID with the lock's own EXIT trap so a
+    # SIGTERM/SIGINT delivered to just this script's own PID during the poll
+    # below still kills QEMU instead of orphaning it with the lock free.
+    qemu_host_lock_track_pid "$RUNNER_PID"
 
     passed=false
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
@@ -618,8 +646,50 @@ for i in $(seq 1 "$COUNT"); do
         sleep 1
     done
 
+    # #827/#865: sampled together, immediately before this boot's own kill --
+    # ps has no output for a PID already gone, so qemu_cpu_seconds and the
+    # aliveness check below must both run before the kill line, not after.
+    HOST_MS_END="$(gbf_host_ms_now)"
+    QEMU_AT_END="$(qemu_host_lock_count qemu-system-x86_64)"
+    LOAD_AT_END="$(gbf_load_1m)"
+    QEMU_ACTUAL_PID="$(gbf_resolve_qemu_pid "$RUNNER_PID" qemu-system-x86_64)"
+    QEMU_CPU_S="$(gbf_qemu_cpu_seconds "$QEMU_ACTUAL_PID")"
+    QEMU_STILL_ALIVE=1
+    kill -0 "$RUNNER_PID" 2>/dev/null || QEMU_STILL_ALIVE=0
+
     kill "$RUNNER_PID" 2>/dev/null || true
     wait "$RUNNER_PID" 2>/dev/null || true
+    qemu_host_lock_release
+
+    # #865: ended_by names which bound in the poll loop above actually ended
+    # this boot -- a read taken immediately after the loop already stopped
+    # (the same #827 idiom the aarch64 strict gate uses), not a new stop
+    # condition. `passed` above is set only by the single success predicate;
+    # the four `grep`-and-`break` failure predicates immediately above this
+    # point (BOOT_TESTS:FAIL/panic, CENSUS_WIDEN_ORACLE FAIL,
+    # CREATION_LOCK_ORDER VIOLATION, TEST:network/TEST:userspace FAIL) are
+    # collapsed into one "failure_marker" bucket here rather than named
+    # individually -- which specific marker fired is already visible in the
+    # serial this line is printed alongside, and scripts/x86-gate-verdict.sh
+    # (run further down) makes the actual pass/fail call either way.
+    ENDED_BY="poll_exhausted"
+    if [ "$passed" = "true" ]; then
+        ENDED_BY="scored_pass"
+    elif grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+        || grep -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+        || grep -qF '[CREATION_LOCK_ORDER:VIOLATION' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+        || grep -qE '\[TEST:network:[^]]*:FAIL' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+        || grep -qE '\[TEST:userspace:[^]]*:FAIL' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+        ENDED_BY="failure_marker"
+    elif [ "$QEMU_STILL_ALIVE" = "0" ]; then
+        ENDED_BY="qemu_exited_early"
+    fi
+    GUEST_UPTIME_MS="$(gbf_last_heartbeat_uptime_ms "$OUTPUT_DIR/serial_kernel.txt")"
+    FACTS_LINE="$(gbf_emit_line "$i" "$HOST_MS_START" "$HOST_MS_END" \
+        "$QEMU_AT_START" "$LOAD_AT_START" "$QEMU_AT_END" "$LOAD_AT_END" \
+        "$QEMU_CPU_S" "$GUEST_UPTIME_MS" "$ENDED_BY")"
+    printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
+    echo "  $FACTS_LINE"
 
     # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
     # BEFORE the passed-flag check below (and before the ~40 marker-count
