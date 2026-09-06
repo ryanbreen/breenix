@@ -155,7 +155,25 @@ BEGIN {
     file_complete = 0
     completion_seq = 0
     truncated_at_marker = 0
-    valid_re = "^\\[DISPATCH_STRAND_CENSUS:seq=[0-9]+:tick=[0-9]+:ms=[0-9]+:saved=[0-9]+:stranded=[0-9]+:tids=(-|[0-9]+(,[0-9]+)*):tid_overflow=[0-9]+:ledger_overflow=[0-9]+\\]$"
+    # The eight fields this tool reads, then any number of further
+    # name=digits fields. That tail is what PR-1 of the critical-path logging
+    # drain appends: ten DispatchLogFact totals, which belong to the
+    # dispatch-path publication census and not to the strand verdict this
+    # script computes. Accepting rather than requiring them is deliberate. The
+    # committed round-4 captures of 775 under
+    # docs/planning/green-program/sockets/serials/775/ carry the eight-field
+    # form and are replayed verbatim by tests/x86_gate_verdict_test.rs, so a
+    # shape check that demanded eighteen fields would score those real
+    # captures malformed. What holds the ten new fields on live bytes is the
+    # DISPATCH_FACT_ORACLE pin in docker/qemu/run-x86-boot-tests.sh, not this
+    # regex.
+    #
+    # NOTE: this comment sits INSIDE the single-quoted awk program, so it
+    # carries no apostrophe and no backtick. One apostrophe here terminates
+    # the program string and what is left prints 0 lines and exits 0; the
+    # first draft of this very comment did exactly that, and
+    # tests/x86_gate_verdict_test.rs caught it.
+    valid_re = "^\\[DISPATCH_STRAND_CENSUS:seq=[0-9]+:tick=[0-9]+:ms=[0-9]+:saved=[0-9]+:stranded=[0-9]+:tids=(-|[0-9]+(,[0-9]+)*):tid_overflow=[0-9]+:ledger_overflow=[0-9]+(:[a-z_]+=[0-9]+)*\\]$"
     best_seq = -1
     valid = 0
     malformed = 0

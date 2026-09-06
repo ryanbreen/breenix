@@ -445,6 +445,27 @@ TTY_IRQ_PM_ORACLE_PATTERN='\[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking
 # machine boots uniprocessor and the injection would take the boot with it.
 # `entry_us` is pinned loosely here for the reason the pattern above gives.
 TTY_IRQ_FG_ORACLE_PATTERN='\[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=[1-9][0-9]*:processed=2:buffered=[1-9][0-9]*:irqs_enabled_before=1:fg_busy_probe=1:entry_us=[0-9]+:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:local_hold\]'
+# Critical-path logging drain PR-1
+# (docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md).
+# PR-1 deleted 16 `log::*!` calls from kernel/src/interrupts/context_switch.rs;
+# ten of the arms had no counter of any kind, so each got one relaxed
+# `DispatchLogFact` counter, appended to the `[DISPATCH_STRAND_CENSUS:...]`
+# line as its own named field. This oracle
+# (kernel/src/test_framework/registry.rs, run_x86_dispatch_fact_oracle) drives
+# exactly one leg per fact between two forced census snapshots and reports how
+# many of the ten moved by EXACTLY one leg. `moved_wrong=0` is the
+# independence claim -- ten counters that all alias one cell would report
+# moved_by_one=1 -- and `irqs_enabled_before=1` is the claim that it read the
+# census through the reporter's real emission boundary, which refuses to run
+# with interrupts disabled. Pinned as an exact literal, so a FAIL emission
+# cannot satisfy this gate by merely being present, and pinned to an emission
+# count of 1 below, so a deleted call site cannot pass by silence.
+#
+# What it does NOT show: that any site in context_switch.rs calls the counter.
+# Seven of the ten arms are defensive arms this tree cannot reach on a running
+# kernel. tests/dispatch_fact_census_structure.rs pins the site-to-counter
+# binding at source, per site.
+DISPATCH_FACT_ORACLE_LITERAL='[DISPATCH_FACT_ORACLE:x86:facts=10:legs=10:moved_by_one=10:moved_wrong=0:irqs_enabled_before=1:PASS]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -497,6 +518,37 @@ TIMER_SCALE_ORACLE_PASS_PATTERN='\[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_be
 # span_ms is kept as an informational, non-gating liveness print only.
 RING_SPAN_PATTERN='\[RING_SPAN:cpu=0:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+:ticks_total=[0-9]+:tick_events=[0-9]+\]'
 RING_SPAN_RATIO_FLOOR=10
+# #766: wake-to-dispatch latency. One kthread sleeps 10 ms against an absolute
+# monotonic deadline while 8 CPU-bound kthreads are runnable; the oracle reports
+# `wake_instant - deadline`. Before the fix, `wake_expired_timers` enqueued a
+# thread whose deadline had already passed at the TAIL of the single x86 ready
+# queue, so the wake cost a full round robin -- #766 measured p90 2592 ms and
+# max 10318 ms over 324 trials, and #631's `clock_gettime_test` Test 3 red is
+# that same quantity seen from userspace. The fix enqueues at the head, which
+# bounds the wait by the running thread's remaining quantum plus one tick:
+# 10 ticks * 5 ms + 5 ms = 55 ms on this profile. `bound_ms=100` is that plus a
+# TCG jitter allowance; `quantum_ms` and `round_ms` are printed so the
+# arithmetic can be redone from the line. The remaining fields are pinned
+# because the marker's own PASS also requires them, so a gate that re-derives
+# them cannot be satisfied by a verdict that drifted.
+TIMER_WAKE_LATENCY_ORACLE_PREFIX='[TIMER_WAKE_LATENCY_ORACLE:'
+TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=[1-9][0-9]*:peers_started=8:peers_spinning=8:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
+# Anti-vacuity preflights on that pattern, in the shape the aarch64 strict gate
+# uses for its own oracle patterns: a sample carrying the pre-fix reading must
+# be REJECTED, and a sample carrying a real measured reading must be ACCEPTED.
+# Without the first, a gate could score green on a line it did not really
+# constrain; without the second, this gate could not pass.
+timer_wake_oracle_sample() {
+    printf '[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=%s:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2"
+}
+if timer_wake_oracle_sample 2592 FAIL | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
+    echo "x86 frame-custody gate preflight: TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN accepts the pre-#766 reading (overrun_ms=2592, FAIL), so this gate would score green on the round-robin wake latency it exists to catch"
+    false
+fi
+if ! timer_wake_oracle_sample 41 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
+    echo "x86 frame-custody gate preflight: TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN rejects overrun_ms=41, a reading the repaired dispatch really records, so this gate cannot pass"
+    false
+fi
 # Thirteen oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
 # Ten launched test programs, one smoke_hello_time (the RING3_SMOKE process
 # kernel_main_continue creates after the twelve disk-loaded ones), one
@@ -688,6 +740,8 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$SCHED_STRAND_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$CENSUS_WIDEN_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
@@ -697,6 +751,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$DISPATCH_FACT_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -1135,6 +1191,31 @@ for i in $(seq 1 "$COUNT"); do
     INIT_GROUP_WALK_COUNT=$(awk 'index($0, "[INIT_GROUP_WALK") { count++ } END { print count + 0 }' \
         "$OUTPUT_DIR"/serial_*.txt)
     test "$INIT_GROUP_WALK_COUNT" -eq 0
+    # (3b) critical-path logging drain PR-1: the dispatch-fact oracle, emitted
+    # once and passing.
+    test "$(grep -h -F -c "$DISPATCH_FACT_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    # And no site in the dispatch path printed any of the sixteen strings PR-1
+    # deleted. The census ratchet says the CALLS are gone at source; this says
+    # the BYTES are gone from the capture, which is the property the drain is
+    # for.
+    test "$(grep -h -c -e 'Context switch aborted' \
+        -e 'has no main_thread for thread' \
+        -e 'Could not find process for thread' \
+        -e 'Process manager is None' \
+        -e 'Failed to switch TLS for thread' \
+        -e 'has pending signals - delivering' \
+        -e 'Restored userspace context for signal delivery' \
+        -e 'Signal terminated process, thread' \
+        -e 'Signal termination in blocked_in_syscall path' \
+        -e 'Signal delivered to thread' \
+        -e 'Failed to acquire lock to restore kernel context' \
+        -e "Failed to get idle thread's kernel stack" \
+        -e 'KTHREAD_SWITCH: Failed to get thread info' \
+        -e 'Refusing userspace restore of kernel frame' \
+        -e 'has no kernel stack!' \
+        -e 'Signal delivery check: process' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
     # (4) #767: the timer-scale oracle, emitted once and passing.
     test "$(grep -h -F -c -- "$TIMER_SCALE_ORACLE_PREFIX" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
@@ -1154,6 +1235,14 @@ for i in $(seq 1 "$COUNT"); do
     test -n "$RING_SPAN_TICK_EVENTS"
     test "$RING_SPAN_TICK_EVENTS" -gt 0
     test "$RING_SPAN_TICKS_TOTAL" -ge "$((RING_SPAN_TICK_EVENTS * RING_SPAN_RATIO_FLOOR))"
+    # (6) #766: the wake-to-dispatch latency oracle, emitted once and passing.
+    # Pinning the emission count at 1 as well as the PASS line means a FAIL
+    # emission cannot hide behind a later PASS, and a deleted call site cannot
+    # pass this gate by silence.
+    test "$(grep -h -F -c -- "$TIMER_WAKE_LATENCY_ORACLE_PREFIX" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -E -c "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
@@ -1211,6 +1300,9 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TIMER_SCALE_ORACLE_LINE"
     echo "$RING_SPAN_LINE"
+    TIMER_WAKE_LATENCY_ORACLE_LINE=$(grep -h -F -- "$TIMER_WAKE_LATENCY_ORACLE_PREFIX" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$TIMER_WAKE_LATENCY_ORACLE_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (BOOT_TESTS:FAIL, KERNEL PANIC, or panic! marker present)"

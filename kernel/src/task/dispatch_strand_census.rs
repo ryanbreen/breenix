@@ -26,6 +26,123 @@ static OVERFLOW_EVENTS: AtomicU64 = AtomicU64::new(0);
 static LAST_HEARTBEAT_NS: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOT_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// The dispatch-path facts that used to be published by a `log::*!` call in
+/// `interrupts::context_switch` and now have no other publication at all.
+///
+/// PR-1 of the critical-path logging drain deletes 16 `log::*!` calls from
+/// `kernel/src/interrupts/context_switch.rs`. Six of them stood beside a
+/// `trace_dispatch_abandon(DispatchAbandonSite::…)` that already counts the
+/// same arm, so deleting them drops no fact. The other ten had no counter of
+/// any kind, and each one gets a variant here: one relaxed `fetch_add` on the
+/// dispatch path, read back and printed from ordinary thread context by
+/// `report_snapshot()` below, which is the emission boundary that already
+/// refuses to run with interrupts disabled.
+///
+/// This is a SIBLING of `tracing::providers::sched::DispatchAbandonSite`, not
+/// an extension of it, and deliberately so: four of the ten arms
+/// (`SignalPendingBlocked`, `SignalContextBlocked`, `SignalDeliveredBlocked`,
+/// `SignalDeliverableUser`) do NOT abandon the dispatch, so folding them into
+/// that enum would add them to the `DISPATCH_SWITCH_IDLE_REDIRECT` aggregate
+/// whose ten contributing arms that counter's own documentation enumerates.
+///
+/// The discriminants index `DISPATCH_LOG_FACTS`, and the order here is the
+/// order the fields appear in the census line.
+/// claim-lint:ok: the 16/6/10 split is the per-site table in
+/// docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md and
+/// is pinned site by site by tests/dispatch_fact_census_structure.rs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(usize)]
+pub(crate) enum DispatchLogFact {
+    /// `save_current_thread_context_with_guard`: the process was found but
+    /// carries no `main_thread`, so no context was saved.
+    SaveNoMainThread = 0,
+    /// `save_current_thread_context_with_guard`: no process in the manager
+    /// owns the thread being saved.
+    SaveProcessNotFound = 1,
+    /// `save_current_thread_context_with_guard`: the guard was taken but the
+    /// manager option it wraps is unset.
+    SaveManagerNone = 2,
+    /// `switch_to_thread`, blocked-in-syscall arm: the thread has deliverable
+    /// signals and a saved userspace context, so delivery runs on that context.
+    SignalPendingBlocked = 3,
+    /// `switch_to_thread`, blocked-in-syscall arm: the saved userspace context
+    /// was installed into the interrupt frame for that delivery.
+    SignalContextBlocked = 4,
+    /// `switch_to_thread`, blocked-in-syscall arm: delivery returned
+    /// `Delivered`.
+    SignalDeliveredBlocked = 5,
+    /// `setup_idle_return`: the idle thread has no kernel stack, so the
+    /// per-CPU fallback was used for the return frame.
+    IdleStackMissing = 6,
+    /// `setup_kernel_thread_return`: the scheduler has no thread info for the
+    /// thread being dispatched, so no context was restored.
+    KernelThreadInfoMissing = 7,
+    /// `restore_userspace_thread_context`: the userspace thread has no kernel
+    /// stack, so `TSS.RSP0` was left as it stood.
+    UserKernelStackMissing = 8,
+    /// `restore_userspace_thread_context`: the process has deliverable signals
+    /// at the point the userspace context has been restored.
+    SignalDeliverableUser = 9,
+}
+
+/// The number of `DispatchLogFact` variants. A variant added without widening
+/// this does not compile (`DISPATCH_LOG_FACTS[fact as usize]` is a constant
+/// index into a fixed array, and `FACT_FIELD_NAMES` below is the same length).
+pub(crate) const DISPATCH_LOG_FACT_COUNT: usize = 10;
+
+/// One whole-machine relaxed counter per fact. Relaxed and unsynchronised on
+/// purpose: these are counts read once a second from thread context, not
+/// values another CPU acts on, so the increment is a single `lock xadd` with
+/// no ordering constraint and no lock, allocation or formatting -- the 3
+/// shapes the dispatch path admits.
+/// claim-lint:ok: the 3 admitted shapes are the Tier-2 constraint list in
+/// CLAUDE.md, and this function is pinned to a single relaxed `fetch_add` by
+/// tests/dispatch_fact_census_structure.rs.
+static DISPATCH_LOG_FACTS: [AtomicU64; DISPATCH_LOG_FACT_COUNT] =
+    [const { AtomicU64::new(0) }; DISPATCH_LOG_FACT_COUNT];
+
+/// The census-line field name of each fact, in discriminant order.
+const FACT_FIELD_NAMES: [&str; DISPATCH_LOG_FACT_COUNT] = [
+    "save_no_thread",
+    "save_no_proc",
+    "save_no_pm",
+    "sig_pending_blocked",
+    "sig_ctx_blocked",
+    "sig_delivered_blocked",
+    "idle_no_stack",
+    "kthread_no_info",
+    "user_no_kstack",
+    "sig_deliverable_user",
+];
+
+/// Record one occurrence of `fact`. Called from the dispatch path with
+/// interrupts disabled and, at several sites, with `PROCESS_MANAGER` held.
+#[inline(always)]
+pub(crate) fn note_fact(fact: DispatchLogFact) {
+    DISPATCH_LOG_FACTS[fact as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// The ten totals, in the order the census line prints them.
+pub(crate) fn fact_counts() -> [u64; DISPATCH_LOG_FACT_COUNT] {
+    let mut out = [0u64; DISPATCH_LOG_FACT_COUNT];
+    for (index, slot) in DISPATCH_LOG_FACTS.iter().enumerate() {
+        out[index] = slot.load(Ordering::Relaxed);
+    }
+    out
+}
+
+/// The ten `name=value` fields, rendered for the census line.
+struct FactFields([u64; DISPATCH_LOG_FACT_COUNT]);
+
+impl fmt::Display for FactFields {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (name, value) in FACT_FIELD_NAMES.iter().zip(self.0.iter()) {
+            write!(formatter, ":{name}={value}")?;
+        }
+        Ok(())
+    }
+}
+
 #[inline(always)]
 fn slot(tid: u64) -> Option<&'static AtomicU8> {
     let index = usize::try_from(tid).ok()?;
@@ -103,7 +220,16 @@ impl fmt::Display for TidList<'_> {
 /// Fields, in emission order: `seq` (1-based, unique within a boot, strictly
 /// increasing), `tick` (the raw PIT tick counter), `ms` (milliseconds on the
 /// monotonic clock the rate limiter reads), `saved`, `stranded`, `tids`,
-/// `tid_overflow`, `ledger_overflow`.
+/// `tid_overflow`, `ledger_overflow`, then the ten `DispatchLogFact` totals in
+/// discriminant order (`FACT_FIELD_NAMES`).
+///
+/// The ten fact fields are APPENDED, so every consumer that reads the first
+/// eight by name keeps working on a capture recorded before this PR;
+/// `scripts/x86-strand-census.sh`'s shape check accepts the eight-field and
+/// the eighteen-field forms alike, which is what lets the committed #775
+/// round-4 captures under
+/// `docs/planning/green-program/sockets/serials/775/` still be replayed by
+/// tests/x86_gate_verdict_test.rs.
 /// claim-lint:ok: #775 ruling R125 fixes the permitted emission call sites.
 pub(crate) fn report_snapshot() {
     let mut threads_saved_blocked = 0u64;
@@ -128,7 +254,7 @@ pub(crate) fn report_snapshot() {
     let seq = SNAPSHOT_SEQ.fetch_add(1, Ordering::Release) + 1;
 
     crate::log_serial_println!(
-        "[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}]",
+        "[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}]",
         seq,
         crate::time::get_ticks(),
         monotonic_now_ns() / 1_000_000,
@@ -137,12 +263,27 @@ pub(crate) fn report_snapshot() {
         TidList(&stranded_tids[..stranded_tid_count]),
         tid_overflow,
         OVERFLOW_EVENTS.load(Ordering::Acquire),
+        FactFields(fact_counts()),
     );
 }
 
 fn monotonic_now_ns() -> u64 {
     let (seconds, nanos) = crate::time::get_monotonic_time_ns();
     seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+/// Emit one snapshot NOW, bypassing the one-per-second limiter.
+///
+/// `boot_tests` only, and called only from
+/// `test_framework::registry::run_x86_dispatch_fact_oracle`, which needs the
+/// two bracketing census lines its verdict is read against to be adjacent in
+/// the capture rather than up to a second apart. It shares the emission
+/// boundary's contract by construction -- the oracle runs on the boot thread
+/// with interrupts enabled -- and it does not disturb the limiter, so the
+/// 1 Hz cadence the gate measures is unchanged.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn force_snapshot() {
+    report_snapshot();
 }
 
 /// Emit at most one census snapshot per second from existing housekeeping.

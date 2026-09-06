@@ -209,6 +209,15 @@ pub static WAKE_SITE_CHILD_EXIT: AtomicU64 = AtomicU64::new(0);
 pub static WAKE_SITE_TIMER: AtomicU64 = AtomicU64::new(0);
 
 pub static ENQUEUE_SAME_LOCK_OK: AtomicU64 = AtomicU64::new(0);
+/// Timer wakes that `wake_expired_timers` put on a ready queue itself (#766).
+///
+/// Position-neutral by design: it counts the enqueue, not where in the queue
+/// the enqueue landed. Its only job is to let a reader tell "the timer-wake
+/// enqueue site ran in this window" from "no timer wake reached it at all",
+/// which is what the #766 latency oracle needs to know before it reports a
+/// number. `WAKE_SITE_TIMER` above cannot answer that: it also counts the
+/// still-current arm, which does not enqueue.
+pub static ENQUEUE_TIMER_WAKE: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_DEFERRED: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_ISR_BUFFER: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_ISR_BUFFER_DEDUP: AtomicU64 = AtomicU64::new(0);
@@ -4255,7 +4264,49 @@ impl Scheduler {
                                 | ((target as u32 & 0xF) << 16)
                                 | self.ready_queue_length() as u32,
                         );
-                        self.per_cpu_queues[target].push_back(tid);
+                        // #766: HEAD, not tail. An entry reaches this line
+                        // only after the loop above read its `wake_time` as no
+                        // later than `now`, so a thread enqueued here is one
+                        // whose deadline has ALREADY passed -- the question
+                        // left is how long it waits on top of that. A tail
+                        // enqueue answers "one full round robin": on x86
+                        // `MAX_CPUS` is 1, so this is the single ready queue
+                        // the runnable threads share, and the woken thread
+                        // waits for the threads ahead of it to exhaust their
+                        // own quanta before it is selected. #766 measured that
+                        // as a wake-to-dispatch overrun of p90 2592 ms and max
+                        // 10318 ms over 324 trials.
+                        //
+                        // Placing a late wake at the head bounds the wait by
+                        // the CURRENT thread's remaining quantum instead of by
+                        // the whole queue's: the pass that runs this function
+                        // is `schedule()`'s own, and its selection loop pops
+                        // the front of this queue a few lines later.
+                        //
+                        // This does not change the quantum policy for ordinary
+                        // preemption: the outgoing thread is still re-enqueued
+                        // at the TAIL by `schedule()`, and a thread promoted
+                        // here is preempted on the same quantum as everything
+                        // else, after which it too goes to the tail. Only
+                        // threads that actually slept are promoted, and only
+                        // once per wake.
+                        //
+                        // Not claimed: deadline order among threads promoted in
+                        // the SAME pass. The heap pops earliest-deadline-first
+                        // and each pop goes to the front, so a pass that
+                        // promotes several reverses their order relative to
+                        // one another. They are already late, and a promoted
+                        // thread does not wait on the others' quanta, so the
+                        // property this change is for is unaffected;
+                        // earliest-deadline dispatch is a different change with
+                        // its own evidence.
+                        //
+                        // Cost on the path: one `VecDeque::push_front` instead
+                        // of one `push_back` (both O(1) on a ring buffer, same
+                        // instruction count class) plus one relaxed increment.
+                        // No lock, no allocation, no formatting, no I/O.
+                        self.per_cpu_queues[target].push_front(tid);
+                        ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     } else {
                         self.hold_pinned_wake_for_home(tid);

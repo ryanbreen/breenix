@@ -1874,6 +1874,106 @@ pub fn run_x86_ring_span_gate() {
 }
 
 // =============================================================================
+// Critical-path logging drain PR-1: the dispatch-fact publication oracle
+// =============================================================================
+
+/// Forced-leg oracle for the ten `DispatchLogFact` counters PR-1 of the
+/// critical-path logging drain added to replace ten deleted `log::*!` calls in
+/// `interrupts::context_switch`.
+///
+/// WHAT IT MEASURES. That each of the ten facts has its OWN field in the
+/// `[DISPATCH_STRAND_CENSUS:...]` line, that the ten fields move
+/// INDEPENDENTLY, and that each moves by EXACTLY the number of legs driven
+/// against it -- one -- with the counter read back through the same
+/// thread-context reporter the gate reads. It brackets the legs with two
+/// forced census snapshots so the before and after lines are adjacent in the
+/// capture.
+///
+/// WHAT IT DOES NOT MEASURE. That any site in
+/// `kernel/src/interrupts/context_switch.rs` calls `note_fact`. This oracle
+/// drives the counters directly, because seven of the ten arms are defensive
+/// arms that this tree cannot reach on a running kernel (a userspace thread
+/// with no process row, an idle thread with no kernel stack, a process
+/// manager option left unset after `process::init`), and reaching them would
+/// mean injecting a fault into a Tier-2 dispatch path. The site-to-counter
+/// binding is pinned instead, per site, by
+/// `tests/dispatch_fact_census_structure.rs`, and the absence of the deleted
+/// prints by `tests/critical_path_logging_census_structure.rs`.
+/// claim-lint:ok: the 10 legs and the 7 unreachable arms are the per-site
+/// table in
+/// docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md.
+///
+/// The ten increments are permanent for the rest of the boot, so each census
+/// line after this oracle carries the oracle's own 1 in each of the ten
+/// fields on top of whatever the dispatch path produced. That offset is
+/// stated here rather than subtracted, so a reader of a later line is not
+/// handed a number the kernel did not print.
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+pub fn run_x86_dispatch_fact_oracle() {
+    use crate::task::dispatch_strand_census::{
+        fact_counts, force_snapshot, note_fact, DispatchLogFact, DISPATCH_LOG_FACT_COUNT,
+    };
+
+    const LEGS: [DispatchLogFact; DISPATCH_LOG_FACT_COUNT] = [
+        DispatchLogFact::SaveNoMainThread,
+        DispatchLogFact::SaveProcessNotFound,
+        DispatchLogFact::SaveManagerNone,
+        DispatchLogFact::SignalPendingBlocked,
+        DispatchLogFact::SignalContextBlocked,
+        DispatchLogFact::SignalDeliveredBlocked,
+        DispatchLogFact::IdleStackMissing,
+        DispatchLogFact::KernelThreadInfoMissing,
+        DispatchLogFact::UserKernelStackMissing,
+        DispatchLogFact::SignalDeliverableUser,
+    ];
+
+    let irqs_enabled = u64::from(crate::arch_interrupts_enabled());
+
+    // The `before` line. Forced rather than rate-limited so it sits directly
+    // above the legs in the capture.
+    force_snapshot();
+    let before = fact_counts();
+
+    // One leg per fact, in discriminant order.
+    for fact in LEGS {
+        note_fact(fact);
+    }
+
+    let after = fact_counts();
+    // The `after` line.
+    force_snapshot();
+
+    let mut moved_by_one = 0u64;
+    let mut moved_wrong = 0u64;
+    for index in 0..DISPATCH_LOG_FACT_COUNT {
+        if after[index] == before[index] + 1 {
+            moved_by_one += 1;
+        } else {
+            moved_wrong += 1;
+        }
+    }
+
+    let verdict = if moved_by_one == DISPATCH_LOG_FACT_COUNT as u64
+        && moved_wrong == 0
+        && irqs_enabled == 1
+    {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+
+    crate::serial_println!(
+        "[DISPATCH_FACT_ORACLE:x86:facts={}:legs={}:moved_by_one={}:moved_wrong={}:irqs_enabled_before={}:{}]",
+        DISPATCH_LOG_FACT_COUNT,
+        DISPATCH_LOG_FACT_COUNT,
+        moved_by_one,
+        moved_wrong,
+        irqs_enabled,
+        verdict,
+    );
+}
+
+// =============================================================================
 // Logging Test Functions (Phase 4d)
 // =============================================================================
 

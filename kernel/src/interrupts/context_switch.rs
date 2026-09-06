@@ -10,6 +10,7 @@ use crate::task::process_context::{
     is_kernel_code_selector, restore_userspace_context, save_userspace_context, RestoreError,
     SavedRegisters,
 };
+use crate::task::dispatch_strand_census::{note_fact, DispatchLogFact};
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
 use crate::tracing::providers::counters::{
@@ -455,11 +456,6 @@ pub extern "C" fn check_need_resched_and_switch(
                     DispatchSaveReason::UserPreempt
                 },
             ) {
-                log::error!(
-                    "Context switch aborted: failed to save thread {} context. \
-                     Would cause return to stale RIP!",
-                    old_thread_id
-                );
                 // Roll back the committed switch and re-arm rescheduling.
                 scheduler::abort_dispatch_and_resume(new_thread_id, old_thread_id);
                 trace_dispatch_abandon(DispatchAbandonSite::RollbackSaveFailed);
@@ -646,20 +642,13 @@ fn save_current_thread_context_with_guard(
                 );
                 return true;
             } else {
-                log::error!(
-                    "Process {} has no main_thread for thread {}",
-                    pid.as_u64(),
-                    thread_id
-                );
+                note_fact(DispatchLogFact::SaveNoMainThread);
             }
         } else {
-            log::error!(
-                "Could not find process for thread {} in process manager",
-                thread_id
-            );
+            note_fact(DispatchLogFact::SaveProcessNotFound);
         }
     } else {
-        log::error!("Process manager is None");
+        note_fact(DispatchLogFact::SaveManagerNone);
     }
     false
 }
@@ -833,8 +822,7 @@ fn switch_to_thread(
     .unwrap_or(false);
 
     if !is_kernel_thread {
-        if let Err(e) = crate::tls::switch_tls(thread_id) {
-            log::error!("Failed to switch TLS for thread {}: {}", thread_id, e);
+        if crate::tls::switch_tls(thread_id).is_err() {
             scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
             trace_dispatch_abandon(DispatchAbandonSite::RollbackTls);
             scheduler::set_need_resched();
@@ -977,10 +965,7 @@ fn switch_to_thread(
 
                     if has_pending_signals && has_saved_context {
                         // SIGNAL DELIVERY PATH: Use saved userspace context for signal delivery
-                        log::info!(
-                            "Thread {} has pending signals - delivering via saved userspace context",
-                            thread_id
-                        );
+                        note_fact(DispatchLogFact::SignalPendingBlocked);
 
                         // CRITICAL FIX: Use context from scheduler's Thread (single source of truth)
                         // Fall back to process.main_thread for backwards compatibility
@@ -1027,11 +1012,7 @@ fn switch_to_thread(
                                 });
                             }
 
-                            log::info!(
-                                "Restored userspace context for signal delivery: RIP={:#x} RSP={:#x} RAX=-EINTR",
-                                saved_ctx.rip,
-                                saved_ctx.rsp
-                            );
+                            note_fact(DispatchLogFact::SignalContextBlocked);
                         }
 
                         // Clear blocked_in_syscall and saved context on BOTH process.main_thread
@@ -1075,8 +1056,7 @@ fn switch_to_thread(
 
                         // Handle signal result
                         match signal_result {
-                            crate::signal::delivery::SignalDeliveryResult::Terminated(n) => {
-                                log::info!("Signal terminated process, thread {}", thread_id);
+                            crate::signal::delivery::SignalDeliveryResult::Terminated(_) => {
                                 // Process was terminated - notify parent after releasing locks
                                 // We need to return from this function and let the locks drop naturally
                                 // but first save the notification data
@@ -1089,10 +1069,6 @@ fn switch_to_thread(
                                 // However, this path is rare (signal terminating a process whose parent
                                 // is blocked in waitpid *at the exact same time*).
                                 // The parent notification happens in the other code paths.
-                                log::debug!(
-                                    "Signal termination in blocked_in_syscall path: parent {} will be notified when resumed",
-                                    n.parent_pid.as_u64()
-                                );
                                 // The return frame, RSP0, and CR3 already name the terminated
                                 // thread, so bookkeeping-only rollback would make recorded and
                                 // executing threads diverge. Complete the switch to idle on its
@@ -1108,7 +1084,7 @@ fn switch_to_thread(
                                 return;
                             }
                             crate::signal::delivery::SignalDeliveryResult::Delivered => {
-                                log::info!("Signal delivered to thread {}", thread_id);
+                                note_fact(DispatchLogFact::SignalDeliveredBlocked);
                             }
                             crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                         }
@@ -1191,10 +1167,6 @@ fn switch_to_thread(
         } else {
             // CRITICAL: Cannot acquire lock to restore kernel context
             // This is a fatal error - we cannot switch to this thread without its context
-            log::error!(
-                "Failed to acquire lock to restore kernel context for thread {}. Context switch aborted.",
-                thread_id
-            );
             // Roll back the committed dispatch and re-arm rescheduling.
             scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
             trace_dispatch_abandon(DispatchAbandonSite::RollbackKernelContextLock);
@@ -1229,7 +1201,7 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
     })
     .flatten()
     .unwrap_or_else(|| {
-        log::error!("Failed to get idle thread's kernel stack!");
+        note_fact(DispatchLogFact::IdleStackMissing);
         crate::per_cpu::kernel_stack_top() // Fallback, but this is wrong
     });
 
@@ -1334,10 +1306,7 @@ fn setup_kernel_thread_return(
         // actual CPU store completion.
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     } else {
-        log::error!(
-            "KTHREAD_SWITCH: Failed to get thread info for thread {}",
-            thread_id
-        );
+        note_fact(DispatchLogFact::KernelThreadInfoMissing);
     }
 }
 
@@ -1424,14 +1393,7 @@ fn restore_userspace_thread_context(
                                 RestoreError::NonCanonicalRip | RestoreError::NonCanonicalRsp => {
                                     raw_serial_str("<BADADDR>")
                                 }
-                                RestoreError::KernelFrame => {
-                                    raw_serial_str("<KFRAME>");
-                                    log::error!(
-                                        "Refusing userspace restore of kernel frame for thread {}: saved CS={:#x}",
-                                        thread_id,
-                                        thread.context.cs
-                                    );
-                                }
+                                RestoreError::KernelFrame => raw_serial_str("<KFRAME>"),
                             }
                             // Corrupted process state. Terminate the process and switch to idle.
                             thread.set_terminated();
@@ -1496,10 +1458,7 @@ fn restore_userspace_thread_context(
                                 crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
                                 log::trace!("Set kernel stack: {:#x}", kernel_stack_top.as_u64());
                             } else {
-                                log::error!(
-                                    "ERROR: Userspace thread {} has no kernel stack!",
-                                    thread_id
-                                );
+                                note_fact(DispatchLogFact::UserKernelStackMissing);
                             }
 
                             // SIGNAL DELIVERY: Check for pending signals before returning to userspace
@@ -1509,11 +1468,7 @@ fn restore_userspace_thread_context(
                             crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
                             if crate::signal::delivery::has_deliverable_signals(process) {
-                                log::debug!(
-                                    "Signal delivery check: process {} (thread {}) has deliverable signals",
-                                    pid.as_u64(),
-                                    thread_id
-                                );
+                                note_fact(DispatchLogFact::SignalDeliverableUser);
 
                                 // CRITICAL: Switch to process CR3 BEFORE delivering signal
                                 // Signal delivery writes to user stack memory, which requires
