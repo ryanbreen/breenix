@@ -1,0 +1,37 @@
+=== round-2 mutations, tree at 04c9a6ad22834d392555599a17a888bedfa51c56 ===
+
+--- baseline ---
+  $ scripts/run-structure-tests.sh x86_madt_reader_bounds   -> exit 0
+    test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  $ scripts/run-structure-tests.sh x86_smp_enum_structure   -> exit 0
+    test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+--- M4: the MADT body-header length guard deleted from census_of_madt ---
+  $ scripts/run-structure-tests.sh x86_madt_reader_bounds   -> exit 101
+    test a_madt_too_short_for_its_body_header_is_refused_at_every_such_length ... FAILED
+    thread 'a_madt_too_short_for_its_body_header_is_refused_at_every_such_length' panicked at <worktree>/tests/x86_madt_reader_bounds.rs:274:23:
+    expected a refusal, got a census of 0 processor entries with local_apic_address 0xdeadbeef
+    test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  $ scripts/run-structure-tests.sh x86_smp_enum_structure   -> exit 101
+    test every_walk_in_the_madt_reader_is_bounded_by_a_constant ... FAILED
+    thread 'every_walk_in_the_madt_reader_is_bounded_by_a_constant' panicked at <worktree>/tests/x86_smp_enum_structure.rs:236:5:
+    census_of_madt must refuse a table whose declared length does not reach the fixed body header it reads at offsets 36..44, before reading it: a length in [36, 44) passes sdt_length's generic check and covers neither field. The refusal is measured, rather than pinned by spelling, in tests/x86_madt_reader_bounds.rs
+    test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+--- M5: the revision-2 RSDP floor put back to the 33 it used to be ---
+  $ scripts/run-structure-tests.sh x86_madt_reader_bounds   -> exit 101
+    test a_revision_2_rsdp_shorter_than_its_own_structure_falls_back_to_the_rsdt ... FAILED
+    thread 'a_revision_2_rsdp_shorter_than_its_own_structure_falls_back_to_the_rsdt' panicked at <worktree>/tests/x86_madt_reader_bounds.rs:426:9:
+    assertion `left == right` failed: an RSDP declaring 33 bytes must be read through its RSDT: one processor is the MADT behind the RSDT, four would be the XSDT's
+      left: 4
+     right: 1
+    test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  $ scripts/run-structure-tests.sh x86_smp_enum_structure   -> exit 0
+    test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+--- tree restored from git ---
+    (no line above means the file matches 04c9a6ad22834d392555599a17a888bedfa51c56)
+  $ scripts/run-structure-tests.sh x86_madt_reader_bounds   -> exit 0
+    test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  $ scripts/run-structure-tests.sh x86_smp_enum_structure   -> exit 0
+    test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s

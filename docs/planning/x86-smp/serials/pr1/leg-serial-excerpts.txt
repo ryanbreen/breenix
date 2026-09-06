@@ -1,0 +1,62 @@
+# Per-leg serial excerpts, x86 SMP enumeration gate at branch head e2717b88
+# Taken from the green run's own serial files. The gate clears and reuses one
+# working directory per leg, so the oracle and mutation runs that followed
+# overwrote two of the three; these excerpts predate that.
+# Long lines (the scheduler's single-character trace stream shares COM1) truncated to 200 columns.
+
+================ leg -smp 1 ================
+serial_kernel.txt lines: 17571, serial_user.txt lines: 1072
+
+--- the enumeration marker, with 2 lines of context either side (serial_kernel.txt) ---
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ERROR] kernel::memory::process_memory: Refusing to map 0x10000400000: root slot 2 was inherited, not allocated by this address space
+[ INFO] kernel::arch_impl::x86_64::smp: [X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
+[ INFO] kernel::memory::layout: KLAYOUT: image=0x100000..0x300000 text=0x100000..0x200000 rodata=0x200000..0x250000 data=0x250000..0x280000 bss=0x280000..0x300000
+[ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x1000045cff8 limit=55
+
+--- marker occurrences across both serials ---
+/root/breenix-smp1-tmp/breenix_x86_smp_enum_1/serial_user.txt:0
+/root/breenix-smp1-tmp/breenix_x86_smp_enum_1/serial_kernel.txt:1
+
+--- the three existing boot_tests pass markers ---
+[TEST:process:frame_custody_refusal_gate:PASS]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW] [...truncated]
+[ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁
+
+================ leg -smp 2 ================
+serial_kernel.txt lines: 17605, serial_user.txt lines: 1076
+
+--- the enumeration marker, with 2 lines of context either side (serial_kernel.txt) ---
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ERROR] kernel::memory::process_memory: Refusing to map 0x10000400000: root slot 2 was inherited, not allocated by this address space
+[ INFO] kernel::arch_impl::x86_64::smp: [X86_SMP_ENUM:madt_cpus=2:enabled=2:x2apic=0:bsp_apic_id=0:cpuid_logical=2:present=1:online=1:max_cpus=1:src=madt:reason=none]
+[ INFO] kernel::memory::layout: KLAYOUT: image=0x100000..0x300000 text=0x100000..0x200000 rodata=0x200000..0x250000 data=0x250000..0x280000 bss=0x280000..0x300000
+[ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x1000045cff8 limit=55
+
+--- marker occurrences across both serials ---
+/root/breenix-smp1-tmp/breenix_x86_smp_enum_2/serial_user.txt:0
+/root/breenix-smp1-tmp/breenix_x86_smp_enum_2/serial_kernel.txt:1
+
+--- the three existing boot_tests pass markers ---
+[TEST:process:frame_custody_refusal_gate:PASS]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW] [...truncated]
+[ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁
+
+================ leg -smp 4 ================
+serial_kernel.txt lines: 17605, serial_user.txt lines: 1072
+
+--- the enumeration marker, with 2 lines of context either side (serial_kernel.txt) ---
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ERROR] kernel::memory::process_memory: Refusing to map 0x10000400000: root slot 2 was inherited, not allocated by this address space
+[ INFO] kernel::arch_impl::x86_64::smp: [X86_SMP_ENUM:madt_cpus=4:enabled=4:x2apic=0:bsp_apic_id=0:cpuid_logical=4:present=1:online=1:max_cpus=1:src=madt:reason=none]
+[ INFO] kernel::memory::layout: KLAYOUT: image=0x100000..0x300000 text=0x100000..0x200000 rodata=0x200000..0x250000 data=0x250000..0x280000 bss=0x280000..0x300000
+[ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x1000045cff8 limit=55
+
+--- marker occurrences across both serials ---
+/root/breenix-smp1-tmp/breenix_x86_smp_enum_4/serial_user.txt:0
+/root/breenix-smp1-tmp/breenix_x86_smp_enum_4/serial_kernel.txt:1
+
+--- the three existing boot_tests pass markers ---
+[TEST:process:frame_custody_refusal_gate:PASS]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW] [...truncated]
+[ INFO] kernel::syscall::handlers: 🏁 TEST RUNNER: All tests passed - you can exit QEMU now 🏁

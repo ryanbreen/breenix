@@ -1,0 +1,33 @@
+=== round-2 host checks, macOS worktree, tree at 04c9a6ad22834d392555599a17a888bedfa51c56 ===
+
+--- aarch64 kernel build (boot_tests profile, soft-float target) ---
+  exit 0
+  warning/error lines in the build log: 1
+    warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+    note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+
+--- scripts/check-kernel-no-neon.sh ---
+  [0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+
+--- docker/qemu/run-aarch64-boot-test-strict.sh 1 ---
+  exit 0
+    [GATE_BOOT_FACTS:boot=1:host_ms=1788669199550-1788669212176:qemu_at_start=0:load_at_start=2.33:qemu_at_end=1:load_at_end=2.28:qemu_cpu_s=19.40:guest_uptime_ms=12087:ended_by=scored_pass]
+  Successes: 1
+  Failures: 0
+  PASS: 1/1 boots succeeded
+
+--- scripts/check-critical-path-violations.sh ---
+  exit 1
+  files this round changed that the script scans: 0
+  kernel files this round changed: kernel/src/arch_impl/x86_64/acpi.rs 
+
+--- the host suites: tests/*_structure.rs plus tests/x86_madt_reader_bounds.rs ---
+  suites: 37 of 37 green, 630 test cases
+  red suites: none
+
+--- claim discipline ---
+  $ python3 scripts/claim-lint.py -> exit 0
+    claim-lint: clean (23 file(s) checked, changed hunks vs 5121cfca2624).
+    claim-lint: 133 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+  $ python3 scripts/test_claim_lint.py -> exit 0
+      T4   clean                          gtty fix2-review.md B1, reviewer's own re-derivation
