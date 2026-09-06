@@ -165,17 +165,23 @@ impl Writer {
     /// back before `END` and the incomplete line does not run into it. That
     /// is what makes `records=` mean "well-formed `[BXCAP:...]` lines before
     /// this `END`" exactly, rather than approximately: a reader can check
-    /// the count against what it could actually parse. The `remaining < 3`
-    /// test covers the case where the record's own body fitted but its
-    /// `]\r\n` terminator does not.
+    /// the count against what it could actually parse.
+    ///
+    /// The terminator is written FIRST and the verdict taken afterwards, so
+    /// that the case where a record's body fitted but its `]\r\n` did not is
+    /// decided by `put()` dropping those bytes rather than by a second piece
+    /// of budget arithmetic here. `put()` is the only place the budget is
+    /// enforced, which is what makes deleting its guard delete the bound --
+    /// a second enforcement point here would keep the emitter bounded and
+    /// make that mutation invisible on a real boot.
     pub fn close(&mut self) {
-        if self.budgeted && (self.truncated || self.remaining < 3) {
-            self.truncated = true;
-            return;
-        }
+        let cut_before = self.truncated;
         self.put(b']');
         self.put(b'\r');
         self.put(b'\n');
+        if cut_before || self.truncated {
+            return;
+        }
         self.in_record = false;
         self.records = self.records.saturating_add(1);
     }
