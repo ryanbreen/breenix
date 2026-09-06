@@ -324,6 +324,12 @@ fi
 # feature-profile guard below, which asserts the two preflights run in order.
 "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
 
+# Failure-capture PR-7: no allocation reachable from the soft-lockup report in
+# THIS gate's selected kernel. It sits inside the live-boot branch, beside the
+# other kernel checks, so the score-only entry point above -- which has no
+# kernel at all -- is unaffected.
+"$BREENIX_ROOT/scripts/check-aarch64-lockup-no-alloc.sh" "$KERNEL"
+
 # Durable feature-profile guard. This gate pins markers that ONLY a
 # `--features boot_tests` kernel emits, so a kernel built in any other profile
 # fails every boot on "marker missing" and the run reads as a kernel regression.

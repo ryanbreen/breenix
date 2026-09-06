@@ -1,0 +1,56 @@
+[GATE_PREFLIGHT:structure_suites=50/50:critical_path_lines=260:pinned=120]
+Building the shipped ARM64 production kernel profile...
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/kernel)
+    Finished `release` profile [optimized] target(s) in 5.43s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   9cb95672cec49b1c49396c6e6e0e7a83030f65b8f2f8915874f106b14aecc388
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h1f33d6ac7668c93eE
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+Booting the ARM64 production profile...
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 96844 (<unknown process>)
+PASS: production profile reached bsshd with the futex oracle seam absent
+Observed: [FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+Observed: [init] futex_handoff_oracle exited pid=6 code=0
+Observed: bsshd: listening on 0.0.0.0:2222
+Observed kernel oracle marker count: 0
+Observed fcntl contention oracle marker count: 0
+Observed IRQ-hold oracle marker count: 0
+Observed TTY input IRQ oracle marker count: 0
+Observed TTY foreground-pgrp oracle marker count: 0
+Observed ring-span self-check marker count: 0
+Observed BXCAP self-test edge count: 0
+Observed block EINTR oracle marker count: 2
+Observed block EINTR oracle failure count: 0
+Observed poll TCP oracle marker count: 2
+Observed poll TCP oracle failure count: 0
+Observed kernel poll timeout report count: 1
+Observed kernel lost-readiness report count: 0
+Observed TTY oracle marker count: 2
+Observed TTY oracle failure count: 0
+Observed TTBR0 ASID census marker count: 12
+Observed TTBR0 ASID census untagged-publish line count: 0
+Observed: [TTBR0_ASID_CENSUS:untagged=0:tagged=21006:kernel=23522:cleared=43830]
+Observed pinned-placement census marker count: 1
+Observed pinned-placement non-zero census line count: 0
+Observed pin-guard oracle line count (must be 0 in this profile): 0
+Observed: [PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+Observed crash marker count: 0
+[GATE_BOOT_FACTS:boot=1:host_ms=1788724456227-1788724465409:qemu_at_start=0:load_at_start=4.24:qemu_at_end=1:load_at_end=4.15:qemu_cpu_s=14.43:guest_uptime_ms=8498:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+PROD_GATE_EXIT=0

@@ -1120,3 +1120,338 @@ fn a_capture_that_overran_the_budget_is_caught() {
     let capture = decode_capture(&serial);
     assert_byte_bound("overrun", &capture, ARM_TINY);
 }
+
+// ---------------------------------------------------------------------------
+// Failure-capture PR-7: the `edge=LOCKUP` fixtures.
+//
+// These are the one non-terminal edge, and the only fixtures in this suite
+// produced by a construction rather than by an injected fault: a CPU1-pinned
+// kernel thread holds the REAL scheduler guard under masked interrupts for
+// longer than the detector's own threshold while CPU0 keeps taking timer
+// interrupts. So `[BXCAP:NOTE sched_lock_held]` here is not a lost race -- the
+// refusal is the state the run deliberately established, and the receipts
+// beside the fixture say which CPU held the guard and for how many ticks.
+//
+// Two captures in ONE boot is the other thing these fixtures carry, and it is
+// what a single-episode run cannot show: `WATCHDOG_REPORTED` clearing on
+// observed progress, `IN_CAPTURE` clearing on normal completion, and `seq`
+// advancing.
+// ---------------------------------------------------------------------------
+
+const SERIAL_DIR_PR7: &str = "docs/planning/green-program/failure-capture/serials/pr7";
+const SERIAL_DIR_PR7_RED: &str =
+    "docs/planning/green-program/failure-capture/serials/pr7-red";
+
+fn fixture_pr7(name: &str) -> String {
+    read(&format!("{SERIAL_DIR_PR7}/{name}"))
+}
+
+/// Split a serial carrying several captures into one text per capture.
+///
+/// `decode_capture` refuses a serial with more than one `BEGIN` on purpose --
+/// scoring two interleaved captures as one is exactly the confusion the `seq`
+/// field exists to prevent. So a multi-episode run is split FIRST, on the
+/// bracket lines, and each block then goes through the unchanged decoder
+/// contract. A `BEGIN` with no following `END` keeps everything after it, so
+/// the decoder still sees the truncation rather than this splitter hiding it.
+fn split_captures(serial: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<Vec<String>> = None;
+    for line in serial.split('\n') {
+        if line.contains("[BXCAP:BEGIN") {
+            current = Some(Vec::new());
+        }
+        let Some(block) = current.as_mut() else {
+            continue;
+        };
+        block.push(line.to_string());
+        if line.contains("[BXCAP:END") {
+            blocks.push(block.join("\n"));
+            current = None;
+        }
+    }
+    if let Some(block) = current {
+        blocks.push(block.join("\n"));
+    }
+    blocks
+}
+
+/// The `edge=LOCKUP` contract, applied to one capture.
+///
+/// `verdict=partial` and `sections_skipped=0x20` are REQUIRED here, unlike the
+/// terminal-edge contract above which deliberately leaves the verdict open.
+/// The difference is what produced the fixture: a terminal edge races the
+/// scheduler read and can win, while this run establishes the hold first and
+/// then waits past the detector's threshold, so a `complete` verdict would mean
+/// the guard was not actually held and the run showed nothing.
+/// claim-lint:ok: 2 of 2 episodes came back verdict=partial sections_skipped=0x20
+/// in docs/planning/green-program/failure-capture/serials/pr7/aarch64-lockup-two-episodes.txt
+fn assert_lockup_capture(name: &str, capture: &Capture) {
+    assert_capture_contract(name, capture);
+    assert_untruncated_sections(name, capture);
+    assert_byte_bound(name, capture, ARM_ORDINARY);
+
+    assert_eq!(capture.begin.text("edge"), "LOCKUP");
+    assert_eq!(capture.end.text("edge"), "LOCKUP");
+    assert_eq!(capture.begin.text("arch"), "aarch64");
+    assert_eq!(capture.begin.u64("cpu"), 0, "only CPU0 runs the detector");
+    assert!(capture.begin.u64("tsfreq") > 0);
+    assert!(capture.begin.u64("uptime_ms") > 0);
+
+    // EDGE's two words: a0 = stalled CPU0-local ticks, a1 = ticks per second.
+    // Read as numbers, not matched against a literal -- the exact stall count
+    // depends on when in the tick the detector fired.
+    let edge: Vec<&Record> = capture.records.iter().filter(|r| r.token == "EDGE").collect();
+    assert_eq!(edge.len(), 1, "{name}: one EDGE record");
+    assert_eq!(edge[0].text("kind"), "LOCKUP");
+    let a1 = edge[0].u64("a1");
+    assert_eq!(a1, 1000, "{name}: a1 is TARGET_TIMER_HZ");
+    let a0 = edge[0].u64("a0");
+    assert!(
+        a0 >= 5000,
+        "{name}: a0={a0} is below the detector's own LOCKUP_THRESHOLD_TICKS"
+    );
+
+    let cpu: Vec<&Record> = capture.records.iter().filter(|r| r.token == "CPU").collect();
+    assert_eq!(cpu.len(), 1, "{name}: one CPU row");
+    assert_eq!(cpu[0].u64("cpu"), 0);
+    assert_eq!(cpu[0].u64("hardirq"), 1, "{name}: the dump runs in hard IRQ");
+    assert_eq!(cpu[0].text("q"), "exact");
+    let cpu_fields = ["preempt", "nr", "softirq", "uptime_ms"];
+    for field in cpu_fields {
+        assert!(cpu[0].fields.contains_key(field), "{name}: CPU row lost {field}");
+    }
+
+    let events: Vec<&Record> = capture.records.iter().filter(|r| r.token == "EV").collect();
+    assert!(!events.is_empty(), "{name}: no EV rows");
+    let ev_fields = ["cpu", "i", "ts", "type", "n", "p", "f"];
+    for field in ev_fields {
+        assert!(events[0].fields.contains_key(field), "{name}: EV row lost {field}");
+    }
+    let counters: Vec<&Record> = capture.records.iter().filter(|r| r.token == "CNT").collect();
+    assert!(!counters.is_empty(), "{name}: no CNT rows");
+
+    let ring: Vec<&Record> = capture.records.iter().filter(|r| r.token == "RING").collect();
+    assert_eq!(ring.len(), 1, "{name}: one RING row");
+    assert_eq!(ring[0].u64("cpu"), 0);
+    assert_eq!(ring[0].u64("enabled"), 1, "{name}: tracing must still be enabled");
+    assert!(ring[0].u64("kept") > 0, "{name}: RING kept 0 events");
+    let ring_fields = ["writes", "dropped", "span_us"];
+    for field in ring_fields {
+        assert!(ring[0].fields.contains_key(field), "{name}: RING row lost {field}");
+    }
+
+    // The refusal, stated, and NO fabricated rows behind it.
+    assert!(
+        capture
+            .records
+            .iter()
+            .any(|r| r.token == "NOTE" && r.body.trim() == "sched_lock_held"),
+        "{name}: the held guard must be reported as `[BXCAP:NOTE sched_lock_held]`"
+    );
+    assert!(
+        !capture.records.iter().any(|r| r.token == "THR"),
+        "{name}: the guard was held, so there is nothing THR could truthfully say"
+    );
+
+    // The accounting: bits 0-4 complete, bit 5 (THR) skipped, and the verdict
+    // word agreeing with that rather than reading `complete` beside a refusal.
+    assert_eq!(capture.end.u64("truncated"), 0);
+    assert_eq!(capture.end.u64("sections_skipped"), THR_BIT);
+    assert_eq!(
+        (!capture.end.u64("sections_skipped")) & 0x3f,
+        0x1f,
+        "{name}: sections 0-4 must all be complete"
+    );
+    assert_eq!(capture.end.text("verdict"), "partial");
+}
+
+#[test]
+fn the_lockup_edge_emits_one_capture_per_episode_in_one_boot() {
+    let serial = fixture_pr7("aarch64-lockup-two-episodes.txt");
+    assert_records_are_crlf_terminated("lockup-two-episodes", &serial);
+    let blocks = split_captures(&serial);
+    assert_eq!(
+        blocks.len(),
+        2,
+        "the oracle ran two episodes; the serial must carry two brackets"
+    );
+    let first = decode_capture(&blocks[0]);
+    let second = decode_capture(&blocks[1]);
+    assert_lockup_capture("lockup-episode-0", &first);
+    assert_lockup_capture("lockup-episode-1", &second);
+
+    // Sequencing, which is the whole reason two episodes were run: `seq`
+    // advances, and the second capture's ring shows MORE writes with tracing
+    // still on. Both would be impossible if the first capture had left
+    // `IN_CAPTURE` latched or the detector had left `WATCHDOG_REPORTED` set.
+    let first_seq = first.begin.u64("seq");
+    let second_seq = second.begin.u64("seq");
+    assert!(
+        second_seq > first_seq,
+        "seq must advance across episodes: {first_seq} then {second_seq}"
+    );
+    assert_eq!(first.end.u64("seq"), first_seq);
+    assert_eq!(second.end.u64("seq"), second_seq);
+
+    let first_writes = ring_writes(&first);
+    let second_writes = ring_writes(&second);
+    assert!(
+        second_writes > first_writes,
+        "the second episode's ring must have taken more writes ({first_writes} \
+         then {second_writes}); the dump no longer disables tracing"
+    );
+}
+
+/// `RING writes=` for the one RING row in a capture.
+fn ring_writes(capture: &Capture) -> u64 {
+    let row = capture.records.iter().find(|r| r.token == "RING");
+    row.expect("a RING row").u64("writes")
+}
+
+#[test]
+fn the_lockup_red_baseline_carries_no_capture_at_all() {
+    let dir = repo_path(SERIAL_DIR_PR7_RED);
+    let mut checked = 0;
+    for entry in fs::read_dir(&dir).expect("serials/pr7-red must exist") {
+        let path = entry.expect("readable dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if !name.starts_with("main-") {
+            continue;
+        }
+        let serial = fs::read_to_string(&path).expect("readable baseline");
+        let hits = serial.matches("[BXCAP:").count();
+        assert_eq!(hits, 0, "{name}: a RED baseline carries {hits} BXCAP lines");
+        // And it must actually have REACHED the edge, or it is a baseline for
+        // no edge at all: an ordinary boot emits no capture either.
+        // claim-lint:ok: 1 of 1 red baseline in this directory shows the banner
+        // and the HELD line, checked by the two assertions below.
+        assert!(
+            serial.contains("!!! SOFT LOCKUP DETECTED !!!"),
+            "{name}: no soft-lockup banner in this baseline"
+        );
+        assert!(
+            serial.contains("Scheduler lock: HELD (possible deadlock)"),
+            "{name}: the baseline must show the arm PR-7 repaired -- a refused \
+             scheduler lock reported as one line"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 1, "expected the one lockup red baseline, saw {checked}");
+}
+
+/// The first episode's block alone, for the mutation legs below.
+fn lockup_episode_block() -> String {
+    let serial = fixture_pr7("aarch64-lockup-two-episodes.txt");
+    split_captures(&serial)
+        .into_iter()
+        .next()
+        .expect("the fixture carries at least one capture")
+}
+
+#[test]
+#[should_panic(expected = "sched_lock_held")]
+fn a_lockup_capture_that_drops_the_refusal_note_is_rejected() {
+    // The note's BODY is changed rather than its line deleted, so the record
+    // count still agrees and the assertion this leg is about is the one that
+    // fires -- not `records=`, which would reject the mutation for an
+    // unrelated reason and leave the refusal check unexercised.
+    let block = lockup_episode_block();
+    let damaged = block.replace("NOTE sched_lock_held", "NOTE sched_lock_free");
+    assert_lockup_capture("no-note", &decode_capture(&damaged));
+}
+
+#[test]
+#[should_panic(expected = "truncated capture")]
+fn a_lockup_capture_with_no_end_is_rejected() {
+    let block = lockup_episode_block();
+    let cut = block.find("[BXCAP:END").expect("the fixture has an END line");
+    decode_capture(&block[..cut]);
+}
+
+#[test]
+#[should_panic]
+fn a_lockup_capture_whose_bitmap_contradicts_its_rows_is_rejected() {
+    // The bitmap says THR completed while the NOTE says it was refused. This
+    // is the shape a scorer must not accept: verdict and sections_skipped
+    // have to agree with the records actually present.
+    let block = lockup_episode_block();
+    let damaged = block.replace("sections_skipped=0x20", "sections_skipped=0x0");
+    assert_lockup_capture("contradictory-bitmap", &decode_capture(&damaged));
+}
+
+#[test]
+#[should_panic(expected = "must carry two brackets")]
+fn a_run_with_only_one_episode_is_rejected() {
+    // Two episodes is the claim; a serial carrying one would be a boot that
+    // did not re-arm, and scoring it as a pass would hide exactly that.
+    // claim-lint:ok: a mutation leg -- the single-block serial is rejected here,
+    // which is what keeps the two-episode assertion from being decorative.
+    let serial = fixture_pr7("aarch64-lockup-two-episodes.txt");
+    let single = split_captures(&serial)[0].clone();
+    assert_eq!(
+        split_captures(&single).len(),
+        2,
+        "the oracle ran two episodes; the serial must carry two brackets"
+    );
+}
+
+/// The receipts are evidence too, and they are the half a serial cannot carry:
+/// which CPU held the guard, whether the guard was really acquired, how long
+/// the hold lasted in the kernel's own ticks, and whether any liveness counter
+/// moved while it was held. A serial with two clean captures and receipts
+/// saying the hold was refused would be two captures of something else.
+#[test]
+fn the_lockup_receipts_show_a_real_held_guard_on_a_peer_cpu() {
+    let receipts = read(&format!("{SERIAL_DIR_PR7}/receipts.txt"));
+    let mut rows = BTreeMap::new();
+    for line in receipts.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        rows.insert(key.trim().to_string(), value.trim().to_string());
+    }
+    assert_eq!(rows.get("verdict").map(String::as_str), Some("DONE"));
+    assert_eq!(rows.get("setup_failure").map(String::as_str), Some("0"));
+    let threshold: u64 = rows["threshold_ticks"].parse().expect("threshold_ticks");
+    assert!(threshold >= 5000, "threshold_ticks={threshold}");
+
+    for episode in 0..2 {
+        let key = |suffix: &str| format!("episode{episode}.{suffix}");
+        assert_eq!(rows[&key("rcpt_acquired")], "1", "episode {episode} refused the guard");
+        assert_eq!(rows[&key("rcpt_cpu")], "1", "episode {episode} ran off CPU1");
+        assert_eq!(rows[&key("rcpt_expired")], "0", "episode {episode} hit its fail-safe");
+        assert_eq!(rows[&key("arm.cpu0_deferred_requeue")], "0");
+        assert_eq!(rows[&key("arm.verdict")], "ARMED");
+        assert_eq!(
+            rows[&key("rcpt_progress_moved_during_hold")],
+            "0",
+            "episode {episode}: a liveness counter moved during the hold"
+        );
+        let held: u64 = rows[&key("rcpt_held_ticks")].parse().expect("held ticks");
+        assert!(
+            held >= threshold,
+            "episode {episode}: held for {held} CPU0 ticks, below the detector's \
+             own threshold of {threshold}"
+        );
+        assert_eq!(
+            rows[&key("rcpt_ctx_at_acquire")],
+            rows[&key("rcpt_ctx_at_release")],
+            "episode {episode}: the context-switch counter moved during the hold"
+        );
+        assert_eq!(
+            rows[&key("rcpt_syscall_at_acquire")],
+            rows[&key("rcpt_syscall_at_release")],
+            "episode {episode}: the syscall counter moved during the hold"
+        );
+        assert_eq!(
+            rows[&key("rcpt_heartbeat_at_acquire")],
+            rows[&key("rcpt_heartbeat_at_release")],
+            "episode {episode}: the exit-kick heartbeat moved during the hold, and \
+             the detector treats that as liveness"
+        );
+    }
+}

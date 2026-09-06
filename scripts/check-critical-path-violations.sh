@@ -134,6 +134,55 @@ PROHIBITED_PATTERNS=(
 #   - raw_serial_char() / raw_serial_str() - lock-free serial output
 
 found_violations=0
+CAPTURE_ONLY=0
+
+# The strict source scope of the AArch64 soft-lockup report. It is NOT a file:
+# blanket-denying the whole timer file would flag things that legitimately
+# belong there (it carries an unrelated CPU0-regression `panic!` outside the
+# dump's forward call path), and pinning line ranges would rot. Instead
+# scripts/check-aarch64-lockup-no-alloc.sh --extract-source prints the item body
+# of `dump_lockup_state` plus each local helper reached by a syntactically
+# resolved call, derived from the calls themselves, and the capture-scoped
+# denylist below is applied to that text.
+#
+# This is an ADVISORY boundary. Cross-file and indirect reachability belong to
+# the binary mode of that same script, which the aarch64 gates run.
+LOCKUP_SCOPE_SCRIPT="$SCRIPT_DIR/check-aarch64-lockup-no-alloc.sh"
+
+check_lockup_scope() {
+    local extracted
+    if [[ ! -x "$LOCKUP_SCOPE_SCRIPT" ]]; then
+        echo -e "${RED}ERROR${NC}: $LOCKUP_SCOPE_SCRIPT missing or not executable."
+        echo "The strict soft-lockup scope was checked against nothing."
+        found_violations=1
+        return
+    fi
+    if ! extracted="$("$LOCKUP_SCOPE_SCRIPT" --extract-source 2>&1)"; then
+        echo -e "${RED}ERROR${NC}: could not extract the strict soft-lockup scope:"
+        echo "$extracted"
+        found_violations=1
+        return
+    fi
+    if [[ -z "$extracted" ]]; then
+        echo -e "${RED}ERROR${NC}: the strict soft-lockup scope extracted to nothing."
+        found_violations=1
+        return
+    fi
+    local scope_has_violations=0
+    local pattern
+    for pattern in "${CAPTURE_PROHIBITED_PATTERNS[@]}"; do
+        if printf '%s\n' "$extracted" | grep -n "$pattern" | grep -v "^[0-9]*:[[:space:]]*//"; then
+            if [[ $scope_has_violations -eq 0 ]]; then
+                echo -e "${RED}VIOLATION${NC} in ${YELLOW}strict soft-lockup scope${NC}:"
+                scope_has_violations=1
+            fi
+            found_violations=1
+        fi
+    done
+    if [[ $scope_has_violations -eq 0 ]]; then
+        echo "  strict soft-lockup scope: clean"
+    fi
+}
 
 check_file() {
     local file="$1"
@@ -166,6 +215,25 @@ check_file() {
             found_violations=1
         fi
     done
+}
+
+# The `capture/` directory entry alone, for --capture-only. Same expansion and
+# same empty-set error as the full scan below.
+check_capture_directory() {
+    local matched=0
+    local member
+    while IFS= read -r member; do
+        [[ -n "$member" ]] || continue
+        matched=$((matched + 1))
+        check_file "$member"
+    done < <(find "$KERNEL_DIR/capture" -type f -name '*.rs' 2>/dev/null | sort)
+    if [[ $matched -eq 0 ]]; then
+        echo -e "${RED}ERROR${NC}: critical directory ${YELLOW}capture/${NC} matched no .rs file."
+        echo "This script checked nothing there. Fix the entry rather than deleting it."
+        found_violations=1
+    else
+        echo "  capture/: $matched file(s) checked"
+    fi
 }
 
 check_all_critical_files() {
@@ -203,14 +271,34 @@ check_all_critical_files() {
 }
 
 # Main entry point
-if [[ $# -gt 0 ]]; then
-    # Check specific file(s)
-    for file in "$@"; do
+#
+# --capture-only runs ONLY the strict surfaces: the capture directory and the
+# soft-lockup scope. It exists because the full scan is deliberately a DEBT
+# REPORT -- it reports pre-existing logging in files that legitimately contain
+# it, so its exit status is not a pass/fail signal and
+# tests/critical_path_logging_census_structure.rs is what holds that debt from
+# growing. A caller that wants a clean exit status for the strict surfaces uses
+# this flag rather than reinterpreting a nonzero full-scan status as a pass.
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --capture-only) CAPTURE_ONLY=1 ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+
+if [[ $CAPTURE_ONLY -eq 1 ]]; then
+    echo "Checking the strict capture surfaces only..."
+    echo ""
+    check_capture_directory
+    check_lockup_scope
+elif [[ ${#ARGS[@]} -gt 0 ]]; then
+    for file in "${ARGS[@]}"; do
         check_file "$file"
     done
 else
-    # Check all critical files
     check_all_critical_files
+    check_lockup_scope
 fi
 
 echo ""

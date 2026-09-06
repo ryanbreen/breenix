@@ -1,0 +1,24 @@
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      scratchpad/cm/elf/kernel-red-scaffold.elf
+  sha256:   9d556c1401a9209f99af7a9f36e3fd7a6e83fb1c161693adcde6339f54b84e5e
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h687dcd8e455304a5E
+  reachable funcs: 59
+  call edges:      118
+FAIL: 3 allocating call target(s) reachable from the root.
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h687dcd8e455304a5E -> _ZN6kernel7process14try_dump_state17h9b877bc9b0fb2382E -> _ZN5alloc7raw_vec12handle_error17h68b903a309082768E -> _ZN5alloc5alloc18handle_alloc_error17hf33c8cedb08f72bdE -> _RNvCs6LYjfSf6a1J_7___rustc26___rust_alloc_error_handler
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h687dcd8e455304a5E -> _ZN6kernel7process14try_dump_state17h9b877bc9b0fb2382E -> _ZN60_$LT$alloc..string..String$u20$as$u20$core..clone..Clone$GT$5clone17h4da3a73ec8fe5aacE -> _RNvCs6LYjfSf6a1J_7___rustc12___rust_alloc
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h687dcd8e455304a5E -> _ZN6kernel7process14try_dump_state17h9b877bc9b0fb2382E -> _ZN5alloc7raw_vec12handle_error17h68b903a309082768E -> _ZN5alloc5alloc18handle_alloc_error17hf33c8cedb08f72bdE
+FAIL: 5 analysis problem(s); a missing target is not a clean leaf.
+    UNRESOLVED indirect blr x8 in _ZN4core3fmt5write17h59373aed596da09fE at 0xffff0000405fcc34
+    UNRESOLVED indirect blr x8 in _ZN4core3fmt5write17h59373aed596da09fE at 0xffff0000405fcccc
+    UNRESOLVED indirect blr x8 in _ZN4core3fmt5write17h59373aed596da09fE at 0xffff0000405fcd3c
+    UNRESOLVED indirect blr x8 in _ZN4core3fmt5write17h59373aed596da09fE at 0xffff0000405fcd4c
+    UNRESOLVED indirect blr x8 in _ZN4core3fmt5write17h59373aed596da09fE at 0xffff0000405fcda8
+[0;31mFAIL:[0m dump_lockup_state runs inside CPU0's timer interrupt.
+[1;33mAn allocation reached from there takes the heap allocator's
+lock from interrupt context, and a report that has to allocate to be
+written cannot be trusted to be written at all. See
+docs/planning/green-program/failure-capture/PR-7-2026-09-06.md[0m

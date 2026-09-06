@@ -1,0 +1,58 @@
+[GATE_PREFLIGHT:structure_suites=50/50:critical_path_lines=260:pinned=120]
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   bc783fb698d847959e9d1135da63dded5a240cd0abf78d149b14506d295424fc
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h61ecf85f7d566472E
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_4c42f615-569-1/target/ext2-aarch64.img
+Iterations: 3
+Requirement: 100% success rate (all 3 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 65104 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788723648032-1788723659088:qemu_at_start=0:load_at_start=4.11:qemu_at_end=1:load_at_end=3.95:qemu_cpu_s=17.85:guest_uptime_ms=10671:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 65668 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+  [GATE_BOOT_FACTS:boot=2:host_ms=1788723660106-1788723672711:qemu_at_start=0:load_at_start=3.95:qemu_at_end=1:load_at_end=3.87:qemu_cpu_s=19.92:guest_uptime_ms=12026:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 66231 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+  [GATE_BOOT_FACTS:boot=3:host_ms=1788723673718-1788723684791:qemu_at_start=0:load_at_start=3.87:qemu_at_end=1:load_at_end=3.66:qemu_cpu_s=18.23:guest_uptime_ms=10596:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 3
+Successes: 3
+Failures: 0
+Success rate: 100%
+Duration: 37s
+
+=========================================
+PASS: 3/3 boots succeeded
+=========================================

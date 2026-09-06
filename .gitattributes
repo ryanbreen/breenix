@@ -116,3 +116,11 @@ docs/planning/green-program/failure-capture/serials/pr5/*.txt -text
 # captures above -- the CR bytes the guest console emits are part of the
 # evidence, and a CRLF normalisation would edit a preserved boot.
 docs/planning/green-program/irq-locks/serials/821/*.txt -text
+
+# PR-7 lockup-oracle serials: raw aarch64 QEMU serial captures from this Mac --
+# the GDB-supervised two-episode green run and the scaffold-only red baseline.
+# Kept byte-exact for the same reason the PR-3/PR-4 fixtures are: the schema
+# suite asserts CRLF record termination, and a CRLF normalisation would delete
+# the byte that assertion is about.
+docs/planning/green-program/failure-capture/serials/pr7/*.txt -text
+docs/planning/green-program/failure-capture/serials/pr7-red/*.txt -text

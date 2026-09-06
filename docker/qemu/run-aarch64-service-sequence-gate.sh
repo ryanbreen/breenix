@@ -143,6 +143,12 @@ fi
 
 "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
 
+# Failure-capture PR-7: no allocation reachable from the soft-lockup report in
+# THIS gate's selected kernel. Placed beside the #528 and feature-profile guards
+# for the same reason they are here -- the kernel this line reads is the kernel
+# the boots below run, not whatever a later build might drop into the path.
+"$BREENIX_ROOT/scripts/check-aarch64-lockup-no-alloc.sh" "$KERNEL"
+
 # Durable feature-profile guard, and it is the twin of the #528 guard above: this
 # gate pins markers that ONLY a `--features boot_tests` kernel emits, so a kernel
 # built in any other profile fails every single boot on "marker missing" and the

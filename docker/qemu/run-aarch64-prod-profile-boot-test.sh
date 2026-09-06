@@ -493,6 +493,14 @@ if ! "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"; then
     exit 1
 fi
 
+# Failure-capture PR-7: no allocation reachable from the soft-lockup report,
+# checked on THIS gate's own selected kernel rather than on whatever was built
+# last. It runs before QEMU so a red guard costs no boot.
+if ! "$BREENIX_ROOT/scripts/check-aarch64-lockup-no-alloc.sh" "$KERNEL"; then
+    echo "FAIL: production kernel failed the soft-lockup allocation guard"
+    exit 1
+fi
+
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if $REBUILD_USERSPACE; then
     "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64

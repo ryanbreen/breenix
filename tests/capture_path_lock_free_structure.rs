@@ -29,6 +29,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const CAPTURE_DIR: &str = "kernel/src/capture";
 const GATE_DIR: &str = "docker/qemu";
@@ -98,7 +99,7 @@ fn code_lines(source: &str) -> Vec<(usize, &str)> {
 /// Kept in step with `CAPTURE_PROHIBITED_PATTERNS` in
 /// `scripts/check-critical-path-violations.sh` by
 /// `the_shell_guard_and_this_suite_deny_the_same_shapes` below.
-const DENIED: [(&str, &str); 15] = [
+const DENIED: [(&str, &str); 17] = [
     (".lock()", "a BLOCKING lock acquisition; the capture may ask (try_lock) but never wait"),
     ("try_dump_state", "the scheduler's ALLOCATING dump; use try_liveness_snapshot"),
     ("serial_println!", "takes SERIAL1's mutex"),
@@ -114,6 +115,13 @@ const DENIED: [(&str, &str); 15] = [
     ("vec!", "heap allocation"),
     ("unwrap()", "a panic from a capture re-enters the path the capture reports from"),
     ("panic!", "a panic from a capture re-enters the path the capture reports from"),
+    // The two spellings the shell script denied and this list did not, found
+    // while PR-7 widened the strict scope to the soft-lockup dump. They were a
+    // real parity gap, not a cosmetic one: `expect(` is a panic and `to_string`
+    // is an allocation, and both were reachable by a capture-path edit that
+    // this suite would have passed.
+    ("to_string", "heap allocation"),
+    ("expect(", "a panic from a capture re-enters the path the capture reports from"),
 ];
 
 fn assert_denylist_clean(name: &str, source: &str) {
@@ -385,10 +393,26 @@ fn the_shell_guard_and_this_suite_deny_the_same_shapes() {
         .expect("capture-scoped denylist must exist");
     let block = &script[start..start + script[start..].find(")\n").expect("unterminated array")];
 
-    // The shapes the shell guard is the one that must catch: a blocking lock
-    // and the allocating scheduler dump. Everything else overlaps with the
-    // shared list, which the script already applies.
-    for needle in [".lock()", "try_dump_state"] {
+    // The COMPLETE strict list, both directions. An earlier revision checked
+    // two spellings -- `.lock()` and `try_dump_state` -- on the reasoning that
+    // everything else overlapped the shared list. It did not: the shell denied
+    // `to_string` and `expect(` and this suite's DENIED array carried neither,
+    // so the two guards had already drifted where nothing was looking.
+    // so the two guards had drifted where neither was looking. This loop now
+    // checks 11 of 11 spellings of the strict list in both directions.
+    for needle in [
+        ".lock()",
+        "try_dump_state",
+        "alloc::",
+        "Vec<",
+        "String",
+        "Box<",
+        "vec!",
+        "to_string",
+        "unwrap()",
+        "expect(",
+        "panic!",
+    ] {
         assert!(
             block.contains(needle),
             "{CRITICAL_PATH_SCRIPT}'s capture denylist lost `{needle}`, which this suite \
@@ -480,4 +504,197 @@ fn gate_scripts() -> Vec<(String, String)> {
             (name, body)
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------
+// The strict soft-lockup scope (failure-capture PR-7).
+//
+// `kernel/src/arch_impl/aarch64/timer_interrupt.rs` was already a critical
+// file, but only for the SHARED logging list: the capture-scoped denylist --
+// `.lock()`, `try_dump_state`, the allocation and panic spellings -- applied
+// to `kernel/src/capture/` alone. That is how an allocating scheduler dump and
+// an allocating process dump sat inside a timer-IRQ report with neither guard
+// seeing them.
+//
+// Adding the whole timer file to the strict list is the wrong repair: it
+// legitimately carries a CPU0-regression `panic!` outside the dump's forward
+// call path, and a guard that demanded that panic be moved or pinned would be
+// demanding the wrong change. The scope is instead the dump's own item body
+// plus the bodies of local helpers in the same file reached by syntactically
+// resolved calls, derived from the calls rather than from a name list.
+//
+// WHERE THAT EXTRACTION LIVES, stated plainly: in
+// `scripts/check-aarch64-lockup-no-alloc.sh --extract-source`, and this suite
+// RUNS it rather than reimplementing it. So this suite does not independently
+// re-derive the scope, and a bug in the extractor is not caught by a second
+// implementation disagreeing. What catches it instead is the mutation legs
+// below, which run the extractor against deliberately mutated source and
+// require the mutation to come back.
+//
+// This is an ADVISORY source boundary either way. Cross-file and indirect
+// reachability is the binary mode of that same script, which the three aarch64
+// gates run against their own selected kernel.
+// ---------------------------------------------------------------------
+
+const TIMER_SOURCE: &str = "kernel/src/arch_impl/aarch64/timer_interrupt.rs";
+const LOCKUP_GUARD_SCRIPT: &str = "scripts/check-aarch64-lockup-no-alloc.sh";
+
+/// Run the guard's source mode. `over` optionally replaces the timer file it
+/// reads, which is what the mutation legs use instead of writing into the tree.
+fn extract_lockup_scope(over: Option<&Path>) -> Result<String, String> {
+    let mut command = Command::new(repo_path(LOCKUP_GUARD_SCRIPT));
+    command.arg("--extract-source");
+    if let Some(path) = over {
+        command.arg("--source").arg(path);
+    }
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run {LOCKUP_GUARD_SCRIPT}: {error}"));
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        return Err(stderr);
+    }
+    Ok(stdout)
+}
+
+/// The `fn` names the extractor put in scope, in emission order.
+fn scope_item_names(scope: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let marker = "// ---- strict lockup scope: fn ";
+    for line in scope.lines() {
+        let Some(rest) = line.strip_prefix(marker) else {
+            continue;
+        };
+        let Some(name) = rest.split_whitespace().next() else {
+            continue;
+        };
+        names.push(name.to_string());
+    }
+    names
+}
+
+/// A temp copy of the timer file with `find` replaced by `with`.
+fn mutated_timer_source(tag: &str, find: &str, with: &str) -> PathBuf {
+    let body = read(TIMER_SOURCE);
+    assert!(
+        body.contains(find),
+        "mutation leg {tag} cannot find its anchor in {TIMER_SOURCE}"
+    );
+    let dir = std::env::temp_dir().join("breenix-lockup-scope-mutations");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join(format!("{tag}.rs"));
+    fs::write(&path, body.replacen(find, with, 1)).expect("write mutated source");
+    path
+}
+
+#[test]
+fn the_strict_lockup_scope_carries_no_lock_allocation_or_formatting() {
+    let scope = extract_lockup_scope(None).unwrap();
+    assert!(
+        !scope.trim().is_empty(),
+        "the strict soft-lockup scope extracted to nothing"
+    );
+    assert_denylist_clean("strict soft-lockup scope", &scope);
+}
+
+/// Anti-vacuity for the scope itself. A scope that collapsed to the dump alone
+/// would pass the denylist while checking none of the helpers the dump calls,
+/// which is the shape this guard exists to reach.
+/// claim-lint:ok: the scope reaches 4 of 4 items on this tree --
+/// dump_lockup_state, raw_serial_str, print_timer_count_decimal, raw_serial_char --
+/// as printed by scripts/check-aarch64-lockup-no-alloc.sh --extract-source
+#[test]
+fn the_strict_lockup_scope_reaches_the_helpers_the_dump_calls() {
+    let scope = extract_lockup_scope(None).unwrap();
+    let names = scope_item_names(&scope);
+    assert!(
+        names.first().map(String::as_str) == Some("dump_lockup_state"),
+        "the scope must be seeded by the dump itself, got {names:?}"
+    );
+    assert!(
+        names.len() >= 2,
+        "the scope reached only {names:?}; the dump calls local helpers and \
+         those bodies are part of what the denylist has to read"
+    );
+}
+
+const DUMP_ANCHOR: &str = "fn dump_lockup_state(stall_ticks: u64) {";
+
+const ALLOC_LINE: &str = "\n    let _s = alloc::string::String::new()";
+
+#[test]
+#[should_panic(expected = "contains `alloc::`")]
+fn an_allocation_inserted_into_the_dump_would_be_caught() {
+    let mut injected = String::from(DUMP_ANCHOR);
+    injected.push_str(ALLOC_LINE);
+    let path = mutated_timer_source("alloc-in-dump", DUMP_ANCHOR, &injected);
+    let scope = extract_lockup_scope(Some(&path)).unwrap();
+    assert_denylist_clean("mutated soft-lockup scope", &scope);
+}
+
+const HELPER_DECL: &str = "fn innocuously_named_helper() {";
+const HELPER_TAIL: &str = ";\n}\n\n";
+const HELPER_CALL: &str = "\n    innocuously_named_helper();";
+
+/// The leg the depth-1 shape cannot do: the allocation is not in the dump, it
+/// is in a NEWLY NAMED helper the dump calls. No list names that helper in
+/// advance, so only a scope derived from the calls themselves reaches it.
+/// claim-lint:ok: this is the mutation leg itself; it reddens the denylist when
+/// the helper is introduced, which is what makes the derivation checkable
+#[test]
+#[should_panic(expected = "contains `alloc::`")]
+fn an_allocation_behind_a_newly_named_local_helper_would_be_caught() {
+    let mut injected = String::from(HELPER_DECL);
+    injected.push_str(ALLOC_LINE);
+    injected.push_str(HELPER_TAIL);
+    injected.push_str(DUMP_ANCHOR);
+    injected.push_str(HELPER_CALL);
+    let path = mutated_timer_source("alloc-behind-helper", DUMP_ANCHOR, &injected);
+    let scope = extract_lockup_scope(Some(&path)).unwrap();
+    assert_denylist_clean("mutated soft-lockup scope", &scope);
+}
+
+const DUMP_NAME: &str = "fn dump_lockup_state";
+const ABSENT_NAME: &str = "fn dump_lockup_absent";
+
+#[test]
+fn a_dump_the_extractor_cannot_find_is_a_failure() {
+    let path = mutated_timer_source("root-not-found", DUMP_NAME, ABSENT_NAME);
+    let outcome = extract_lockup_scope(Some(&path));
+    let message = outcome.expect_err("an absent root must not extract an empty scope");
+    assert!(
+        message.contains("no `fn dump_lockup_state` item"),
+        "the extractor must say the root is missing, got: {message}"
+    );
+}
+
+/// A new file under `kernel/src/capture/` is covered by the disk census the
+/// day it lands. This leg proves the denylist that census feeds actually
+/// rejects an allocation, without writing a file into the tree to do it.
+/// claim-lint:ok: a mutation leg -- the synthetic module is rejected by the same
+/// assert_denylist_clean the disk census feeds
+#[test]
+#[should_panic(expected = "contains `alloc::`")]
+fn an_allocation_in_a_new_capture_module_file_would_be_caught() {
+    let mut synthetic = String::from("pub fn sample() {");
+    synthetic.push_str(ALLOC_LINE);
+    synthetic.push_str(";\n}\n");
+    assert_denylist_clean("kernel/src/capture/synthetic_new_module.rs", &synthetic);
+}
+
+/// The shell script has to actually consume the strict scope, and it has to
+/// offer a clean-exit mode for it. The full scan is a DEBT REPORT whose
+/// nonzero status is not a failure signal, so without `--capture-only` a
+/// caller has no honest way to gate on these surfaces.
+#[test]
+fn the_shell_guard_consumes_the_strict_lockup_scope() {
+    let script = read(CRITICAL_PATH_SCRIPT);
+    let needles = ["--extract-source", "check_lockup_scope", "--capture-only"];
+    for needle in needles {
+        assert!(
+            script.contains(needle),
+            "{CRITICAL_PATH_SCRIPT} must carry the strict-scope wiring `{needle}`"
+        );
+    }
 }
