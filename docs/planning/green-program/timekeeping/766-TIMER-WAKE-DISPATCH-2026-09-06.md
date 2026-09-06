@@ -69,8 +69,13 @@ and stays open.
 
 ### 1.4 Cross-check: why aarch64 does not show it
 
-The same `push_back` runs on aarch64, and the same leg measures **3 ms** and
-**9 ms** there (section 4). Three differences account for it:
+The same `push_back` runs on aarch64, and the same leg measures single-digit
+milliseconds there: over the 40 boots of the two strict runs in the round
+record's section 4, `overrun_ms` reads 2 to 9 (median 5) in run 1 and 0 to 12
+(median 3) in run 2, per-boot lines in
+`serials/766/21-shipped-leg-strict-run1-19of20-oracle-lines.txt` and
+`serials/766/25-shipped-leg-strict-run2-19of20-oracle-lines.txt`. Three
+differences account for it:
 
 1. **`MAX_CPUS = 8`** (`kernel/src/task/scheduler.rs:1349`). The wake is routed
    by `find_target_cpu_for_wakeup` (`:4410`), which falls through to the
