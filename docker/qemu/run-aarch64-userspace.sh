@@ -55,27 +55,22 @@ if [ ! -f "$KERNEL" ]; then
     exit 1
 fi
 
-# Find or create ARM64 ext2 disk
+# Find or create ARM64 ext2 disk.
+#
+# #850: this used to pin a hardcoded 8MB size (both to pass --size and to
+# decide "size doesn't match, recreate"), which stopped fitting the real
+# aarch64 userspace binary + font payload (measured ~62MB) long before this
+# bug was filed -- create_ext2_disk.sh's own --size guard now rejects an
+# 8MB request outright rather than failing partway through the copy with
+# ENOSPC. The other 12 of 13 real call sites in this tree pass no --size
+# at all and just check whether the image already exists (census in
+# tests/ext2_disk_size_structure.rs); this caller now does the same instead
+# of carrying its own size-tracking magic number that can drift out of
+# sync with the payload again.
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
-EXT2_SIZE_BYTES=$((8 * 1024 * 1024))
-EXT2_SIZE_ACTUAL=0
-if [ -f "$EXT2_DISK" ]; then
-    if stat -f%z "$EXT2_DISK" >/dev/null 2>&1; then
-        EXT2_SIZE_ACTUAL=$(stat -f%z "$EXT2_DISK")
-    else
-        EXT2_SIZE_ACTUAL=$(stat -c %s "$EXT2_DISK")
-    fi
-fi
-
-if [ ! -f "$EXT2_DISK" ] || [ "$EXT2_SIZE_ACTUAL" -ne "$EXT2_SIZE_BYTES" ]; then
-    if [ -f "$EXT2_DISK" ]; then
-        echo "Recreating ARM64 ext2 disk (size mismatch: $EXT2_SIZE_ACTUAL bytes)"
-        rm -f "$EXT2_DISK"
-    else
-        echo "Creating ARM64 ext2 disk image..."
-    fi
-
-    "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64 --size 8
+if [ ! -f "$EXT2_DISK" ]; then
+    echo "Creating ARM64 ext2 disk image..."
+    "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
 
     if [ ! -f "$EXT2_DISK" ]; then
         echo "Error: Failed to create ext2 disk image at $EXT2_DISK"
