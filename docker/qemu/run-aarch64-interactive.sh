@@ -51,12 +51,25 @@ if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     docker build -t "$IMAGE_NAME" -f "$SCRIPT_DIR/Dockerfile.aarch64" "$SCRIPT_DIR"
 fi
 
-# Kill any existing containers (prevents port conflicts)
-EXISTING=$(docker ps -q --filter ancestor="$IMAGE_NAME" 2>/dev/null)
-if [ -n "$EXISTING" ]; then
-    echo "Stopping existing ARM64 containers..."
-    docker kill $EXISTING 2>/dev/null || true
-fi
+# #829: CONTAINER_NAME is unique to this invocation (this script's own
+# PID). This replaces the previous ancestor-image-filtered "kill any
+# existing container" preflight, which could kill a DIFFERENT concurrent
+# invocation's own container from the same image -- including one already
+# serialized behind qemu_host_lock_acquire below, waiting its turn. Now
+# that each aarch64 launcher in this tree cooperates with that lock, a
+# second invocation simply waits instead of needing its container killed
+# out from under it; the only container this preflight rm can ever remove
+# is a same-PID-numbered leftover from an earlier crashed run of this
+# exact script.
+CONTAINER_NAME="breenix-aarch64-interactive-$$"
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+_cleanup_aarch64_interactive_container() {
+    # TERM then KILL after a bounded wait -- docker stop's own contract:
+    # SIGTERM to the container's PID 1, SIGKILL only if it has not exited
+    # within the timeout.
+    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap _cleanup_aarch64_interactive_container EXIT
 
 # Create output directory
 OUTPUT_DIR=$(mktemp -d)
@@ -90,6 +103,7 @@ fi
 
 qemu_host_lock_acquire
 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -p 5901:5900 \
     -v "$KERNEL:/breenix/kernel:ro" \
     -v "$OUTPUT_DIR:/output" \

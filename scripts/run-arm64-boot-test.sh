@@ -86,17 +86,41 @@ echo "Kernel built: $KERNEL_PATH"
 echo ""
 
 # #834 fix-round F2 (2026-09-05): qemu_host_lock_acquire moves here, before
-# the cleanup pkill below, so the pattern-based kill cannot hit another
-# lock-cooperating script's own in-progress, lock-protected boot -- by the
-# time this script holds the lock, any such script must already have
-# released it (or this script would still be blocked waiting to acquire).
-# A stray process the pkill still reaches after the lock is held is, by
-# construction, not a boot any lock-cooperating script currently owns.
+# the pre-launch cleanup below, so a pattern-based kill could not hit
+# another lock-cooperating script's own in-progress, lock-protected boot --
+# by the time this script holds the lock, any such script must already
+# have released it (or this script would still be blocked waiting to
+# acquire). #829 (2026-09-05) then replaced that pattern-based pkill with
+# the PID-scoped QEMU_PID_FILE check below, closing the remaining gap: a
+# stray process outside this lock's cooperation (a human's own manual
+# boot) is no longer reachable at all, not merely deferred until after
+# this script holds the lock.
 qemu_host_lock_acquire
 
-# Clean up any previous QEMU
+# #829: PID-scoped cleanup instead of a pattern-based pkill, which could
+# reach ANY qemu-system-aarch64/kernel-aarch64 process on the host --
+# including one a human is running by hand (a GDB session, a manual boot),
+# not only a leftover from a previous crashed run of this same script.
+# QEMU_PID_FILE is this script's own record of the PID it last launched,
+# written immediately after capture below and consulted here before a new
+# launch; a stale entry is only ever acted on after a `kill -0` liveness
+# check succeeds -- the same stale-PID protocol
+# docker/qemu/lib/qemu-host-lock.sh's own lock-reclaim path already uses.
 echo "[2/4] Starting QEMU..."
-pkill -9 -f "qemu-system-aarch64.*kernel-aarch64" 2>/dev/null || true
+QEMU_PID_FILE="$BREENIX_GATE_TMP/arm64_boot_test.qemu.pid"
+if [ -f "$QEMU_PID_FILE" ]; then
+    STALE_PID="$(cat "$QEMU_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$STALE_PID" ] && kill -0 "$STALE_PID" 2>/dev/null; then
+        echo "Stopping leftover QEMU from a previous run (PID $STALE_PID)..."
+        kill -TERM "$STALE_PID" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+            kill -0 "$STALE_PID" 2>/dev/null || break
+            sleep 1
+        done
+        kill -KILL "$STALE_PID" 2>/dev/null || true
+    fi
+    rm -f "$QEMU_PID_FILE"
+fi
 rm -f "$SERIAL_OUTPUT"
 
 # Check for ext2 disk (required for userspace tests)
@@ -121,7 +145,7 @@ fi
 # VirtIO GPU and keyboard are included unconditionally so the kernel's MMIO
 # enumeration discovers them (needed for interactive shell and device
 # driver tests). qemu_host_lock_acquire already ran above, before the
-# cleanup pkill.
+# PID-file-based pre-launch cleanup.
 qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
@@ -135,6 +159,7 @@ qemu-system-aarch64 \
     $NET_OPTS \
     -serial "file:$SERIAL_OUTPUT" &
 QEMU_PID=$!
+echo "$QEMU_PID" > "$QEMU_PID_FILE"
 # F2: registers QEMU with the lock's own EXIT trap (see
 # docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just
 # this script's own PID during the poll below still kills QEMU instead of
@@ -179,6 +204,7 @@ done
 # Kill QEMU
 kill $QEMU_PID 2>/dev/null || true
 wait $QEMU_PID 2>/dev/null || true
+rm -f "$QEMU_PID_FILE"
 
 echo ""
 
