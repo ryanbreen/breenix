@@ -1,0 +1,188 @@
+== aarch64_testing_profile_structure ==
+test the_testing_profile_gate_scores_committed_serials_with_the_same_code ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== block_request_lifetime_structure ==
+test every_wedged_driver_gate_refuses_inside_lock ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+== capture_bxcap_schema_structure ==
+test every_committed_fixture_decodes ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== capture_path_lock_free_structure ==
+test the_selftest_edge_is_feature_gated_and_no_gate_builds_it ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== context_restore_structure ==
+test fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee ... ok
+
+test result: ok. 97 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 52.91s
+== coreproof_component_h_structure ==
+test self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== coreproof_coverage_structure ==
+test every_non_harness_site_has_a_real_coverage_placement ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+== coreproof_mutation_register_structure ==
+test every_gated_mutation_is_declared ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+== coreproof_sites_structure ==
+test every_declared_site_is_actually_placed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+== critical_path_logging_census_structure ==
+test critical_path_log_census_is_pinned ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+== degenerate_transfer_fd_validation_structure ==
+test every_degenerate_transfer_guard_validates_the_descriptor_first ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== dispatch_path_lock_free_structure ==
+test master_kernel_pml4_is_read_without_a_lock ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== dispatch_strand_census_structure ==
+test the_staleness_bound_has_exactly_one_copy_in_the_repository ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+== dma_and_log_sink_structure ==
+test framebuffer_log_sink_is_nonblocking_and_bounded ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== entry_point_df_structure ==
+test every_hand_written_entry_clears_df_before_its_first_call_or_string_op ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+== exec_lock_order_structure ==
+test arm64_exec_bodies_never_touch_the_scheduler_lock ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+== exit_tally_structure ==
+test record_exit_calls_exist_only_at_the_two_termination_transitions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+== ext2_disk_size_structure ==
+test no_caller_passes_a_size_flag ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+== ext2_lock_structure ==
+test is_mounted_is_home_mounted_and_home_mount_id_route_through_the_accessor ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== fcntl_pm_contention_gate_structure ==
+test every_gate_pinning_the_aarch64_pass_verdict_selfchecks_its_pattern ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+== fork_lock_order_structure ==
+test negative_deleted_cow_restore_is_rejected ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== gate_boot_facts_pipefail_structure ==
+test gbf_helpers_survive_pipefail_with_a_nonexistent_pid_on_every_bash_here ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+== gate_boot_facts_structure ==
+test gate_boot_facts_predicates_are_not_vacuous ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== gate_capture_drain_structure ==
+test drain_disabled_reads_partial_drain_enabled_reads_complete_same_race ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+== green_program_envelope_structure ==
+test item5_mutation_proof ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== loopback_pump_structure ==
+test both_aarch64_gates_fail_on_a_pinned_placement_refusal ... ok
+
+test result: ok. 104 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.24s
+== masked_binary_load_structure ==
+test the_boot_path_still_loads_binaries_and_still_masks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== mmap_floor_structure ==
+test neither_census_is_empty ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+== net_lock_structure ==
+test every_cross_context_net_static_is_guarded_or_declared_thread_only ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+== parallels_kill_by_name_structure ==
+test census_reaches_the_known_unfixed_run_sh_instances ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== poll_tcp_gate_wiring_structure ==
+test every_oracle_fail_gate_also_requires_the_kernel_ready_lost_marker ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+== preempt_bracket_structure ==
+test boot_path_preempt_brackets_are_cfg_symmetric ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+== qemu_host_lock_structure ==
+test every_x86_qemu_launch_script_sources_and_acquires_the_host_lock ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+== qemu_kill_by_name_structure ==
+test no_shell_script_kills_qemu_by_name_or_pattern ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+== ring_span_report_site_structure ==
+test the_registry_prints_the_marker_through_the_locked_writer ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== serial_line_atomicity_structure ==
+test raw_serial_primitive_census_is_pinned ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+== signal_eintr_predicate_structure ==
+test syscall_eintr_uses_disposition_aware_signal_predicate ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== strand_handoff_structure ==
+test aarch64_census_widen_oracle_has_real_disarmed_and_armed_legs ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+== syscall_return_register_structure ==
+test no_trap_names_its_return_register_as_input_only ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+== teardown_structure ==
+test scheduler_lock_irq_shape_ratchet_is_not_vacuous ... ok
+
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.41s
+== terminal_edge_capture_structure ==
+test deleting_one_panic_handlers_emit_call_would_be_caught - should panic ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+== trace_ring_depth_structure ==
+test tick_sample_guard_deletion_would_be_caught - should panic ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== ttbr0_shadow_reconciliation_structure ==
+test every_shadow_publish_has_an_accounted_asid ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.42s
+== tty_irq_fg_structure ==
+test the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+== tty_irq_pm_structure ==
+test the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+== tty_oracle_structure ==
+test deliberately_broken_variants_fail_the_ratchets ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== x86_smp_enum_structure ==
+test the_enumeration_marker_has_exactly_one_emission_site ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
