@@ -452,3 +452,54 @@ number of test functions). `qemu_host_lock_structure.rs`'s own two tests
 claim-lint: scripts/claim-lint.py -> exit 0
 claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (this round's commit)
 ```
+
+## Landing re-smoke (2026-09-05)
+
+Re-run at the merge-to-main landing point, after `git merge --no-ff
+origin/main` (merge commit `de11731102e874d49a2f211b391bc544154313e4`,
+merging `6432391b` -- unrelated `tools/breenix-runs`/`xtask` changes only,
+no conflicts, no `kernel/`, gate-script, or `tests/*_structure.rs` file
+touched by main's side). Fresh worktree needing the same one-time setup as
+the boot proofs above (`rust-fork` symlink, `userspace/programs/build.sh
+--arch aarch64`, `scripts/create_ext2_disk.sh --arch aarch64`).
+
+```
+cargo test --test <name>   for each of the 33 tests/*_structure.rs files
+-> 33/33 green, 593 test cases total (identical to the round's own count above)
+
+python3 scripts/test_claim_lint.py
+-> OK (exit 0)
+```
+
+Kernel rebuilt at this merge commit with `--features boot_tests`
+(`scripts/check-kernel-no-neon.sh` -> `PASS: 0 FP/SIMD load/store
+instructions in kernel .text (allowlisted & suppressed: 0)`), then:
+
+```
+BREENIX_GATE_TMP=<private scratch> ./docker/qemu/run-aarch64-boot-test-strict.sh
+-> RESULTS: Total iterations: 20, Successes: 20, Failures: 0, Success rate: 100%
+-> PASS: 20/20 boots succeeded
+-> all 20 GATE_BOOT_FACTS lines read ended_by=scored_pass (grep -c: 20/20);
+   host aarch64 QEMU count 0 before the run and 0 remaining from this
+   worktree after it
+```
+
+Kernel then rebuilt at the same commit without `boot_tests` (the
+prod-profile script's own build step) for:
+
+```
+BREENIX_GATE_TMP=<private scratch> ./docker/qemu/run-aarch64-prod-profile-boot-test.sh
+-> PASS: production profile reached bsshd with the futex oracle seam absent
+-> [GATE_BOOT_FACTS:boot=1:...:ended_by=scored_pass]
+```
+
+Neither re-smoke boot hit any pre-adjudicated red signature (#826, #694,
+#836, #840, #555, #536, #576, #586, #609, #612/#613). This landing round
+makes no source changes of its own -- it merges main and re-runs the round's
+own 33 structural suites, `test_claim_lint.py`, one strict-gate boot batch,
+and one prod-profile boot at the merge point, with the results quoted above.
+
+```
+claim-lint: scripts/claim-lint.py -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <merge msg> -> exit 0
+```
