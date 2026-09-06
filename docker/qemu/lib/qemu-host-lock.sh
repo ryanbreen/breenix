@@ -24,7 +24,13 @@
 # (`qemu-system-aarch64` or `qemu-system-x86_64`) as their first argument,
 # defaulting to `qemu-system-aarch64` when omitted so the ~30 aarch64 call
 # sites that predate #865 and call e.g. `qemu_host_lock_acquire` bare keep
-# working byte-for-byte. qemu_host_lock_release and qemu_host_lock_track_pid
+# working byte-for-byte. A non-empty first argument that is neither of
+# those two literals (a typo, e.g. `qemu-system-x86`) is refused via
+# `_qhl_resolve_bin` below -- exit 1 with a FAIL line on stderr -- rather
+# than silently treated as `qemu-system-aarch64` by a `case ... *)`
+# default arm, which would otherwise pick the wrong lock domain and the
+# wrong `pgrep` target with no indication anything was wrong.
+# qemu_host_lock_release and qemu_host_lock_track_pid
 # need no such argument -- they operate on this process's own global lock
 # state (`_QHL_LOCK_DIR`, `_QHL_TRACKED_PIDS`), already scoped to whichever
 # binary the matching acquire call was made for. An x86 caller passes the
@@ -100,6 +106,38 @@ _QHL_LOCK_DIR=""
 _QHL_DISABLED=0
 _QHL_TRAP_INSTALLED=0
 _QHL_TRACKED_PIDS=()
+_QHL_RESOLVED_BIN=""
+
+# Resolves $1 to a known QEMU binary name into the global
+# _QHL_RESOLVED_BIN, defaulting to qemu-system-aarch64 when $1 is empty
+# (the pre-#865 bare-call shape, see the ARCHITECTURE AWARENESS header
+# comment) and returns 0. On a non-empty $1 that is neither
+# qemu-system-aarch64 nor qemu-system-x86_64 -- a typo, e.g.
+# qemu-system-x86 -- prints a FAIL line to stderr, clears
+# _QHL_RESOLVED_BIN, and returns 1 (#865 F1: this used to be a silent
+# `case ... *)` fallthrough to the aarch64 lock domain and pgrep target
+# in both qemu_host_lock_dir and qemu_host_lock_count). 3/3 call sites
+# below invoke it as a plain function call --
+# `_qhl_resolve_bin "${1:-}" || exit 1` -- not via `$( )` command
+# substitution, so the `exit 1` on an unrecognized name runs in the SAME
+# shell as the caller (qemu_host_lock_dir/qemu_host_lock_count's own
+# bodies already execute inside whatever subshell their own caller's
+# command substitution created; qemu_host_lock_acquire's body runs
+# directly in the calling script's shell) rather than being swallowed by
+# an extra throwaway subshell this helper would otherwise add.
+_qhl_resolve_bin() {
+    _QHL_RESOLVED_BIN="${1:-qemu-system-aarch64}"
+    case "$_QHL_RESOLVED_BIN" in
+        qemu-system-aarch64|qemu-system-x86_64)
+            return 0
+            ;;
+        *)
+            echo "QEMU HOST LOCK: FAIL -- unrecognized QEMU binary name: '$_QHL_RESOLVED_BIN' (expected qemu-system-aarch64 or qemu-system-x86_64)" >&2
+            _QHL_RESOLVED_BIN=""
+            return 1
+            ;;
+    esac
+}
 
 # The directory this lock's atomic mkdir acquires, for the QEMU binary named
 # in $1 (default qemu-system-aarch64, see the ARCHITECTURE AWARENESS header
@@ -112,7 +150,8 @@ _QHL_TRACKED_PIDS=()
 # single-knob shape rather than growing an a64/x86-specific pair of
 # variables no caller has ever needed.
 qemu_host_lock_dir() {
-    local qemu_bin="${1:-qemu-system-aarch64}"
+    _qhl_resolve_bin "${1:-}" || exit 1
+    local qemu_bin="$_QHL_RESOLVED_BIN"
     if [ -n "${BREENIX_QEMU_LOCK:-}" ] && [ "$BREENIX_QEMU_LOCK" != "off" ]; then
         printf '%s\n' "$BREENIX_QEMU_LOCK"
         return
@@ -146,7 +185,8 @@ qemu_host_lock_dir() {
 # human or a launch log can see what this host was carrying at the moment
 # of a lock acquisition.
 qemu_host_lock_count() {
-    local qemu_bin="${1:-qemu-system-aarch64}"
+    _qhl_resolve_bin "${1:-}" || exit 1
+    local qemu_bin="$_QHL_RESOLVED_BIN"
     # pgrep exits 1 (not an error) when no process matches, and with a caller
     # running `set -o pipefail` that would make either pipeline below "fail"
     # and, for the bare `count="$(qemu_host_lock_count)"` assignment this
@@ -224,7 +264,8 @@ _qhl_verdict_banner() {
 # locked and contended, prints a wait message roughly once per 30s span
 # (poll granularity is 1s; the message is not itself the poll interval).
 qemu_host_lock_acquire() {
-    local qemu_bin="${1:-qemu-system-aarch64}"
+    _qhl_resolve_bin "${1:-}" || exit 1
+    local qemu_bin="$_QHL_RESOLVED_BIN"
     _qhl_chain_exit_trap
     if [ -n "${BREENIX_QEMU_LOCK:-}" ] && [ "$BREENIX_QEMU_LOCK" != "off" ]; then
         case "$BREENIX_QEMU_LOCK" in
