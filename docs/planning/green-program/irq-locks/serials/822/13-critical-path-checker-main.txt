@@ -1,0 +1,274 @@
+Checking critical path files for logging violations...
+
+573:    crate::serial_println!(
+791:                crate::serial_println!(
+842:        crate::serial_println!(
+915:        crate::serial_println!("[PERCPU_STACK_SELECTION_ROUTED:total={}]", routed);
+930:            crate::serial_println!(
+3273:    crate::serial_println!(
+[0;31mVIOLATION[0m in [1;33march_impl/aarch64/context_switch.rs[0m:
+573:    crate::serial_println!(
+791:                crate::serial_println!(
+842:        crate::serial_println!(
+915:        crate::serial_println!("[PERCPU_STACK_SELECTION_ROUTED:total={}]", routed);
+930:            crate::serial_println!(
+3273:    crate::serial_println!(
+573:    crate::serial_println!(
+791:                crate::serial_println!(
+842:        crate::serial_println!(
+915:        crate::serial_println!("[PERCPU_STACK_SELECTION_ROUTED:total={}]", routed);
+930:            crate::serial_println!(
+3273:    crate::serial_println!(
+1092:                                log::debug!(
+1512:                                log::debug!(
+[0;31mVIOLATION[0m in [1;33minterrupts/context_switch.rs[0m:
+980:                        log::info!(
+1030:                            log::info!(
+1079:                                log::info!("Signal terminated process, thread {}", thread_id);
+1111:                                log::info!("Signal delivered to thread {}", thread_id);
+1369:                log::info!("First run: thread {} entering userspace", thread_id);
+1683:            log::info!(
+1712:    log::info!("FIRST_ENTRY t{}: zeroed all registers", thread_id);
+1714:    log::info!(
+458:                log::error!(
+649:                log::error!(
+656:            log::error!(
+662:        log::error!("Process manager is None");
+837:            log::error!("Failed to switch TLS for thread {}: {}", thread_id, e);
+1194:            log::error!(
+1232:        log::error!("Failed to get idle thread's kernel stack!");
+1337:        log::error!(
+1429:                                    log::error!(
+1499:                                log::error!(
+1582:        log::error!(
+557:            log::trace!("Restored userspace context for thread {}", new_thread_id);
+642:                log::trace!(
+748:        log::trace!(
+821:            log::trace!(
+882:            log::trace!("Restoring idle thread's saved context");
+1262:    log::trace!("Set up return to idle loop");
+1352:    log::trace!("restore_userspace_thread_context: thread {}", thread_id);
+1392:    log::trace!("Resuming thread {}", thread_id);
+1497:                                log::trace!("Set kernel stack: {:#x}", kernel_stack_top.as_u64());
+251:    crate::serial_println!(
+282:        crate::serial_println!(
+294:        crate::serial_println!(
+310:        crate::serial_println!(
+335:            crate::serial_println!(
+342:            crate::serial_println!(
+375:        crate::serial_println!(
+810:    crate::serial_println!(
+844:                crate::serial_println!(
+852:                crate::serial_println!(
+872:    crate::serial_println!(
+885:        crate::serial_println!(
+913:            crate::serial_println!(
+916:            crate::serial_println!(
+930:            crate::serial_println!(
+937:        crate::serial_println!(
+[0;31mVIOLATION[0m in [1;33march_impl/aarch64/timer_interrupt.rs[0m:
+237:    log::info!("ARM64 timer interrupt init: frequency = {} Hz", freq);
+387:    log::info!("ARM64 timer interrupt initialized");
+251:    crate::serial_println!(
+282:        crate::serial_println!(
+294:        crate::serial_println!(
+310:        crate::serial_println!(
+335:            crate::serial_println!(
+342:            crate::serial_println!(
+375:        crate::serial_println!(
+810:    crate::serial_println!(
+844:                crate::serial_println!(
+852:                crate::serial_println!(
+872:    crate::serial_println!(
+885:        crate::serial_println!(
+913:            crate::serial_println!(
+916:            crate::serial_println!(
+930:            crate::serial_println!(
+937:        crate::serial_println!(
+251:    crate::serial_println!(
+282:        crate::serial_println!(
+294:        crate::serial_println!(
+310:        crate::serial_println!(
+335:            crate::serial_println!(
+342:            crate::serial_println!(
+375:        crate::serial_println!(
+810:    crate::serial_println!(
+844:                crate::serial_println!(
+852:                crate::serial_println!(
+872:    crate::serial_println!(
+885:        crate::serial_println!(
+913:            crate::serial_println!(
+916:            crate::serial_println!(
+930:            crate::serial_println!(
+937:        crate::serial_println!(
+1450:            crate::serial_println!("[exception] Breakpoint (BRK #{}) at {:#x}", imm, frame.elr);
+1889:            crate::serial_println!("[syscall] exit({})", exit_code);
+1890:            crate::serial_println!();
+1891:            crate::serial_println!("========================================");
+1892:            crate::serial_println!("  Userspace Test Complete!");
+1893:            crate::serial_println!("  Exit code: {}", exit_code);
+1894:            crate::serial_println!("========================================");
+1895:            crate::serial_println!();
+1947:            crate::serial_println!("[syscall] ENOSYS for syscall {}", syscall_num);
+[0;31mVIOLATION[0m in [1;33march_impl/aarch64/exception.rs[0m:
+1450:            crate::serial_println!("[exception] Breakpoint (BRK #{}) at {:#x}", imm, frame.elr);
+1889:            crate::serial_println!("[syscall] exit({})", exit_code);
+1890:            crate::serial_println!();
+1891:            crate::serial_println!("========================================");
+1892:            crate::serial_println!("  Userspace Test Complete!");
+1893:            crate::serial_println!("  Exit code: {}", exit_code);
+1894:            crate::serial_println!("========================================");
+1895:            crate::serial_println!();
+1947:            crate::serial_println!("[syscall] ENOSYS for syscall {}", syscall_num);
+1450:            crate::serial_println!("[exception] Breakpoint (BRK #{}) at {:#x}", imm, frame.elr);
+1889:            crate::serial_println!("[syscall] exit({})", exit_code);
+1890:            crate::serial_println!();
+1891:            crate::serial_println!("========================================");
+1892:            crate::serial_println!("  Userspace Test Complete!");
+1893:            crate::serial_println!("  Exit code: {}", exit_code);
+1894:            crate::serial_println!("========================================");
+1895:            crate::serial_println!();
+1947:            crate::serial_println!("[syscall] ENOSYS for syscall {}", syscall_num);
+502:            log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
+[0;31mVIOLATION[0m in [1;33msyscall/handler.rs[0m:
+536:        log::error!("CRITICAL: Cannot set TSS.RSP0 - kernel_stack_top is 0!");
+114:    log::info!(
+[0;31mVIOLATION[0m in [1;33msyscall/time.rs[0m:
+389:    log::debug!("  GS_BASE = {:#x}", hal_percpu::msr::read_gs_base_msr());
+390:    log::debug!(
+[0;31mVIOLATION[0m in [1;33mper_cpu.rs[0m:
+375:    log::info!("Initializing per-CPU data via GS segment");
+388:    log::info!("Per-CPU data initialized at {:#x}", cpu_data_addr);
+425:    log::info!("HAL read-back verification passed: GS-relative operations working");
+429:    log::info!(
+439:    log::info!(
+447:    log::info!(
+452:    log::info!("HAL_PERCPU_INITIALIZED: Per-CPU data setup via HAL complete");
+1165:    log::info!("Setting kernel_cr3 in per-CPU data to {:#x}", cr3);
+1160:        log::warn!("set_kernel_cr3 called before per-CPU init, storing for later");
+1378:            log::warn!("can_schedule: returning false - current_thread is None");
+390:    log::debug!("  TPIDR_EL1 = {:#x}", hal_percpu::percpu_base());
+[0;31mVIOLATION[0m in [1;33mper_cpu_aarch64.rs[0m:
+382:    log::info!("Initializing per-CPU data via TPIDR_EL1");
+386:    log::info!(
+400:    log::info!("HAL read-back verification passed: TPIDR_EL1-relative operations working");
+414:    log::info!("Per-CPU data marked as initialized");
+842:        log::warn!("set_kernel_cr3 called before per-CPU init");
+275:    crate::serial_println!(
+285:    crate::serial_println!(
+490:    crate::serial_println!(
+531:    crate::serial_println!(
+540:        crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason=probe_thread_unavailable]");
+569:            crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason={}]", reason);
+578:            crate::serial_println!(
+1981:        log_serial_println!(
+2091:        log_serial_println!(
+2341:            log_serial_println!(
+2447:                            log_serial_println!(
+2465:                    log_serial_println!(
+2478:                    log_serial_println!(
+2497:            log_serial_println!(
+3408:                        log_serial_println!(
+3595:                    log_serial_println!(
+3610:                log_serial_println!(
+3634:        log_serial_println!(
+3641:            log_serial_println!(
+3681:                        log_serial_println!(
+3699:                    log_serial_println!(
+3711:                log_serial_println!(
+3719:            log_serial_println!("unblock_for_signal: Thread {} not found!", thread_id);
+3745:                log_serial_println!(
+3794:                        log_serial_println!(
+4965:            crate::serial_println!(
+4973:        crate::serial_println!(
+4984:            crate::serial_println!(
+5190:        log_serial_println!("Scheduler initialized");
+5221:        log_serial_println!(
+5757:        crate::serial_println!("[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]");
+5769:        crate::serial_println!("[CREATION_LOCK_ORDER:INJECTED:PM_HELD]");
+5893:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]");
+5897:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]");
+5901:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]");
+5904:                crate::serial_println!("[EXEC_LOCK_ORDER:FIRST_COMMIT]");
+[0;31mVIOLATION[0m in [1;33mtask/scheduler.rs[0m:
+6278:            log::info!(
+6291:        log::info!(
+6502:        log::info!("=== TEST: unblock avoids duplicate ready_queue entries ===");
+6526:        log::info!("=== TEST PASSED: unblock avoids duplicate ready_queue entries ===");
+6530:        log::info!("=== TEST: schedule avoids duplicate ready_queue entries ===");
+6559:        log::info!("=== TEST PASSED: schedule avoids duplicate ready_queue entries ===");
+6572:        log::info!("=== TEST: yield_current() scheduler state invariant ===");
+6576:        log::info!("Thread ID before yield_current(): {:?}", thread_id_before);
+6583:        log::info!("Thread ID after yield_current(): {:?}", thread_id_after);
+6605:        log::info!("=== TEST PASSED: yield_current() correctly preserves scheduler state ===");
+6623:        log::info!("=== Scheduler invariant check (non-test mode) ===");
+6636:            log::info!("Scheduler invariant check passed: yield_current() preserves state");
+6284:            log::error!(
+6354:            log::error!(
+6630:            log::error!(
+275:    crate::serial_println!(
+285:    crate::serial_println!(
+490:    crate::serial_println!(
+531:    crate::serial_println!(
+540:        crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason=probe_thread_unavailable]");
+569:            crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason={}]", reason);
+578:            crate::serial_println!(
+1981:        log_serial_println!(
+2091:        log_serial_println!(
+2341:            log_serial_println!(
+2447:                            log_serial_println!(
+2465:                    log_serial_println!(
+2478:                    log_serial_println!(
+2497:            log_serial_println!(
+3408:                        log_serial_println!(
+3595:                    log_serial_println!(
+3610:                log_serial_println!(
+3634:        log_serial_println!(
+3641:            log_serial_println!(
+3681:                        log_serial_println!(
+3699:                    log_serial_println!(
+3711:                log_serial_println!(
+3719:            log_serial_println!("unblock_for_signal: Thread {} not found!", thread_id);
+3745:                log_serial_println!(
+3794:                        log_serial_println!(
+4965:            crate::serial_println!(
+4973:        crate::serial_println!(
+4984:            crate::serial_println!(
+5190:        log_serial_println!("Scheduler initialized");
+5221:        log_serial_println!(
+5757:        crate::serial_println!("[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]");
+5769:        crate::serial_println!("[CREATION_LOCK_ORDER:INJECTED:PM_HELD]");
+5893:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]");
+5897:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]");
+5901:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]");
+5904:                crate::serial_println!("[EXEC_LOCK_ORDER:FIRST_COMMIT]");
+275:    crate::serial_println!(
+285:    crate::serial_println!(
+490:    crate::serial_println!(
+531:    crate::serial_println!(
+540:        crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason=probe_thread_unavailable]");
+569:            crate::serial_println!("[PIN_GUARD_ORACLE:aarch64:SKIP:reason={}]", reason);
+578:            crate::serial_println!(
+4965:            crate::serial_println!(
+4973:        crate::serial_println!(
+4984:            crate::serial_println!(
+5757:        crate::serial_println!("[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]");
+5769:        crate::serial_println!("[CREATION_LOCK_ORDER:INJECTED:PM_HELD]");
+5893:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:PM_HELD]");
+5897:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:UNPINNED]");
+5901:                crate::serial_println!("[EXEC_LOCK_ORDER:VIOLATION:NO_SCHED_THREAD]");
+5904:                crate::serial_println!("[EXEC_LOCK_ORDER:FIRST_COMMIT]");
+  capture/: 4 file(s) checked
+
+[0;31mCritical path violations detected![0m
+
+These files are on the kernel's critical path (interrupt handlers,
+context switch, syscall hot path). Logging using locks is FORBIDDEN.
+
+Allowed alternatives:
+  - raw_uart_char(b'X')     - Single character, no locks
+  - raw_serial_char(0x41)   - Single character to serial
+  - trace_event(TYPE, val)  - Lock-free ring buffer trace
+  - trace_marker!(A)        - Lock-free debug marker
+
+See kernel/src/trace.rs for the lock-free tracing framework.

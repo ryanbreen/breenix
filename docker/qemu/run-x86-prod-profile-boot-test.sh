@@ -405,6 +405,7 @@ TEST_ONLY_MARKERS=(
     '[FCNTL_PM_CONTENTION_ORACLE:'
     '[IRQ_HOLD_ORACLE:'
     '[TTY_IRQ_PM_ORACLE:'  # #821's TTY input IRQ oracle (boot_tests-only)
+    '[TTY_IRQ_FG_ORACLE:'  # #822's TTY foreground-pgrp oracle (boot_tests-only)
     '[RING_SPAN:'  # failure-trace-capture PR-2 ring-depth self-check (boot_tests-only)
     # failure-trace-capture PR-3's BXCAP self-test edge, which is
     # `capture_selftest`-only. The VALUE, not the `[BXCAP:` token: the emitter

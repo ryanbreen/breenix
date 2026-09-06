@@ -1,0 +1,57 @@
+# aarch64 strict gate, 20 boots, fix-round HEAD, run 1. The gate rejected 2 boots; boots 17-20's host-lock lines read 'count before acquire: 1' and boot 19 waited 60s+ for it, so another qemu-system-aarch64 was on the host for the tail of this run.
+#
+# One line per boot: that boot's own [TTY_IRQ_FG_ORACLE:...] verdict line and
+# its [GATE_BOOT_FACTS:...] line, read out of the gate's own per-boot directory
+# ($BREENIX_GATE_TMP/breenix_aarch64_strict_<N>/serial.txt) after the run. The
+# gate's stdout carries the boot verdicts and 0 oracle lines, which is why this
+# file exists. Each field below is read from THIS oracle's marker only: 3 other
+# oracles in the same serial spell `entry_us=` the same way.
+
+boot=1 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=138:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=1:host_ms=1788698261183-1788698270734:qemu_at_start=0:load_at_start=5.16:qemu_at_end=1:load_at_end=5.62:qemu_cpu_s=17.62:guest_uptime_ms=9055:ended_by=scored_pass]
+boot=2 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=128:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=2:host_ms=1788698272082-1788698281644:qemu_at_start=0:load_at_start=5.62:qemu_at_end=1:load_at_end=5.58:qemu_cpu_s=18.00:guest_uptime_ms=8933:ended_by=scored_pass]
+boot=3 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=120:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=3:host_ms=1788698283010-1788698294097:qemu_at_start=0:load_at_start=5.45:qemu_at_end=1:load_at_end=4.77:qemu_cpu_s=18.47:guest_uptime_ms=10911:ended_by=scored_pass]
+boot=4 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=128:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=4:host_ms=1788698295543-1788698306614:qemu_at_start=0:load_at_start=4.77:qemu_at_end=1:load_at_end=4.41:qemu_cpu_s=18.52:guest_uptime_ms=10789:ended_by=scored_pass]
+boot=5 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=116:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=5:host_ms=1788698308211-1788698320832:qemu_at_start=0:load_at_start=4.46:qemu_at_end=1:load_at_end=3.85:qemu_cpu_s=20.54:guest_uptime_ms=11813:ended_by=scored_pass]
+boot=6 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=120:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=6:host_ms=1788698322292-1788698334915:qemu_at_start=0:load_at_start=3.85:qemu_at_end=1:load_at_end=3.49:qemu_cpu_s=21.16:guest_uptime_ms=12198:ended_by=scored_pass]
+boot=7 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=144:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=7:host_ms=1788698336374-1788698347481:qemu_at_start=0:load_at_start=3.49:qemu_at_end=1:load_at_end=3.80:qemu_cpu_s=19.45:guest_uptime_ms=10466:ended_by=scored_pass]
+boot=8 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=130:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=8:host_ms=1788698349006-1788698360078:qemu_at_start=0:load_at_start=3.66:qemu_at_end=1:load_at_end=3.94:qemu_cpu_s=18.61:guest_uptime_ms=10236:ended_by=scored_pass]
+boot=9 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=122:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=9:host_ms=1788698361585-1788698372710:qemu_at_start=0:load_at_start=3.94:qemu_at_end=1:load_at_end=3.87:qemu_cpu_s=18.98:guest_uptime_ms=10794:ended_by=scored_pass]
+boot=10 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20008:entry_us=218:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=10:host_ms=1788698374096-1788698392901:qemu_at_start=0:load_at_start=4.28:qemu_at_end=1:load_at_end=8.98:qemu_cpu_s=21.52:guest_uptime_ms=18743:ended_by=poll_exhausted]
+boot=11 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=176:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=11:host_ms=1788698394320-1788698406956:qemu_at_start=0:load_at_start=8.98:qemu_at_end=1:load_at_end=7.83:qemu_cpu_s=20.63:guest_uptime_ms=12066:ended_by=scored_pass]
+boot=12 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=122:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=12:host_ms=1788698408328-1788698419408:qemu_at_start=0:load_at_start=7.36:qemu_at_end=1:load_at_end=6.85:qemu_cpu_s=18.69:guest_uptime_ms=10727:ended_by=scored_pass]
+boot=13 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=116:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=13:host_ms=1788698420936-1788698432018:qemu_at_start=0:load_at_start=6.85:qemu_at_end=1:load_at_end=6.19:qemu_cpu_s=18.64:guest_uptime_ms=11060:ended_by=scored_pass]
+boot=14 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=152:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=14:host_ms=1788698433463-1788698446111:qemu_at_start=0:load_at_start=5.78:qemu_at_end=1:load_at_end=5.05:qemu_cpu_s=20.51:guest_uptime_ms=11724:ended_by=scored_pass]
+boot=15 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=124:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=15:host_ms=1788698447568-1788698460203:qemu_at_start=0:load_at_start=5.05:qemu_at_end=1:load_at_end=4.27:qemu_cpu_s=20.88:guest_uptime_ms=12252:ended_by=scored_pass]
+boot=16 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20006:entry_us=170:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=16:host_ms=1788698461596-1788698474221:qemu_at_start=0:load_at_start=4.27:qemu_at_end=1:load_at_end=3.53:qemu_cpu_s=21.02:guest_uptime_ms=12467:ended_by=scored_pass]
+boot=17 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20002:entry_us=114:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=17:host_ms=1788698504049-1788698516677:qemu_at_start=0:load_at_start=3.38:qemu_at_end=1:load_at_end=3.16:qemu_cpu_s=20.49:guest_uptime_ms=12078:ended_by=scored_pass]
+boot=18 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=116:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=18:host_ms=1788698546415-1788698557488:qemu_at_start=0:load_at_start=3.30:qemu_at_end=1:load_at_end=3.48:qemu_cpu_s=18.90:guest_uptime_ms=10963:ended_by=scored_pass]
+boot=19 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=116:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]
+       [GATE_BOOT_FACTS:boot=19:host_ms=1788698627708-1788698638797:qemu_at_start=0:load_at_start=2.38:qemu_at_end=1:load_at_end=2.67:qemu_cpu_s=18.57:guest_uptime_ms=10825:ended_by=scored_pass]
+boot=20 [TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=4120:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:FAIL:peer_hold]
+       [GATE_BOOT_FACTS:boot=20:host_ms=1788698654390-1788698673059:qemu_at_start=0:load_at_start=2.59:qemu_at_end=1:load_at_end=2.50:qemu_cpu_s=26.02:guest_uptime_ms=17811:ended_by=poll_exhausted]
+
+# Tally, computed over the 20 lines above:
+#   printed PASS: 19 of 20
+#   printed FAIL: 1 of 20
+#   fg_lock_touches=0 and fg_blocking_acquires=0: 20 of 20
+#   sig_calls=1:sig_pid=822:sig_num=2: 20 of 20
+#   entry_us out of this oracle's own line, sorted: 114 116 116 116 116 120 120 122 122 124 128 128 130 138 144 152 170 176 218 4120
+

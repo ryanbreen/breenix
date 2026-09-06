@@ -5759,6 +5759,467 @@ fn test_tty_irq_pm_oracle() -> TestResult {
     }
 }
 
+// ===========================================================================
+// #822 -- no TTY interrupt path touches the console's foreground_pgrp mutex
+// ===========================================================================
+//
+// The lock: the console `TtyDevice`'s `foreground_pgrp: Mutex<Option<u64>>`.
+// It is a plain spin lock with no mask operation of its own, so each of the 5
+// acquisitions of it in `tty/driver.rs` -- reached from `tcsetpgrp` through
+// `tty/ioctl.rs::handle_tiocspgrp`, from TIOCGPGRP through
+// `get_foreground_pgrp`, and from `process/creation.rs` at process creation --
+// runs with interrupts unmasked, on both architectures.
+//
+// What the interrupt side did with it, before this round:
+//
+// * `input_char_nonblock` read it under `try_lock` with an
+//   `unwrap_or(false)` degrade arm, so a keystroke arriving during a
+//   `tcsetpgrp` skipped the adoption it owed;
+// * `send_signal_to_foreground_nonblock` read it under `try_lock` and
+//   RETURNED on a busy lock, so a Ctrl+C arriving during a `tcsetpgrp` was
+//   dropped -- and on x86 the drop was announced through `serial_println!`,
+//   a second lock taken from interrupt context.
+//
+// Neither waited, so neither could wedge; what they did instead was lose the
+// keystroke's meaning. Both now read a snapshot the thread-side writers
+// publish under the mutex, so the interrupt side takes 0 acquisitions of it,
+// blocking or otherwise.
+//
+// This oracle drives one input byte through the real entry while a thread
+// holds that mutex unmasked for 20 ms, and reads:
+//
+// * `fg_lock_touches` and `fg_blocking_acquires`, the production counters
+//   `tty/driver.rs` bumps before each of its 5 acquisition sites when a TTY
+//   interrupt entry's scope is open on this CPU. 0 is the property.
+// * `sig_calls`, `sig_pid` and `sig_num`: the interrupt side resolved a
+//   foreground pgrp under the hold and dispatched SIGINT to it. On the
+//   unrepaired entry this reads `sig_calls=0` -- the signal is gone.
+// * `entry_us`: on aarch64, where the hold is on a peer CPU, an entry that
+//   acquired the mutex would wait the hold out and read ~20000.
+//
+// The x86 arm refuses to drive the held-lock injection when the detector has
+// already found a blocking acquisition, for the reason #821's arm gives: this
+// machine boots `-smp 1`, and an injection under a lock this CPU owns would
+// take the boot with it.
+
+/// Ordinary byte: not INTR, QUIT or SUSP, not ERASE, KILL or EOF, and not a
+/// newline, so it lands in the canonical edit buffer and 0 bytes reach the
+/// global stdin ring a userspace reader would see.
+const TTY_IRQ_FG_BYTE: u8 = b's';
+/// The INTR byte. `line_discipline.rs` maps it to SIGINT while ISIG is set,
+/// which is the console's default, and returns before the canonical buffer is
+/// touched -- so it generates the signal without disturbing the byte above.
+const TTY_IRQ_FG_INTR_BYTE: u8 = 0x03;
+/// The foreground process group the oracle installs. It names no live process
+/// on purpose: see `target_absent` below.
+const TTY_IRQ_FG_PGRP: u64 = 822;
+/// A second pgrp, used only to show the snapshot tracking an ordinary
+/// thread-side write of the field.
+const TTY_IRQ_FG_PGRP_ALT: u64 = 823;
+/// SIGINT's number, repeated here so the verdict line can be read without the
+/// signal module in hand.
+const TTY_IRQ_FG_SIGINT: u64 = 2;
+/// Microseconds the holder keeps `foreground_pgrp` while the injection runs.
+const TTY_IRQ_FG_HOLD_US: u64 = 20_000;
+/// Microseconds the driver waits for the peer to publish its hold.
+#[cfg(target_arch = "aarch64")]
+const TTY_IRQ_FG_ARM_WAIT_US: u64 = 500_000;
+/// Microseconds the driver waits for the peer thread to exit.
+#[cfg(target_arch = "aarch64")]
+const TTY_IRQ_FG_JOIN_US: u64 = 1_000_000;
+/// Ceiling, in microseconds, for the measured entry. The hold is 20 ms, so an
+/// entry that waited for it cannot come in under this. Read by the aarch64 arm
+/// alone, for the reason #821's own ceiling is: the x86 profile's monotonic
+/// clock is TSC-backed only when the TSC is calibrated, and a tight pin there
+/// would be a flake rather than a reading.
+#[cfg(target_arch = "aarch64")]
+const TTY_IRQ_FG_ENTRY_CEILING_US: u64 = 1_000;
+
+#[cfg(target_arch = "aarch64")]
+static TTY_IRQ_FG_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static TTY_IRQ_FG_HOLD_DONE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static TTY_IRQ_FG_HOLD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(target_arch = "aarch64")]
+static TTY_IRQ_FG_HOLD_MEASURED_US: AtomicU64 = AtomicU64::new(0);
+
+/// aarch64 peer body: own `foreground_pgrp`, UNMASKED, for a fixed window.
+///
+/// Unmasked is the point. `tcsetpgrp` holds this lock with interrupts live, so
+/// that is the shape an input interrupt has to survive. Preemption is disabled
+/// so the window is the holder's own and not the scheduler's.
+#[cfg(target_arch = "aarch64")]
+fn tty_irq_fg_holder_body() {
+    let Some(tty) = crate::tty::console() else {
+        TTY_IRQ_FG_HOLD_DONE.store(true, AtomicOrdering::Release);
+        return;
+    };
+
+    crate::per_cpu::preempt_disable();
+    tty.hold_foreground_pgrp_for_test(&mut || {
+        TTY_IRQ_FG_HOLD_CPU.store(
+            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
+            AtomicOrdering::Relaxed,
+        );
+        TTY_IRQ_FG_HOLD_ACTIVE.store(true, AtomicOrdering::Release);
+
+        let held_from = tty_irq_pm_now_us();
+        loop {
+            let elapsed = tty_irq_pm_now_us().wrapping_sub(held_from);
+            if elapsed >= TTY_IRQ_FG_HOLD_US {
+                TTY_IRQ_FG_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    });
+    crate::per_cpu::preempt_enable();
+    TTY_IRQ_FG_HOLD_DONE.store(true, AtomicOrdering::Release);
+}
+
+/// One injection through the input IRQ entry, with preemption disabled.
+///
+/// Returns (processed, entry microseconds, foreground-pgrp lock touches taken
+/// inside it, the blocking subset of those, snapshot reads it made, signal
+/// dispatches it made).
+fn tty_irq_fg_inject(byte: u8) -> (u64, u64, u64, u64, u64, u64) {
+    let touches_before = crate::tty::driver::tty_irq_fg_lock_touches();
+    let blocking_before = crate::tty::driver::tty_irq_fg_blocking_acquires();
+    let reads_before = crate::tty::driver::tty_irq_fg_snapshot_reads();
+    let (calls_before, _, _) = crate::tty::driver::tty_irq_fg_signal_census();
+
+    // Preemption off for the measured region: the detector's scope is per CPU
+    // and is released on the slot it was taken on, so a thread that migrated
+    // mid-injection would be measured against the wrong CPU.
+    crate::per_cpu::preempt_disable();
+    let start = tty_irq_pm_now_us();
+    let processed = crate::tty::push_char_nonblock(byte);
+    let entry_us = tty_irq_pm_now_us().wrapping_sub(start);
+    crate::per_cpu::preempt_enable();
+
+    let (calls_after, _, _) = crate::tty::driver::tty_irq_fg_signal_census();
+    (
+        u64::from(processed),
+        entry_us,
+        crate::tty::driver::tty_irq_fg_lock_touches().wrapping_sub(touches_before),
+        crate::tty::driver::tty_irq_fg_blocking_acquires().wrapping_sub(blocking_before),
+        crate::tty::driver::tty_irq_fg_snapshot_reads().wrapping_sub(reads_before),
+        calls_after.wrapping_sub(calls_before),
+    )
+}
+
+/// Whether the process manager holds a row for `pid`.
+///
+/// The oracle installs a foreground pgrp that names no live process, and this
+/// is the reading that says so. Dispatching a real SIGINT to a live process
+/// inside a boot gate would be a boot hazard: the target could take the signal
+/// and die between the injection and any attempt to clear it. What the oracle
+/// measures instead is the dispatch itself -- the pid the interrupt side
+/// resolved and handed to the delivery hop, recorded by `driver.rs` at that
+/// hop. See this round's document for what that does and does not claim.
+fn tty_irq_fg_pid_absent(pid: u64) -> bool {
+    match crate::process::try_manager() {
+        Some(manager) => match *manager {
+            Some(ref pm) => pm.get_process(crate::process::ProcessId::new(pid)).is_none(),
+            None => true,
+        },
+        None => false,
+    }
+}
+
+/// The console state the oracle borrows, so it can be put back exactly.
+struct TtyIrqFgConsoleSave {
+    termios: crate::tty::Termios,
+    pgrp: Option<u64>,
+}
+
+/// Put the console into the state this oracle needs: a known foreground
+/// process group, and echo off so the injected bytes -- the INTR byte's `^C`
+/// included -- cannot appear in the serial log a gate is scoring.
+fn tty_irq_fg_borrow_console(tty: &alloc::sync::Arc<crate::tty::TtyDevice>) -> TtyIrqFgConsoleSave {
+    let save = TtyIrqFgConsoleSave {
+        termios: tty.get_termios(),
+        pgrp: tty.get_foreground_pgrp(),
+    };
+    let mut quiet = save.termios;
+    quiet.c_lflag &= !crate::tty::termios::ECHO;
+    tty.set_termios(&quiet);
+    tty.set_foreground_pgrp_raw_for_test(Some(TTY_IRQ_FG_PGRP));
+    save
+}
+
+/// Return the console exactly as it was found, and drop the injected bytes.
+/// The snapshot is checked against the field here too: a restore that put the
+/// field back and left the snapshot behind would be this round's own defect.
+fn tty_irq_fg_return_console(
+    tty: &alloc::sync::Arc<crate::tty::TtyDevice>,
+    save: &TtyIrqFgConsoleSave,
+) -> bool {
+    tty.flush_input();
+    tty.set_termios(&save.termios);
+    tty.set_foreground_pgrp_raw_for_test(save.pgrp);
+    tty.get_foreground_pgrp() == save.pgrp
+        && tty.foreground_pgrp_snapshot_for_test() == save.pgrp
+        && tty.get_termios().c_lflag == save.termios.c_lflag
+}
+
+/// #822: drive the TTY input IRQ entry while a thread holds the console's
+/// `foreground_pgrp` unmasked, and report how many times the entry touched
+/// that mutex, whether the Ctrl+C it carried still reached the signal path
+/// with the right pgrp, and how long the entry took.
+pub fn run_tty_irq_fg_oracle() -> bool {
+    let Some(tty) = crate::tty::console() else {
+        crate::serial_println!(
+            "[TTY_IRQ_FG_ORACLE:{}:arm=none:reason=no_console_tty:FAIL:unarmed]",
+            TTY_IRQ_FG_ARCH,
+        );
+        return false;
+    };
+
+    let save = tty_irq_fg_borrow_console(&tty);
+    let fg_known = tty.get_foreground_pgrp().unwrap_or(0);
+    let target_absent = u64::from(tty_irq_fg_pid_absent(TTY_IRQ_FG_PGRP));
+
+    // Leg 1 -- the detector, with the lock free. On an unrepaired entry this is
+    // where the acquisition shows up, and it shows up with no holder to wait on.
+    let (processed_a, _entry_a_us, touches_a, blocking_a, reads_a, calls_a) =
+        tty_irq_fg_inject(TTY_IRQ_FG_BYTE);
+
+    // Leg 2 -- the INTR byte through the same entry, with foreground_pgrp
+    // genuinely held by a thread with interrupts unmasked.
+    #[cfg(target_arch = "aarch64")]
+    let mut arm = TTY_IRQ_FG_ARM_UNARMED;
+    #[cfg(not(target_arch = "aarch64"))]
+    let arm;
+    let mut processed_b = 0u64;
+    let mut entry_us = 0u64;
+    let mut touches_b = 0u64;
+    let mut blocking_b = 0u64;
+    let mut reads_b = 0u64;
+    let mut calls_b = 0u64;
+    let mut irqs_enabled_before = 0u64;
+    let mut fg_busy_probe = 0u64;
+    #[cfg(target_arch = "aarch64")]
+    let mut holder_cpu = u64::MAX;
+    #[cfg(target_arch = "aarch64")]
+    let mut hold_us = 0u64;
+    #[cfg(target_arch = "aarch64")]
+    let mut joined = 0u64;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::task::kthread::{
+            kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
+        };
+        use crate::task::scheduler::{
+            live_peer_cpu_for_test, live_peer_cpu_for_test_excluding_cpu0,
+            release_cpu_affine_thread_for_test,
+        };
+
+        let peer = live_peer_cpu_for_test();
+        let peer = match peer {
+            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+            other => other,
+        };
+
+        if let Some(peer) = peer {
+            TTY_IRQ_FG_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_FG_HOLD_DONE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_FG_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
+            TTY_IRQ_FG_HOLD_MEASURED_US.store(0, AtomicOrdering::Relaxed);
+
+            if let Ok(handle) =
+                kthread_run_on_cpu_for_test(tty_irq_fg_holder_body, "tty-irq-fg-822", peer)
+            {
+                arm = TTY_IRQ_FG_ARM_PEER_HOLD;
+                let arm_start = tty_irq_pm_now_us();
+                while !TTY_IRQ_FG_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+                    && !TTY_IRQ_FG_HOLD_DONE.load(AtomicOrdering::Acquire)
+                    && tty_irq_pm_now_us().wrapping_sub(arm_start) < TTY_IRQ_FG_ARM_WAIT_US
+                {
+                    core::hint::spin_loop();
+                }
+
+                if TTY_IRQ_FG_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
+                    irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+                    fg_busy_probe = u64::from(tty.foreground_pgrp_busy_for_test());
+                    let injected = tty_irq_fg_inject(TTY_IRQ_FG_INTR_BYTE);
+                    processed_b = injected.0;
+                    entry_us = injected.1;
+                    touches_b = injected.2;
+                    blocking_b = injected.3;
+                    reads_b = injected.4;
+                    calls_b = injected.5;
+                }
+
+                release_cpu_affine_thread_for_test(handle.tid());
+                let join_start = tty_irq_pm_now_us();
+                while !kthread_has_exited_for_test(&handle)
+                    && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_FG_JOIN_US
+                {
+                    crate::arch_halt();
+                }
+                if kthread_has_exited_for_test(&handle) {
+                    joined = u64::from(kthread_join(&handle).is_ok());
+                }
+                holder_cpu = TTY_IRQ_FG_HOLD_CPU.load(AtomicOrdering::Relaxed);
+                hold_us = TTY_IRQ_FG_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        if blocking_a == 0 {
+            arm = TTY_IRQ_FG_ARM_LOCAL_HOLD;
+            irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+            let held_from = tty_irq_pm_now_us();
+            tty.hold_foreground_pgrp_for_test(&mut || {
+                fg_busy_probe = u64::from(tty.foreground_pgrp_busy_for_test());
+                let injected = tty_irq_fg_inject(TTY_IRQ_FG_INTR_BYTE);
+                processed_b = injected.0;
+                entry_us = injected.1;
+                touches_b = injected.2;
+                blocking_b = injected.3;
+                reads_b = injected.4;
+                calls_b = injected.5;
+                // Keep the hold open for the same window the aarch64 peer uses,
+                // so a lock this arm reports as "held during the entry" was held
+                // for a window an interrupt could not have squeezed past.
+                while tty_irq_pm_now_us().wrapping_sub(held_from) < TTY_IRQ_FG_HOLD_US {
+                    core::hint::spin_loop();
+                }
+            });
+        } else {
+            // The entry still reaches a blocking acquisition of this mutex.
+            // This machine boots uniprocessor, so driving the injection under a
+            // real hold would wedge the CPU on a lock it already owns and take
+            // the whole boot with it. Report the reading instead.
+            arm = TTY_IRQ_FG_ARM_WOULD_BLOCK;
+        }
+    }
+
+    let buffered = tty.input_line_pending() as u64;
+    let (_, sig_pid, sig_num) = crate::tty::driver::tty_irq_fg_signal_census();
+
+    // Leg 3 -- the thread side still owns the field, and the snapshot tracks
+    // it. Both directions: cleared, and set to a different pgrp.
+    tty.set_foreground_pgrp_raw_for_test(None);
+    let agrees_unset =
+        tty.get_foreground_pgrp().is_none() && tty.foreground_pgrp_snapshot_for_test().is_none();
+    tty.set_foreground_pgrp(TTY_IRQ_FG_PGRP_ALT);
+    let agrees_set = tty.get_foreground_pgrp() == Some(TTY_IRQ_FG_PGRP_ALT)
+        && tty.foreground_pgrp_snapshot_for_test() == Some(TTY_IRQ_FG_PGRP_ALT);
+    let snapshot_agrees = u64::from(agrees_unset && agrees_set);
+
+    let restored = u64::from(tty_irq_fg_return_console(&tty, &save));
+
+    let touches = touches_a.wrapping_add(touches_b);
+    let blocking = blocking_a.wrapping_add(blocking_b);
+    let reads = reads_a.wrapping_add(reads_b);
+    let sig_calls = calls_a.wrapping_add(calls_b);
+    let processed = processed_a.wrapping_add(processed_b);
+
+    let common_pass = fg_known == TTY_IRQ_FG_PGRP
+        && target_absent == 1
+        && touches == 0
+        && blocking == 0
+        && reads >= 2
+        && processed == 2
+        && buffered >= 1
+        && irqs_enabled_before == 1
+        && fg_busy_probe == 1
+        && sig_calls == 1
+        && sig_pid == TTY_IRQ_FG_PGRP
+        && sig_num == TTY_IRQ_FG_SIGINT
+        && snapshot_agrees == 1
+        && restored == 1;
+
+    #[cfg(target_arch = "aarch64")]
+    let passed = common_pass
+        && arm == TTY_IRQ_FG_ARM_PEER_HOLD
+        && holder_cpu != u64::MAX
+        && hold_us >= TTY_IRQ_FG_HOLD_US
+        && entry_us < TTY_IRQ_FG_ENTRY_CEILING_US
+        && joined == 1;
+
+    #[cfg(not(target_arch = "aarch64"))]
+    let passed = common_pass && arm == TTY_IRQ_FG_ARM_LOCAL_HOLD;
+
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!(
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known={}:target_absent={}:fg_lock_touches={}:fg_blocking_acquires={}:snapshot_reads={}:processed={}:buffered={}:irqs_enabled_before={}:holder_cpu={}:fg_busy_probe={}:hold_us={}:entry_us={}:joined={}:sig_calls={}:sig_pid={}:sig_num={}:snapshot_agrees={}:restored={}:{}:{}]",
+        fg_known,
+        target_absent,
+        touches,
+        blocking,
+        reads,
+        processed,
+        buffered,
+        irqs_enabled_before,
+        holder_cpu,
+        fg_busy_probe,
+        hold_us,
+        entry_us,
+        joined,
+        sig_calls,
+        sig_pid,
+        sig_num,
+        snapshot_agrees,
+        restored,
+        if passed { "PASS" } else { "FAIL" },
+        arm,
+    );
+
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::serial_println!(
+        "[TTY_IRQ_FG_ORACLE:x86:fg_known={}:target_absent={}:fg_lock_touches={}:fg_blocking_acquires={}:snapshot_reads={}:processed={}:buffered={}:irqs_enabled_before={}:fg_busy_probe={}:entry_us={}:sig_calls={}:sig_pid={}:sig_num={}:snapshot_agrees={}:restored={}:{}:{}]",
+        fg_known,
+        target_absent,
+        touches,
+        blocking,
+        reads,
+        processed,
+        buffered,
+        irqs_enabled_before,
+        fg_busy_probe,
+        entry_us,
+        sig_calls,
+        sig_pid,
+        sig_num,
+        snapshot_agrees,
+        restored,
+        if passed { "PASS" } else { "FAIL" },
+        arm,
+    );
+
+    passed
+}
+
+/// Arm names, stamped into the verdict line's last field.
+#[cfg(target_arch = "aarch64")]
+const TTY_IRQ_FG_ARM_UNARMED: &str = "unarmed";
+#[cfg(target_arch = "aarch64")]
+const TTY_IRQ_FG_ARM_PEER_HOLD: &str = "peer_hold";
+#[cfg(not(target_arch = "aarch64"))]
+const TTY_IRQ_FG_ARM_LOCAL_HOLD: &str = "local_hold";
+#[cfg(not(target_arch = "aarch64"))]
+const TTY_IRQ_FG_ARM_WOULD_BLOCK: &str = "handler_would_block";
+#[cfg(target_arch = "aarch64")]
+const TTY_IRQ_FG_ARCH: &str = "aarch64";
+#[cfg(not(target_arch = "aarch64"))]
+const TTY_IRQ_FG_ARCH: &str = "x86";
+
+#[cfg(target_arch = "aarch64")]
+fn test_tty_irq_fg_oracle() -> TestResult {
+    if run_tty_irq_fg_oracle() {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("a TTY interrupt entry touched the console's foreground_pgrp mutex")
+    }
+}
+
 fn test_census_widen_oracle() -> TestResult {
     if run_census_widen_oracle() {
         TestResult::Pass
@@ -8878,6 +9339,20 @@ static SYSCALL_TESTS: &[TestDef] = &[
     TestDef {
         name: "tty_irq_pm_oracle",
         func: test_tty_irq_pm_oracle,
+        arch: Arch::Aarch64,
+        timeout_ms: 20000,
+        stage: TestStage::ProcessContext,
+    },
+    // #822. Same stage and same array as the three oracles above, for the same
+    // reasons plus one of its own: this one parks a peer CPU on the console
+    // TTY's foreground_pgrp for 20 ms, and #821's oracle borrows that same
+    // console. Tests within one subsystem run sequentially on that subsystem's
+    // kthread, so the two console borrows cannot overlap and hand each other a
+    // foreground pgrp neither installed.
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "tty_irq_fg_oracle",
+        func: test_tty_irq_fg_oracle,
         arch: Arch::Aarch64,
         timeout_ms: 20000,
         stage: TestStage::ProcessContext,

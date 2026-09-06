@@ -144,3 +144,26 @@ last time: the production-profile scorer requires the new marker ABSENT, which
 the existing `02` already satisfies with 0 occurrences. `03` is untouched for
 the reason recorded above — the tests splice its `PIN_GUARD_ORACLE` line into a
 copy of `01` and read no other line from it.
+
+**`01` re-recorded again on `fix/822-tty-irq-no-fg-block`.** #822 adds a
+`TTY_IRQ_FG_ORACLE` check to the same `score_serial` function — the standing
+"widen the scorer, re-record the fixture" step, for the fourth time on this
+file. The previous `01` was taken on #821's branch and carries 0 of the new
+marker, so the 2 `loopback_pump_structure` legs and the 1
+`ttbr0_shadow_reconciliation_structure` leg that score it green — 3 of 3 —
+would read "TTY input IRQ foreground-pgrp oracle marker missing or failed" at
+this head.
+`01` is replaced with strict boot 1 of that branch's 20-boot run (20 of 20
+passed), carrying `[PIN_GUARD_ORACLE:...:verdict=PASS]`, `[RING_SPAN:cpu=0:...]`,
+`[TTY_IRQ_PM_ORACLE:aarch64:...:entry_us=2:...:PASS:peer_hold]` and
+`[TTY_IRQ_FG_ORACLE:aarch64:...:entry_us=116:...:PASS:peer_hold]` together; the
+same bytes are kept as
+`docs/planning/green-program/irq-locks/serials/822/02-a64-green-repaired-serial.txt`,
+that round's own green capture, and as
+`docs/planning/green-program/irq-locks/serials/821/02-a64-green-repaired-serial.txt`,
+which #821's own gate legs score green through the same widened scorer. `02` is
+untouched again, and for the same reason as last time: the production-profile
+scorer requires the new marker ABSENT, which the existing `02` already satisfies
+with 0 occurrences. `03` is untouched for the reason recorded above — the tests
+splice its `PIN_GUARD_ORACLE` line into a copy of `01` and read no other line
+from it.

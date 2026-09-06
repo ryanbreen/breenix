@@ -693,6 +693,15 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         // the exposed shape the #821 census names, and the oracle needs to be
         // one.
         kernel::test_framework::registry::run_tty_irq_pm_oracle();
+        // #822 third, immediately after #821 and for the same reasons: two
+        // bytes through the same TTY input IRQ entry plus one brief hold of the
+        // console's own foreground_pgrp, with 0 heap allocations and 0 process
+        // rows created, so it does not move the frame, page-table or
+        // kernel-stack counts the gates below pin. It has to be HERE for the
+        // same reason #821 does: this is the window where the boot thread runs
+        // with IF=1, and a thread-context holder of this lock with interrupts
+        // live is exactly the exposed shape the census names.
+        kernel::test_framework::registry::run_tty_irq_fg_oracle();
         kernel::task::process_task::run_x86_retirement_fence_gate();
         kernel::task::process_task::run_x86_reclaim_progress_gate();
         kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
