@@ -23,6 +23,14 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # budget and a boot that genuinely wedged score identically no longer.
 # shellcheck source=lib/gate-boot-facts.sh
 source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
+# failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+# BXCAP capture (if one is open) before this gate's own kill line runs. This
+# profile builds with no features (see the BXCAP_SELFTEST_COUNT assertion
+# below, which requires that self-test edge stay ABSENT here), so a real
+# capture on this gate is categorically `absent` today -- it becomes
+# meaningful once PR-4 wires the panic/fault edges into the shipped kernel.
+# shellcheck source=lib/gate-capture-drain.sh
+source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
 
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same
 # host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
@@ -259,6 +267,20 @@ cleanup() {
     trap - EXIT
     set +e
     if [ -n "$QEMU_PID" ]; then
+        # failure-trace-capture PR-5: this branch is the ABNORMAL-abort kill
+        # site -- it only fires when something ended the script (a
+        # SIGTERM/SIGINT, or a set -e/ERR trip) DURING the boot-poll window,
+        # before the main flow below ever reached its own explicit kill (that
+        # kill clears QEMU_PID to "" right after it runs, so this branch
+        # being taken at all means that kill did not run).
+        # Reaching this branch IS the non-PASS outcome -- there is no
+        # "confirmed pass" reading to skip draining for here, unlike the
+        # main flow's own kill further down -- so this branch drains
+        # unconditionally, the same
+        # way run-x86-prod-profile-boot-test.sh's report_gate_failure does
+        # for the identical shape.
+        CAPTURE_LINES="$(gcd_drain_and_report "${SERIAL_FILE:-$OUTPUT_DIR/serial.txt}")"
+        printf '%s\n' "$CAPTURE_LINES"
         kill "$QEMU_PID" 2>/dev/null || true
         wait "$QEMU_PID" 2>/dev/null || true
     fi
@@ -332,6 +354,20 @@ cleanup() {
                     ended_by="scored_pass"
                 else
                     ended_by="scored_fail"
+                    # review finding
+                    # aarch64-gates-drain-decision-uses-provisional-not-final-verdict,
+                    # half (a): PROD_ENDED_BY_LOOP="early_pass" chose the
+                    # 0-cost gcd_pass_report path (bsshd had reached), but
+                    # the assertion chain below it went on to reject the
+                    # boot anyway -- a genuine scored_fail. QEMU is already
+                    # dead here (the main flow's own kill, above, already
+                    # ran before any of those assertions could run), so no
+                    # further wait is useful, but the frozen
+                    # file's ACTUAL capture state is real evidence for what
+                    # is, by definition, a non-PASS outcome -- report it
+                    # honestly instead of leaving the pass path's
+                    # capture=n/a in place.
+                    CAPTURE_LINES="$(gcd_classify_report "$SERIAL_FILE")"
                 fi
                 ;;
             *)
@@ -344,15 +380,27 @@ cleanup() {
                 fi
                 ;;
         esac
+        # PROD_DEADLINE_SERIAL's only job was SERIAL_FILE's rescore
+        # above -- remove it so this boot's evidence directory keeps exactly
+        # the files it did before this fix, not an extra snapshot a later
+        # tool (tools/breenix-runs's importer) has no reason to expect.
+        rm -f "${PROD_DEADLINE_SERIAL:-}"
         facts_line="$(gbf_emit_line 1 "$PROD_HOST_MS_START" "$PROD_HOST_MS_END" \
             "$PROD_QEMU_AT_START" "$PROD_LOAD_AT_START" \
             "$PROD_QEMU_AT_END" "$PROD_LOAD_AT_END" \
             "$PROD_QEMU_CPU_S" "$guest_uptime_ms" "$ended_by")"
         # Recorded into this boot's own evidence directory unconditionally --
         # not only on failure, so a passing boot's host-side reading is on
-        # the record too.
-        printf '%s\n' "$facts_line" > "$OUTPUT_DIR/gate_boot_facts.txt" 2>/dev/null || true
+        # the record too. failure-trace-capture PR-5: CAPTURE_LINES rides
+        # the same file, right below it -- capture=n/a on this profile's
+        # normal PASS path (gcd_pass_report's own contract), the real
+        # drained reading otherwise.
+        {
+            printf '%s\n' "$facts_line"
+            printf '%s\n' "${CAPTURE_LINES:-}"
+        } > "$OUTPUT_DIR/gate_boot_facts.txt" 2>/dev/null || true
         echo "$facts_line"
+        printf '%s\n' "${CAPTURE_LINES:-}" | sed 's/^/  /'
     fi
 
     if [ "$status" -ne 0 ]; then
@@ -370,7 +418,10 @@ cleanup() {
             : > "$failure_dir/serial.txt"
         fi
         if [ -n "$facts_line" ]; then
-            printf '%s\n' "$facts_line" > "$failure_dir/gate_boot_facts.txt"
+            {
+                printf '%s\n' "$facts_line"
+                printf '%s\n' "${CAPTURE_LINES:-}"
+            } > "$failure_dir/gate_boot_facts.txt"
         fi
         echo "Preserved failing serial: $failure_dir/serial.txt"
         print_observed_values "$failure_dir/serial.txt"
@@ -491,6 +542,50 @@ if [ -f "$SERIAL_FILE" ] && grep -F -q "$BSSHD_LITERAL" "$SERIAL_FILE" 2>/dev/nu
 elif [ -f "$SERIAL_FILE" ] && grep -qiE "$CRASH_MARKERS_PATTERN" "$SERIAL_FILE" 2>/dev/null; then
     PROD_ENDED_BY_LOOP="crash"
 fi
+# failure-trace-capture PR-5's own forced-fail knob (unset by default, so an
+# ordinary run is unaffected): forces the drain path below to run even on a
+# boot that reached bsshd, so a live boot can exercise it deterministically.
+if [ -n "${BREENIX_PROD_FORCE_FAIL:-}" ]; then
+    PROD_ENDED_BY_LOOP="forced_fail"
+fi
+
+# review finding
+# aarch64-gates-drain-decision-uses-provisional-not-final-verdict: freeze a
+# byte-for-byte copy of the serial file THE INSTANT the poll loop above
+# stops, BEFORE the drain-or-pass decision right below runs -- that decision
+# may trigger gcd_drain_and_report's own wait, which deliberately keeps QEMU
+# alive up to BREENIX_GATE_DRAIN_SETTLE_MS + BREENIX_GATE_DRAIN_MAX_MS
+# longer so it can finish writing an open capture, and that extra QEMU
+# lifetime must not itself move which side of the poll loop's own deadline
+# this boot lands on. gcd_drain_and_report below is called with this
+# still-live $SERIAL_FILE (the snapshot is not yet in play), so the capture
+# evidence it reports keeps benefiting from the extra wait; only once that
+# call returns does $SERIAL_FILE get repointed at the frozen snapshot, right
+# below, so the ~35 assertions further down that decide this boot's pass/fail
+# verdict -- unchanged text, still reading "$SERIAL_FILE" -- read the
+# snapshot rather than a file the drain step may have kept growing. Plain
+# (non-local), like PROD_ENDED_BY_LOOP and CAPTURE_LINES, so cleanup() can
+# also read it.
+PROD_DEADLINE_SERIAL="$OUTPUT_DIR/serial.deadline.txt"
+cp -f "$SERIAL_FILE" "$PROD_DEADLINE_SERIAL" 2>/dev/null || : > "$PROD_DEADLINE_SERIAL"
+
+# failure-trace-capture PR-5: on any outcome that does not already read as a
+# pass right here, drain the guest's BXCAP capture (if one is open) BEFORE
+# this boot's kill line runs, further down -- deliberately placed before the
+# "immediately before kill" sampling block that follows, for the same reason
+# the strict gate's own drain call is placed there (see that gate's own
+# comment). Plain (non-local) so cleanup(), a separate top-level function,
+# can read it below.
+if [ "$PROD_ENDED_BY_LOOP" = "early_pass" ]; then
+    CAPTURE_LINES="$(gcd_pass_report)"
+else
+    CAPTURE_LINES="$(gcd_drain_and_report "$SERIAL_FILE")"
+fi
+
+# Repoint $SERIAL_FILE at the deadline snapshot now that the drain-or-pass
+# decision above (the only thing that still needed the live file) has run --
+# see the review-finding comment above PROD_DEADLINE_SERIAL's own creation.
+SERIAL_FILE="$PROD_DEADLINE_SERIAL"
 
 # #827: sampled together, immediately before this boot's own kill -- ps
 # has no output for a PID already gone, so qemu_cpu_seconds and the
@@ -512,6 +607,15 @@ QEMU_PID=""
 qemu_host_lock_release
 fi
 
+# review finding
+# aarch64-gates-drain-decision-uses-provisional-not-final-verdict: the
+# live-boot branch above repoints $SERIAL_FILE at the deadline snapshot;
+# that branch is the body of the top-level `if [ -z "$SCORE_ONLY_SERIAL" ]`
+# guard starting near line 424, and a BREENIX_PROD_SCORE_ONLY replay takes
+# the earlier, separate `if [ -n "$SCORE_ONLY_SERIAL" ]` branch instead (no
+# live boot, no drain, no snapshot involved), so $SERIAL_FILE
+# here is still exactly $SCORE_ONLY_SERIAL, unaffected, exactly as before
+# this fix.
 PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")
 KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
 SCHED_STRAND_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$SCHED_STRAND_ORACLE_LITERAL")
