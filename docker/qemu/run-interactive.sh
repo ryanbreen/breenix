@@ -16,13 +16,29 @@ if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
 fi
 
-# #849: CONTAINER_NAME is unique to this invocation (this script's own
-# PID). This replaces the previous ancestor-image-filtered "kill any
-# existing container" preflight (docker ps -q --filter
+# #849/F1-review: CONTAINER_NAME is unique to this invocation (this
+# script's own PID). This replaces the previous ancestor-image-filtered
+# "kill any existing container" preflight (docker ps -q --filter
 # ancestor="$IMAGE_NAME"), which could kill a DIFFERENT concurrent
 # invocation's own container from the same image -- not only a leftover
 # from a crashed earlier run of this exact script, which is the only
-# container this preflight rm can now ever remove.
+# container the `docker rm -f "$CONTAINER_NAME"` line below can now ever
+# remove.
+#
+# This is NOT the same tradeoff as #829's aarch64 precedent
+# (run-aarch64-interactive.sh): that script's second-invocation case is
+# safe because each aarch64 launcher in this tree cooperates with the
+# host-wide lock in lib/qemu-host-lock.sh, so a second invocation simply
+# waits its turn. qemu-system-x86_64 has no such lock, and this script
+# does not add one. So dropping the old preflight gives up more than the
+# same-PID crash-leftover case above: if an earlier run-interactive.sh
+# is still bound to host port 5900 (-p 5900:5900, fixed, below), this
+# invocation's own `docker run --name "$CONTAINER_NAME"` fails on that
+# port conflict rather than taking over. Because that `docker run` is
+# backgrounded, the failure is silent unless checked for explicitly --
+# the DOCKER_PID liveness check below (before opening TigerVNC) is that
+# check, so this now fails loudly with an actionable message instead of
+# silently opening TigerVNC onto the stale earlier session's screen.
 CONTAINER_NAME="breenix-interactive-$$"
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 _cleanup_interactive_container() {
@@ -99,6 +115,25 @@ DOCKER_PID=$!
 # Wait for VNC to be ready
 echo "Waiting for VNC server..."
 sleep 3
+
+# F1-review: confirm THIS invocation's own docker run client (DOCKER_PID)
+# is still alive before opening a viewer. There is no host-wide lock for
+# x86 (see the CONTAINER_NAME comment above), so if a still-running
+# earlier run-interactive.sh already holds host port 5900, the `docker
+# run --name "$CONTAINER_NAME" -p 5900:5900 ...` above fails immediately
+# ("port is already allocated") and DOCKER_PID exits before this check
+# runs. Failing loudly here -- by this invocation's own PID, not by
+# killing anything -- replaces what would otherwise be a silent wrong
+# outcome: TigerVNC opening against the OTHER session's still-live QEMU
+# with no indication that this invocation's own container did not start.
+if ! kill -0 "$DOCKER_PID" 2>/dev/null; then
+    echo "" >&2
+    echo "Error: this invocation's own QEMU container ($CONTAINER_NAME) failed to start." >&2
+    echo "The most likely cause is host port 5900 already being held by an earlier," >&2
+    echo "still-running run-interactive.sh session (see the docker run error above)." >&2
+    echo "Stop that session (Ctrl-C in its terminal) and retry." >&2
+    exit 1
+fi
 
 # Auto-open TigerVNC
 echo "Opening TigerVNC..."

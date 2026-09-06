@@ -42,8 +42,15 @@ OUTPUT_DIR=$(mktemp -d)
 # owns. The trap fires on every exit path this script can take (a
 # success/timeout `exit 0`/`exit 1` below, or an early `set -e` exit), not
 # only a bottom-of-script cleanup line.
+#
+# F3-review: also `docker rm -f` this exact CONTAINER_NAME before
+# launch (matching run-interactive.sh's own preflight) -- PID-scoped,
+# so it can only ever remove a same-PID-numbered leftover container
+# from an earlier crashed run of this exact script, guarding against
+# `docker run --name` failing outright on a stale name collision.
 # claim-lint:ok: #849
 CONTAINER_NAME="breenix-blocking-recv-test-$$"
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 _cleanup_blocking_recv_test() {
     rm -rf "$OUTPUT_DIR"
     docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true

@@ -87,6 +87,15 @@ record "- ${SHA}: starting"
 # `killall -9 qemu-system-x86_64` here could only ever have reached a
 # DIFFERENT, unrelated x86 gate's own QEMU process running concurrently on
 # the same host.
+#
+# #860 (review, disclosed not fixed): the `/breenix-/` name-match below is
+# itself the identical kill-by-name-pattern hazard shape, one resource type
+# over (Parallels VMs, not qemu-ish processes/containers) -- it stops and
+# deletes ANY VM matching the pattern, not only one this invocation
+# started. Pre-existing (not introduced by #849), and outside #849's own
+# chartered scope (its ratchet in tests/qemu_kill_by_name_structure.rs is
+# scoped to qemu-ish pkill/killall/docker-kill shapes and correctly cannot
+# see `prlctl` at all). Not fixed here -- see #860.
 # claim-lint:ok: #849
 for old_vm in $(prlctl list --all 2>/dev/null | awk '/breenix-/ {print $NF}'); do
     prlctl stop "$old_vm" --kill >/dev/null 2>&1 || true
