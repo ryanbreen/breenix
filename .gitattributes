@@ -94,3 +94,11 @@ docs/planning/green-program/failure-capture/serials/pr3/*.txt -text
 # Same treatment as the fixtures above -- these are raw QEMU captures whose
 # interleaved bytes ARE the evidence, and a CRLF normalisation would edit them.
 docs/planning/green-program/failure-capture/serials/pr3-gate/*.txt -text
+# failure-capture PR-4 BXCAP fixtures and their red baselines: raw aarch64 and
+# x86_64 QEMU serial captures. Same treatment and the same reason as the PR-3
+# fixtures above -- tests/capture_bxcap_schema_structure.rs asserts every
+# [BXCAP: record is CRLF-terminated, so a CRLF normalisation would delete the
+# byte the assertion is about and leave the suite pinning a property its own
+# fixture no longer demonstrates.
+docs/planning/green-program/failure-capture/serials/pr4/*.txt -text
+docs/planning/green-program/failure-capture/serials/pr4-red/*.txt -text

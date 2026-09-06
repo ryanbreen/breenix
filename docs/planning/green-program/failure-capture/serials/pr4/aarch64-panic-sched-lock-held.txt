@@ -1,0 +1,950 @@
+# Provenance
+# gate: docker/qemu/run-aarch64-boot-test-strict.sh (real boot, not score-only replay)
+# host: Ryans-M5-Max (Mac, native HVF-accelerated aarch64 QEMU, -smp 4 cortex-a72)
+# branch: capture/ftc-pr4-terminal-edges
+# base: 9538ebb769b4fb5bc292e554d38b8ba5834d70b2
+# kernel features: boot_tests,capture_panic_oracle
+# note: the same edge with the scheduler read REFUSED: verdict=partial sections_skipped=0x20, and the refusal stated as a NOTE record naming sched_lock_held
+
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a9d1a0d26c0
+========================================
+
+[CTX596_ORACLE:ARMED:force_eret=0]
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 62500000 Hz (62 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 470500
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 190464 sectors (93 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x41237
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1
+[virtio-net] MAC address: 52:54:00:12:34:56
+[virtio-net] RX queue max size: 1024
+[virtio-net] TX queue max size: 1024
+[virtio-net] Network device initialized successfully
+[virtio-net] Network device IRQ 75 (will enable after net init)
+[drivers] VirtIO network driver initialized
+[virtio-net] Device test - MAC: 52:54:00:12:34:56
+[virtio-net] Test passed!
+[virtio-gpu] Searching for GPU device...
+[virtio-gpu] Found GPU device at 0xa003e00
+[virtio-gpu] Device version: 1
+[virtio-gpu] Control queue max size: 1024
+[virtio-gpu] Display: 1280x800
+[virtio-gpu] GPU device initialized successfully
+[drivers] VirtIO GPU driver initialized
+[virtio-gpu] Device test - Display: 1280x800
+[virtio-gpu] Test passed!
+[virtio-sound] Searching for sound device...
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...
+[virtio-blk] Sector 0 data: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+[virtio-blk] Read test passed!
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] MAC address: 52:54:00:12:34:56
+NET: IP address: 10.0.2.15
+NET: Gateway: 10.0.2.2
+Network stack initialized
+NET: Sending ARP request for gateway 10.0.2.2
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.0.2.2
+NET: ARP cache miss for 10.0.2.2, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net] Enabling IRQ 75 for network device
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+[boot] Initializing filesystem...
+[ext2] Using VirtIO block device (190464 sectors)
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: ARM Cortex-A72
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[virtio-gpu] GPU device already initialized
+[arm64-fb] Shell framebuffer initialized: 1280x800
+[graphics] Framebuffer: 1280x800
+[graphics] Particle system initialized
+[render_queue] Initialized (64KB buffer)
+[graphics] Split-screen terminal UI initialized
+[boot] Initializing VirtIO keyboard...
+[virtio-input] Searching for input devices (ID=18)...
+[virtio-input] Slot 27 at 0xa003600: device_id=1
+[virtio-input] Slot 28 at 0xa003800: device_id=2
+[virtio-input] Slot 29 at 0xa003a00: device_id=18
+[virtio-input] Found tablet at 0xa003a00 (slot 29, supports EV_ABS)
+[virtio-input] Tablet device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 77 for tablet
+[virtio-input] Tablet initialized (16 buffers)
+[virtio-input] Slot 30 at 0xa003c00: device_id=18
+[virtio-input] Found keyboard at 0xa003c00 (slot 30, no EV_ABS)
+[virtio-input] Keyboard device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 78 for keyboard
+[virtio-input] Keyboard initialized (64 buffers)
+[virtio-input] Slot 31 at 0xa003e00: device_id=16
+[boot] VirtIO keyboard initialized
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread spawned (tid=4)
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[net] ICMP echo reply received from 10.0.2.2 seq=1
+[boot] Init binary pre-loaded: 298664 bytes
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=false
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (62500 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] Probing secondary CPUs via PSCI...
+[smp] CPU 1: PSCI CPU_ON success (raw_status=1@01)
+A[2@1ABsmp] CCPU 2:D BCPDSCIE ECePeFU_OFGNG succes2s1 (raw_status=0)
+[s3@1Amp]BC CPU 3: PSCI CPU_ON suDEeFG3ccess (raw_status=0)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+T[gi1c] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
+[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+[smp] 4 CPUs online
+[boot] Running parallel boot tests...
+T2[BOOT_TESTS:START]
+[STAGE:serial:ADVANCE]
+[BOOT_TESTS:TOTAL:111]
+[BOOT_TESTS:SERIAL_BOOT:3]
+[BOOT_TESTS:EARLY_BOOT:90]
+[BOOT_TESTS:STAGED:21 tests waiting for later stages]
+T3T4T5T6T7[SUBSYSTEM:process:serial:START]
+[TEST:process:frame_custody_refusal_gate:START]
+T8T9[TEST:process:frame_custody_refusal_gate:PASS]
+T0[TEST:process:page_table_custody_disposition_gate:START]
+[EXEC_FAILED_RELEASE_ORACLE:aarch64:used_before=1:used_after=1:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:live_refused=0]
+[TEST:process:page_table_custody_disposition_gate:PASS]
+[TEST:process:block_current_departure_gate:START]
+[TEST:process:block_current_departure_gate:PASS]
+[SUBSYSTEM:process:serial:COMPLETE:3/3]
+[STAGE:serial:COMPLETE:3/111]
+[STAGE:early:ADVANCE]
+[SUBSYSTEM:memory:early:START]
+[TEST:memory:framework_sanity:START]
+[TEST:memory:framework_sanity:PASS]
+[SUBSYSTEM:interrupts:early:START]
+[TEST:interrupts:interrupt_controller_init:START]
+[TEST:interrupts:interrupt_controller_init:PASS]
+[SUBSYSTEM:network:early:START]
+[TEST:network:network_stack_init:START]
+[SUBSYSTEM:filesystem:early:START]
+[TEST:filesystem:vfs_init:START]
+[TEST:network:network_stack_init:PASS]
+[TEST:filesystem:vfs_init:PASS]
+[TEST:memory:heap_alloc_basic:START]
+[TEST:memory:heap_alloc_basic:PASS]
+[TEST:filesystem:devfs_mounted:START]
+[TEST:filesystem:devfs_mounted:PASS]
+[SUBSYSTEM:process:early:START]
+[TEST:process:deferred_fault_ring_overflow_injection:START]
+[TEST:process:deferred_fault_ring_overflow_injection:PASS]
+[SUBSYSTEM:syscall:early:START]
+[TEST:syscall:syscall_dispatch:START]
+[SUBSYSTEM:ipc:early:START]
+[TEST:syscall:syscall_dispatch:PASS]
+[TEST:ipc:pipe_buffer_basic:START]
+[TEST:ipc:pipe_buffer_basic:PASS]
+[SUBSYSTEM:logging:early:START]
+[TEST:logging:logging_init:START]
+[TEST:logging:logging_init:PASS]
+[SUBSYSTEM:timer:early:START]
+[TEST:timer:timer_init:START]
+[SUBSYSTEM:system:early:START]
+[TEST:timer:timer_init:PASS]
+[TEST:system:boot_sequence:START]
+[TEST:system:boot_sequence:PASS]
+[SUBSYSTEM:scheduler:early:START]
+[TEST:scheduler:wakes_are_placed_on_online_cpus:START]
+[TEST:scheduler:wakes_are_placed_on_online_cpus:PASS]
+[TEST:memory:frame_allocator:START]
+[TEST:memory:frame_allocator:PASS]
+[TEST:filesystem:file_open_close:START]
+[TEST:filesystem:file_open_close:PASS]
+[TEST:memory:heap_large_alloc:START]
+[TEST:logging:log_levels:START]
+[TEST:logging:log_levels:PASS]
+[TEST:memory:heap_large_alloc:PASS]
+[TEST:syscall:arm64_pty_ioctl_path:START]
+manager.create_process [ARM64]: ENTRY - name='pty_ioctl_test', elf_size=276816
+manager.create_process [ARM64]: Generated PID 2
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x4000e0b0
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x40017000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4401e000-0x4402e000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4401e000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 2 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 2
+[TEST:syscall:arm64_pty_ioctl_path:PASS]
+[TEST:logging:serial_output:START]
+[LOGGING_TEST] Serial test ARM64
+[TEST:logging:serial_output:PASS]
+[TEST:memory:heap_many_small:START]
+[TEST:memory:heap_many_small:PASS]
+[TEST:process:process_manager_init:START]
+[TEST:process:process_manager_init:PASS]
+[TEST:scheduler:executor_exists:START]
+[TEST:scheduler:executor_exists:PASS]
+[TEST:ipc:pipe_eof:START]
+[TEST:ipc:pipe_eof:PASS]
+[SUBSYSTEM:logging:early:COMPLETE:3/3]
+[TEST:scheduler:async_waker:START]
+[TEST:scheduler:async_waker:PASS]
+[TEST:filesystem:directory_list:START]
+[TEST:filesystem:directory_list:PASS]
+[TEST:scheduler:future_basics:START]
+[TEST:scheduler:future_basics:PASS]
+[TEST:memory:cow_flags_aarch64:START]
+[TEST:memory:cow_flags_aarch64:PASS]
+[TEST:process:scheduler_init:START]
+[TEST:process:scheduler_init:PASS]
+[TEST:timer:timer_ticks:START]
+[TEST:timer:timer_ticks:PASS]
+[TEST:network:virtio_net_probe:START]
+[TEST:network:virtio_net_probe:PASS]
+[TEST:process:thread_creation:START]
+[SCHED_STRAND_ORACLE:aarch64:samples=7:checked=88:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=335:worst_silence_cpu=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=0:kernel=27:cleared=27]
+[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+[TEST:ipc:pipe_broken:START]
+[TEST:ipc:pipe_broken:PASS]
+[TEST:process:thread_creation:PASS]
+[TEST:interrupts:irq_enable_disable:START]
+[TEST:interrupts:irq_enable_disable:PASS]
+[TEST:process:signal_delivery_infrastructure:START]
+[TEST:process:signal_delivery_infrastructure:PASS]
+[TEST:ipc:pipe_wake_mechanism:START]
+[TEST:ipc:pipe_wake_mechanism:PASS]
+[TEST:process:arm64_signal_frame_conversion:START]
+[TEST:process:arm64_signal_frame_conversion:PASS]
+[TEST:memory:guard_page_exists:START]
+[TEST:memory:guard_page_exists:PASS]
+[TEST:filesystem:filesystem_syscalls_aarch64:START]
+[TEST:memory:stack_layout:START]
+[TEST:memory:stack_layout:PASS]
+[TEST:filesystem:filesystem_syscalls_aarch64:PASS]
+[TEST:network:socket_creation:START]
+[TEST:network:socket_creation:PASS]
+[TEST:timer:timer_delay:START]
+[TEST:timer:timer_delay:PASS]
+[TEST:network:tcp_socket_creation:START]
+[TEST:network:tcp_socket_creation:PASS]
+[SUBSYSTEM:process:early:COMPLETE:6/6]
+[TEST:network:loopback:START]
+[TEST:network:loopback:PASS]
+[TEST:timer:timer_monotonic:START]
+[TEST:timer:timer_monotonic:PASS]
+[TEST:filesystem:virtio_blk_multi_read:START]
+[virtio-blk] Starting multi-read stress test (10 reads)...
+[virtio-blk] Read 1 of 10 complete
+[virtio-blk] Read 2 of 10 complete
+[virtio-blk] Read 3 of 10 complete
+[virtio-blk] Read 4 of 10 complete
+[virtio-blk] Read 5 of 10 complete
+[virtio-blk] Read 6 of 10 complete
+[virtio-blk] Read 7 of 10 complete
+[virtio-blk] Read 8 of 10 complete
+[virtio-blk] Read 9 of 10 complete
+[virtio-blk] Read 10 of 10 complete
+[virtio-blk] Multi-read stress test passed!
+[TEST:filesystem:virtio_blk_multi_read:PASS]
+[TEST:timer:timer_quantum_reset_aarch64:START]
+[TEST:timer:timer_quantum_reset_aarch64:PASS]
+[TEST:filesystem:virtio_blk_sequential_read:START]
+[virtio-blk] Testing sequential read of sectors 0-31...
+[virtio-blk] Read sectors 0-7 OK (avail_idx wrap count: 0)
+[virtio-blk] Read sectors 0-15 OK (avail_idx wrap count: 1)
+[virtio-blk] Read sectors 0-23 OK (avail_idx wrap count: 1)
+[virtio-blk] Read sectors 0-31 OK (avail_idx wrap count: 2)
+[virtio-blk] Sequential read test passed! (32 sectors, 2 queue wraps)
+[TEST:filesystem:virtio_blk_sequential_read:PASS]
+[TEST:network:loopback_wake_loss_counters_are_zero:START]
+[TEST:network:loopback_wake_loss_counters_are_zero:PASS]
+[TEST:memory:stack_allocation:START]
+[TEST:memory:stack_allocation:PASS]
+[TEST:filesystem:virtio_blk_write_read_verify:START]
+[virtio-blk] Testing write-read-verify cycle...
+[virtio-blk] Device capacity: 190464 sectors
+[virtio-blk] Reading original data from sector 1000...
+[virtio-blk] Original first 16 bytes: [00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[virtio-blk] Test pattern first 16 bytes: [aa, 01, aa, 03, aa, 05, aa, 07, aa, 09, aa, 0b, aa, 0d, aa, 0f]
+[virtio-blk] Writing test pattern to sector 1000...
+[virtio-blk] Write succeeded
+[virtio-blk] Reading back sector 1000...
+[virtio-blk] Readback first 16 bytes: [aa, 01, aa, 03, aa, 05, aa, 07, aa, 09, aa, 0b, aa, 0d, aa, 0f]
+[virtio-blk] Restoring original data to sector 1000...
+[virtio-blk] Write-read-verify test passed! All 512 bytes match.
+[TEST:filesystem:virtio_blk_write_read_verify:PASS]
+[TEST:syscall:arm64_socket_reset_quantum:START]
+[TEST:syscall:arm64_socket_reset_quantum:PASS]
+[TEST:filesystem:virtio_blk_invalid_sector:START]
+[virtio-blk] Testing invalid sector read...
+[virtio-blk] Device capacity: 190464 sectors
+[virtio-blk] Invalid sector correctly rejected: Sector out of range
+[virtio-blk] Invalid sector test passed!
+[TEST:filesystem:virtio_blk_invalid_sector:PASS]
+[TEST:memory:user_stack_base:START]
+[TEST:memory:user_stack_base:PASS]
+[TEST:filesystem:virtio_blk_uninitialized_read:START]
+[virtio-blk] Testing uninitialized device handling...
+[virtio-blk] Device is initialized (expected during normal boot)
+[virtio-blk] Verified: read_sector checks BLOCK_DEVICE.is_none() and returns error
+[virtio-blk] Uninitialized test passed (device was already initialized)!
+[TEST:filesystem:virtio_blk_uninitialized_read:PASS]
+[TEST:interrupts:timer_interrupt_running:START]
+[TEST:interrupts:timer_interrupt_running:PASS]
+[TEST:ipc:fd_table_creation:START]
+[TEST:ipc:fd_table_creation:PASS]
+[TEST:system:system_stability:START]
+[TEST:system:system_stability:PASS]
+[TEST:ipc:fd_alloc_close:START]
+[TEST:ipc:fd_alloc_close:PASS]
+[TEST:network:loopback_recv_wake_when_idle:START]
+[TEST:ipc:create_pipe:START]
+[TEST:ipc:create_pipe:PASS]
+[SUBSYSTEM:filesystem:early:COMPLETE:10/10]
+[TEST:ipc:pty_support_aarch64:START]
+[TEST:ipc:pty_support_aarch64:PASS]
+[SUBSYSTEM:ipc:early:COMPLETE:8/8]
+[TEST:interrupts:keyboard_irq_setup:START]
+[TEST:interrupts:keyboard_irq_setup:PASS]
+[TEST:memory:user_stack_size:START]
+[TEST:memory:user_stack_size:PASS]
+[SUBSYSTEM:scheduler:early:COMPLETE:4/4]
+[TEST:interrupts:exception_vectors:START]
+[TEST:interrupts:exception_vectors:PASS]
+[TEST:system:kernel_heap:START]
+[TEST:system:kernel_heap:PASS]
+[TEST:interrupts:exception_handlers:START]
+[TEST:interrupts:exception_handlers:PASS]
+[TEST:memory:user_stack_top:START]
+[TEST:memory:user_stack_top:PASS]
+[TEST:network:loopback_recv_wake_when_idle:PASS]
+[SUBSYSTEM:syscall:early:COMPLETE:3/3]
+[SUBSYSTEM:timer:early:COMPLETE:5/5]
+[TEST:system:tty_foreground_pgrp:START]
+[TEST:system:tty_foreground_pgrp:PASS]
+[TEST:interrupts:breakpoint:START]
+[exception] Breakpoint (BRK #0) at 0xffff000040431e34
+[TEST:interrupts:breakpoint:PASS]
+[TEST:network:loopback_recv_wake_under_load:START]
+[TEST:interrupts:softirq_aarch64:START]
+[TEST:interrupts:softirq_aarch64:PASS]
+[SUBSYSTEM:system:early:COMPLETE:4/4]
+[TEST:memory:user_stack_guard:START]
+[TEST:memory:user_stack_guard:PASS]
+[SUBSYSTEM:interrupts:early:COMPLETE:8/8]
+[RING_SPAN:cpu=0:span_ms=1484:writes=564:dropped=0:ticks_total=3993:tick_events=62]
+[TEST:memory:user_stack_alignment:START]
+[TEST:memory:user_stack_alignment:PASS]
+[TEST:memory:kernel_stack_base:START]
+[TEST:memory:kernel_stack_base:PASS]
+[TEST:memory:kernel_stack_size:START]
+[TEST:memory:kernel_stack_size:PASS]
+[TEST:memory:kernel_stack_top:START]
+[TEST:memory:kernel_stack_top:PASS]
+[TEST:memory:kernel_stack_guard:START]
+[TEST:memory:kernel_stack_guard:PASS]
+[TEST:memory:kernel_stack_alignment:START]
+[TEST:memory:kernel_stack_alignment:PASS]
+[TEST:memory:stack_in_range:START]
+[TEST:memory:stack_in_range:PASS]
+[TEST:memory:stack_grows_down:START]
+[TEST:memory:stack_grows_down:PASS]
+[TEST:memory:stack_depth:START]
+[TEST:memory:stack_depth:PASS]
+[TEST:memory:stack_frame_size:START]
+[TEST:memory:stack_frame_size:PASS]
+[TEST:memory:stack_red_zone:START]
+[TEST:memory:stack_red_zone:PASS]
+[SUBSYSTEM:memory:early:COMPLETE:24/24]
+[TEST:network:loopback_recv_wake_under_load:PASS]
+[TEST:network:loopback_pump_does_not_busy_spin:START]
+[TEST:network:loopback_pump_does_not_busy_spin:PASS]
+[TEST:network:tcp_final_ack_survives_accept_publish_race:START]
+[TEST:network:tcp_final_ack_survives_accept_publish_race:PASS]
+[TEST:network:arm64_net_softirq_registration:START]
+[TEST:network:arm64_net_softirq_registration:PASS]
+[TEST:network:net_lock_guard_masks_interrupt_source:START]
+[TEST:network:net_lock_guard_masks_interrupt_source:PASS]
+[SUBSYSTEM:network:early:COMPLETE:12/12]
+[STAGE:early:COMPLETE:90/111]
+[STAGE:sched:ADVANCE]
+[SUBSYSTEM:scheduler:sched:START]
+[TEST:scheduler:kthread_spawn_verify:START]
+[SUBSYSTEM:process:sched:START]
+[TEST:process:fork_exit_defer_reclaim_pairing_test:START]
+[SUBSYSTEM:filesystem:sched:START]
+[TEST:filesystem:block_wedge_oracle:START]
+[TEST:scheduler:kthread_spawn_verify:PASS]
+[TEST:scheduler:workqueue_operational:START]
+[BLOCK_WEDGE_ORACLE:locked=1:wedged=1:refused=1:parked=0:refuse_ms=0]
+[TEST:filesystem:block_wedge_oracle:PASS]
+[TEST:scheduler:workqueue_operational:PASS]
+[SUBSYSTEM:filesystem:sched:COMPLETE:1/1]
+[PT_RETIRE_ORACLE:aarch64:cycles=64:used_before=53:used_after=53:expected_tables=9:roots=64:returned=640:lost=0:kstack_returns=64]
+[PT_LEAF_ORACLE:aarch64:cycles=64:expected=192:recorded=192:released=192:returned=192:live_refused=0:used_before=53:used_after=53]
+[TEST:process:fork_exit_defer_reclaim_pairing_test:PASS]
+[SUBSYSTEM:scheduler:sched:COMPLETE:2/2]
+[TEST:process:exec_detach_oracle:START]
+manager.create_process [ARM64]: ENTRY - name='exec_detach_leader', elf_size=180
+manager.create_process [ARM64]: Generated PID 69
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x200000
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x401000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4404c000-0x4405c000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4404c000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 69 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 69
+[EXEC_DETACH_ORACLE:aarch64:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=18:kstack_frames_released=0:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:clone_admission_oracle:START]
+[CLONE_ADMISSION_ORACLE:aarch64:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:init_designation_oracle:START]
+manager.create_process_with_argv [ARM64]: ENTRY - name='init_oracle_a1', elf_size=8, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ENTRY - name='init_oracle_a2', elf_size=120, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:START]
+[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:kernel_stack_ownership_oracle:START]
+[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[KSTACK_OWNER_ORACLE:aarch64:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=0:foreign_returned=0:frames_mapped_delta=0:frames_released_delta=0:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1106:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1073:pub_sched_owned=1073:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=28:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=0:reconciliation_skew_bound=6:balance=0]
+[TEST:process:kernel_stack_ownership_oracle:PASS]
+[TEST:process:creating_dispatch_refusal:START]
+manager.create_process [ARM64]: ENTRY - name='creating_dispatch_probe', elf_size=180
+manager.create_process [ARM64]: Generated PID 86
+manager.create_process [ARM64]: Creating ProcessPageTable
+manager.create_process [ARM64]: ProcessPageTable created
+manager.create_process [ARM64]: Loading ELF into page table
+manager.create_process [ARM64]: ELF loaded, entry=0x200000
+manager.create_process [ARM64]: Creating Process struct
+manager.create_process [ARM64]: Process struct created, heap_start=0x401000
+manager.create_process [ARM64]: Allocating user stack
+manager.create_process [ARM64]: Stack physical range 0x4405c000-0x4406c000
+manager.create_process [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process [ARM64]: Mapping user stack into process page table
+manager.create_process [ARM64]: map_user_stack_to_process user_bottom=0xfffffeff0000 user_top=0xffffff000000 phys_bottom=0x4405c000
+manager.create_process [ARM64]: User stack mapped successfully
+manager.create_process [ARM64]: Creating main thread
+manager.create_process [ARM64]: Main thread created
+manager.create_process [ARM64]: Main thread set on process
+manager.create_process [ARM64]: Adding PID 86 to ready queue
+manager.create_process [ARM64]: Inserting process into process table
+manager.create_process [ARM64]: SUCCESS - returning PID 86
+[CREATING_DISPATCH_ORACLE_DIAG:aarch64:refusal_delta=2:leaf_residual=16:user_stack_residual=16:balance=0:settle_rounds=3:root=0x44046000:root_release_done=1:probe_hw_clear=1:probe_shadow_clear=1:probe_cached_clear=1:retire_hw_blocked=0:retire_shadow_blocked=0:retire_cached_blocked=0]
+[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]
+[TEST:process:creating_dispatch_refusal:PASS]
+[TEST:process:creating_dispatch_refusal:PASS]
+[TEST:process:tombstone_join_oracle:START]
+[TOMBSTONE_JOIN_ORACLE:aarch64:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+[TEST:process:tombstone_join_oracle:PASS]
+[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[TEST:process:reclaim_progress_gate:PASS]
+[TEST:process:exit_kick_protocol_gate:START]
+[TEST:process:exit_kick_protocol_gate:PASS]
+[TEST:process:census_widen_oracle:START]
+[CENSUS_WIDEN_ORACLE:aarch64:arm_target=0:baseline_reported=0:armed_reported=1:tid=1200:shape=ready_queued_nondispatching:queued_nondispatching=1:queued_nondispatch_ms=1558:cpu_silence_ms=1558:joined=1:retired=1:PASS]
+[TEST:process:census_widen_oracle:PASS]
+[SUBSYSTEM:process:sched:COMPLETE:12/12]
+[STAGE:sched:COMPLETE:105/111]
+[boot] All boot tests passed!
+[PT_ROOT_CUSTODY:no_proof=2:no_arch=0:terminated=1:undecided=3:mid_retire=1:retired=76]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2:kernel=519:cleared=522]
+[PIN_GUARD_ORACLE:aarch64:home=1:here=0:reclaim=1:requeue=1:previous=1:on_home=3:refused=3:census_clean=1:verdict=PASS]
+[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=298664, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f5d0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]
+[STAGE:proc:ADVANCE]
+[SUBSYSTEM:ipc:proc:START]
+[TEST:ipc:telnetd_dependencies_aarch64:START]
+[SUBSYSTEM:process:proc:START]
+[TEST:ipc:telnetd_dependencies_aarch64:PASS]
+[TEST:process:current_thread_exists:START]
+[SUBSYSTEM:syscall:proc:START]
+[TEST:syscall:fcntl_pm_contention_oracle:START]
+[TEST:process:current_thread_exists:PASS]
+[SUBSYSTEM:ipc:proc:COMPLETE:1/1]
+[TEST:process:process_list_populated:START]
+[TEST:process:process_list_populated:PASS]
+[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=93:armed=1:acquired=1:holder_cpu=1:pm_busy_probe=1:calls=64:eagain=0:first_errno=9:first_wait_us=8103:hold_safety=0:hold_done=1:joined=1:PASS]
+[TEST:syscall:fcntl_pm_contention_oracle:PASS]
+[TEST:process:frame_custody_healthy_counters:START]
+[TEST:process:frame_custody_healthy_counters:PASS]
+[TEST:syscall:irq_hold_oracle:START]
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+UDP: Delivered packet to socket on port 54540
+[SUBSYSTEM:process:proc:COMPLETE:3/3]
+[IRQ_HOLD_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12014:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:PASS]
+[TEST:syscall:irq_hold_oracle:PASS]
+[SUBSYSTEM:syscall:proc:COMPLETE:2/2]
+[EXEC_LOCK_ORDER:commits=0:pm_held=0:unpinned=0:missing=0]
+[TESTS_COMPLETE:111/111]
+[BOOT_TESTS:PASS]
+[boot] Reset 4 idle thread contexts (CPUs online: 4)
+EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[STAGE:user:ADVANCE]
+[EXEC_LOCK_ORDER:commits=0:pm_held=0:unpinned=0:missing=0]
+[USER_RSP_SCRATCH_EL_CENSUS:el0_installs=4:el1_skipped=0]
+[TESTS_COMPLETE:111/111]
+[BOOT_TESTS:PASS]
+[init] Breenix init starting (PID 1)
+[spawn] path='/bin/heartbeat'
+manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=303616, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 90
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f85c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 90
+[spawn] Created child PID 90 for parent PID 1
+[spawn] Success: child PID 90 scheduled
+[init] heartbeat started (PID 90)
+[INIT_GROUP_WALK:aarch64:rows=3:init_tgid_rows=1:foreign_tgid_rows=0:refused=1:verdict=PASS]
+[heartbeat] tid=1208 uptime_ms=2961 kbd_nonzero=0
+[INIT_GROUP_WALK:aarch64:rows=3:init_tgid_rows=1:foreign_tgid_rows=0:refused=2:verdict=PASS]
+[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]
+[spawn] path='/bin/block_eintr_oracle'
+manager.create_process_with_argv [ARM64]: ENTRY - name='block_eintr_oracle', elf_size=304752, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 91
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f938
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 91
+[spawn] Created child PID 91 for parent PID 1
+[spawn] Success: child PID 91 scheduled
+F123456789SC[syscall] exit(0) pid=92 name=block_eintr_oracle_child_92
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2278:kernel=3229:cleared=5483]
+[STRAND_INJECT_ORACLE:aarch64:legA_exercised=1:legA_recovered=1:legB_exercised=1:legB_recovered=1:stranded=0]
+[heartbeat] tid=1208 uptime_ms=3969 kbd_nonzero=0
+[heartbeat] tid=1208 uptime_ms=4970 kbd_nonzero=0
+F123456789SC[SCHED_STRAND_ORACLE:aarch64:samples=102:checked=523:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=2:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=1:queued_on_nondispatching_cpu=1:worst_queued_nondispatch_ms=1557:worst_cpu_scheduler_silence_ms=1574:worst_silence_cpu=0]
+[TOMBSTONE_CENSUS:resident=0:removed=2:reap_second=1:retire_second=1:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=6666:kernel=8539:cleared=15125]
+[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/capture_oracle.rs:77:5:
+capture_panic_oracle: deliberate panic at uptime_ms=3000 tick=3000
+
+[BXCAP:BEGIN v=1 seq=0 edge=PANIC cpu=0 ts=354493250 tsfreq=62500000 uptime_ms=3000 arch=aarch64]
+[BXCAP:EDGE kind=PANIC a0=0x4d a1=0x5]
+[BXCAP:CPU cpu=0 preempt=65536 nr=1 hardirq=1 softirq=0 uptime_ms=3000 q=exact]
+[BXCAP:EV cpu=0 i=992 ts=354328062 type=0xff44 n=CTX_DIAG_SP p=1411591760 f=0x0]
+[BXCAP:EV cpu=0 i=993 ts=354328062 type=0xff45 n=CTX_DIAG_FLAGS p=0 f=0x0]
+[BXCAP:EV cpu=0 i=994 ts=354328125 type=0xff39 n=DEFER_REQUEUE_STAGE p=196612 f=0x0]
+[BXCAP:EV cpu=0 i=995 ts=354328125 type=0xff3a n=DEFER_REQUEUE_SP p=1411591760 f=0x0]
+[BXCAP:EV cpu=0 i=996 ts=354328125 type=0xff3b n=DEFER_REQUEUE_ELR p=1078063232 f=0x0]
+[BXCAP:EV cpu=0 i=997 ts=354328125 type=0xff3c n=DEFER_REQUEUE_X30 p=1079960740 f=0x0]
+[BXCAP:EV cpu=0 i=998 ts=354328125 type=0xff3d n=DEFER_REQUEUE_FLAGS p=1026 f=0x0]
+[BXCAP:EV cpu=0 i=999 ts=354328125 type=0xff3e n=CTX_DIAG_STAGE p=589828 f=0x0]
+[BXCAP:EV cpu=0 i=1000 ts=354328187 type=0xff3f n=CTX_DIAG_TID_PAIR p=262145 f=0x0]
+[BXCAP:EV cpu=0 i=1001 ts=354328187 type=0xff40 n=CTX_DIAG_FRAME_ELR p=1078063232 f=0x0]
+[BXCAP:EV cpu=0 i=1002 ts=354328187 type=0xff41 n=CTX_DIAG_FRAME_X30 p=1079960740 f=0x0]
+[BXCAP:EV cpu=0 i=1003 ts=354328187 type=0xff42 n=CTX_DIAG_THREAD_ELR p=1078063232 f=0x0]
+[BXCAP:EV cpu=0 i=1004 ts=354328187 type=0xff43 n=CTX_DIAG_THREAD_X30 p=1079960740 f=0x0]
+[BXCAP:EV cpu=0 i=1005 ts=354328187 type=0xff44 n=CTX_DIAG_SP p=1411591760 f=0x0]
+[BXCAP:EV cpu=0 i=1006 ts=354328250 type=0xff45 n=CTX_DIAG_FLAGS p=0 f=0x0]
+[BXCAP:EV cpu=0 i=1007 ts=354415875 type=0x205 n=SCHED_RESCHED_IPI_RECV p=0 f=0x0]
+[BXCAP:EV cpu=0 i=1008 ts=354417187 type=0xff39 n=DEFER_REQUEUE_STAGE p=65540 f=0x0]
+[BXCAP:EV cpu=0 i=1009 ts=354417187 type=0xff3a n=DEFER_REQUEUE_SP p=1411591760 f=0x0]
+[BXCAP:EV cpu=0 i=1010 ts=354417187 type=0xff3b n=DEFER_REQUEUE_ELR p=1078063232 f=0x0]
+[BXCAP:EV cpu=0 i=1011 ts=354417187 type=0xff3c n=DEFER_REQUEUE_X30 p=1079960740 f=0x0]
+[BXCAP:EV cpu=0 i=1012 ts=354417250 type=0xff3d n=DEFER_REQUEUE_FLAGS p=1026 f=0x0]
+[BXCAP:EV cpu=0 i=1013 ts=354417250 type=0xff3e n=CTX_DIAG_STAGE p=458756 f=0x0]
+[BXCAP:EV cpu=0 i=1014 ts=354417250 type=0xff3f n=CTX_DIAG_TID_PAIR p=262144 f=0x0]
+[BXCAP:EV cpu=0 i=1015 ts=354417312 type=0xff40 n=CTX_DIAG_FRAME_ELR p=0 f=0x0]
+[BXCAP:EV cpu=0 i=1016 ts=354417312 type=0xff41 n=CTX_DIAG_FRAME_X30 p=0 f=0x0]
+[BXCAP:EV cpu=0 i=1017 ts=354417312 type=0xff42 n=CTX_DIAG_THREAD_ELR p=1078063232 f=0x0]
+[BXCAP:EV cpu=0 i=1018 ts=354417312 type=0xff43 n=CTX_DIAG_THREAD_X30 p=1079960740 f=0x0]
+[BXCAP:EV cpu=0 i=1019 ts=354417312 type=0xff44 n=CTX_DIAG_SP p=1411591760 f=0x0]
+[BXCAP:EV cpu=0 i=1020 ts=354417312 type=0xff45 n=CTX_DIAG_FLAGS p=262144 f=0x0]
+[BXCAP:EV cpu=0 i=1021 ts=354471875 type=0x205 n=SCHED_RESCHED_IPI_RECV p=0 f=0x0]
+[BXCAP:EV cpu=0 i=1022 ts=354552312 type=0x205 n=SCHED_RESCHED_IPI_RECV p=0 f=0x0]
+[BXCAP:EV cpu=0 i=1023 ts=354553000 type=0x205 n=SCHED_RESCHED_IPI_RECV p=0 f=0x0]
+[BXCAP:CNT NET_RX_FRAME_TOTAL=3]
+[BXCAP:CNT NET_RX_ARP_TOTAL=2]
+[BXCAP:CNT NET_RX_SOFTIRQ_ENTRY_TOTAL=16]
+[BXCAP:CNT NET_RX_SOFTIRQ_EXIT_TOTAL=16]
+[BXCAP:CNT NET_RX_REENTRANT_SKIP_TOTAL=1]
+[BXCAP:CNT NET_RX_GUARD_RELEASE_TOTAL=15]
+[BXCAP:CNT TEARDOWN_ENTRY_EXIT=138]
+[BXCAP:CNT EXIT_FIRST_REQUESTS=69]
+[BXCAP:CNT EXIT_REPEAT_REQUESTS=130]
+[BXCAP:CNT TEARDOWN_DEFER=75]
+[BXCAP:CNT TEARDOWN_RECLAIM=92]
+[BXCAP:CNT TEARDOWN_MASKED_FRAMES_WALKED=9]
+[BXCAP:CNT FD_CLOSES_UNDER_PM=210]
+[BXCAP:CNT DEFERRED_FAULT_RING_DROPPED=1]
+[BXCAP:CNT RECLAIM_DRAIN_NESTED_REFUSED=120]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_EPOCH=8]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_HW=1]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_SHADOW=1]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_CACHED=4]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_LIVE_ROW=5]
+[BXCAP:CNT RETIRE_EMPTY_ONLINE_MASK=1]
+[BXCAP:CNT EXIT_SGI_SENT=4]
+[BXCAP:CNT EXIT_KICK_PUBLISHED=3]
+[BXCAP:CNT EXIT_KICK_BUCKET_COLLISION=2]
+[BXCAP:CNT FRAME_RETURN_REFUSED_DOUBLE=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_STALE=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_NEVER_ALLOCATED=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_UNTRACKED=1]
+[BXCAP:CNT FRAME_DUPLICATE_ALLOC_REFUSED=3]
+[BXCAP:CNT FRAME_LOST_CONTENDED=2]
+[BXCAP:CNT LEAF_MAPPINGS_RECORDED=605]
+[BXCAP:CNT LEAF_MAPPINGS_RELEASED=379]
+[BXCAP:RING cpu=0 writes=661153 dropped=660129 kept=1024 span_us=24082 enabled=1]
+[BXCAP:NOTE sched_lock_held]
+[BXCAP:END v=1 seq=0 edge=PANIC verdict=partial records=69 bytes=4335 truncated=0 sections_skipped=0x20]
+[COUNTER] ====== COUNTER DUMP ======
+[COUNTER] Registered counters: 196
+[COUNTER] NET_RX_MSI_TOTAL: 0
+[COUNTER] NET_RX_RING_DRAIN_TOTAL: 0
+[COUNTER] NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[COUNTER] NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[COUNTER] NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[COUNTER] NET_RX_SOFTIRQ_ENTRY_TOTAL: 16 (cpu0=1, cpu1=3, cpu2=7, cpu3=5)
+[COUNTER] NET_RX_SOFTIRQ_EXIT_TOTAL: 16 (cpu0=1, cpu1=3, cpu2=7, cpu3=5)
+[COUNTER] NET_RX_REENTRANT_SKIP_TOTAL: 1 (cpu2=1)
+[COUNTER] NET_RX_GUARD_RELEASE_TOTAL: 15 (cpu0=1, cpu1=3, cpu2=6, cpu3=5)
+[COUNTER] NET_RX_REARM_CHECK_TOTAL: 0
+[COUNTER] NET_RX_REARM_RACE_TOTAL: 0
+[COUNTER] NET_RX_REARM_ARMED_TOTAL: 0
+[COUNTER] TEARDOWN_ENTRY_EXIT: 138 (cpu0=1, cpu1=60, cpu2=6, cpu3=71)
+[COUNTER] TEARDOWN_ENTRY_FAULT: 0
+[COUNTER] TEARDOWN_ENTRY_SIGNAL: 0
+[COUNTER] TEARDOWN_ENTRY_GROUP: 0
+[COUNTER] EXIT_FIRST_REQUESTS: 69 (cpu0=1, cpu1=30, cpu2=2, cpu3=36)
+[COUNTER] EXIT_REPEAT_REQUESTS: 130 (cpu1=57, cpu2=7, cpu3=66)
+[COUNTER] TEARDOWN_QUARANTINE: 0
+[COUNTER] TEARDOWN_DEFER: 75 (cpu1=36, cpu2=4, cpu3=35)
+[COUNTER] TEARDOWN_RECLAIM: 92 (cpu1=21, cpu2=6, cpu3=65)
+[COUNTER] TEARDOWN_MASKED_FRAMES_WALKED: 9 (cpu0=1, cpu1=4, cpu2=2, cpu3=2)
+[COUNTER] FD_CLOSES_UNDER_PM: 210 (cpu0=3, cpu1=90, cpu2=9, cpu3=108)
+[COUNTER] TEARDOWN_VICTIM_DIVERGENCE: 0
+[COUNTER] TEARDOWN_CR3_MISS: 0
+[COUNTER] EXIT_ATTRIBUTION_UNCERTAIN: 0
+[COUNTER] DEFERRED_FAULT_RING_DROPPED: 1 (cpu1=1)
+[COUNTER] RECLAIM_ENQUEUE_UNDER_PM: 0
+[COUNTER] PROOF_UNDER_QUEUE_LOCK: 0
+[COUNTER] RECLAIM_CONTEXT_VIOLATIONS: 0
+[COUNTER] RECLAIM_DRAIN_NESTED_REFUSED: 120 (cpu0=17, cpu1=45, cpu2=25, cpu3=33)
+[COUNTER] RECLAIM_PASS_SELECTION_CAPPED: 0
+[COUNTER] TEARDOWN_LOCK_ORDER_SUSPECT: 0
+[COUNTER] ROOT_PROOF_BLOCKED_EPOCH: 8 (cpu1=5, cpu2=3)
+[COUNTER] ROOT_PROOF_BLOCKED_HW: 1 (cpu1=1)
+[COUNTER] ROOT_PROOF_BLOCKED_SHADOW: 1 (cpu1=1)
+[COUNTER] ROOT_PROOF_BLOCKED_CACHED: 4 (cpu1=4)
+[COUNTER] ROOT_PROOF_BLOCKED_LIVE_ROW: 5 (cpu1=5)
+[COUNTER] RETIRE_EMPTY_ONLINE_MASK: 1 (cpu1=1)
+[COUNTER] EXIT_SGI_SENT: 4 (cpu1=1, cpu2=1, cpu3=2)
+[COUNTER] EXIT_REQUEST_OBSERVED: 0
+[COUNTER] EXIT_KICK_PUBLISHED: 3 (cpu1=1, cpu3=2)
+[COUNTER] EXIT_KICK_OBSERVED: 0
+[COUNTER] EXIT_KICK_BUCKET_COLLISION: 2 (cpu2=1, cpu3=1)
+[COUNTER] RECEIPT_DROPPED_UNRETIRED: 0
+[COUNTER] LEDGER_CLAIM_MISMATCH: 0
+[COUNTER] LEDGER_CLAIM_ORPHANED: 0
+[COUNTER] FRAME_RETURN_REFUSED_DOUBLE: 1 (cpu3=1)
+[COUNTER] FRAME_RETURN_REFUSED_STALE: 1 (cpu3=1)
+[COUNTER] FRAME_RETURN_REFUSED_NEVER_ALLOCATED: 1 (cpu3=1)
+[COUNTER] FRAME_RETURN_REFUSED_UNTRACKED: 1 (cpu3=1)
+[COUNTER] FRAME_DUPLICATE_ALLOC_REFUSED: 3 (cpu3=3)
+[COUNTER] FRAME_LOST_CONTENDED: 2 (cpu3=2)
+[COUNTER] FRAME_RETURN_REFUSED_LIVE_LEAF: 0
+[COUNTER] LEAF_MAPPINGS_RECORDED: 605 (cpu0=141, cpu1=186, cpu2=81, cpu3=197)
+[COUNTER] LEAF_MAPPINGS_RELEASED: 379 (cpu0=61, cpu1=65, cpu2=60, cpu3=193)
+[COUNTER] LEAF_FRAMES_RETURNED: 302 (cpu0=19, cpu1=48, cpu2=43, cpu3=192)
+[COUNTER] LEAF_DECREF_UNREGISTERED: 0
+[COUNTER] LEAF_CUSTODY_REFUSED: 0
+[COUNTER] PT_TABLE_FRAMES_RECORDED: 800 (cpu0=24, cpu1=406, cpu2=26, cpu3=344)
+[COUNTER] PT_ROOT_ABANDONED_NO_PROOF: 3 (cpu0=1, cpu3=2)
+[COUNTER] PT_ROOT_ABANDONED_NO_ARCH: 0
+[COUNTER] PT_ROOT_ABANDONED_TERMINATED: 1 (cpu2=1)
+[COUNTER] PT_ROOT_DROPPED_UNDECIDED: 3 (cpu2=3)
+[COUNTER] PT_ROOTS_RETIRED: 76 (cpu1=5, cpu2=6, cpu3=65)
+[COUNTER] PT_TABLE_FRAMES_RETURNED: 822 (cpu1=146, cpu2=36, cpu3=640)
+[COUNTER] PT_RETIRE_FRAMES_LOST: 1 (cpu3=1)
+[COUNTER] PT_ROOT_DROPPED_MID_RETIRE: 1 (cpu1=1)
+[COUNTER] PT_RETIRE_BUDGET_REQUEUED: 1 (cpu1=1)
+[COUNTER] PT_ROOT_SLOT_REFUSED: 0
+[COUNTER] PT_SHADOW_ROOT_CLEARED: 0
+[COUNTER] CLONE_ADMISSION_ADMITTED: 3 (cpu1=1, cpu2=1, cpu3=1)
+[COUNTER] CLONE_ADMISSION_REFUSED: 2 (cpu2=2)
+[COUNTER] CLONE_INIT_GROUP_REFUSED: 2 (cpu1=1, cpu3=1)
+[COUNTER] INIT_ORDINARY_PID_ALLOCATIONS: 92 (cpu0=2, cpu1=36, cpu2=14, cpu3=40)
+[COUNTER] INIT_RESERVED_PID_COLLISIONS: 0
+[COUNTER] INIT_DESIGNATION_ACCEPTED: 3 (cpu0=1, cpu2=2)
+[COUNTER] INIT_DESIGNATION_REFUSED: 4 (cpu2=4)
+[COUNTER] INIT_DESIGNATION_RETIRED: 2 (cpu2=2)
+[COUNTER] INIT_PUBLICATIONS: 3 (cpu0=1, cpu2=2)
+[COUNTER] INIT_REPARENT_CHILDREN: 1 (cpu2=1)
+[COUNTER] INIT_REPARENT_SKIPPED_NO_INIT: 1 (cpu2=1)
+[COUNTER] RECLAIM_PASS_SKIPPED: 10 (cpu1=10)
+[COUNTER] RECLAIM_PARKED: 3 (cpu1=3)
+[COUNTER] RECLAIM_UNPARKED_EPOCH: 1 (cpu1=1)
+[COUNTER] RECLAIM_UNPARKED_ROW: 1 (cpu1=1)
+[COUNTER] RECLAIM_UNPARKED_AGE: 1 (cpu1=1)
+[COUNTER] RECLAIM_PARK_IMMEDIATE_UNPARK: 0
+[COUNTER] RECLAIM_PARK_RESIDENT: 0
+[COUNTER] RECLAIM_ABANDONED_UNQUEUED: 0
+[COUNTER] LEDGER_EFFECT_AMBIGUOUS_REPORT: 0
+[COUNTER] TOMBSTONE_RESIDENT: 0
+[COUNTER] TOMBSTONE_REMOVED: 2 (cpu1=2)
+[COUNTER] TOMBSTONE_JOIN_REAP_SECOND: 1 (cpu1=1)
+[COUNTER] TOMBSTONE_JOIN_RETIRE_SECOND: 1 (cpu1=1)
+[COUNTER] EXIT_BLOCK_REFUSED_FAMILY: 0
+[COUNTER] EXIT_WAIT_CANCELLED_FAMILY: 0
+[COUNTER] INIT_FATAL_SIGNAL_DROPPED: 0
+[COUNTER] INIT_FATAL_SIGNAL_DROPPED_GROUP: 0
+[COUNTER] VIRTGPU_SUBMIT_TOTAL: 0
+[COUNTER] VIRTGPU_COMPLETE_TOTAL: 0
+[COUNTER] VIRTGPU_FAIL_TOTAL: 0
+[COUNTER] VIRTGPU_WAIT_TIMEOUT_COUNT: 0
+[COUNTER] BWM_COMPOSITE_FRAME_ENTER_TOTAL: 0
+[COUNTER] BWM_COMPOSITE_FRAME_EXIT_TOTAL: 0
+[COUNTER] VIRTGPU_FLUSH_ENTER_TOTAL: 0
+[COUNTER] VIRTGPU_FLUSH_EXIT_TOTAL: 0
+[COUNTER] VIRTGPU_SUBMIT_3D_ENTER_TOTAL: 0
+[COUNTER] VIRTGPU_SUBMIT_3D_EXIT_TOTAL: 0
+[COUNTER] VIRTGPU_WAIT_COMPLETION_ENTER_TOTAL: 0
+[COUNTER] VIRTGPU_WAIT_COMPLETION_EXIT_TOTAL: 0
+[COUNTER] VIRTGPU_COMPOSITOR_PRESENT_SUBMITTED_TOTAL: 0
+[COUNTER] VIRTGPU_COMPOSITOR_PRESENT_COMPLETED_TOTAL: 0
+[COUNTER] VIRTGPU_COMPOSITOR_PRESENT_INFLIGHT_GT1_TOTAL: 0
+[COUNTER] VIRTGPU_COMPOSITOR_CLIENT_WAITERS_RELEASED_TOTAL: 0
+[COUNTER] VIRTGPU_R2_CREATE: 0
+[COUNTER] VIRTGPU_R2_ATTACH_BACKING: 0
+[COUNTER] VIRTGPU_R2_CTX_ATTACH: 0
+[COUNTER] VIRTGPU_R2_TRANSFER: 0
+[COUNTER] VIRTGPU_R2_SET_SCANOUT: 0
+[COUNTER] VIRTGPU_R2_FLUSH_OK: 0
+[COUNTER] VIRTGPU_R2_FLUSH_FAIL: 0
+[COUNTER] VIRTGPU_R2_UNREF_OR_DETACH: 0
+[COUNTER] VIRTGPU_FLUSH_WITH_ZERO_RES: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_2D_FULL: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_2D_RECT: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_2D_ONLY: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_FRAME: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_RECTS: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_FLUSH: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10: 0
+[COUNTER] VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD: 0
+[COUNTER] XHCI_MSI_EVENT_TOTAL: 0
+[COUNTER] XHCI_IRQ_ENTRY_TOTAL: 0
+[COUNTER] XHCI_LOCK_CONTENDED_TOTAL: 0
+[COUNTER] SYSCALL_TOTAL: 84 (cpu0=34, cpu1=27, cpu2=7, cpu3=16)
+[COUNTER] IRQ_TOTAL: 35732 (cpu0=13477, cpu1=7386, cpu2=7430, cpu3=7441)
+[COUNTER] CTX_SWITCH_TOTAL: 18920 (cpu0=7628, cpu1=3726, cpu2=3745, cpu3=3821)
+[COUNTER] TIMER_TICK_TOTAL: 12684 (cpu0=3000, cpu1=3230, cpu2=3226, cpu3=3229)
+[COUNTER] FORK_TOTAL: 68 (cpu0=1, cpu1=29, cpu3=38)
+[COUNTER] EXEC_TOTAL: 6 (cpu1=3, cpu2=3)
+[COUNTER] COW_FAULT_TOTAL: 10 (cpu0=4, cpu1=2, cpu2=2, cpu3=2)
+[COUNTER] IDLE_TICK_TOTAL: 6644 (cpu0=1263, cpu1=1786, cpu2=1782, cpu3=1813)
+[COUNTER] GPU_BYTES_UPLOADED: 0
+[COUNTER] GPU_FULL_UPLOADS: 0
+[COUNTER] GPU_PARTIAL_UPLOADS: 0
+[COUNTER] NET_RX_BUDGET_EXHAUSTED: 0
+[COUNTER] NET_PCI_IRQ_RAISED_NETRX: 0
+[COUNTER] GIC_SPI55_ACK_TOTAL: 0
+[COUNTER] RECV_WAIT_STILL_BLOCKED_TRUE: 0
+[COUNTER] RECV_WAIT_STILL_BLOCKED_FALSE: 0
+[COUNTER] DISPATCH_NO_PROGRESS: 0
+[COUNTER] DISPATCH_KERNEL_RESTORE_TOTAL: 0
+[COUNTER] WAIT_LOOP_PARK_TOTAL: 1089980 (cpu0=1089727, cpu1=106, cpu2=72, cpu3=75)
+[COUNTER] DISPATCH_SAVE_REASON_USER_PREEMPT: 0
+[COUNTER] DISPATCH_SAVE_REASON_USER_MANDATORY: 0
+[COUNTER] DISPATCH_SAVE_REASON_KERNEL_BLOCKED_PREEMPT: 0
+[COUNTER] DISPATCH_SAVE_REASON_KERNEL_BLOCKED_MANDATORY: 0
+[COUNTER] DISPATCH_SAVE_REASON_KTHREAD_PREEMPT: 0
+[COUNTER] DISPATCH_SAVE_REASON_KTHREAD_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_SAVE_USER_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_SAVE_USER_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_SAVE_KERNEL_BLOCKED_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_SAVE_KTHREAD_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_SAVE_KTHREAD_MANDATORY: 0
+[COUNTER] DISPATCH_SWITCH_ROLLED_BACK: 0
+[COUNTER] DISPATCH_SWITCH_IDLE_REDIRECT: 0
+[COUNTER] DISPATCH_EXC_IDLE_REDIRECT: 0
+[COUNTER] DISPATCH_GATE_PREEMPT_ACTIVE: 0
+[COUNTER] DISPATCH_NOPROGRESS_REVISIT: 0
+[COUNTER] DISPATCH_NOPROGRESS_ZERO_ITER: 0
+[COUNTER] DISPATCH_NOPROGRESS_ITERS_UNKNOWN: 0
+[COUNTER] DISPATCH_NOPROGRESS_REVISIT_USER_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_ZERO_ITER_USER_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_REVISIT_USER_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_ZERO_ITER_USER_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_ITERS_UNKNOWN_USER_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_REVISIT_KERNEL_BLOCKED_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_ZERO_ITER_KERNEL_BLOCKED_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KERNEL_BLOCKED_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_REVISIT_KTHREAD_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_PREEMPT: 0
+[COUNTER] DISPATCH_NOPROGRESS_REVISIT_KTHREAD_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_ZERO_ITER_KTHREAD_MANDATORY: 0
+[COUNTER] DISPATCH_NOPROGRESS_ITERS_UNKNOWN_KTHREAD_MANDATORY: 0
+[COUNTER] ====== END COUNTERS ======
+[syscall] exit(0) pid=93 name=block_eintr_oracle_child_93
+[TTBR0_ASID_CENSUS:untagged=0:tagged=6753:kernel=8666:cleared=15338]
+[heartbeat] tid=1208 uptime_ms=5983 kbd_nonzero=0
