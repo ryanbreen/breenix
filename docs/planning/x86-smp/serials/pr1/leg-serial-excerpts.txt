@@ -1,5 +1,7 @@
 # Per-leg serial excerpts, x86 SMP enumeration gate at branch head e2717b88
-# Full serials stay in the container at /root/breenix-smp1-tmp/breenix_x86_smp_enum_<leg>/
+# Taken from the green run's own serial files. The gate clears and reuses one
+# working directory per leg, so the oracle and mutation runs that followed
+# overwrote two of the three; these excerpts predate that.
 # Long lines (the scheduler's single-character trace stream shares COM1) truncated to 200 columns.
 
 ================ leg -smp 1 ================

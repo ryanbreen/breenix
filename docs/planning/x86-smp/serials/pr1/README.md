@@ -7,9 +7,12 @@ Branch `x86/smp-pr1-madt-enum`, head `e2717b88`, based on `origin/main`
 x86 evidence was taken on beast (the `breenix-x86` Incus VM) in the clone
 `/root/breenix-smp1`, with `BREENIX_GATE_TMP=/root/breenix-smp1-tmp` (R18).
 aarch64 evidence was taken on the Mac in the worktree this branch was authored
-in. Per-boot serial files stay in the container under
-`/root/breenix-smp1-tmp/breenix_x86_smp_enum_<leg>/`; what is committed here is
-the gate transcripts and the excerpts they are read through.
+in. The gate reuses one working directory per leg
+(`/root/breenix-smp1-tmp/breenix_x86_smp_enum_<leg>/`) and clears it at the
+start of each run, so the container holds only the last run to use each path —
+the oracle and mutation runs overwrote two of the green run's three. The
+transcripts and excerpts committed here, taken from each run's own files at the
+time, are the record.
 
 | file | what it is |
 |---|---|
