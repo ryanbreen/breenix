@@ -9,10 +9,10 @@
 //! How the synthetic firmware is reached: the reader turns a physical address
 //! into a pointer by adding the `physical_memory_offset` it is handed, so an
 //! image placed at a chosen fake physical base is addressed by handing it
-//! `image_pointer - IMAGE_BASE`. The 3 fake table addresses used here (an
-//! RSDP, an RSDT and a MADT) sit far below the reader's own 4 GiB read
-//! ceiling, so what each test measures is the length check it is about rather
-//! than a ceiling refusal.
+//! `image_pointer - IMAGE_BASE`. The 5 fake table addresses used here (an
+//! RSDP, an RSDT, an XSDT and 2 MADTs) sit far below the reader's own 4 GiB
+//! read ceiling, so what each test measures is the length check it is about
+//! rather than a ceiling refusal.
 //!
 //! What these tests reach: what the reader decides about a table it is handed
 //! -- which tables it refuses, and what it counts when it accepts one. What
@@ -31,13 +31,15 @@ use acpi::{read_madt, refusal_token, MadtCensus, MadtRefusal};
 /// length decision rather than a ceiling one.
 const IMAGE_BASE: u64 = 0x0002_0000;
 
-/// Bytes of synthetic physical memory: room for the 3 tables laid out below.
+/// Bytes of synthetic physical memory: room for the 5 tables laid out below.
 const IMAGE_LENGTH: usize = 4096;
 
 /// Where each synthetic table sits, as a fake physical address.
 const RSDP: u64 = IMAGE_BASE + 0x0000;
 const RSDT: u64 = IMAGE_BASE + 0x0100;
+const XSDT: u64 = IMAGE_BASE + 0x0180;
 const MADT: u64 = IMAGE_BASE + 0x0200;
+const MADT_BEHIND_THE_XSDT: u64 = IMAGE_BASE + 0x0300;
 
 /// A local APIC address no real machine would report, so a test can tell a
 /// value the reader took from the table apart from a zeroed field.
@@ -75,6 +77,10 @@ impl Image {
     }
 
     fn put_u32(&mut self, phys: u64, value: u32) {
+        self.put(phys, &value.to_le_bytes());
+    }
+
+    fn put_u64(&mut self, phys: u64, value: u64) {
         self.put(phys, &value.to_le_bytes());
     }
 
@@ -131,14 +137,80 @@ fn put_rsdp_v1(image: &mut Image, rsdt: u64) {
     image.seal(RSDP, 20, RSDP + 8);
 }
 
-/// A root table (an RSDT here) listing `tables` as 32-bit entries.
-fn put_rsdt(image: &mut Image, root: u64, tables: &[u64]) {
-    let declared_length = 36 + 4 * tables.len() as u32;
-    put_sdt_header(image, root, b"RSDT", declared_length);
+/// A root table listing `tables`: an RSDT, whose entries are 32-bit, or an
+/// XSDT, whose entries are 64-bit.
+fn put_root_table(
+    image: &mut Image,
+    root: u64,
+    signature: &[u8; 4],
+    entry_width: u64,
+    tables: &[u64],
+) {
+    let declared_length = 36 + entry_width as u32 * tables.len() as u32;
+    put_sdt_header(image, root, signature, declared_length);
     for (index, table) in tables.iter().enumerate() {
-        image.put_u32(root + 36 + 4 * index as u64, *table as u32);
+        let at = root + 36 + entry_width * index as u64;
+        if entry_width == 8 {
+            image.put_u64(at, *table);
+        } else {
+            image.put_u32(at, *table as u32);
+        }
     }
     image.seal(root, declared_length, root + 9);
+}
+
+fn put_rsdt(image: &mut Image, root: u64, tables: &[u64]) {
+    put_root_table(image, root, b"RSDT", 4, tables);
+}
+
+fn put_xsdt(image: &mut Image, root: u64, tables: &[u64]) {
+    put_root_table(image, root, b"XSDT", 8, tables);
+}
+
+/// An ACPI 2.0+ RSDP whose Length field DECLARES `declared_length`, carrying
+/// both a 32-bit RSDT address and a 64-bit XSDT address. Both checksums are
+/// sealed -- the 20-byte one over the ACPI 1.0 prefix, the extended one over
+/// exactly the declared bytes -- so a reader that trusts the declared length
+/// finds it valid, and what the tests below measure is which root table the
+/// reader follows, not a checksum refusal.
+fn put_rsdp_v2(image: &mut Image, rsdt: u64, xsdt: u64, declared_length: u32) {
+    image.put(RSDP, b"RSD PTR ");
+    image.put(RSDP + 8, &[0u8]); // checksum, sealed below
+    image.put(RSDP + 9, b"BREENX");
+    image.put(RSDP + 15, &[2u8]); // revision 2: an XSDT may be present
+    image.put_u32(RSDP + 16, rsdt as u32);
+    image.put_u32(RSDP + 20, declared_length);
+    image.put_u64(RSDP + 24, xsdt);
+    image.put(RSDP + 32, &[0u8]); // extended checksum, sealed below
+    image.seal(RSDP, 20, RSDP + 8);
+    image.seal(RSDP, declared_length, RSDP + 32);
+}
+
+/// One MADT behind the RSDT and a DIFFERENT one behind the XSDT, so which root
+/// table the reader followed is readable off the census it returns: one
+/// processor means the RSDT, four means the XSDT.
+fn two_root_tables(declared_rsdp_length: u32) -> Image {
+    let mut image = Image::new();
+
+    let one = local_apic_entry(0, 0, ENABLED);
+    put_madt(&mut image, MADT, 0xFEE0_0000, &one, 44 + one.len() as u32);
+    put_rsdt(&mut image, RSDT, &[MADT]);
+
+    let mut four = Vec::new();
+    for processor in 0..4u8 {
+        four.extend_from_slice(&local_apic_entry(processor, processor, ENABLED));
+    }
+    put_madt(
+        &mut image,
+        MADT_BEHIND_THE_XSDT,
+        0xFEE0_0000,
+        &four,
+        44 + four.len() as u32,
+    );
+    put_xsdt(&mut image, XSDT, &[MADT_BEHIND_THE_XSDT]);
+
+    put_rsdp_v2(&mut image, RSDT, XSDT, declared_rsdp_length);
+    image
 }
 
 /// A MADT whose header DECLARES `declared_length`, whose fixed body header is
@@ -325,4 +397,36 @@ fn an_entry_that_runs_past_the_declared_length_is_not_counted() {
     );
     assert_eq!(census.recorded, 1);
     assert_eq!(census.apic_ids[0], 0);
+}
+
+/// ANTI-VACUITY for the pair below: at the length an ACPI 2.0 RSDP really
+/// occupies, the XSDT is followed. Without this, a reader that ignored the
+/// XSDT would pass the fallback test for the wrong reason.
+#[test]
+fn a_full_length_revision_2_rsdp_is_followed_through_its_xsdt() {
+    let image = two_root_tables(36);
+    let census = census_of(&image);
+    assert_eq!(
+        census.processor_entries, 4,
+        "four processors is the MADT behind the XSDT"
+    );
+}
+
+/// The second finding this file was written for: a revision >= 2 RSDP whose
+/// own Length does not reach the 36 bytes that structure occupies does not
+/// contain the XSDT address at offsets 24..32, so the reader falls back to the
+/// RSDT rather than trusting a length that cannot cover the field it would
+/// read. 33 is where the floor used to sit -- exactly enough to reach the
+/// extended checksum byte at offset 32 -- so the loop starts there.
+#[test]
+fn a_revision_2_rsdp_shorter_than_its_own_structure_falls_back_to_the_rsdt() {
+    for declared_length in 33..36u32 {
+        let image = two_root_tables(declared_length);
+        let census = census_of(&image);
+        assert_eq!(
+            census.processor_entries, 1,
+            "an RSDP declaring {declared_length} bytes must be read through its RSDT: \
+             one processor is the MADT behind the RSDT, four would be the XSDT's"
+        );
+    }
 }

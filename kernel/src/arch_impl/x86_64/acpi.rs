@@ -44,9 +44,13 @@
 //! OVER it: `census_of_madt` checks that the MADT's declared length reaches
 //! the fixed body-header fields at offsets 36..44 before reading them, so a
 //! table too short to contain them is refused rather than read past the extent
-//! its own checksum covers. `tests/x86_madt_reader_bounds.rs` compiles this
-//! module into a host test binary and runs it over synthetic tables that take
-//! that refusal.
+//! its own checksum covers. The RSDP is the one table here whose length is not
+//! reachable that way -- the field lives at offset 20, so the revision byte at
+//! 15 is what gates reading it -- and the length it then reports is held to
+//! `RSDP_V2_LENGTH` before the extended checksum is walked and the XSDT
+//! address at offsets 24..32 is read. `tests/x86_madt_reader_bounds.rs`
+//! compiles this module into a host test binary and runs it over synthetic
+//! tables that take both of those refusals.
 //!
 //! There is no allocation here: results travel in a `MadtCensus` value whose
 //! fields are fixed-size, and `tests/x86_smp_enum_structure.rs` pins that
@@ -83,6 +87,13 @@ const MAX_MADT_ENTRIES: usize = 1024;
 
 /// Bytes of an ACPI System Description Table header.
 const SDT_HEADER_LENGTH: u32 = 36;
+
+/// Bytes of an ACPI 2.0+ RSDP: the 20-byte ACPI 1.0 prefix, the 4-byte Length,
+/// the 8-byte XSDT address, the extended checksum byte and 3 reserved bytes.
+/// A revision >= 2 RSDP whose Length reports less than this does not contain
+/// the XSDT address at offsets 24..32, so the reader falls back to the RSDT
+/// rather than checksumming and reading past what that length covers.
+const RSDP_V2_LENGTH: u32 = 36;
 
 /// Bytes of the MADT's own fixed body header: the 32-bit Local Interrupt
 /// Controller Address and the 32-bit Multiple APIC Flags word, which ACPI
@@ -322,7 +333,7 @@ fn root_table(reader: &PhysReader, rsdp_phys: u64) -> Result<(u64, u64), MadtRef
         let length = reader
             .u32_at(rsdp_phys + 20)
             .ok_or(MadtRefusal::AboveReadCeiling)?;
-        if length >= 33 && length <= MAX_TABLE_LENGTH {
+        if length >= RSDP_V2_LENGTH && length <= MAX_TABLE_LENGTH {
             let extended_ok = reader
                 .checksum_ok(rsdp_phys, length)
                 .ok_or(MadtRefusal::AboveReadCeiling)?;
