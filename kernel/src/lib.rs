@@ -73,6 +73,8 @@ pub mod boot;
 pub mod trace;
 // DTrace-style tracing framework with per-CPU ring buffers
 pub mod tracing;
+// BXCAP: bounded, lock-free failure-trace capture (see kernel/src/capture/mod.rs)
+pub mod capture;
 // Kernel log ring buffer for /proc/kmsg
 pub mod log_buffer;
 // Parallel boot test framework and BTRT

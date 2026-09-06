@@ -67,6 +67,16 @@ IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:'
 # -- so this is the 6th boot_tests-only marker asserted absent here, and a
 # count of 0 on the shipped profile is a reading, not an assumption.
 RING_SPAN_LITERAL='[RING_SPAN:cpu='
+# failure-trace-capture PR-3's BXCAP self-test edge is `capture_selftest`-only
+# (kernel/Cargo.toml; the feature is NOT implied by boot_tests and no gate
+# builds it), so this is the 7th test-only marker asserted absent here. Pinned
+# on the `edge=SELFTEST` VALUE rather than on the `[BXCAP:` token: the emitter
+# itself is not feature-gated, because PR-4 wires it to the panic and fault
+# edges of the SHIPPED kernel. Asserting `[BXCAP:` absent would then be
+# asserting the absence of a production fault, which is a different claim and
+# one this gate's crash-marker checks already make properly. What is
+# boot-profile-specific is the self-test edge, and that is what this counts.
+BXCAP_SELFTEST_LITERAL='edge=SELFTEST'
 # This proves init resumed after waiting for the self-limiting driver.
 INIT_EXIT_LITERAL='[init] futex_handoff_oracle exited pid='
 # This proves init's earlier oracle also completes on the unarmed profile.
@@ -213,6 +223,7 @@ print_observed_values() {
     echo "Observed strand injection oracle marker count: $(marker_count "$serial_file" "$STRAND_INJECT_ORACLE_LITERAL")"
     echo "Observed fcntl contention oracle marker count: $(marker_count "$serial_file" "$FCNTL_PM_ORACLE_LITERAL")"
     echo "Observed IRQ-hold oracle marker count: $(marker_count "$serial_file" "$IRQ_HOLD_ORACLE_LITERAL")"
+    echo "Observed BXCAP self-test edge count: $(marker_count "$serial_file" "$BXCAP_SELFTEST_LITERAL")"
     echo "Observed init-resumed marker count: $(marker_count "$serial_file" "$INIT_EXIT_LITERAL")"
     echo "Observed block EINTR oracle marker count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_LITERAL")"
     echo "Observed block EINTR oracle failure count: $(marker_count "$serial_file" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")"
@@ -501,6 +512,7 @@ STRAND_INJECT_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$STRAND_INJECT_ORACLE_
 FCNTL_PM_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$FCNTL_PM_ORACLE_LITERAL")
 IRQ_HOLD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$IRQ_HOLD_ORACLE_LITERAL")
 RING_SPAN_COUNT=$(marker_count "$SERIAL_FILE" "$RING_SPAN_LITERAL")
+BXCAP_SELFTEST_COUNT=$(marker_count "$SERIAL_FILE" "$BXCAP_SELFTEST_LITERAL")
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
 BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
 BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
@@ -553,6 +565,10 @@ fi
 }
 [ "$RING_SPAN_COUNT" -eq 0 ] || {
     echo "FAIL: boot_tests-only ring-span self-check marker was present"
+    exit 1
+}
+[ "$BXCAP_SELFTEST_COUNT" -eq 0 ] || {
+    echo "FAIL: capture_selftest-only BXCAP self-test edge was present"
     exit 1
 }
 [ "$INIT_EXIT_COUNT" -ge 1 ] || {
@@ -635,6 +651,8 @@ echo "Observed: $(grep -F -m 1 "$BSSHD_LITERAL" "$SERIAL_FILE")"
 echo "Observed kernel oracle marker count: $KERNEL_ORACLE_COUNT"
 echo "Observed fcntl contention oracle marker count: $FCNTL_PM_ORACLE_COUNT"
 echo "Observed IRQ-hold oracle marker count: $IRQ_HOLD_ORACLE_COUNT"
+echo "Observed ring-span self-check marker count: $RING_SPAN_COUNT"
+echo "Observed BXCAP self-test edge count: $BXCAP_SELFTEST_COUNT"
 echo "Observed block EINTR oracle marker count: $BLOCK_EINTR_ORACLE_COUNT"
 echo "Observed block EINTR oracle failure count: $BLOCK_EINTR_ORACLE_FAIL_COUNT"
 echo "Observed poll TCP oracle marker count: $POLL_TCP_ORACLE_COUNT"

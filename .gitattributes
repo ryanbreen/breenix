@@ -81,3 +81,16 @@ docs/planning/green-program/aarch64-testing/serials/slice3e/** -text
 # and a CRLF normalisation would silently make the fixture stop matching the
 # source it claims to be a byte-for-byte copy of.
 tools/breenix-runs/Tests/Fixtures/05-runtime-anti-vacuity-strict-serial.txt -text
+
+# failure-capture PR-3 BXCAP fixtures: raw aarch64 QEMU serial captures from
+# this Mac. Kept byte-exact for a reason narrower than the captures above --
+# the BXCAP v1 schema specifies CRLF-terminated records, and
+# tests/capture_bxcap_schema_structure.rs asserts that terminator on the
+# fixture. A CRLF normalisation would delete the very byte the schema names,
+# and the suite would then be pinning a property its fixture no longer shows.
+docs/planning/green-program/failure-capture/serials/pr3/*.txt -text
+# PR-3 review-round gate serials: the preserved aarch64 strict-gate boots that
+# failed during this round's re-runs, at the fix head and at the pre-fix head.
+# Same treatment as the fixtures above -- these are raw QEMU captures whose
+# interleaved bytes ARE the evidence, and a CRLF normalisation would edit them.
+docs/planning/green-program/failure-capture/serials/pr3-gate/*.txt -text

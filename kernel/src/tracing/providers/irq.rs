@@ -204,6 +204,12 @@ pub fn trace_timer_tick(tick_count: u64) {
 
     #[cfg(feature = "boot_tests")]
     ring_span_self_check::observe(tick_count);
+
+    // The BXCAP self-test edge (failure-capture PR-3). Behind
+    // `capture_selftest`, which no gate builds with, so a gated or shipped
+    // kernel does not compile this line at all.
+    #[cfg(feature = "capture_selftest")]
+    crate::capture::selftest::observe(tick_count);
 }
 
 /// Trace heartbeat marker (inline for minimal overhead).

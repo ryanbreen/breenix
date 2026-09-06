@@ -100,7 +100,7 @@ pub use self::core::{
     disable, enable, init, is_enabled, record_event, record_event_2, TraceEvent, TraceEventType,
     MAX_CPUS, TRACE_BUFFERS, TRACE_ENABLED,
 };
-pub use self::timestamp::trace_timestamp;
+pub use self::timestamp::{timestamp_frequency_hz, timestamp_to_nanos, trace_timestamp};
 
 // Re-export provider types
 pub use self::provider::{TraceProbe, TraceProvider};
