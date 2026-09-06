@@ -28,12 +28,36 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Guest uptime at which the one capture fires, in milliseconds.
 ///
-/// After PR-2's `RING_SPAN` self-check at 1000 ms, so the two markers do not
-/// contend for the UART, and late enough that the ring, the counters and the
-/// scheduler have real content to report. Inside the boot window this runs
-/// in: the aarch64 strict gate polls to ~18 s and the x86 boot-tests gate
-/// runs longer still.
+/// Per architecture, and both numbers are MEASURED rather than chosen. The
+/// requirement pulls two ways: late enough that the boot's own serial traffic
+/// has quietened, because the capture is ~4.5 KB written a byte at a time by
+/// a lock-free writer that a peer CPU's locked `serial_println!` can
+/// interleave into (#847), and early enough that the profile actually reaches
+/// it.
+///
+/// **aarch64: 3000 ms.** 13 of 13 strict-gate boots at this checkpoint
+/// produced an uncorrupted `[BXCAP:END ...]` line. At 1100 ms, tried first for symmetry
+/// with x86, 1 of 4 boots had another CPU's `[TEST:...]` line spliced into the
+/// middle of the `END` record and a second boot lost PR-2's `[RING_SPAN:` line
+/// the same way -- the gate's own #847 signature. The aarch64 gate is `-smp 4`
+/// and its boot-test output storm is still running at 1100 ms.
+///
+/// **x86_64: 1100 ms.** The x86 `boot_tests` profile does not reach 3000 ms: a
+/// `boot_tests,testing,external_test_bins,capture_selftest` build on the beast
+/// container emitted 0 `[BXCAP:` bytes across both of
+/// `run-x86-boot-tests.sh`'s serials, while the same build's
+/// `[RING_SPAN:cpu=0:...]` line -- whose checkpoint is 1000 ms -- was present.
+/// x86 ticks at `PIT_HZ` = 200 Hz (`MS_PER_TICK` = 5), so 3000 ms is tick 600
+/// and 1100 ms is tick 220. The interleaving that ruled 1100 ms out on aarch64
+/// does not arise there: both x86 gates run `-smp 1`, so there is no peer CPU
+/// writing the same UART.
+///
+/// The round doc's section 6.7 records both measurements.
+#[cfg(target_arch = "aarch64")]
 const CAPTURE_AT_MS: u64 = 3_000;
+
+#[cfg(not(target_arch = "aarch64"))]
+const CAPTURE_AT_MS: u64 = 1_100;
 
 static FIRED: AtomicBool = AtomicBool::new(false);
 
