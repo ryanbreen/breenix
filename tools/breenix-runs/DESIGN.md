@@ -680,36 +680,87 @@ The three arm profiles map to
 (`:194-217`), the launcher surfaces that refusal as a first-class run state
 `.refused(preflight)` — a run that did not boot, distinct from a run that failed.
 
-### 5.2 x86: ssh to beast, run the gate in a private clone, rsync back
+### 5.2 x86: ssh to beast, run the gate in a private clone, pull evidence back
 
-`run-x86-gate.sh:42-47` states the constraint precisely: the fetch/checkout of the
-branch under test *cannot* live in the repo, because a script that `git reset
---hard`s its own checkout is a self-modification hazard. The Inspector is the thing
-outside the working tree, so that step is its job.
+**Status: implemented in PR-5 (`RemoteCommand.swift`, `BeastLauncher.swift`), as
+the mechanism below — corrected against beast, live, on 2026-09-06, from the
+plan originally written here.** Two specifics in the original plan turned out
+to be wrong for the `breenix-x86` Incus container specifically, verified by SSH
+before writing the PR-5 code:
+
+* **There is no `wrb` account in this container** (`id wrb` → "no such user").
+  The repo lives at `/root/breenix`, owned by `root`, and commands in the
+  container run as root: `sudo -n incus exec breenix-x86 -- bash -lc '<CMD>'`,
+  with no `-iu` anything. A `sudo -iu wrb bash -lc '<CMD>'` shape is the
+  pattern for a *different* beast container (`breeniac`, per global
+  CLAUDE.md) and does not apply here.
+* **`rsync -az beast:<clone>/...` cannot reach the evidence.** `<clone>` is a
+  path inside the Incus container's own filesystem namespace, not a path on
+  the beast host's filesystem an `ssh beast` + `rsync` pair can see. The
+  working mechanism is a `tar` stream over the same ssh+incus-exec channel:
+  `sudo -n incus exec breenix-x86 -- tar -czf - -C <clone> gate-tmp`, its
+  stdout captured directly (kept separate from stderr, since it is raw gzip
+  bytes) and extracted locally with `/usr/bin/tar -xzf`.
+
+`run-x86-gate.sh:42-47` states the constraint that motivates having the
+Inspector do this at all: the fetch/checkout of the branch under test *cannot*
+live in the repo, because a script that `git reset --hard`s its own checkout
+is a self-modification hazard. The Inspector is the thing outside the working
+tree, so that step is its job.
 
 ```
-1. ssh beast → sudo -n incus exec breenix-x86 -- sudo -iu wrb bash -lc '<CMD>'   (per CLAUDE.md)
-2. CMD: mktemp -d a per-run clone dir; git clone --shared from the container's
-        canonical checkout; git fetch origin <sha>; git checkout --detach <sha>
-3. CMD: env BREENIX_GATE_TMP=<clone>/gate-tmp BREENIX_REPO_DIR=<clone> \
-            BREENIX_RUST_FORK=<container path> \
-            docker/qemu/run-x86-gate.sh <boots> full
-4. rsync -az beast:<clone>/gate-tmp/ <store>/runs/<id>/          (evidence back)
-5. rm -rf the remote clone; verdict from the remote exit status
+1. ssh -T -o BatchMode=yes -o ConnectTimeout=15 beast '<CMD>' for each step below
+   -- non-interactive throughout; each invocation runs sudo -n incus exec
+   breenix-x86 -- ... as root, no login shell, no -iu anything
+2. prepare: bash -lc 'git -C /root/breenix fetch origin && rm -rf <clone> &&
+   git clone --shared /root/breenix <clone> && git -C <clone> checkout
+   --detach <sha>' -- verified live: no SECOND fetch is needed inside the
+   clone. `--shared`'s alternates file makes each of /root/breenix's objects
+   (including one reachable only via refs/remotes/origin/* after step 1's
+   fetch, not via any local branch) checkoutable in the new clone even
+   though no ref in the new clone points at it yet.
+3. run: bash -lc 'mkdir -p <clone>/gate-tmp && source /root/.cargo/env &&
+   env BREENIX_GATE_TMP=<clone>/gate-tmp BREENIX_REPO_DIR=<clone>
+   BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=<n>
+   <clone>/docker/qemu/run-x86-gate.sh <boots> <full|kthread>' -- the mkdir
+   runs before the gate script so a build failure that does not reach the
+   per-boot loop still leaves gate-tmp/ present for step 4
+4. pull: tar -czf - -C <clone> gate-tmp   (stdout captured raw, not combined
+   with stderr; written to a local .tar.gz, then extracted with
+   /usr/bin/tar -xzf)
+5. remove: rm -rf <clone>   -- runs via a `defer` registered before step 2
+   is attempted, so it fires on the exit path whether step 2 succeeds,
+   fails partway through (e.g. `git clone --shared` lands but the trailing
+   `checkout --detach <sha>` doesn't), or step 3's gate passes or fails;
+   `rm -rf` on a clone path step 2 never got as far as creating is a no-op,
+   so this is safe to attempt unconditionally. Verdict is the gate script's
+   own exit code from step 3.
 ```
+
+`BREENIX_RUST_FORK=/root/breenix/rust-fork-real` matters because
+`rust-fork-real` is gitignored and untracked — a fresh clone has neither the
+`rust-fork` symlink nor its target, which is exactly why `run-x86-gate.sh` has
+its own repoint logic (`rm -f rust-fork; ln -s "$BREENIX_RUST_FORK" rust-fork`)
+that this launcher relies on rather than duplicating.
 
 A **private clone per run** rather than a shared checkout is required, not
 preferred: it is the `[[workflow-worktree-isolation]]` rule (R83), and #797 is the
 issue where concurrent lanes on this exact shared beast container clobbered each
 other's `/tmp/breenix_gate_$i`. Setting `BREENIX_GATE_TMP` inside the clone closes
-the other half.
+the other half. The clone path itself is a plain function of the run id
+(`/root/breenix-<id>`, a sibling of the canonical checkout, matching the
+`breenix-<lane>` naming convention the other beast clones on this host
+already use) — not `mktemp`, which would make the launcher's plan-building
+step impure and untestable as a pure function of (sha, boots, mode, paths).
 
-Cancellation is by **process group, not by name**: the launcher runs the gate in
-its own group and sends `SIGTERM` to that group, then `SIGKILL` after a grace
-period. `pkill qemu-system-*` is forbidden (`[[workflow-worktree-isolation]]` R84,
-and it would kill unrelated worktrees' boots, manufacturing the very host
-contention the host-facts work exists to measure). On the remote side, cancellation
-kills the remote shell's group over the same SSH channel and then removes the clone.
+**Deferred to a later PR: mid-run cancellation.** The design's original
+intent — cancel by process group, not by name, so an interrupted `breenix-runs
+run x86` cannot leave a stray remote QEMU boot running or degrade into
+`pkill qemu-system-*` (`[[workflow-worktree-isolation]]` R84) — is not built in
+PR-5. A `Ctrl-C` during the multi-minute `runGate` step today leaves the remote
+gate (and its clone) running on beast; the operator cleans it up by hand
+(`ssh beast 'sudo -n incus exec breenix-x86 -- rm -rf <clone>'`) until this
+lands. This is a real, disclosed gap, not a silently dropped requirement.
 
 ### 5.3 Host facts the launcher samples itself
 
@@ -748,7 +799,7 @@ keeps them same-day landable. PR-1 alone satisfies the operator's first ask.
 | 2 | Serial ingestion: scanner + marker families | `Sources/BreenixRuns/Parsing/{MarkerScanner,MarkerFamily,SerialIndex}.swift`, `Tests/Fixtures/*.txt`, `Tests/…/MarkerScannerTests.swift` | `swift test` against **real committed serials** copied into `Tests/Fixtures/`: from `slice3d/05-runtime-anti-vacuity-strict-serial.txt` assert `[BOOT_TESTS:PASS]` ×2 at lines 602 and 610, `TTBR0_ASID_CENSUS` ×2 with parsed counters, four distinct `EXEC_SMOKE` states, monotonic `heartbeat.uptime_ms`; **prefix-tolerance leg**: the literal `T2T3[BOOT_TESTS:` must match — a line-anchored regex reddens this test | M |
 | 3 | Subsystem state machine + `show` / `facts` | `xtask/src/main.rs` (+`dump-boot-stages --json`), `tools/breenix-runs/Resources/boot-stages-{aarch64,x86_64}.json`, `Sources/BreenixRuns/Subsystems/{StageCatalog,StateMachine}.swift`, `Sources/breenix-runs/` subcommands, `tests/boot_stage_catalog_export.rs` | `cargo test`: committed JSON matches the live catalog, **census-anchored on entry count + name set** (deleting a `BootStage` reddens it; the assertion contains no literal stage-name list). `swift test`: green strict serial ⇒ each arm64 kernel stage `reached`; a preserved failure serial ⇒ exactly one `stoppedHere` with the correct predecessor | M |
 | 4 | Import existing evidence | `Sources/BreenixRuns/Store/Importer.swift`, `Sources/breenix-runs/import.swift`, `Tests/…/ImporterTests.swift` | `swift test`: import a synthesized gate-tmp tree + a preserved-failures dir + a loose serials dir into a temp store; assert arch/profile inference per §3.3, `verdict == .unknown` for loose serials (**not invented**), and that a second import is a no-op (identical ids, unchanged count) | M |
-| 5 | x86 beast launcher | `Sources/BreenixRuns/Launch/{BeastLauncher,RemoteCommand}.swift`, `Sources/breenix-runs/` (`run x86`, `--dry-run`), `Tests/…/BeastLauncherTests.swift` | `swift test`: the launcher's argv is a **pure function** of (sha, boots, mode, paths) — snapshot-assert the exact `ssh`/`incus exec`/`rsync` argv, that `BREENIX_GATE_TMP` points inside the per-run clone, and that the teardown removes the clone. No network in the test. `breenix-runs run x86 --dry-run` prints the same plan for the operator | M |
+| 5 | x86 beast launcher | `Sources/BreenixRuns/Launch/{BeastLauncher,RemoteCommand}.swift`, `Sources/breenix-runs/` (`run x86`, `--dry-run`), `Tests/…/BeastLauncherTests.swift` | `swift test`: the launcher's argv is a **pure function** of (sha, boots, mode, paths) — snapshot-assert the exact `ssh`/`incus exec`/`tar` argv, that `BREENIX_GATE_TMP` points inside the per-run clone, and that the teardown removes the clone. No network in the test. `breenix-runs run x86 --dry-run` prints the same plan for the operator | M |
 | 6 | SwiftUI app + `make app` | `Sources/BreenixRunInspector/**` (App, Sidebar, Subsystems, Messages panes), `Makefile` (`app` target), `Sources/BreenixRuns/ViewModels/*` | `swift build --target BreenixRunInspector`; `swift test` on the view models (sidebar sorts newest-first incl. the amber attributed state; message filter predicate selects only the intended families); `make app && plutil -lint "Breenix Run Inspector.app/Contents/Info.plist"` exits 0 | L |
 | 7 | Traces pane: host facts, BXCAP, FATAL_REGS | `Sources/BreenixRuns/Parsing/{BXCAPDecoder,FatalRegsDecoder,BootFactsParser}.swift`, `Sources/BreenixRunInspector/TracesPane.swift`, `Tests/…/{BXCAPTests,FatalRegsTests}.swift` | `swift test`: `FATAL_REGS` assembled from a **real committed fatal serial** (`docs/planning/teardown-unification/607-576-serials/gate-clean100-cortexa72-boot3-stackpc-8600000e.txt`), both header shapes (with and without `label=`), x0…x30 grid complete; BXCAP legs — `BEGIN` w/o `END` ⇒ `truncated`, `v=2` ⇒ **refused not decoded**, `seq` interleaving ⇒ two captures; `GATE_BOOT_FACTS` parser accepts an **unknown extra key** without failing, and a serial with no such record yields the explicit "not present" state | M |
 | 8 | Compare view + `tail` | `Sources/BreenixRuns/Diff/RunDiff.swift`, `Sources/BreenixRunInspector/ComparePane.swift`, `Sources/breenix-runs/tail.swift` | `swift test`: diff of two fixture runs reports the exact subsystem-state delta and marker-count delta, and is empty for a run against itself; `tail` follows a file being appended to in a temp dir and terminates on EOF+exit | S |
