@@ -224,6 +224,75 @@ pub fn process_manager_held_on_current_cpu() -> bool {
         .is_some_and(|(cpu, _)| cpu == current_process_manager_owner_identity().0)
 }
 
+/// #821: a scope, entered on the CPU that takes an interrupt, inside which no
+/// BLOCKING `PROCESS_MANAGER` acquisition may happen.
+///
+/// The TTY input IRQ entry is the first member. `manager()` and
+/// `with_process_manager()` wait for a lock a thread-context holder can own
+/// with interrupts live -- on x86_64 `manager()` performs no mask operation at
+/// all -- so an acquisition taken from inside such a scope is the #821 defect
+/// itself rather than a symptom of it. The depth is kept per CPU because the
+/// scope belongs to the CPU taking the interrupt; the violation counter is
+/// global because a violation on any CPU is the same fact.
+///
+/// `try_manager()` is deliberately NOT counted. It does not wait, and since
+/// PR #833 it masks around its hold on both arches, so the IRQ side is allowed
+/// to use it.
+const NO_BLOCKING_PM_CPUS: usize = crate::tracing::MAX_CPUS;
+
+#[allow(clippy::declare_interior_mutable_const)]
+const NO_BLOCKING_PM_DEPTH_INIT: AtomicU64 = AtomicU64::new(0);
+static NO_BLOCKING_PM_DEPTH: [AtomicU64; NO_BLOCKING_PM_CPUS] =
+    [NO_BLOCKING_PM_DEPTH_INIT; NO_BLOCKING_PM_CPUS];
+static NO_BLOCKING_PM_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
+
+#[inline(always)]
+fn no_blocking_pm_slot_index() -> usize {
+    (current_process_manager_owner_identity().0 as usize).min(NO_BLOCKING_PM_CPUS - 1)
+}
+
+/// RAII marker for a region that must take no blocking `PROCESS_MANAGER`
+/// acquisition. The slot index is captured at entry and released on the same
+/// slot, so a region that is entered on one CPU and left on another cannot
+/// leave a permanent depth behind.
+pub struct NoBlockingProcessManagerScope {
+    slot: usize,
+}
+
+impl NoBlockingProcessManagerScope {
+    #[inline(always)]
+    pub fn enter() -> Self {
+        let slot = no_blocking_pm_slot_index();
+        NO_BLOCKING_PM_DEPTH[slot].fetch_add(1, Ordering::Relaxed);
+        Self { slot }
+    }
+}
+
+impl Drop for NoBlockingProcessManagerScope {
+    #[inline(always)]
+    fn drop(&mut self) {
+        let _ = NO_BLOCKING_PM_DEPTH[self.slot].fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |depth| depth.checked_sub(1),
+        );
+    }
+}
+
+/// Count of blocking `PROCESS_MANAGER` acquisitions taken inside a
+/// `NoBlockingProcessManagerScope`. A reading of 0 is the property; a reading
+/// above 0 is the #821 defect class, live.
+pub fn no_blocking_pm_acquisitions() -> u64 {
+    NO_BLOCKING_PM_ACQUISITIONS.load(Ordering::Relaxed)
+}
+
+#[inline(always)]
+fn note_blocking_process_manager_acquisition() {
+    if NO_BLOCKING_PM_DEPTH[no_blocking_pm_slot_index()].load(Ordering::Relaxed) != 0 {
+        NO_BLOCKING_PM_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Initialize the process management system
 pub fn init() {
     let manager = ProcessManager::new();
@@ -237,6 +306,9 @@ pub fn init() {
 /// single-CPU deadlocks where a timer interrupt tries to re-acquire the lock
 /// from the context switch path.
 pub fn manager() -> ProcessManagerGuard {
+    // #821. Recorded BEFORE the acquisition, so a call that wedges on a lock
+    // this CPU already owns, and so does not return, is still counted.
+    note_blocking_process_manager_acquisition();
     #[cfg(target_arch = "aarch64")]
     {
         let saved_daif: u64;
@@ -268,6 +340,8 @@ pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ProcessManager) -> R,
 {
+    // #821, for the same reason as `manager()`.
+    note_blocking_process_manager_acquisition();
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut manager_lock = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();
@@ -332,6 +406,8 @@ pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ProcessManager) -> R,
 {
+    // #821, for the same reason as `manager()`.
+    note_blocking_process_manager_acquisition();
     crate::arch_impl::aarch64::cpu::without_interrupts(|| {
         let mut manager_lock = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();

@@ -722,9 +722,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
     };
     let manager_guard = crate::process::manager();
-    let process = match &*manager_guard {
+    // #821 keeps `reader_pid`: the stdin arm below is the console's
+    // thread-context consumer, and the pid the input IRQ entry must not block
+    // on PROCESS_MANAGER to resolve is already in hand right here.
+    let (reader_pid, process) = match &*manager_guard {
         Some(manager) => match manager.find_process_by_thread(thread_id) {
-            Some((_pid, p)) => p,
+            Some((pid, p)) => (pid, p),
             None => {
                 // Fall back to stdin behavior for kernel threads
                 return SyscallResult::Ok(0);
@@ -755,6 +758,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             //
             // Drop the process manager lock before potentially blocking
             drop(manager_guard);
+
+            // #821: take any foreground-pgrp adoption the input IRQ entry
+            // deferred. Deliberately after the guard is dropped, so this holds
+            // no PROCESS_MANAGER while it touches the TTY's own locks.
+            crate::tty::driver::adopt_foreground_pgrp_from_reader(reader_pid);
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 

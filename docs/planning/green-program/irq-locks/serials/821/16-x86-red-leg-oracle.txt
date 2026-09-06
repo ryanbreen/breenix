@@ -1,0 +1,4 @@
+[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=1:deferred=0:pgrp_set_by_entry=0:processed=1:buffered=1:irqs_enabled_before=0:pm_held_during_entry=0:entry_us=0:adopted=0:adopted_pgrp=0:restored=1:FAIL:handler_would_block]
+RED_GATE_EXIT=1 (docker/qemu/run-x86-boot-tests.sh 1, mutated kernel)
+x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:836, exit 1)
+HTTP Test: All tests passed!

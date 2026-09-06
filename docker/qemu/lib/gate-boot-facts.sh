@@ -118,7 +118,24 @@ gbf_resolve_qemu_pid() {
     case "$comm" in
         *"$qemu_bin") printf '%s' "$wrapper_pid"; return ;;
     esac
-    child="$(pgrep -P "$wrapper_pid" -x "$qemu_bin" 2>/dev/null | head -1)"
+    # #821: `|| true` here for the identical reason it is already load-bearing
+    # on the `ps` assignment above -- Linux truncates both `ps -o comm=` and
+    # `pgrep -x`'s own match target to the kernel's 15-byte TASK_COMM_LEN, so
+    # neither the `case` above nor this `pgrep -x` can match a 19-byte name
+    # like `qemu-system-x86_64` (pgrep's own diagnostic, quoted verbatim on
+    # this beast host: "pattern that searches for process name longer than
+    # 15 characters will result in zero matches"; claim-lint:ok: #821, the
+    # tool's own literal wording, not this comment's claim). Without this
+    # guard, `pgrep`'s exit 1 aborted the x86 boot-tests gate's landing
+    # re-smoke for #821 on this merged head at beast, on a boot that had
+    # already scored a pass; a second run with this guard applied reached
+    # the same scored pass and exited 0. The `else` branch below still
+    # returns the right PID for both of this function's non-`timeout`-
+    # wrapped x86 callers: `$wrapper_pid` there is already `$!` of the
+    # directly-backgrounded `qemu-system-x86_64`, so the fallback is
+    # correct, not merely non-fatal (re-verified: run 2, same serial dir,
+    # PASS after this fix).
+    child="$(pgrep -P "$wrapper_pid" -x "$qemu_bin" 2>/dev/null | head -1)" || true
     if [ -n "$child" ]; then
         printf '%s' "$child"
     else

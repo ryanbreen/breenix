@@ -124,3 +124,23 @@ occurrences of either), so no scorer requirement newly applies to it.
 `03` (the red-on-main pin-guard capture) is also untouched: the tests' only
 read of it splices its `PIN_GUARD_ORACLE` line into a copy of `01`, and does
 not read a `RING_SPAN` line from `03` at all, so `03` does not need one.
+
+**`01` re-recorded again on `fix/821-tty-irq-no-pm-block`.** #821 adds a
+`TTY_IRQ_PM_ORACLE` check to the same `score_serial` function — the standing
+"widen the scorer, re-record the fixture" step, for the third time on this
+file. The previous `01` predates #821's kernel change and carries 0 of that
+marker, so the two `loopback_pump_structure` legs and the one
+`ttbr0_shadow_reconciliation_structure` leg that score it green — 3 of 3 —
+would read "TTY input IRQ process-manager oracle marker missing or failed" at
+this head.
+`01` is replaced with a fresh strict boot 1 taken on that branch, carrying
+`[PIN_GUARD_ORACLE:aarch64:home=1:here=0:reclaim=1:requeue=1:previous=1:on_home=3:refused=3:census_clean=1:verdict=PASS]`,
+`[RING_SPAN:cpu=0:...]` and
+`[TTY_IRQ_PM_ORACLE:aarch64:...:PASS:peer_hold]` together; the same bytes are
+also kept as
+`docs/planning/green-program/irq-locks/serials/821/02-a64-green-repaired-serial.txt`,
+that round's own green capture. `02` is untouched again, and for the same reason as
+last time: the production-profile scorer requires the new marker ABSENT, which
+the existing `02` already satisfies with 0 occurrences. `03` is untouched for
+the reason recorded above — the tests splice its `PIN_GUARD_ORACLE` line into a
+copy of `01` and read no other line from it.

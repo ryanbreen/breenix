@@ -102,3 +102,9 @@ docs/planning/green-program/failure-capture/serials/pr3-gate/*.txt -text
 # fixture no longer demonstrates.
 docs/planning/green-program/failure-capture/serials/pr4/*.txt -text
 docs/planning/green-program/failure-capture/serials/pr4-red/*.txt -text
+
+# #821 serials: raw QEMU serial captures from the aarch64 strict gate on this
+# Mac and from the x86 gates on the beast container. Same treatment as the
+# captures above -- the CR bytes the guest console emits are part of the
+# evidence, and a CRLF normalisation would edit a preserved boot.
+docs/planning/green-program/irq-locks/serials/821/*.txt -text
