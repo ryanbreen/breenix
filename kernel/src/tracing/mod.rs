@@ -114,7 +114,7 @@ pub use self::macros::{
 // Re-export output functions for convenience
 pub use self::output::{
     dump_all_buffers, dump_buffer, dump_counters, dump_event_summary, dump_latest_events,
-    dump_on_panic, dump_providers, event_type_name,
+    dump_providers, event_type_name,
 };
 
 // GDB-inspectable symbols are defined in core.rs with #[no_mangle]

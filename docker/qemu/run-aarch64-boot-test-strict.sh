@@ -10,6 +10,10 @@
 # Usage: ./run-aarch64-boot-test-strict.sh [iterations]
 #        Default: 20 iterations
 #
+# Before booting anything, this gate runs each tests/*_structure.rs suite
+# (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is red.
+# BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
+#
 # Exit codes:
 #   0 - All iterations passed
 #   1 - One or more iterations failed
@@ -30,6 +34,18 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # for why a starved boot and a wedged boot could not be told apart before.
 # shellcheck source=lib/gate-boot-facts.sh
 source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
+# failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+# BXCAP capture (if one is open) before this gate's own kill line runs, and
+# reports what ended up on the wire. See that file's own header and
+# docs/planning/green-program/failure-capture/PLAN-2026-09-05.md section 6.
+# shellcheck source=lib/gate-capture-drain.sh
+source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
+# R191/PR-1 (gate-tooling round): runs each tests/*_structure.rs suite via
+# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+# that file's own header for why the kernel-swap hazard below does not
+# apply to it) before this gate's own kernel-file check, further down.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same host,
 # both native QEMU rather than the shared beast container #797/#801 covered)
 # each hardcoded the identical /tmp/breenix_aarch64_strict_$iteration and
@@ -185,6 +201,42 @@ if ! tty_irq_pm_oracle_sample 2 | grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN"; then
     echo "FAIL: TTY_IRQ_PM_ORACLE_PATTERN rejects entry_us=2, the reading the repaired entry really records, so this gate can never pass"
     exit 1
 fi
+# #822 -- the same TTY input IRQ entry, and the console's own foreground_pgrp
+# mutex rather than PROCESS_MANAGER. `fg_lock_touches=0` is the property: a
+# production counter `tty/driver.rs` bumps before each of its 5 acquisitions of
+# that mutex when a TTY interrupt entry's scope is open on this CPU, so a
+# `try_lock` counts too -- neither kind belongs on the interrupt side of a lock
+# a thread holds unmasked. `fg_blocking_acquires=0` is the blocking
+# subset, pinned separately because it is the reading the x86 arm keys its
+# refusal on. `sig_calls=1:sig_pid=822:sig_num=2` is the byte's meaning
+# surviving the hold: the Ctrl+C the oracle injects still reaches the signal
+# path with the foreground pgrp the oracle installed. `fg_busy_probe=1` is the
+# independent reading that the mutex really was owned at that instant, and
+# `hold_us` is the holder's own measurement of its window, pinned to at least
+# five digits so a hold that collapsed cannot pass.
+#
+# `entry_us` is pinned to at most three digits -- under 1 ms against a 20 ms
+# hold -- and the selfcheck below runs that pin against both readings before it
+# is used to score a boot.
+# claim-lint:ok: the scoring legs behind this pin are recorded in
+# docs/planning/green-program/irq-locks/serials/822/05-a64-gate-mutations.txt
+TTY_IRQ_FG_ORACLE_PATTERN='\[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=[1-9][0-9]*:processed=2:buffered=[1-9][0-9]*:irqs_enabled_before=1:holder_cpu=[0-9]+:fg_busy_probe=1:hold_us=[2-9][0-9]{4,}:entry_us=[0-9]{1,3}:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold\]'
+# TTY_IRQ_FG_SELFCHECK, for the reason TTY_IRQ_PM_SELFCHECK above gives. The two
+# samples are the values this branch actually recorded: 116 us repaired -- the
+# reading in serials/822/02-a64-green-repaired-serial.txt, from a 20-boot run
+# whose 20 readings span 116..154 us -- and 20048 us with a blocking
+# acquisition restored, in serials/822/03-a64-red-blocking-lock-serial.txt.
+tty_irq_fg_oracle_sample() {
+    printf '[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=%s:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]\n' "$1"
+}
+if tty_irq_fg_oracle_sample 20022 | grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN"; then
+    echo "FAIL: TTY_IRQ_FG_ORACLE_PATTERN accepts entry_us=20022, so this gate would score green on an input IRQ entry that waited out the whole foreground-pgrp hold"
+    exit 1
+fi
+if ! tty_irq_fg_oracle_sample 116 | grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN"; then
+    echo "FAIL: TTY_IRQ_FG_ORACLE_PATTERN rejects entry_us=116, the reading the repaired entry really records, so this gate can never pass"
+    exit 1
+fi
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 # #786 follow-on: the TTBR0 ASID census, emitted before userspace and at every
 # process exit. `untagged` counts publishes into `saved_process_cr3`/`next_cr3`
@@ -263,6 +315,16 @@ SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
 
 if [ -z "$SCORE_ONLY_SERIAL" ]; then
 
+# R191/PR-1: structure-suite + critical-path-census preflight, before any
+# kernel build or QEMU state exists to interfere with. BREENIX_GATE_SKIP_STRUCTURE=1
+# skips this loudly (a caller that already ran the suites itself, or a host
+# that cannot compile them); see docker/qemu/lib/gate-structure-preflight.sh
+# for both the rustc-vs-cargo reasoning and what each printed field means.
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)"
+    exit 1
+fi
+
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
@@ -303,7 +365,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -386,6 +448,17 @@ score_serial() {
     local serial_file="$1"
     local boot_test_fail_line
     local crash_type
+
+    # failure-trace-capture PR-5's own forced-fail knob: unset by default, so
+    # an ordinary run's control flow here is unchanged. Set, this process
+    # scores each boot it runs as FAIL regardless of what the serial
+    # actually contains -- which is what lets a real, live boot exercise the
+    # drain path below deterministically instead of waiting on a rare
+    # fault. See docs/planning/green-program/failure-capture/PR-5-2026-09-06.md.
+    if [ -n "${BREENIX_STRICT_FORCE_FAIL:-}" ]; then
+        echo "Forced failure (BREENIX_STRICT_FORCE_FAIL set)"
+        return 1
+    fi
 
     if [ ! -f "$serial_file" ]; then
         echo "Userspace not detected"
@@ -527,6 +600,16 @@ score_serial() {
     fi
     if ! grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "TTY input IRQ process-manager oracle marker missing or failed"
+        return 1
+    fi
+    # #822, pinned as the same pair for the same reason.
+    if grep -qF "[TTY_IRQ_FG_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
+        && grep -qE "TTY_IRQ_FG_ORACLE.*:FAIL(:[a-z_]+)?\]" "$serial_file" 2>/dev/null; then
+        echo "TTY input IRQ foreground-pgrp oracle reported failure ($(grep -aoE '\[TTY_IRQ_FG_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "TTY input IRQ foreground-pgrp oracle marker missing or failed"
         return 1
     fi
     if ! grep -qF "[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]" "$serial_file" 2>/dev/null; then
@@ -677,6 +760,7 @@ report_failure() {
     local reason="$2"
     local serial_file="$3"
     local facts_line="$4"
+    local capture_lines="$5"
     local failure_dir="$BREENIX_GATE_TMP/breenix_aarch64_strict_failures"
     local timestamp
     local preserved_serial
@@ -696,10 +780,17 @@ report_failure() {
     fi
     # #827: the facts line is preserved alongside the serial it describes,
     # not only echoed to the console, so a failed boot's host-side reading
-    # is as durable as its serial capture.
-    printf '%s\n' "$facts_line" > "$failure_dir/${timestamp}-boot${iteration}.facts.txt"
+    # is as durable as its serial capture. failure-trace-capture PR-5: the
+    # two CAPTURE_DRAIN lines ride the same sidecar, right below it -- one
+    # record of what the drain step (above, in run_single_test, BEFORE this
+    # boot's kill) found on the wire.
+    {
+        printf '%s\n' "$facts_line"
+        printf '%s\n' "$capture_lines"
+    } > "$failure_dir/${timestamp}-boot${iteration}.facts.txt"
     echo "  [FAIL] Boot $iteration: $reason ($lines lines); serial: $preserved_serial"
     echo "  $facts_line"
+    printf '%s\n' "$capture_lines" | sed 's/^/  /'
 }
 
 run_single_test() {
@@ -803,6 +894,45 @@ run_single_test() {
         ENDED_BY_LOOP="early_pass"
     fi
 
+    # review finding
+    # aarch64-gates-drain-decision-uses-provisional-not-final-verdict: freeze
+    # a byte-for-byte copy of the serial file THE INSTANT the poll loop above
+    # stops. #827's own post-kill rescore below -- SCORE_PASS/FAIL_DETAIL,
+    # the thing that actually decides scored_pass vs scored_fail vs
+    # poll_exhausted/hard_timeout -- now reads THIS snapshot, not the live
+    # file, so gcd_drain_and_report's own wait (which the CAPTURE_LINES
+    # decision just below may trigger, deliberately keeping QEMU alive up to
+    # BREENIX_GATE_DRAIN_SETTLE_MS + BREENIX_GATE_DRAIN_MAX_MS longer so it
+    # can finish writing an open capture) cannot itself move which side of
+    # the poll loop's own deadline this boot lands on -- a boot that would
+    # have been poll_exhausted before this PR existed cannot become
+    # scored_pass only because draining kept QEMU alive long enough for a
+    # slow marker to land. gcd_drain_and_report itself still reads the LIVE
+    # file ($OUTPUT_DIR/serial.txt, unchanged below) so the capture evidence
+    # it reports keeps benefiting from that extra time; only the pass/fail
+    # verdict is pinned to this snapshot.
+    local DEADLINE_SERIAL="$OUTPUT_DIR/serial.deadline.txt"
+    cp -f "$OUTPUT_DIR/serial.txt" "$DEADLINE_SERIAL" 2>/dev/null || : > "$DEADLINE_SERIAL"
+
+    # failure-trace-capture PR-5: on any outcome that does not already read
+    # as a pass right here, drain the guest's BXCAP capture (if one is open)
+    # BEFORE this boot's kill line runs, further down. This is deliberately
+    # placed BEFORE the "immediately before kill" sampling block that
+    # follows it -- gcd_drain_and_report can add up to
+    # (BREENIX_GATE_DRAIN_SETTLE_MS + BREENIX_GATE_DRAIN_MAX_MS) of real wall
+    # time while QEMU keeps running, and that time has to be inside the
+    # window HOST_MS_END/QEMU_CPU_S measure, not before it -- the whole point
+    # of "immediately before kill" is that it reads QEMU's true end-of-life
+    # state, which this drain step deliberately postpones. On an
+    # ENDED_BY_LOOP=early_pass boot this costs 0ms: gcd_pass_report does not
+    # read the file at all.
+    local CAPTURE_LINES
+    if [ "$ENDED_BY_LOOP" = "early_pass" ]; then
+        CAPTURE_LINES="$(gcd_pass_report)"
+    else
+        CAPTURE_LINES="$(gcd_drain_and_report "$OUTPUT_DIR/serial.txt")"
+    fi
+
     # #827: sampled together, immediately before this boot's own kill --
     # ps has no output for a PID already gone, so qemu_cpu_seconds and the
     # aliveness check below must both run before the kill line, not after.
@@ -823,13 +953,41 @@ run_single_test() {
     wait $QEMU_PID 2>/dev/null || true
     qemu_host_lock_release
 
-    # The poll booleans above are a stop condition, not a verdict. Score the boot
-    # from the serial file QEMU actually left behind.
+    # The poll booleans above are a stop condition, not a verdict. Score the
+    # boot from DEADLINE_SERIAL -- the snapshot frozen the instant the poll
+    # loop stopped, above -- not from $OUTPUT_DIR/serial.txt as it stands
+    # now: reading the live file here would let gcd_drain_and_report's own
+    # wait (just run, on the "else" branch above) change this verdict, which
+    # is exactly the deadline-widening the comment above DEADLINE_SERIAL's
+    # creation explains.
     local FAIL_DETAIL
     local SCORE_PASS=0
-    if FAIL_DETAIL=$(score_serial "$OUTPUT_DIR/serial.txt"); then
+    if FAIL_DETAIL=$(score_serial "$DEADLINE_SERIAL"); then
         SCORE_PASS=1
     fi
+
+    # review finding
+    # aarch64-gates-drain-decision-uses-provisional-not-final-verdict, half
+    # (a): ENDED_BY_LOOP="early_pass" chose the 0-cost gcd_pass_report path
+    # above on the strength of a score_serial call that, by the time this
+    # line runs, the DEADLINE_SERIAL rescore just above has disagreed with
+    # (a scored_fail -- content written in the gap between that in-loop
+    # check and this rescore flipped it). QEMU is already dead by this point
+    # (the kill above already ran), so no further wait is useful -- a full
+    # gcd_drain_and_report here would only add latency with no new content
+    # to observe -- but the frozen file's ACTUAL capture state is real
+    # evidence for what the deadline snapshot says is a genuine FAIL, and
+    # reporting it honestly beats leaving the pass path's capture=n/a in
+    # place for exactly the failure shape this PR exists to capture evidence
+    # for.
+    if [ "$ENDED_BY_LOOP" = "early_pass" ] && [ "$SCORE_PASS" != "1" ]; then
+        CAPTURE_LINES="$(gcd_classify_report "$OUTPUT_DIR/serial.txt")"
+    fi
+    # DEADLINE_SERIAL's only job was the rescore just above -- remove it so
+    # this boot's evidence directory keeps exactly the files it did before
+    # this fix (serial.txt, gate_boot_facts.txt), not an extra snapshot a
+    # later tool (tools/breenix-runs's importer) has no reason to expect.
+    rm -f "$DEADLINE_SERIAL"
 
     # #827: ended_by names which bound in the loop above actually ended this
     # boot, derived from the same control flow the scoring above already
@@ -894,16 +1052,22 @@ run_single_test() {
         "$QEMU_CPU_S" "$GUEST_UPTIME_MS" "$ENDED_BY")"
     # Recorded into this boot's own evidence directory unconditionally --
     # not only on failure, so a passing boot's host-side reading is on the
-    # record too.
-    printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
+    # record too. failure-trace-capture PR-5: CAPTURE_LINES rides the same
+    # file, right below it, on each boot -- PASS included, reading
+    # capture=n/a there per gcd_pass_report's own contract.
+    {
+        printf '%s\n' "$FACTS_LINE"
+        printf '%s\n' "$CAPTURE_LINES"
+    } > "$OUTPUT_DIR/gate_boot_facts.txt"
 
     if [ "$SCORE_PASS" = "1" ]; then
         echo "  [OK] Boot $iteration: SUCCESS"
         echo "  $FACTS_LINE"
+        printf '%s\n' "$CAPTURE_LINES" | sed 's/^/  /'
         return 0
     fi
 
-    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE"
+    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE" "$CAPTURE_LINES"
     return 1
 }
 

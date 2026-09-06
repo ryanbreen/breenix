@@ -183,6 +183,12 @@
 # fires on every uncaught nonzero exit, names the failing command and line, tails
 # the serial, preserves it in a timestamped directory, and re-raises the same
 # nonzero status.
+#
+# STRUCTURE-SUITE PREFLIGHT (R191/PR-1)
+#
+# Before building the production kernel, this gate runs each
+# tests/*_structure.rs suite (docker/qemu/lib/gate-structure-preflight.sh) and
+# fails if any is red. BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
 
 set -euo pipefail
 # errtrace: without this the ERR trap is not inherited into shell functions, and
@@ -191,6 +197,14 @@ set -E
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+# BXCAP capture (if one is open) before this gate's own kill line runs. This
+# profile builds with no features (the profile-fidelity block further down
+# asserts each test-only marker absent), so a real capture on this gate is
+# categorically `absent` today -- it becomes meaningful once PR-4 wires the
+# panic/fault edges into the shipped kernel.
+# shellcheck source=lib/gate-capture-drain.sh
+source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
 # #826/#834/#865/R181: this gate's qemu-system-x86_64 boot runs behind the
 # host-wide lock in lib/qemu-host-lock.sh (one lock domain per QEMU binary),
 # so it cannot starve, or be starved by, a concurrent x86 boot lane on the
@@ -201,6 +215,12 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #827/#865: per-boot host-side facts line -- see that file's own header.
 # shellcheck source=lib/gate-boot-facts.sh
 source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
+# R191/PR-1 (gate-tooling round): runs each tests/*_structure.rs suite via
+# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+# that file's own header for why the kernel-swap hazard does not apply to
+# it) before this gate's own production kernel build, further down.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_prod_profile
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run.
@@ -385,6 +405,7 @@ TEST_ONLY_MARKERS=(
     '[FCNTL_PM_CONTENTION_ORACLE:'
     '[IRQ_HOLD_ORACLE:'
     '[TTY_IRQ_PM_ORACLE:'  # #821's TTY input IRQ oracle (boot_tests-only)
+    '[TTY_IRQ_FG_ORACLE:'  # #822's TTY foreground-pgrp oracle (boot_tests-only)
     '[RING_SPAN:'  # failure-trace-capture PR-2 ring-depth self-check (boot_tests-only)
     '[TIMER_WAKE_LATENCY_ORACLE:'  # #766's wake-to-dispatch latency leg (boot_tests-only: it makes 8 threads CPU-bound on purpose)
     # failure-trace-capture PR-3's BXCAP self-test edge, which is
@@ -815,6 +836,42 @@ report_gate_failure() {
     trap - ERR
     echo "x86 production-profile gate: FAIL (set -e abort at ${BASH_SOURCE[0]}:${line_no}, exit ${exit_code})"
     echo "  failing command: ${failing_cmd}"
+    # failure-trace-capture PR-5: reaching this handler at all IS the
+    # non-PASS outcome, so this branch drains unconditionally -- no
+    # early_pass branch is
+    # needed here the way the aarch64 gates need one, because a call that
+    # reads capture evidence after the poll loop confirms steady state is a
+    # separate kill site (the main-flow kill further down), not this one.
+    # Guarded on QEMU_PID being non-empty and a serial file existing: an
+    # abort before the boot ever launched (a build failure) has neither.
+    local capture_lines=""
+    if [ -n "$QEMU_PID" ] && compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
+        capture_lines="$(gcd_drain_and_report "$OUTPUT_DIR"/serial_*.txt)"
+        printf '%s\n' "$capture_lines"
+    elif compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
+        # review finding
+        # x86-prod-profile-capture-lines-locked-before-liveness-and-teardown-assertions:
+        # $QEMU_PID is only ever cleared to "" by the main flow's own kill,
+        # further down (right after the liveness stimulus window), and
+        # serial files only exist once QEMU has actually launched -- so
+        # reaching this branch (QEMU_PID empty, serial files present) means
+        # this handler fired from one of the ~40 assertions AFTER that
+        # kill: the liveness/wedge check or the teardown census, not the
+        # earlier reached-confirmation check this function's other branch
+        # covers. The main flow already committed to capture=n/a on the
+        # strength of steady state alone (its own CAPTURE_LINES=
+        # gcd_pass_report() call, right after that check) before any of
+        # those later assertions could run -- so reaching this handler
+        # here means one of them just rejected the boot, making this a
+        # genuine non-PASS outcome. QEMU is already dead, so no further
+        # wait is useful, but the frozen files' real capture state is
+        # real evidence for a non-PASS outcome -- report it honestly
+        # instead of leaving capture_lines blank (which, unlike
+        # gcd_pass_report's explicit `n/a`, would write an empty
+        # capture_drain.txt carrying no marker for a confirmed FAIL).
+        capture_lines="$(gcd_classify_report "$OUTPUT_DIR"/serial_*.txt)"
+        printf '%s\n' "$capture_lines"
+    fi
     if [ -n "$QEMU_PID" ]; then
         kill "$QEMU_PID" 2>/dev/null || true
         wait "$QEMU_PID" 2>/dev/null || true
@@ -825,6 +882,7 @@ report_gate_failure() {
         failure_dir="$BREENIX_GATE_TMP/breenix_x86_prod_profile_failures/$(date -u +%Y%m%dT%H%M%SZ)_$$"
         mkdir -p "$failure_dir"
         cp "$OUTPUT_DIR"/serial_*.txt "$failure_dir/"
+        printf '%s\n' "$capture_lines" >"$failure_dir/capture_drain.txt"
         echo "  preserved failing serial: $failure_dir"
         echo "--- observed values ---"
         print_observed_values
@@ -866,6 +924,18 @@ case "$BREENIX_GATE_TMP" in
 esac
 if [ "${#CONSOLE_SOCK_PATH}" -gt 107 ]; then
     echo "x86 production-profile gate preflight: console socket path \"$CONSOLE_SOCK_PATH\" is ${#CONSOLE_SOCK_PATH} chars, over the AF_UNIX sun_path limit of 107 -- shorten BREENIX_GATE_TMP" >&2
+    false
+fi
+
+# R191/PR-1: structure-suite + critical-path-census preflight, same
+# BASE-DIR-PREFLIGHT block, same `echo` + bare `false` shape (the ERR trap
+# does not catch a bare `exit`) -- run ahead of `cd "$BREENIX_ROOT"` and the
+# production kernel build for the same fail-early reason the two checks
+# above it are here. BREENIX_GATE_SKIP_STRUCTURE=1 skips this loudly; see
+# docker/qemu/lib/gate-structure-preflight.sh for both the rustc-vs-cargo
+# reasoning and what each printed field means.
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "x86 production-profile gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)" >&2
     false
 fi
 
@@ -1100,6 +1170,14 @@ reached=false
 # it here for ended_by purposes would silently add a second appearance.
 POLL_BREAK_REASON=""
 for _ in $(seq 1 "$POLL_BOUND_SECONDS"); do
+    # failure-trace-capture PR-5's own forced-fail knob (unset by default,
+    # so an ordinary run is unaffected): breaks before `reached` can ever be
+    # set true, driving control into report_gate_failure below (via the
+    # verdict assertion further down), which drains before its own kill --
+    # see docs/planning/green-program/failure-capture/PR-5-2026-09-06.md.
+    if [ -n "${BREENIX_X86_PROD_FORCE_FAIL:-}" ]; then
+        break
+    fi
     if grep -qF -- "$STEADY_STATE_LITERAL" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
         reached=true
         POLL_BREAK_REASON="scored_pass"
@@ -1147,6 +1225,13 @@ echo "  $FACTS_LINE"
 # Explicit assertion, not a bare boolean variable: a bare boolean executed as a
 # command is silent under set -e and leaves a red with no verdict text.
 test "$reached" = true
+
+# failure-trace-capture PR-5: reaching this point means `reached` is
+# confirmed true, so the outcome already reads as a pass -- the drain is
+# skipped for the kill immediately below (contrast report_gate_failure
+# above, which drains unconditionally, because reaching it IS the non-PASS
+# outcome).
+CAPTURE_LINES="$(gcd_pass_report)"
 
 # Liveness. Both samples are taken with QEMU still running, after steady state,
 # with the stimulus written between them: a kernel that has wedged in its halt
@@ -1369,3 +1454,4 @@ fi
 print_observed_values
 echo "  console prompt count over ${LIVENESS_WINDOW_SECONDS}s: $PROMPT_BEFORE -> $PROMPT_AFTER"
 echo "  (informational) total serial bytes at exit: $(serial_bytes)"
+printf '%s\n' "$CAPTURE_LINES"

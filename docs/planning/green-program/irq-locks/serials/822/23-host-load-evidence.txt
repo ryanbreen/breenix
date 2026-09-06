@@ -1,0 +1,10 @@
+$ uptime   # sampled between strict-gate run2 and run3
+10:17  up 13 days, 23:22, 25 users, load averages: 6.02 7.31 7.22
+
+$ ps aux | grep -i qemu-system   # same sample
+wrb  54134  11.3  0.2  ...  qemu-system-x86_64 -pflash target/ovmf/x64/code.fd ... \
+  -drive ... file=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ftc/wt-pr3/target/debug/build/breenix-f95e1a189b16a8a4/out/breenix-uefi.img \
+  ... -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 ...
+  (started 2:28AM, this session's own strict-gate runs started ~10:08-10:19 --
+  a concurrent x86 TCG boot from an unrelated worktree, ftc/wt-pr3, was on
+  this Mac for the whole window both red strict-gate runs ran in)

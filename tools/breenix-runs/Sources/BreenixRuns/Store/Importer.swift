@@ -103,6 +103,12 @@ public struct Importer {
             return result
         }
 
+        if isX86BootTestsFailureRunDirectory(sourceURL) {
+            var result = ImportPathResult(sourcePath: sourceURL.path)
+            try importX86BootTestsFailureRun(sourceURL, into: &result)
+            return result
+        }
+
         if let gateInfo = gateInfo(for: sourceURL) {
             var result = ImportPathResult(sourcePath: sourceURL.path)
             try importGateIteration(sourceURL, info: gateInfo, into: &result)
@@ -250,6 +256,11 @@ public struct Importer {
         try importPreservedFailure(entry, into: &result)
     }
 
+    private func importX86BootTestsFailureRun(_ directory: URL, into result: inout ImportPathResult) throws {
+        guard let entry = try x86BootTestsFailureRunEntry(directory, into: &result) else { return }
+        try importPreservedFailure(entry, into: &result)
+    }
+
     private func preservedFailureEntries(in directories: [URL], into result: inout ImportPathResult) throws -> [PreservedFailureEntry] {
         var entries: [PreservedFailureEntry] = []
         for directory in directories where isPreservedFailureContainer(directory) {
@@ -265,6 +276,10 @@ public struct Importer {
         for child in try directoryContents(of: directory) {
             if isProdFailureRunDirectory(child) {
                 if let entry = prodFailureRunEntry(child, into: &result) {
+                    entries.append(entry)
+                }
+            } else if isX86BootTestsFailureRunDirectory(child) {
+                if let entry = try x86BootTestsFailureRunEntry(child, into: &result) {
                     entries.append(entry)
                 }
             } else if isFlatPreservedFailureSerial(child) {
@@ -326,6 +341,41 @@ public struct Importer {
             startedAt: startedAt,
             arch: .aarch64,
             profile: "prod",
+            verdict: .fail("imported")
+        )
+    }
+
+    // review finding
+    // breenix-runs-importer-missing-new-x86-boot-tests-failure-dir:
+    // run-x86-boot-tests.sh's own failure_dir ($BREENIX_GATE_TMP/
+    // breenix_x86_boot_tests_failures/<timestamp>_<pid>/), holding the
+    // guest's serial_kernel.txt/serial_user.txt pair plus capture_drain.txt
+    // -- the x86 counterpart of prodFailureRunEntry just above, reusing the
+    // same generic serialSources/captureSources helpers importGateIteration
+    // already uses instead of hand-listing filenames, since this
+    // directory's shape (an arbitrary set of serial_*.txt files plus
+    // sidecar captures) already matches what those helpers scan for.
+    private func x86BootTestsFailureRunEntry(
+        _ directory: URL,
+        into result: inout ImportPathResult
+    ) throws -> PreservedFailureEntry? {
+        guard let startedAt = timestampFromPidSuffixedName(directory.lastPathComponent) else {
+            result.skipped.append(ImportSkip(path: directory.path, reason: "timestamp undeterminable"))
+            return nil
+        }
+
+        let serials = try serialSources(in: directory)
+        guard !serials.isEmpty else {
+            return nil
+        }
+
+        return PreservedFailureEntry(
+            sourceURL: directory,
+            serials: serials,
+            captures: try captureSources(in: directory),
+            startedAt: startedAt,
+            arch: .x86_64,
+            profile: "boot-tests",
             verdict: .fail("imported")
         )
     }
@@ -574,6 +624,7 @@ public struct Importer {
         directory.lastPathComponent == "breenix_aarch64_strict_failures"
             || directory.lastPathComponent == "breenix_prod_profile_failures"
             || directory.lastPathComponent == "breenix_testing_profile_failures"
+            || directory.lastPathComponent == "breenix_x86_boot_tests_failures"
     }
 
     private func profileForFailureContainer(_ directory: URL) -> String {
@@ -582,6 +633,8 @@ public struct Importer {
             return "prod"
         case "breenix_testing_profile_failures":
             return "testing"
+        case "breenix_x86_boot_tests_failures":
+            return "boot-tests"
         default:
             return "strict"
         }
@@ -598,6 +651,25 @@ public struct Importer {
               isDirectory.boolValue,
               directory.deletingLastPathComponent().lastPathComponent == "breenix_prod_profile_failures",
               parseTimestamp(directory.lastPathComponent) != nil else {
+            return false
+        }
+        return true
+    }
+
+    // review finding
+    // breenix-runs-importer-missing-new-x86-boot-tests-failure-dir: the x86
+    // counterpart of isProdFailureRunDirectory just above -- same shape
+    // (one subdirectory per failed boot under a named container), but
+    // named with a trailing `_<pid>` (run-x86-boot-tests.sh's own
+    // `$(date -u +%Y%m%dT%H%M%SZ)_$$`), which parseTimestamp's exact-match
+    // format cannot parse -- hence timestampFromPidSuffixedName below
+    // rather than parseTimestamp directly.
+    private func isX86BootTestsFailureRunDirectory(_ directory: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              directory.deletingLastPathComponent().lastPathComponent == "breenix_x86_boot_tests_failures",
+              timestampFromPidSuffixedName(directory.lastPathComponent) != nil else {
             return false
         }
         return true
@@ -623,6 +695,26 @@ public struct Importer {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
         return formatter.date(from: text)
+    }
+
+    // review finding
+    // breenix-runs-importer-missing-new-x86-boot-tests-failure-dir: strips
+    // a trailing `_<digits>` pid suffix -- run-x86-boot-tests.sh and
+    // run-x86-prod-profile-boot-test.sh both name their failure_dir
+    // `$(date -u +%Y%m%dT%H%M%SZ)_$$` -- then parses what is left with
+    // parseTimestamp's own exact-match format, so a name with anything
+    // other than digits after the trailing `_` (or no `_` at all) is
+    // correctly rejected rather than silently misread.
+    private func timestampFromPidSuffixedName(_ name: String) -> Date? {
+        guard let separator = name.range(of: "Z_", options: .backwards) else {
+            return nil
+        }
+        let pid = name[separator.upperBound...]
+        guard !pid.isEmpty, pid.allSatisfy(\.isNumber) else {
+            return nil
+        }
+        let timestamp = String(name[name.startIndex..<separator.lowerBound]) + "Z"
+        return parseTimestamp(timestamp)
     }
 
     private func hasIntegerSuffix(_ name: String, after prefix: String) -> Bool {

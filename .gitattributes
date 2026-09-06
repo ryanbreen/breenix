@@ -94,7 +94,23 @@ docs/planning/green-program/failure-capture/serials/pr3/*.txt -text
 # Same treatment as the fixtures above -- these are raw QEMU captures whose
 # interleaved bytes ARE the evidence, and a CRLF normalisation would edit them.
 docs/planning/green-program/failure-capture/serials/pr3-gate/*.txt -text
+# failure-capture PR-4 BXCAP fixtures and their red baselines: raw aarch64 and
+# x86_64 QEMU serial captures. Same treatment and the same reason as the PR-3
+# fixtures above -- tests/capture_bxcap_schema_structure.rs asserts every
+# [BXCAP: record is CRLF-terminated, so a CRLF normalisation would delete the
+# byte the assertion is about and leave the suite pinning a property its own
+# fixture no longer demonstrates.
+docs/planning/green-program/failure-capture/serials/pr4/*.txt -text
+docs/planning/green-program/failure-capture/serials/pr4-red/*.txt -text
 
+# PR-5 drain-oracle serials: raw aarch64 strict-gate captures (the
+# capture_selftest + BREENIX_STRICT_FORCE_FAIL boot this round's oracle is
+# measured against) and a fixture derived from it by a straight `sed`
+# byte-range cut, not a re-encoding. Same treatment as the pr3/pr3-gate
+# captures above -- these carry the BXCAP v1 CRLF terminator and the
+# scheduler trace stream's own interleaved bytes, and a CRLF normalisation
+# would edit the evidence the round doc quotes.
+docs/planning/green-program/failure-capture/serials/pr5/*.txt -text
 # #821 serials: raw QEMU serial captures from the aarch64 strict gate on this
 # Mac and from the x86 gates on the beast container. Same treatment as the
 # captures above -- the CR bytes the guest console emits are part of the

@@ -210,6 +210,12 @@ pub fn trace_timer_tick(tick_count: u64) {
     // kernel does not compile this line at all.
     #[cfg(feature = "capture_selftest")]
     crate::capture::selftest::observe(tick_count);
+
+    // The BXCAP `edge=PANIC` oracle (failure-capture PR-4). Behind
+    // `capture_panic_oracle`, which no gate builds with, so a gated or
+    // shipped kernel does not compile this line at all.
+    #[cfg(feature = "capture_panic_oracle")]
+    crate::capture_oracle::observe(tick_count);
 }
 
 /// Trace heartbeat marker (inline for minimal overhead).

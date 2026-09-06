@@ -12,6 +12,10 @@
 # a nonzero http_test exit. A quiet boot with no marker remains a gate failure.
 # This gate never retries a hung run: a blanket retry could swallow exactly the
 # recv-wake regression this gate exists to catch.
+#
+# Before building the kernel, this gate runs each tests/*_structure.rs suite
+# (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is red.
+# BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
 
 set -euo pipefail
 # errtrace: without this, the ERR trap below is not inherited into shell
@@ -57,9 +61,28 @@ report_gate_failure() {
     fi
     echo "x86 frame-custody gate${i:+ run $i}: FAIL (set -e abort at ${BASH_SOURCE[0]}:${line_no}, exit ${exit_code})"
     echo "  failing command: ${failing_cmd}"
+    # failure-trace-capture PR-5: set once, right before this boot's own
+    # kill line (see the drain call above it), so it is already on the
+    # record if a later assertion aborts the script through this trap --
+    # empty on an abort before that point (a build failure, say), where
+    # there is no boot to report capture evidence about.
+    if [ -n "${CAPTURE_LINES:-}" ]; then
+        printf '%s\n' "$CAPTURE_LINES"
+    fi
     if [ -n "${OUTPUT_DIR:-}" ] && compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
         echo "--- serial tail (last 200 lines per file, $OUTPUT_DIR) ---"
         tail -n 200 "$OUTPUT_DIR"/serial_*.txt
+        # failure-trace-capture PR-5: preserve the serial pair and the
+        # capture-drain reading beside it in a durable evidence dir, the
+        # same shape run-aarch64-boot-test-strict.sh's report_failure keeps
+        # (this script previously only tailed to console and preserved no
+        # evidence dir).
+        local failure_dir
+        failure_dir="${BREENIX_GATE_TMP:-/tmp}/breenix_x86_boot_tests_failures/$(date -u +%Y%m%dT%H%M%SZ)_$$"
+        mkdir -p "$failure_dir" 2>/dev/null || true
+        cp "$OUTPUT_DIR"/serial_*.txt "$failure_dir/" 2>/dev/null || true
+        printf '%s\n' "${CAPTURE_LINES:-}" >"$failure_dir/capture_drain.txt" 2>/dev/null || true
+        echo "  preserved failing serial + capture reading: $failure_dir"
     fi
     exit "$exit_code"
 }
@@ -68,6 +91,12 @@ trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+# BXCAP capture (if one is open) before this gate's own kill line runs, and
+# reports what ended up on the wire. See that file's own header and
+# docs/planning/green-program/failure-capture/PLAN-2026-09-05.md section 6.
+# shellcheck source=lib/gate-capture-drain.sh
+source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
 # #826/#834/#865/R181: this gate's qemu-system-x86_64 boot(s) run behind the
 # host-wide lock in lib/qemu-host-lock.sh (one lock domain per QEMU binary --
 # see that file's own ARCHITECTURE AWARENESS comment), so at most one
@@ -83,6 +112,12 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # for why a starved boot and a wedged boot could not be told apart before.
 # shellcheck source=lib/gate-boot-facts.sh
 source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
+# R191/PR-1 (gate-tooling round): runs each tests/*_structure.rs suite via
+# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+# that file's own header for why the kernel-swap hazard does not apply to
+# it) before this gate's own kernel build, further down.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_boot_tests_$i
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run and
@@ -107,6 +142,17 @@ case "$BREENIX_GATE_TMP" in
     *) echo "x86 frame-custody gate preflight: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2
        false ;;
 esac
+# R191/PR-1: structure-suite + critical-path-census preflight, run here (the
+# ERR trap is already installed above, and no kernel build or QEMU state
+# exists yet). BREENIX_GATE_SKIP_STRUCTURE=1 skips this loudly; see
+# docker/qemu/lib/gate-structure-preflight.sh for both the rustc-vs-cargo
+# reasoning and what each printed field means. `false`, not `exit 1`, is the
+# same #802/#805 idiom the BREENIX_GATE_TMP check above uses: the ERR trap
+# does not catch a bare `exit`.
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "x86 frame-custody gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)" >&2
+    false
+fi
 # The x86 serial console carries the scheduler's single-character trace stream
 # on the same port as kernel and userspace output, so any marker line can carry
 # a prefix. The markers are self-delimiting (`[...]` or a unique sentence), so
@@ -389,6 +435,37 @@ IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_sof
 # The aarch64 gate carries the timed reading; this one carries the
 # completed-under-hold reading.
 TTY_IRQ_PM_ORACLE_PATTERN='\[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=[0-9]+:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold\]'
+# #822's oracle, on the same entry and the console's own foreground_pgrp
+# mutex. `fg_lock_touches=0` is the property, `fg_blocking_acquires=0` its
+# blocking subset, and `sig_calls=1:sig_pid=822:sig_num=2` is the injected
+# Ctrl+C still reaching the signal path with the right pgrp while a thread on
+# this CPU holds that mutex with IF=1. `arm=local_hold` is what says the
+# injection was really driven under the hold rather than refused: the x86 arm
+# refuses when the entry still reaches a blocking acquisition, because this
+# machine boots uniprocessor and the injection would take the boot with it.
+# `entry_us` is pinned loosely here for the reason the pattern above gives.
+TTY_IRQ_FG_ORACLE_PATTERN='\[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=[1-9][0-9]*:processed=2:buffered=[1-9][0-9]*:irqs_enabled_before=1:fg_busy_probe=1:entry_us=[0-9]+:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:local_hold\]'
+# Critical-path logging drain PR-1
+# (docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md).
+# PR-1 deleted 16 `log::*!` calls from kernel/src/interrupts/context_switch.rs;
+# ten of the arms had no counter of any kind, so each got one relaxed
+# `DispatchLogFact` counter, appended to the `[DISPATCH_STRAND_CENSUS:...]`
+# line as its own named field. This oracle
+# (kernel/src/test_framework/registry.rs, run_x86_dispatch_fact_oracle) drives
+# exactly one leg per fact between two forced census snapshots and reports how
+# many of the ten moved by EXACTLY one leg. `moved_wrong=0` is the
+# independence claim -- ten counters that all alias one cell would report
+# moved_by_one=1 -- and `irqs_enabled_before=1` is the claim that it read the
+# census through the reporter's real emission boundary, which refuses to run
+# with interrupts disabled. Pinned as an exact literal, so a FAIL emission
+# cannot satisfy this gate by merely being present, and pinned to an emission
+# count of 1 below, so a deleted call site cannot pass by silence.
+#
+# What it does NOT show: that any site in context_switch.rs calls the counter.
+# Seven of the ten arms are defensive arms this tree cannot reach on a running
+# kernel. tests/dispatch_fact_census_structure.rs pins the site-to-counter
+# binding at source, per site.
+DISPATCH_FACT_ORACLE_LITERAL='[DISPATCH_FACT_ORACLE:x86:facts=10:legs=10:moved_by_one=10:moved_wrong=0:irqs_enabled_before=1:PASS]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -583,6 +660,13 @@ for i in $(seq 1 "$COUNT"); do
     qemu_host_lock_track_pid "$RUNNER_PID"
 
     passed=false
+    # failure-trace-capture PR-5: cleared here, alongside `passed`, and set
+    # at the SAME site `passed=true` is set below -- rather than read
+    # `$passed` a second time after the loop (this gate's own structural
+    # ratchet, tests/teardown_structure.rs::validate_x86_frame_custody_harness,
+    # pins that read count at exactly 1) so whether this is still empty
+    # after the loop is the drain decision.
+    CAPTURE_LINES=""
     # #865: which named branch of the poll loop below broke it, set inline
     # at each existing break site rather than re-derived by re-grepping the
     # same patterns afterward -- see the loop's own comment on why.
@@ -609,7 +693,14 @@ for i in $(seq 1 "$COUNT"); do
     # verdict marker itself; either polarity ends the wait, and the failing
     # polarity is still rejected downstream by scripts/x86-gate-verdict.sh.
     for _ in $(seq 1 900); do
-        if grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
+        # failure-trace-capture PR-5's own forced-fail knob (unset by
+        # default, so an ordinary run is unaffected): keeps this
+        # conjunction from ever setting passed=true, so a live boot can
+        # exercise the drain path below deterministically instead of
+        # waiting on a rare fault. See
+        # docs/planning/green-program/failure-capture/PR-5-2026-09-06.md.
+        if [ -z "${BREENIX_X86_BOOT_FORCE_FAIL:-}" ] \
+            && grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$FRAME_CUSTODY_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -659,6 +750,10 @@ for i in $(seq 1 "$COUNT"); do
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$DISPATCH_FACT_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$KSTACK_OWNER_ORACLE_PATTERN" \
@@ -680,6 +775,10 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qE 'TEST RUNNER: (All tests passed|FAILED)' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
+            # failure-trace-capture PR-5: set at the same site as
+            # `passed=true`, not read from it -- see the comment beside
+            # `passed=false` above.
+            CAPTURE_LINES="$(gcd_pass_report)"
             POLL_BREAK_REASON="scored_pass"
             break
         fi
@@ -724,6 +823,16 @@ for i in $(seq 1 "$COUNT"); do
         sleep 1
     done
 
+    # failure-trace-capture PR-5: on any outcome that is not already a
+    # confirmed pass, drain the guest's BXCAP capture (if one is open)
+    # BEFORE the kill line below runs. CAPTURE_LINES is still empty here
+    # exactly when the loop above did not reach its passed=true site -- the
+    # same condition, reached without a second read of `$passed` (see the
+    # comment beside `passed=false`). This gate's guest writes to two serial
+    # files, and BXCAP output can land on either.
+    if [ -z "$CAPTURE_LINES" ]; then
+        CAPTURE_LINES="$(gcd_drain_and_report "$OUTPUT_DIR"/serial_*.txt)"
+    fi
     # #827/#865: sampled together, immediately before this boot's own kill --
     # ps has no output for a PID already gone, so qemu_cpu_seconds and the
     # aliveness check below must both run before the kill line, not after.
@@ -1082,6 +1191,31 @@ for i in $(seq 1 "$COUNT"); do
     INIT_GROUP_WALK_COUNT=$(awk 'index($0, "[INIT_GROUP_WALK") { count++ } END { print count + 0 }' \
         "$OUTPUT_DIR"/serial_*.txt)
     test "$INIT_GROUP_WALK_COUNT" -eq 0
+    # (3b) critical-path logging drain PR-1: the dispatch-fact oracle, emitted
+    # once and passing.
+    test "$(grep -h -F -c "$DISPATCH_FACT_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    # And no site in the dispatch path printed any of the sixteen strings PR-1
+    # deleted. The census ratchet says the CALLS are gone at source; this says
+    # the BYTES are gone from the capture, which is the property the drain is
+    # for.
+    test "$(grep -h -c -e 'Context switch aborted' \
+        -e 'has no main_thread for thread' \
+        -e 'Could not find process for thread' \
+        -e 'Process manager is None' \
+        -e 'Failed to switch TLS for thread' \
+        -e 'has pending signals - delivering' \
+        -e 'Restored userspace context for signal delivery' \
+        -e 'Signal terminated process, thread' \
+        -e 'Signal termination in blocked_in_syscall path' \
+        -e 'Signal delivered to thread' \
+        -e 'Failed to acquire lock to restore kernel context' \
+        -e "Failed to get idle thread's kernel stack" \
+        -e 'KTHREAD_SWITCH: Failed to get thread info' \
+        -e 'Refusing userspace restore of kernel frame' \
+        -e 'has no kernel stack!' \
+        -e 'Signal delivery check: process' \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
     # (4) #767: the timer-scale oracle, emitted once and passing.
     test "$(grep -h -F -c -- "$TIMER_SCALE_ORACLE_PREFIX" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
@@ -1149,6 +1283,9 @@ for i in $(seq 1 "$COUNT"); do
     TTY_IRQ_PM_ORACLE_LINE=$(grep -h -E "$TTY_IRQ_PM_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TTY_IRQ_PM_ORACLE_LINE"
+    TTY_IRQ_FG_ORACLE_LINE=$(grep -h -E "$TTY_IRQ_FG_ORACLE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$TTY_IRQ_FG_ORACLE_LINE"
     FUTEX_HANDOFF_ORACLE_LINE=$(grep -h -E "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FUTEX_HANDOFF_ORACLE_LINE"
@@ -1194,4 +1331,5 @@ for i in $(seq 1 "$COUNT"); do
         false
     fi
     echo "x86 frame-custody gate run $i: PASS"
+    printf '%s\n' "$CAPTURE_LINES"
 done

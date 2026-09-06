@@ -72,6 +72,67 @@ final class ImporterTests: XCTestCase {
         assertFailureVerdict(manifest.verdict)
     }
 
+    // review finding
+    // breenix-runs-importer-missing-new-x86-boot-tests-failure-dir:
+    // run-x86-boot-tests.sh's own failure_dir names each preserved failure
+    // run `<timestamp>_<pid>` (a trailing pid suffix breenix_prod_profile_
+    // failures's bare-timestamp directories, covered by
+    // testProdProfileGateTmpTreeMergesFailureWithoutDuplicatingFactsCapture
+    // below, do not carry) and preserves both serial_kernel.txt/
+    // serial_user.txt plus capture_drain.txt, not a single serial.txt.
+    func testX86BootTestsPreservedFailureImportsPidSuffixedRunWithBothSerialsAndCaptureDrain() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let failures = root.appendingPathComponent("breenix_x86_boot_tests_failures", isDirectory: true)
+        let run = failures.appendingPathComponent("20260101T000000Z_54321", isDirectory: true)
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        try Data("kernel log\n".utf8).write(to: run.appendingPathComponent("serial_kernel.txt"))
+        try Data("user log\n".utf8).write(to: run.appendingPathComponent("serial_user.txt"))
+        try Data("[CAPTURE_DRAIN:capture=partial:seq=1:edge=FAULT:cpu=0:records=-:drain_ms=300]\n".utf8)
+            .write(to: run.appendingPathComponent("capture_drain.txt"))
+
+        let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
+        let result = try Importer(store: store).importPath(failures)
+        let manifest = try XCTUnwrap(manifests(for: result.imported, store: store).first)
+
+        XCTAssertEqual(result.imported.count, 1)
+        assertFailureVerdict(manifest.verdict)
+        XCTAssertEqual(manifest.arch, .x86_64)
+        XCTAssertEqual(manifest.profile, "boot-tests")
+        XCTAssertEqual(manifest.startedAt, Date(timeIntervalSince1970: 1_767_225_600))
+        XCTAssertEqual(Set(manifest.serials.map(\.name)), ["serial_kernel.txt", "serial_user.txt"])
+        XCTAssertEqual(
+            Set(manifest.serials.map(\.stream)),
+            [SerialStream.com1, SerialStream.com2]
+        )
+        XCTAssertEqual(manifest.captures.map(\.name), ["capture_drain.txt"])
+    }
+
+    // Same review finding: a directory name with no numeric pid suffix (or
+    // no `_` at all) must not be misread as a bare timestamp --
+    // timestampFromPidSuffixedName's own guard, not just an accident of
+    // Foundation's DateFormatter rejecting the extra characters. Matches
+    // isProdFailureRunDirectory's own existing behavior for a directory
+    // name it does not recognize: silently not a run directory (no
+    // diagnostic recorded here either -- that only happens once
+    // isX86BootTestsFailureRunDirectory/isProdFailureRunDirectory has
+    // already accepted the name and the CONTENT inside it turns out to be
+    // missing).
+    func testX86BootTestsPreservedFailureSkipsRunDirectoryWithoutNumericPidSuffix() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let failures = root.appendingPathComponent("breenix_x86_boot_tests_failures", isDirectory: true)
+        let run = failures.appendingPathComponent("20260101T000000Z_notapid", isDirectory: true)
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        try Data("kernel log\n".utf8).write(to: run.appendingPathComponent("serial_kernel.txt"))
+
+        let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
+        let result = try Importer(store: store).importPath(failures)
+
+        XCTAssertEqual(result.imported.count, 0)
+        XCTAssertEqual(result.skipped.count, 0)
+    }
+
     func testLooseSerialsDirectoryInfersArchAndStrictProfileWithoutInventingVerdict() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -693,6 +693,24 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         // the exposed shape the #821 census names, and the oracle needs to be
         // one.
         kernel::test_framework::registry::run_tty_irq_pm_oracle();
+        // #822 third, immediately after #821 and for the same reasons: two
+        // bytes through the same TTY input IRQ entry plus one brief hold of the
+        // console's own foreground_pgrp, with 0 heap allocations and 0 process
+        // rows created, so it does not move the frame, page-table or
+        // kernel-stack counts the gates below pin. It has to be HERE for the
+        // same reason #821 does: this is the window where the boot thread runs
+        // with IF=1, and a thread-context holder of this lock with interrupts
+        // live is exactly the exposed shape the census names.
+        kernel::test_framework::registry::run_tty_irq_fg_oracle();
+        // Critical-path logging drain PR-1, fourth and for the same reason the
+        // three above are here: its footprint is ten relaxed atomic adds and
+        // three serial lines, with 0 heap allocations and 0 process rows
+        // created, so it cannot move the frame, page-table or kernel-stack
+        // counts the gates below pin. It has to be in this window because it
+        // asserts that it runs with interrupts enabled -- the census
+        // reporter's own emission boundary refuses otherwise -- and
+        // `interrupts::disable()` comes after this block.
+        kernel::test_framework::registry::run_x86_dispatch_fact_oracle();
         kernel::task::process_task::run_x86_retirement_fence_gate();
         kernel::task::process_task::run_x86_reclaim_progress_gate();
         kernel::tracing::providers::teardown::run_x86_retire_cohort_gate();
@@ -2521,6 +2539,27 @@ fn panic(info: &PanicInfo) -> ! {
     // Try to output panic info if possible
     serial_println!("KERNEL PANIC: {}", info);
     log::error!("KERNEL PANIC: {}", info);
+
+    // Failure-capture PR-4: the bounded, lock-free BXCAP record.
+    //
+    // ORDER. It goes after the banner because a reader wants the panic
+    // message immediately above the state that explains it, and it goes
+    // BEFORE `exit_qemu`, which ends the process at that line -- anything
+    // not on the wire by then is lost. 6 of this kernel's 7 terminal x86
+    // exceptions reach `panic!` (double fault, kernel page fault,
+    // stack-segment, GPF, divide-by-0, stack overflow), so this one call
+    // site carries those 6; `invalid_opcode_handler` does not panic and is
+    // NOT covered -- see
+    // docs/planning/green-program/failure-capture/PR-4-2026-09-05.md.
+    //
+    // The two words are the panic site's line and column, which is what
+    // `[BXCAP:EDGE a0= a1=]` can carry without formatting anything.
+    let (panic_line, panic_column) = match info.location() {
+        Some(location) => (location.line() as u64, location.column() as u64),
+        None => (0, 0),
+    };
+    kernel::capture::emit(kernel::capture::Edge::Panic, panic_line, panic_column);
+
     // In testing/CI builds, request QEMU to exit with failure for deterministic CI signal
     #[cfg(feature = "testing")]
     {

@@ -97,17 +97,25 @@ fn the_surviving_record_census_in_the_dispatch_path_is_pinned() {
     }
     histogram.sort();
 
+    // Moved consciously by PR-1 of the critical-path logging drain
+    // (docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md),
+    // which deleted the sixteen H1 calls that file's classification table names:
+    // 2 debug, 10 error and 4 info. 30 -> 14, and the `debug` row is gone
+    // rather than present with a count of 0, because a level with no records
+    // is not a histogram row.
+    // The 9 `trace` records are untouched: `CombinedLogger::log` returns before
+    // taking any lock on a Trace record, so they emit 0 bytes today, and the
+    // drain plan classifies them H3 and hands them to a later PR.
     assert_eq!(
         records.len(),
-        30,
+        14,
         "context_switch.rs record census moved: {histogram:?}"
     );
     assert_eq!(
         histogram,
         vec![
-            ("debug".to_string(), 2),
-            ("error".to_string(), 11),
-            ("info".to_string(), 8),
+            ("error".to_string(), 1),
+            ("info".to_string(), 4),
             ("trace".to_string(), 9),
         ],
         "context_switch.rs record level histogram moved"
@@ -188,6 +196,14 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
         .contains("#[cfg(target_arch = \"x86_64\")]\npub(crate) mod dispatch_strand_census;"));
     assert!(task_mod.contains("pub fn report_dispatch_strand_census_heartbeat()"));
     assert!(census.contains("[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved="));
+    // PR-1 of the critical-path logging drain APPENDS ten `DispatchLogFact`
+    // fields after `ledger_overflow`. The eight fields this suite and
+    // scripts/x86-strand-census.sh read keep their names, their order and
+    // their position, which is what lets the committed #775 round-4 captures
+    // still be replayed by tests/x86_gate_verdict_test.rs. The ten appended
+    // fields are pinned by tests/dispatch_fact_census_structure.rs.
+    assert!(census.contains(":tid_overflow={}:ledger_overflow={}{}]"));
+    assert!(census.contains("FactFields(fact_counts()),"));
     assert!(census.contains("const STRANDED_TID_CAPACITY: usize = 16;"));
     assert!(census.contains("if !crate::arch_interrupts_enabled()"));
     assert!(census.contains("pub(crate) fn report_heartbeat_if_due()"));

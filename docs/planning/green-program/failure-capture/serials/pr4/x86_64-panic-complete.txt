@@ -1,0 +1,145 @@
+# Provenance
+# gate: docker/qemu/run-x86-boot-tests.sh 1 (real boot; the gate's own hard-coded
+#       feature list was patched to add capture_panic_oracle for the run and
+#       reverted afterwards -- that gate REBUILDS the kernel, where the aarch64
+#       strict gate validates the kernel it is handed)
+# host: beast, Incus container breenix-x86 (-smp 1)
+# file: serial_user.txt (COM1)
+# branch: capture/ftc-pr4-terminal-edges
+# base: 9538ebb769b4fb5bc292e554d38b8ba5834d70b2
+# kernel features: boot_tests,testing,external_test_bins,capture_panic_oracle
+# note: the x86_64 panic handler's capture: verdict=complete records=76 bytes=4417 truncated=0 sections_skipped=0x0, emitted below the KERNEL PANIC banner and before exit_qemu(Failed) ends the process
+
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001d785000,
+    metadata: 6015824,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: bf0cc, mem_size: bf0cc, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: bf0d0, virtual_addr: c00d0, physical_addr: c00d0, file_size: 31ecf1, mem_size: 31ecf1, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3dddc8, virtual_addr: 3dfdc8, physical_addr: 3dfdc8, file_size: 4b8f0, mem_size: 4c238, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 429700, virtual_addr: 42c700, physical_addr: 42c700, file_size: 356f0, mem_size: 97c40, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x100000d2470
+INFO : Creating GDT at PhysAddr(0x207000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x100000d2470)
+[TEST:process:frame_custody_refusal_gate:START]
+[TEST:process:frame_custody_refusal_gate:PASS]
+[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
+[TEST:process:page_table_custody_disposition_gate:START]
+[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=16502:used_after=16502:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0]
+[TEST:process:page_table_custody_disposition_gate:PASS]
+[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]
+PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc100/0x80 irq=0x0b
+PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0a
+PCI_FN 00:06.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+PCI_FN_TOTAL 9
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=21:ms=105:ticks_after=21:ticks_nonzero=1:in_range=1:PASS]
+[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[RING_SPAN:cpu=0:span_ms=2611:writes=31:dropped=0:ticks_total=200:tick_events=12]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>KERNEL PANIC: panicked at kernel/src/capture_oracle.rs:77:5:
+capture_panic_oracle: deliberate panic at uptime_ms=3000 tick=600
+[BXCAP:BEGIN v=1 seq=0 edge=PANIC cpu=0 ts=52248771852 tsfreq=2401416900 uptime_ms=3000 arch=x86_64]
+[BXCAP:EDGE kind=PANIC a0=0x4d a1=0x5]
+[BXCAP:CPU cpu=0 preempt=65536 nr=0 hardirq=1 softirq=0 uptime_ms=3000 q=exact]
+[BXCAP:EV cpu=0 i=39 ts=45822855348 type=0x20 n=UNKNOWN p=2711550 f=0x4]
+[BXCAP:EV cpu=0 i=40 ts=45835294161 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
+[BXCAP:EV cpu=0 i=41 ts=45835430010 type=0x20 n=UNKNOWN p=3057042 f=0x85]
+[BXCAP:EV cpu=0 i=42 ts=46315031472 type=0x102 n=TIMER_TICK p=304 f=0x0]
+[BXCAP:EV cpu=0 i=43 ts=47250430926 type=0x102 n=TIMER_TICK p=320 f=0x0]
+[BXCAP:EV cpu=0 i=44 ts=47490651885 type=0x102 n=TIMER_TICK p=336 f=0x0]
+[BXCAP:EV cpu=0 i=45 ts=47682647964 type=0x102 n=TIMER_TICK p=352 f=0x0]
+[BXCAP:EV cpu=0 i=46 ts=47874681456 type=0x102 n=TIMER_TICK p=368 f=0x0]
+[BXCAP:EV cpu=0 i=47 ts=48066533250 type=0x102 n=TIMER_TICK p=384 f=0x0]
+[BXCAP:EV cpu=0 i=48 ts=48258506820 type=0x102 n=TIMER_TICK p=400 f=0x0]
+[BXCAP:EV cpu=0 i=49 ts=48295182999 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
+[BXCAP:EV cpu=0 i=50 ts=48295448367 type=0x20 n=UNKNOWN p=2623106 f=0x4]
+[BXCAP:EV cpu=0 i=51 ts=48306963018 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
+[BXCAP:EV cpu=0 i=52 ts=48307098498 type=0x20 n=UNKNOWN p=3057042 f=0x85]
+[BXCAP:EV cpu=0 i=53 ts=48450526209 type=0x102 n=TIMER_TICK p=416 f=0x0]
+[BXCAP:EV cpu=0 i=54 ts=48642488928 type=0x102 n=TIMER_TICK p=432 f=0x0]
+[BXCAP:EV cpu=0 i=55 ts=48647775264 type=0xa01 n=UNKNOWN p=4294963210 f=0x0]
+[BXCAP:EV cpu=0 i=56 ts=49119981423 type=0x102 n=TIMER_TICK p=448 f=0x0]
+[BXCAP:EV cpu=0 i=57 ts=49765251366 type=0x102 n=TIMER_TICK p=464 f=0x0]
+[BXCAP:EV cpu=0 i=58 ts=50539053543 type=0x102 n=TIMER_TICK p=480 f=0x0]
+[BXCAP:EV cpu=0 i=59 ts=50706788205 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
+[BXCAP:EV cpu=0 i=60 ts=50707017006 type=0x20 n=UNKNOWN p=2623398 f=0x4]
+[BXCAP:EV cpu=0 i=61 ts=50718592815 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
+[BXCAP:EV cpu=0 i=62 ts=50718723858 type=0x20 n=UNKNOWN p=3057042 f=0x85]
+[BXCAP:EV cpu=0 i=63 ts=50730140541 type=0x102 n=TIMER_TICK p=496 f=0x0]
+[BXCAP:EV cpu=0 i=64 ts=50922072231 type=0x102 n=TIMER_TICK p=512 f=0x0]
+[BXCAP:EV cpu=0 i=65 ts=51114071229 type=0x102 n=TIMER_TICK p=528 f=0x0]
+[BXCAP:EV cpu=0 i=66 ts=51305998194 type=0x102 n=TIMER_TICK p=544 f=0x0]
+[BXCAP:EV cpu=0 i=67 ts=51497965242 type=0x102 n=TIMER_TICK p=560 f=0x0]
+[BXCAP:EV cpu=0 i=68 ts=51689955555 type=0x102 n=TIMER_TICK p=576 f=0x0]
+[BXCAP:EV cpu=0 i=69 ts=51810443388 type=0xa01 n=UNKNOWN p=4294963211 f=0x0]
+[BXCAP:EV cpu=0 i=70 ts=52011727215 type=0x102 n=TIMER_TICK p=592 f=0x0]
+[BXCAP:CNT NET_RX_FRAME_TOTAL=3]
+[BXCAP:CNT NET_RX_ARP_TOTAL=2]
+[BXCAP:CNT NET_RX_SOFTIRQ_ENTRY_TOTAL=12]
+[BXCAP:CNT NET_RX_SOFTIRQ_EXIT_TOTAL=12]
+[BXCAP:CNT TEARDOWN_RECLAIM=6]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_HW=1]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_SHADOW=2]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_LIVE_ROW=5]
+[BXCAP:CNT RETIRE_EMPTY_ONLINE_MASK=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_DOUBLE=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_STALE=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_NEVER_ALLOCATED=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_UNTRACKED=1]
+[BXCAP:CNT FRAME_DUPLICATE_ALLOC_REFUSED=3]
+[BXCAP:CNT FRAME_LOST_CONTENDED=3]
+[BXCAP:CNT LEAF_MAPPINGS_RECORDED=4]
+[BXCAP:CNT LEAF_MAPPINGS_RELEASED=4]
+[BXCAP:CNT LEAF_FRAMES_RETURNED=4]
+[BXCAP:CNT PT_TABLE_FRAMES_RECORDED=19]
+[BXCAP:CNT PT_ROOT_ABANDONED_TERMINATED=1]
+[BXCAP:CNT PT_ROOT_DROPPED_UNDECIDED=1]
+[BXCAP:CNT PT_ROOTS_RETIRED=7]
+[BXCAP:CNT PT_TABLE_FRAMES_RETURNED=22]
+[BXCAP:CNT PT_RETIRE_FRAMES_LOST=2]
+[BXCAP:CNT PT_ROOT_SLOT_REFUSED=1]
+[BXCAP:CNT INIT_ORDINARY_PID_ALLOCATIONS=1]
+[BXCAP:CNT RECLAIM_PASS_SKIPPED=5]
+[BXCAP:CNT RECLAIM_PARKED=2]
+[BXCAP:CNT RECLAIM_UNPARKED_EPOCH=1]
+[BXCAP:CNT RECLAIM_UNPARKED_ROW=1]
+[BXCAP:CNT CTX_SWITCH_TOTAL=14]
+[BXCAP:CNT TIMER_TICK_TOTAL=600]
+[BXCAP:RING cpu=0 writes=71 dropped=0 kept=71 span_us=5942045 enabled=1]
+[BXCAP:THR cpu=0 cur=1 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=1 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=2 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=3 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=4 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=5 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=6 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=7 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:END v=1 seq=0 edge=PANIC verdict=complete records=76 bytes=4417 truncated=0 sections_skipped=0x0]
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h

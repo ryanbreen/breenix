@@ -61,6 +61,18 @@
 //! wires them; this module states the behaviour rather than leaving it to be
 //! discovered.
 //!
+//! PR-4 wired the panic and fault edges and KEPT the one-way latch, without
+//! changing a byte of this file's logic. The reasoning is the trade-off
+//! above read in the direction those edges actually take: a terminal edge is
+//! already the end of the boot, so the second capture the latch would cost
+//! is a capture of a machine that was not going to run again, while the
+//! recursion a self-clearing latch would allow is a fault loop inside the
+//! emitter that destroys the FIRST capture's bytes as well. A depth counter
+//! was considered and not taken: it buys the second capture only in the case
+//! where the inner fault RETURNS, which the outer frame already handles by
+//! clearing the latch itself. See
+//! docs/planning/green-program/failure-capture/PR-4-2026-09-05.md.
+//!
 //! # What is wired in this PR
 //!
 //! One edge: `Edge::SelfTest`, behind `--features capture_selftest`, fired

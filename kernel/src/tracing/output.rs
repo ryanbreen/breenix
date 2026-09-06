@@ -982,38 +982,6 @@ pub extern "C" fn trace_dump_counters() {
 // Panic Handler Integration
 // =============================================================================
 
-/// Dump trace data during a panic.
-///
-/// This function should be called from the panic handler to capture
-/// trace state before the system halts. It outputs a condensed view
-/// showing the most recent events and counter values.
-///
-/// # Safety
-///
-/// This function uses lock-free serial output and is safe to call
-/// from panic handlers. However, trace data may be inconsistent
-/// if the panic occurred during trace recording.
-pub fn dump_on_panic() {
-    raw_serial_newline();
-    raw_serial_str("====== PANIC TRACE DUMP ======");
-    raw_serial_newline();
-
-    // Disable further tracing to prevent race conditions
-    super::disable();
-
-    // Dump the last 32 events across all CPUs
-    dump_latest_events(32);
-
-    // Dump counter summary
-    dump_counters();
-
-    // Dump provider state
-    dump_providers();
-
-    raw_serial_str("====== END PANIC DUMP ======");
-    raw_serial_newline();
-}
-
 // =============================================================================
 // Unit Tests
 // =============================================================================
