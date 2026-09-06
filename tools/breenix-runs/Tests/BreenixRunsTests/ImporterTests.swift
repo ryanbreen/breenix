@@ -3,6 +3,67 @@ import Foundation
 import XCTest
 
 final class ImporterTests: XCTestCase {
+
+    private func declaredFixture(root: URL) throws -> (RunStore, URL, GateProvenance) {
+        let evidence = root.appendingPathComponent("evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        try Data("Breenix ARM64 Kernel Starting\n".utf8).write(to: evidence.appendingPathComponent("serial.txt"))
+        try Data("facts\n".utf8).write(to: evidence.appendingPathComponent("gate_boot_facts.txt"))
+        let start = Date(timeIntervalSince1970: 1_788_633_600)
+        let provenance = GateProvenance(schemaVersion: 1, id: UUID().uuidString,
+            arch: .aarch64, profile: "testing", verdict: "PASS", exitCode: 0,
+            startedAt: start, endedAt: start.addingTimeInterval(20),
+            command: ["gate.sh", "1"], serials: ["serial.txt"], captures: ["gate_boot_facts.txt"])
+        return (RunStore(root: root.appendingPathComponent("store")), evidence, provenance)
+    }
+
+    func testImportRefusesWhenSidecarDeclaresAFileMissingOnDisk() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        provenance.serials.append("serial_missing.txt")
+        try RunStore.encoder.encode(provenance).write(to: evidence.appendingPathComponent("run-inspector.json"))
+        let result = try Importer(store: store).importPath(evidence)
+        XCTAssertTrue(result.imported.isEmpty)
+        XCTAssertEqual(result.skipped.count, 1)
+        XCTAssertTrue(result.skipped.first?.reason.contains("serial_missing.txt") == true)
+        XCTAssertEqual(try store.readIndex().runs.count, 0)
+    }
+
+    func testImportOfDirectoryScanNeverPicksUpAFileTheSidecarDidNotDeclare() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, provenance) = try declaredFixture(root: root)
+        try Data("extra\n".utf8).write(to: evidence.appendingPathComponent("serial_extra.txt"))
+        try Data("extra\n".utf8).write(to: evidence.appendingPathComponent("extra.facts.txt"))
+        try RunStore.encoder.encode(provenance).write(to: evidence.appendingPathComponent("run-inspector.json"))
+        let result = try Importer(store: store).importPath(evidence)
+        let manifest = try store.readManifest(id: XCTUnwrap(result.imported.first?.id))
+        XCTAssertEqual(manifest.serials.map(\.name), ["serial.txt"])
+        XCTAssertEqual(manifest.captures.map(\.name), ["gate_boot_facts.txt"])
+    }
+
+    func testReimportPicksUpEvidenceTheSidecarNewlyDeclares() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        let sidecar = evidence.appendingPathComponent("run-inspector.json")
+        try RunStore.encoder.encode(provenance).write(to: sidecar)
+        let importer = Importer(store: store)
+        let first = try importer.importPath(evidence)
+        let id = try XCTUnwrap(first.imported.first?.id)
+        provenance.captures.append("extra-capture.txt")
+        try Data("new capture\n".utf8).write(to: evidence.appendingPathComponent("extra-capture.txt"))
+        try RunStore.encoder.encode(provenance).write(to: sidecar)
+        let second = try importer.importPath(evidence)
+        XCTAssertEqual(second.imported.first?.alreadyExisted, false)
+        XCTAssertEqual(Set(try store.readManifest(id: id).captures.map(\.name)),
+                       ["gate_boot_facts.txt", "extra-capture.txt"])
+        XCTAssertEqual(try importer.importPath(evidence).imported.first?.alreadyExisted, true)
+    }
+
     func testAuthoritativeSidecarPreservesVerdictTimesAndFactsAcrossRelocation() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

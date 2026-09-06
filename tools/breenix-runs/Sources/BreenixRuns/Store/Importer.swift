@@ -198,6 +198,18 @@ public struct Importer {
     }
 
     private func importGateIteration(_ directory: URL, info: GateInfo, into result: inout ImportPathResult) throws {
+        if let provenance = try GateProvenance.read(from: directory) {
+            let (serials, captures, missing) = declaredSources(for: provenance, in: directory)
+            guard missing.isEmpty else {
+                result.skipped.append(ImportSkip(path: directory.path,
+                    reason: "run-inspector.json declares evidence missing on disk: \(missing.joined(separator: ", "))"))
+                return
+            }
+            try importRun(sourceURL: directory, serials: serials, captures: captures,
+                startedAt: provenance.startedAt, arch: info.arch, profile: info.profile,
+                verdict: .unknown, into: &result)
+            return
+        }
         let serials = try serialSources(in: directory)
         guard !serials.isEmpty else {
             return
@@ -521,9 +533,13 @@ public struct Importer {
         let id = provenance.map { "gate-" + $0.id } ??
             RunManifest.makeImportedID(serialData: firstSerialData, sourcePath: sourceURL.standardizedFileURL.path)
         if fileManager.fileExists(atPath: store.manifestURL(id: id).path),
-           (try? store.readManifest(id: id)) != nil {
-            result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path, alreadyExisted: true))
-            return
+           let existingManifest = try? store.readManifest(id: id) {
+            let declaredGrew = provenance.map { declaredInventoryGrew($0, comparedTo: existingManifest) } ?? false
+            if !declaredGrew {
+                result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path, alreadyExisted: true))
+                return
+            }
+            // New declared evidence requires replacing the stored inventory.
         }
         let runDirectory = try store.createRunDirectory(id: id)
 
@@ -623,6 +639,38 @@ public struct Importer {
             return GateInfo(arch: .aarch64, profile: "testing")
         }
         return nil
+    }
+
+    /// Resolve only the sidecar inventory; report missing files instead of dropping evidence.
+    private func declaredSources(
+        for provenance: GateProvenance, in directory: URL
+    ) -> (serials: [SerialSource], captures: [CaptureSource], missing: [String]) {
+        var serials: [SerialSource] = []
+        var captures: [CaptureSource] = []
+        var missing: [String] = []
+        for name in provenance.serials {
+            let url = directory.appendingPathComponent(name)
+            if isRegularFile(url) {
+                serials.append(SerialSource(url: url, destinationName: name, stream: stream(for: name)))
+            } else {
+                missing.append(name)
+            }
+        }
+        for name in provenance.captures {
+            let url = directory.appendingPathComponent(name)
+            if isRegularFile(url) {
+                captures.append(CaptureSource(url: url, destinationName: name))
+            } else {
+                missing.append(name)
+            }
+        }
+        return (serials, captures, missing)
+    }
+
+    /// Re-import when later evidence is declared beyond the stored inventory.
+    private func declaredInventoryGrew(_ provenance: GateProvenance, comparedTo manifest: RunManifest) -> Bool {
+        let existingNames = Set(manifest.serials.map(\.name) + manifest.captures.map(\.name))
+        return !Set(provenance.serials + provenance.captures).isSubset(of: existingNames)
     }
 
     private func serialSources(in directory: URL) throws -> [SerialSource] {
