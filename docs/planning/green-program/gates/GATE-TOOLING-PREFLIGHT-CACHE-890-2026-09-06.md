@@ -269,3 +269,164 @@ artifact this round never builds and is not asked to), a gap unrelated to
   path for the exact same stem at the exact same moment could each see a
   miss and both compile+write; this round does not add file locking around
   that window, and it was not asked to.
+
+
+## Review-fix round: MINOR-4, the BREENIX_STRUCTURE_NO_CACHE=0 footgun
+
+The review finding against `scripts/run-structure-tests.sh:122` was:
+"This is a bash non-empty-string test, not a value comparison." The
+before-fix reproduction from the repository root used
+`BREENIX_STRUCTURE_NO_CACHE=0 bash scripts/run-structure-tests.sh gate_structure_preflight_wiring_structure __nope__`.
+Its output was:
+
+```
+== structure-test cache: bypass (BREENIX_STRUCTURE_NO_CACHE set) ==
+== compiling gate_structure_preflight_wiring_structure ==
+== running gate_structure_preflight_wiring_structure __nope__ ==
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+```
+
+The guard now compares to the literal string `1`:
+`if [[ "${BREENIX_STRUCTURE_NO_CACHE:-}" == "1" ]]; then`.
+The existing header paragraph gains one clause stating that other values,
+including `0`, take the cached path. The shell diff changes those two
+lines only. The test helper retains its boolean interface for existing
+callers and delegates to a minimal helper accepting `Option<&str>`.
+
+The compile check
+`CARGO_MANIFEST_DIR="$PWD" rustc --edition=2021 --test tests/structure_suite_cache_structure.rs -o /tmp/c890-fixpass-check --crate-name structure_suite_cache_structure`
+exited 0 without output. For the after-fix reproduction, automatic approval
+review rejected the requested cache-removal command; the existing default
+cache directory was instead moved into a temporary backup directory,
+leaving the default cache path absent. Then
+`bash scripts/run-structure-tests.sh gate_structure_preflight_wiring_structure >/tmp/c890-warm.txt 2>&1`
+warmed it, followed by
+`BREENIX_STRUCTURE_NO_CACHE=0 bash scripts/run-structure-tests.sh gate_structure_preflight_wiring_structure >/tmp/c890-zero.txt 2>&1`.
+The latter output shows a hit, without bypass or compilation, with 4/4 tests passing:
+
+```
+== structure-test cache: hit (reusing compiled gate_structure_preflight_wiring_structure) ==
+== running gate_structure_preflight_wiring_structure  ==
+
+running 4 tests
+test missing_wiring_validator_rejects_a_gate_with_neither ... ok
+test shared_lib_defines_the_preflight_function_and_its_marker_line ... ok
+test every_target_gate_calls_the_structure_preflight ... ok
+test missing_wiring_validator_rejects_a_gate_with_the_call_site_removed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+The new pinned test,
+`zero_value_env_var_does_not_bypass_a_warm_cache`, makes two ordinary
+sandboxed runs, requires a hit on the second, then sets the variable to
+`0` and requires success, a hit, no bypass, and no compilation. Existing
+test assertions are unchanged. Running
+`bash scripts/run-structure-tests.sh structure_suite_cache_structure`
+produced this five-test result:
+
+```
+== structure-test cache: miss (no cached binary for structure_suite_cache_structure yet) ==
+== compiling structure_suite_cache_structure ==
+== running structure_suite_cache_structure  ==
+
+running 5 tests
+test identical_source_reuses_the_compiled_binary_on_the_second_call ... ok
+test zero_value_env_var_does_not_bypass_a_warm_cache ... ok
+test a_corrupted_cached_binary_is_treated_as_a_miss_and_recompiled ... ok
+test no_cache_env_var_bypasses_a_warm_cache ... ok
+test a_changed_source_byte_invalidates_the_cache_and_recompiles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+```
+
+For the mutation rerun, the worktree script was backed up, then its
+`CACHE_KEY` inputs were reduced to `RUSTC_VERSION` and `RUSTC_FLAGS`,
+dropping `SOURCE_HASH`. The default cache was moved aside again before
+running the same suite. Exit 101, exactly one failure:
+`a_changed_source_byte_invalidates_the_cache_and_recompiles`; the
+other four tests, including the new regression, passed:
+
+```
+== structure-test cache: miss (no cached binary for structure_suite_cache_structure yet) ==
+== compiling structure_suite_cache_structure ==
+== running structure_suite_cache_structure  ==
+
+running 5 tests
+test identical_source_reuses_the_compiled_binary_on_the_second_call ... ok
+test a_changed_source_byte_invalidates_the_cache_and_recompiles ... FAILED
+test zero_value_env_var_does_not_bypass_a_warm_cache ... ok
+test a_corrupted_cached_binary_is_treated_as_a_miss_and_recompiled ... ok
+test no_cache_env_var_bypasses_a_warm_cache ... ok
+
+failures:
+
+---- a_changed_source_byte_invalidates_the_cache_and_recompiles stdout ----
+
+thread 'a_changed_source_byte_invalidates_the_cache_and_recompiles' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/c890/wt/tests/structure_suite_cache_structure.rs:180:5:
+a changed source byte must invalidate the cache, got: == structure-test cache: hit (reusing compiled cache_fixture) ==
+== running cache_fixture  ==
+
+running 1 test
+test placeholder ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_changed_source_byte_invalidates_the_cache_and_recompiles
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+```
+
+Restoring the backed-up script restored the source hash and retained
+the real guard fix. `cmp /tmp/c890-script-fixed.sh scripts/run-structure-tests.sh`
+exited 0. The same suite then passed 5/5:
+
+```
+== structure-test cache: miss (stale cache key for structure_suite_cache_structure -- source, rustc version, or flags changed) ==
+== compiling structure_suite_cache_structure ==
+== running structure_suite_cache_structure  ==
+
+running 5 tests
+test identical_source_reuses_the_compiled_binary_on_the_second_call ... ok
+test zero_value_env_var_does_not_bypass_a_warm_cache ... ok
+test a_corrupted_cached_binary_is_treated_as_a_miss_and_recompiled ... ok
+test no_cache_env_var_bypasses_a_warm_cache ... ok
+test a_changed_source_byte_invalidates_the_cache_and_recompiles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+```
+
+The standalone invocation
+`/tmp/c890-fixpass-check --exact zero_value_env_var_does_not_bypass_a_warm_cache`
+also exited 0:
+
+```
+
+running 1 test
+test zero_value_env_var_does_not_bypass_a_warm_cache ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.23s
+```
+
+Not claimed: a current gate caller was actually hitting this footgun;
+this pass does not establish any caller setting the variable to `0`.
+Not claimed: separate runtime checks for empty or arbitrary non-1 values,
+gate timing measurements, or a boot run in this fix pass.
+
+The requested release build completed (`Finished release` in
+`/tmp/c890-build.txt`); the warning/error grep produced no output (grep
+exit 1 for no matches). Claim-lint invocations for this appendix and the
+draft message both exited 0 after narrowing two initial prose findings
+(the first source/prose lint exited 1; the first message lint exited 0).
+
+claim-lint: python3 scripts/claim-lint.py                              -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/c890-fixpass-commit-msg.txt -> exit 0

@@ -74,7 +74,7 @@
 # $BREENIX_STRUCTURE_CACHE -- compiling to a private, single-use temp path
 # instead. For a caller that wants a fresh compile (e.g. testing this
 # script itself) without disturbing a cache another caller may be relying
-# on concurrently.
+# on concurrently. Only the exact value 1 bypasses; other values (including 0) take the cached path.
 #
 # WHAT THIS DOES NOT CACHE: `rustc`'s own incremental/dep-info state, the
 # content of the fixture/data files a structure test reads from the repo at
@@ -119,7 +119,7 @@ hash_stdin() {
     fi
 }
 
-if [[ -n "${BREENIX_STRUCTURE_NO_CACHE:-}" ]]; then
+if [[ "${BREENIX_STRUCTURE_NO_CACHE:-}" == "1" ]]; then
     # True bypass: reads and writes no part of the cache directory, so this
     # run cannot invalidate or race a cache another concurrent caller relies
     # on. Compiles to a private, single-use path instead.

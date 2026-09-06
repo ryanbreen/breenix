@@ -7,7 +7,8 @@
 //! implementation's internals -- so a rewrite that keeps the observable
 //! contract (miss on first sight, hit on an unchanged source, miss again on
 //! a changed byte, bypass ignores a warm cache, a corrupted cached binary
-//! is treated as a miss) still passes this file untouched.
+//! is treated as a miss, zero_value_env_var_does_not_bypass_a_warm_cache
+//! pins the cached path for an explicit 0) still passes this file untouched.
 //!
 //! # Isolation: a sandboxed REPO_ROOT, not this repository
 //!
@@ -83,6 +84,12 @@ fn write_fixture(sandbox: &Path, marker: &str) {
 /// `BREENIX_STRUCTURE_NO_CACHE` set only when `no_cache` is true. Returns
 /// (exit success, combined stdout+stderr).
 fn run_sandboxed(sandbox: &Path, no_cache: bool) -> (bool, String) {
+    run_sandboxed_with_value(sandbox, if no_cache { Some("1") } else { None })
+}
+
+/// Runs the sandboxed script with an arbitrary bypass value, or unset.
+/// Returns (exit success, combined stdout+stderr).
+fn run_sandboxed_with_value(sandbox: &Path, no_cache: Option<&str>) -> (bool, String) {
     let mut cmd = Command::new("bash");
     cmd.arg(sandbox.join("scripts/run-structure-tests.sh"))
         .arg(FIXTURE_STEM)
@@ -106,8 +113,8 @@ fn run_sandboxed(sandbox: &Path, no_cache: bool) -> (bool, String) {
         // pinning cwd here to the real repo root matches actual usage
         // instead of deviating from it.
         .current_dir(repo_root());
-    if no_cache {
-        cmd.env("BREENIX_STRUCTURE_NO_CACHE", "1");
+    if let Some(value) = no_cache {
+        cmd.env("BREENIX_STRUCTURE_NO_CACHE", value);
     }
     let output = cmd
         .output()
@@ -255,6 +262,39 @@ fn a_corrupted_cached_binary_is_treated_as_a_miss_and_recompiled() {
     assert!(
         out2.contains("== compiling"),
         "a corrupt-binary miss must actually recompile, got: {out2}"
+    );
+
+    fs::remove_dir_all(&sandbox).ok();
+}
+
+/// BREENIX_STRUCTURE_NO_CACHE=0 must retain a warm-cache hit without compiling.
+#[test]
+fn zero_value_env_var_does_not_bypass_a_warm_cache() {
+    let sandbox = unique_sandbox("zero");
+    write_fixture(&sandbox, "v1");
+
+    let (ok1, out1) = run_sandboxed(&sandbox, false);
+    assert!(ok1, "warm-up run 1 must succeed: {out1}");
+    let (ok2, out2) = run_sandboxed(&sandbox, false);
+    assert!(ok2, "warm-up run 2 must succeed: {out2}");
+    assert!(
+        out2.contains("cache: hit"),
+        "cache must be warm before the zero-value check, got: {out2}"
+    );
+
+    let (ok3, out3) = run_sandboxed_with_value(&sandbox, Some("0"));
+    assert!(ok3, "zero-value run must succeed: {out3}");
+    assert!(
+        out3.contains("cache: hit"),
+        "BREENIX_STRUCTURE_NO_CACHE=0 must report a cache hit, got: {out3}"
+    );
+    assert!(
+        !out3.contains("cache: bypass"),
+        "BREENIX_STRUCTURE_NO_CACHE=0 must not bypass a warm cache, got: {out3}"
+    );
+    assert!(
+        !out3.contains("== compiling"),
+        "a zero-value cache hit must not recompile, got: {out3}"
     );
 
     fs::remove_dir_all(&sandbox).ok();
