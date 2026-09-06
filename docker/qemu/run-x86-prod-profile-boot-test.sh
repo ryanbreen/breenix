@@ -183,6 +183,12 @@
 # fires on every uncaught nonzero exit, names the failing command and line, tails
 # the serial, preserves it in a timestamped directory, and re-raises the same
 # nonzero status.
+#
+# STRUCTURE-SUITE PREFLIGHT (R191/PR-1)
+#
+# Before building the production kernel, this gate runs each
+# tests/*_structure.rs suite (docker/qemu/lib/gate-structure-preflight.sh) and
+# fails if any is red. BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
 
 set -euo pipefail
 # errtrace: without this the ERR trap is not inherited into shell functions, and
@@ -209,6 +215,12 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #827/#865: per-boot host-side facts line -- see that file's own header.
 # shellcheck source=lib/gate-boot-facts.sh
 source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
+# R191/PR-1 (gate-tooling round): runs each tests/*_structure.rs suite via
+# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+# that file's own header for why the kernel-swap hazard does not apply to
+# it) before this gate's own production kernel build, further down.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_prod_profile
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run.
@@ -911,6 +923,18 @@ case "$BREENIX_GATE_TMP" in
 esac
 if [ "${#CONSOLE_SOCK_PATH}" -gt 107 ]; then
     echo "x86 production-profile gate preflight: console socket path \"$CONSOLE_SOCK_PATH\" is ${#CONSOLE_SOCK_PATH} chars, over the AF_UNIX sun_path limit of 107 -- shorten BREENIX_GATE_TMP" >&2
+    false
+fi
+
+# R191/PR-1: structure-suite + critical-path-census preflight, same
+# BASE-DIR-PREFLIGHT block, same `echo` + bare `false` shape (the ERR trap
+# does not catch a bare `exit`) -- run ahead of `cd "$BREENIX_ROOT"` and the
+# production kernel build for the same fail-early reason the two checks
+# above it are here. BREENIX_GATE_SKIP_STRUCTURE=1 skips this loudly; see
+# docker/qemu/lib/gate-structure-preflight.sh for both the rustc-vs-cargo
+# reasoning and what each printed field means.
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "x86 production-profile gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)" >&2
     false
 fi
 

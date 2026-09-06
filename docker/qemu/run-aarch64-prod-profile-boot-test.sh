@@ -5,6 +5,10 @@
 # scripts/parallels/build-efi.sh is not wedged by boot_tests-only futex oracle
 # plumbing: the unarmed driver must time out its probe, init must resume, and
 # bsshd must start.
+#
+# Before building that profile, this gate runs each tests/*_structure.rs
+# suite (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is
+# red. BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
 
 set -e
 
@@ -31,6 +35,12 @@ source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 # meaningful once PR-4 wires the panic/fault edges into the shipped kernel.
 # shellcheck source=lib/gate-capture-drain.sh
 source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
+# R191/PR-1 (gate-tooling round): runs each tests/*_structure.rs suite via
+# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+# that file's own header for why the kernel-swap hazard does not apply to
+# it) before this gate's own production kernel build, further down.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same
 # host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
@@ -434,6 +444,18 @@ cleanup() {
     exit "$status"
 }
 if [ -z "$SCORE_ONLY_SERIAL" ]; then
+
+# R191/PR-1: structure-suite + critical-path-census preflight, before any
+# kernel build or QEMU state exists to interfere with (no OUTPUT_DIR, no
+# QEMU_PID yet, so the cleanup trap below has no state to release on a
+# rejection). BREENIX_GATE_SKIP_STRUCTURE=1 skips this loudly; see
+# docker/qemu/lib/gate-structure-preflight.sh for both the rustc-vs-cargo
+# reasoning and what each printed field means.
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "FAIL: structure-suite preflight failed -- see GATE_PREFLIGHT line above"
+    exit 1
+fi
+
 trap 'cleanup $?' EXIT
 
 rm -rf "$OUTPUT_DIR"

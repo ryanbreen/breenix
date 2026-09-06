@@ -12,6 +12,10 @@
 # a nonzero http_test exit. A quiet boot with no marker remains a gate failure.
 # This gate never retries a hung run: a blanket retry could swallow exactly the
 # recv-wake regression this gate exists to catch.
+#
+# Before building the kernel, this gate runs each tests/*_structure.rs suite
+# (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is red.
+# BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
 
 set -euo pipefail
 # errtrace: without this, the ERR trap below is not inherited into shell
@@ -108,6 +112,12 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # for why a starved boot and a wedged boot could not be told apart before.
 # shellcheck source=lib/gate-boot-facts.sh
 source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
+# R191/PR-1 (gate-tooling round): runs each tests/*_structure.rs suite via
+# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+# that file's own header for why the kernel-swap hazard does not apply to
+# it) before this gate's own kernel build, further down.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_x86_boot_tests_$i
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run and
@@ -132,6 +142,17 @@ case "$BREENIX_GATE_TMP" in
     *) echo "x86 frame-custody gate preflight: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP" >&2
        false ;;
 esac
+# R191/PR-1: structure-suite + critical-path-census preflight, run here (the
+# ERR trap is already installed above, and no kernel build or QEMU state
+# exists yet). BREENIX_GATE_SKIP_STRUCTURE=1 skips this loudly; see
+# docker/qemu/lib/gate-structure-preflight.sh for both the rustc-vs-cargo
+# reasoning and what each printed field means. `false`, not `exit 1`, is the
+# same #802/#805 idiom the BREENIX_GATE_TMP check above uses: the ERR trap
+# does not catch a bare `exit`.
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "x86 frame-custody gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)" >&2
+    false
+fi
 # The x86 serial console carries the scheduler's single-character trace stream
 # on the same port as kernel and userspace output, so any marker line can carry
 # a prefix. The markers are self-delimiting (`[...]` or a unique sentence), so

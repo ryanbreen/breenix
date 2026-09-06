@@ -10,6 +10,10 @@
 # Usage: ./run-aarch64-boot-test-strict.sh [iterations]
 #        Default: 20 iterations
 #
+# Before booting anything, this gate runs each tests/*_structure.rs suite
+# (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is red.
+# BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
+#
 # Exit codes:
 #   0 - All iterations passed
 #   1 - One or more iterations failed
@@ -36,6 +40,12 @@ source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 # docs/planning/green-program/failure-capture/PLAN-2026-09-05.md section 6.
 # shellcheck source=lib/gate-capture-drain.sh
 source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
+# R191/PR-1 (gate-tooling round): runs each tests/*_structure.rs suite via
+# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+# that file's own header for why the kernel-swap hazard below does not
+# apply to it) before this gate's own kernel-file check, further down.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same host,
 # both native QEMU rather than the shared beast container #797/#801 covered)
 # each hardcoded the identical /tmp/breenix_aarch64_strict_$iteration and
@@ -282,6 +292,16 @@ PIN_GUARD_ORACLE_PASS_LITERAL=':verdict=PASS]'
 SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
 
 if [ -z "$SCORE_ONLY_SERIAL" ]; then
+
+# R191/PR-1: structure-suite + critical-path-census preflight, before any
+# kernel build or QEMU state exists to interfere with. BREENIX_GATE_SKIP_STRUCTURE=1
+# skips this loudly (a caller that already ran the suites itself, or a host
+# that cannot compile them); see docker/qemu/lib/gate-structure-preflight.sh
+# for both the rustc-vs-cargo reasoning and what each printed field means.
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)"
+    exit 1
+fi
 
 # Find the ARM64 kernel
 KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
