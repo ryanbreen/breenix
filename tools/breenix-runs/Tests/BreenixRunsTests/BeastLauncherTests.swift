@@ -22,16 +22,21 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertTrue(request.combineOutput)
     }
 
-    func testRunGateRequestArgvEncodesBootsModeAndGateTmpInsideClone() throws {
+    func testRunGateRequestArgvEncodesBootsModeAndGateTmpInsideClone() {
         let paths = BeastPaths(clonePath: "/root/breenix-testclone")
         let request = RemoteCommand.runGateRequest(boots: 3, mode: .kthread, timeoutSecs: 900, paths: paths)
-        let remote = try XCTUnwrap(request.arguments.last)
 
-        XCTAssertTrue(remote.contains("BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp"))
-        XCTAssertTrue(remote.contains("BREENIX_REPO_DIR=/root/breenix-testclone"))
-        XCTAssertTrue(remote.contains("BREENIX_RUST_FORK=/root/breenix/rust-fork-real"))
-        XCTAssertTrue(remote.contains("BREENIX_GATE_TIMEOUT=900"))
-        XCTAssertTrue(remote.hasSuffix("/root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread'"))
+        XCTAssertEqual(request.executable, "/usr/bin/ssh")
+        XCTAssertEqual(request.arguments, [
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=15",
+            "beast",
+            "sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && source /root/.cargo/env && env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread'"
+        ])
+        XCTAssertTrue(request.combineOutput)
         XCTAssertTrue(paths.gateTmpPath.hasPrefix(paths.clonePath + "/"))
     }
 
@@ -102,7 +107,7 @@ final class BeastLauncherTests: XCTestCase {
         try assertTeardownRemovesClone(gateExitCode: 1)
     }
 
-    func testPrepareFailureNeverCallsRemoveCloneAndPersistsNothing() throws {
+    func testPrepareFailureCallsRemoveCloneAndPersistsNothing() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
@@ -116,7 +121,7 @@ final class BeastLauncherTests: XCTestCase {
             }
             XCTAssertEqual(exitCode, 1)
         }
-        XCTAssertFalse(runner.calls.contains { $0 == RemoteCommand.removeCloneRequest(paths: BeastPaths(clonePath: "/root/breenix-prepare-fails")) })
+        XCTAssertTrue(runner.calls.contains(RemoteCommand.removeCloneRequest(paths: BeastPaths(clonePath: "/root/breenix-prepare-fails"))))
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: store.runsDirectory.path)) ?? []
         XCTAssertTrue(entries.isEmpty, "prepare failure must not leave an orphaned run directory: \(entries)")
     }

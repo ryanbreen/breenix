@@ -421,7 +421,7 @@ func main() -> Int32 {
                     return 0
                 }
             default:
-                throw CLIError(description: "run \(args[1]) is not implemented in PR-1")
+                throw CLIError(description: "run \(args[1]) is not a recognized architecture (supported: arm, x86)")
             }
 
         case "facts":

@@ -2,7 +2,6 @@ import Foundation
 
 public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
     case unsupportedHost(String)
-    case unsupportedProfile(String)
     case prepareCloneFailed(exitCode: Int, output: String)
     case missingLocalSHA
     case invalidBootCount(Int)
@@ -11,8 +10,6 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .unsupportedHost(let host):
             return "unsupported x86 host \(host); PR-5 supports only beast and does not fall back to local TCG on this Mac"
-        case .unsupportedProfile(let profile):
-            return "x86 \(profile) is not implemented in PR-5"
         case .prepareCloneFailed(let exitCode, let output):
             return "prepare clone failed with exit \(exitCode): \(output)"
         case .missingLocalSHA:
@@ -114,6 +111,10 @@ public struct BeastLauncher {
         let planResult = try plan(options: plannedOptions)
 
         let startFacts = parseHostFactsSample(runner: runner, paths: planResult.paths, wallTime: startedAt)
+        defer {
+            _ = try? runner.run(planResult.removeClone)
+        }
+
         let prepareResult: ProcessResult
         do {
             prepareResult = try runner.run(planResult.prepareClone)
@@ -125,10 +126,6 @@ public struct BeastLauncher {
                 exitCode: Int(prepareResult.exitCode),
                 output: prepareResult.stdoutString + prepareResult.stderrString
             )
-        }
-
-        defer {
-            _ = try? runner.run(planResult.removeClone)
         }
 
         let runDirectory = try prepareRunDirectory(id: id, persist: options.persist)
