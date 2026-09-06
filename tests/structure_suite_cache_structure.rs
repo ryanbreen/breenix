@@ -1,5 +1,5 @@
 //! Behavioral oracle for #890: `scripts/run-structure-tests.sh`'s compile
-//! cache. Filed from PR #889's review measurements (~106s Mac / ~6m20s
+//! cache. Filed from PR #889's review measurements (~127s Mac / ~331s
 //! beast, uncached, per gate call -- docs/planning/green-program/gates/
 //! GATE-TOOLING-STRUCTURE-PREFLIGHT-PR1-2026-09-06.md, "Isolated preflight
 //! time cost"). This suite runs the real script end to end against a

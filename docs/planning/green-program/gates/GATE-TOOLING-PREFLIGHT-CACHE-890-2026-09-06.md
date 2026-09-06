@@ -89,7 +89,9 @@ inside a scratch sandbox. Reverified green on both hosts after the fix
 
 ```
 claim-lint: python3 scripts/claim-lint.py                                    -> exit 0
-claim-lint: python3 scripts/claim-lint.py --commit-msg <round's commit message> -> exit 0
+claim-lint: git log -1 --format=%B 8248ff0a5fffa574edde5bb1d17ad2bc42de6ab9 > \
+  /tmp/890msg/review-fix.txt && python3 scripts/claim-lint.py \
+  --commit-msg /tmp/890msg/review-fix.txt                                  -> exit 0
 ```
 
 ## Evidence
@@ -111,7 +113,7 @@ test a_corrupted_cached_binary_is_treated_as_a_miss_and_recompiled ... ok
 test no_cache_env_var_bypasses_a_warm_cache ... ok
 
 thread 'a_changed_source_byte_invalidates_the_cache_and_recompiles' panicked at
-tests/structure_suite_cache_structure.rs:156:5:
+tests/structure_suite_cache_structure.rs:180:5:
 a changed source byte must invalidate the cache, got: == structure-test
 cache: hit (reusing compiled cache_fixture) ==
 ...
@@ -148,11 +150,16 @@ real 446.88s user 10.28s system 367% cpu 2:04.44 total   (wall 124.4s)
 
 Not claimed: a large aggregate wall-clock win from this pair alone. This
 Mac was concurrently running unrelated sibling `cargo`/`rustc` work from
-other worktrees during both measurements (`ps aux` during the run showed
-other agents' `run-structure-tests.sh` processes active), which the 332-367%
-CPU utilization on a run whose own loop is strictly sequential corroborates,
-so wall-clock here is contended and noisy in both directions. The isolated,
-uncontended per-suite check below is the clean evidence that compilation
+other worktrees during both measurements, observed directly via `ps aux`
+during the run, which showed other agents' `run-structure-tests.sh`
+processes active -- that direct process-list observation, not the raw
+CPU-utilization figure, is what corroborates the contention. The 332-367%
+CPU utilization alone does not, by itself, establish sibling processes:
+each compiled suite binary also runs its own tests in parallel by default
+(this script does not pass `--test-threads=1`), which alone can push
+utilization above 100% even on an otherwise-uncontended run. So
+wall-clock here is contended and noisy in both directions. The isolated, uncontended per-suite
+check below is the clean evidence that compilation
 itself is genuinely skipped on a hit.
 
 ### Isolated per-suite measurement, uncontended (Mac)
@@ -172,14 +179,18 @@ HIT:  == structure-test cache: hit (reusing compiled ...) ==
       0.02s user 0.02s system 92% cpu 0.051 total
 ```
 
-Also disclosed: `context_restore_structure` (7899-line suite, 103
-`#[test]` functions per its own `grep -c '^test ' <log>`) took 81.39s wall
+Also disclosed: `context_restore_structure` (7899-line suite, 97
+`#[test]` functions per its own `grep -c '^test ' <log>`, re-verified
+directly against HEAD via `rg -c '^\s*#\[test\]' tests/context_restore_structure.rs`
+-> 97) took 81.39s wall
 on a cold compile-and-run and showed no reduction on a warm cache-hit
 rerun in this same noisy environment -- confirmed via its own per-run log
 containing `== structure-test cache: hit ==` with no `== compiling ==`
 line at all, i.e. the compile step really was skipped, yet wall-clock did not
-drop. For this suite, execution of its 103 tests (each doing
-`fs::read_dir` source-tree scans, per its own source) -- not compilation --
+drop. For this suite, execution of its 97 tests (most of which do
+`fs::read_dir` source-tree scans, per its own source; at least one,
+`unblock_validator_rejects_foreign_flag_clear`, instead validates an
+inline synthetic string literal with no directory scan) -- not compilation --
 is the dominant cost, and this round's cache does not and is not asked to
 touch that: "tests still RUN on every call (only compilation is cached)"
 (claim-lint:ok: #890, quoted verbatim from this round's own dispatching

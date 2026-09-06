@@ -36,8 +36,8 @@
 # file from scratch on each call: no mtime check, no reuse across the
 # four gates' four separate invocations. Measured cost (docs/planning/
 # green-program/gates/GATE-TOOLING-STRUCTURE-PREFLIGHT-PR1-2026-09-06.md,
-# "Isolated preflight time cost"): ~106s wall-clock on an Apple Silicon Mac
-# and ~6m20s on the beast x86 Incus container, per gate invocation, paid in
+# "Isolated preflight time cost"): ~127s wall-clock on an Apple Silicon Mac
+# and ~331s on the beast x86 Incus container, per gate invocation, paid in
 # full on each of the four gates' runs.
 #
 # The cache below keys each compiled test binary on three things: the
