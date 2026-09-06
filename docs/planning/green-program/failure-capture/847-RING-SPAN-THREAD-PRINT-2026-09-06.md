@@ -90,8 +90,9 @@ print; a thread-context boot test takes the print and gains the locked writer.
 `report()` became `publish()`. The arithmetic in it is unchanged line for line:
 same ring pointer idiom, same `TIMER_TICK`-typed filter, same single traversal
 computing `oldest`/`newest`/`tick_events`, same `timestamp_to_nanos` conversion,
-same `TIMER_TICK_TOTAL.aggregate()` read. What replaced its eleven `raw_serial_*`
-calls is seven atomic stores:
+same `TIMER_TICK_TOTAL.aggregate()` read. What replaced its twelve `raw_serial_*`
+calls -- six `raw_serial_str`, five `raw_serial_dec` and one
+`raw_serial_newline` -- is seven atomic stores:
 
 ```rust
 CPU.store(MEASURED_CPU, Ordering::Relaxed);
@@ -106,9 +107,11 @@ READY.store(true, Ordering::Release);
 `observe()` is untouched: the same relaxed-load early return on each tick, the
 same `CHECKED.swap(true, AcqRel)` one-shot latch, now calling `publish()`.
 
-The tick path is therefore strictly cheaper than before -- it lost ~60 bytes of
-UART MMIO writes and gained six relaxed stores and one release store, once per
-boot -- and it still takes no lock, makes no heap allocation, does no string
+The tick path is therefore strictly cheaper than before -- it lost the marker
+line's byte-at-a-time UART MMIO writes (69 bytes of fixed text, five decimal
+fields and a CRLF: 85 bytes on the wire for each of the two well-formed markers
+under `serials/847/`) and gained six relaxed stores and one release store, once
+per boot -- and it still takes no lock, makes no heap allocation, does no string
 formatting and performs no I/O.
 
 `cpu` is published rather than baked into the marker text, so the printer has no
@@ -439,8 +442,9 @@ claim-lint: scripts/claim-lint.py --commit-msg <msg3>                -> exit 0
    `serial_println!` marker call sites in `kernel/src/task/scheduler.rs`, which
    this round does not touch. It did not pass before this round either.
 4. **Not claimed:** any cycle-level measurement of the tick path. §3.1 argues
-   from instruction shape -- eleven UART MMIO writes removed, seven atomic
-   stores added, once per boot -- not from a counter.
+   from instruction shape -- twelve `raw_serial_*` calls (85 bytes of
+   byte-at-a-time UART MMIO writes) removed, seven atomic stores added, once
+   per boot -- not from a counter.
 5. **Not claimed:** that the 3000 ms deadline is portable to a host or
    acceleration mode where the boot reaches the registry executor more than 3 s
    of guest time before the 1000 ms publication checkpoint. It is three times
