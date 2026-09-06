@@ -1,7 +1,7 @@
 #!/bin/bash
 # Create ext2 disk image for Breenix kernel testing
 #
-# This script creates an ext2 filesystem image (64MB default) with:
+# This script creates an ext2 filesystem image (256MB default) with:
 #   - Test files for filesystem testing
 #   - BusyBox binary in /bin/busybox with symlinks for coreutils
 #   - hello_world binary for exec testing
@@ -12,7 +12,13 @@
 # Usage:
 #   ./scripts/create_ext2_disk.sh
 #   ./scripts/create_ext2_disk.sh --arch aarch64
-#   ./scripts/create_ext2_disk.sh --arch aarch64 --size 8
+#   ./scripts/create_ext2_disk.sh --arch aarch64 --size 128
+#
+# --size below what the current userspace binaries + fonts payload needs is
+# rejected up front with the computed shortfall (#850) rather than failing
+# partway through the copy step with ENOSPC -- omit --size to get the
+# 256MB default, which comfortably fits the payload on both architectures
+# as of this writing.
 #
 # Or use xtask:
 #   cargo run -p xtask -- create-ext2-disk
@@ -46,7 +52,7 @@ if [[ "$ARCH" == "aarch64" ]]; then
     USERSPACE_DIR="$PROJECT_ROOT/userspace/programs/aarch64"
     OUTPUT_FILE="$TARGET_DIR/ext2-aarch64.img"
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2-aarch64.img"
-    # ARM64 uses same 64MB default as x86_64
+    # ARM64 uses the same 256MB default as x86_64
 else
     USERSPACE_DIR="$PROJECT_ROOT/userspace/programs"
     OUTPUT_FILE="$TARGET_DIR/ext2.img"
@@ -57,6 +63,59 @@ echo "Creating ext2 disk image..."
 echo "  Arch: $ARCH"
 echo "  Output: $OUTPUT_FILE"
 echo "  Size: ${SIZE_MB}MB"
+
+# --- #850: refuse a --size too small for the real payload -----------------
+#
+# This script's copy step installs the *.elf files directly under
+# $USERSPACE_DIR (top-level glob, matching the `for elf_file in .../*.elf`
+# loops below) plus the *.ttf files under $PROJECT_ROOT/fonts, independent
+# of --size. A requested size smaller than that payload used to fail
+# partway through the Docker copy step with a bare "No space left on
+# device" from `cp`, after the image had already been created and
+# partially populated (#850). Compute the payload up front and fail
+# loudly, before touching Docker/mke2fs at all, rather than truncating an
+# image mid-copy.
+file_size_bytes() {
+    # Portable stat: BSD/macOS uses -f%z, GNU/Linux uses -c%s.
+    stat -f%z "$1" 2>/dev/null || stat -c%s "$1"
+}
+
+payload_bytes=0
+for f in "$USERSPACE_DIR"/*.elf "$PROJECT_ROOT/fonts"/*.ttf; do
+    [[ -f "$f" ]] || continue
+    payload_bytes=$(( payload_bytes + $(file_size_bytes "$f") ))
+done
+
+# Headroom arithmetic (measured empirically against a real Docker mke2fs
+# build of the actual aarch64 payload -- see docs/planning/green-program/
+# gates/ for the round that derived this):
+#   - mke2fs/ext2 metadata (inode tables, block group descriptors, reserved
+#     GDT blocks for future resize, block-size rounding per file) cost
+#     ~30-40% of total image size at these sizes, not a fixed number of
+#     bytes -- so the multiplier is applied to the payload, not added flat.
+#   - +45% multiplier reproduced a comfortable ~15-20MB of genuine free
+#     space left over on a 62MB real aarch64 payload (72MB requested left
+#     only 0.8MB free -- too tight; 88-96MB requested left 14.7-21.8MB
+#     free).
+#   - +4MB flat on top covers /etc, /tmp, /home, /var/log and the small
+#     built-in test text files each image also gets, which don't scale
+#     with the binary/font payload above.
+required_bytes=$(( payload_bytes * 29 / 20 + 4 * 1024 * 1024 ))
+required_mb=$(( (required_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
+payload_mb_display=$(( (payload_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
+
+echo "  Payload: ${payload_mb_display}MB (userspace binaries + fonts)"
+echo "  Minimum image size for this payload: ${required_mb}MB (incl. ext2 overhead + headroom)"
+
+if (( SIZE_MB < required_mb )); then
+    echo ""
+    echo "ERROR: requested size ${SIZE_MB}MB is too small for the ${payload_mb_display}MB payload." >&2
+    echo "  Needs at least ${required_mb}MB (shortfall: $((required_mb - SIZE_MB))MB)." >&2
+    echo "  Refusing to build a disk image that would fail partway through the copy" >&2
+    echo "  step with ENOSPC. Pass --size ${required_mb} or larger, or omit --size to" >&2
+    echo "  use the 256MB default." >&2
+    exit 1
+fi
 
 # Ensure target directory exists
 mkdir -p "$TARGET_DIR"
