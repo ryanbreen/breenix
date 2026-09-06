@@ -361,13 +361,13 @@ fn the_rearm_check_rejects_a_marker_with_no_peer_gap() {
 }
 
 #[test]
-#[should_panic(expected = "must pin `rearms=32`")]
+#[should_panic(expected = "must pin `rearms=12`")]
 fn the_gate_census_check_rejects_a_gate_that_does_not_pin_the_count() {
     assert_gate_pins_the_rearm_census(
         "a gate that reads only the verdict",
-        "TIMER_WAKE_LATENCY_ORACLE:x86:overrun_ms=[0-9]+:peer_gap_bound_ms=2800:PASS",
+        "TIMER_WAKE_LATENCY_ORACLE:x86:overrun_ms=[0-9]+:peer_gap_bound_ms=2200:PASS",
+        3,
         4,
-        8,
     );
 }
 
@@ -376,8 +376,8 @@ fn the_gate_census_check_rejects_a_gate_that_does_not_pin_the_count() {
 fn the_gate_census_check_rejects_a_gate_that_does_not_read_the_ceiling() {
     assert_gate_pins_the_rearm_census(
         "a gate that reads only the re-arm count",
-        "TIMER_WAKE_LATENCY_ORACLE:x86:rearms=32:overrun_ms=[0-9]+:PASS",
+        "TIMER_WAKE_LATENCY_ORACLE:x86:rearms=12:overrun_ms=[0-9]+:PASS",
+        3,
         4,
-        8,
     );
 }

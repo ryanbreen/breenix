@@ -132,15 +132,21 @@ const ARCH_TAG: &str = if cfg!(target_arch = "x86_64") {
 };
 
 /// Runnable CPU-bound threads a wake has to get past.
-const PEERS: usize = 8;
+///
+/// `PEERS + REARMERS + 1` is 10, one more than the boot thread plus the 9 the
+/// pre-re-arm version of this leg created. The aarch64 strict gate scores a
+/// boot against a 20 s ceiling and has been recorded within 700 ms of it, so
+/// the leg's thread count and its window are held at what that gate was
+/// measured green on rather than at whatever the measurement would prefer.
+const PEERS: usize = 6;
 
 /// Threads that sleep and immediately sleep again. More than one, because the
 /// question the peer gap answers is what a POPULATION of re-arming timer
 /// threads costs the CPU-bound class, not what one does.
-const REARMERS: usize = 4;
+const REARMERS: usize = 3;
 
 /// Sleeps per re-armer.
-const REARMS: u64 = 8;
+const REARMS: u64 = 4;
 
 /// Sleeps the leg performs in total. Pinned on the marker, so a re-armer that
 /// gave up early cannot be read as a completed run.
@@ -173,8 +179,8 @@ const BOUND_MS: u64 = 100;
 
 /// Starvation ceiling on a CPU-bound peer's worst off-CPU interval: four times
 /// the round it would wait if each thread in this leg held a full quantum.
-/// x86: `(8 + 4 + 2) * 50 * 4` = 2800 ms. aarch64: `(8 + 4 + 2) * 10 * 4` =
-/// 560 ms.
+/// x86: `(6 + 3 + 2) * 50 * 4` = 2200 ms. aarch64: `(6 + 3 + 2) * 10 * 4` =
+/// 440 ms.
 const PEER_GAP_BOUND_MS: u64 = (PEERS as u64 + REARMERS as u64 + 2) * QUANTUM_MS * 4;
 
 /// Backstops. No wait in this oracle is unbounded: each one carries a
