@@ -1367,9 +1367,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Slice 3e's oracle: three of the eleven migration sites, driven against a
     // thread that carries a per-CPU worker pin, reporting the CPU each one put
     // it on against the CPU the pin names. Boot-tests only, and it runs before
-    // the census above so the census reports the state the probe left -- the
-    // probe subtracts its own contribution, which is why they must be in this
-    // order to be readable together.
+    // the census above so the census reports any refusal the probe's own
+    // migrations incidentally cause for a thread other than the probe --
+    // `count_pinned_migration_refusal` routes a refusal of the probe's own tid
+    // to `PIN_GUARD_ORACLE_REFUSED` instead, so it never reaches the counter
+    // this census reads, which is why they must be in this order to be
+    // readable together.
     #[cfg(feature = "boot_tests")]
     kernel::task::scheduler::emit_pin_guard_oracle();
     kernel::task::scheduler::emit_pinned_placement_census();
