@@ -9,9 +9,10 @@ swift build
 swift test
 ```
 
-`make app` is intentionally a stub in PR-1. SwiftUI app bundling lands in PR-6.
+`make app` now builds the debug `BreenixRunInspector` executable target and
+creates an ad-hoc signed `Breenix Run Inspector.app` bundle in this directory.
 
-## CLI
+## CLI and App
 
 PR-1 through PR-5 implement:
 
@@ -21,6 +22,7 @@ breenix-runs run x86 [gate] [--boots N] [--sha SHA] [--mode kthread|full] [--hos
 breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
 breenix-runs facts <run-id|latest> [--json]
 breenix-runs import <path>...
+make app
 ```
 
 Examples:
@@ -36,6 +38,7 @@ swift run breenix-runs show <run-id> --messages --traces
 swift run breenix-runs facts latest
 swift run breenix-runs facts latest --json
 swift run breenix-runs import /tmp/breenix-gate-tree
+make app
 ```
 
 `run arm` drives the existing gate script and sets `BREENIX_GATE_TMP` to a private absolute directory under the run directory. It does not recreate the QEMU command line in Swift and it does not compute a pass/fail verdict; the manifest records the gate script argv and exit code.
@@ -47,3 +50,7 @@ Host facts record QEMU peer counts separately for `qemu-system-aarch64` and `qem
 `show` renders a section per flag given (`--subsystems`, `--messages`, `--traces` may be combined), and defaults to `--subsystems` alone with no flag given: `--subsystems` walks the committed boot-stage catalog against the run's serial and prints each stage's reached/stopped state, `--messages` dumps each scanned serial line tagged with its marker family, and `--traces` reports which structured trace records (`GATE_BOOT_FACTS`, `BXCAP`, `FATAL_REGS`) are not wired up yet. `latest-fail` selects the most recent run whose verdict is a failure (`.fail`, `.attributed`, `.refused`, or a `.gateScript` whose exit code is not 0).
 
 `import` records existing gate-tmp trees, preserved failure directories, and loose serial directories in the run store. Imported loose serials keep `.unknown` verdicts because the importer does not replay gate scoring.
+
+`BreenixRunInspector` is a read-only macOS app for the same run store that the CLI
+uses. PR-6 renders the run sidebar, subsystem state-machine rows, and scanned
+serial messages; launching runs remains in the CLI.

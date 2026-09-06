@@ -324,6 +324,31 @@ Ad-hoc signing means Gatekeeper will treat the bundle as unsigned; since the
 operator builds it locally from source and launches it from the build directory,
 that is correct and requires no notarization story.
 
+**Status: implemented in PR-6 (`Sources/BreenixRunInspector/**`, the
+`BreenixRunInspector` executable target in `Package.swift`, the real `make app`
+recipe in `Makefile`), with one correction found while landing it.** `make app`
+bundles the **debug** build, not release: `swift build --product
+BreenixRunInspector -c release` crashes this toolchain's `swift-frontend`
+(Swift 6.3.3, swiftlang-6.3.3.1.3) — an ownership-verifier assertion
+("Found outside of lifetime use?!") in the `CopyPropagation` SIL pass while
+compiling the pre-existing `RunShow.renderSubsystems` (PR-3,
+`Sources/BreenixRuns/Show/RunShow.swift:89`) at `-O` — reproduced directly with
+`swift build --product BreenixRunInspector -c release` at this file's current
+contents. This is a toolchain limitation on a SIL optimization pass, not a
+defect in `renderSubsystems`'s logic (`swift test` exercises the same code path
+and is green); `swift build`'s default debug configuration does not run this
+pass and is unaffected, which is why the `breenix-runs` CLI and the `swift
+test` acceptance in every other PR row have never hit it. `make app`'s `-c
+debug` choice sidesteps it rather than working around it in source, since
+`renderSubsystems` is correct and owned by PR-3, and a change made only to
+dodge a compiler crash it did not cause would be exactly the kind of
+unmotivated edit CLAUDE.md's Tier discipline warns against for hot-path files
+— `RunShow.swift` is not Tier-1/2, but the principle (fix code where the
+defect actually lives) still applies. Revisit if a future PR needs a release
+build (e.g. distributing the bundle outside this machine): either a newer
+Swift toolchain no longer hits this pass ordering, or `renderSubsystems` gets
+refactored as its own PR with the crash cited as the reason.
+
 ### 2.5 App screens
 
 **Sidebar** — each run, newest first. One row per run:
