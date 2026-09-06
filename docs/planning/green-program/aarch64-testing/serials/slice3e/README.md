@@ -100,3 +100,27 @@ scoping the constant to aarch64, and `10` is the re-run at that head.
 carries `BUILD_ID` `006a9ca4e213dd` and `16`'s boot carries `006a9ca4fe0397`;
 neither replaces `01` or `02`, which stay the fixtures the 3 replay tests score,
 because this round changed 0 fields of the census line those tests compare.
+
+**`01` re-recorded landing `capture/ftc-pr2-tick-sampling`.** Landing that
+branch merged `docker/qemu/run-aarch64-boot-test-strict.sh`'s
+`score_serial` with this slice's `PIN_GUARD_ORACLE` check, adding a
+`RING_SPAN` sampling-ratio check the other branch's own tick-sampling PR
+(`docs/planning/green-program/failure-capture/PR-2-2026-09-05.md`) contributed
+-- the standing "widen the scorer, re-record the fixture" step. `01` did not
+carry `RING_SPAN` (it predates that PR's kernel change), so the anti-vacuity
+leg in `tests/loopback_pump_structure.rs::the_gates_score_the_pin_guard_oracle_in_opposite_directions`
+and the green leg in
+`tests/ttbr0_shadow_reconciliation_structure.rs::both_aarch64_gates_fail_on_an_untagged_publish`
+would both score the unmodified `01` FAIL at the merged head
+("Ring-span self-check marker missing"). `01` is replaced with a fresh strict
+boot 1 at the merge commit, `BUILD_ID` `006a9cbfd61727`, carrying both
+`[PIN_GUARD_ORACLE:aarch64:home=1:here=0:reclaim=1:requeue=1:previous=1:on_home=3:refused=3:census_clean=1:verdict=PASS]`
+and `[RING_SPAN:cpu=0:span_ms=1498:writes=520:dropped=0:ticks_total=3979:tick_events=62]`
+(ratio 64.2, well clear of `RING_SPAN_RATIO_FLOOR=10`); re-scored PASS via
+`BREENIX_STRICT_SCORE_ONLY` against the merged gate, and both replay tests
+above pass green against it. `02` is untouched -- the prod-profile scorer
+requires both markers ABSENT, which the existing `02` already satisfies (0
+occurrences of either), so no scorer requirement newly applies to it.
+`03` (the red-on-main pin-guard capture) is also untouched: the tests' only
+read of it splices its `PIN_GUARD_ORACLE` line into a copy of `01`, and does
+not read a `RING_SPAN` line from `03` at all, so `03` does not need one.

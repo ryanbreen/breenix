@@ -374,6 +374,7 @@ TEST_ONLY_MARKERS=(
     '[CENSUS_WIDEN_ORACLE:'
     '[FCNTL_PM_CONTENTION_ORACLE:'
     '[IRQ_HOLD_ORACLE:'
+    '[RING_SPAN:'  # failure-trace-capture PR-2 ring-depth self-check (boot_tests-only)
     'Testing features enabled'
 )
 

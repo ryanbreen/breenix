@@ -503,6 +503,62 @@ score_serial() {
         echo "Pinned-placement census marker missing"
         return 1
     fi
+    # failure-trace-capture PR-2: TIMER_TICK ring-depth self-check
+    # (kernel/src/tracing/providers/irq.rs), fires once ~1s into boot.
+    #
+    # PR-2 fix round (2026-09-05, PR-2-2026-09-05.md section 9): this used to
+    # gate purely on span_ms (the wall-clock reach of CPU 0's live
+    # TIMER_TICK entries) against a fixed floor. That floor was wall-clock
+    # jitter sensitive rather than a proof the sampling guard was actually
+    # gating: widening the sample beyond this PR's original 2-3 boots per
+    # configuration measured unsampled (TICK_SAMPLE=1) readings from 0ms to
+    # 1120ms and sampled (the fix) readings from 1270ms to 1903ms -- a real,
+    # measured ~8% false-pass rate at the old 1100 floor across the combined
+    # sample, not the "clean, reproducible gap" originally claimed. The
+    # underlying cause: at the boundary where the ring's own wrap timing
+    # decides span_ms, ordinary boot-to-boot host jitter can put either
+    # configuration on either side, and no amount of floor-tuning removes
+    # that -- pushing the checkpoint later shrinks the margin against
+    # userspace bring-up traffic swamping the ring instead (see section 2.2).
+    #
+    # `ticks_total` / `tick_events` (added this round) does not depend on
+    # wall-clock timing: `ticks_total` is `TIMER_TICK_TOTAL`'s aggregate,
+    # incremented unconditionally on each tick with no sampling applied;
+    # `tick_events` is how many TIMER_TICK-typed entries the ring currently
+    # holds. Their ratio is a pure count relationship -- it does not care
+    # when in the boot this fires or whether the ring has wrapped. Measured
+    # on this branch, this configuration (aarch64, -smp 4): sampled
+    # (`TICK_SAMPLE=16`, the fix) reads ratios of 34.0-64.4 across 8 boots;
+    # unsampled (`TICK_SAMPLE=1`, the mutation) reads ratios of 5.39-5.94
+    # across 9 boots -- 8 of 8 fixed-config samples clear
+    # RING_SPAN_RATIO_FLOOR below, 9 of 9 mutated-config samples fall below
+    # it (PR-2-2026-09-05.md section 9.4).
+    #
+    # span_ms is kept as a basic liveness sanity check (nonzero, i.e. the
+    # ring actually held more than one TIMER_TICK entry when this fired) --
+    # informational only, not a threshold; the ratio above is the pass/fail
+    # signal, per the 8-of-8 / 9-of-9 result just cited.
+    RING_SPAN_RATIO_FLOOR=10
+    ring_span_line=$(grep -aoE '\[RING_SPAN:cpu=0:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+:ticks_total=[0-9]+:tick_events=[0-9]+\]' "$serial_file" 2>/dev/null | tail -1 || true)
+    if [ -z "$ring_span_line" ]; then
+        echo "Ring-span self-check marker missing"
+        return 1
+    fi
+    ring_span_ms=$(echo "$ring_span_line" | sed -n 's/^\[RING_SPAN:cpu=0:span_ms=\([0-9][0-9]*\):.*/\1/p')
+    ticks_total=$(echo "$ring_span_line" | sed -n 's/.*:ticks_total=\([0-9][0-9]*\):.*/\1/p')
+    tick_events=$(echo "$ring_span_line" | sed -n 's/.*:tick_events=\([0-9][0-9]*\)\].*/\1/p')
+    if [ -z "$ring_span_ms" ] || [ "$ring_span_ms" -le 0 ]; then
+        echo "Ring-span self-check span_ms ${ring_span_ms:-<unparsed>} is not a positive span ($ring_span_line)"
+        return 1
+    fi
+    if [ -z "$ticks_total" ] || [ -z "$tick_events" ] || [ "$tick_events" -le 0 ]; then
+        echo "Ring-span self-check ticks_total/tick_events unparsed or zero ($ring_span_line)"
+        return 1
+    fi
+    if [ "$ticks_total" -lt "$((tick_events * RING_SPAN_RATIO_FLOOR))" ]; then
+        echo "Ring-span self-check sampling ratio ticks_total=$ticks_total / tick_events=$tick_events below floor $RING_SPAN_RATIO_FLOOR ($ring_span_line)"
+        return 1
+    fi
     if ! grep -qaE "$PIN_GUARD_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Pin-guard oracle line missing"
         return 1
