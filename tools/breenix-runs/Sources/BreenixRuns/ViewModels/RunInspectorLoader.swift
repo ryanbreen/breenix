@@ -14,22 +14,37 @@ public struct RunInspectorLoadedRun: Equatable, Sendable {
     }
 }
 
+public struct RunInspectorRunList: Sendable {
+    public var runs: [RunInspectorLoadedRun]
+    public var warnings: [String]
+}
+
 public enum RunInspectorLoader {
     public static func loadRuns(store: RunStore) async throws -> [RunInspectorLoadedRun] {
+        try await loadRunList(store: store).runs
+    }
+
+    public static func loadRunList(store: RunStore) async throws -> RunInspectorRunList {
         try await Task.detached(priority: .userInitiated) {
             let index = try store.readIndex()
             var manifests: [RunManifest] = []
+            var warnings: [String] = []
             for entry in index.runs {
-                manifests.append(try store.readManifest(id: entry.id))
+                do {
+                    manifests.append(try store.readManifest(id: entry.id))
+                } catch {
+                    warnings.append("Unable to read run \(entry.id): \(error)")
+                }
             }
             let rows = SidebarViewModel.rows(for: manifests)
             let manifestsByID = Dictionary(uniqueKeysWithValues: manifests.map { ($0.id, $0) })
-            return rows.compactMap { row in
+            let runs = rows.compactMap { row -> RunInspectorLoadedRun? in
                 guard let manifest = manifestsByID[row.id] else {
                     return nil
                 }
                 return RunInspectorLoadedRun(row: row, manifest: manifest)
             }
+            return RunInspectorRunList(runs: runs, warnings: warnings)
         }.value
     }
 

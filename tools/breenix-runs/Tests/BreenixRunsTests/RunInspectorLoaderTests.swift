@@ -106,6 +106,47 @@ final class RunInspectorLoaderTests: XCTestCase {
         XCTAssertEqual(loaded, expected)
     }
 
+    func testFixtureListAndDetailSurviveDamagedManifestAndReload() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+        var older = try storeFixtureRun(fixtureName: "05-runtime-anti-vacuity-strict-serial.txt",
+            id: "fixture-older", verdict: .pass, store: store)
+        var newer = try storeFixtureRun(fixtureName: "testing-boot1-562-panic.txt",
+            id: "fixture-newer", verdict: .attributed("PASS-WITH-ATTRIBUTED-LOCKUP"), store: store)
+        older.startedAt = Date(timeIntervalSince1970: 10)
+        newer.startedAt = Date(timeIntervalSince1970: 20)
+        let directory = store.runDirectory(id: older.id)
+        let facts = try Data(contentsOf: fixtureURL("gate-boot-facts-positive.txt"))
+        try facts.write(to: directory.appendingPathComponent("gate_boot_facts.txt"))
+        older.captures = [CaptureRef(name: "gate_boot_facts.txt", path: "gate_boot_facts.txt", bytes: facts.count)]
+        try store.writeManifest(older)
+        try store.writeManifest(newer)
+        let damaged = sampleManifest(id: "fixture-damaged")
+        try store.writeManifest(damaged)
+        try Data("{ damaged".utf8).write(to: store.manifestURL(id: damaged.id))
+
+        let list = try await RunInspectorLoader.loadRunList(store: store)
+        XCTAssertEqual(list.runs.map(\.id), [newer.id, older.id])
+        XCTAssertEqual(list.runs.map(\.row.verdictState), [.attributed, .success])
+        XCTAssertEqual(list.warnings.count, 1)
+        XCTAssertTrue(list.warnings[0].contains(damaged.id))
+        let rows = try await RunInspectorLoader.loadRuns(store: store)
+        XCTAssertEqual(rows.count, 2)
+
+        let detail = try await RunInspectorLoader.loadDetail(manifest: older, store: store)
+        XCTAssertEqual(detail.subsystems.rows.first?.name, "ARM64 kernel starting")
+        XCTAssertGreaterThan(detail.subsystems.reachedCount, 0)
+        XCTAssertTrue(detail.messages.contains { $0.text.contains("Breenix ARM64 Kernel Starting") })
+        XCTAssertEqual(detail.traces.hostFacts.first?.fields["qemu_cpu_s"], "17.85")
+        XCTAssertEqual(detail.traces.hostFacts.first?.sourceFile, "gate_boot_facts.txt")
+
+        try FileManager.default.removeItem(at: store.runDirectory(id: newer.id))
+        let reloaded = try await RunInspectorLoader.loadRunList(store: store)
+        XCTAssertEqual(reloaded.runs.map(\.id), [older.id])
+        XCTAssertEqual(reloaded.warnings.count, 2)
+    }
+
     private func storeFixtureRun(
         fixtureName: String,
         id: String,

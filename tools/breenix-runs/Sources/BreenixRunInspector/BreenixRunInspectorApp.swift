@@ -36,6 +36,7 @@ private struct LoadedRun: Identifiable, Equatable {
 struct InspectorRootView: View {
     private let store = RunStore.defaultStore()
 
+    @State private var loadWarnings: [String] = []
     @State private var runs: [LoadedRun] = []
     @State private var selectedRunID: String?
     @State private var selectedComparisonRunID: String?
@@ -46,8 +47,16 @@ struct InspectorRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(rows: runs.map(\.row), selection: $selectedRunID)
-                .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 460)
+            VStack(alignment: .leading) {
+                if !loadWarnings.isEmpty {
+                    Text(loadWarnings.joined(separator: "\n"))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("run-load-warnings")
+                }
+                SidebarView(rows: runs.map(\.row), selection: $selectedRunID)
+            }
+            .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 460)
         } detail: {
             detailView
         }
@@ -147,8 +156,9 @@ struct InspectorRootView: View {
 
     private func loadRuns() async {
         do {
-            let loadedRuns = try await RunInspectorLoader.loadRuns(store: store)
-            runs = loadedRuns.map { LoadedRun(row: $0.row, manifest: $0.manifest) }
+            let loadedList = try await RunInspectorLoader.loadRunList(store: store)
+            loadWarnings = loadedList.warnings
+            runs = loadedList.runs.map { LoadedRun(row: $0.row, manifest: $0.manifest) }
             loadError = nil
 
             if self.selectedRunID == nil {
