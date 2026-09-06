@@ -40,9 +40,9 @@
 //! entry walk also refuses a self-declared entry length below the two-byte
 //! ACPI minimum, which is the shape that would otherwise not advance.
 //!
-//! There is no allocation here: every result travels in a `MadtCensus` value
-//! with fixed-size fields, and `tests/x86_smp_enum_structure.rs` pins both
-//! that property and the bounds above at source level.
+//! There is no allocation here: results travel in a `MadtCensus` value whose
+//! fields are fixed-size, and `tests/x86_smp_enum_structure.rs` pins that
+//! property and the bounds above at source level.
 
 use core::ptr::read_volatile;
 
@@ -92,7 +92,7 @@ const MADT_FLAG_ENABLED: u32 = 1 << 0;
 
 /// What the firmware's MADT says about the processors on this machine.
 ///
-/// Every field is a plain count or a fixed-size array: this type is `Copy` and
+/// Each field is a plain count or a fixed-size array: this type is `Copy` and
 /// carries no allocation.
 #[derive(Clone, Copy)]
 pub struct MadtCensus {
@@ -192,7 +192,7 @@ impl PhysReader {
     }
 
     /// Whether `[phys, phys + len)` sits inside the window this module relies
-    /// on. A zero physical address is refused too: ACPI uses 0 as "absent".
+    /// on. A physical address of 0 is refused too: ACPI uses 0 as "absent".
     fn readable(&self, phys: u64, len: u64) -> bool {
         if phys == 0 {
             return false;
@@ -211,12 +211,12 @@ impl PhysReader {
         // module comment establishes is inside the bootloader's
         // physical-memory mapping, and `self.offset` is the offset that
         // mapping was reported at. The read is one byte, volatile because the
-        // firmware owns this memory, and never written.
+        // firmware owns this memory, and the pointer is not written through.
         Some(unsafe { read_volatile((self.offset + phys) as *const u8) })
     }
 
-    /// Little-endian, byte at a time: ACPI table fields are not guaranteed to
-    /// be naturally aligned (an XSDT's 8-byte entries sit at header + 8*i,
+    /// Little-endian, byte at a time: ACPI table fields are not necessarily
+    /// naturally aligned (an XSDT's 8-byte entries sit at header + 8*i,
     /// i.e. 4-byte aligned), and a wide unaligned `read_volatile` is undefined
     /// behaviour.
     fn u32_at(&self, phys: u64) -> Option<u32> {
@@ -235,8 +235,8 @@ impl PhysReader {
         Some(value)
     }
 
-    /// True when the bytes `[phys, phys + n)` sum to zero modulo 256, which is
-    /// the ACPI checksum rule for every table this reader touches.
+    /// True when the bytes `[phys, phys + n)` sum to 0 modulo 256, which is the
+    /// ACPI checksum rule for the 4 table kinds this reader touches.
     fn checksum_ok(&self, phys: u64, length: u32) -> Option<bool> {
         if length == 0 || length > MAX_TABLE_LENGTH {
             return None;
@@ -285,7 +285,7 @@ fn root_table(reader: &PhysReader, rsdp_phys: u64) -> Result<(u64, u64), MadtRef
     if !signature_matches {
         return Err(MadtRefusal::RsdpSignature);
     }
-    // ACPI 1.0 RSDP: the first 20 bytes sum to zero.
+    // ACPI 1.0 RSDP: the first 20 bytes sum to 0 modulo 256.
     let first_20_ok = reader
         .checksum_ok(rsdp_phys, 20)
         .ok_or(MadtRefusal::AboveReadCeiling)?;

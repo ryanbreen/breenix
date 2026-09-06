@@ -13,13 +13,13 @@
 #
 # (a) is the enumeration claim: the count comes from the firmware's MADT, not
 # from a compile-time constant, so it MOVES with -smp. (b) is the
-# no-regression claim: the extra vCPUs change nothing about the boot, because
-# the kernel does not address them.
+# no-regression claim: the extra vCPUs leave the boot as it was, because the
+# kernel does not address them.
 #
 # WHAT HAPPENS TO THE EXTRA CPUs
 #
-# Nothing this kernel does. It sends no INIT/SIPI, writes no LAPIC register
-# and has no AP entry point (#814's census: `grep -rn "SIPI|LAPIC" kernel/src`
+# This kernel does not act on them. It sends no INIT/SIPI, writes no LAPIC
+# register and has no AP entry point (#814's census: `grep -rn "SIPI|LAPIC" kernel/src`
 # has no output). On a -smp 2 or -smp 4 boot, OVMF starts the application
 # processors during its own initialisation and parks them before handing over;
 # they stay parked, and the kernel schedules on the boot processor alone. That
@@ -107,8 +107,8 @@ marker_pattern_for_leg() {
     printf '%s' "\[X86_SMP_ENUM:madt_cpus=${leg}:enabled=${leg}:x2apic=[0-9]+:bsp_apic_id=[0-9]+:cpuid_logical=[0-9]+:present=1:online=1:max_cpus=1:src=madt:reason=none\]"
 }
 
-# The existing boot_tests pass markers this gate re-checks on every leg. They
-# are not new: run-x86-boot-tests.sh pins all three in its own poll condition.
+# The existing boot_tests pass markers this gate re-checks on each leg. They
+# are not new: run-x86-boot-tests.sh pins the same 3 in its own poll condition.
 # One is emitted from memory::init (before the enumeration runs), one from the
 # mid-boot process/reclaim cohort, and one is the test runner's terminal
 # verdict.
@@ -128,16 +128,16 @@ BUILD_LOG="$BREENIX_GATE_TMP/breenix_x86_smp_enum_build.log"
 mkdir -p "$BREENIX_GATE_TMP"
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi 2>&1 | tee "$BUILD_LOG"
 # Zero-warning law. grep exits 1 on the clean case, so the status is swallowed
-# in the group and awk -- which always exits 0 -- produces the number.
+# in the group and awk -- whose own exit status here is 0 -- produces the number.
 test "$( { grep -c '^warning' "$BUILD_LOG" || true; } | awk '{ print $1 + 0 }')" -eq 0
 
 BREENIX_PRINT_UEFI_IMAGE=1 cargo run --release \
     --features boot_tests,testing,external_test_bins --bin qemu-uefi >/dev/null
 # create-test-disk packs userspace/programs/*.elf without rebuilding them, so
-# repack every run to pick up rebuilt userspace.
+# repack on each run to pick up rebuilt userspace.
 rm -f target/test_binaries.img
 cargo run -p xtask -- create-test-disk
-# The ext2 image carries the same userspace binaries, so rebuild it every run.
+# The ext2 image carries the same userspace binaries, so rebuild it on each run.
 rm -f target/ext2.img
 ./scripts/create_ext2_disk.sh
 
@@ -186,7 +186,7 @@ for smp in "${SMP_LEGS[@]}"; do
         sleep 1
     done
 
-    # Own PID only: this gate never kills QEMU by name.
+    # Own PID only: this gate kills the process it started, not a process name.
     kill "$QEMU_PID" 2>/dev/null || true
     wait "$QEMU_PID" 2>/dev/null || true
 

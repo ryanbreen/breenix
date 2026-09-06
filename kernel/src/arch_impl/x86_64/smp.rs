@@ -8,10 +8,10 @@
 //! compile-time constant. That is the whole of it.
 //!
 //! It starts no processor. No INIT/SIPI sequence is sent, no APIC register is
-//! written, no trampoline exists, and `CPUS_ONLINE` is seeded at 1 and moved
-//! by nothing in this module. On a `-smp N` boot the other N-1 processors stay
+//! written, no trampoline exists, and `CPUS_ONLINE` is seeded at 1 and has no
+//! store site in this module. On a `-smp N` boot the other N-1 processors stay
 //! where the firmware left them: OVMF starts them during its own init and
-//! parks them, and this kernel never addresses them again. `online=1` in the
+//! parks them, and this kernel does not address them again. `online=1` in the
 //! marker below is that fact, reported rather than assumed.
 //!
 //! ## Two different numbers
@@ -51,8 +51,8 @@ const SOURCE_MADT: u32 = 1;
 const SOURCE_CPUID_FALLBACK: u32 = 2;
 
 /// Processors currently online, in the sense the scheduler means: entered and
-/// able to dispatch. Seeded at 1 for the boot processor, and moved by nothing
-/// in this PR — no AP is started.
+/// able to dispatch. Seeded at 1 for the boot processor, with no store site in
+/// this PR: no AP is started.
 static CPUS_ONLINE: AtomicU64 = AtomicU64::new(1);
 
 /// Processors this kernel's per-CPU state can address: the MADT count clamped
@@ -125,7 +125,7 @@ pub fn enumerated_cpu_count() -> usize {
     APIC_ID_COUNT.load(Ordering::Acquire) as usize
 }
 
-/// The APIC id recorded at `index`, or `None` past what was recorded.
+/// The APIC id recorded at `index`, if the enumeration recorded that many.
 pub fn apic_id_of(index: usize) -> Option<u32> {
     if index >= enumerated_cpu_count() {
         return None;
@@ -144,7 +144,7 @@ pub fn enumeration_source() -> EnumerationSource {
 
 /// Highest standard CPUID leaf this processor answers.
 fn cpuid_max_leaf() -> u32 {
-    // SAFETY: CPUID leaf 0 is architecturally present on every x86_64.
+    // SAFETY: CPUID leaf 0 is architecturally present on x86_64.
     unsafe { __cpuid(0) }.eax
 }
 
@@ -190,7 +190,7 @@ fn cpuid_bsp_apic_id() -> u32 {
 ///
 /// Called from `kernel_main` after `memory::init` has installed the master
 /// kernel page table, because the MADT walk reads physical memory through the
-/// bootloader's offset window (see `super::acpi`). Nothing here starts a
+/// bootloader's offset window (see `super::acpi`). This path starts no
 /// processor.
 pub fn init(rsdp_phys: Option<u64>, physical_memory_offset: u64) {
     if INITIALIZED.swap(true, Ordering::AcqRel) {

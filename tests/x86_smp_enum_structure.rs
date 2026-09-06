@@ -6,9 +6,10 @@
 //!    `kernel/src`, and `docker/qemu/run-x86-smp-enum-gate.sh` pins it by
 //!    shape on the `-smp 1`, `-smp 2` and `-smp 4` legs. A second emission
 //!    site would make the gate's "exactly one line" count ambiguous; a gate
-//!    that stopped naming the legs would stop proving that the count MOVES.
-//! 2. The MADT reader allocates nothing and every walk in it is bounded by a
-//!    constant, not only by a length the table itself supplies. This is the
+//!    that stopped naming the legs could no longer tell a moving count from a
+//!    hardcoded one.
+//! 2. The MADT reader performs no allocation, and each walk in it is bounded
+//!    by a constant, not only by a length the table itself supplies. This is the
 //!    property that lets the reader run at boot on firmware-owned memory
 //!    without a heap and without a malformed table wedging it.
 //! 3. `Scheduler::online_cpu_count()`'s x86 arm reads the enumeration's
@@ -36,7 +37,7 @@ fn read(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
-/// Every `.rs` file below `kernel/src`, as (path, text) pairs.
+/// Each `.rs` file below `kernel/src`, as (path, text) pairs.
 fn kernel_sources() -> Vec<(String, String)> {
     fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
         for entry in fs::read_dir(dir).expect("read kernel source directory") {
@@ -204,7 +205,7 @@ fn every_walk_in_the_madt_reader_is_bounded_by_a_constant() {
     let acpi = read("kernel/src/arch_impl/x86_64/acpi.rs");
 
     // Each bound is checked where it binds, not merely somewhere in the file:
-    // a constant that is declared and unused bounds nothing.
+    // a constant that is declared and unused bounds no loop.
     let entry_walk = function_body(&acpi, "census_of_madt");
     let while_lines: Vec<&str> = entry_walk
         .lines()
@@ -263,7 +264,7 @@ fn the_x86_online_count_reads_the_enumeration_and_max_cpus_is_still_one() {
     );
 
     // The boundary this PR does not cross. If MAX_CPUS moves off 1 on x86,
-    // placement can index a CPU that nothing runs on, which is the failure
+    // placement can index a CPU with no thread running on it, which is the
     // #629's body describes -- and this ratchet's message is where a future
     // PR-6 should look first.
     let max_cpus: Vec<&str> = scheduler
@@ -286,7 +287,7 @@ fn the_x86_online_count_reads_the_enumeration_and_max_cpus_is_still_one() {
 
 /// ANTI-VACUITY: the two predicates this file leans on must fire on the real
 /// shapes they claim to, in both directions. Without this, an emission-site
-/// census that matched nothing and a function-body reader that returned an
+/// census that matched no line and a function-body reader that returned an
 /// empty string would both report green.
 #[test]
 fn the_predicates_are_not_vacuous() {
