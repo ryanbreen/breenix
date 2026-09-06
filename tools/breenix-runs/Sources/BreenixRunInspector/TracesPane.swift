@@ -88,7 +88,7 @@ private struct BootFactsRow: View {
                     .fontWeight(.semibold)
                 Spacer()
                 if let lineNumber = record.lineNumber {
-                    Text("L\(lineNumber)")
+                    Text(lineLabel(lineNumber: lineNumber, sourceFile: record.sourceFile))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -100,6 +100,13 @@ private struct BootFactsRow: View {
         }
         .padding(.vertical, 4)
     }
+}
+
+private func lineLabel(lineNumber: Int, sourceFile: String?) -> String {
+    if let sourceFile {
+        return "\(sourceFile):L\(lineNumber)"
+    }
+    return "L\(lineNumber)"
 }
 
 private struct BXCAPCaptureRow: View {

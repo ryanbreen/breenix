@@ -12,10 +12,11 @@ public struct BootFactsHostMilliseconds: Codable, Equatable, Sendable {
 
 public struct BootFactsRecord: Codable, Equatable, Sendable, Identifiable {
     public var id: String {
+        let source = sourceFile ?? "-"
         if let lineNumber {
-            return "\(lineNumber)-\(boot)-\(raw)"
+            return "\(source)-\(lineNumber)-\(boot)-\(raw)"
         }
-        return "\(boot)-\(raw)"
+        return "\(source)-\(boot)-\(raw)"
     }
 
     public var boot: Int
@@ -23,19 +24,22 @@ public struct BootFactsRecord: Codable, Equatable, Sendable, Identifiable {
     public var hostMilliseconds: BootFactsHostMilliseconds?
     public var raw: String
     public var lineNumber: Int?
+    public var sourceFile: String?
 
     public init(
         boot: Int,
         fields: [String: String],
         hostMilliseconds: BootFactsHostMilliseconds? = nil,
         raw: String,
-        lineNumber: Int? = nil
+        lineNumber: Int? = nil,
+        sourceFile: String? = nil
     ) {
         self.boot = boot
         self.fields = fields
         self.hostMilliseconds = hostMilliseconds
         self.raw = raw
         self.lineNumber = lineNumber
+        self.sourceFile = sourceFile
     }
 }
 

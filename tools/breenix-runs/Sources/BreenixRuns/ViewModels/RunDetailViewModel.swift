@@ -19,7 +19,7 @@ public struct RunDetailViewModel: Equatable, Sendable {
     public static func load(manifest: RunManifest, store: RunStore) throws -> RunDetailViewModel {
         let serialIndex = try scanSerials(manifest: manifest, store: store)
         let catalog = try StageCatalog.load(for: manifest.arch)
-        let gateStdoutText = try readGateStdoutText(manifest: manifest, store: store)
+        let gateStdoutText = try store.readGateStdoutText(manifest: manifest)
         return RunDetailViewModel(manifest: manifest, serialIndex: serialIndex, catalog: catalog, gateStdoutText: gateStdoutText)
     }
 
@@ -47,25 +47,5 @@ public struct RunDetailViewModel: Equatable, Sendable {
             return URL(fileURLWithPath: serial.path)
         }
         return store.runDirectory(id: manifest.id).appendingPathComponent(serial.path)
-    }
-
-    private static func readGateStdoutText(manifest: RunManifest, store: RunStore) throws -> String {
-        let chunks = try manifest.captures
-            .filter { $0.name == "gate-stdout.txt" }
-            .compactMap { capture -> String? in
-                let url = captureURL(capture, manifest: manifest, store: store)
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    return nil
-                }
-                return String(decoding: try Data(contentsOf: url), as: UTF8.self)
-            }
-        return chunks.joined(separator: "\n")
-    }
-
-    private static func captureURL(_ capture: CaptureRef, manifest: RunManifest, store: RunStore) -> URL {
-        if capture.path.hasPrefix("/") {
-            return URL(fileURLWithPath: capture.path)
-        }
-        return store.runDirectory(id: manifest.id).appendingPathComponent(capture.path)
     }
 }

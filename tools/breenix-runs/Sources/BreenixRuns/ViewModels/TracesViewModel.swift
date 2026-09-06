@@ -12,19 +12,23 @@ public struct TracesViewModel: Equatable, Sendable {
     }
 
     public static func build(serialIndex: SerialIndex, gateStdoutText: String) -> TracesViewModel {
-        let serialText = mergedText(from: serialIndex)
-        let bootFactsText = [serialText, gateStdoutText]
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
+        let serialFacts = BootFactsParser.parse(serialLines: serialIndex.lines)
+            .map { record in
+                var record = record
+                record.sourceFile = "serial.txt"
+                return record
+            }
+        let gateStdoutFacts = BootFactsParser.parse(text: gateStdoutText)
+            .map { record in
+                var record = record
+                record.sourceFile = "gate-stdout.txt"
+                return record
+            }
 
         return TracesViewModel(
-            hostFacts: BootFactsParser.parse(text: bootFactsText),
+            hostFacts: serialFacts + gateStdoutFacts,
             bxcap: BXCAPDecoder.decode(serialLines: serialIndex.lines),
             fatalRegs: FatalRegsDecoder.decode(serialLines: serialIndex.lines)
         )
-    }
-
-    private static func mergedText(from index: SerialIndex) -> String {
-        index.lines.map(\.text).joined(separator: "\n")
     }
 }

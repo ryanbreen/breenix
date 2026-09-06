@@ -54,7 +54,7 @@ public enum RunShow {
             sections.append(renderMessages(index: serialIndex))
         }
         if options.traces {
-            let gateStdoutText = try readGateStdoutText(manifest: manifest, store: store)
+            let gateStdoutText = try store.readGateStdoutText(manifest: manifest)
             sections.append(renderTraces(TracesViewModel.build(serialIndex: serialIndex, gateStdoutText: gateStdoutText)))
         }
 
@@ -153,13 +153,23 @@ public enum RunShow {
         }
 
         for record in records {
-            let lineText = record.lineNumber.map { " L\($0)" } ?? ""
+            let lineText = hostFactLineText(record)
             lines.append("boot \(record.boot)\(lineText)")
             for key in record.fields.keys.sorted() {
                 lines.append("  \(key)=\(record.fields[key] ?? "")")
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func hostFactLineText(_ record: BootFactsRecord) -> String {
+        guard let lineNumber = record.lineNumber else {
+            return ""
+        }
+        if let sourceFile = record.sourceFile {
+            return " \(sourceFile):L\(lineNumber)"
+        }
+        return " L\(lineNumber)"
     }
 
     private static func renderBXCAP(_ result: BXCAPDecodeResult) -> String {
@@ -209,25 +219,5 @@ public enum RunShow {
             }
         }
         return lines.joined(separator: "\n")
-    }
-
-    private static func readGateStdoutText(manifest: RunManifest, store: RunStore) throws -> String {
-        let chunks = try manifest.captures
-            .filter { $0.name == "gate-stdout.txt" }
-            .compactMap { capture -> String? in
-                let url = captureURL(capture, manifest: manifest, store: store)
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    return nil
-                }
-                return String(decoding: try Data(contentsOf: url), as: UTF8.self)
-            }
-        return chunks.joined(separator: "\n")
-    }
-
-    private static func captureURL(_ capture: CaptureRef, manifest: RunManifest, store: RunStore) -> URL {
-        if capture.path.hasPrefix("/") {
-            return URL(fileURLWithPath: capture.path)
-        }
-        return store.runDirectory(id: manifest.id).appendingPathComponent(capture.path)
     }
 }
