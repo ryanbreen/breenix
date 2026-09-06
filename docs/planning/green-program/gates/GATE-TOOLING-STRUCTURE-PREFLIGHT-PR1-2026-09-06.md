@@ -164,6 +164,58 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 Removing the wiring from one gate reddens the suite and names that exact
 gate; reverting restores a clean, byte-identical file and a green suite.
 
+## Isolated preflight time cost
+
+Every timing figure earlier in this document (`Duration: 508s` in the
+strict-gate run below) is an AGGREGATE: the one-time preflight plus the
+whole boot loop that follows it, with no breakdown between the two. That
+aggregate does not by itself show what the preflight adds, because
+`scripts/run-structure-tests.sh` recompiles every `tests/*_structure.rs`
+file (47/47 discovered today, the same count the `[GATE_PREFLIGHT:
+structure_suites=...]` line below reports) from scratch on every call --
+no mtime check, no cache, nothing reused between the four gates' four
+separate invocations -- so this cost is paid in full, every time, on
+every one of the four gates this round wires it into.
+
+Measured standalone (`gate_structure_preflight` alone, sourced and called
+directly, outside any boot loop or kernel build), fresh for this round's
+review-fix pass, on both hosts these four gates actually run on:
+
+```
+# Apple Silicon Mac (this worktree, native macOS rustc; 47/47 suites)
+$ time bash -c 'source docker/qemu/lib/gate-structure-preflight.sh; \
+    gate_structure_preflight "$PWD" "$BREENIX_GATE_TMP"'
+[GATE_PREFLIGHT:structure_suites=47/47:critical_path_lines=275:pinned=136]
+real 126.70
+user 448.58
+sys 10.45
+```
+
+```
+# beast, breenix-x86 Incus container (own clone at /root/breenix-gw,
+# checked out at this branch's own c147024f54f5b4a56c8541334534a77c318d2b5e;
+# 47/47 suites; this is the actual host run-x86-boot-tests.sh and
+# run-x86-prod-profile-boot-test.sh execute in for merge-gating)
+$ bash -c 'TIMEFORMAT="real %R user %U sys %S"; \
+    source docker/qemu/lib/gate-structure-preflight.sh; \
+    time gate_structure_preflight /root/breenix-gw "$BREENIX_GATE_TMP"'
+[GATE_PREFLIGHT:structure_suites=47/47:critical_path_lines=275:pinned=136]
+real 331.463 user 1140.895 sys 19.307
+```
+
+So the preflight's own isolated share is ~127s (about two minutes) on the
+Mac and ~331s (about five and a half minutes) on beast -- the host that
+matters for the two x86 gates, `run-x86-boot-tests.sh` and
+`run-x86-prod-profile-boot-test.sh`. Those two gates' own boot loops
+already run ~8 minutes each under TCG (per this repository's own
+documented beast timing), so this preflight roughly doubles each x86
+gate's total wall-clock cost, in addition to the boot loop it already
+paid. Both aarch64 gates pay the smaller (~2min-scale) Mac-class number on
+top of their own boot loops, since the aarch64 gates run natively on this
+Mac, not in the beast container. `BREENIX_GATE_SKIP_STRUCTURE=1` is the
+documented opt-out for a caller that has already paid this cost earlier in
+the same session and does not want to pay it again.
+
 ## Evidence
 
 ### 47 of 47 `tests/*_structure.rs` suites, standalone, on this branch

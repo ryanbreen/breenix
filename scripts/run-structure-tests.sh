@@ -13,12 +13,22 @@
 # are std-only and depend on no crate in this workspace -- they read the tree
 # from disk -- so `rustc --test` compiles and runs them directly.
 #
-# WHAT THIS DOES NOT DO
+# WHAT THIS DOES AND DOES NOT DO
 #
-# It does not run in any gate. No gate script under docker/qemu/ invokes it, and
-# this repository has no GitHub Actions CI, so a ratchet in one of these files
-# is enforced only when a person or an agent runs this script. Wiring it into a
-# gate is a separate change with its own review.
+# As of R191/PR-1 (docs/planning/green-program/gates/
+# GATE-TOOLING-STRUCTURE-PREFLIGHT-PR1-2026-09-06.md), this script DOES run in
+# a gate: docker/qemu/lib/gate-structure-preflight.sh's
+# gate_structure_preflight function calls it once per discovered
+# tests/*_structure.rs file, and all four boot gates (4/4, pinned by
+# tests/gate_structure_preflight_wiring_structure.rs) --
+# run-aarch64-boot-test-strict.sh, run-aarch64-prod-profile-boot-test.sh,
+# run-x86-boot-tests.sh and run-x86-prod-profile-boot-test.sh -- source that
+# lib and call the function before building or booting anything, so a ratchet
+# in one of these files is now enforced on every one of those four gate runs,
+# not only when a person or an agent runs this script by hand. This
+# repository still has no GitHub Actions CI, so nothing runs a gate on every
+# commit automatically; the ratchet's enforcement is tied to a gate
+# invocation, whoever or whatever triggers it.
 #
 # Usage:
 #   scripts/run-structure-tests.sh                       # teardown_structure, whole file

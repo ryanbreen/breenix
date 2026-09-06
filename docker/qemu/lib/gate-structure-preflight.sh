@@ -32,6 +32,22 @@
 # each of the four callers below places it before its own kernel build step
 # regardless, so the two never interleave in the first place.
 #
+# COST, measured (not asserted): step (a) below recompiles all 47 (47/47
+# discovered at the time of writing) `tests/*_structure.rs` suites from
+# scratch on every call -- `scripts/run-structure-tests.sh` has no
+# mtime/staleness check, so nothing is cached or reused across the four
+# gates' four separate invocations of this function. Standalone (this
+# function alone, outside any boot loop), freshly measured on two hosts:
+# ~127s wall-clock on an Apple Silicon Mac (macOS, native rustc), and
+# ~331s (5m31s) wall-clock in the beast x86 Incus container (Linux, the
+# actual host run-x86-boot-tests.sh and run-x86-prod-profile-boot-test.sh
+# execute in for merge-gating) -- see the "Isolated preflight time cost"
+# section of docs/planning/green-program/gates/
+# GATE-TOOLING-STRUCTURE-PREFLIGHT-PR1-2026-09-06.md for the full method
+# and both hosts' numbers. This is paid in full on every one of the four
+# gates' runs; on the x86 host it adds several minutes on top of that
+# gate's own boot loop.
+#
 # BREENIX_GATE_SKIP_STRUCTURE=1: loud, operator-set opt-out. Skips both
 # steps below (no suite runs, no census-count read) and prints a
 # `[GATE_PREFLIGHT:skipped=1:reason=...]` line instead of the scored one --
@@ -111,7 +127,7 @@ gate_structure_preflight() {
         else
             red_stems="$red_stems $stem"
         fi
-    done < <(cd "$tests_dir" 2>/dev/null && ls -1 *_structure.rs 2>/dev/null | sed 's/\.rs$//' | sort)
+    done < <(cd "$tests_dir" 2>/dev/null && find . -maxdepth 1 -type f -name '*_structure.rs' -print 2>/dev/null | sed 's|^\./||; s/\.rs$//' | sort)
 
     local critical_path_lines=0
     local checker="$repo_root/scripts/check-critical-path-violations.sh"
