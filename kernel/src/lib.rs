@@ -79,6 +79,10 @@ pub mod capture;
 // of it: that directory forbids `panic!` and this module's job is to raise one.
 #[cfg(feature = "capture_panic_oracle")]
 pub mod capture_oracle;
+// The BXCAP `edge=LOCKUP` oracle. AArch64 only: the soft-lockup detector it
+// drives, and the CPU-pinned spawn it needs, exist on that arch alone.
+#[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
+pub mod capture_lockup_oracle;
 // Kernel log ring buffer for /proc/kmsg
 pub mod log_buffer;
 // Parallel boot test framework and BTRT

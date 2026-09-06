@@ -1202,9 +1202,10 @@ pub struct SchedulerLivenessSnapshot {
 /// `try_lock` is still right for the acquisition itself: a busy lock here means
 /// a peer CPU holds it, and a watchdog snapshot must not wait on that.
 ///
-/// Callers: 0 in this tree today; this is the AArch64 soft-lockup watchdog's
-/// snapshot API, and `--gc-sections` drops it from the shipped kernel. The mask
-/// is here so the caller that lands does not have to rediscover R153.
+/// Callers: 1 in this tree today -- `capture::sections::sample_threads`, which
+/// is the BXCAP `THR` section's one scheduler read and therefore the read the
+/// AArch64 soft-lockup watchdog now reaches through `capture::emit`. The mask
+/// is here so that caller does not have to rediscover R153.
 /// `tests/teardown_structure.rs::scheduler_lock_acquisitions_are_irq_safe_by_shape`
 /// reddens if it is removed.
 ///
@@ -1245,6 +1246,43 @@ pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot>
     })
 }
 
+/// Hold the REAL scheduler guard, with local IRQ/FIQ masked, for as long as
+/// `body` runs -- the `capture_lockup_oracle` coordinator's one primitive.
+///
+/// This is not a second acquisition helper for production use. It exists so
+/// that the oracle's stall is a genuine peer-held scheduler mutex rather than a
+/// forced refusal return value: the watchdog on CPU0 must fail a real
+/// `try_lock` against a real holder, or the capture it produces proves nothing
+/// about the arm it claims to repair.
+/// claim-lint:ok: the hold is measured -- rcpt_acquired=1, rcpt_cpu=1 and
+/// rcpt_held_ticks=5128 on 2 of 2 episodes in
+/// docs/planning/green-program/failure-capture/serials/pr7/receipts.txt
+///
+/// Shape, deliberately: the guard is taken with `try_lock_scheduler` inside
+/// `without_interrupts`, `guard.as_ref()` must yield an initialized scheduler,
+/// and the guard stays alive inside that masked closure until `body` returns.
+/// Refusal is returned explicitly as `false`; there is no blocking acquisition,
+/// no guard leak and no force-unlock. `body` runs with the guard held on this
+/// CPU with interrupts masked, so it may do nothing but read/write atomics and
+/// spin -- no output, no allocation, no scheduler call.
+/// claim-lint:ok: the acquisition shape is machine-checked by
+/// tests/teardown_structure.rs::scheduler_lock_acquisitions_are_irq_safe_by_shape,
+/// which admits this site by its local mask with no exemption
+#[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
+pub fn with_lockup_oracle_hold<F: FnOnce()>(body: F) -> bool {
+    without_interrupts(|| {
+        let Some(guard) = try_lock_scheduler() else {
+            return false;
+        };
+        if guard.as_ref().is_none() {
+            return false;
+        }
+        body();
+        drop(guard);
+        true
+    })
+}
+
 /// Try to get a snapshot of scheduler state without blocking.
 /// Returns None if the scheduler lock is held (which is itself diagnostic).
 ///
@@ -1253,10 +1291,14 @@ pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot>
 /// and walks the thread table while holding the guard, so wrapping it in
 /// `arch_without_interrupts` would put an unbounded allocating walk inside a
 /// no-interrupt window -- the same trade `release_reclaimed_threads` declines on
-/// x86_64. What makes it safe instead is its caller set: both callers today are
-/// interrupt or exception context (`arch_impl/aarch64/timer_interrupt.rs` and
-/// `arch_impl/aarch64/exception.rs`), where the hardware has already masked on
-/// entry.
+/// x86_64. What makes it safe instead is its caller set: the 1 caller today is
+/// exception context (`arch_impl/aarch64/exception.rs`), where the hardware has
+/// already masked on entry. The soft-lockup dump in
+/// `arch_impl/aarch64/timer_interrupt.rs` was the second caller until PR-7 of
+/// the failure-capture plan removed it; it now reaches the scheduler through
+/// `try_liveness_snapshot` instead, so no allocation happens on that IRQ path.
+/// This function itself still allocates, which is why the exception caller is
+/// disclosed rather than described as allocation-free.
 ///
 /// That condition is machine-checked, not asserted: this is one of the 6 sites
 /// `tests/teardown_structure.rs::scheduler_lock_acquisitions_are_irq_safe_by_shape`

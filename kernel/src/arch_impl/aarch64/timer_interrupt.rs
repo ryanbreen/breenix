@@ -185,8 +185,8 @@ static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 //
 // Detects when no context switch, syscall, or boot-test coordinator heartbeat
 // has occurred for LOCKUP_THRESHOLD_TICKS timer interrupts. When triggered,
-// dumps diagnostic state to serial using lock-free raw_serial_str(). Fires once
-// per stall and resets when one of those liveness signals resumes.
+// it frames one bounded BXCAP capture with lock-free raw_serial_str() banners.
+// Fires once per stall and resets when one of those liveness signals resumes.
 
 /// Threshold in CPU0-local timer ticks before declaring a soft lockup.
 const LOCKUP_THRESHOLD_TICKS: u64 = TARGET_TIMER_HZ * 5;
@@ -222,6 +222,15 @@ static WATCHDOG_REPORTED: core::sync::atomic::AtomicBool =
 #[inline(always)]
 pub fn record_exit_kick_gate_watchdog_heartbeat() {
     EXIT_KICK_GATE_WATCHDOG_HEARTBEAT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Read the exit-kick coordinator heartbeat, for the `capture_lockup_oracle`
+/// coordinator's own liveness sampling. It reads the counter the detector
+/// reads; it does not write it, because a write would be a liveness signal that
+/// suppresses the report the oracle exists to observe.
+#[cfg(feature = "capture_lockup_oracle")]
+pub fn exit_kick_gate_watchdog_heartbeat() -> u64 {
+    EXIT_KICK_GATE_WATCHDOG_HEARTBEAT.load(Ordering::Relaxed)
 }
 
 /// Initialize the timer interrupt system
@@ -992,10 +1001,12 @@ fn print_hex_u64(val: u64) {
 ///
 /// Compares the current liveness counters against their last observed values.
 /// If no context switches, syscalls, or boot-test coordinator heartbeats occur for
-/// LOCKUP_THRESHOLD_TICKS CPU0-local timer interrupts (~5 seconds), reports
-/// the stall with scheduler/process state:
-/// - If the scheduler lock is held → likely deadlock, report immediately
-/// - If the ready queue has threads → scheduler is stuck, report
+/// LOCKUP_THRESHOLD_TICKS CPU0-local timer interrupts (~5 seconds), it reports
+/// the stall once through `dump_lockup_state`, which frames one bounded
+/// `BXCAP` capture. The report does not branch on the scheduler or process
+/// lock: the capture's own `THR` section asks for the scheduler lock without
+/// waiting and reports a refusal as `[BXCAP:NOTE sched_lock_held]` after the
+/// lock-independent sections are already on the wire.
 fn check_soft_lockup(cpu0_tick: u64) {
     let ctx_count = crate::task::scheduler::context_switch_count();
     let last_ctx = WATCHDOG_LAST_CTX_SWITCH.load(Ordering::Relaxed);
@@ -1048,229 +1059,65 @@ fn check_soft_lockup(cpu0_tick: u64) {
 
     let stall_ticks = cpu0_tick.wrapping_sub(stall_start);
     if stall_ticks >= LOCKUP_THRESHOLD_TICKS && !WATCHDOG_REPORTED.load(Ordering::Relaxed) {
-        // Always report stall — even if ready_queue is empty, userspace threads
-        // might be stuck in BlockedOnTimer/Blocked state without being woken.
-        // The dump includes per-thread state so we can diagnose the exact issue.
+        // Report the stall even when ready_queue is empty: userspace
+        // threads might be stuck in BlockedOnTimer/Blocked state without being
+        // woken. The latch below makes this once per uninterrupted episode; it
+        // is cleared again above the moment one of the liveness signals moves.
         WATCHDOG_REPORTED.store(true, Ordering::Relaxed);
         dump_lockup_state(stall_ticks);
     }
 }
 
 /// Dump diagnostic state when a soft lockup is detected.
-/// Uses only lock-free serial output — safe to call from interrupt context.
+///
+/// The report is five raw string writes -- an opening banner, the stalled
+/// duration in seconds and in ticks, and a closing banner -- around one
+/// `crate::capture::emit` call. Everything the old report gathered by hand
+/// (scheduler rows, process rows, the whole-machine trace dump, a hand-rolled
+/// counter list) now comes from the bounded `BXCAP` emitter instead, so this
+/// function reaches no allocating snapshot API from the timer IRQ.
+///
+/// `EDGE.a0` is the stalled CPU0-local tick count; `EDGE.a1` is
+/// `TARGET_TIMER_HZ`, the ticks-per-second that a0 is denominated in. A reader
+/// divides one by the other rather than assuming this kernel's tick rate.
+///
+/// What this costs, stated rather than hidden: on a successful scheduler
+/// acquisition the old report printed each thread's ELR/x30/SP, its inline
+/// schedule stack scan, ready-queue membership, PID/name and per-thread flags.
+/// `BXCAP`'s `THR` section carries per-CPU aggregate rows instead. What it buys
+/// is the other arm: a refused scheduler lock now still yields `EV`/`CNT`/`RING`
+/// plus `[BXCAP:NOTE sched_lock_held]` rather than a single `HELD` line. See
+/// docs/planning/green-program/failure-capture/PR-7-2026-09-06.md.
+///
+/// `#[cold]` and `#[inline(never)]` for the same reason `capture::emit` carries
+/// them: this is a failure-edge dump, and its frame and its constants do not
+/// belong in the tick path that merely references it.
+/// claim-lint:ok: the flagged word is inside the attribute name
+/// `#[inline(never)]`, not a claim; the same annotation and the same reasoning are
+/// on `capture::emit` in kernel/src/capture/mod.rs
+#[cold]
+#[inline(never)]
 fn dump_lockup_state(stall_ticks: u64) {
     raw_serial_str(b"\n\n!!! SOFT LOCKUP DETECTED !!!\n");
-    raw_serial_str(b"No context switch for ~");
+    raw_serial_str(b"No watchdog progress for ~");
     print_timer_count_decimal(stall_ticks / TARGET_TIMER_HZ);
     raw_serial_str(b" seconds (");
     print_timer_count_decimal(stall_ticks);
     raw_serial_str(b" ticks)\n");
-    crate::tracing::disable();
 
-    // Try to get scheduler info without blocking (try_lock)
-    // If the scheduler lock is held, that itself is diagnostic info
-    raw_serial_str(b"Scheduler lock: ");
-    // We use the global SCHEDULER directly via the public with_scheduler_try_lock helper
-    if let Some(info) = crate::task::scheduler::try_dump_state() {
-        raw_serial_str(b"acquired\n");
-        raw_serial_str(b"  Ready queue length: ");
-        print_timer_count_decimal(info.ready_queue_len);
-        raw_serial_str(b"\n  Total threads: ");
-        print_timer_count_decimal(info.total_threads);
-        raw_serial_str(b"\n  Blocked threads: ");
-        print_timer_count_decimal(info.blocked_count);
-
-        // Per-CPU current/previous threads
-        raw_serial_str(b"\n  Per-CPU state:\n");
-        for cpu in 0..crate::arch_impl::aarch64::smp::MAX_CPUS.min(info.per_cpu_current.len()) {
-            raw_serial_str(b"    CPU ");
-            raw_serial_char(b'0' + cpu as u8);
-            raw_serial_str(b": current=");
-            print_timer_count_decimal(info.per_cpu_current[cpu]);
-            raw_serial_str(b" previous=");
-            print_timer_count_decimal(info.per_cpu_previous[cpu]);
-            raw_serial_str(b"\n");
-        }
-
-        // Ready queue contents
-        raw_serial_str(b"  Ready queue: [");
-        for (i, &tid) in info.ready_queue_ids.iter().enumerate() {
-            if i > 0 {
-                raw_serial_str(b", ");
-            }
-            print_timer_count_decimal(tid);
-        }
-        raw_serial_str(b"]\n");
-
-        // Per-thread state (state names: R=Ready, X=Running, B=Blocked, S=Signal, C=ChildExit, T=Timer, D=Terminated)
-        raw_serial_str(b"  Threads:\n");
-        for t in &info.threads {
-            raw_serial_str(b"    tid=");
-            print_timer_count_decimal(t.id);
-            raw_serial_str(b" state=");
-            let state_ch = match t.state {
-                0 => b'R', // Ready
-                1 => b'X', // Running
-                2 => b'B', // Blocked
-                3 => b'S', // BlockedOnSignal
-                4 => b'C', // BlockedOnChildExit
-                5 => b'T', // BlockedOnTimer
-                6 => b'D', // Terminated
-                _ => b'?',
-            };
-            raw_serial_char(state_ch);
-            if t.blocked_in_syscall {
-                raw_serial_str(b" bis");
-            }
-            if t.saved_by_inline_schedule {
-                raw_serial_str(b" inl");
-            }
-            if t.has_wake_time {
-                raw_serial_str(b" wt");
-            }
-            if t.privilege == 1 {
-                raw_serial_str(b" user");
-            }
-            if t.owner_pid != 0 {
-                raw_serial_str(b" pid=");
-                print_timer_count_decimal(t.owner_pid);
-            }
-            raw_serial_str(b" elr=");
-            crate::arch_impl::aarch64::context_switch::raw_uart_hex(t.elr_el1);
-            raw_serial_str(b" x30=");
-            crate::arch_impl::aarch64::context_switch::raw_uart_hex(t.x30);
-            raw_serial_str(b" sp=");
-            crate::arch_impl::aarch64::context_switch::raw_uart_hex(t.sp);
-            if t.saved_by_inline_schedule
-                && t.sp >= 0xFFFF_0000_5200_0000
-                && t.sp < 0xFFFF_0000_5600_0000
-            {
-                let mut saved_lr_rel = i64::MIN;
-                let mut rel = -0x80i64;
-                while rel <= 0x100 {
-                    let addr = if rel < 0 {
-                        t.sp.wrapping_sub((-rel) as u64)
-                    } else {
-                        t.sp.wrapping_add(rel as u64)
-                    };
-                    let slot = unsafe { core::ptr::read_volatile(addr as *const u64) };
-                    if slot == t.inline_schedule_caller_lr {
-                        saved_lr_rel = rel;
-                        break;
-                    }
-                    rel += 8;
-                }
-                raw_serial_str(b" saved_lr=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(
-                    t.inline_schedule_caller_lr,
-                );
-                raw_serial_str(b" saved_sp=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(
-                    t.inline_schedule_saved_sp,
-                );
-                raw_serial_str(b" sp_delta=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(
-                    t.sp.wrapping_sub(t.inline_schedule_saved_sp),
-                );
-                raw_serial_str(b" lr_rel=");
-                if saved_lr_rel == i64::MIN {
-                    raw_serial_str(b"none");
-                } else {
-                    if saved_lr_rel < 0 {
-                        raw_serial_str(b"-");
-                        crate::arch_impl::aarch64::context_switch::raw_uart_hex(
-                            (-saved_lr_rel) as u64,
-                        );
-                    } else {
-                        crate::arch_impl::aarch64::context_switch::raw_uart_hex(saved_lr_rel as u64);
-                    }
-                }
-                let frame20 = unsafe { core::ptr::read_volatile((t.sp + 0x20) as *const u64) };
-                let frame30 = unsafe { core::ptr::read_volatile((t.sp + 0x30) as *const u64) };
-                let frame40 = unsafe { core::ptr::read_volatile((t.sp + 0x40) as *const u64) };
-                let frame50 = unsafe { core::ptr::read_volatile((t.sp + 0x50) as *const u64) };
-                let frame60 = unsafe { core::ptr::read_volatile((t.sp + 0x60) as *const u64) };
-                let frame70 = unsafe { core::ptr::read_volatile((t.sp + 0x70) as *const u64) };
-                raw_serial_str(b" f20=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame20);
-                raw_serial_str(b" f30=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame30);
-                raw_serial_str(b" f40=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame40);
-                raw_serial_str(b" f50=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame50);
-                raw_serial_str(b" f60=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame60);
-                raw_serial_str(b" f70=");
-                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame70);
-            }
-            raw_serial_str(b"\n");
-        }
-
-        raw_serial_str(b"\n  Deferred requeue snapshots:\n");
-        crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
-
-        raw_serial_str(b"\n  Trace buffers:\n");
-        crate::tracing::dump_all_buffers();
-    } else {
-        raw_serial_str(b"HELD (possible deadlock)\n");
-    }
-
-    // Try to get process manager info
-    raw_serial_str(b"Process manager lock: ");
-    if let Some(info) = crate::process::try_dump_state() {
-        raw_serial_str(b"acquired\n");
-        raw_serial_str(b"  Total processes: ");
-        print_timer_count_decimal(info.total_processes);
-        raw_serial_str(b"\n  Running: ");
-        print_timer_count_decimal(info.running_count);
-        raw_serial_str(b"\n  Blocked: ");
-        print_timer_count_decimal(info.blocked_count);
-        raw_serial_str(b"\n");
-        // Dump individual process names and states
-        for p in &info.processes {
-            raw_serial_str(b"  PID ");
-            print_timer_count_decimal(p.pid);
-            raw_serial_str(b" [");
-            raw_serial_str(p.state_str.as_bytes());
-            raw_serial_str(b"] ");
-            raw_serial_str(p.name.as_bytes());
-            raw_serial_str(b"\n");
-        }
-    } else {
-        raw_serial_str(b"HELD (possible deadlock)\n");
-    }
-
-    // Dump trace counters (lock-free atomics, always safe from interrupt context)
-    dump_trace_counters();
+    crate::capture::emit(crate::capture::Edge::Lockup, stall_ticks, TARGET_TIMER_HZ);
 
     raw_serial_str(b"!!! END SOFT LOCKUP DUMP !!!\n\n");
 }
 
-/// Dump trace counter values using lock-free serial output.
-/// Safe to call from interrupt context since TraceCounter uses per-CPU atomics.
-fn dump_trace_counters() {
-    use crate::tracing::providers::counters;
-
-    raw_serial_str(b"Trace counters:\n");
-
-    raw_serial_str(b"  SYSCALL_TOTAL:    ");
-    print_timer_count_decimal(counters::SYSCALL_TOTAL.aggregate());
-    raw_serial_str(b"\n  IRQ_TOTAL:        ");
-    print_timer_count_decimal(counters::IRQ_TOTAL.aggregate());
-    raw_serial_str(b"\n  CTX_SWITCH_TOTAL: ");
-    print_timer_count_decimal(counters::CTX_SWITCH_TOTAL.aggregate());
-    raw_serial_str(b"\n  TIMER_TICK_TOTAL: ");
-    print_timer_count_decimal(counters::TIMER_TICK_TOTAL.aggregate());
-    raw_serial_str(b"\n  FORK_TOTAL:       ");
-    print_timer_count_decimal(counters::FORK_TOTAL.aggregate());
-    raw_serial_str(b"\n  EXEC_TOTAL:       ");
-    print_timer_count_decimal(counters::EXEC_TOTAL.aggregate());
-    raw_serial_str(b"\n  Global ticks:     ");
-    print_timer_count_decimal(crate::time::get_ticks());
-    raw_serial_str(b"\n  Timer IRQ count:  ");
-    print_timer_count_decimal(TIMER_INTERRUPT_COUNT.load(Ordering::Relaxed));
-    raw_serial_str(b"\n");
+/// The detector's real threshold, readable by the `capture_lockup_oracle`
+/// coordinator so that its hold is derived from the constant this file
+/// enforces rather than from a second copy of the number.
+///
+/// Feature-gated on purpose: an ordinary build's visibility is unchanged.
+#[cfg(feature = "capture_lockup_oracle")]
+pub fn lockup_threshold_ticks() -> u64 {
+    LOCKUP_THRESHOLD_TICKS
 }
 
 /// Reset the quantum counter for the current CPU (called when switching threads)

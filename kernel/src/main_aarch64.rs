@@ -1255,6 +1255,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         );
     }
 
+    // Failure-capture PR-7's `edge=LOCKUP` oracle (test profile only, feature
+    // `capture_lockup_oracle`). Placed here on purpose: SMP bring-up above has
+    // finished, so a CPU1-pinned holder can actually be dispatched, and no
+    // boot-test coordinator or userspace process has started yet, so no other code
+    // is making the context-switch/syscall progress the soft-lockup
+    // detector treats as liveness. It returns.
+    #[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
+    kernel::capture_lockup_oracle::run_lockup_capture_oracle();
+
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]
