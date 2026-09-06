@@ -253,3 +253,111 @@ done unreviewed.
   the plan filed verbatim with a provenance header)
 - `docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR0-ROUND-2026-09-06.md`
   (this file)
+
+## Landing re-smoke
+
+Landed at `eae95309e745433cd17056a2ce05ca8843f4e718` from a fresh worktree
+(`git worktree add ... origin/gates/chk-pr0-census-ratchet`). `git merge
+--no-ff origin/main` reported "Already up to date." -- `origin/main` at
+`783a6a53668d99225e356530a124c081d1fdcbd3` is already an ancestor of this
+branch's HEAD (`git log --oneline HEAD..origin/main` at landing time: 0
+commits -- the branch was built directly on that commit), so no merge
+commit was created and no anchor table needed re-deriving. `kernel/` is
+untouched by this diff (`git diff --stat origin/main..HEAD`: 4 of 4
+changed files are under `docs/`, `scripts/`, or `tests/` -- 0 under
+`kernel/`).
+
+### `scripts/claim-lint.py`
+
+```
+$ python3 scripts/claim-lint.py
+claim-lint: clean (4 file(s) checked, changed hunks vs 783a6a53668d).
+claim-lint: 3 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+```
+Exit 0. Same "4 files, 3 pre-existing findings" shape the round's own
+re-run recorded above.
+
+### 43 of 43 `tests/*_structure.rs` suites, standalone
+
+Ran every file matching `tests/*_structure.rs` (43 files, alphabetical,
+including `critical_path_logging_census_structure`) through
+`scripts/run-structure-tests.sh <name>` individually. 43 of 43 exited 0,
+689 individual `#[test]` cases passed, 0 failed. Per-suite summary in
+`/tmp/structure_suite_summary.log` on the landing machine (scratch
+evidence, not repository content); `critical_path_logging_census_structure`
+itself: 9 passed, 0 failed, 0.15s, matching the round's own run above.
+
+### `scripts/test_claim_lint.py`
+
+```
+$ python3 scripts/test_claim_lint.py
+...
+Ran 72 tests in 1.722s
+
+OK
+```
+Exit 0. Same historical-corpus catch rates (9/12 in-context, 15/18
+isolated-quote) and verified-true corpus shape as before this round; this
+round does not touch the linter.
+
+### `scripts/check-critical-path-violations.sh`
+
+```
+$ bash scripts/check-critical-path-violations.sh; echo "EXIT=$?"
+... (275 stdout lines, 9 `VIOLATION in <file>` headers) ...
+EXIT=1
+```
+275 lines, 9 headers, exit 1 -- identical to the round's own "after"
+measurement above. The script is unchanged since that measurement; this is
+an independent re-run at the landing commit, not a copy of that number.
+
+### aarch64 strict boot gate, one run at the script's default iteration count
+
+Built the `boot_tests` kernel first (`cargo build --release --features
+boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z
+build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`),
+then ran `docker/qemu/run-aarch64-boot-test-strict.sh` (default 20
+iterations) with a private `BREENIX_GATE_TMP` pointed at a directory under
+this landing worktree's own scratchpad, so its per-boot output could not
+collide with the concurrent gate another workflow had running on this host
+at the same time (`docker/qemu/lib/qemu-host-lock.sh` serialized the two
+across QEMU launches; both ran to completion). No `cargo test` ran in this
+same shell session before this build -- all 43 of 43 structure-suite runs
+above went through `scripts/run-structure-tests.sh`'s direct `rustc --test`
+path, not `cargo test` -- so the `require_boot_tests_kernel` hazard this
+round's own "What this round deliberately did not do" section describes
+(a same-session `cargo test` silently relinking a non-`boot_tests` kernel
+over this gate's expected binary) does not apply here.
+
+```
+=========================================
+RESULTS
+=========================================
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+Duration: 529s
+
+=========================================
+PASS: 20/20 boots succeeded
+=========================================
+```
+
+### claim-lint on this section
+
+This subsection's own first draft tripped the linter 3 of 3 times on its
+own text before this paragraph existed (two unquantified-absolute findings
+in the merge paragraph above, one in the aarch64-gate paragraph); each was
+reworded to name an explicit count rather than suppressed, and a rerun
+after each edit is what brought the finding total down to 0. The doc
+quoted above still predates the words in this paragraph, so what actually
+gates this round's push is the run below, on the tree as committed,
+immediately before `git push`:
+
+```
+$ python3 scripts/claim-lint.py
+claim-lint: clean (4 file(s) checked, changed hunks vs 783a6a53668d).
+claim-lint: 3 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+```
+Exit 0.
