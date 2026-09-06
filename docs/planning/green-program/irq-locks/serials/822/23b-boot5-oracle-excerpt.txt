@@ -1,0 +1,1 @@
+643:[IRQ_HOLD_ORACLE:aarch64:attempts=3:armed=0:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12001:netrx_pending_at_release=1:received=32:stalled=0:hold_done=1:joined=1:FAIL]
