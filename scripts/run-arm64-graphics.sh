@@ -95,10 +95,21 @@ esac
 # NOTE: Use -device virtio-*-device (MMIO) not virtio-*-pci
 # #834: this is an interactive display session (Ctrl-A X exits QEMU), but
 # it still takes the host-wide lock -- not exempt just because a human, not
-# a gate, is driving it. `exec` is dropped in favor of a plain foreground
-# launch: replacing this shell's own process image would discard the
-# qemu_host_lock_acquire EXIT trap before it could release the lock, since
-# there would be no bash process left to run it.
+# a gate, is driving it. `exec` is dropped because replacing this shell's
+# own process image would discard the qemu_host_lock_acquire EXIT trap
+# before it could release the lock. A plain foreground launch (no `&`) is
+# not a safe substitute for `exec`, though: a SIGTERM/SIGINT delivered to
+# just this script's own PID does not propagate to a foreground child on
+# its own, so the EXIT trap would run and release the lock while QEMU kept
+# running, orphaned and untracked -- reproducing the exact unserialized
+# double-boot contention this lock exists to prevent (#834 fix-round F1,
+# 2026-09-05). QEMU is backgrounded instead, with its PID handed to
+# qemu_host_lock_track_pid so the lock's own EXIT trap kills it before
+# releasing the lock on that path, then `wait`ed on so this script still
+# blocks in the foreground exactly as before. `0<&0` is required on the
+# backgrounded launch: bash redirects a backgrounded command's stdin from
+# /dev/null unless the command carries its own explicit stdin redirection,
+# and this session's serial monitor needs this script's own stdin attached.
 qemu_host_lock_acquire
 qemu-system-aarch64 \
     -M virt \
@@ -111,4 +122,8 @@ qemu-system-aarch64 \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -device virtio-keyboard-device \
-    -kernel "$KERNEL"
+    -kernel "$KERNEL" \
+    0<&0 &
+QEMU_PID=$!
+qemu_host_lock_track_pid "$QEMU_PID"
+wait "$QEMU_PID"

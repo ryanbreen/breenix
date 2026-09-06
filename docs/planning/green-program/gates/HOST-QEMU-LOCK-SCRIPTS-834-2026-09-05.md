@@ -43,7 +43,7 @@ its own, or on a SIGTERM/SIGINT delivered to just the script's own PID).
 |---|---|---|
 | `scripts/run-arm64-keyboard-test.sh` | bare `qemu-system-aarch64 \`, backgrounded, existing `trap cleanup EXIT` | wiring only -- chains onto the existing trap |
 | `scripts/run-arm64-boot-test.sh` | bare `qemu-system-aarch64 \`, backgrounded, no existing trap | wiring only -- the lock installs its own `EXIT` trap |
-| `scripts/run-arm64-qemu.sh` | `exec qemu-system-aarch64 \` (interactive, Ctrl-A X exits) | `exec` dropped for a plain foreground launch (see below) |
+| `scripts/run-arm64-qemu.sh` | `exec qemu-system-aarch64 \` (interactive, Ctrl-A X exits) | `exec` dropped for a backgrounded launch + `track_pid` (see below, revised by the 2026-09-05 fix round) |
 | `scripts/run-arm64-graphics.sh` | `exec qemu-system-aarch64 \` (interactive) | same `exec`-drop |
 | `scripts/run-aarch64-userspace.sh` | `exec qemu-system-aarch64 \` (interactive) | same `exec`-drop |
 | `scripts/test_tracing_via_gdb.sh` | `"$QEMU_BIN" \` (aarch64 leg only; the x86_64 leg launches `qemu-system-x86_64` and is untouched) | lock call placed inside the `if [ "$ARCH" = "aarch64" ]` branch only |
@@ -64,17 +64,38 @@ trap when QEMU itself later exits, so the lock directory would be left
 behind for the next acquirer's stale-PID reclaim path on each interactive
 run, not only on a crash.
 
-Each of the three now runs QEMU as a plain foreground command (no `exec`,
-still no `&`) after `qemu_host_lock_acquire`. This is an interactive display
-session precisely the same as before -- Ctrl-A X still exits QEMU exactly as
-it did with `exec`, the same terminal remains attached to the same monitor,
-and no output or behavior difference is visible to whoever runs the script.
-The only difference is internal: on QEMU's exit, control returns to the
-shell for one instruction (falling off the end of the script) instead of the
-process image being replaced, so the lock's `EXIT` trap can run and release
-it. `scripts/run-arm64-qemu.sh` was checked by hand for a trailing action
-after its old `exec` line that this change might now skip -- there is no
-such action; the `exec` was already the file's last line.
+**Revised by the 2026-09-05 fix round (F1, blocking).** The branch's first
+cut ran QEMU as a plain foreground command (no `exec`, still no `&`) after
+`qemu_host_lock_acquire`, on the reasoning that a foreground child is
+equivalent to the old `exec`'d process for signal purposes. That reasoning
+was wrong: a `SIGTERM`/`SIGINT` delivered to just the script's own PID
+during the interactive session -- e.g. `kill -TERM <script-pid>` from
+another terminal, distinct from the terminal-generated Ctrl-C the running
+session itself swallows into the guest -- does not propagate to a
+foreground child on its own. Reproduced live against the real
+`qemu-host-lock.sh` with a stand-in `qemu-system-aarch64` on `PATH`: a
+direct-PID `SIGTERM` fired the chained `EXIT` trap (releasing the lock)
+while the foreground stand-in kept running, orphaned and untracked -- the
+opposite of "no behavior difference," and worse than the pre-branch `exec`
+shape for this exact signal, since `exec` at least made the script's PID
+*be* QEMU's PID.
+
+Each of the three now backgrounds QEMU instead, registers the PID with
+`qemu_host_lock_track_pid` (the same mechanism the other five wired
+interactive/gate scripts already use), then `wait`s on it -- so the lock's
+own `EXIT` trap kills QEMU before releasing the lock on the direct-PID-signal
+path, exactly like those five. The backgrounded launch adds an explicit
+`0<&0` redirect: bash redirects a backgrounded command's stdin from
+`/dev/null` unless the command carries its own explicit stdin redirection,
+and these sessions' `-serial mon:stdio` (or `-nographic`) consoles need the
+script's own stdin attached for Ctrl-A X and any serial-console typing to
+keep working. Reproduced live (piped stdin into the backgrounded shape with
+`0<&0` reaches the stand-in unchanged) and re-verified the SIGTERM case
+against the corrected shape: the stand-in is killed and the lock is released,
+matching the five already-correct scripts. `scripts/run-arm64-qemu.sh` was
+checked by hand for a trailing action after its old `exec` line that either
+revision might skip -- there is no such action; the `exec` was already the
+file's last line.
 
 ### `test_tracing_via_gdb.sh` and `run.sh`: arch-conditional locking
 
@@ -115,17 +136,32 @@ produced #834 in the first place):
   "run-aarch64-test\.exp" .` across the whole repository returns only the
   file itself -- 0 callers anywhere in this tree. Same bash/Tcl boundary as
   the `.py` scripts above, compounded by being unreferenced; not fixed here.
-- **Two pre-existing kill-by-pattern hazards are unchanged**:
+- **Two pre-existing kill-by-pattern hazards, addressed by the 2026-09-05
+  fix round (F2, major) -- narrowed, not eliminated as a mechanism**:
   `scripts/run-arm64-boot-test.sh`'s `pkill -9 -f
-  "qemu-system-aarch64.*kernel-aarch64"` and `docker/qemu-aarch64/
-  run-arm64-boot.sh`'s `docker kill $(docker ps -q --filter
-  ancestor=breenix-qemu-aarch64)` each terminate by pattern/image match
-  rather than a specific PID or container ID this script itself launched --
-  the same shape #834's own issue body named for the first of these two
-  ("a second, distinct issue in its own right... same shape as the
-  already-filed #829") and asked to be looked at "regardless of which fix
-  this issue gets," not as a precondition of this fix. Wiring the host-wide
-  lock does not touch either kill line; both are left exactly as found.
+  "qemu-system-aarch64.*kernel-aarch64"` ran *before* this script's own
+  `qemu_host_lock_acquire`, so it could hit a different, lock-holding
+  script's in-progress boot the moment this script started -- undermining
+  the "wired into the lock" property for exactly the file this branch
+  claimed to have closed the gap for. Fixed by moving
+  `qemu_host_lock_acquire` ahead of the pkill: by the time this script's own
+  cleanup runs, any lock-cooperating peer must already have released the
+  lock, so the pkill can no longer reach a peer's active, lock-protected
+  boot. `docker/qemu-aarch64/run-arm64-boot.sh`'s `docker kill $(docker ps
+  -q --filter ancestor=breenix-qemu-aarch64)` matched by image, not by the
+  container this invocation started; fixed by naming the container
+  (`--name breenix-arm64-boot-$$`) and killing that name specifically,
+  matching the fix shape #829 itself proposes ("capture this invocation's
+  own container id ... and docker kill that one id"). Neither fix makes the
+  underlying primitive PID/container-scoped in general -- a genuinely
+  unwired caller of `qemu-system-aarch64` (the `.py`/`.exp` scripts below,
+  or `docker/qemu/run-aarch64-interactive.sh`'s own *pre-acquire* `docker
+  kill $EXISTING` cleanup, found while reviewing this bullet and reported
+  on #829 rather than fixed here since that file is untouched by this
+  branch's diff) can still reach a lock-cooperating script's process from
+  outside the lock's own serialization. What is closed is the specific
+  claim this branch made about these two files: their own cleanup can no
+  longer defeat the mutual-exclusion property this branch wires them into.
 - **`shell_scripts_below`'s `.sh`-extension filter is what keeps the three
   `.py` files and the one `.exp` file out of this branch's own `>= 28`
   ratchet floor**, not a path-based exemption list -- so a future `.sh`
@@ -293,13 +329,20 @@ claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (one per commit
   0 callers anywhere in this repository). If a developer runs one of these
   four alongside a wired script, or two of the four together, the contention
   #826/R181 measured is not prevented.
-- **The two pre-existing kill-by-pattern hazards
-  (`scripts/run-arm64-boot-test.sh`'s `pkill -9 -f`, `docker/qemu-aarch64/
-  run-arm64-boot.sh`'s `docker kill $(docker ps -q --filter ancestor=...)`)
-  are unchanged.** Both can still terminate a different, unrelated process
-  matching the same pattern/image; this branch's own issue disclosed the
-  first of these two explicitly as a separate concern, not a precondition
-  of the lock-wiring fix.
+- **The two pre-existing kill-by-pattern hazards in
+  `scripts/run-arm64-boot-test.sh` and `docker/qemu-aarch64/
+  run-arm64-boot.sh` are narrowed by the 2026-09-05 fix round, not
+  eliminated as a mechanism.** `run-arm64-boot-test.sh`'s cleanup pkill now
+  runs after this script's own `qemu_host_lock_acquire`, so it cannot reach
+  a lock-cooperating peer's active boot; `run-arm64-boot.sh`'s cleanup
+  `docker kill` now targets this invocation's own named container, not
+  any other container from the image. Neither is claimed to be a
+  general-purpose PID/container-scoped kill: a caller outside the lock's
+  own serialization (the `.py`/`.exp` scripts below, or a sibling script's
+  own pre-acquire cleanup, such as `docker/qemu/run-aarch64-interactive.sh`'s
+  `docker kill $EXISTING`, reported on #829 but not fixed in this branch)
+  can still terminate a lock-cooperating script's process from outside the
+  lock.
 - **`run.sh --parallels` and `run.sh --vmware` are unaffected.** Both exit
   before reaching the native `qemu-system-aarch64` launch line this branch
   wires; they boot a VM via `prlctl`/VMware tooling, not a native QEMU
@@ -320,3 +363,92 @@ claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (one per commit
 
 claim-lint: scripts/claim-lint.py -> exit 0
 claim-lint: scripts/claim-lint.py --files docs/planning/green-program/gates/HOST-QEMU-LOCK-SCRIPTS-834-2026-09-05.md -> exit 0
+
+## Fix round (2026-09-05): F1-F4 closed
+
+A review of this branch found four findings. F1 (blocking) and F4 (minor)
+are corrected in place above (the "Why three scripts lost their `exec`"
+section and the "Two pre-existing kill-by-pattern hazards" bullets in both
+"What is disclosed" and "What is NOT claimed"); this section gives fresh
+evidence for each of the four.
+
+**F1 (blocking) -- foreground launch loses the tracked child on a
+direct-PID signal.** Fixed in `scripts/run-arm64-qemu.sh`,
+`run-arm64-graphics.sh`, and `run-aarch64-userspace.sh`: QEMU is now
+backgrounded with an explicit `0<&0`, its PID handed to
+`qemu_host_lock_track_pid`, then `wait`ed on.
+
+```
+Mechanism proof, real files, real qemu-system-aarch64 (not a stand-in):
+  BREENIX_QEMU_LOCK=<scratch>/lock ./scripts/run-arm64-qemu.sh release \
+    (headless, backgrounded, real kernel boot)
+  -> lock dir appears (acquired), real qemu-system-aarch64 PID observed
+     via pgrep
+  kill -TERM <script's own PID only>
+  -> lock dir removed (released) AND
+     serial output shows: "qemu-system-aarch64: terminating on signal 15
+     from pid <script PID>" -- the tracked-PID kill actually reached QEMU,
+     not merely the script exiting
+  -> 0 qemu-system-aarch64 processes remain (pgrep -x, confirmed after)
+
+Stdin-preservation proof (0<&0 requirement): a stand-in `qemu-system-aarch64`
+on PATH that `read`s one line from stdin, invoked via the exact
+backgrounded+track_pid+wait shape with a piped stdin, receives the piped
+line unchanged; the same shape without `0<&0` receives EOF immediately
+(bash's own /dev/null-redirect-for-backgrounded-commands-without-explicit-
+redirection rule, confirmed both ways).
+```
+
+**F2 (major) -- pattern-based kills could hit a different lock-cooperating
+script's active boot.** Fixed as described above:
+`scripts/run-arm64-boot-test.sh` moves `qemu_host_lock_acquire` before its
+cleanup `pkill`; `docker/qemu-aarch64/run-arm64-boot.sh` names its
+container (`breenix-arm64-boot-$$`) and kills that name instead of matching
+by image. The related, unfixed
+`docker/qemu/run-aarch64-interactive.sh` occurrence found while reviewing
+this bullet is reported as a comment on #829, not fixed here (that file is
+untouched by this branch's diff).
+
+**F3 (major) -- fixed `/tmp` paths not parameterized.**
+`docker/qemu-aarch64/run-arm64-boot.sh`'s `OUTPUT_DIR` and
+`scripts/run-arm64-boot-test.sh`'s `SERIAL_OUTPUT` now take the same
+`BREENIX_GATE_TMP` base (default `/tmp`, absolute-path validated) as
+`docker/qemu/run-aarch64-test.sh` and `docker/qemu/run-aarch64-userspace.sh`
+already do for #825.
+
+```
+Live proof, both scripts, real kernel boot, private BREENIX_GATE_TMP:
+
+BREENIX_GATE_TMP=<scratch> ./scripts/run-arm64-boot-test.sh quick
+-> PASS: 'Hello from ARM64' found; exit 0
+-> <scratch>/arm64_boot_test_output.txt written (not /tmp directly)
+-> host aarch64 QEMU count: 0 before, 0 after
+
+BREENIX_GATE_TMP=<scratch> ./docker/qemu-aarch64/run-arm64-boot.sh
+-> ARM64 BOOT: PASS; exit 0
+-> <scratch>/breenix_arm64_boot/serial.txt and qemu_debug.txt written
+-> docker kill reported the named container (breenix-arm64-boot-<pid>),
+   confirming the F2 name-scoped kill matched a real container
+-> 0 qemu-system-aarch64 processes and 0 breenix-arm64-boot-* containers
+   remain afterward
+```
+
+**F4 (minor) -- stale claim-lint receipt.** The "9 file(s) checked" quote
+earlier in this doc was captured one commit before the doc itself existed
+to be counted; corrected in place is not attempted (it is an accurate
+record of that earlier commit, not of the final state), but the doc's own
+closing receipts below are re-run at this round's own final HEAD so they
+are not stale in the same way.
+
+Structural suites re-run after all four fixes: 33/33 green, 593 test cases
+(same total as before -- these fixes change script/doc text and the
+`qemu_host_lock_structure.rs` mutation-leg target line's position, not the
+number of test functions). `qemu_host_lock_structure.rs`'s own two tests
+(the whole-suite rule and the anti-vacuity mutation suite, whose
+`scripts/run-arm64-boot-test.sh` mutation leg now targets the relocated
+`qemu_host_lock_acquire` line) both still pass.
+
+```
+claim-lint: scripts/claim-lint.py -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <msg> -> exit 0   (this round's commit)
+```

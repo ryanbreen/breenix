@@ -18,6 +18,19 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=../qemu/lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/../qemu/lib/qemu-host-lock.sh"
 
+# #834 fix-round F3 (2026-09-05): OUTPUT_DIR is a HOST path this script
+# rm -rf's, mkdir's, and bind-mounts into the container, so it collides with
+# any other concurrent invocation the same way #825 already reports for
+# docker/qemu/run-aarch64-test.sh's OUTPUT_DIR (see that file's own #825
+# comment for the identical BREENIX_GATE_TMP shape). Defaulting to /tmp
+# keeps a caller that leaves it unset byte-identical; a concurrent-lane
+# launcher sets this to a per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+esac
+
 # Find the ARM64 kernel binary
 KERNEL_BIN="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 if [ ! -f "$KERNEL_BIN" ]; then
@@ -30,7 +43,7 @@ echo "Running ARM64 boot test in Docker..."
 echo "Kernel: $KERNEL_BIN"
 
 # Create output directory
-OUTPUT_DIR="/tmp/breenix_arm64_boot"
+OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_arm64_boot"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
@@ -43,8 +56,17 @@ docker build -q -t breenix-qemu-aarch64 "$SCRIPT_DIR" > /dev/null
 # - 1 CPU
 # - PL011 UART for serial output
 # - No graphics
+# #834 fix-round F2 (2026-09-05): CONTAINER_NAME is unique to this
+# invocation (this script's own PID), so the cleanup `docker kill` below
+# can target the exact container this run started instead of matching by
+# ancestor image -- an ancestor-image filter can kill a DIFFERENT running
+# container from that image, including one a concurrent invocation of this
+# same script (or of another script sharing the image) legitimately owns.
+CONTAINER_NAME="breenix-arm64-boot-$$"
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 qemu_host_lock_acquire
 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -v "$KERNEL_BIN:/breenix/kernel.elf:ro" \
     -v "$OUTPUT_DIR:/output" \
     breenix-qemu-aarch64 \
@@ -81,8 +103,9 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Cleanup
-docker kill $(docker ps -q --filter ancestor=breenix-qemu-aarch64) 2>/dev/null || true
+# Cleanup: targets this invocation's own container by name (see
+# CONTAINER_NAME above), not the whole image's running containers.
+docker kill "$CONTAINER_NAME" 2>/dev/null || true
 
 # Check results
 echo ""
