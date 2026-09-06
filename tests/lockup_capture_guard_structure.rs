@@ -51,62 +51,34 @@ fn read(rel: &str) -> String {
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", full.display()))
 }
 
-/// Assemble and link one fixture, returning its ELF path.
+const FIXTURE_DIR: &str = "tests/fixtures/lockup-guard";
+
+/// The committed ELF for one shape.
 ///
-/// A toolchain that cannot produce an aarch64 ELF is a FAILURE here, not a
-/// skip: these legs are the only thing that shows the guard rejects anything,
-/// and a suite that quietly passed without them would be the vacuity they
-/// exist to prevent.
-fn build_fixture(name: &str, entry: &str, asm: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("breenix-lockup-guard-fixtures");
-    fs::create_dir_all(&dir).expect("temp dir");
-    let source = dir.join(format!("{name}.s"));
-    let object = dir.join(format!("{name}.o"));
-    let elf = dir.join(format!("{name}.elf"));
-    fs::write(&source, asm).expect("write fixture asm");
-    let cc = Command::new("clang")
-        .args(["-target", "aarch64-unknown-none-elf", "-c", "-o"])
-        .arg(&object)
-        .arg(&source)
-        .output()
-        .expect("clang must be available to build the guard fixtures");
+/// The fixtures are COMMITTED, not built at test time, and that is a
+/// deliberate trade. Building them needs an assembler that can emit an aarch64
+/// ELF, and the two hosts this repository's gates run on do not share one: the
+/// Mac has `clang` and no `llvm-mc`, the beast x86 container has `llvm-mc` and
+/// no `clang` or aarch64 cross toolchain. A suite that skipped its own legs on
+/// whichever host was missing the tool would be vacuous exactly where nobody
+/// was looking, and `scripts/run-structure-tests.sh` runs this file inside the
+/// gate preflight on both.
+///
+/// So each of the 7 legs runs the guard against a committed ELF. The `.s`
+/// beside each one is the source it was linked from, and
+/// `the_committed_fixtures_match_their_sources` below rebuilds and re-scores
+/// 7 of 7 on a host that CAN assemble -- which is what keeps the committed
+/// binaries honest rather than merely present.
+fn fixture_elf(name: &str) -> PathBuf {
+    let path = repo_path(&format!("{FIXTURE_DIR}/{name}.aarch64-elf"));
     assert!(
-        cc.status.success(),
-        "assembling {name} failed: {}",
-        String::from_utf8_lossy(&cc.stderr)
+        path.is_file(),
+        "missing guard fixture {}; this suite has nothing to check",
+        path.display()
     );
-    let ld = Command::new(rust_lld())
-        .args(["-flavor", "gnu", "-e", entry, "-o"])
-        .arg(&elf)
-        .arg(&object)
-        .output()
-        .expect("rust-lld must be available to link the guard fixtures");
-    assert!(
-        ld.status.success(),
-        "linking {name} failed: {}",
-        String::from_utf8_lossy(&ld.stderr)
-    );
-    elf
+    path
 }
 
-/// The `rust-lld` that ships with the active toolchain. Preferred over a PATH
-/// `ld` because the host linker on macOS produces Mach-O, not ELF.
-fn rust_lld() -> PathBuf {
-    let out = Command::new("rustc")
-        .args(["--print", "sysroot"])
-        .output()
-        .expect("rustc must be on PATH");
-    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let root = PathBuf::from(sysroot).join("lib/rustlib");
-    let entries = fs::read_dir(&root).expect("rustlib must exist");
-    for entry in entries {
-        let candidate = entry.expect("readable entry").path().join("bin/rust-lld");
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-    panic!("no rust-lld under {}", root.display());
-}
 
 /// Run the real guard against one ELF. Returns its status and its output.
 fn run_guard(elf: &PathBuf) -> (bool, String) {
@@ -119,8 +91,8 @@ fn run_guard(elf: &PathBuf) -> (bool, String) {
     (out.status.success(), text)
 }
 
-fn assert_guard_rejects(name: &str, entry: &str, asm: &str, expected: &str) {
-    let elf = build_fixture(name, entry, asm);
+fn assert_guard_rejects(name: &str, expected: &str) {
+    let elf = fixture_elf(name);
     let (ok, text) = run_guard(&elf);
     assert!(!ok, "{name}: the guard PASSED a fixture it must reject:\n{text}");
     assert!(
@@ -130,106 +102,10 @@ fn assert_guard_rejects(name: &str, entry: &str, asm: &str, expected: &str) {
     );
 }
 
-// The fixture call graphs, as assembly. Each one is the smallest program that
-// has the shape its test names.
-
-const ASM_DIRECT: &str = "
-.global dump_lockup_state
-dump_lockup_state:
-    bl __rust_alloc
-    ret
-.global __rust_alloc
-__rust_alloc:
-    ret
-";
-
-const ASM_TWO_HELPERS: &str = "
-.global dump_lockup_state
-dump_lockup_state:
-    bl format_the_banner
-    ret
-.global format_the_banner
-format_the_banner:
-    bl widen_the_row
-    ret
-.global widen_the_row
-widen_the_row:
-    bl __rust_alloc
-    ret
-.global __rust_alloc
-__rust_alloc:
-    ret
-";
-
-const ASM_INDIRECT: &str = "
-.section .data
-.align 3
-alloc_slot:
-    .quad __rust_alloc
-.text
-.global dump_lockup_state
-dump_lockup_state:
-    adrp x8, alloc_slot
-    add x8, x8, :lo12:alloc_slot
-    ldr x8, [x8]
-    blr x8
-    ret
-.global __rust_alloc
-__rust_alloc:
-    ret
-";
-
-const ASM_TAIL_CALL: &str = "
-.global dump_lockup_state
-dump_lockup_state:
-    b write_the_tail
-.global write_the_tail
-write_the_tail:
-    bl __rust_realloc
-    ret
-.global __rust_realloc
-__rust_realloc:
-    ret
-";
-
-const ASM_MISSING_ROOT: &str = "
-.global some_other_function
-some_other_function:
-    bl __rust_alloc
-    ret
-.global __rust_alloc
-__rust_alloc:
-    ret
-";
-
-const ASM_UNRESOLVED_INDIRECT: &str = "
-.global dump_lockup_state
-dump_lockup_state:
-    mov x8, x0
-    blr x8
-    ret
-";
-
-const ASM_CLEAN_CHAIN: &str = "
-.global dump_lockup_state
-dump_lockup_state:
-    bl print_the_banner
-    ret
-.global print_the_banner
-print_the_banner:
-    bl write_one_byte
-    ret
-.global write_one_byte
-write_one_byte:
-    ret
-";
-
 #[test]
 fn the_guard_rejects_a_direct_allocation() {
     assert_guard_rejects(
         "direct",
-        "dump_lockup_state",
-        ASM_DIRECT,
         "allocating call target(s) reachable",
     );
 }
@@ -238,8 +114,6 @@ fn the_guard_rejects_a_direct_allocation() {
 fn the_guard_rejects_an_allocation_behind_two_innocent_helpers() {
     assert_guard_rejects(
         "two-helpers",
-        "dump_lockup_state",
-        ASM_TWO_HELPERS,
         "dump_lockup_state -> format_the_banner -> widen_the_row -> __rust_alloc",
     );
 }
@@ -248,8 +122,6 @@ fn the_guard_rejects_an_allocation_behind_two_innocent_helpers() {
 fn the_guard_rejects_an_allocation_reached_through_a_data_pointer() {
     assert_guard_rejects(
         "indirect",
-        "dump_lockup_state",
-        ASM_INDIRECT,
         "dump_lockup_state -> __rust_alloc",
     );
 }
@@ -258,8 +130,6 @@ fn the_guard_rejects_an_allocation_reached_through_a_data_pointer() {
 fn the_guard_rejects_an_allocation_reached_by_a_tail_call() {
     assert_guard_rejects(
         "tail-call",
-        "dump_lockup_state",
-        ASM_TAIL_CALL,
         "dump_lockup_state -> write_the_tail -> __rust_realloc",
     );
 }
@@ -268,8 +138,6 @@ fn the_guard_rejects_an_allocation_reached_by_a_tail_call() {
 fn the_guard_fails_when_the_root_symbol_is_absent() {
     assert_guard_rejects(
         "missing-root",
-        "some_other_function",
-        ASM_MISSING_ROOT,
         "no symbol whose name contains",
     );
 }
@@ -278,8 +146,6 @@ fn the_guard_fails_when_the_root_symbol_is_absent() {
 fn the_guard_fails_on_an_indirect_transfer_it_cannot_resolve() {
     assert_guard_rejects(
         "unresolved-indirect",
-        "dump_lockup_state",
-        ASM_UNRESOLVED_INDIRECT,
         "UNRESOLVED indirect",
     );
 }
@@ -287,7 +153,7 @@ fn the_guard_fails_on_an_indirect_transfer_it_cannot_resolve() {
 /// Without this leg, a guard that rejected each of its inputs would look perfect.
 #[test]
 fn the_guard_passes_a_clean_nonallocating_helper_chain() {
-    let elf = build_fixture("clean-chain", "dump_lockup_state", ASM_CLEAN_CHAIN);
+    let elf = fixture_elf("clean-chain");
     let (ok, text) = run_guard(&elf);
     assert!(ok, "the guard rejected a clean chain:\n{text}");
     assert!(
@@ -351,4 +217,110 @@ fn the_aarch64_gates_run_the_guard_on_their_own_kernel() {
             "{gate} must hand the guard its OWN selected kernel"
         );
     }
+}
+
+/// The 7 shapes: name, entry symbol, and whether the guard must reject it.
+const FIXTURES: [(&str, &str, bool); 7] = [
+    ("direct", "dump_lockup_state", true),
+    ("two-helpers", "dump_lockup_state", true),
+    ("indirect", "dump_lockup_state", true),
+    ("tail-call", "dump_lockup_state", true),
+    ("missing-root", "some_other_function", true),
+    ("unresolved-indirect", "dump_lockup_state", true),
+    ("clean-chain", "dump_lockup_state", false),
+];
+
+/// An assembler that can emit an aarch64 ELF object, if this host has one.
+/// `clang` targets any architecture; `llvm-mc` ships with the rustup
+/// `llvm-tools` component on hosts that installed it.
+fn aarch64_assembler() -> Option<(PathBuf, Vec<String>)> {
+    if Command::new("clang").arg("--version").output().is_ok() {
+        let args = ["-target", "aarch64-unknown-none-elf", "-c", "-o"];
+        let owned = args.iter().map(|a| a.to_string()).collect();
+        return Some((PathBuf::from("clang"), owned));
+    }
+    let mc = rust_lld().with_file_name("llvm-mc");
+    if mc.is_file() {
+        let args = ["--arch=aarch64", "--filetype=obj", "-o"];
+        let owned = args.iter().map(|a| a.to_string()).collect();
+        return Some((mc, owned));
+    }
+    None
+}
+
+/// Rebuild each committed fixture from the `.s` beside it and re-score it.
+///
+/// This is what keeps the committed binaries honest: on a host with an aarch64
+/// assembler, 7 of 7 fixtures are re-derived from their own sources and the
+/// guard's verdict on each rebuild must match its verdict on the committed ELF.
+///
+/// Stated narrowing: on a host with no such assembler this leg returns without
+/// checking anything. The other 7 legs still run the guard against the committed
+/// ELFs, so the suite is not vacuous there; what it cannot check on that host is
+/// that each ELF and its `.s` still correspond.
+#[test]
+fn the_committed_fixtures_match_their_sources() {
+    let Some((assembler, prefix)) = aarch64_assembler() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join("breenix-lockup-guard-rebuild");
+    fs::create_dir_all(&dir).expect("temp dir");
+    for (name, entry, must_reject) in FIXTURES {
+        let source = repo_path(&format!("{FIXTURE_DIR}/{name}.s"));
+        assert!(source.is_file(), "missing fixture source {}", source.display());
+        let object = dir.join(format!("{name}.o"));
+        let elf = dir.join(format!("{name}.aarch64-elf"));
+        let cc = Command::new(&assembler)
+            .args(&prefix)
+            .arg(&object)
+            .arg(&source)
+            .output()
+            .expect("assembler runs");
+        assert!(
+            cc.status.success(),
+            "assembling {name} failed: {}",
+            String::from_utf8_lossy(&cc.stderr)
+        );
+        let ld = Command::new(rust_lld())
+            .args(["-flavor", "gnu", "-e", entry, "-o"])
+            .arg(&elf)
+            .arg(&object)
+            .output()
+            .expect("rust-lld runs");
+        assert!(
+            ld.status.success(),
+            "linking {name} failed: {}",
+            String::from_utf8_lossy(&ld.stderr)
+        );
+        let (rebuilt_ok, rebuilt_text) = run_guard(&elf);
+        let (committed_ok, _) = run_guard(&fixture_elf(name));
+        assert_eq!(
+            rebuilt_ok, committed_ok,
+            "{name}: the committed fixture and a rebuild from {name}.s score \
+             differently, so the committed ELF no longer matches its source:\n{rebuilt_text}"
+        );
+        assert_eq!(
+            rebuilt_ok, !must_reject,
+            "{name}: rebuilt fixture scored the wrong way:\n{rebuilt_text}"
+        );
+    }
+}
+
+/// The `rust-lld` that ships with the active toolchain. Preferred over a PATH
+/// `ld` because the host linker on macOS produces Mach-O, not ELF.
+fn rust_lld() -> PathBuf {
+    let out = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .expect("rustc must be on PATH");
+    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let root = PathBuf::from(sysroot).join("lib/rustlib");
+    let entries = fs::read_dir(&root).expect("rustlib must exist");
+    for entry in entries {
+        let candidate = entry.expect("readable entry").path().join("bin/rust-lld");
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    panic!("no rust-lld under {}", root.display());
 }
