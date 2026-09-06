@@ -547,3 +547,100 @@ Claim-discipline receipts for this landing step:
 claim-lint: scripts/claim-lint.py (pre-merge)               -> exit 0
 claim-lint: scripts/claim-lint.py (post-merge, at d692bb92) -> exit 0
 ```
+
+## 11. Landing re-smoke, round 2 (merged head 76062c69)
+
+Main advanced again between §10's push and the PR step, from `826f0c62` to
+`9538ebb7` (PR #873, failure-trace-capture PR-3's BXCAP bounded lock-free
+emitter). Its one overlapping file with this round is
+`kernel/src/tracing/providers/irq.rs`: PR-3 adds a `capture_selftest`-gated
+call in `trace_timer_tick` immediately after the untouched
+`ring_span_self_check::observe(tick_count)` line (source lines ~204-212),
+while this round's own hunks in the same file start at line 248
+(`trace_heartbeat_marker`) and continue into the `ring_span_self_check` module
+below it -- disjoint regions. `git merge --no-ff origin/main` auto-merged to
+`76062c69` with no conflict.
+
+PR-3 also touches both prod-profile gate scripts (adds a `BXCAP` self-test
+absence check, additive, `RING_SPAN_LITERAL`/`RING_SPAN_COUNT` unchanged) and
+rewrites `scripts/check-critical-path-violations.sh` to add a `capture/`
+directory entry with its own extra denylist (locks/allocation/panics), scoped
+to files under `kernel/src/capture/` only. `git diff` of
+`run-aarch64-boot-test-strict.sh` and `run-x86-boot-tests.sh` between the two
+merge bases is empty, so the two gates this round's committed serial fixtures
+are scored against did not change; no fixture re-recording was needed.
+
+Re-smoke at `76062c69`:
+
+```
+tests/*_structure.rs (41 files, +2 more from PR-3: capture_bxcap_schema_structure,
+  capture_path_lock_free_structure)          -> 41/41 green, 670 cases total, 0 failed
+python3 scripts/test_claim_lint.py           -> Ran 72 tests, OK (exit 0)
+python3 scripts/claim-lint.py                -> clean (exit 0)
+scripts/check-critical-path-violations.sh    -> exit 1; identical to the round-1
+  merge's output plus one new line, "capture/: 4 file(s) checked" (0
+  violations there); the pre-existing scheduler.rs violation set this round
+  does not touch is otherwise unchanged
+```
+
+aarch64, rebuilt from the merged source:
+
+```
+cargo build --release --features boot_tests --target aarch64-breenix-kernel.json ...
+-> Finished, 0 kernel warnings
+scripts/check-kernel-no-neon.sh -> PASS: 0 FP/SIMD load/store instructions
+```
+
+`./docker/qemu/run-aarch64-boot-test-strict.sh`, script default, fresh private
+`BREENIX_GATE_TMP`:
+
+```
+Total iterations: 20
+Successes: 19
+Failures: 1
+Success rate: 95%
+```
+
+**RING_SPAN reds: 0 of 20** -- every boot's `serial.txt` carries exactly one
+well-formed marker (`span_ms` 1479-1552, `ticks_total` 3881-3990, `dropped` 0
+in all 20, ratios 62.6-64.3 against the floor of 10). The one failure (boot 1,
+`ended_by=poll_exhausted`, `guest_uptime_ms=17971`) carries
+`[BOOT_TESTS:FAIL:1]` and
+`[TEST:syscall:fcntl_pm_contention_oracle:FAIL:fcntl contention oracle's peer
+released the process-manager lock on its safety deadline; the arming
+rendezvous did not complete]`, preceded by
+`[FCNTL_PM_CONTENTION_ORACLE:aarch64:...:hold_safety=1:hold_done=1:joined=1:FAIL:hold_safety_release]`
+-- the exact `hold_safety_release` field shape §5.2 attributes to #836
+(`armed=0`, tiny `arm_wait_us`, `hold_safety=1`, `hold_done=1`, `joined=1`), on
+a boot that ran to 17971 ms of guest uptime with a well-formed `RING_SPAN` line
+and 0 crash markers.
+
+`./docker/qemu/run-aarch64-prod-profile-boot-test.sh` -> **PASS**, exit 0; 0
+`RING_SPAN` lines, 0 `edge=SELFTEST` (BXCAP self-test) lines observed.
+
+Beast (`/root/breenix-p847` reset to `76062c69`,
+`BREENIX_GATE_TMP=/root/breenix-p847-tmp`):
+
+```
+cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
+-> build exit=0, 0 warning/error lines
+./docker/qemu/run-x86-boot-tests.sh 1
+-> x86 frame-custody gate run 1: PASS; x86 userspace gate: PASS
+-> [RING_SPAN:cpu=0:span_ms=2446:writes=31:dropped=0:ticks_total=200:tick_events=12]
+   (ratio 16.67)
+./scripts/check-x86-dispatch-no-alloc.sh
+-> PASS: 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked
+./docker/qemu/run-x86-prod-profile-boot-test.sh
+-> exit=0; test-only marker '[RING_SPAN:' count: 0; test-only marker
+   'edge=SELFTEST' count: 0
+```
+
+`git ls-remote origin main` immediately before the PR step still read
+`9538ebb7`, matching this round's merge base, so no further merge was needed
+before opening the PR.
+
+Claim-discipline receipts for this step:
+
+```
+claim-lint: scripts/claim-lint.py (post round-2 merge, at 76062c69) -> exit 0
+```
