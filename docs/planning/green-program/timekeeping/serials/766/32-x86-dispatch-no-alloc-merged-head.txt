@@ -1,0 +1,10 @@
+# scripts/check-x86-dispatch-no-alloc.sh at merged head 436f476a (breenix-x86 Incus container)
+Guard: x86 kernel-thread dispatch allocation check (#791)
+  ELF:      /root/breenix-p766/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  sha256:   5fe6a496f9177ed5aeb724aa81a587792523583b007a0bf74c5aca8cfb6689c6
+  objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
+  readelf:  readelf
+  function: setup_kernel_thread_return (its own body and its closures)
+  symbols in scope: 3
+  call targets resolved: 14
+PASS: 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.

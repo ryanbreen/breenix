@@ -1,0 +1,9 @@
+# run-x86-prod-profile-boot-test.sh at merged head 436f476a (breenix-x86 Incus container)
+255:PASS: x86 production profile reached steady state with the teardown census at rest
+283:  test-only marker '[INIT_DESIGNATION_ORACLE:': 0
+296:  fault marker 'DISK LOADING FAILED': 0
+345:[ INFO] kernel: [PREEMPT_BRACKET_CENSUS:underflow=0]
+346:[ INFO] kernel: [PROD_BRACKET_RELEASE_CENSUS:underflow=0]
+347:[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=49:ms=245:ticks_after=49:ticks_nonzero=1:in_range=1:PASS]
+348:[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+349:  console prompt count over 60s: 1 -> 2

@@ -1,0 +1,8 @@
+# docker/qemu/run-aarch64-boot-test-strict.sh 20 at merged head 436f476a (this Mac, native QEMU)
+1:[GATE_PREFLIGHT:structure_suites=50/50:critical_path_lines=259:pinned=120]
+139:RESULTS
+142:Successes: 20
+143:Failures: 0
+144:Success rate: 100%
+145:Duration: 261s
+148:PASS: 20/20 boots succeeded
