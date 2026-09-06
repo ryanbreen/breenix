@@ -690,6 +690,22 @@ fn the_panic_oracle_is_feature_gated_and_no_gate_builds_it() {
          gated boot at 3 seconds"
     );
 
+    // And the workspace root forwards it. This is not bookkeeping: the x86
+    // gates build `--bin qemu-uefi` from the ROOT package, so a feature that
+    // exists only in kernel/Cargo.toml cannot be selected there at all --
+    // `cargo build --features ...,capture_panic_oracle --bin qemu-uefi`
+    // fails with "the package 'breenix' does not contain this feature".
+    // That is how this round discovered it, and this assertion is what
+    // stops the next feature from being unusable on x86 for the same
+    // reason.
+    let root = read("Cargo.toml");
+    assert!(
+        root.contains("capture_panic_oracle = [\"boot_tests\", \"kernel/capture_panic_oracle\"]"),
+        "the workspace root must forward capture_panic_oracle to the kernel crate, or \
+         the x86 gates -- which build --bin qemu-uefi from the root package -- cannot \
+         select it"
+    );
+
     // Its only trigger is behind the feature.
     let irq = read("kernel/src/tracing/providers/irq.rs");
     let trigger = irq
