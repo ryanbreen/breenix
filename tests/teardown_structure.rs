@@ -15821,6 +15821,138 @@ fn x86_production_profile_gate_ratchet_is_not_vacuous() {
     );
 }
 
+/// #884: the console-prompt liveness check's own verdict SHAPE, not the
+/// generic verdict machinery `validate_x86_prod_profile_harness` already
+/// covers above. A bare `test "$PROMPT_BEFORE" -eq 1` already routes a
+/// failure through `report_gate_failure` via this script's `set -e` +
+/// `set -E` + ERR trap -- proven structurally by
+/// `x86_production_profile_gate_verdict_discipline_holds` and
+/// `gate_scripts_with_verdict_trap_have_no_preempting_exits` (both this
+/// file), and directly by the shell-level proof in
+/// docs/planning/green-program/gates/X86-PROD-GATE-884-ROUND-2026-09-06.md.
+/// What a bare `test` does NOT do is say which liveness fact failed, or
+/// correct the GATE_BOOT_FACTS line already written before this liveness
+/// window even starts, whose `ended_by` field otherwise stays stuck at
+/// whatever the earlier steady-state poll loop recorded (typically
+/// scored_pass) on a boot that goes on to fail here -- #884 own "no ...
+/// ended_by marker" report. This checks that the three prompt-liveness
+/// assertions are wrapped in a check-and-false block that names a distinct
+/// `ended_by` cause (at minimum `prompt_absent`, the #884 report own
+/// PROMPT_BEFORE=0 shape), re-emits GATE_BOOT_FACTS with it, prints the
+/// pre-adjudicated host-contention read (#826), and reaches the ERR trap
+/// through a bare `false` as its own last statement, never `exit`.
+/// claim-lint:ok: #884, proven by the mutation legs in
+/// x86_production_profile_gate_prompt_liveness_ratchet_is_not_vacuous
+/// below -- reverting to a bare `test` or swapping the terminal `false`
+/// for `exit` reddens that test.
+fn x86_prod_prompt_liveness_failure_names_its_cause(script: &str) -> bool {
+    const GUARD: &str = "if ! test \"$PROMPT_AFTER\" -gt \"$PROMPT_BEFORE\" || ! test \"$PROMPT_BEFORE\" -eq 1 || ! test \"$PROMPT_AFTER\" -eq 2; then";
+    let Some(start) = script.find(GUARD) else {
+        return false;
+    };
+    let tail = &script[start..];
+    let Some(end) = tail.find("\nfi\n") else {
+        return false;
+    };
+    let block = &tail[..end];
+    block.contains("PROMPT_LIVENESS_ENDED_BY=\"prompt_absent\"")
+        && block.contains("gbf_emit_line 1 ")
+        && block.contains("$PROMPT_LIVENESS_ENDED_BY")
+        && block.contains("gate_boot_facts.txt")
+        && block.contains("#826")
+        && block
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .last()
+            == Some("false")
+}
+
+#[test]
+fn x86_production_profile_gate_prompt_liveness_failure_routes_through_verdict() {
+    let gate = repo_text("docker/qemu/run-x86-prod-profile-boot-test.sh");
+    assert!(
+        x86_prod_prompt_liveness_failure_names_its_cause(&gate),
+        "the x86 production-profile gate console-prompt liveness check must \
+         name a distinct ended_by cause, re-emit GATE_BOOT_FACTS, print the \
+         #826 host-contention read, and reach the ERR trap via a bare `false`"
+    );
+}
+
+#[test]
+fn x86_production_profile_gate_prompt_liveness_ratchet_is_not_vacuous() {
+    let gate = repo_text("docker/qemu/run-x86-prod-profile-boot-test.sh");
+    assert!(
+        x86_prod_prompt_liveness_failure_names_its_cause(&gate),
+        "must be clean before mutation"
+    );
+
+    const GUARD: &str = "if ! test \"$PROMPT_AFTER\" -gt \"$PROMPT_BEFORE\" || ! test \"$PROMPT_BEFORE\" -eq 1 || ! test \"$PROMPT_AFTER\" -eq 2; then";
+    let start = gate.find(GUARD).expect("guard present before mutation");
+    let tail = &gate[start..];
+    let block_end =
+        start + tail.find("\nfi\n").expect("block closes before mutation") + "\nfi\n".len();
+
+    // #884 own pre-fix shape: three bare `test` assertions, no named
+    // cause, no GATE_BOOT_FACTS correction, no host-contention read -- the
+    // exact shape this file's `validate_x86_prod_profile_harness` already
+    // accepted, which is precisely why #884 needed a second, narrower
+    // ratchet rather than a stricter version of the first one.
+    let bare_shape = "test \"$PROMPT_AFTER\" -gt \"$PROMPT_BEFORE\"\ntest \"$PROMPT_BEFORE\" -eq 1\ntest \"$PROMPT_AFTER\" -eq 2\n";
+    let mut reverted = gate.clone();
+    reverted.replace_range(start..block_end, bare_shape);
+    assert_ne!(reverted, gate, "reverting to the bare shape must apply");
+    assert!(
+        !x86_prod_prompt_liveness_failure_names_its_cause(&reverted),
+        "reverting to #884 bare three-assertion shape must redden this ratchet"
+    );
+    // The reverted shape is a readability/diagnosability regression, not a
+    // verdict-machinery one -- it still satisfies the generic verdict
+    // rules (a bare `test` is not a pre-empting `exit`), which is exactly
+    // why THIS ratchet, not that one, is what must catch it.
+    assert!(
+        validate_x86_prod_profile_harness(&reverted).is_ok(),
+        "the bare shape must still satisfy the generic verdict machinery"
+    );
+
+    // Dropping only the named cause (leaving the rest of the block, and its
+    // terminal `false`, intact) must also redden.
+    let no_cause = gate.replacen(
+        "PROMPT_LIVENESS_ENDED_BY=\"prompt_absent\"",
+        "PROMPT_LIVENESS_ENDED_BY=\"unknown\"",
+        1,
+    );
+    assert_ne!(no_cause, gate, "ended_by mutation must apply");
+    assert!(
+        !x86_prod_prompt_liveness_failure_names_its_cause(&no_cause),
+        "losing the named prompt_absent cause must redden this ratchet"
+    );
+
+    // Swapping the terminal `false` for `exit 1` must redden both this
+    // ratchet and the generic pre-empting-exit census -- the two ratchets
+    // agreeing is what proves this shape is still routed through the same
+    // trap the rest of the script uses, not a parallel exit path.
+    let false_rel = tail
+        .rfind("\n    false\nfi\n")
+        .expect("terminal false present");
+    let false_abs = start + false_rel;
+    let mut exit_mutated = gate.clone();
+    exit_mutated.replace_range(
+        false_abs..false_abs + "\n    false\nfi\n".len(),
+        "\n    exit 1\nfi\n",
+    );
+    assert_ne!(exit_mutated, gate, "exit mutation must apply");
+    assert!(
+        !x86_prod_prompt_liveness_failure_names_its_cause(&exit_mutated),
+        "swapping the terminal false for exit must redden this ratchet"
+    );
+    assert!(
+        verdict_trap_has_no_preempting_exit(&exit_mutated).is_err(),
+        "swapping the terminal false for exit must also redden the generic \
+         pre-empting-exit census"
+    );
+}
+
 /// GATE VERDICT DISCIPLINE, WIDENED (#802/#805) -- each gate script that
 /// carries the `report_gate_failure`-via-ERR-trap architecture, not just
 /// `run-x86-prod-profile-boot-test.sh`.

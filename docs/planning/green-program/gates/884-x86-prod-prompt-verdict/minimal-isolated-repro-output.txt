@@ -1,0 +1,2 @@
+TRAP_FIRED exit=1 line=11 cmd=[test "$X" -eq 1]
+exit=7
