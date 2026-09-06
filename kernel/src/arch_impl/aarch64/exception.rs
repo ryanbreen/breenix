@@ -605,9 +605,18 @@ fn dump_fatal_postmortem_once(label: &str) {
     // for. The round doc records the departure and its reason.
     //
     // The two words are ESR_EL1 and FAR_EL1, read here rather than passed
-    // down: this runs inside the exception handler, so both still describe
-    // the fault, and two `mrs` reads add no lock, no allocation and no
-    // serial byte to a path that may not have any of them.
+    // down: this runs inside the exception handler, and two `mrs` reads add
+    // no lock, no allocation and no serial byte to a path that may not have
+    // any of them.
+    //
+    // CAVEAT this inherits from the section-skip design above: if a fault is
+    // taken while sections 0-6 are running (the label printed at the top of
+    // this postmortem is for that ORIGINAL fault), the ORIGINAL invocation
+    // abandons this section and a NESTED invocation is the one that reaches
+    // section 7. In that case these `mrs` reads describe the NESTED fault,
+    // not the one named by the printed label -- the record's a0/a1 are the
+    // most recent EL1 fault on this CPU at the point section 7 runs, which
+    // is not provably the labeled one.
     dump_fatal_postmortem_section(cpu_id, 7, "\n  Trace buffers:\n", || {
         let esr: u64;
         let far: u64;
