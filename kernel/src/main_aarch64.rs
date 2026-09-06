@@ -1355,6 +1355,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // production boot --
     // docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-boot1-serial.txt
     // and 02-prod-boot1-serial.txt
+    // Slice 3e's oracle: three of the eleven migration sites, driven against a
+    // thread that carries a per-CPU worker pin, reporting the CPU each one put
+    // it on against the CPU the pin names. Boot-tests only, and it runs before
+    // the census above so the census reports the state the probe left -- the
+    // probe subtracts its own contribution, which is why they must be in this
+    // order to be readable together.
+    #[cfg(feature = "boot_tests")]
+    kernel::task::scheduler::emit_pin_guard_oracle();
     kernel::task::scheduler::emit_pinned_placement_census();
 
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).

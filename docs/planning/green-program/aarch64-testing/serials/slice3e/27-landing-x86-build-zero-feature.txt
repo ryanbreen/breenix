@@ -1,0 +1,3 @@
+   Compiling kernel v0.1.0 (/root/breenix-slice3e/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-slice3e)
+    Finished `release` profile [optimized] target(s) in 14.90s

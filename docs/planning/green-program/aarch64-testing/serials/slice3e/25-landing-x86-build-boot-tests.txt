@@ -1,0 +1,123 @@
+    Updating git repository `https://github.com/rust-osdev/bootloader.git`
+    Updating crates.io index
+     Locking 154 packages to latest compatible versions
+      Adding aarch64-cpu v9.4.0 (available: v11.2.0)
+      Adding acpi v5.2.0 (available: v6.1.1)
+      Adding az v1.2.1 (available: v1.3.0)
+      Adding pic8259 v0.10.4 (available: v0.11.0)
+      Adding spin v0.9.9 (available: v0.12.3)
+      Adding tock-registers v0.8.1 (available: v0.10.1)
+      Adding uart_16550 v0.3.2 (available: v0.8.0)
+      Adding uefi v0.33.0 (available: v0.37.0)
+      Adding x86_64 v0.15.4 (available: v0.15.5)
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling serde v1.0.229
+   Compiling serde_core v1.0.229
+   Compiling rustversion v1.0.23
+   Compiling x86 v0.52.0
+   Compiling bit_field v0.10.3
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling const_fn v0.4.12
+   Compiling libc v0.2.189
+   Compiling find-msvc-tools v0.1.12
+   Compiling shlex v2.0.1
+   Compiling scopeguard v1.2.0
+   Compiling bitflags v2.13.1
+   Compiling autocfg v1.5.1
+   Compiling cfg-if v1.0.4
+   Compiling cc v1.4.5
+   Compiling lock_api v0.4.14
+   Compiling volatile v0.4.6
+   Compiling getrandom v0.4.3
+   Compiling az v1.2.1
+   Compiling bitflags v1.3.2
+   Compiling num-traits v0.2.19
+   Compiling raw-cpuid v10.7.0
+   Compiling syn v3.0.5
+   Compiling crossbeam-utils v0.8.23
+   Compiling conquer-util v0.3.0
+   Compiling rand_core v0.6.4
+   Compiling ring v0.17.14
+   Compiling spinning_top v0.2.5
+   Compiling rustix v1.1.4
+   Compiling zmij v1.0.23
+   Compiling typenum v1.20.1
+   Compiling zeroize v1.9.0
+   Compiling byteorder v1.5.0
+   Compiling zero v0.1.3
+   Compiling embedded-graphics-core v0.4.1
+   Compiling xmas-elf v0.8.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling uart_16550 v0.3.2
+   Compiling float-cmp v0.9.0
+   Compiling hybrid-array v0.4.14
+   Compiling getrandom v0.2.17
+   Compiling rand_hc v0.3.2
+   Compiling rand v0.8.8
+   Compiling conquer-once v0.3.2
+   Compiling serde_derive v1.0.229
+   Compiling x86_64 v0.15.4
+   Compiling x86_64 v0.14.13
+   Compiling llvm-tools v0.1.1
+   Compiling noto-sans-mono-bitmap v0.2.0
+   Compiling futures-core v0.3.34
+   Compiling micromath v2.1.0
+   Compiling linux-raw-sys v0.12.1
+   Compiling log v0.4.34
+   Compiling pin-project-lite v0.2.17
+   Compiling serde_json v1.0.151
+   Compiling futures-task v0.3.34
+   Compiling untrusted v0.9.0
+   Compiling slab v0.4.12
+   Compiling kernel v0.1.0 (/root/breenix-slice3e/kernel)
+   Compiling httparse v1.10.1
+   Compiling anyhow v1.0.104
+   Compiling crc-catalog v2.5.0
+   Compiling usize_conversions v0.2.0
+   Compiling crc v3.4.0
+   Compiling pic8259 v0.10.4
+   Compiling futures-util v0.3.34
+   Compiling embedded-graphics v0.8.2
+   Compiling bootloader v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling crossbeam-queue v0.3.14
+   Compiling uuid v1.26.0
+   Compiling linked_list_allocator v0.10.6
+   Compiling conquer-once v0.4.0
+   Compiling spin v0.9.9
+   Compiling once_cell v1.21.4
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling rustls v0.23.43
+   Compiling fastrand v2.5.0
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling bytes v1.12.1
+   Compiling bootloader-boot-config v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling fatfs v0.3.6
+   Compiling bootloader-x86_64-common v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling tempfile v3.27.0
+   Compiling http v1.5.0
+   Compiling gpt v3.1.0
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling const-oid v0.10.2
+   Compiling subtle v2.6.1
+   Compiling base64 v0.23.1
+   Compiling xattr v1.6.1
+   Compiling digest v0.11.3
+   Compiling ureq-proto v0.6.1
+   Compiling webpki-roots v1.0.9
+   Compiling filetime v0.2.29
+   Compiling utf8-zero v0.8.1
+   Compiling percent-encoding v2.3.2
+   Compiling cpufeatures v0.3.1
+   Compiling sha2 v0.11.0
+   Compiling lzma-rs v0.3.0
+   Compiling rustls-webpki v0.103.15
+   Compiling tar v0.4.46
+   Compiling breenix v0.1.0 (/root/breenix-slice3e)
+   Compiling base16ct v1.0.0
+   Compiling ureq v3.4.0
+   Compiling ovmf-prebuilt v0.2.9
+    Finished `release` profile [optimized] target(s) in 2m 18s

@@ -646,9 +646,30 @@ pub struct CpuPin {
     pub per_cpu_worker: bool,
 }
 
+/// `CpuPin` values minted since boot, by either constructor.
+///
+/// Monotonic: it is never decremented, so it over-counts a pin that was built
+/// and then dropped or cleared, and it under-counts by 0. A reading of 0 is
+/// therefore a statement that 0 `Thread::cpu_affinity` fields in the kernel
+/// hold `Some`, which is what `Scheduler::retain_cpu_affine_thread` reads it
+/// for: on that reading the guard answers "no constraint" from 1 relaxed load
+/// and 1 compare, instead of searching `self.threads` once per migration site.
+/// claim-lint:ok: 2 of 2 constructors of `CpuPin` increment this and 0
+/// `CpuPin { .. }` literals exist in kernel/src outside the type's own
+/// definition, both counted by
+/// `tests/loopback_pump_structure.rs::every_cpu_pin_is_minted_by_a_counting_constructor`
+///
+/// The increment happens inside the constructor, before the value can be
+/// stored into a thread row, and a row only becomes visible to another CPU
+/// through the scheduler lock -- so the lock's release/acquire pair is the edge
+/// that keeps a live pin from being paired with a 0 reading here, and
+/// `Relaxed` is enough for the counter's own accesses.
+pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
+
 impl CpuPin {
     /// A pin whose work lives in `cpu`'s per-CPU state.
-    pub const fn per_cpu_worker(cpu: usize) -> Self {
+    pub fn per_cpu_worker(cpu: usize) -> Self {
+        CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
         Self {
             cpu,
             per_cpu_worker: true,
@@ -662,7 +683,8 @@ impl CpuPin {
     /// the kind is what makes the two pins distinguishable at all, and a pin
     /// type with only one kind cannot carry the distinction the reclaim
     /// disposition will read.
-    pub const fn hold_pen(cpu: usize) -> Self {
+    pub fn hold_pen(cpu: usize) -> Self {
+        CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
         Self {
             cpu,
             per_cpu_worker: false,
