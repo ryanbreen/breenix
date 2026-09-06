@@ -15,13 +15,19 @@ ICNS_NAME := AppIcon.icns
 # below; not meant to be set directly on the command line.
 CONFIG ?= release
 
-.PHONY: build test catalog icon app app-debug bundle
+.PHONY: build test unit-test ui-smoke catalog icon app app-debug bundle
 
 build:
 	swift build
 
-test:
+test: unit-test
+	$(MAKE) ui-smoke
+
+unit-test:
 	swift test
+
+ui-smoke:
+	bash scripts/ui-smoke.sh
 
 catalog:
 	cd ../.. && cargo run -p xtask -- dump-boot-stages --arch aarch64 --json > tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-aarch64.json
@@ -58,7 +64,9 @@ bundle:
 	swift build --product $(APP_EXECUTABLE) -c $(CONFIG)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_MACOS)" "$(APP_RESOURCES)"
-	cp ".build/$(CONFIG)/$(APP_EXECUTABLE)" "$(APP_MACOS)/$(APP_EXECUTABLE)"
+	bin_path="$$(swift build --show-bin-path -c $(CONFIG))" && \
+		cp "$$bin_path/$(APP_EXECUTABLE)" "$(APP_MACOS)/$(APP_EXECUTABLE)" && \
+		cp -R "$$bin_path/breenix-runs_BreenixRuns.bundle" "$(APP_RESOURCES)/breenix-runs_BreenixRuns.bundle"
 	cp "$(ICNS)" "$(APP_RESOURCES)/$(ICNS_NAME)"
 	{ \
 		printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'; \
@@ -87,3 +95,8 @@ bundle:
 		printf '%s\n' '</plist>'; \
 	} > "$(INFO_PLIST)"
 	codesign --force --deep --sign - "$(APP_BUNDLE)"
+
+.PHONY: import-preserved
+import-preserved:
+	swift build --product breenix-runs -c release
+	bash scripts/import-preserved.sh

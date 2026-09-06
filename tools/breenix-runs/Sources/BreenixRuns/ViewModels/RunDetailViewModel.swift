@@ -19,8 +19,9 @@ public struct RunDetailViewModel: Equatable, Sendable {
     public static func load(manifest: RunManifest, store: RunStore) throws -> RunDetailViewModel {
         let serialIndex = try scanSerials(manifest: manifest, store: store)
         let catalog = try StageCatalog.load(for: manifest.arch)
-        let gateStdoutText = try store.readGateStdoutText(manifest: manifest)
-        return RunDetailViewModel(manifest: manifest, serialIndex: serialIndex, catalog: catalog, gateStdoutText: gateStdoutText)
+        var detail = RunDetailViewModel(manifest: manifest, serialIndex: serialIndex, catalog: catalog)
+        detail.traces.hostFacts = try store.readBootFacts(manifest: manifest)
+        return detail
     }
 
     public static func scanSerials(manifest: RunManifest, store: RunStore) throws -> SerialIndex {

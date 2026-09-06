@@ -1,0 +1,20 @@
+== compiling run_inspector_import_structure ==
+== running run_inspector_import_structure  ==
+
+running 1 test
+test six_gates_source_and_call_the_post_verdict_importer ... FAILED
+
+failures:
+
+---- six_gates_source_and_call_the_post_verdict_importer stdout ----
+
+thread 'six_gates_source_and_call_the_post_verdict_importer' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/tests/run_inspector_import_structure.rs:19:9:
+run-x86-gate.sh: missing post-verdict import call
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    six_gates_source_and_call_the_post_verdict_importer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

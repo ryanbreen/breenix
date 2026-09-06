@@ -1,0 +1,66 @@
+/Applications/Xcode.app/Contents/Developer/usr/bin/make bundle CONFIG=release
+swift build --product BreenixRunInspector -c release
+[0/1] Planning build
+Building for production...
+[0/3] Write sources
+[1/3] Write swift-version--58304C5D6DBC2206.txt
+[3/4] Compiling BreenixRuns RunDiff.swift
+[3/6] Write sources
+[5/7] Compiling BreenixRunInspector BreenixRunInspectorApp.swift
+[5/7] Write Objects.LinkFileList
+[6/7] Linking BreenixRunInspector
+Build of product 'BreenixRunInspector' complete! (9.62s)
+rm -rf "Breenix Run Inspector.app"
+mkdir -p "Breenix Run Inspector.app/Contents/MacOS" "Breenix Run Inspector.app/Contents/Resources"
+bin_path="$(swift build --show-bin-path -c release)" && \
+		cp "$bin_path/BreenixRunInspector" "Breenix Run Inspector.app/Contents/MacOS/BreenixRunInspector" && \
+		cp -R "$bin_path/breenix-runs_BreenixRuns.bundle" "Breenix Run Inspector.app/Contents/Resources/breenix-runs_BreenixRuns.bundle"
+cp "Icon/AppIcon.icns" "Breenix Run Inspector.app/Contents/Resources/AppIcon.icns"
+{ \
+		printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'; \
+		printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'; \
+		printf '%s\n' '<plist version="1.0">'; \
+		printf '%s\n' '<dict>'; \
+		printf '%s\n' '  <key>CFBundleExecutable</key>'; \
+		printf '%s\n' '  <string>BreenixRunInspector</string>'; \
+		printf '%s\n' '  <key>CFBundleIconFile</key>'; \
+		printf '%s\n' '  <string>AppIcon</string>'; \
+		printf '%s\n' '  <key>CFBundleIdentifier</key>'; \
+		printf '%s\n' '  <string>dev.breenix.run-inspector</string>'; \
+		printf '%s\n' '  <key>CFBundleName</key>'; \
+		printf '%s\n' '  <string>Breenix Run Inspector</string>'; \
+		printf '%s\n' '  <key>CFBundlePackageType</key>'; \
+		printf '%s\n' '  <string>APPL</string>'; \
+		printf '%s\n' '  <key>CFBundleShortVersionString</key>'; \
+		printf '%s\n' '  <string>1.0</string>'; \
+		printf '%s\n' '  <key>CFBundleVersion</key>'; \
+		printf '%s\n' '  <string>1</string>'; \
+		printf '%s\n' '  <key>LSMinimumSystemVersion</key>'; \
+		printf '%s\n' '  <string>14.0</string>'; \
+		printf '%s\n' '  <key>NSHighResolutionCapable</key>'; \
+		printf '%s\n' '  <true/>'; \
+		printf '%s\n' '</dict>'; \
+		printf '%s\n' '</plist>'; \
+	} > "Breenix Run Inspector.app/Contents/Info.plist"
+codesign --force --deep --sign - "Breenix Run Inspector.app"
+Breenix Run Inspector.app: replacing existing signature
+[0/1] Planning build
+Building for production...
+[0/4] Write sources
+[1/4] Write swift-version--58304C5D6DBC2206.txt
+[3/5] Compiling breenix_runs compare.swift
+[3/5] Write Objects.LinkFileList
+[4/5] Linking breenix-runs
+Build of product 'breenix-runs' complete! (1.89s)
+Import: /tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/tools/breenix-runs/.build/ui-smoke-store.rbPIyb/input
+Imported: 2
+Existing: 0
+  imported-breenix_aarch64_strict_1-70d2e182a6b827fd6674002e
+  imported-breenix_aarch64_strict_2-4b2d5617320c3f85570835b9
+Skipped: 0
+Total: imported=2 skipped=0 existing=0
+Launched packaged app PID=75581
+PID=75581 AXIsProcessTrusted=false
+AXWindows error=-25211 count=-1
+UI SMOKE FAILED: Accessibility permission denied: AXIsProcessTrusted=false; AXWindows error=-25211
+Owned PID=75581 exited

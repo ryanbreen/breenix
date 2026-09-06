@@ -3,6 +3,47 @@ import Foundation
 import XCTest
 
 final class ImporterTests: XCTestCase {
+    func testAuthoritativeSidecarPreservesVerdictTimesAndFactsAcrossRelocation() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root.appendingPathComponent("store"))
+        for (text, code, state) in [
+            ("PASS", 0, VerdictDisplayState.success),
+            ("FAIL", 9, .failure),
+            ("PASS-WITH-ATTRIBUTED-LOCKUP", 0, .attributed),
+            ("REFUSED", 7, .failure)
+        ] {
+            let evidence = root.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+            try Data(contentsOf: fixtureURL(named: "05-runtime-anti-vacuity-strict-serial.txt"))
+                .write(to: evidence.appendingPathComponent("serial.txt"))
+            let facts = try Data(contentsOf: fixtureURL(named: "gate-boot-facts-positive.txt"))
+            try facts.write(to: evidence.appendingPathComponent("gate_boot_facts.txt"))
+            let start = Date(timeIntervalSince1970: 1_788_633_600)
+            let metadata = GateProvenance(schemaVersion: 1, id: UUID().uuidString,
+                arch: .aarch64, profile: "testing", verdict: text, exitCode: code,
+                startedAt: start, endedAt: start.addingTimeInterval(20),
+                command: ["gate.sh", "1"], serials: ["serial.txt"], captures: ["gate_boot_facts.txt"])
+            try RunStore.encoder.encode(metadata).write(to: evidence.appendingPathComponent("run-inspector.json"))
+            let result = try Importer(store: store).importPath(evidence)
+            let id = try XCTUnwrap(result.imported.first?.id)
+            let manifest = try store.readManifest(id: id)
+            XCTAssertEqual(SidebarViewModel.row(for: manifest).verdictState, state)
+            XCTAssertEqual(manifest.verdictSource, .gateScript(command: ["gate.sh", "1"], exitCode: code))
+            XCTAssertEqual(manifest.startedAt, start)
+            XCTAssertEqual(manifest.endedAt, start.addingTimeInterval(20))
+            XCTAssertEqual(manifest.profile, "testing")
+            let detail = try RunDetailViewModel.load(manifest: manifest, store: store)
+            XCTAssertEqual(detail.traces.hostFacts.first?.sourceFile, "gate_boot_facts.txt")
+            XCTAssertEqual(detail.traces.hostFacts.first?.lineNumber, 2)
+            XCTAssertEqual(detail.traces.hostFacts.first?.fields["ended_by"], "scored_pass")
+            let moved = root.appendingPathComponent("download-" + UUID().uuidString)
+            try FileManager.default.copyItem(at: evidence, to: moved)
+            XCTAssertEqual(try Importer(store: store).importPath(moved).imported.first?.id, id)
+        }
+        XCTAssertEqual(try store.readIndex().runs.count, 4)
+    }
+
     func testGateTmpTreeImportsOneRunPerIterationDirectory() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

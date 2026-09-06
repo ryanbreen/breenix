@@ -36,17 +36,19 @@ public struct SerialTailer: Sendable {
         var stablePolls = 0
 
         while true {
+            // Observe completion before measuring EOF: a final write can race the poll.
+            let writerDone = try isWriterDone()
             let size = fileSize(fileURL)
             if size > offset {
                 let chunk = try readChunk(fileURL, offset: offset)
-                offset = size
+                offset += UInt64(chunk.count)
                 stablePolls = 0
                 if !chunk.isEmpty {
                     try sink(chunk)
                 }
             } else {
                 stablePolls += 1
-                if stablePolls >= stablePollsBeforeDone, try isWriterDone() {
+                if stablePolls >= stablePollsBeforeDone, writerDone {
                     return
                 }
             }

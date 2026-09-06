@@ -9,7 +9,9 @@ struct SidebarView: View {
         List(rows, selection: $selection) { row in
             SidebarRow(row: row)
                 .tag(row.id)
+                .accessibilityIdentifier("run-row-" + row.id)
         }
+        .accessibilityIdentifier("run-sidebar")
     }
 }
 

@@ -65,6 +65,16 @@ public struct HostFactsSample: Codable, Equatable, Sendable {
 // value is read through `runner` (an injected ProcessRunner) rather than a
 // native macOS API so HostFactsTests can assert against fixture strings with
 // no real processes spawned.
+public enum HostFactsError: Error, CustomStringConvertible {
+    case peerQueryFailed(Int32, String)
+    public var description: String {
+        switch self {
+        case .peerQueryFailed(let status, let message):
+            return "QEMU peer query failed (exit \(status)): \(message)"
+        }
+    }
+}
+
 public enum HostFacts {
     public static func sample(
         runner: ProcessRunner,
@@ -103,8 +113,16 @@ public enum HostFacts {
     }
 
     static func qemuPeerCount(processName: String, runner: ProcessRunner) throws -> Int {
-        let result = try runner.run(ProcessRequest(executable: "/usr/bin/pgrep", arguments: ["-c", processName]))
-        return parseInt(result.stdoutString) ?? 0
+        let result = try runner.run(ProcessRequest(executable: "/usr/bin/pgrep", arguments: ["-x", processName]))
+        if result.exitCode == 1, result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return 0 // pgrep's documented no-match result.
+        }
+        let lines = result.stdoutString.split(whereSeparator: \.isWhitespace)
+        guard result.exitCode == 0, !lines.isEmpty,
+              lines.allSatisfy({ Int32($0).map { $0 > 0 } ?? false }) else {
+            throw HostFactsError.peerQueryFailed(result.exitCode, result.stderrString + result.stdoutString)
+        }
+        return lines.count
     }
 
     static func loadAverage(runner: ProcessRunner) throws -> (Double, Double, Double)? {
@@ -213,10 +231,6 @@ public enum HostFacts {
             return daySeconds + hours * 60 * 60 + minutes * 60 + seconds
         }
         return nil
-    }
-
-    private static func parseInt(_ text: String) -> Int? {
-        Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private static func nonEmptyTrimmed(_ text: String) -> String? {

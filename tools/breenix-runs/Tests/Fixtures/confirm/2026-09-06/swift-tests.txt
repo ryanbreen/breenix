@@ -1,0 +1,292 @@
+[0/1] Planning build
+Building for debugging...
+[0/6] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.12s)
+Test Suite 'All tests' started at 2026-09-06 18:20:02.506.
+Test Suite 'breenix-runsPackageTests.xctest' started at 2026-09-06 18:20:02.507.
+Test Suite 'BXCAPTests' started at 2026-09-06 18:20:02.507.
+Test Case '-[BreenixRunsTests.BXCAPTests testBeginWithoutMatchingEndDecodesAsTruncated]' started.
+Test Case '-[BreenixRunsTests.BXCAPTests testBeginWithoutMatchingEndDecodesAsTruncated]' passed (0.001 seconds).
+Test Case '-[BreenixRunsTests.BXCAPTests testInterleavedSequencesDecodeAsSeparateCaptures]' started.
+Test Case '-[BreenixRunsTests.BXCAPTests testInterleavedSequencesDecodeAsSeparateCaptures]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BXCAPTests testNoCapturePresentIsEmptyResult]' started.
+Test Case '-[BreenixRunsTests.BXCAPTests testNoCapturePresentIsEmptyResult]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BXCAPTests testSynthesizedV1FixturePreservesRowsVerdictSectionsSkippedAndQuality]' started.
+Test Case '-[BreenixRunsTests.BXCAPTests testSynthesizedV1FixturePreservesRowsVerdictSectionsSkippedAndQuality]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BXCAPTests testUnknownMajorVersionIsRefused]' started.
+Test Case '-[BreenixRunsTests.BXCAPTests testUnknownMajorVersionIsRefused]' passed (0.000 seconds).
+Test Suite 'BXCAPTests' passed at 2026-09-06 18:20:02.509.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+Test Suite 'BeastLauncherTests' started at 2026-09-06 18:20:02.509.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testFailedEvidencePullStillProducesTwoEmptySerialRefs]' started.
+gate ok
+Test Case '-[BreenixRunsTests.BeastLauncherTests testFailedEvidencePullStillProducesTwoEmptySerialRefs]' passed (0.007 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testGateTmpAndTarballRemovedAfterHarvest]' started.
+gate ok
+Test Case '-[BreenixRunsTests.BeastLauncherTests testGateTmpAndTarballRemovedAfterHarvest]' passed (0.074 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testHostFactsSamplingFailureDoesNotAbortRun]' started.
+gate ok
+Test Case '-[BreenixRunsTests.BeastLauncherTests testHostFactsSamplingFailureDoesNotAbortRun]' passed (0.003 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testParseHostFactsFromFixtureString]' started.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testParseHostFactsFromFixtureString]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPlanIsPureFunctionOfInputs]' started.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPlanIsPureFunctionOfInputs]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPlanMatchesWhatRunX86WouldExecute]' started.
+gate ok
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPlanMatchesWhatRunX86WouldExecute]' passed (0.003 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPrepareCloneRequestArgv]' started.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPrepareCloneRequestArgv]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPrepareFailureCallsRemoveCloneAndPersistsNothing]' started.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPrepareFailureCallsRemoveCloneAndPersistsNothing]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPullEvidenceRequestArgvAndDoesNotCombineOutput]' started.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testPullEvidenceRequestArgvAndDoesNotCombineOutput]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testRemoveCloneRequestArgvTargetsClonePath]' started.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testRemoveCloneRequestArgvTargetsClonePath]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testRunGateRequestArgvEncodesBootsModeAndGateTmpInsideClone]' started.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testRunGateRequestArgvEncodesBootsModeAndGateTmpInsideClone]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testTeardownRemovesCloneOnGateNonZeroExit]' started.
+gate exited 1
+Test Case '-[BreenixRunsTests.BeastLauncherTests testTeardownRemovesCloneOnGateNonZeroExit]' passed (0.003 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testTeardownRemovesCloneOnGateSuccess]' started.
+gate exited 0
+Test Case '-[BreenixRunsTests.BeastLauncherTests testTeardownRemovesCloneOnGateSuccess]' passed (0.003 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testTwoBootHarvestOrdersNaturally]' started.
+gate ok
+Test Case '-[BreenixRunsTests.BeastLauncherTests testTwoBootHarvestOrdersNaturally]' passed (0.073 seconds).
+Test Case '-[BreenixRunsTests.BeastLauncherTests testUnsupportedHostIsRejected]' started.
+Test Case '-[BreenixRunsTests.BeastLauncherTests testUnsupportedHostIsRejected]' passed (0.000 seconds).
+Test Suite 'BeastLauncherTests' passed at 2026-09-06 18:20:02.675.
+	 Executed 15 tests, with 0 failures (0 unexpected) in 0.166 (0.167) seconds
+Test Suite 'BootFactsParserTests' started at 2026-09-06 18:20:02.676.
+Test Case '-[BreenixRunsTests.BootFactsParserTests testAbsentFixtureReturnsNoRecords]' started.
+Test Case '-[BreenixRunsTests.BootFactsParserTests testAbsentFixtureReturnsNoRecords]' passed (0.002 seconds).
+Test Case '-[BreenixRunsTests.BootFactsParserTests testParsesRealQuotedLinesAndPreservesUnknownExtraKey]' started.
+Test Case '-[BreenixRunsTests.BootFactsParserTests testParsesRealQuotedLinesAndPreservesUnknownExtraKey]' passed (0.000 seconds).
+Test Suite 'BootFactsParserTests' passed at 2026-09-06 18:20:02.678.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'CLIHelpTests' started at 2026-09-06 18:20:02.678.
+Test Case '-[BreenixRunsTests.CLIHelpTests testHelpExitsSuccessfullyWithoutStoreOrRepositoryAccess]' started.
+Test Case '-[BreenixRunsTests.CLIHelpTests testHelpExitsSuccessfullyWithoutStoreOrRepositoryAccess]' passed (0.198 seconds).
+Test Suite 'CLIHelpTests' passed at 2026-09-06 18:20:02.876.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.198 (0.198) seconds
+Test Suite 'CLIReadTests' started at 2026-09-06 18:20:02.876.
+Test Case '-[BreenixRunsTests.CLIReadTests testFactsDecodesSidecarInTextAndJSON]' started.
+Test Case '-[BreenixRunsTests.CLIReadTests testFactsDecodesSidecarInTextAndJSON]' passed (0.194 seconds).
+Test Case '-[BreenixRunsTests.CLIReadTests testListShowsImportedIdentityAndAppliesFilters]' started.
+Test Case '-[BreenixRunsTests.CLIReadTests testListShowsImportedIdentityAndAppliesFilters]' passed (0.252 seconds).
+Test Suite 'CLIReadTests' passed at 2026-09-06 18:20:03.322.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.446 (0.447) seconds
+Test Suite 'FatalRegsTests' started at 2026-09-06 18:20:03.322.
+Test Case '-[BreenixRunsTests.FatalRegsTests testLabelledFatalRegsFixtureHasCompleteGridAndDispatchHeader]' started.
+Test Case '-[BreenixRunsTests.FatalRegsTests testLabelledFatalRegsFixtureHasCompleteGridAndDispatchHeader]' passed (0.001 seconds).
+Test Case '-[BreenixRunsTests.FatalRegsTests testUnlabelledFatalRegsFixtureDoesNotRequireDispatchHeader]' started.
+Test Case '-[BreenixRunsTests.FatalRegsTests testUnlabelledFatalRegsFixtureDoesNotRequireDispatchHeader]' passed (0.001 seconds).
+Test Suite 'FatalRegsTests' passed at 2026-09-06 18:20:03.325.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'HostFactsTests' started at 2026-09-06 18:20:03.325.
+Test Case '-[BreenixRunsTests.HostFactsTests testPeerQueryRejectsFailureInsteadOfReportingZero]' started.
+Test Case '-[BreenixRunsTests.HostFactsTests testPeerQueryRejectsFailureInsteadOfReportingZero]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.HostFactsTests testPeerQueryUsesActualMacOSUtility]' started.
+Test Case '-[BreenixRunsTests.HostFactsTests testPeerQueryUsesActualMacOSUtility]' passed (0.201 seconds).
+Test Case '-[BreenixRunsTests.HostFactsTests testProcessTimeParserHandlesHourMinuteSecondShape]' started.
+Test Case '-[BreenixRunsTests.HostFactsTests testProcessTimeParserHandlesHourMinuteSecondShape]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.HostFactsTests testProcessTimeParserHandlesMinuteSecondFractionShape]' started.
+Test Case '-[BreenixRunsTests.HostFactsTests testProcessTimeParserHandlesMinuteSecondFractionShape]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.HostFactsTests testSampleParsesFixtureStringsWithoutRealProcesses]' started.
+Test Case '-[BreenixRunsTests.HostFactsTests testSampleParsesFixtureStringsWithoutRealProcesses]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.HostFactsTests testThermalPressureIsNilWhenUnavailable]' started.
+Test Case '-[BreenixRunsTests.HostFactsTests testThermalPressureIsNilWhenUnavailable]' passed (0.000 seconds).
+Test Suite 'HostFactsTests' passed at 2026-09-06 18:20:03.528.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.202 (0.203) seconds
+Test Suite 'ImporterTests' started at 2026-09-06 18:20:03.528.
+Test Case '-[BreenixRunsTests.ImporterTests testAuthoritativeSidecarPreservesVerdictTimesAndFactsAcrossRelocation]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testAuthoritativeSidecarPreservesVerdictTimesAndFactsAcrossRelocation]' passed (0.858 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testGateTmpReimportIsIdempotent]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testGateTmpReimportIsIdempotent]' passed (0.010 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testGateTmpTreeImportsOneRunPerIterationDirectory]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testGateTmpTreeImportsOneRunPerIterationDirectory]' passed (0.006 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testGateTmpTreeImportsOrphanedPreservedFailureWhenSiblingIterationDoesNotMatch]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testGateTmpTreeImportsOrphanedPreservedFailureWhenSiblingIterationDoesNotMatch]' passed (0.005 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testLooseSerialsDirectoryInfersArchAndStrictProfileWithoutInventingVerdict]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testLooseSerialsDirectoryInfersArchAndStrictProfileWithoutInventingVerdict]' passed (0.025 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testMergedFailureIDMatchesStandaloneFailureDirectoryImport]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testMergedFailureIDMatchesStandaloneFailureDirectoryImport]' passed (0.010 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testPreservedFailuresImportRecordsFailureVerdictAndParsedTimestamp]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testPreservedFailuresImportRecordsFailureVerdictAndParsedTimestamp]' passed (0.004 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testProdProfileGateTmpTreeMergesFailureWithoutDuplicatingFactsCapture]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testProdProfileGateTmpTreeMergesFailureWithoutDuplicatingFactsCapture]' passed (0.004 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testStrictGateTmpTreeMergesMatchingPreservedFailure]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testStrictGateTmpTreeMergesMatchingPreservedFailure]' passed (0.008 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testTestingProfileGateTmpTreeMergesFailureAndKeepsIterationCapture]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testTestingProfileGateTmpTreeMergesFailureAndKeepsIterationCapture]' passed (0.005 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testTestingProfilePreservedFailuresImportAsAarch64TestingFailures]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testTestingProfilePreservedFailuresImportAsAarch64TestingFailures]' passed (0.003 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testX86BootTestsPreservedFailureImportsPidSuffixedRunWithBothSerialsAndCaptureDrain]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testX86BootTestsPreservedFailureImportsPidSuffixedRunWithBothSerialsAndCaptureDrain]' passed (0.004 seconds).
+Test Case '-[BreenixRunsTests.ImporterTests testX86BootTestsPreservedFailureSkipsRunDirectoryWithoutNumericPidSuffix]' started.
+Test Case '-[BreenixRunsTests.ImporterTests testX86BootTestsPreservedFailureSkipsRunDirectoryWithoutNumericPidSuffix]' passed (0.001 seconds).
+Test Suite 'ImporterTests' passed at 2026-09-06 18:20:04.472.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.943 (0.944) seconds
+Test Suite 'LocalGateLauncherTests' started at 2026-09-06 18:20:04.472.
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testGateTmpIsRemovedAfterHarvest]' started.
+boot 1 passed
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testGateTmpIsRemovedAfterHarvest]' passed (0.004 seconds).
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testHostLockRefusalLeavesNoOrphanRunDirectory]' started.
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testHostLockRefusalLeavesNoOrphanRunDirectory]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testNoStoreCleansUpScratchDirectoryAfterReturn]' started.
+boot 1 passed
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testNoStoreCleansUpScratchDirectoryAfterReturn]' passed (0.001 seconds).
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testPreflightRefusalSurfacesAsRefusedVerdict]' started.
+Error: /path/to/kernel-aarch64 was not built with --features boot_tests.
+  Missing boot_tests-only marker literal(s): [BOOT_TESTS:
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testPreflightRefusalSurfacesAsRefusedVerdict]' passed (0.003 seconds).
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testProdProfileFailureCopyIsExcludedFromMergedSerial]' started.
+boot 1 failed
+Test Case '-[BreenixRunsTests.LocalGateLauncherTests testProdProfileFailureCopyIsExcludedFromMergedSerial]' passed (0.003 seconds).
+Test Suite 'LocalGateLauncherTests' passed at 2026-09-06 18:20:04.484.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.012 (0.012) seconds
+Test Suite 'MarkerScannerTests' started at 2026-09-06 18:20:04.484.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testAnchoredKTAPPatternDoesNotMatchWithPrefixNoise]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testAnchoredKTAPPatternDoesNotMatchWithPrefixNoise]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testBannerPinnedHomeAndStrandFamilies]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testBannerPinnedHomeAndStrandFamilies]' passed (0.022 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testBootTestsPassOccurrencesAndPrefixTolerance]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testBootTestsPassOccurrencesAndPrefixTolerance]' passed (0.022 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testByteRangesSliceOriginalBuffer]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testByteRangesSliceOriginalBuffer]' passed (0.022 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testExecSmokeDistinctStates]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testExecSmokeDistinctStates]' passed (0.026 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testGenericOracleDoesNotDuplicateSpecificFamilyRanges]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testGenericOracleDoesNotDuplicateSpecificFamilyRanges]' passed (0.024 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testGenericOracleRelabelsLeadingArchPayloadField]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testGenericOracleRelabelsLeadingArchPayloadField]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testHeartbeatUptimeIsMonotonic]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testHeartbeatUptimeIsMonotonic]' passed (0.023 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testTraceNoiseMatchesBreadcrumbRunsAndRejectsUART0]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testTraceNoiseMatchesBreadcrumbRunsAndRejectsUART0]' passed (0.025 seconds).
+Test Case '-[BreenixRunsTests.MarkerScannerTests testTTBR0ASIDCensusCountAndCounters]' started.
+Test Case '-[BreenixRunsTests.MarkerScannerTests testTTBR0ASIDCensusCountAndCounters]' passed (0.023 seconds).
+Test Suite 'MarkerScannerTests' passed at 2026-09-06 18:20:04.673.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.188 (0.189) seconds
+Test Suite 'MessageFilterTests' started at 2026-09-06 18:20:04.673.
+Test Case '-[BreenixRunsTests.MessageFilterTests testFilterPredicateAppliesSearchTextAfterBucketSelection]' started.
+Test Case '-[BreenixRunsTests.MessageFilterTests testFilterPredicateAppliesSearchTextAfterBucketSelection]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.MessageFilterTests testFilterPredicateSelectsOnlyRequestedBuckets]' started.
+Test Case '-[BreenixRunsTests.MessageFilterTests testFilterPredicateSelectsOnlyRequestedBuckets]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.MessageFilterTests testFilterPredicateWithEmptySelectionShowsNothing]' started.
+Test Case '-[BreenixRunsTests.MessageFilterTests testFilterPredicateWithEmptySelectionShowsNothing]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.MessageFilterTests testLineWithoutHitMapsToOther]' started.
+Test Case '-[BreenixRunsTests.MessageFilterTests testLineWithoutHitMapsToOther]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.MessageFilterTests testMarkerFamiliesMapToDesignBuckets]' started.
+Test Case '-[BreenixRunsTests.MessageFilterTests testMarkerFamiliesMapToDesignBuckets]' passed (0.000 seconds).
+Test Suite 'MessageFilterTests' passed at 2026-09-06 18:20:04.674.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'PackagedResourceTests' started at 2026-09-06 18:20:04.674.
+Test Case '-[BreenixRunsTests.PackagedResourceTests testPackagedExecutableResolvesItsOwnCatalogs]' started.
+Test Case '-[BreenixRunsTests.PackagedResourceTests testPackagedExecutableResolvesItsOwnCatalogs]' passed (0.117 seconds).
+Test Case '-[BreenixRunsTests.PackagedResourceTests testSwiftPMCatalogResolution]' started.
+Test Case '-[BreenixRunsTests.PackagedResourceTests testSwiftPMCatalogResolution]' passed (0.001 seconds).
+Test Suite 'PackagedResourceTests' passed at 2026-09-06 18:20:04.792.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.117 (0.118) seconds
+Test Suite 'RunDiffTests' started at 2026-09-06 18:20:04.792.
+Test Case '-[BreenixRunsTests.RunDiffTests testCrossArchCompareThrowsArchMismatch]' started.
+Test Case '-[BreenixRunsTests.RunDiffTests testCrossArchCompareThrowsArchMismatch]' passed (0.005 seconds).
+Test Case '-[BreenixRunsTests.RunDiffTests testFixturePairReportsSubsystemAndMarkerDeltas]' started.
+Test Case '-[BreenixRunsTests.RunDiffTests testFixturePairReportsSubsystemAndMarkerDeltas]' passed (0.262 seconds).
+Test Case '-[BreenixRunsTests.RunDiffTests testHostFactsDeltaIsExplicitNotSampledWhenEitherSideIsNil]' started.
+Test Case '-[BreenixRunsTests.RunDiffTests testHostFactsDeltaIsExplicitNotSampledWhenEitherSideIsNil]' passed (0.264 seconds).
+Test Case '-[BreenixRunsTests.RunDiffTests testHostFactsDeltaUsesStartSamplesAcrossRuns]' started.
+Test Case '-[BreenixRunsTests.RunDiffTests testHostFactsDeltaUsesStartSamplesAcrossRuns]' passed (0.268 seconds).
+Test Case '-[BreenixRunsTests.RunDiffTests testRunComparedWithItselfHasNoSubsystemOrMarkerDeltas]' started.
+Test Case '-[BreenixRunsTests.RunDiffTests testRunComparedWithItselfHasNoSubsystemOrMarkerDeltas]' passed (0.361 seconds).
+Test Suite 'RunDiffTests' passed at 2026-09-06 18:20:05.952.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 1.160 (1.160) seconds
+Test Suite 'RunInspectorLoaderTests' started at 2026-09-06 18:20:05.952.
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testFixtureListAndDetailSurviveDamagedManifestAndReload]' started.
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testFixtureListAndDetailSurviveDamagedManifestAndReload]' passed (0.204 seconds).
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testLoadDetailKeepsGateStdoutBootFactsLineNumbers]' started.
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testLoadDetailKeepsGateStdoutBootFactsLineNumbers]' passed (0.163 seconds).
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testLoadDetailMatchesDirectViewModelLoadForFixtureSerial]' started.
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testLoadDetailMatchesDirectViewModelLoadForFixtureSerial]' passed (0.167 seconds).
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testLoadDiffMatchesDirectRunDiffCompareForFixtureSerials]' started.
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testLoadDiffMatchesDirectRunDiffCompareForFixtureSerials]' passed (0.519 seconds).
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testLoadRunsMatchesDirectStoreAndSidebarProjection]' started.
+Test Case '-[BreenixRunsTests.RunInspectorLoaderTests testLoadRunsMatchesDirectStoreAndSidebarProjection]' passed (0.007 seconds).
+Test Suite 'RunInspectorLoaderTests' passed at 2026-09-06 18:20:07.012.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 1.059 (1.060) seconds
+Test Suite 'RunStoreTests' started at 2026-09-06 18:20:07.012.
+Test Case '-[BreenixRunsTests.RunStoreTests testCorruptManifestIsSkippedRatherThanPoisoningRebuildOrFutureWrites]' started.
+warning: skipping unreadable manifest at /private/var/folders/yv/_v01qqx127j449b8bd85bblm0000gn/T/breenix-runs-tests-FB75C510-8CE0-4786-9667-51F61C2C21F6/runs/20260905T185300Z-aarch64-strict-corr/manifest.json: DecodingError.dataCorrupted: Data was corrupted. Debug description: The given data was not valid JSON.. Underlying error: Error Domain=NSCocoaErrorDomain Code=3840 "Unexpected character 't' around line 1, column 4." UserInfo={NSJSONSerializationErrorIndex=3, NSDebugDescription=Unexpected character 't' around line 1, column 4.}
+warning: skipping unreadable manifest at /private/var/folders/yv/_v01qqx127j449b8bd85bblm0000gn/T/breenix-runs-tests-FB75C510-8CE0-4786-9667-51F61C2C21F6/runs/20260905T185300Z-aarch64-strict-corr/manifest.json: DecodingError.dataCorrupted: Data was corrupted. Debug description: The given data was not valid JSON.. Underlying error: Error Domain=NSCocoaErrorDomain Code=3840 "Unexpected character 't' around line 1, column 4." UserInfo={NSDebugDescription=Unexpected character 't' around line 1, column 4., NSJSONSerializationErrorIndex=3}
+Test Case '-[BreenixRunsTests.RunStoreTests testCorruptManifestIsSkippedRatherThanPoisoningRebuildOrFutureWrites]' passed (0.007 seconds).
+Test Case '-[BreenixRunsTests.RunStoreTests testManifestDateFieldsSurviveSubSecondRoundTrip]' started.
+Test Case '-[BreenixRunsTests.RunStoreTests testManifestDateFieldsSurviveSubSecondRoundTrip]' passed (0.002 seconds).
+Test Case '-[BreenixRunsTests.RunStoreTests testManifestWriteRoundTripsAndIndexRebuildsFromScratch]' started.
+Test Case '-[BreenixRunsTests.RunStoreTests testManifestWriteRoundTripsAndIndexRebuildsFromScratch]' passed (0.004 seconds).
+Test Case '-[BreenixRunsTests.RunStoreTests testStrayManifestTmpIsNeverSurfacedOverValidManifest]' started.
+Test Case '-[BreenixRunsTests.RunStoreTests testStrayManifestTmpIsNeverSurfacedOverValidManifest]' passed (0.004 seconds).
+Test Case '-[BreenixRunsTests.RunStoreTests testStrayManifestTmpWithoutManifestDoesNotCreateRun]' started.
+Test Case '-[BreenixRunsTests.RunStoreTests testStrayManifestTmpWithoutManifestDoesNotCreateRun]' passed (0.001 seconds).
+Test Suite 'RunStoreTests' passed at 2026-09-06 18:20:07.031.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.018 (0.019) seconds
+Test Suite 'SerialTailerTests' started at 2026-09-06 18:20:07.031.
+Test Case '-[BreenixRunsTests.SerialTailerTests testFinalWriteAtCompletionIsDrainedBeforeReturning]' started.
+Test Case '-[BreenixRunsTests.SerialTailerTests testFinalWriteAtCompletionIsDrainedBeforeReturning]' passed (0.002 seconds).
+Test Case '-[BreenixRunsTests.SerialTailerTests testTailerReadsAppendedChunksAndReturnsAfterDoneAtEOF]' started.
+Test Case '-[BreenixRunsTests.SerialTailerTests testTailerReadsAppendedChunksAndReturnsAfterDoneAtEOF]' passed (0.087 seconds).
+Test Case '-[BreenixRunsTests.SerialTailerTests testTailerTimeoutsWhenDonePredicateNeverTurnsTrue]' started.
+Test Case '-[BreenixRunsTests.SerialTailerTests testTailerTimeoutsWhenDonePredicateNeverTurnsTrue]' passed (0.052 seconds).
+Test Suite 'SerialTailerTests' passed at 2026-09-06 18:20:07.172.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.141 (0.141) seconds
+Test Suite 'SidebarViewModelTests' started at 2026-09-06 18:20:07.172.
+Test Case '-[BreenixRunsTests.SidebarViewModelTests testRowsSortNewestFirstAndKeepAttributedAmber]' started.
+Test Case '-[BreenixRunsTests.SidebarViewModelTests testRowsSortNewestFirstAndKeepAttributedAmber]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.SidebarViewModelTests testRunningUnknownAndGateScriptDisplayStatesRemainDistinct]' started.
+Test Case '-[BreenixRunsTests.SidebarViewModelTests testRunningUnknownAndGateScriptDisplayStatesRemainDistinct]' passed (0.000 seconds).
+Test Suite 'SidebarViewModelTests' passed at 2026-09-06 18:20:07.173.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'StageCatalogStateMachineTests' started at 2026-09-06 18:20:07.173.
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testCommittedCatalogsLoadAndMatchTheirFileCounts]' started.
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testCommittedCatalogsLoadAndMatchTheirFileCounts]' passed (0.001 seconds).
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testGreenStrictFixtureReachesAarch64KernelBootPrefix]' started.
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testGreenStrictFixtureReachesAarch64KernelBootPrefix]' passed (0.030 seconds).
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testLatestFailureManifestThrowsWhenStoreHasNoFailures]' started.
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testLatestFailureManifestThrowsWhenStoreHasNoFailures]' passed (0.003 seconds).
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testPartialAarch64BootReportsExactlyOneStoppedHereStage]' started.
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testPartialAarch64BootReportsExactlyOneStoppedHereStage]' passed (0.077 seconds).
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testShowLatestFailSelectsOlderFailureOverNewerPassEndToEnd]' started.
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testShowLatestFailSelectsOlderFailureOverNewerPassEndToEnd]' passed (0.086 seconds).
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testShowSubsystemsColumnsAreActuallyAligned]' started.
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testShowSubsystemsColumnsAreActuallyAligned]' passed (0.084 seconds).
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testShowSubsystemsRendersStoredRunHighWaterMark]' started.
+Test Case '-[BreenixRunsTests.StageCatalogStateMachineTests testShowSubsystemsRendersStoredRunHighWaterMark]' passed (0.163 seconds).
+Test Suite 'StageCatalogStateMachineTests' passed at 2026-09-06 18:20:07.618.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.444 (0.445) seconds
+Test Suite 'TracesViewModelTests' started at 2026-09-06 18:20:07.618.
+Test Case '-[BreenixRunsTests.TracesViewModelTests testGateStdoutBootFactsKeepGateStdoutLineNumbers]' started.
+Test Case '-[BreenixRunsTests.TracesViewModelTests testGateStdoutBootFactsKeepGateStdoutLineNumbers]' passed (0.022 seconds).
+Test Case '-[BreenixRunsTests.TracesViewModelTests testSerialBootFactsKeepSerialLineNumbers]' started.
+Test Case '-[BreenixRunsTests.TracesViewModelTests testSerialBootFactsKeepSerialLineNumbers]' passed (0.000 seconds).
+Test Suite 'TracesViewModelTests' passed at 2026-09-06 18:20:07.640.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.022 (0.022) seconds
+Test Suite 'VerdictTests' started at 2026-09-06 18:20:07.640.
+Test Case '-[BreenixRunsTests.VerdictTests testFailAttributedAndRefusedAreFailures]' started.
+Test Case '-[BreenixRunsTests.VerdictTests testFailAttributedAndRefusedAreFailures]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.VerdictTests testGateScriptIsFailureExactlyWhenExitCodeIsNonZero]' started.
+Test Case '-[BreenixRunsTests.VerdictTests testGateScriptIsFailureExactlyWhenExitCodeIsNonZero]' passed (0.000 seconds).
+Test Case '-[BreenixRunsTests.VerdictTests testPassRunningAndUnknownAreNotFailures]' started.
+Test Case '-[BreenixRunsTests.VerdictTests testPassRunningAndUnknownAreNotFailures]' passed (0.000 seconds).
+Test Suite 'VerdictTests' passed at 2026-09-06 18:20:07.641.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'breenix-runsPackageTests.xctest' passed at 2026-09-06 18:20:07.641.
+	 Executed 100 tests, with 0 failures (0 unexpected) in 5.126 (5.134) seconds
+Test Suite 'All tests' passed at 2026-09-06 18:20:07.641.
+	 Executed 100 tests, with 0 failures (0 unexpected) in 5.126 (5.134) seconds
+Bundle.main=/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/tools/breenix-runs/Breenix Run Inspector.app
+catalog=aarch64 stages=184 path=/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/tools/breenix-runs/Breenix Run Inspector.app/Contents/Resources/breenix-runs_BreenixRuns.bundle/Resources/boot-stages-aarch64.json
+catalog=x86_64 stages=252 path=/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/tools/breenix-runs/Breenix Run Inspector.app/Contents/Resources/breenix-runs_BreenixRuns.bundle/Resources/boot-stages-x86_64.json
+
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

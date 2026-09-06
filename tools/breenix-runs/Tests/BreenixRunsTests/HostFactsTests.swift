@@ -3,11 +3,32 @@ import Foundation
 import XCTest
 
 final class HostFactsTests: XCTestCase {
+    func testPeerQueryRejectsFailureInsteadOfReportingZero() throws {
+        for result in [ProcessResult(stderr: Data("unsupported option".utf8), exitCode: 2),
+                       ProcessResult(stdout: Data("not a PID".utf8), exitCode: 0)] {
+            let runner = FixtureProcessRunner(outputs: ["/usr/bin/pgrep -x qemu-system-aarch64": result])
+            XCTAssertThrowsError(try HostFacts.qemuPeerCount(processName: "qemu-system-aarch64", runner: runner))
+        }
+    }
+
+    func testPeerQueryUsesActualMacOSUtility() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        defer {
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+        }
+        XCTAssertGreaterThanOrEqual(try HostFacts.qemuPeerCount(processName: "sleep", runner: RealProcessRunner()), 1)
+        XCTAssertEqual(try HostFacts.qemuPeerCount(processName: "breenix-absent-" + UUID().uuidString, runner: RealProcessRunner()), 0)
+    }
+
     func testSampleParsesFixtureStringsWithoutRealProcesses() throws {
         let repoRoot = URL(fileURLWithPath: "/repo", isDirectory: true)
         let runner = FixtureProcessRunner(outputs: [
-            "/usr/bin/pgrep -c qemu-system-aarch64": ProcessResult(stdout: Data("2\n".utf8), exitCode: 0),
-            "/usr/bin/pgrep -c qemu-system-x86_64": ProcessResult(stdout: Data("3\n".utf8), exitCode: 0),
+            "/usr/bin/pgrep -x qemu-system-aarch64": ProcessResult(stdout: Data("201\n202\n".utf8), exitCode: 0),
+            "/usr/bin/pgrep -x qemu-system-x86_64": ProcessResult(stdout: Data("301\n302\n303\n".utf8), exitCode: 0),
             "/usr/sbin/sysctl -n vm.loadavg": ProcessResult(stdout: Data("{ 1.23 2.34 3.45 }\n".utf8), exitCode: 0),
             "/bin/ps -o time= -p 4242": ProcessResult(stdout: Data("01:02.34\n".utf8), exitCode: 0),
             "/usr/bin/pmset -g therm": ProcessResult(stdout: Data("CPU_Speed_Limit     = 100\nScheduler_Limit     = 100\n".utf8), exitCode: 0),
@@ -54,8 +75,8 @@ final class HostFactsTests: XCTestCase {
 
     func testThermalPressureIsNilWhenUnavailable() throws {
         let runner = FixtureProcessRunner(outputs: [
-            "/usr/bin/pgrep -c qemu-system-aarch64": ProcessResult(stdout: Data("0\n".utf8), exitCode: 1),
-            "/usr/bin/pgrep -c qemu-system-x86_64": ProcessResult(stdout: Data("0\n".utf8), exitCode: 1),
+            "/usr/bin/pgrep -x qemu-system-aarch64": ProcessResult(stdout: Data(), exitCode: 1),
+            "/usr/bin/pgrep -x qemu-system-x86_64": ProcessResult(stdout: Data(), exitCode: 1),
             "/usr/sbin/sysctl -n vm.loadavg": ProcessResult(stdout: Data("{ 0.10 0.20 0.30 }\n".utf8), exitCode: 0),
             "/usr/bin/pmset -g therm": ProcessResult(stdout: Data(), stderr: Data("unsupported\n".utf8), exitCode: 1),
             "/usr/sbin/sysctl hw.model hw.memsize": ProcessResult(stdout: Data("hw.model: Mac16,1\nhw.memsize: 17179869184\n".utf8), exitCode: 0),
