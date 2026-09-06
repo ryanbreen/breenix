@@ -288,6 +288,73 @@ fn removing_the_version_field_would_be_caught() {
 }
 
 #[test]
+fn every_section_reports_the_verdict_its_own_record_close_returned() {
+    let record = read("kernel/src/capture/record.rs");
+    let sections = read("kernel/src/capture/sections.rs");
+    assert_close_verdicts_are_carried(&record, &sections);
+}
+
+/// Shared assertion body: `Writer::close()` hands back whether the record
+/// went onto the wire whole, and no section drops that answer.
+///
+/// `open()` only refuses a record that starts with the budget already spent.
+/// A record cut MID-write is reported by `close()` alone, so a section that
+/// ignored it would clear its own bit in `sections_skipped=` over a fragment.
+/// Two guards, because either alone is weak: `#[must_use]` makes the compiler
+/// object anywhere in the tree, and the census below is what a reader of this
+/// file can check without building.
+fn assert_close_verdicts_are_carried(record: &str, sections: &str) {
+    assert!(
+        record.contains("#[must_use]\n    pub fn close(&mut self) -> bool {"),
+        "Writer::close must return its verdict and be #[must_use]; without the return \
+         value a section cannot tell a completed record from one the budget cut, and \
+         without the attribute a future edit can drop the answer silently"
+    );
+
+    let total = sections.matches("writer.close()").count();
+    let branched = sections.matches("if !writer.close()").count();
+    let returned = sections.matches("\n    writer.close()\n}").count();
+    let discarded = sections.matches("let _ = writer.close()").count();
+    assert!(total > 0, "sections.rs closes no records at all");
+    assert_eq!(
+        total,
+        branched + returned + discarded,
+        "sections.rs has {total} `writer.close()` call sites but only {} carry the \
+         verdict ({branched} branched on, {returned} returned, {discarded} explicitly \
+         discarded); a site that drops it reports a fragment as a completed section",
+        branched + returned + discarded
+    );
+    assert_eq!(
+        discarded, 1,
+        "exactly one call site may discard the verdict -- the `[BXCAP:NOTE \
+         sched_lock_held]` refusal, whose section is being reported as skipped \
+         either way. Found {discarded}; a new one has to be argued for, not added"
+    );
+}
+
+#[test]
+#[should_panic(expected = "reports a fragment as a completed section")]
+fn a_section_that_drops_the_close_verdict_would_be_caught() {
+    // The pre-fix shape, applied in memory: a section closes its record and
+    // returns `true` unconditionally. The file on disk is untouched.
+    let record = read("kernel/src/capture/record.rs");
+    let sections = read("kernel/src/capture/sections.rs").replacen(
+        "if !writer.close() {\n            return false;\n        }",
+        "writer.close();",
+        1,
+    );
+    assert_close_verdicts_are_carried(&record, &sections);
+}
+
+#[test]
+#[should_panic(expected = "must return its verdict and be #[must_use]")]
+fn dropping_the_must_use_on_close_would_be_caught() {
+    let record = read("kernel/src/capture/record.rs").replace("#[must_use]\n    pub fn close", "pub fn close");
+    let sections = read("kernel/src/capture/sections.rs");
+    assert_close_verdicts_are_carried(&record, &sections);
+}
+
+#[test]
 fn the_shell_guard_covers_the_capture_directory() {
     let script = read(CRITICAL_PATH_SCRIPT);
     assert!(

@@ -160,7 +160,8 @@ impl Writer {
         true
     }
 
-    /// Close a record: `]` then CRLF, and count it.
+    /// Close a record: `]` then CRLF, and count it. Returns whether this
+    /// record went onto the wire whole.
     ///
     /// A record the budget cut is NOT closed and NOT counted. It stays
     /// `in_record`, so `close_dangling_record()` puts the line terminator
@@ -169,6 +170,18 @@ impl Writer {
     /// this `END`" exactly, rather than approximately: a reader can check
     /// the count against what it could actually parse.
     ///
+    /// # Why the caller has to look at the answer
+    ///
+    /// `open()` refuses only when the budget was ALREADY spent when the
+    /// record started. A record that starts with a few bytes left runs out
+    /// mid-way instead: its `text()`/`kv_*()` calls drop the rest silently,
+    /// and only this return value says so. A section that ignored it would
+    /// set its own bit in the capture's `completed` word -- and therefore
+    /// clear it from `sections_skipped=` -- over a fragment. That is the
+    /// one field a reader has for learning which section a truncation ate,
+    /// so it is `#[must_use]`: dropping the verdict is a compile-time
+    /// warning, and a zero-warning build cannot carry one.
+    ///
     /// The terminator is written FIRST and the verdict taken afterwards, so
     /// that the case where a record's body fitted but its `]\r\n` did not is
     /// decided by `put()` dropping those bytes rather than by a second piece
@@ -176,16 +189,18 @@ impl Writer {
     /// enforced, which is what makes deleting its guard delete the bound --
     /// a second enforcement point here would keep the emitter bounded and
     /// make that mutation invisible on a real boot.
-    pub fn close(&mut self) {
+    #[must_use]
+    pub fn close(&mut self) -> bool {
         let cut_before = self.truncated;
         self.put(b']');
         self.put(b'\r');
         self.put(b'\n');
         if cut_before || self.truncated {
-            return;
+            return false;
         }
         self.in_record = false;
         self.records = self.records.saturating_add(1);
+        true
     }
 
     pub fn kv_dec(&mut self, key: &str, value: u64) {

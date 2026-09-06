@@ -10,6 +10,15 @@
 //! bit clear in the capture's `completed` word, which is what `END`'s
 //! `sections_skipped=` reports.
 //!
+//! "The budget stopped it" has two shapes, and a section has to report both.
+//! `Writer::open()` refuses a record that starts with the budget already
+//! spent, and each loop here checks that. A record that starts with a few
+//! bytes left is cut MID-WRITE instead, and the one thing that says so is
+//! `Writer::close()`'s return value -- so each `close()` below is either
+//! returned or branched on. Ignoring one would report a fragment as a
+//! completed section, which is exactly the claim `sections_skipped=` exists
+//! to make truthfully.
+//!
 //! # THR is the inverse of the soft-lockup dump's failure arm
 //!
 //! `arch_impl/aarch64/timer_interrupt.rs`'s `dump_lockup_state` prints
@@ -67,8 +76,7 @@ pub fn edge(writer: &mut Writer, kind: &str, arg0: u64, arg1: u64) -> bool {
     writer.kv_text("kind", kind);
     writer.kv_hex("a0", arg0);
     writer.kv_hex("a1", arg1);
-    writer.close();
-    true
+    writer.close()
 }
 
 /// `[BXCAP:CPU ...]` -- the capturing CPU's own per-CPU state.
@@ -96,8 +104,7 @@ pub fn cpu(writer: &mut Writer) -> bool {
     writer.kv_dec("softirq", Cpu::in_softirq() as u64);
     writer.kv_dec("uptime_ms", crate::time::timer::get_monotonic_time());
     writer.kv_text("q", "exact");
-    writer.close();
-    true
+    writer.close()
 }
 
 /// Borrow the capturing CPU's own ring buffer.
@@ -140,7 +147,9 @@ pub fn events(writer: &mut Writer, cpu_id: usize) -> bool {
         writer.kv_text("n", event_type_name(event.event_type));
         writer.kv_dec("p", event.payload as u64);
         writer.kv_hex("f", event.flags as u64);
-        writer.close();
+        if !writer.close() {
+            return false;
+        }
         emitted += 1;
         if emitted >= BXCAP_MAX_EVENTS {
             break;
@@ -167,7 +176,9 @@ pub fn counters(writer: &mut Writer) -> bool {
             return false;
         }
         writer.kv_dec(counter.name, total);
-        writer.close();
+        if !writer.close() {
+            return false;
+        }
         emitted += 1;
         if emitted >= BXCAP_MAX_COUNTERS {
             break;
@@ -211,8 +222,7 @@ pub fn ring(writer: &mut Writer, cpu_id: usize) -> bool {
     writer.kv_dec("kept", kept);
     writer.kv_dec("span_us", span_us);
     writer.kv_dec("enabled", crate::tracing::TRACE_ENABLED.load(Ordering::Relaxed));
-    writer.close();
-    true
+    writer.close()
 }
 
 /// Ask the scheduler for a fixed-size liveness snapshot, without waiting.
@@ -258,7 +268,10 @@ pub fn threads(
         None => {
             if writer.open("NOTE") {
                 writer.text(" sched_lock_held");
-                writer.close();
+                // The one deliberate discard in this file. The arm returns
+                // `false` whatever the budget did to the note, because the
+                // section it is refusing for was not emitted either way.
+                let _ = writer.close();
             }
             return false;
         }
@@ -273,7 +286,9 @@ pub fn threads(
         writer.kv_dec("threads", snapshot.total_threads);
         writer.kv_dec("blocked", snapshot.blocked_count);
         writer.kv_text("q", "exact");
-        writer.close();
+        if !writer.close() {
+            return false;
+        }
     }
     true
 }

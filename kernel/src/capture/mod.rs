@@ -159,7 +159,9 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
         if nested.open("NOTE") {
             nested.text(" reentrant seq=");
             nested.dec(seq);
-            nested.close();
+            // Unbudgeted, and the verdict has no reader here: this line
+            // either lands whole or the CPU is too far gone to care.
+            let _ = nested.close();
         }
         return;
     }
@@ -176,10 +178,17 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
         writer.kv_dec("tsfreq", crate::tracing::timestamp_frequency_hz());
         writer.kv_dec("uptime_ms", crate::time::timer::get_monotonic_time());
         writer.kv_text("arch", ARCH_NAME);
-        writer.close();
+        // The bracket lines are written with the budget suspended, so their
+        // verdict carries no information a reader does not already have from
+        // the line itself being on the wire.
+        let _ = writer.close();
     }
     writer.set_budgeted(true);
 
+    // A section returns `true` only when its own records went onto the wire
+    // whole -- `Writer::close()`'s verdict, propagated. A section the budget
+    // cut mid-record returns `false` and keeps its bit in `sections_skipped=`
+    // below, so that field does not claim a fragment was a complete section.
     let mut completed: u64 = 0;
     if sections::edge(&mut writer, edge.as_str(), arg0, arg1) {
         completed |= section_bit(SECTION_EDGE);
@@ -238,7 +247,7 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
         writer.kv_dec("bytes", bytes);
         writer.kv_dec("truncated", truncated as u64);
         writer.kv_hex("sections_skipped", sections_skipped);
-        writer.close();
+        let _ = writer.close();
     }
 
     IN_CAPTURE[cpu_id].store(false, Ordering::Release);
