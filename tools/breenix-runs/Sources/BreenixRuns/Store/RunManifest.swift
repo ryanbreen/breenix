@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum Arch: String, Codable, Equatable, Sendable {
@@ -98,6 +99,17 @@ public enum Verdict: Codable, Equatable, Sendable {
             try container.encode("gateScript", forKey: .kind)
             try container.encode(command, forKey: .command)
             try container.encode(exitCode, forKey: .exitCode)
+        }
+    }
+
+    public var isFailure: Bool {
+        switch self {
+        case .fail, .attributed, .refused:
+            return true
+        case .gateScript(_, let exitCode):
+            return exitCode != 0
+        case .pass, .running, .unknown:
+            return false
         }
     }
 }
@@ -246,5 +258,28 @@ public struct RunManifest: Codable, Equatable, Sendable {
 
         let suffix = random ?? String(format: "%04x", Int.random(in: 0...0xffff))
         return "\(formatter.string(from: startedAt))-\(arch.rawValue)-\(profile)-\(suffix)"
+    }
+
+    public static func makeImportedID(serialData: Data, sourcePath: String) -> String {
+        var input = Data()
+        input.append(serialData)
+        input.append(0)
+        input.append(Data(sourcePath.utf8))
+
+        let digest = SHA256.hash(data: input)
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        let readable = sanitizedIDComponent(URL(fileURLWithPath: sourcePath).deletingPathExtension().lastPathComponent)
+        return "imported-\(readable)-\(hex.prefix(24))"
+    }
+
+    private static func sanitizedIDComponent(_ raw: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let scalars = raw.unicodeScalars.map { scalar -> Character in
+            allowed.contains(scalar) ? Character(scalar) : "-"
+        }
+        let collapsed = String(scalars)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        return collapsed.isEmpty ? "source" : collapsed
     }
 }

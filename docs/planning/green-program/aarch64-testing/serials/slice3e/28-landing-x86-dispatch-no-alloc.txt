@@ -1,0 +1,10 @@
+Guard: x86 kernel-thread dispatch allocation check (#791)
+  ELF:      /root/breenix-slice3e/target/x86_64-unknown-none/release/deps/artifact/kernel-2359797acaafbda5/bin/kernel-2359797acaafbda5
+  sha256:   05606f4a1f54ee55ceae76cf9e8a49d99eceb8600d7ca3e25732b3ac1f729cc9
+  objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
+  readelf:  readelf
+  function: setup_kernel_thread_return (its own body and its closures)
+  symbols in scope: 3
+  call targets resolved: 19
+[0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h

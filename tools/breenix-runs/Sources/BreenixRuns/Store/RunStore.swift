@@ -128,6 +128,14 @@ public struct RunStore: Sendable {
         return try readManifest(id: latest.id)
     }
 
+    public func latestFailureManifest() throws -> RunManifest {
+        let failures = try readIndex().runs.filter(\.verdict.isFailure)
+        guard let latest = failures.max(by: { $0.startedAt < $1.startedAt }) else {
+            throw RunStoreError.runNotFound("latest-fail")
+        }
+        return try readManifest(id: latest.id)
+    }
+
     public func writeAtomically(data: Data, to finalURL: URL) throws {
         let tmpURL = finalURL.deletingLastPathComponent()
             .appendingPathComponent(finalURL.lastPathComponent + ".tmp")

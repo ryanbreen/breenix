@@ -16,6 +16,13 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # active on this host for the boot's duration.
 # shellcheck source=lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+# #827: per-boot host-side facts (wall-clock window, host QEMU count and
+# load average at start/kill, QEMU's own CPU time, the guest's last
+# heartbeat, and which bound ended the boot) -- the same shape the strict
+# gate now records, so a boot that ran out of its host-side wall-clock
+# budget and a boot that genuinely wedged score identically no longer.
+# shellcheck source=lib/gate-boot-facts.sh
+source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 
 # #825: two concurrent runs of this gate (e.g. two worktrees on the same
 # host) each hardcoded the identical /tmp/breenix_aarch64_prod_profile path,
@@ -117,9 +124,14 @@ ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][
 # read the all-zero literal, and the forced-hold leg reddens this gate --
 # docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt,
 # 02-prod-boot1.txt and its 2 siblings, 05-runtime-anti-vacuity-strict-gate.txt
-PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+\]'
-PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]'
+PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+:migration_refused=[0-9]+:stack_home_conflict=[0-9]+\]'
+PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]'
 PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
+
+# Slice 3e's pin-guard oracle is boot-tests scaffolding. The production kernel
+# builds with no features at all, so the line must not be here -- its presence
+# would mean a boot-tests-only probe reached a shipped kernel.
+PIN_GUARD_ORACLE_LITERAL='[PIN_GUARD_ORACLE:'
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected'
 
 OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_prod_profile"
@@ -247,6 +259,84 @@ cleanup() {
     qemu_host_lock_release
     _qhl_verdict_banner
 
+    # #827: only when this run actually reached the launch line above --
+    # PROD_HOST_MS_END is unset on a path that aborted before boot (a
+    # kernel-build failure, a missing ext2 disk), where there is no boot to
+    # report facts about, and it stays unset by construction if `set -e`
+    # aborted from inside the poll loop's own body before this function's
+    # own post-loop sampling ran.
+    local facts_line=""
+    if [ -n "${PROD_HOST_MS_END:-}" ]; then
+        local guest_uptime_ms ended_by
+        guest_uptime_ms="$(gbf_last_heartbeat_uptime_ms "$SERIAL_FILE")"
+        # ended_by, from the same control flow the assertion chain above
+        # already ran -- no new stop condition, no changed deadline:
+        #   crash_marker   -- the crash-marker break fired
+        #   scored_pass    -- either the bsshd break fired and the full
+        #                     assertion chain (unchanged, above) still
+        #                     exits 0, OR neither break fired (the loop's
+        #                     own kill -0 check ended the loop, or its 120
+        #                     iterations ran out) but bsshd's listening
+        #                     line landed in the gap between this
+        #                     function's pre-kill sampling calls and the
+        #                     assertion chain that reads $status -- the
+        #                     mirror of the scored_fail race below,
+        #                     resolved the same way: $status, not the
+        #                     loop's now-stale classification, wins -- the
+        #                     case block right below checks $status -eq 0
+        #                     before it falls through to
+        #                     poll_exhausted/hard_timeout, so a $status
+        #                     of 0 lands on scored_pass, matching the
+        #                     PASS line the assertion chain already printed
+        #   scored_fail    -- the bsshd break fired, but a later assertion in
+        #                     that chain rejected the boot anyway (status=1)
+        #   hard_timeout   -- neither break fired, $status is not 0, and
+        #                     QEMU was already dead when this point was
+        #                     reached -- either the wrapping `timeout 120`
+        #                     killed it, or the loop's own `! kill -0`
+        #                     break already caught QEMU exiting on its own
+        #                     (a crash that missed CRASH_MARKERS_PATTERN,
+        #                     an OOM kill, a triple fault under -no-reboot
+        #                     that also failed to print a recognized
+        #                     marker) --
+        #                     both leave QEMU dead here, so this label
+        #                     covers both, not only the `timeout` wrapper
+        #   poll_exhausted -- neither break fired, $status is not 0, and
+        #                     the loop's own 120 iterations ran out with
+        #                     QEMU still alive (this script's own kill
+        #                     ends it)
+        case "${PROD_ENDED_BY_LOOP:-}" in
+            crash)
+                ended_by="crash_marker"
+                ;;
+            early_pass)
+                if [ "$status" -eq 0 ]; then
+                    ended_by="scored_pass"
+                else
+                    ended_by="scored_fail"
+                fi
+                ;;
+            *)
+                if [ "$status" -eq 0 ]; then
+                    ended_by="scored_pass"
+                elif [ "${PROD_QEMU_STILL_ALIVE:-1}" = "1" ]; then
+                    ended_by="poll_exhausted"
+                else
+                    ended_by="hard_timeout"
+                fi
+                ;;
+        esac
+        facts_line="$(gbf_emit_line 1 "$PROD_HOST_MS_START" "$PROD_HOST_MS_END" \
+            "$PROD_QEMU_AT_START" "$PROD_LOAD_AT_START" \
+            "$PROD_QEMU_AT_END" "$PROD_LOAD_AT_END" \
+            "$PROD_QEMU_CPU_S" "$guest_uptime_ms" "$ended_by")"
+        # Recorded into this boot's own evidence directory unconditionally --
+        # not only on failure, so a passing boot's host-side reading is on
+        # the record too.
+        printf '%s\n' "$facts_line" > "$OUTPUT_DIR/gate_boot_facts.txt" 2>/dev/null || true
+        echo "$facts_line"
+    fi
+
     if [ "$status" -ne 0 ]; then
         timestamp=$(date -u +%Y%m%dT%H%M%SZ)
         failure_dir="$BREENIX_GATE_TMP/breenix_prod_profile_failures/$timestamp"
@@ -260,6 +350,9 @@ cleanup() {
             cp "$SERIAL_FILE" "$failure_dir/serial.txt"
         else
             : > "$failure_dir/serial.txt"
+        fi
+        if [ -n "$facts_line" ]; then
+            printf '%s\n' "$facts_line" > "$failure_dir/gate_boot_facts.txt"
         fi
         echo "Preserved failing serial: $failure_dir/serial.txt"
         print_observed_values "$failure_dir/serial.txt"
@@ -324,6 +417,13 @@ cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
 echo "Booting the ARM64 production profile..."
 qemu_host_lock_acquire
+# #827: "start" is sampled here, right after the lock is held and right
+# before QEMU is launched -- see gate-boot-facts.sh's own header for why.
+# These are plain (non-local) assignments: cleanup(), which reads them, is
+# a separate top-level function, not a nested scope of this block.
+PROD_HOST_MS_START="$(gbf_host_ms_now)"
+PROD_QEMU_AT_START="$(qemu_host_lock_count)"
+PROD_LOAD_AT_START="$(gbf_load_1m)"
 timeout 120 qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
@@ -355,6 +455,39 @@ while [ "$POLL" -lt 120 ]; do
     sleep 1
 done
 
+# #827: reclassifies which of the loop's own guarded breaks explains why
+# polling stopped, using the SAME two content checks the loop above uses
+# (bsshd reached, a crash pattern present), evaluated once more against
+# the file's state right as the loop exits. This is not a new stop
+# condition -- the loop body above is unchanged -- it is a read taken
+# immediately after the loop already stopped. "early_pass" is this gate's
+# own primary target (bsshd reached) but NOT the full verdict, since the
+# assertion chain below still has to run; left empty when neither content
+# check is true, which covers both "QEMU exited on its own" (the loop's
+# own kill -0 break) and "the loop ran out its 120 iterations" -- the
+# QEMU-aliveness check just below tells those two apart the same way the
+# strict gate's poll_exhausted/hard_timeout split does.
+PROD_ENDED_BY_LOOP=""
+if [ -f "$SERIAL_FILE" ] && grep -F -q "$BSSHD_LITERAL" "$SERIAL_FILE" 2>/dev/null; then
+    PROD_ENDED_BY_LOOP="early_pass"
+elif [ -f "$SERIAL_FILE" ] && grep -qiE "$CRASH_MARKERS_PATTERN" "$SERIAL_FILE" 2>/dev/null; then
+    PROD_ENDED_BY_LOOP="crash"
+fi
+
+# #827: sampled together, immediately before this boot's own kill -- ps
+# has no output for a PID already gone, so qemu_cpu_seconds and the
+# aliveness check below must both run before the kill line, not after.
+PROD_HOST_MS_END="$(gbf_host_ms_now)"
+PROD_QEMU_AT_END="$(qemu_host_lock_count)"
+PROD_LOAD_AT_END="$(gbf_load_1m)"
+# #827: $QEMU_PID is `timeout`'s own pid (see gate-boot-facts.sh's own
+# header for why); resolve to the actual qemu-system-aarch64 child
+# before reading its CPU time.
+PROD_QEMU_ACTUAL_PID="$(gbf_resolve_qemu_pid "$QEMU_PID")"
+PROD_QEMU_CPU_S="$(gbf_qemu_cpu_seconds "$PROD_QEMU_ACTUAL_PID")"
+PROD_QEMU_STILL_ALIVE=1
+kill -0 "$QEMU_PID" 2>/dev/null || PROD_QEMU_STILL_ALIVE=0
+
 kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
 QEMU_PID=""
@@ -384,6 +517,7 @@ ASID_CENSUS_PUBLISHED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PUBLISH
 PINNED_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$PINNED_CENSUS_PATTERN")
 PINNED_CENSUS_NONZERO_COUNT=$(pinned_nonzero_count "$SERIAL_FILE")
 PINNED_FIRST_HOLD_COUNT=$(marker_count "$SERIAL_FILE" "$PINNED_FIRST_HOLD_LITERAL")
+PIN_GUARD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$PIN_GUARD_ORACLE_LITERAL")
 CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 
 if grep -qF '[BOOT_TESTS:FAIL' "$SERIAL_FILE" 2>/dev/null; then
@@ -485,6 +619,10 @@ fi
     echo "FAIL: a pinned worker's wake was held for want of a dispatching home CPU: $(grep -aF -m1 "$PINNED_FIRST_HOLD_LITERAL" "$SERIAL_FILE")"
     exit 1
 }
+[ "$PIN_GUARD_ORACLE_COUNT" -eq 0 ] || {
+    echo "FAIL: the boot-tests-only pin-guard oracle ran in the production profile: $(grep -aF -m1 "$PIN_GUARD_ORACLE_LITERAL" "$SERIAL_FILE")"
+    exit 1
+}
 [ "$CRASH_COUNT" -eq 0 ] || {
     echo "FAIL: crash marker detected"
     exit 1
@@ -510,6 +648,7 @@ echo "Observed TTBR0 ASID census untagged-publish line count: $ASID_CENSUS_UNTAG
 echo "Observed: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
 echo "Observed pinned-placement census marker count: $PINNED_CENSUS_COUNT"
 echo "Observed pinned-placement non-zero census line count: $PINNED_CENSUS_NONZERO_COUNT"
+echo "Observed pin-guard oracle line count (must be 0 in this profile): $PIN_GUARD_ORACLE_COUNT"
 echo "Observed: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0

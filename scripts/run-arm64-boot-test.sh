@@ -28,9 +28,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$BREENIX_ROOT"
 
+# #826/#834/R181: this script's qemu-system-aarch64 boot runs behind the
+# host-wide lock in docker/qemu/lib/qemu-host-lock.sh -- #834 extends that
+# lock's coverage from docker/qemu/*.sh (its original #826/R181 scope) to
+# scripts/ as well.
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
+# #834 fix-round F3 (2026-09-05): SERIAL_OUTPUT is a HOST path this script
+# rm -f's and then points QEMU's `-serial file:` at, so it collides with any
+# other concurrent invocation the same way #825 already reports for
+# docker/qemu/run-aarch64-test.sh's OUTPUT_DIR (see that file's own #825
+# comment for the identical BREENIX_GATE_TMP shape). Defaulting to /tmp
+# keeps a caller that leaves it unset byte-identical; a concurrent-lane
+# launcher sets this to a per-worktree directory instead.
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+case "$BREENIX_GATE_TMP" in
+    /*) ;;
+    *) echo "FAIL: BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP"; exit 1 ;;
+esac
+
 # Configuration
 KERNEL_PATH="target/aarch64-breenix-kernel/release/kernel-aarch64"
-SERIAL_OUTPUT="/tmp/arm64_boot_test_output.txt"
+SERIAL_OUTPUT="$BREENIX_GATE_TMP/arm64_boot_test_output.txt"
 TIMEOUT_SECS=30
 TEST_MODE="${1:-full}"
 
@@ -65,6 +85,15 @@ fi
 echo "Kernel built: $KERNEL_PATH"
 echo ""
 
+# #834 fix-round F2 (2026-09-05): qemu_host_lock_acquire moves here, before
+# the cleanup pkill below, so the pattern-based kill cannot hit another
+# lock-cooperating script's own in-progress, lock-protected boot -- by the
+# time this script holds the lock, any such script must already have
+# released it (or this script would still be blocked waiting to acquire).
+# A stray process the pkill still reaches after the lock is held is, by
+# construction, not a boot any lock-cooperating script currently owns.
+qemu_host_lock_acquire
+
 # Clean up any previous QEMU
 echo "[2/4] Starting QEMU..."
 pkill -9 -f "qemu-system-aarch64.*kernel-aarch64" 2>/dev/null || true
@@ -89,8 +118,10 @@ if [ "$TEST_MODE" = "network" ]; then
 fi
 
 # Start QEMU in background
-# Always include VirtIO GPU and keyboard so the kernel's MMIO enumeration
-# discovers them (needed for interactive shell and device driver tests)
+# VirtIO GPU and keyboard are included unconditionally so the kernel's MMIO
+# enumeration discovers them (needed for interactive shell and device
+# driver tests). qemu_host_lock_acquire already ran above, before the
+# cleanup pkill.
 qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
@@ -104,6 +135,11 @@ qemu-system-aarch64 \
     $NET_OPTS \
     -serial "file:$SERIAL_OUTPUT" &
 QEMU_PID=$!
+# F2: registers QEMU with the lock's own EXIT trap (see
+# docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just
+# this script's own PID during the poll below still kills QEMU instead of
+# orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 # Wait for output - different markers for different test modes
 echo "[3/4] Waiting for kernel output (${TIMEOUT_SECS}s timeout)..."

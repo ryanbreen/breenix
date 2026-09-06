@@ -80,6 +80,29 @@ where
     })
 }
 
+/// A kernel thread built but not published, for slice 3e's pin-guard oracle.
+///
+/// The oracle needs a real `Thread` row -- the migration sites it drives look
+/// their subject up in the scheduler's own table -- but it is not built to be
+/// dispatched: the context here has no `KthreadStart` argument, so running it
+/// would enter `kthread_entry` with a null start block. The oracle publishes
+/// it, drives the sites, takes it back out and drops it, all inside 1
+/// scheduler-lock acquisition with interrupts masked, which is what keeps 0 of
+/// the other CPUs able to select it.
+/// claim-lint:ok: 1 of 1 publication and 1 of 1 withdrawal are inside the same
+/// `without_interrupts(|| lock_scheduler())` window in
+/// `scheduler::emit_pin_guard_oracle`
+///
+/// It is deliberately NOT registered in `KTHREAD_REGISTRY`: 0 of the registry's
+/// operations -- join, park, stop -- have a caller for this tid, and a registry
+/// row for a thread with 0 dispatches would outlive the probe.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub(crate) fn build_pin_guard_probe_thread() -> Option<Box<Thread>> {
+    Thread::new_kernel("pin-guard-probe".to_string(), kthread_entry, 0)
+        .ok()
+        .map(Box::new)
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub(crate) fn kthread_run_on_cpu_for_test<F>(
     func: F,

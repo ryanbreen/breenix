@@ -4303,6 +4303,12 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=aarch64)] fn terminate_thread_best_effort", 1),
+    // Slice 3e (#562 lane): the pin-guard oracle drives 3 of the 11 migration
+    // sites in turn and clears the probe thread off 8 of 8 per-CPU queues
+    // between the legs, so each leg reads the destination of its own site
+    // rather than the one before it. Boot-tests only, and the probe is
+    // published and withdrawn inside 1 scheduler-lock acquisition.
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(all(target_arch=aarch64,feature=boot_tests))] fn run_pin_guard_oracle", 3),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_without_scheduling", 1),
     ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),

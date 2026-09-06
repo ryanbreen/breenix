@@ -25,6 +25,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# #826/#834/R181: this script's qemu-system-aarch64 boot runs behind the
+# host-wide lock in docker/qemu/lib/qemu-host-lock.sh -- #834 extends that
+# lock's coverage from docker/qemu/*.sh (its original #826/R181 scope) to
+# scripts/ as well.
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 # Configuration
 SERIAL_PORT=4454
 MONITOR_PORT=4455
@@ -70,6 +77,7 @@ echo "[1/5] Starting QEMU..."
 
 # Use file output for reliable logging + TCP for input
 # The TCP serial allows bidirectional I/O - we'll connect and send input
+qemu_host_lock_acquire
 qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512M \
     -kernel "$KERNEL" \
@@ -82,6 +90,11 @@ qemu-system-aarch64 \
     -monitor tcp:127.0.0.1:${MONITOR_PORT},server,nowait \
     &
 QEMU_PID=$!
+# F2: registers QEMU with the lock's own EXIT trap (see
+# docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just
+# this script's own PID during the test loop below still kills QEMU instead
+# of orphaning it with the lock free.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 echo "  QEMU started with PID $QEMU_PID"
 
