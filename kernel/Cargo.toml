@@ -108,6 +108,18 @@ fs_fault_disarm_corrupt_inode = ["fs_fault_inject"]
 # only: the module and both of its call sites are behind this feature, and it
 # requires boot_tests for kthread_run_on_cpu_for_test's aarch64 CPU pinning.
 ext2_lock_race = ["boot_tests"]
+# Failure-capture PR-3: the deterministic `edge=SELFTEST` BXCAP capture.
+# Test profile only, and NOT implied by `boot_tests` -- no gate builds with
+# it, which is what keeps the emitter's cost off every gated and shipped
+# kernel while still giving later PRs a capture to test against on demand.
+# `kernel/src/capture/selftest.rs` carries the reasoning for where it fires.
+capture_selftest = ["boot_tests"]
+# Anti-vacuity leg for the emitter's byte budget: shrinks
+# `BXCAP_BUDGET_BYTES` to a size a normal capture cannot fit, so a boot built
+# with this must report `truncated=1` and a non-empty `sections_skipped=`. A
+# budget that stopped being enforced would make this leg indistinguishable
+# from the ordinary one.
+capture_selftest_tiny_budget = ["capture_selftest"]
 btrt = []  # Boot Test Result Table (structured test results)
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
 xhci_linux_harness = []  # Build and use the Linux C-based xHCI harness
