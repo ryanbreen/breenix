@@ -527,6 +527,10 @@ for i in $(seq 1 "$COUNT"); do
     qemu_host_lock_track_pid "$RUNNER_PID"
 
     passed=false
+    # #865: which named branch of the poll loop below broke it, set inline
+    # at each existing break site rather than re-derived by re-grepping the
+    # same patterns afterward -- see the loop's own comment on why.
+    POLL_BREAK_REASON=""
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
     # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
     # loopback_pump_does_not_busy_spin, and tcp_final_ack_survives_accept_publish_race.
@@ -616,28 +620,42 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qE 'TEST RUNNER: (All tests passed|FAILED)' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
+            POLL_BREAK_REASON="scored_pass"
             break
         fi
+        # #865: each branch below records its own name in POLL_BREAK_REASON
+        # right before the break that already existed here -- an annotation
+        # of which existing branch fired, not a new grep of the pattern it
+        # already checks. The GATE_BOOT_FACTS ended_by classification just
+        # below the loop reads this instead of re-grepping these same
+        # literal FAIL/PANIC patterns a second time, which would silently
+        # desync loopback_pump_structure.rs's and teardown_structure.rs's
+        # own exact-occurrence-count ratchets on this file's text.
         if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="crash_marker"
             break
         fi
         if grep -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="failure_marker"
             break
         fi
         # The scheduler publication seam emits this prefix if it publishes while
         # the process-manager lock is held on that CPU; fail early on any variant.
         if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="failure_marker"
             break
         fi
         if grep -qE '\[TEST:network:[^]]*:FAIL' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="failure_marker"
             break
         fi
         if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+            POLL_BREAK_REASON="failure_marker"
             break
         fi
         if ! kill -0 "$RUNNER_PID" 2>/dev/null; then
@@ -664,23 +682,17 @@ for i in $(seq 1 "$COUNT"); do
     # #865: ended_by names which bound in the poll loop above actually ended
     # this boot -- a read taken immediately after the loop already stopped
     # (the same #827 idiom the aarch64 strict gate uses), not a new stop
-    # condition. `passed` above is set only by the single success predicate;
-    # the four `grep`-and-`break` failure predicates immediately above this
-    # point (BOOT_TESTS:FAIL/panic, CENSUS_WIDEN_ORACLE FAIL,
-    # CREATION_LOCK_ORDER VIOLATION, TEST:network/TEST:userspace FAIL) are
-    # collapsed into one "failure_marker" bucket here rather than named
-    # individually -- which specific marker fired is already visible in the
-    # serial this line is printed alongside, and scripts/x86-gate-verdict.sh
-    # (run further down) makes the actual pass/fail call either way.
+    # condition. POLL_BREAK_REASON is set inline inside the loop above, at
+    # the same existing branches (including the success branch, alongside
+    # `passed=true`) -- deriving ended_by from a fresh re-grep of those same
+    # literal patterns here, or from a second read of $passed, would
+    # silently add a bypass-worthy extra occurrence to text
+    # loopback_pump_structure.rs and teardown_structure.rs both pin the
+    # exact occurrence count of, which is what the first version of this
+    # change did (caught by both ratchets going red on this branch).
     ENDED_BY="poll_exhausted"
-    if [ "$passed" = "true" ]; then
-        ENDED_BY="scored_pass"
-    elif grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-        || grep -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-        || grep -qF '[CREATION_LOCK_ORDER:VIOLATION' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-        || grep -qE '\[TEST:network:[^]]*:FAIL' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-        || grep -qE '\[TEST:userspace:[^]]*:FAIL' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
-        ENDED_BY="failure_marker"
+    if [ -n "$POLL_BREAK_REASON" ]; then
+        ENDED_BY="$POLL_BREAK_REASON"
     elif [ "$QEMU_STILL_ALIVE" = "0" ]; then
         ENDED_BY="qemu_exited_early"
     fi

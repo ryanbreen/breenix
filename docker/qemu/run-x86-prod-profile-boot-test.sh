@@ -1082,12 +1082,22 @@ QEMU_PID=$!
 qemu_host_lock_track_pid "$QEMU_PID"
 
 reached=false
+# #865: which branch of the loop below fired, set inline at each existing
+# break site (the same idiom run-x86-boot-tests.sh uses and explains) so the
+# ended_by derivation after the loop needs no second read of the verdict
+# variable or a second grep of CRASH_MARKERS_PATTERN -- teardown_structure.rs
+# pins this script's own verdict variable to exactly one appearance in its
+# text, spent by the steady-state assertion a few lines down, so re-testing
+# it here for ended_by purposes would silently add a second appearance.
+POLL_BREAK_REASON=""
 for _ in $(seq 1 "$POLL_BOUND_SECONDS"); do
     if grep -qF -- "$STEADY_STATE_LITERAL" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
         reached=true
+        POLL_BREAK_REASON="scored_pass"
         break
     fi
     if grep -qE -- "$CRASH_MARKERS_PATTERN" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+        POLL_BREAK_REASON="crash_marker"
         break
     fi
     if ! kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -1100,12 +1110,11 @@ done
 # down, after the liveness window) -- ps has no output for a PID already
 # gone. This is the boot-to-steady-state window #826/#865's own timing
 # ceilings are about, so the facts line below is emitted at this point
-# (before the reached-assertion two lines down may abort the script) rather
-# than deferred to the final kill after the liveness window: the
-# `test "$reached" = true` assertion right below this block, under this
-# file's own `set -e`, is what stops a starved or wedged boot from reaching
-# that later kill at all -- deferring the facts line there would leave
-# exactly that boot with no facts line on record.
+# (before the steady-state assertion two lines down may abort the script)
+# rather than deferred to the final kill after the liveness window: that
+# assertion, under this file's own `set -e`, is what stops a starved or
+# wedged boot from reaching that later kill at all -- deferring the facts
+# line there would leave exactly that boot with no facts line on record.
 HOST_MS_END="$(gbf_host_ms_now)"
 QEMU_AT_END="$(qemu_host_lock_count qemu-system-x86_64)"
 LOAD_AT_END="$(gbf_load_1m)"
@@ -1114,10 +1123,8 @@ QEMU_CPU_S="$(gbf_qemu_cpu_seconds "$QEMU_ACTUAL_PID")"
 QEMU_STILL_ALIVE=1
 kill -0 "$QEMU_PID" 2>/dev/null || QEMU_STILL_ALIVE=0
 ENDED_BY="poll_exhausted"
-if [ "$reached" = "true" ]; then
-    ENDED_BY="scored_pass"
-elif grep -qE -- "$CRASH_MARKERS_PATTERN" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
-    ENDED_BY="crash_marker"
+if [ -n "$POLL_BREAK_REASON" ]; then
+    ENDED_BY="$POLL_BREAK_REASON"
 elif [ "$QEMU_STILL_ALIVE" = "0" ]; then
     ENDED_BY="qemu_exited_early"
 fi

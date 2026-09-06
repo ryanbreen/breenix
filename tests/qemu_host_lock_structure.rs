@@ -38,6 +38,23 @@
 //! excludes each of these four by construction, so this ratchet's `>= 28` floor below
 //! cannot regress by silently absorbing one of them into "covered."
 //!
+//! #865 widened the lock helper itself to one lock domain per QEMU binary
+//! (`qemu_host_lock_dir`/`qemu_host_lock_count`/`qemu_host_lock_acquire` now
+//! take the binary name as an argument, defaulting to `qemu-system-aarch64`
+//! so the aarch64 call sites this file already polices keep working
+//! byte-for-byte) and wired the 17 `qemu-system-x86_64` launch sites this
+//! same audit found under `docker/`, `scripts/`, and `run.sh`. This file's
+//! census is widened the same way #834 widened it for `scripts/`: a second
+//! whole-suite test (`every_x86_qemu_launch_script_sources_and_acquires_the_
+//! host_lock`) mirrors the aarch64 one against `launches_qemu_x86`, and
+//! `calls_qemu_host_lock_acquire` is loosened from an exact-match on the
+//! bare identifier to also accept `qemu_host_lock_acquire <argument>` (the
+//! shape each x86 call site added by #865 uses to name its own binary) --
+//! still requiring a literal space after the identifier, so the helper's
+//! own `qemu_host_lock_acquire() {` definition line (no space before the
+//! `(`) is not mistaken for a call, the same property the exact-match
+//! version had.
+//!
 //! Census-shaped, not a closed file list (the #549/#551/#527-r1 lesson this
 //! campaign has learned three times already): `launches_qemu_aarch64`
 //! re-derives "this script starts a real qemu-system-aarch64 process" from
@@ -125,19 +142,51 @@ fn launches_qemu_aarch64(script: &str) -> bool {
     script.lines().any(is_qemu_aarch64_launch_line)
 }
 
+/// #865: the x86 twin of `is_qemu_aarch64_launch_line`, same shape (a
+/// non-comment line that, once any trailing continuation is stripped, ends
+/// with the bare `qemu-system-x86_64` token). Each real x86 invocation
+/// this campaign wired (`timeout N qemu-system-x86_64 \`, a bare
+/// `qemu-system-x86_64 \`, the `qemu-system-x86_64 \` line following a
+/// `docker run ... breenix-qemu \` chain, or
+/// `test_tracing_via_gdb.sh`'s `QEMU_BIN=qemu-system-x86_64` assignment
+/// feeding its own indirect `"$QEMU_BIN" \` invocation) matches this
+/// predicate the same way the aarch64 shapes match its own.
+fn is_qemu_x86_launch_line(line: &str) -> bool {
+    let trimmed_start = line.trim_start();
+    if trimmed_start.starts_with('#') {
+        return false;
+    }
+    let trimmed_end = line.trim_end();
+    let without_continuation = trimmed_end.strip_suffix('\\').unwrap_or(trimmed_end).trim_end();
+    without_continuation.ends_with("qemu-system-x86_64")
+}
+
+fn launches_qemu_x86(script: &str) -> bool {
+    script.lines().any(is_qemu_x86_launch_line)
+}
+
 fn sources_qemu_host_lock(script: &str) -> bool {
     script.contains("lib/qemu-host-lock.sh")
 }
 
-/// A real call: a non-comment line whose trimmed text is exactly the bare
-/// function name (each call site this campaign added is
-/// `    qemu_host_lock_acquire` alone on its line, at some indentation).
-/// This excludes the helper's own `qemu_host_lock_acquire() {` definition
-/// line and any comment mentioning the function by name.
+/// A real call: a non-comment line whose trimmed text is either exactly the
+/// bare function name (each aarch64 call site this campaign added before
+/// #865 is `    qemu_host_lock_acquire` alone on its line, at some
+/// indentation) or the bare name followed by a literal space and an
+/// argument (`    qemu_host_lock_acquire qemu-system-x86_64`, the shape
+/// #865 added so an x86 call site can name its own binary -- the lock
+/// helper defaults to aarch64 when no argument is given, so the bare form
+/// stays a real call too). The required literal space excludes the
+/// helper's own `qemu_host_lock_acquire() {` definition line -- there is no
+/// space before the `(` there -- and any comment mentioning the function by
+/// name is excluded by the leading `#` check up front.
 fn calls_qemu_host_lock_acquire(script: &str) -> bool {
     script.lines().any(|line| {
         let trimmed = line.trim();
-        trimmed == "qemu_host_lock_acquire"
+        if trimmed.starts_with('#') {
+            return false;
+        }
+        trimmed == "qemu_host_lock_acquire" || trimmed.starts_with("qemu_host_lock_acquire ")
     })
 }
 
@@ -183,6 +232,57 @@ fn every_aarch64_qemu_launch_script_sources_and_acquires_the_host_lock() {
     );
 }
 
+/// #865's x86 twin of the whole-suite rule above: the same census, run
+/// against `launches_qemu_x86` instead. A single shared `calls_qemu_host_
+/// lock_acquire` check works for both suites because #865 made the
+/// underlying helper functions binary-aware while keeping one shared call
+/// spelling (`qemu_host_lock_acquire [binary]`) -- an x86 site just supplies
+/// the argument an aarch64 site leaves to the default.
+#[test]
+fn every_x86_qemu_launch_script_sources_and_acquires_the_host_lock() {
+    let scripts = all_shell_scripts();
+
+    let launching: Vec<&(String, String)> = scripts
+        .iter()
+        .filter(|(_, text)| launches_qemu_x86(text))
+        .collect();
+
+    // Anti-vacuity floor: measured at 17 on this branch (docker/qemu/
+    // run-blocking-recv-test.sh, run-boot-parallel.sh, run-dns-test.sh,
+    // run-ext2-lock-race-gate.sh, run-fs-fault-gate.sh, run-interactive.sh,
+    // run-keyboard-test.sh, run-kthread-parallel.sh, run-kthread-test.sh,
+    // run-nonblock-eagain-test.sh, run-x86-boot-tests.sh,
+    // run-x86-prod-profile-boot-test.sh, run-x86-tty-oracle-gate.sh;
+    // run.sh; scripts/run-interactive-native.sh, scripts/test-workqueue.sh,
+    // scripts/test_tracing_via_gdb.sh). Not a closed list -- a future x86
+    // launcher only needs to raise this count, not edit it down.
+    assert!(
+        launching.len() >= 17,
+        "only {} script(s) under docker/, scripts/, or run.sh launch qemu-system-x86_64; expected at least 17",
+        launching.len()
+    );
+
+    let mut violations = Vec::new();
+    for (path, text) in &launching {
+        let sourced = sources_qemu_host_lock(text);
+        let acquires = calls_qemu_host_lock_acquire(text);
+        if !sourced || !acquires {
+            let missing = match (sourced, acquires) {
+                (false, false) => "sources lib/qemu-host-lock.sh AND calls qemu_host_lock_acquire",
+                (false, true) => "sources lib/qemu-host-lock.sh",
+                (true, false) => "calls qemu_host_lock_acquire",
+                (true, true) => unreachable!(),
+            };
+            violations.push(format!("{path}: launches qemu-system-x86_64 but does not {missing} (#865)"));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "x86 QEMU launch(es) bypass the host-wide lock:\n{}",
+        violations.join("\n")
+    );
+}
+
 /// ANTI-VACUITY: the launch/source/acquire predicates must fire on the
 /// real shapes they claim to, in both directions, and the whole-suite rule
 /// above must actually redden on a real script with the lock call removed
@@ -224,6 +324,36 @@ fn qemu_host_lock_predicates_are_not_vacuous() {
         !calls_qemu_host_lock_acquire(&lock_helper),
         "the helper's `qemu_host_lock_acquire() {{` definition line must not be mistaken \
          for a call to it"
+    );
+
+    // #865: the x86 twin of the positive-shape loop above, plus a check
+    // that `calls_qemu_host_lock_acquire` accepts the argument form #865
+    // added (`qemu_host_lock_acquire qemu-system-x86_64`), not only the
+    // bare aarch64-default spelling.
+    for line in [
+        "    timeout \"${X86_BOOT_TIMEOUT:-1800}\" qemu-system-x86_64 \\",
+        "qemu-system-x86_64 \\",
+        "    qemu-system-x86_64 \\",
+        "    QEMU_BIN=qemu-system-x86_64",
+    ] {
+        assert!(
+            is_qemu_x86_launch_line(line),
+            "must detect a real qemu-system-x86_64 launch line: {line:?}"
+        );
+    }
+    assert!(
+        !is_qemu_x86_launch_line("# every script that launches qemu-system-x86_64 ..."),
+        "a comment mentioning the token must not count as a launch"
+    );
+    assert!(
+        !launches_qemu_x86(&lock_helper),
+        "the lock helper's own pgrep -f \"docker run.*$qemu_bin\" search line must not be \
+         mistaken for a launch"
+    );
+    assert!(
+        calls_qemu_host_lock_acquire("    qemu_host_lock_acquire qemu-system-x86_64"),
+        "the argument form #865 added must count as a real call, not only the bare aarch64 \
+         default spelling"
     );
 
     // ANTI-VACUITY mutation, leg 1 (docker/qemu/, #826/R181's original
@@ -312,5 +442,74 @@ fn qemu_host_lock_predicates_are_not_vacuous() {
     assert!(
         census.iter().any(|(path, _)| path == "run.sh"),
         "the census must include run.sh itself, not only files under docker/ or scripts/"
+    );
+
+    // ANTI-VACUITY mutation, leg 3 (docker/qemu/, #865's x86 scope): strip
+    // the real qemu_host_lock_acquire call from run-x86-boot-tests.sh (one
+    // of the two named gates #865 asked to emit host facts) and confirm
+    // the x86 whole-suite rule reddens by name, the same proof leg 1 above
+    // ran for the aarch64 strict gate.
+    let real_x86_boot_tests = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    assert!(
+        launches_qemu_x86(&real_x86_boot_tests),
+        "sanity: run-x86-boot-tests.sh must still launch qemu-system-x86_64"
+    );
+    assert!(
+        sources_qemu_host_lock(&real_x86_boot_tests)
+            && calls_qemu_host_lock_acquire(&real_x86_boot_tests),
+        "sanity: run-x86-boot-tests.sh must be clean before mutation"
+    );
+    let x86_acquire_line = "    qemu_host_lock_acquire qemu-system-x86_64\n";
+    assert!(
+        real_x86_boot_tests.contains(x86_acquire_line),
+        "the reconstructed acquire line must match the real file, or this mutation proves          nothing"
+    );
+    let mutated_x86_boot_tests = real_x86_boot_tests.replacen(x86_acquire_line, "", 1);
+    assert_ne!(mutated_x86_boot_tests, real_x86_boot_tests, "mutation must apply");
+    assert!(
+        sources_qemu_host_lock(&mutated_x86_boot_tests),
+        "the mutation must leave the source line intact -- this proves the acquire check          specifically, not the source check"
+    );
+    assert!(
+        !calls_qemu_host_lock_acquire(&mutated_x86_boot_tests),
+        "reddening: the mutated text must no longer show an acquire call"
+    );
+    assert!(
+        launches_qemu_x86(&mutated_x86_boot_tests),
+        "the mutation must not have touched the launch line itself"
+    );
+
+    // ANTI-VACUITY mutation, leg 4 (scripts/, #865's x86 scope): the same
+    // proof against a real script under scripts/ -- a bypass here is
+    // exactly the shape #865 closed (each scripts/ x86 launcher wired),
+    // and the x86 whole-suite rule above must catch a bypass the same way
+    // it catches a docker/qemu/ one.
+    let real_workqueue = repo_text("scripts/test-workqueue.sh");
+    assert!(
+        launches_qemu_x86(&real_workqueue),
+        "sanity: scripts/test-workqueue.sh must still launch qemu-system-x86_64"
+    );
+    assert!(
+        sources_qemu_host_lock(&real_workqueue) && calls_qemu_host_lock_acquire(&real_workqueue),
+        "sanity: scripts/test-workqueue.sh must be clean before mutation"
+    );
+    let workqueue_acquire_line = "qemu_host_lock_acquire qemu-system-x86_64\n";
+    assert!(
+        real_workqueue.contains(workqueue_acquire_line),
+        "the reconstructed acquire line must match the real scripts/ file, or this mutation          proves nothing"
+    );
+    let mutated_workqueue = real_workqueue.replacen(workqueue_acquire_line, "", 1);
+    assert_ne!(mutated_workqueue, real_workqueue, "mutation must apply");
+    assert!(
+        sources_qemu_host_lock(&mutated_workqueue),
+        "the mutation must leave the source line intact -- this proves the acquire check          specifically, not the source check"
+    );
+    assert!(
+        !calls_qemu_host_lock_acquire(&mutated_workqueue),
+        "reddening: the mutated text must no longer show an acquire call"
+    );
+    assert!(
+        launches_qemu_x86(&mutated_workqueue),
+        "the mutation must not have touched the launch line itself"
     );
 }
