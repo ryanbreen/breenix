@@ -1,4 +1,4 @@
-//! #829 kill-by-name structural ratchet.
+//! #829/#849 kill-by-name structural ratchet.
 //!
 //! #829's own report: `docker/qemu/run-aarch64-test.sh` and
 //! `docker/qemu/run-aarch64-userspace.sh` each ended their cleanup with
@@ -12,24 +12,37 @@
 //! fixed a third instance in a sibling file
 //! (`docker/qemu-aarch64/run-arm64-boot.sh`, via a `--name`-scoped
 //! container this file's own predicates confirm stays clean). Auditing
-//! this fix round's own reachable set (each script that cooperates with
+//! that fix round's own reachable set (each script that cooperates with
 //! `docker/qemu/lib/qemu-host-lock.sh`, the same set
 //! `tests/qemu_host_lock_structure.rs` already walks) found a fourth,
 //! different-shaped instance: `scripts/run-arm64-boot-test.sh`'s
-//! `pkill -9 -f "qemu-system-aarch64.*kernel-aarch64"` pre-launch cleanup,
-//! which #834's own F2 had already moved to run *after*
-//! `qemu_host_lock_acquire` (closing the lock-cooperator-vs-lock-cooperator
-//! case) but had not eliminated as a mechanism -- it could still reach a
-//! process outside the lock's cooperation altogether, e.g. a human's own
-//! manual `qemu-system-aarch64` boot for GDB debugging.
+//! `pkill -9 -f "qemu-system-aarch64.*kernel-aarch64"` pre-launch cleanup.
+//! That round's ratchet (this file, as first landed) scoped its reachable
+//! set to that same lock-cooperator set, and disclosed rather than
+//! silently absorbed ten x86-side instances of the identical shape sitting
+//! outside it -- `qemu-system-x86_64` has no host-wide lock analogous to
+//! `qemu-host-lock.sh`, so `sources_qemu_host_lock` could never reach a
+//! script that launches it.
+//! claim-lint:ok: #849
 //!
-//! This file's one property: no `.sh` script that sources
-//! `docker/qemu/lib/qemu-host-lock.sh` -- the reachable set this
-//! project's own shared mutual-exclusion lock is meant to protect -- kills
-//! a qemu-ish process or container by name/pattern rather than by an
-//! identifier (a PID from its own `$!`, or a container name/id it minted
-//! for itself) this invocation captured. Three shapes, matching #829's own
-//! parenthetical and the real instances found above:
+//! #849 fixed those ten x86-side scripts (`docker/qemu/run-boot-parallel.sh`,
+//! `docker/qemu/run-kthread-test.sh`, `docker/qemu/run-kthread-parallel.sh`,
+//! `docker/qemu/run-dns-test.sh`, `docker/qemu/run-blocking-recv-test.sh`,
+//! `docker/qemu/run-nonblock-eagain-test.sh`, `docker/qemu/run-interactive.sh`,
+//! `scripts/test-workqueue.sh`, `scripts/f21-bisect-verdict.sh`,
+//! `scripts/ci/ring3_check.sh`) and widened this file's own reachable set to
+//! match: every `.sh` script under `docker/`, `scripts/`, or `run.sh` --
+//! not only the ones that source the aarch64 lock. A script needs no
+//! shared lock to owe this property; it only needs to be capable of
+//! running concurrently with another script on the same host, which any
+//! script in this tree can.
+//! claim-lint:ok: #849
+//!
+//! This file's one property: no `.sh` script under `docker/`, `scripts/`,
+//! or `run.sh` kills a qemu-ish process or container by name/pattern
+//! rather than by an identifier (a PID from its own `$!`, or a container
+//! name/id it minted for itself) this invocation captured. Three shapes,
+//! matching #829's own parenthetical and the real instances found above:
 //!
 //! 1. `pkill`/`killall` naming a qemu-ish pattern. `pkill -P <pid>` (kill
 //!    the children of a specific PID) is excluded -- already PID-scoped,
@@ -44,30 +57,25 @@
 //!    variable this same file assigns from exactly that query elsewhere
 //!    (`EXISTING=$(docker ps ... --filter ancestor=...)` ...
 //!    `docker kill $EXISTING`) -- checked as a same-file dataflow, not a
-//!    same-line one, since the real `run-aarch64-interactive.sh` instance
-//!    split the query and the kill across two lines.
+//!    same-line one, since the real `run-aarch64-interactive.sh` and
+//!    `run-interactive.sh` instances each split the query and the kill
+//!    across two lines.
 //!
 //! Census-shaped, not a closed file list (the #549/#551/#527-r1 lesson):
 //! `kill_by_name_of_qemu_violations` re-derives each violation from a
-//! script's own text each time it runs, so a new lock-cooperating script that
-//! reintroduces any of the three shapes is caught automatically, not only
-//! the four fixed by this round.
+//! script's own text each time it runs, so a new script anywhere in this
+//! tree's `.sh` reachable set that introduces any of the three shapes is
+//! caught automatically, not only the fourteen fixed across #829 and #849.
 //!
 //! Deliberately NOT covered by this file, disclosed rather than silently
-//! excluded (see `docs/planning/green-program/gates/
-//! KILL-BY-NAME-829-2026-09-05.md`): scripts that launch
-//! `qemu-system-x86_64` (a different, unwired lock domain -- this file's
-//! `docker/qemu/lib/qemu-host-lock.sh` counts and serializes
-//! `qemu-system-aarch64` only) still carry the identical shape in several
-//! places (`docker/qemu/run-boot-parallel.sh`,
-//! `docker/qemu/run-kthread-test.sh`, `docker/qemu/run-dns-test.sh`,
-//! `docker/qemu/run-kthread-parallel.sh`,
-//! `docker/qemu/run-blocking-recv-test.sh`,
-//! `docker/qemu/run-nonblock-eagain-test.sh`,
-//! `docker/qemu/run-interactive.sh`, `scripts/test-workqueue.sh`,
-//! `scripts/f21-bisect-verdict.sh`, `scripts/ci/ring3_check.sh`). Not
-//! reachable by `sources_qemu_host_lock`, so this ratchet's census does
-//! not walk them; filed as a follow-up rather than silently absorbed.
+//! excluded: this file's own predicates only ever look at `.sh` text, so
+//! the identical `pkill -f qemu-system-x86_64` shape one layer down in
+//! `scripts/breenix_runner.py`'s own `start()` (invoked by
+//! `scripts/ci/ring3_check.sh`, one of #849's own ten) sits outside any
+//! walk this file performs; filed as #854 rather than silently absorbed.
+//! See `docs/planning/green-program/gates/KILL-BY-NAME-829-2026-09-05.md`
+//! (the #829 round) and this file's own #849 round doc for both rounds'
+//! full evidence.
 
 use std::collections::HashSet;
 use std::fs;
@@ -84,7 +92,9 @@ fn repo_text(relative: &str) -> String {
 
 /// Identical walk to `tests/qemu_host_lock_structure.rs`'s own
 /// `all_shell_scripts`: each `.sh` file under `docker/` (recursive) and
-/// `scripts/` (recursive), plus `run.sh` itself.
+/// `scripts/` (recursive), plus `run.sh` itself. This is this file's own
+/// full reachable set as of #849 -- no longer filtered down to lock
+/// cooperators (see module doc).
 fn all_shell_scripts() -> Vec<(String, String)> {
     fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
         for entry in fs::read_dir(dir).expect("read script directory") {
@@ -111,11 +121,13 @@ fn all_shell_scripts() -> Vec<(String, String)> {
     scripts
 }
 
-/// This ratchet's reachable set: each script that sources the shared
-/// aarch64 host lock -- the same membership test
-/// `tests/qemu_host_lock_structure.rs` uses, reused rather than
-/// re-derived so both files agree on exactly which scripts this project's
-/// own mutual-exclusion promise is meant to cover.
+/// Whether a script sources the shared aarch64 host lock -- the same
+/// membership test `tests/qemu_host_lock_structure.rs` uses. No longer
+/// used to narrow this file's own main reachable set (#849 widened that to
+/// every script -- see module doc), but kept for the aarch64-specific
+/// reach-check below, which still wants to confirm the four #829-fixed
+/// files are lock cooperators as a sanity check on that round's own claim.
+/// claim-lint:ok: #849
 fn sources_qemu_host_lock(script: &str) -> bool {
     script.contains("qemu-host-lock.sh")
 }
@@ -222,7 +234,11 @@ fn kill_by_name_of_qemu_violations(text: &str) -> Vec<String> {
     violations
 }
 
-/// The aarch64 host-lock cooperator set this ratchet polices.
+/// The aarch64 host-lock cooperator set #829's own round policed --
+/// retained for the aarch64-specific reach-check sanity assertion below,
+/// not for this file's own main reachable set (#849 widened that to every
+/// script; see module doc and `all_shell_scripts`).
+/// claim-lint:ok: #849
 fn lock_cooperator_scripts() -> Vec<(String, String)> {
     all_shell_scripts()
         .into_iter()
@@ -231,30 +247,32 @@ fn lock_cooperator_scripts() -> Vec<(String, String)> {
 }
 
 #[test]
-fn no_aarch64_qemu_lock_cooperator_kills_by_name_or_pattern() {
-    let cooperators = lock_cooperator_scripts();
+fn no_shell_script_kills_qemu_by_name_or_pattern() {
+    let scripts = all_shell_scripts();
 
-    // Anti-vacuity floor: 29 scripts source the lock as of this file's own
-    // last edit (the exact set `tests/qemu_host_lock_structure.rs`'s own
-    // launch-site census is drawn from). Not a closed list -- a future
-    // lock-cooperating script only needs to raise this count.
+    // Anti-vacuity floor: 95 `.sh` scripts exist under docker/, scripts/,
+    // and run.sh as of this file's own last edit (94 found by `find docker
+    // scripts -name '*.sh'` plus run.sh itself). Not a closed list -- a
+    // future script only needs to raise this count.
     assert!(
-        cooperators.len() >= 29,
-        "only {} script(s) source docker/qemu/lib/qemu-host-lock.sh; expected at least 29",
-        cooperators.len()
+        scripts.len() >= 95,
+        "only {} script(s) found under docker/, scripts/, and run.sh; expected at least 95",
+        scripts.len()
     );
 
     let mut violations = Vec::new();
-    for (path, text) in &cooperators {
+    for (path, text) in &scripts {
         for violation in kill_by_name_of_qemu_violations(text) {
-            violations.push(format!("{path}: {violation} (#829)"));
+            violations.push(format!("{path}: {violation} (#829/#849)"));
         }
     }
     assert!(
         violations.is_empty(),
-        "aarch64 QEMU host-lock cooperator(s) kill by name/pattern instead of an \
-         invocation-owned id, defeating this project's own mutual-exclusion lock for \
-         every OTHER cooperating script sharing it:\n{}",
+        "script(s) under docker/, scripts/, or run.sh kill a qemu-ish process or \
+         container by name/pattern instead of an invocation-owned id, so the first of \
+         two concurrent invocations (of this script, a peer script sharing the same \
+         image, or any other script matching the same bare pattern) to finish can kill \
+         the other's still-running process out from under it:\n{}",
         violations.join("\n")
     );
 }
@@ -329,13 +347,27 @@ fn kill_by_name_predicates_are_not_vacuous() {
         "a doc comment describing the hazard in prose must not itself be flagged"
     );
 
-    // --- Real-file sanity: each fixed file is clean post-fix. ---
-    for path in [
+    // --- Real-file sanity: each file fixed across #829 and #849 is clean
+    // post-fix.
+    let aarch64_fixed_paths = [
         "docker/qemu/run-aarch64-test.sh",
         "docker/qemu/run-aarch64-userspace.sh",
         "docker/qemu/run-aarch64-interactive.sh",
         "scripts/run-arm64-boot-test.sh",
-    ] {
+    ];
+    let x86_fixed_paths = [
+        "docker/qemu/run-boot-parallel.sh",
+        "docker/qemu/run-kthread-test.sh",
+        "docker/qemu/run-kthread-parallel.sh",
+        "docker/qemu/run-dns-test.sh",
+        "docker/qemu/run-blocking-recv-test.sh",
+        "docker/qemu/run-nonblock-eagain-test.sh",
+        "docker/qemu/run-interactive.sh",
+        "scripts/test-workqueue.sh",
+        "scripts/f21-bisect-verdict.sh",
+        "scripts/ci/ring3_check.sh",
+    ];
+    for path in aarch64_fixed_paths {
         let text = repo_text(path);
         assert!(
             sources_qemu_host_lock(&text),
@@ -347,13 +379,21 @@ fn kill_by_name_predicates_are_not_vacuous() {
             "{path} must be clean post-fix, found: {violations:?}"
         );
     }
+    for path in x86_fixed_paths {
+        let text = repo_text(path);
+        let violations = kill_by_name_of_qemu_violations(&text);
+        assert!(
+            violations.is_empty(),
+            "{path} must be clean post-fix, found: {violations:?}"
+        );
+    }
 
     // --- ANTI-VACUITY mutation: the ratchet must redden against the real,
-    // literal pre-#829 text of each fixed file, not only synthetic
-    // strings. Each reconstructed line/block below is copied verbatim from
-    // this file's own pre-fix git history (the #829 issue body and this
-    // round's own PR diff), spliced back into the real POST-fix file text
-    // read from disk.
+    // literal pre-fix text of each fixed file, not only synthetic strings.
+    // Each reconstructed line/block below is copied verbatim from the
+    // real pre-fix file text (the #829 issue body/PR diff for the aarch64
+    // four, this file's own git history for the x86 ten), spliced back
+    // into the real POST-fix file text read from disk.
     let pre_fix_test_sh_line =
         "docker kill $(docker ps -q --filter ancestor=breenix-qemu-aarch64) 2>/dev/null || true\n";
     let mutated_test_sh = format!("{}{}", repo_text("docker/qemu/run-aarch64-test.sh"), pre_fix_test_sh_line);
@@ -402,20 +442,100 @@ if [ -n \"$EXISTING\" ]; then\n    \
          line must trip the ratchet"
     );
 
-    // --- ANTI-VACUITY reach check: the four fixed files are actually in
-    // this ratchet's own census, not merely clean by having been skipped by
-    // the census walk.
+    // #849's own ten x86-side files, each reddened with its real pre-fix
+    // line(s).
+    let x86_pre_fix_lines: [(&str, &[&str]); 9] = [
+        (
+            "docker/qemu/run-boot-parallel.sh",
+            &["docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true\n"],
+        ),
+        (
+            "docker/qemu/run-kthread-test.sh",
+            &["docker kill $(docker ps -q --filter ancestor=\"$IMAGE_NAME\") 2>/dev/null || true\n"],
+        ),
+        (
+            "docker/qemu/run-kthread-parallel.sh",
+            &["docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true\n"],
+        ),
+        (
+            "docker/qemu/run-dns-test.sh",
+            &["docker kill $(docker ps -q --filter ancestor=\"$IMAGE_NAME\") 2>/dev/null || true\n"],
+        ),
+        (
+            "docker/qemu/run-blocking-recv-test.sh",
+            &["docker kill $(docker ps -q --filter ancestor=\"$IMAGE_NAME\") 2>/dev/null || true\n"],
+        ),
+        (
+            "docker/qemu/run-nonblock-eagain-test.sh",
+            &["docker kill $(docker ps -q --filter ancestor=\"$IMAGE_NAME\") 2>/dev/null || true\n"],
+        ),
+        (
+            "scripts/test-workqueue.sh",
+            &[
+                "pkill -9 qemu-system-x86_64 2>/dev/null || true\n",
+                "docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true\n",
+            ],
+        ),
+        (
+            "scripts/f21-bisect-verdict.sh",
+            &[
+                "pkill -9 qemu-system-x86 >/dev/null 2>&1 || true\n",
+                "killall -9 qemu-system-x86_64 >/dev/null 2>&1 || true\n",
+            ],
+        ),
+        (
+            "scripts/ci/ring3_check.sh",
+            &["pkill -f qemu-system-x86_64 >/dev/null 2>&1 || true\n"],
+        ),
+    ];
+    for (path, pre_fix_lines) in x86_pre_fix_lines {
+        let mut mutated = repo_text(path);
+        for line in pre_fix_lines {
+            mutated.push_str(line);
+        }
+        assert!(
+            !kill_by_name_of_qemu_violations(&mutated).is_empty(),
+            "reddening: reintroducing {path}'s real pre-#849 kill-by-name line(s) must trip the ratchet"
+        );
+    }
+
+    // run-interactive.sh's pre-#849 shape was the same two-line
+    // ancestor-filter/EXISTING dataflow as run-aarch64-interactive.sh's own
+    // pre-#829 block, just against a different literal image name.
+    let pre_fix_run_interactive_block = "EXISTING=$(docker ps -q --filter ancestor=\"$IMAGE_NAME\" 2>/dev/null)\n\
+if [ -n \"$EXISTING\" ]; then\n    \
+    echo \"Stopping existing breenix-qemu containers...\"\n    \
+    docker kill $EXISTING 2>/dev/null || true\nfi\n";
+    let mutated_run_interactive = format!(
+        "{}{}",
+        repo_text("docker/qemu/run-interactive.sh"),
+        pre_fix_run_interactive_block
+    );
+    assert!(
+        !kill_by_name_of_qemu_violations(&mutated_run_interactive).is_empty(),
+        "reddening: reintroducing run-interactive.sh's real pre-#849 EXISTING/docker-kill \
+         block must trip the ratchet"
+    );
+
+    // --- ANTI-VACUITY reach check: every fixed file is actually in this
+    // ratchet's own census, not merely clean by having been skipped by the
+    // census walk.
+    // claim-lint:ok: #849
+    let scripts = all_shell_scripts();
     let cooperators = lock_cooperator_scripts();
-    for path in [
-        "docker/qemu/run-aarch64-test.sh",
-        "docker/qemu/run-aarch64-userspace.sh",
-        "docker/qemu/run-aarch64-interactive.sh",
-        "scripts/run-arm64-boot-test.sh",
-    ] {
+    for path in aarch64_fixed_paths {
         assert!(
             cooperators.iter().any(|(p, _)| p == path),
-            "{path} must be walked by this ratchet's own census, or its clean post-fix \
-             text proves nothing about detection"
+            "{path} must be walked by the aarch64 lock-cooperator census, or its clean \
+             post-fix text proves nothing about detection"
+        );
+    }
+    for path in aarch64_fixed_paths.iter().chain(x86_fixed_paths.iter()).chain(["docker/qemu/run-interactive.sh"].iter())
+    {
+        assert!(
+            scripts.iter().any(|(p, _)| p == path),
+            "{path} must be walked by this ratchet's own full-tree census, or its clean \
+             post-fix text proves nothing about detection"
         );
     }
 }

@@ -35,7 +35,21 @@ fi
 
 # Create output directory
 OUTPUT_DIR=$(mktemp -d)
-trap "rm -rf $OUTPUT_DIR" EXIT
+# #849: CONTAINER_NAME is unique to this invocation (this script's own
+# PID), so cleanup targets the exact container this run started instead of
+# matching by ancestor image -- an ancestor-image filter (the pre-#849
+# shape) can kill a DIFFERENT running container from the same image,
+# including one a concurrent invocation of this same script legitimately
+# owns. The trap fires on every exit path this script can take (a
+# success/timeout `exit 0`/`exit 1` below, or an early `set -e` exit), not
+# only a bottom-of-script cleanup line.
+# claim-lint:ok: #849
+CONTAINER_NAME="breenix-nonblock-eagain-test-$$"
+_cleanup_nonblock_eagain_test() {
+    rm -rf "$OUTPUT_DIR"
+    docker stop -t 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap _cleanup_nonblock_eagain_test EXIT
 
 # Create empty output files
 touch "$OUTPUT_DIR/serial_kernel.txt"
@@ -53,6 +67,7 @@ cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
 # Run QEMU inside Docker
 # No external packet needed - test verifies EAGAIN return immediately
 timeout 60 docker run --rm \
+    --name "$CONTAINER_NAME" \
     -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
     -v "$BREENIX_ROOT/target/test_binaries.img:/breenix/test_binaries.img:ro" \
     -v "$BREENIX_ROOT/target/ext2.img:/breenix/ext2.img:ro" \
@@ -101,7 +116,6 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
             echo "========================================="
             echo "NONBLOCK EAGAIN TEST: PASS"
             echo "========================================="
-            docker kill $(docker ps -q --filter ancestor="$IMAGE_NAME") 2>/dev/null || true
             exit 0
         fi
 
@@ -113,7 +127,6 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
             echo ""
             echo "User output (COM1):"
             cat "$OUTPUT_DIR/serial_user.txt" 2>/dev/null | grep -E "NONBLOCK_EAGAIN_TEST" || echo "(no output)"
-            docker kill $(docker ps -q --filter ancestor="$IMAGE_NAME") 2>/dev/null || true
             exit 1
         fi
     fi
@@ -130,5 +143,4 @@ echo ""
 echo "Last 20 lines of kernel output (COM2):"
 tail -20 "$OUTPUT_DIR/serial_kernel.txt" 2>/dev/null || echo "(no output)"
 
-docker kill $(docker ps -q --filter ancestor="$IMAGE_NAME") 2>/dev/null || true
 exit 1
