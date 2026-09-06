@@ -72,7 +72,10 @@ pub struct Writer {
     bytes: u32,
     truncated: bool,
     budgeted: bool,
-    in_record: bool,
+    /// Bytes of the current line's terminator the budget has not yet let
+    /// through: 2 = the whole CRLF is still owed, 1 = the LF alone, 0 = the
+    /// line is terminated. `close_dangling_record()` pays exactly this.
+    pending_terminator: u8,
 }
 
 impl Writer {
@@ -84,22 +87,28 @@ impl Writer {
             bytes: 0,
             truncated: false,
             budgeted: true,
-            in_record: false,
+            pending_terminator: 0,
         }
     }
 
     /// The single byte sink, and the single budget-enforcement point.
+    ///
+    /// Returns whether the byte reached the wire. Most callers have no use
+    /// for that; `close()` does, because whether a record's `]` landed is
+    /// the difference between a line a reader can parse and a fragment it
+    /// cannot.
     #[inline(always)]
-    fn put(&mut self, byte: u8) {
+    fn put(&mut self, byte: u8) -> bool {
         if self.budgeted {
             if self.remaining == 0 {
                 self.truncated = true;
-                return;
+                return false;
             }
             self.remaining -= 1;
         }
         self.bytes = self.bytes.saturating_add(1);
         raw_serial_char(byte);
+        true
     }
 
     #[inline(never)]
@@ -156,19 +165,32 @@ impl Writer {
         }
         self.text("[BXCAP:");
         self.text(token);
-        self.in_record = true;
+        self.pending_terminator = 2;
         true
     }
 
     /// Close a record: `]` then CRLF, and count it. Returns whether this
     /// record went onto the wire whole.
     ///
-    /// A record the budget cut is NOT closed and NOT counted. It stays
-    /// `in_record`, so `close_dangling_record()` puts the line terminator
-    /// back before `END` and the incomplete line does not run into it. That
-    /// is what makes `records=` mean "well-formed `[BXCAP:...]` lines before
-    /// this `END`" exactly, rather than approximately: a reader can check
-    /// the count against what it could actually parse.
+    /// A record whose own bytes the budget cut is NOT counted, and the
+    /// terminator it still owes is paid by `close_dangling_record()` so the
+    /// fragment does not run into the `END` line. That is what makes
+    /// `records=` mean "well-formed `[BXCAP:...]` lines before this `END`"
+    /// exactly, rather than approximately: a reader can check the count
+    /// against what it could actually parse.
+    ///
+    /// # Where the two questions come apart
+    ///
+    /// "Did the budget run out during this record?" and "can a reader parse
+    /// this record?" are not the same question, and they disagree on exactly
+    /// one boundary: the budget ending between the closing `]` and its CRLF.
+    /// The `]` is on the wire, `close_dangling_record()` supplies the
+    /// terminator with the budget suspended, and the line a reader sees is
+    /// complete -- so it is counted. Deciding on `self.truncated` instead
+    /// would leave `records=` one short of what decodes, which is the same
+    /// field disagreeing with the wire that this writer refuses to allow in
+    /// the other direction. The count therefore keys on whether the `]`
+    /// itself landed.
     ///
     /// # Why the caller has to look at the answer
     ///
@@ -182,23 +204,25 @@ impl Writer {
     /// so it is `#[must_use]`: dropping the verdict is a compile-time
     /// warning, and a zero-warning build cannot carry one.
     ///
-    /// The terminator is written FIRST and the verdict taken afterwards, so
-    /// that the case where a record's body fitted but its `]\r\n` did not is
-    /// decided by `put()` dropping those bytes rather than by a second piece
-    /// of budget arithmetic here. `put()` is the only place the budget is
+    /// Both answers come from `put()` rather than from budget arithmetic
+    /// here: the terminator is written first and the verdict read off what
+    /// those writes returned. `put()` stays the only place the budget is
     /// enforced, which is what makes deleting its guard delete the bound --
     /// a second enforcement point here would keep the emitter bounded and
     /// make that mutation invisible on a real boot.
     #[must_use]
     pub fn close(&mut self) -> bool {
         let cut_before = self.truncated;
-        self.put(b']');
-        self.put(b'\r');
-        self.put(b'\n');
-        if cut_before || self.truncated {
+        let bracket = self.put(b']');
+        if self.put(b'\r') {
+            self.pending_terminator = 1;
+        }
+        if self.put(b'\n') {
+            self.pending_terminator = 0;
+        }
+        if cut_before || !bracket {
             return false;
         }
-        self.in_record = false;
         self.records = self.records.saturating_add(1);
         true
     }
@@ -248,13 +272,22 @@ impl Writer {
         self.budgeted = budgeted;
     }
 
-    /// If the budget cut a record mid-line, put the terminator back so the
-    /// `END` line starts at column 0 and a line-oriented reader sees it.
+    /// If the budget cut a record's line terminator, pay the part of it that
+    /// did not land, so the `END` line starts at column 0 and a
+    /// line-oriented reader sees it.
+    ///
+    /// Only the missing bytes: a record that got its `\r` through and lost
+    /// only the `\n` is owed one byte, and writing a second `\r` would put a
+    /// stray byte inside the line it is repairing. Callers suspend the
+    /// budget first -- this repair belongs to the `END` bracket's contract,
+    /// not to the section content the budget caps.
     pub fn close_dangling_record(&mut self) {
-        if self.in_record {
-            self.in_record = false;
+        if self.pending_terminator == 2 {
             self.put(b'\r');
+        }
+        if self.pending_terminator > 0 {
             self.put(b'\n');
         }
+        self.pending_terminator = 0;
     }
 }
