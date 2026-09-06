@@ -184,8 +184,18 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             panic!("Cannot initialize memory without physical memory mapping");
         }
     };
+    let rsdp_addr = boot_info.rsdp_addr.into_option();
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
+
+    // #814 PR-1 / #629: enumerate the processors the firmware reports and
+    // answer the CPU-count question from that enumeration instead of from a
+    // compile-time constant. This reads four fixed ACPI tables through the
+    // bootloader's physical-memory window, which is why it runs after
+    // memory::init has installed the master kernel page table. It starts no
+    // processor: see kernel/src/arch_impl/x86_64/smp.rs for what `online=1` in
+    // the marker it emits does and does not claim.
+    kernel::arch_impl::x86_64::smp::init(rsdp_addr, physical_memory_offset.as_u64());
 
     // Initialize BTRT (requires memory for virt_to_phys and serial for output)
     #[cfg(feature = "btrt")]

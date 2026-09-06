@@ -13,6 +13,7 @@
 //! if not currently used by the kernel.
 
 // HAL modules define complete APIs - not all items are used yet
+pub mod acpi;
 #[allow(unused_imports)]
 pub mod constants;
 pub mod cpu;
@@ -22,6 +23,7 @@ pub mod paging;
 pub mod percpu;
 pub mod pic;
 pub mod privilege;
+pub mod smp;
 pub mod timer;
 
 // Re-export commonly used items

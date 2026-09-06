@@ -1805,7 +1805,18 @@ impl Scheduler {
         {
             (crate::arch_impl::aarch64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
         }
-        #[cfg(not(target_arch = "aarch64"))]
+        // #814 PR-1 / #629: x86 used to answer this question with the bare
+        // constant. It now reads the same atomic shape aarch64 reads. The
+        // VALUE does not move in this PR -- `cpus_online()` is seeded at 1 and
+        // no x86 AP is started -- and the clamp keeps it inside MAX_CPUS,
+        // which is still 1 here; what changes is where the answer comes from.
+        // The load is one acquire read of a static: no lock, no allocation, so
+        // it is admissible on this dispatch path.
+        #[cfg(target_arch = "x86_64")]
+        {
+            (crate::arch_impl::x86_64::smp::cpus_online() as usize).clamp(1, MAX_CPUS)
+        }
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
         {
             MAX_CPUS
         }
