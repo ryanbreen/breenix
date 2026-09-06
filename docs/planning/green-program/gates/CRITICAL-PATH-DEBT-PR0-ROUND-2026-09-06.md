@@ -37,8 +37,8 @@ tooling only); the const in the committed suite is what that pipeline
 produces against `783a6a53` today, which this round's own `cargo test`/
 `rustc --test` runs (below) re-confirm independently.
 
-`CRITICAL_PATH_LOG_WIDER_ANCHORS` is not a second hand-maintained table --
-`wider_anchors()` appends exactly one row (`kernel/src/arch_impl/aarch64/
+The wider census is not a second hand-maintained table -- `wider_anchors()`
+appends exactly one row (`kernel/src/arch_impl/aarch64/
 exception.rs :: fn sys_write`, count 1) to `CRITICAL_PATH_LOG_ANCHORS` at
 test time, so "wider = narrow + the one escaped site" is visible in code
 rather than asserted in two tables that could drift.
@@ -94,6 +94,43 @@ outside of docs.)
 $ python3 scripts/claim-lint.py --files docs/planning/green-program/gates/CRITICAL-PATH-DEBT-2026-09-06.md
 claim-lint: clean (1 file(s) checked, whole files).
 ```
+
+### `scripts/claim-lint.py`, re-run after this round's own fixes (F1-F3)
+
+A review of the round found three minor findings; this round addresses 3
+of 3: F1 added a doc-comment paragraph to `tests/critical_path_logging_
+census_structure.rs` disclosing that the pin's validator is a full exact
+match (a DECREASE at an existing anchor fails the run too, not only an
+increase); F2 corrected an invented symbol name
+(`CRITICAL_PATH_LOG_WIDER_ANCHORS`, which does not exist in the suite) in
+this doc's "two censuses" section to reference the real `wider_anchors()`
+function it was already describing correctly in the next sentence; F3 is
+this subsection.
+
+With F1 and F2 on disk, and this subsection drafted up to the point above
+this paragraph, the diff-mode check still reports clean against the same
+four files as the first run of this round (the base commit is unchanged,
+so a rerun after review-round edits still diffs against `783a6a53668d`):
+
+```
+$ python3 scripts/claim-lint.py
+claim-lint: clean (4 file(s) checked, changed hunks vs 783a6a53668d).
+claim-lint: 3 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+```
+
+`--whole-file` confirms those 3 pre-existing findings (lines 28, 159, 212,
+each a `NEVER`/`all` with no `claim-lint:ok`) are unchanged from the run
+recorded above -- each one sits in `scripts/check-critical-path-
+violations.sh`'s original comments carried over from before this branch;
+0 of 3 were introduced or touched by this round or this fix.
+
+The finding this subsection answers observed that a doc cannot quote a
+linter run over its own not-yet-final text. That is still true here: the
+invocation quoted above predates the words in this paragraph. What
+actually gates this round's push is `python3 scripts/claim-lint.py` run
+once more, on the tree as committed, immediately before `git push`, per
+CLAUDE.md's requirement that command exit 0 first -- not a run captured
+inside the doc it is checking.
 
 ### `scripts/test_claim_lint.py`
 

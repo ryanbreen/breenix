@@ -9,6 +9,13 @@
 //! `cargo test` run, the same way `tests/serial_line_atomicity_structure.rs`
 //! pins the raw-serial-primitive census and `tests/
 //! capture_path_lock_free_structure.rs` pins the capture path's denylist.
+//! The pin is a full `(file, item-path) -> count` exact match, not a
+//! one-directional ratchet: a DECREASE at an existing anchor fails the same
+//! run, with its own `~ <file> :: <item>  (expected N, found N-1)` diff
+//! line, so a drain PR has to update the table consciously rather than
+//! coast on a stale higher count. See "Direction" in `docs/planning/
+//! green-program/gates/CRITICAL-PATH-DEBT-2026-09-06.md` for the fuller
+//! statement of this.
 //!
 //! # Two censuses, on purpose
 //!
