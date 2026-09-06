@@ -365,3 +365,144 @@ not folded into this round.
 
 `scripts/run-structure-tests.sh` and `scripts/check-critical-path-
 violations.sh` are read by the new preflight but not edited by this round.
+
+## Landing re-smoke
+
+Landed at `72ce064bb9e3619802c0b45cada7950c647ae696` (review passed) by
+merging `origin/main` (`a0ec6cf8473d02c5029fc9ab44403c7f68cedde3`, PR #887)
+in with `git merge --no-ff`. `git diff --name-only HEAD` after resolution
+lists 65 changed paths, 4 of them the `docker/qemu` gate scripts both sides
+wired (all 4 auto-merged cleanly, both sides' hunks present in each --
+confirmed by grepping each for `gate-structure-preflight`, 4 hits each),
+and `git diff --check` plus a repo-wide grep for
+`<<<<<<<`/`=======`/`>>>>>>>` each found 0 conflict markers in the 65
+changed paths (claim-lint:ok: 0 of 65, both checks run directly against
+the merged tree). Reproduced the identical merge
+independently on the beast x86 host from the same two parent commits (no
+GitHub reachable from that container, so both tips were fetched by exact
+SHA through the host's own already-fetched clone): the resulting tree hash
+(`9a64ca2b63a1ec45177c5d8e67b55597e3428ca6`) is byte-identical to the Mac
+merge's tree hash.
+
+`python3 scripts/claim-lint.py` on the merged tree:
+```
+claim-lint: clean (8 file(s) checked, changed hunks vs a0ec6cf8473d).
+claim-lint: 115 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+```
+Exit 0.
+
+### The `tests/*_structure.rs` suites (48/48), standalone, on the merged tree
+
+`origin/main`'s #822 round added a 48th suite (`tty_irq_fg_structure`) since
+the 47/47 count PR-1's own Evidence section above recorded; the preflight's
+own discovery (`find tests -maxdepth 1 -name '*_structure.rs'`) picks it up
+without any change to this round's code, and running it directly (`source
+docker/qemu/lib/gate-structure-preflight.sh; gate_structure_preflight
+"$(pwd)" "$BREENIX_GATE_TMP"`) on the Mac scored:
+```
+[GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
+```
+48 of 48 green, exit 0. (One capture artifact for the record, not a repo
+defect: three direct attempts to write that exact line through this
+session's interactive shell -- plain `echo`, and the same command
+redirected straight to a file -- each landed on disk 2 bytes short, always
+the same two bytes ("`:c`" out of "`:critical_path_lines`"), reproducibly
+at that fixed byte offset; a `python3 subprocess.run(..., capture_output=
+True)` invocation of the identical function, same working tree, same
+values, wrote the full 75-byte line with `:critical_path_lines=275`
+intact. All numeric readings cited in this section are taken from that
+subprocess capture, not the shorter files.)
+
+### `scripts/test_claim_lint.py`
+
+```
+$ python3 scripts/test_claim_lint.py
+...
+Ran 72 tests in 2.212s
+
+OK
+```
+72 of 72 passed, exit 0.
+
+### aarch64 strict gate, script default (20 iterations)
+
+Built the `boot_tests` kernel and both architectures' userspace ELFs first
+(`userspace/programs/build.sh` and `--arch aarch64`, then `scripts/
+create_ext2_disk.sh --arch aarch64` -- this worktree's fresh `target/`
+directory had 0 of these artifacts before this step, per its first build
+attempt failing on a missing `simple_exit.elf`). `scripts/
+check-kernel-no-neon.sh`: PASS, 0 FP/SIMD instructions.
+```
+$ bash docker/qemu/run-aarch64-boot-test-strict.sh
+[GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
+...
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+Duration: 256s
+PASS: 20/20 boots succeeded
+```
+
+### aarch64 production-profile gate, x1
+
+```
+$ bash docker/qemu/run-aarch64-prod-profile-boot-test.sh
+[GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
+...
+PASS: production profile reached bsshd with the futex oracle seam absent
+...
+Observed crash marker count: 0
+[GATE_BOOT_FACTS:boot=1:...:ended_by=scored_pass]
+```
+
+### beast x86: `run-x86-boot-tests.sh 1`
+
+Own clone `/root/breenix-gw` (fetched by exact SHA from the beast host's
+own `/root/breenix`, since the container reaches no outbound GitHub),
+`rust-fork` symlinked to `/root/breenix/rust-fork-real`,
+`BREENIX_GATE_TMP=/root/breenix-gw-tmp`. x86_64 userspace built first
+(`userspace/programs/build.sh`, no `--arch` -- x86_64 is the default).
+```
+[GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
+...
+x86 frame-custody gate run 1: PASS
+```
+Exit 0. One `grep -c FAIL` hit in the 617-line transcript, and it is not a
+verdict: line 606 is the `EXEC_FAILED_RELEASE_PROD` counter label, whose
+own 15 fields read 10 zero-valued counters (`balance`, `undecided`,
+`mid_retire`, `lost`, `custody_refused`, `decref_unregistered`, `double`,
+`stale`, `untracked`, `root_slot_refused`, each `=0`) plus 5 `true`-valued
+flags this label's own name predicts (`plain_err`, `plain_kept`,
+`argv_err`, `argv_kept`, `name_kept`) -- not a FAIL line (claim-lint:ok:
+10-of-15 and 5-of-15, counted directly against this round's own captured
+line, quoted in full above the "beast x86:" heading is the same transcript
+this count is read from).
+
+### beast x86 production-profile gate
+
+```
+[GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
+...
+PASS: x86 production profile reached steady state with the teardown census at rest
+```
+Exit 0. One `grep -c FAIL` hit in the 371-line transcript, and it is the
+same pre-existing shape PR-1's own Evidence section already recorded for
+this gate: the "fault marker 'DISK LOADING FAILED': 0" line, reading 0.
+
+Both beast runs waited on `lib/qemu-host-lock.sh`'s host-wide lock behind
+concurrent x86 boots from other sessions on the shared beast host
+(`breenix-chk1`, `breenix-p766` were both observed running their own
+`qemu-system-x86_64` during this round's wait windows) -- the same pattern
+PR-1's own Evidence section recorded; neither this round's gates nor this
+round's agent touched those processes. No gate process on either host died
+mid-run without reaching a verdict, so #871's beast-disk-fault signature
+did not occur this round and no `journalctl` attribution or retry was
+needed.
+
+`python3 scripts/claim-lint.py` on the tree, immediately before push:
+```
+claim-lint: clean (8 file(s) checked, changed hunks vs a0ec6cf8473d).
+claim-lint: 115 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+```
+Exit 0.
