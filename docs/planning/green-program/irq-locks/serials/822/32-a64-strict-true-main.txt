@@ -1,0 +1,151 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+Iterations: 20
+Requirement: 100% success rate (all 20 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 32761 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788705810801-1788705821914:qemu_at_start=0:load_at_start=4.70:qemu_at_end=1:load_at_end=5.14:qemu_cpu_s=18.69:guest_uptime_ms=10530:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 34364 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+  [GATE_BOOT_FACTS:boot=2:host_ms=1788705833532-1788705844648:qemu_at_start=0:load_at_start=5.67:qemu_at_end=1:load_at_end=5.32:qemu_cpu_s=19.36:guest_uptime_ms=10853:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 36681 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+  [GATE_BOOT_FACTS:boot=3:host_ms=1788705868343-1788705881011:qemu_at_start=0:load_at_start=5.04:qemu_at_end=1:load_at_end=5.19:qemu_cpu_s=20.36:guest_uptime_ms=12071:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 38090 (<unknown process>)
+  [OK] Boot 4: SUCCESS
+  [GATE_BOOT_FACTS:boot=4:host_ms=1788705892613-1788705905234:qemu_at_start=0:load_at_start=4.97:qemu_at_end=1:load_at_end=4.88:qemu_cpu_s=20.67:guest_uptime_ms=12144:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 39597 (<unknown process>)
+  [OK] Boot 5: SUCCESS
+  [GATE_BOOT_FACTS:boot=5:host_ms=1788705918778-1788705931436:qemu_at_start=0:load_at_start=5.31:qemu_at_end=1:load_at_end=5.53:qemu_cpu_s=20.80:guest_uptime_ms=12052:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 41061 (<unknown process>)
+  [OK] Boot 6: SUCCESS
+  [GATE_BOOT_FACTS:boot=6:host_ms=1788705944055-1788705955144:qemu_at_start=0:load_at_start=4.75:qemu_at_end=1:load_at_end=4.55:qemu_cpu_s=18.33:guest_uptime_ms=10919:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 42558 (<unknown process>)
+  [OK] Boot 7: SUCCESS
+  [GATE_BOOT_FACTS:boot=7:host_ms=1788705968741-1788705981382:qemu_at_start=0:load_at_start=4.60:qemu_at_end=1:load_at_end=4.12:qemu_cpu_s=20.42:guest_uptime_ms=11934:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 44760 (<unknown process>)
+  [OK] Boot 8: SUCCESS
+  [GATE_BOOT_FACTS:boot=8:host_ms=1788706006079-1788706018719:qemu_at_start=0:load_at_start=3.78:qemu_at_end=1:load_at_end=3.92:qemu_cpu_s=20.49:guest_uptime_ms=12241:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (60s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 49930 (<unknown process>)
+  [OK] Boot 9: SUCCESS
+  [GATE_BOOT_FACTS:boot=9:host_ms=1788706095080-1788706107706:qemu_at_start=0:load_at_start=3.94:qemu_at_end=1:load_at_end=4.04:qemu_cpu_s=20.31:guest_uptime_ms=11813:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 51446 (<unknown process>)
+  [OK] Boot 10: SUCCESS
+  [GATE_BOOT_FACTS:boot=10:host_ms=1788706121310-1788706130953:qemu_at_start=0:load_at_start=4.14:qemu_at_end=1:load_at_end=4.77:qemu_cpu_s=19.06:guest_uptime_ms=9638:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 52844 (<unknown process>)
+  [OK] Boot 11: SUCCESS
+  [GATE_BOOT_FACTS:boot=11:host_ms=1788706143849-1788706153523:qemu_at_start=0:load_at_start=5.48:qemu_at_end=1:load_at_end=5.70:qemu_cpu_s=19.51:guest_uptime_ms=9492:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 54200 (<unknown process>)
+  [OK] Boot 12: SUCCESS
+  [GATE_BOOT_FACTS:boot=12:host_ms=1788706166406-1788706177532:qemu_at_start=0:load_at_start=6.55:qemu_at_end=1:load_at_end=6.39:qemu_cpu_s=19.78:guest_uptime_ms=10288:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 57567 (<unknown process>)
+  [OK] Boot 13: SUCCESS
+  [GATE_BOOT_FACTS:boot=13:host_ms=1788706189285-1788706198897:qemu_at_start=0:load_at_start=6.71:qemu_at_end=1:load_at_end=6.62:qemu_cpu_s=17.52:guest_uptime_ms=8650:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 60003 (<unknown process>)
+  [OK] Boot 14: SUCCESS
+  [GATE_BOOT_FACTS:boot=14:host_ms=1788706212643-1788706223722:qemu_at_start=0:load_at_start=6.37:qemu_at_end=1:load_at_end=5.78:qemu_cpu_s=19.13:guest_uptime_ms=10086:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 61236 (<unknown process>)
+  [OK] Boot 15: SUCCESS
+  [GATE_BOOT_FACTS:boot=15:host_ms=1788706225289-1788706237911:qemu_at_start=0:load_at_start=5.78:qemu_at_end=1:load_at_end=5.47:qemu_cpu_s=20.26:guest_uptime_ms=12185:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 61968 (<unknown process>)
+  [OK] Boot 16: SUCCESS
+  [GATE_BOOT_FACTS:boot=16:host_ms=1788706239371-1788706250432:qemu_at_start=0:load_at_start=5.47:qemu_at_end=1:load_at_end=4.94:qemu_cpu_s=18.67:guest_uptime_ms=10980:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 62640 (<unknown process>)
+  [OK] Boot 17: SUCCESS
+  [GATE_BOOT_FACTS:boot=17:host_ms=1788706251914-1788706262996:qemu_at_start=0:load_at_start=4.63:qemu_at_end=1:load_at_end=4.36:qemu_cpu_s=18.58:guest_uptime_ms=10813:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 63334 (<unknown process>)
+  [OK] Boot 18: SUCCESS
+  [GATE_BOOT_FACTS:boot=18:host_ms=1788706264494-1788706275688:qemu_at_start=0:load_at_start=4.36:qemu_at_end=1:load_at_end=4.83:qemu_cpu_s=19.44:guest_uptime_ms=10711:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 64081 (<unknown process>)
+  [OK] Boot 19: SUCCESS
+  [GATE_BOOT_FACTS:boot=19:host_ms=1788706277464-1788706291705:qemu_at_start=0:load_at_start=4.92:qemu_at_end=1:load_at_end=5.34:qemu_cpu_s=25.14:guest_uptime_ms=13308:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 65413 (<unknown process>)
+  [OK] Boot 20: SUCCESS
+  [GATE_BOOT_FACTS:boot=20:host_ms=1788706293278-1788706306040:qemu_at_start=0:load_at_start=5.34:qemu_at_end=1:load_at_end=4.89:qemu_cpu_s=22.61:guest_uptime_ms=12270:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+Duration: 530s
+
+=========================================
+PASS: 20/20 boots succeeded
+=========================================
