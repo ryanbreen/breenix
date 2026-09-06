@@ -21,8 +21,11 @@ struct InspectorRootView: View {
 
     @State private var runs: [LoadedRun] = []
     @State private var selectedRunID: String?
+    @State private var selectedComparisonRunID: String?
     @State private var detail: RunDetailViewModel?
+    @State private var diff: RunDiffResult?
     @State private var loadError: String?
+    @State private var diffError: String?
 
     var body: some View {
         NavigationSplitView {
@@ -39,24 +42,46 @@ struct InspectorRootView: View {
                 await loadDetail(id: newValue)
             }
         }
+        .onChange(of: selectedComparisonRunID) { _, newValue in
+            Task {
+                await loadDiff(id: newValue)
+            }
+        }
     }
 
     @ViewBuilder
     private var detailView: some View {
         if let detail {
-            TabView {
-                SubsystemsPane(viewModel: detail.subsystems)
-                    .tabItem {
-                        Label("Subsystems", systemImage: "checklist")
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("Compare with", selection: $selectedComparisonRunID) {
+                    Text("No comparison").tag(String?.none)
+                    ForEach(runs.filter { $0.id != detail.manifest.id && $0.manifest.arch == detail.manifest.arch }) { run in
+                        Text("\(run.row.arch) \(run.row.profile) \(run.row.timeText) \(run.row.verdictText)")
+                            .tag(String?.some(run.id))
                     }
-                MessagesPane(messages: detail.messages)
-                    .tabItem {
-                        Label("Messages", systemImage: "text.alignleft")
+                }
+                .frame(maxWidth: 360)
+
+                TabView {
+                    SubsystemsPane(viewModel: detail.subsystems)
+                        .tabItem {
+                            Label("Subsystems", systemImage: "checklist")
+                        }
+                    MessagesPane(messages: detail.messages)
+                        .tabItem {
+                            Label("Messages", systemImage: "text.alignleft")
+                        }
+                    TracesPane(viewModel: detail.traces)
+                        .tabItem {
+                            Label("Traces", systemImage: "waveform.path.ecg")
+                        }
+                    if selectedComparisonRunID != nil {
+                        compareTab
+                            .tabItem {
+                                Label("Compare", systemImage: "arrow.left.arrow.right")
+                            }
                     }
-                TracesPane(viewModel: detail.traces)
-                    .tabItem {
-                        Label("Traces", systemImage: "waveform.path.ecg")
-                    }
+                }
             }
             .padding()
         } else if let loadError {
@@ -81,6 +106,25 @@ struct InspectorRootView: View {
         }
     }
 
+    @ViewBuilder
+    private var compareTab: some View {
+        if let diff {
+            ComparePane(result: diff)
+        } else if let diffError {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Unable to compare runs")
+                    .font(.headline)
+                Text(diffError)
+                    .font(.body.monospaced())
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            ProgressView("Loading compare")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
     private func loadRuns() async {
         do {
             let loadedRuns = try await RunInspectorLoader.loadRuns(store: store)
@@ -92,11 +136,16 @@ struct InspectorRootView: View {
             } else if let currentSelection = self.selectedRunID, !runs.contains(where: { $0.id == currentSelection }) {
                 self.selectedRunID = runs.first?.id
             }
+            if let comparison = self.selectedComparisonRunID, !runs.contains(where: { $0.id == comparison }) {
+                self.selectedComparisonRunID = nil
+            }
             await loadDetail(id: self.selectedRunID)
         } catch {
             runs = []
             detail = nil
+            diff = nil
             loadError = String(describing: error)
+            diffError = nil
         }
     }
 
@@ -113,6 +162,7 @@ struct InspectorRootView: View {
         }
         guard let run = runs.first(where: { $0.id == id }) else {
             detail = nil
+            diff = nil
             return
         }
 
@@ -123,12 +173,47 @@ struct InspectorRootView: View {
             }
             detail = loadedDetail
             loadError = nil
+            if selectedComparisonRunID == id {
+                selectedComparisonRunID = nil
+            }
+            await loadDiff(id: selectedComparisonRunID)
         } catch {
             guard selectedRunID == id else {
                 return
             }
             detail = nil
+            diff = nil
             loadError = String(describing: error)
+        }
+    }
+
+    private func loadDiff(id: String?) async {
+        guard let id, let detail else {
+            diff = nil
+            diffError = nil
+            return
+        }
+        guard let rhs = runs.first(where: { $0.id == id }) else {
+            diff = nil
+            diffError = nil
+            return
+        }
+
+        diff = nil
+        diffError = nil
+        do {
+            let loadedDiff = try await RunInspectorLoader.loadDiff(lhs: detail.manifest, rhs: rhs.manifest, store: store)
+            guard selectedRunID == detail.manifest.id, selectedComparisonRunID == id else {
+                return
+            }
+            diff = loadedDiff
+            diffError = nil
+        } catch {
+            guard selectedRunID == detail.manifest.id, selectedComparisonRunID == id else {
+                return
+            }
+            diff = nil
+            diffError = String(describing: error)
         }
     }
 }

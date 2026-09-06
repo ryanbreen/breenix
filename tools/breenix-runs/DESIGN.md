@@ -308,6 +308,7 @@ breenix-runs run x86 [gate|boot-tests|prod] [--boots N] [--host beast]
 breenix-runs list   [--arch arm|x86] [--verdict pass|fail] [--since 2d] [--limit N]
 breenix-runs show   <run-id|latest|latest-fail>   [--subsystems] [--messages] [--traces]
 breenix-runs facts  <run-id|latest>               [--json]
+breenix-runs compare <run-id-a> <run-id-b>
 breenix-runs tail   [<run-id>]                    # follow a live run's serial
 breenix-runs import <path>...                     # a gate tmp tree, or a serials dir
 breenix-runs score  <run-id>                      # re-run the gate's own scorer
@@ -321,6 +322,13 @@ sha, image sha256), the Inspector's own host sample (§4.3), and then each
 `GATE_BOOT_FACTS` record found in the serial — or an explicit
 `no [GATE_BOOT_FACTS] records in this serial (#827 not landed on this run's gate)`
 line when no such record exists.
+
+**Status: implemented in PR-8** (`Sources/BreenixRuns/Launch/SerialTailer.swift`,
+`Sources/breenix-runs/tail.swift`). `tail` follows the selected stored run's
+`gate-stdout.txt` capture when present, otherwise its first serial file; today's
+manifest-writing path records runs after the launcher exits, so the CLI prints a
+stored file and then returns after EOF is stable. It is not live-process-attached
+yet; the reusable tailer is the tested primitive for a later concurrent writer.
 
 ### 2.4 Build and launch: SwiftPM + `make app`, no Xcode project — justified, and verified
 
@@ -467,6 +475,13 @@ lying.
 other did not), marker-set delta (families/counts present in one only), host-facts
 delta, and verdict delta. This is the "was it my change or the host?" view, and it
 is why host facts and subsystem states live in the same store.
+
+**Status: implemented in PR-8** (`Sources/BreenixRuns/Diff/RunDiff.swift`,
+`Sources/BreenixRunInspector/ComparePane.swift`,
+`Sources/breenix-runs/compare.swift`, and
+`RunInspectorLoader.loadDiff(lhs:rhs:store:)`). The app exposes Compare as a fourth
+detail tab after a second stored run is selected, and the CLI renders the same
+library diff text.
 
 ---
 

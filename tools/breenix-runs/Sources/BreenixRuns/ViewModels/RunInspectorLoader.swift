@@ -38,4 +38,10 @@ public enum RunInspectorLoader {
             try RunDetailViewModel.load(manifest: manifest, store: store)
         }.value
     }
+
+    public static func loadDiff(lhs: RunManifest, rhs: RunManifest, store: RunStore) async throws -> RunDiffResult {
+        try await Task.detached(priority: .userInitiated) {
+            try RunDiff.compare(lhs: lhs, rhs: rhs, store: store)
+        }.value
+    }
 }
