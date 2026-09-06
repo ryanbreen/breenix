@@ -364,6 +364,31 @@ FCNTL_PM_CONTENTION_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:rea
 # not earn. Pinning the SKIP line keeps the emitter alive on this arch --
 # deleting the oracle would otherwise leave this gate green.
 IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]'
+# #821. Unlike the two SKIPs above, this oracle has a real arm on x86: the
+# defect it measures is worse here than on aarch64, because `manager()`
+# performs no mask operation on this architecture, so the boot thread's
+# driver-test window holds PROCESS_MANAGER with IF=1 and an input interrupt
+# taken on top of it, on a machine that boots -smp 1, would wait for a lock its
+# own CPU owns.
+#
+# `pm_blocking_acquires=0` is the property: a production counter that each of
+# the 3 blocking PROCESS_MANAGER accessors bumps while the input IRQ entry's
+# no-blocking scope is open. `fg_unset_before=1` is the precondition, since the
+# deferring branch is only live while no foreground pgrp is set.
+# `pm_held_during_entry=1` and `irqs_enabled_before=1` are the pair that says
+# the injection really ran under a held, unmasked lock -- and on this
+# uniprocessor profile the entry's mere completion under that hold is the
+# reading, which is why the trailing arm is pinned to `local_hold`. The oracle
+# reports `handler_would_block` and refuses to drive that injection when its
+# own detector says the entry still reaches a blocking acquisition, so the
+# unrepaired kernel reddens this gate instead of hanging the boot.
+#
+# `entry_us` is deliberately pinned loosely here: this profile's monotonic
+# clock is TSC-backed only when the TSC is calibrated, and a millisecond-
+# resolution fallback would make a tight pin a flake rather than a reading.
+# The aarch64 gate carries the timed reading; this one carries the
+# completed-under-hold reading.
+TTY_IRQ_PM_ORACLE_PATTERN='\[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=[0-9]+:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold\]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -598,6 +623,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$IRQ_HOLD_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -1078,6 +1105,9 @@ for i in $(seq 1 "$COUNT"); do
     IRQ_HOLD_ORACLE_LINE=$(grep -h -F "$IRQ_HOLD_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$IRQ_HOLD_ORACLE_LINE"
+    TTY_IRQ_PM_ORACLE_LINE=$(grep -h -E "$TTY_IRQ_PM_ORACLE_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$TTY_IRQ_PM_ORACLE_LINE"
     FUTEX_HANDOFF_ORACLE_LINE=$(grep -h -E "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FUTEX_HANDOFF_ORACLE_LINE"

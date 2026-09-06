@@ -94,3 +94,9 @@ docs/planning/green-program/failure-capture/serials/pr3/*.txt -text
 # Same treatment as the fixtures above -- these are raw QEMU captures whose
 # interleaved bytes ARE the evidence, and a CRLF normalisation would edit them.
 docs/planning/green-program/failure-capture/serials/pr3-gate/*.txt -text
+
+# #821 serials: raw QEMU serial captures from the aarch64 strict gate on this
+# Mac and from the x86 gates on the beast container. Same treatment as the
+# captures above -- the CR bytes the guest console emits are part of the
+# evidence, and a CRLF normalisation would edit a preserved boot.
+docs/planning/green-program/irq-locks/serials/821/*.txt -text

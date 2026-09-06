@@ -18,6 +18,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::line_discipline::LineDiscipline;
@@ -34,6 +35,24 @@ const EAGAIN: i32 = 11;
 
 /// Static list of thread IDs blocked waiting for TTY input
 static BLOCKED_READERS: Mutex<VecDeque<u64>> = Mutex::new(VecDeque::new());
+
+/// #821 census. `deferred` counts the times the input IRQ entry saw a console
+/// with no foreground process group and recorded the adoption for the
+/// thread-context consumer instead of resolving a pid in the interrupt;
+/// `adopted` counts the times that consumer took it. Both are read by the
+/// boot-test oracle, which reports deltas across its own injections.
+static TTY_IRQ_PM_DEFERRED: AtomicU64 = AtomicU64::new(0);
+static TTY_IRQ_PM_ADOPTED: AtomicU64 = AtomicU64::new(0);
+
+/// Times the input IRQ entry deferred a foreground-pgrp adoption (#821).
+pub fn tty_irq_pm_deferred_count() -> u64 {
+    TTY_IRQ_PM_DEFERRED.load(Ordering::Relaxed)
+}
+
+/// Times a thread-context reader took a deferred foreground-pgrp adoption (#821).
+pub fn tty_irq_pm_adopted_count() -> u64 {
+    TTY_IRQ_PM_ADOPTED.load(Ordering::Relaxed)
+}
 
 /// Maximum UART bytes emitted while interrupts are masked for one TTY write.
 const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
@@ -104,6 +123,12 @@ pub struct TtyDevice {
     /// Session leader process ID (for future use)
     /// The session leader is the process that opened the controlling terminal
     session: Mutex<Option<ProcessId>>,
+
+    /// #821: an input byte arrived while `foreground_pgrp` was unset, so the
+    /// adoption of a foreground process group is owed to the next
+    /// thread-context reader. Lock-free because the only writer that sets it
+    /// runs in interrupt context.
+    adopt_pending: AtomicBool,
 }
 
 impl TtyDevice {
@@ -117,6 +142,7 @@ impl TtyDevice {
             ldisc: Mutex::new(LineDiscipline::new()),
             foreground_pgrp: Mutex::new(None),
             session: Mutex::new(None),
+            adopt_pending: AtomicBool::new(false),
         }
     }
 
@@ -177,19 +203,35 @@ impl TtyDevice {
     /// Returns true if the character was processed, false if the lock was busy.
     ///
     /// Used by keyboard interrupt handler when TTY is routed from interrupt context.
+    ///
+    /// # #821
+    ///
+    /// This body takes NO blocking `PROCESS_MANAGER` acquisition. It used to
+    /// call `crate::process::current_pid()` here, which blocks in `manager()`,
+    /// while a thread-context holder of the same lock can be running with
+    /// interrupts live. The pid that call resolved was only ever used to name a
+    /// foreground process group, and the pid an interrupt can see is the
+    /// interrupted thread's, not the terminal's reader; so the adoption is
+    /// recorded here and taken by the thread-context consumer
+    /// (`adopt_deferred_foreground_pgrp`, driven from the stdin read path),
+    /// where the reader's own pid is already in hand. The scope below makes a
+    /// reintroduction fail loudly rather than silently.
     #[allow(dead_code)]
     pub fn input_char_nonblock(&self, c: u8) -> bool {
-        // Auto-set foreground process group if not set
-        // This allows signals to work even if shell doesn't call tcsetpgrp
+        let _no_blocking_pm = crate::process::NoBlockingProcessManagerScope::enter();
+
+        // Owe a foreground process group to the next thread-context reader
+        // while the field is unset. This lets signals work before a shell has
+        // called tcsetpgrp. The `try_lock` read keeps its degrade arm: a busy
+        // lock means some thread is already writing the field.
         if self
             .foreground_pgrp
             .try_lock()
             .map(|g| g.is_none())
             .unwrap_or(false)
         {
-            if let Some(current_pid) = crate::process::current_pid() {
-                self.set_foreground_pgrp(current_pid.as_u64());
-            }
+            self.adopt_pending.store(true, Ordering::Release);
+            TTY_IRQ_PM_DEFERRED.fetch_add(1, Ordering::Relaxed);
         }
 
         let mut ldisc = match self.ldisc.try_lock() {
@@ -310,6 +352,56 @@ impl TtyDevice {
     #[allow(dead_code)]
     pub fn get_foreground_pgrp(&self) -> Option<u64> {
         *self.foreground_pgrp.lock()
+    }
+
+    /// Take an adoption the input IRQ entry deferred (#821).
+    ///
+    /// This is the thread-context half of the auto-set the IRQ path used to do
+    /// inline. `pid` is the reading thread's own process, which is the answer
+    /// the IRQ path could not have: an interrupt sees whichever thread it
+    /// preempted, a reader is the terminal's foreground job by construction.
+    ///
+    /// Blocking on `foreground_pgrp` is legal here because this runs in thread
+    /// context. The check-then-set shape is the one the IRQ path already had,
+    /// so a second setter racing this one wins exactly as it did before; #822
+    /// owns that lock's own discipline and is untouched.
+    pub fn adopt_deferred_foreground_pgrp(&self, pid: ProcessId) {
+        if !self.adopt_pending.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        if self.get_foreground_pgrp().is_none() {
+            self.set_foreground_pgrp(pid.as_u64());
+            TTY_IRQ_PM_ADOPTED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether an adoption is owed to the next reader (#821).
+    #[cfg(any(feature = "boot_tests", feature = "btrt"))]
+    pub fn foreground_pgrp_adoption_pending(&self) -> bool {
+        self.adopt_pending.load(Ordering::Acquire)
+    }
+
+    /// Clear the foreground process group.
+    ///
+    /// Boot-test only: the #821 oracle needs the console in the state the
+    /// defect is reachable from (no foreground pgrp), and restores what it
+    /// found afterwards. The 4 production writers of this field each set it to
+    /// a pgrp: `kernel/src/process/creation.rs` at 2 sites,
+    /// `kernel/src/tty/ioctl.rs` at 1, and this round's
+    /// `adopt_deferred_foreground_pgrp`.
+    #[cfg(any(feature = "boot_tests", feature = "btrt"))]
+    pub fn set_foreground_pgrp_raw_for_test(&self, pgrp: Option<u64>) {
+        *self.foreground_pgrp.lock() = pgrp;
+    }
+
+    /// Bytes the line discipline is holding in its canonical edit buffer.
+    ///
+    /// Boot-test only: the #821 oracle's reading that an injected byte reached
+    /// the line discipline. `bytes_available()` cannot say so in canonical
+    /// mode, where a line is not readable until its newline arrives.
+    #[cfg(any(feature = "boot_tests", feature = "btrt"))]
+    pub fn input_line_pending(&self) -> usize {
+        self.ldisc.lock().pending_line_bytes()
     }
 
     /// Set the session leader
@@ -761,6 +853,17 @@ pub fn push_char_nonblock(c: u8) -> bool {
         }
     }
     false
+}
+
+/// Take any foreground-pgrp adoption the input IRQ entry deferred (#821).
+///
+/// Called from the stdin read path, which is the console's thread-context
+/// consumer and already holds the reading process's own pid. A read with no
+/// adoption owed costs one atomic swap.
+pub fn adopt_foreground_pgrp_from_reader(pid: ProcessId) {
+    if let Some(tty) = console() {
+        tty.adopt_deferred_foreground_pgrp(pid);
+    }
 }
 
 /// Initialize the console TTY device

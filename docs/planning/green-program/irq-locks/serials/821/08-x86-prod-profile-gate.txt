@@ -1,0 +1,345 @@
+Building the shipped x86_64 production kernel profile...
+   Compiling kernel v0.1.0 (/root/breenix-p821/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-p821)
+    Finished `release` profile [optimized] target(s) in 13.78s
+   Compiling kernel v0.1.0 (/root/breenix-p821/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-p821)
+    Finished `release` profile [optimized] target(s) in 13.56s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-p821/target/release/build/breenix-03b3b4f3cd901e39/out/breenix-uefi.img (7405568 bytes)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-p821/target/ext2.img
+  Size: 256MB
+  Payload: 45MB (userspace binaries + fonts)
+  Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 45 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 10692
+drwxr-xr-x  2 root root   4096 Sep  6 08:04 .
+drwxr-xr-x 12 root root   4096 Sep  6 08:04 ..
+-rwxr-xr-x  1 root root 299312 Sep  6 08:04 bcheck
+-rwxr-xr-x  1 root root 346312 Sep  6 08:04 bfontpicker
+-rwxr-xr-x  1 root root 248224 Sep  6 08:04 biconkit
+-rwxr-xr-x  1 root root 325424 Sep  6 08:04 blauncher
+-rwxr-xr-x  1 root root 185632 Sep  6 08:04 bless
+-rwxr-xr-x  1 root root 189992 Sep  6 08:04 block_eintr_oracle
+-rwxr-xr-x  1 root root 331160 Sep  6 08:04 blog
+-rwxr-xr-x  1 root root 275184 Sep  6 08:04 bounce
+-rwxr-xr-x  1 root root 579456 Sep  6 08:04 bsh
+-rwxr-xr-x  1 root root 322376 Sep  6 08:04 bssh
+-rwxr-xr-x  1 root root 314144 Sep  6 08:04 bsshd
+-rwxr-xr-x  1 root root 338672 Sep  6 08:04 bterm
+-rwxr-xr-x  1 root root 184184 Sep  6 08:04 btop
+-rwxr-xr-x  1 root root 198920 Sep  6 08:04 btrace
+-rwxr-xr-x  1 root root 483304 Sep  6 08:04 burl
+-rwxr-xr-x  1 root root 331472 Sep  6 08:04 bwm
+-rwxr-xr-x  1 root root 188928 Sep  6 08:04 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189232 Sep  6 08:04 confetti
+-rwxr-xr-x  1 root root 177624 Sep  6 08:04 counter
+-rwxr-xr-x  1 root root 189696 Sep  6 08:04 demo
+-rwxr-xr-x  1 root root 187624 Sep  6 08:04 df_preempt_oracle
+-rwxr-xr-x  1 root root 178048 Sep  6 08:04 exec_smoke
+-rwxr-xr-x  1 root root 185032 Sep  6 08:04 exec_smoke_target
+-rwxr-xr-x  1 root root 191680 Sep  6 08:04 fart
+-rwxr-xr-x  1 root root 187592 Sep  6 08:04 fork_smoke
+-rwxr-xr-x  1 root root 178808 Sep  6 08:04 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391600 Sep  6 08:04 guskit
+-rwxr-xr-x  1 root root 189088 Sep  6 08:04 heartbeat
+-rwxr-xr-x  1 root root 177616 Sep  6 08:04 hello_time
+-rwxr-xr-x  1 root root 227152 Sep  6 08:04 hello_world
+-rwxr-xr-x  1 root root 262608 Sep  6 08:04 init_shell
+-rwxr-xr-x  1 root root 193920 Sep  6 08:04 particles
+-rwxr-xr-x  1 root root 207152 Sep  6 08:04 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197072 Sep  6 08:04 rectangles
+-rwxr-xr-x  1 root root 186912 Sep  6 08:04 resolution
+-rwxr-xr-x  1 root root 177864 Sep  6 08:04 signal_exec_check
+-rwxr-xr-x  1 root root 170568 Sep  6 08:04 simple_exit
+-rwxr-xr-x  1 root root 170568 Sep  6 08:04 simple_exit0
+-rwxr-xr-x  1 root root 170584 Sep  6 08:04 spawn_smoke_target
+-rwxr-xr-x  1 root root 177624 Sep  6 08:04 spinner
+-rwxr-xr-x  1 root root 177512 Sep  6 08:04 syscall_enosys
+-rwxr-xr-x  1 root root 184200 Sep  6 08:04 tones
+-rwxr-xr-x  1 root root 218392 Sep  6 08:04 tty_oracle
+-rwxr-xr-x  1 root root 195552 Sep  6 08:04 wait_stress
+-rwxr-xr-x  1 root root 183104 Sep  6 08:04 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19564
+drwxr-xr-x 2 root root   4096 Sep  6 08:04 .
+drwxr-xr-x 3 root root   4096 Sep  6 08:04 ..
+-rwxr-xr-x 1 root root 177928 Sep  6 08:04 access_test
+-rwxr-xr-x 1 root root 182744 Sep  6 08:04 alarm_test
+-rwxr-xr-x 1 root root 184328 Sep  6 08:04 argv_test
+-rwxr-xr-x 1 root root 184000 Sep  6 08:04 blocking_recv_test
+-rwxr-xr-x 1 root root 182472 Sep  6 08:04 brk_test
+-rwxr-xr-x 1 root root 183224 Sep  6 08:04 cat_test
+-rwxr-xr-x 1 root root 184560 Sep  6 08:04 clock_gettime_test
+-rwxr-xr-x 1 root root 192576 Sep  6 08:04 cloexec_test
+-rwxr-xr-x 1 root root 184656 Sep  6 08:04 clonevm_exec_test
+-rwxr-xr-x 1 root root 182520 Sep  6 08:04 cow_cleanup_test
+-rwxr-xr-x 1 root root 182488 Sep  6 08:04 cow_oom_test
+-rwxr-xr-x 1 root root 187032 Sep  6 08:04 cow_readonly_test
+-rwxr-xr-x 1 root root 188296 Sep  6 08:04 cow_signal_test
+-rwxr-xr-x 1 root root 186992 Sep  6 08:04 cow_sole_owner_test
+-rwxr-xr-x 1 root root 187080 Sep  6 08:04 cow_stress_test
+-rwxr-xr-x 1 root root 182792 Sep  6 08:04 cp_mv_argv_test
+-rwxr-xr-x 1 root root 187968 Sep  6 08:04 ctrl_c_test
+-rwxr-xr-x 1 root root 182608 Sep  6 08:04 cwd_test
+-rwxr-xr-x 1 root root 182424 Sep  6 08:04 devfs_test
+-rwxr-xr-x 1 root root 195216 Sep  6 08:04 dns_test
+-rwxr-xr-x 1 root root 189144 Sep  6 08:04 dup_test
+-rwxr-xr-x 1 root root 182456 Sep  6 08:04 echo_argv_test
+-rwxr-xr-x 1 root root 182816 Sep  6 08:04 epoll_test
+-rwxr-xr-x 1 root root 178192 Sep  6 08:04 exec_argv_test
+-rwxr-xr-x 1 root root 188064 Sep  6 08:04 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183416 Sep  6 08:04 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182544 Sep  6 08:04 false_test
+-rwxr-xr-x 1 root root 187560 Sep  6 08:04 fbinfo_test
+-rwxr-xr-x 1 root root 188736 Sep  6 08:04 fcntl_test
+-rwxr-xr-x 1 root root 198432 Sep  6 08:04 fifo_test
+-rwxr-xr-x 1 root root 182392 Sep  6 08:04 file_read_test
+-rwxr-xr-x 1 root root 188648 Sep  6 08:04 fork_memory_test
+-rwxr-xr-x 1 root root 187728 Sep  6 08:04 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189168 Sep  6 08:04 fork_state_test
+-rwxr-xr-x 1 root root 188080 Sep  6 08:04 fork_test
+-rwxr-xr-x 1 root root 188600 Sep  6 08:04 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183136 Sep  6 08:04 fs_directory_test
+-rwxr-xr-x 1 root root 182600 Sep  6 08:04 fs_large_file_test
+-rwxr-xr-x 1 root root 182792 Sep  6 08:04 fs_link_test
+-rwxr-xr-x 1 root root 182696 Sep  6 08:04 fs_rename_test
+-rwxr-xr-x 1 root root 182880 Sep  6 08:04 fs_write_test
+-rwxr-xr-x 1 root root 183968 Sep  6 08:04 getdents_test
+-rwxr-xr-x 1 root root 183048 Sep  6 08:04 head_test
+-rwxr-xr-x 1 root root 464376 Sep  6 08:04 http_fetch_test
+-rwxr-xr-x 1 root root 468528 Sep  6 08:04 http_test
+-rwxr-xr-x 1 root root 183184 Sep  6 08:04 itimer_test
+-rwxr-xr-x 1 root root 187640 Sep  6 08:04 job_control_test
+-rwxr-xr-x 1 root root 192216 Sep  6 08:04 job_table_test
+-rwxr-xr-x 1 root root 188472 Sep  6 08:04 kill_process_group_test
+-rwxr-xr-x 1 root root 190424 Sep  6 08:04 loopback_wake_test
+-rwxr-xr-x 1 root root 183280 Sep  6 08:04 ls_test
+-rwxr-xr-x 1 root root 182496 Sep  6 08:04 lseek_test
+-rwxr-xr-x 1 root root 182656 Sep  6 08:04 mkdir_argv_test
+-rwxr-xr-x 1 root root 191568 Sep  6 08:04 net_test
+-rwxr-xr-x 1 root root 179600 Sep  6 08:04 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188728 Sep  6 08:04 nonblock_test
+-rwxr-xr-x 1 root root 188344 Sep  6 08:04 pause_test
+-rwxr-xr-x 1 root root 188904 Sep  6 08:04 pipe2_test
+-rwxr-xr-x 1 root root 188704 Sep  6 08:04 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188808 Sep  6 08:04 pipe_fork_test
+-rwxr-xr-x 1 root root 199936 Sep  6 08:04 pipe_refcount_test
+-rwxr-xr-x 1 root root 188232 Sep  6 08:04 pipe_test
+-rwxr-xr-x 1 root root 191568 Sep  6 08:04 pipeline_test
+-rwxr-xr-x 1 root root 189008 Sep  6 08:04 poll_test
+-rwxr-xr-x 1 root root 182992 Sep  6 08:04 pty_test
+-rwxr-xr-x 1 root root 177080 Sep  6 08:04 register_init_test
+-rwxr-xr-x 1 root root 182472 Sep  6 08:04 rm_argv_test
+-rwxr-xr-x 1 root root 188896 Sep  6 08:04 select_test
+-rwxr-xr-x 1 root root 187960 Sep  6 08:04 session_test
+-rwxr-xr-x 1 root root 183120 Sep  6 08:04 shell_pipe_test
+-rwxr-xr-x 1 root root 188992 Sep  6 08:04 sigaltstack_test
+-rwxr-xr-x 1 root root 187512 Sep  6 08:04 sigchld_job_test
+-rwxr-xr-x 1 root root 182424 Sep  6 08:04 sigchld_test
+-rwxr-xr-x 1 root root 206688 Sep  6 08:04 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188704 Sep  6 08:04 signal_exec_test
+-rwxr-xr-x 1 root root 188152 Sep  6 08:04 signal_fork_test
+-rwxr-xr-x 1 root root 187880 Sep  6 08:04 signal_handler_test
+-rwxr-xr-x 1 root root 188192 Sep  6 08:04 signal_regs_test
+-rwxr-xr-x 1 root root 188304 Sep  6 08:04 signal_return_test
+-rwxr-xr-x 1 root root 187848 Sep  6 08:04 signal_test
+-rwxr-xr-x 1 root root 188856 Sep  6 08:04 sigsuspend_test
+-rwxr-xr-x 1 root root 188576 Sep  6 08:04 sleep_debug_test
+-rwxr-xr-x 1 root root 182272 Sep  6 08:04 stdin_test
+-rwxr-xr-x 1 root root 170848 Sep  6 08:04 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183048 Sep  6 08:04 tail_test
+-rwxr-xr-x 1 root root 203416 Sep  6 08:04 tcp_blocking_test
+-rwxr-xr-x 1 root root 187608 Sep  6 08:04 tcp_client_test
+-rwxr-xr-x 1 root root 189432 Sep  6 08:04 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188824 Sep  6 08:04 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202272 Sep  6 08:04 tcp_socket_test
+-rwxr-xr-x 1 root root 182208 Sep  6 08:04 test_mmap
+-rwxr-xr-x 1 root root 182136 Sep  6 08:04 timer_test
+-rwxr-xr-x 1 root root 182544 Sep  6 08:04 true_test
+-rwxr-xr-x 1 root root 188080 Sep  6 08:04 tty_test
+-rwxr-xr-x 1 root root 193384 Sep  6 08:04 udp_socket_test
+-rwxr-xr-x 1 root root 195320 Sep  6 08:04 unix_named_socket_test
+-rwxr-xr-x 1 root root 205296 Sep  6 08:04 unix_socket_test
+-rwxr-xr-x 1 root root 188128 Sep  6 08:04 waitpid_test
+-rwxr-xr-x 1 root root 183616 Sep  6 08:04 wc_test
+-rwxr-xr-x 1 root root 182944 Sep  6 08:04 which_test
+-rwxr-xr-x 1 root root 182528 Sep  6 08:04 wnohang_timing_test
+-rw-r--r-- 1 root root 276932 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 359048 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 876576 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 0 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/empty.txt
+-rwxr-xr-x 1 root root 184056 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/sbin/telnetd
+-rwxr-xr-x 1 root root 187472 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/sbin/init
+-rwxr-xr-x 1 root root 181944 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/sbin/blogd
+-rw-r--r-- 1 root root 19 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/trunctest.txt
+-rw-r--r-- 1 root root 20 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/test/nested.txt
+-rw-r--r-- 1 root root 20 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 111 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/lines.txt
+-rw-r--r-- 1 root root 17 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/hello.txt
+-rw-r--r-- 1 root root 367 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/etc/bshrc
+-rw-r--r-- 1 root root 26 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/etc/group
+-rw-r--r-- 1 root root 679 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/etc/init.js
+-rw-r--r-- 1 root root 349 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/etc/hotkeys.conf
+-rw-r--r-- 1 root root 83 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/etc/passwd
+-rw-r--r-- 1 root root 445 Sep  6 08:04 /tmp/tmp.IovXSsjX5a/etc/fonts.conf
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-p821/target/ext2.img
+  /root/breenix-p821/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+Booting the x86_64 production profile...
+PASS: x86 production profile reached steady state with the teardown census at rest
+  ext2 root mounted:            1
+  PCI_FN blk/e1000/total lines: 3/1/9
+  kernel init complete:         1
+  async executor started:       1
+  steady state reached:         1
+  console prompt:               2
+  tombstone census lines:       1
+  tombstone census at rest:     1
+  root custody lines:           1
+  root custody at rest:         1
+  crash markers:                0
+  test-only marker 'TEST_TALLY:': 0
+  test-only marker '[TEST:': 0
+  test-only marker 'TEST RUNNER:': 0
+  test-only marker '[BOOT_TESTS:': 0
+  test-only marker 'RING3_SMOKE: creating': 0
+  test-only marker '[TOMBSTONE_QUIESCE:': 0
+  test-only marker '[RECLAIM_DRAIN:': 0
+  test-only marker '[TOMBSTONE_JOIN_ORACLE:': 0
+  test-only marker '[KSTACK_OWNER_ORACLE:': 0
+  test-only marker '[KSTACK_QUIESCE_LEAK:': 0
+  test-only marker '[PT_CUSTODY_COUNTERS:': 0
+  test-only marker '[FRAME_CUSTODY_COUNTERS:': 0
+  test-only marker '[PT_RETIRE_COHORT:': 0
+  test-only marker '[PT_EXEC_COHORT:': 0
+  test-only marker '[EXEC_DETACH_ORACLE:': 0
+  test-only marker '[CLONE_ADMISSION_ORACLE:': 0
+  test-only marker '[INIT_DESIGNATION_ORACLE:': 0
+  test-only marker '[SCHED_STRAND_ORACLE:': 0
+  test-only marker '[CENSUS_WIDEN_ORACLE:': 0
+  test-only marker '[FCNTL_PM_CONTENTION_ORACLE:': 0
+  test-only marker '[IRQ_HOLD_ORACLE:': 0
+  test-only marker '[TTY_IRQ_PM_ORACLE:': 0
+  test-only marker '[RING_SPAN:': 0
+  test-only marker 'edge=SELFTEST': 0
+  test-only marker 'Testing features enabled': 0
+  fault marker '[PMGUARD]': 0
+  fault marker '[CREATION_LOCK_ORDER:VIOLATION': 0
+  fault marker 'DISK LOADING FAILED': 0
+  fixed PRECONDITION 5 fail (#673): 0
+  fixed PRECONDITION 5 pass (#673): 1
+  fixed PRECONDITION 7 fail (#672): 0
+  fixed PRECONDITION 7 pass (#672): 1
+  preempt census lines:          1
+  preempt census at rest:        1
+  prod bracket release census:   1
+  prod bracket release at rest:  1
+  timer resolution window exceeded (#673 MA6/R3-m4): 0
+  timer scale oracle emissions (#767):   1
+  timer scale oracle head (#767):        1
+  timer scale oracle verdict (#767):     1
+  init designation (#673):      1
+  ring3 syscall confirmed (#673): 1
+  init first line (#673 M6):    1
+  init bsshd-launch warning (must be absent, #713): 0
+  bsshd started (#713):          1
+  bsshd listening (#713):        1
+  spawn-smoke child reaped exit 0 (#713): 1
+  spawn-smoke reap failed (must be absent, #713 fix-round-2): 0
+  tty oracle exit record (TTY-x86 port): 1
+  tty oracle reap failed (must be absent, TTY-x86 port): 0
+  tty oracle failed (must be absent, TTY-x86 port): 0
+  exec smoke launch (#721):      1
+  exec smoke target enter argc=2 (#721): 1
+  exec smoke target ok (#721):   1
+  exec smoke launcher exit code=0 (#721): 1
+  exec smoke spawn failed (must be absent, #721): 0
+  exec smoke exec failed (must be absent, #721): 0
+  exec smoke target argv fail (must be absent, #721): 0
+  exec lock order first commit (#721 K7): 1
+  exec lock order PM-held violation (must be absent, #721 K7): 0
+  exec lock order unpinned violation (must be absent, #721 K7): 0
+  exec lock order no-sched-thread violation (must be absent, #721 K7): 0
+  fork smoke launch (#745):      1
+  fork smoke child (#745):       1
+  fork smoke CoW isolation OK (#745): 1
+  fork smoke CoW isolation corrupted (must be absent, #745): 0
+  fork smoke parent reaped (#745): 1
+  fork smoke launcher exit code=0 (#745): 1
+  fork smoke child exit code=37 (#745 review r2 B1): 1
+  first CoW fault taken (#745 precheck C3(2)): 1
+  fork smoke spawn failed (must be absent, #745): 0
+  fork smoke fork failed (must be absent, #745): 0
+  fork smoke child unexpected return (must be absent, #745): 0
+  fork smoke reap failed (must be absent, #745): 0
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[ INFO] kernel: [PREEMPT_BRACKET_CENSUS:underflow=0]
+[ INFO] kernel: [PROD_BRACKET_RELEASE_CENSUS:underflow=0]
+[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=48:ms=240:ticks_after=48:ticks_nonzero=1:in_range=1:PASS]
+[INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
+  console prompt count over 60s: 1 -> 2
+  (informational) total serial bytes at exit: 259485

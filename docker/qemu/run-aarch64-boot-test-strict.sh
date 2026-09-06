@@ -145,6 +145,46 @@ if ! irq_hold_oracle_sample 12034 | grep -qE "$IRQ_HOLD_ORACLE_PATTERN"; then
     echo "FAIL: IRQ_HOLD_ORACLE_PATTERN rejects hold_us=12034, a window the repaired oracle really records, so this gate can never pass"
     exit 1
 fi
+# #821. The console TTY has its foreground process group cleared, a peer CPU
+# takes PROCESS_MANAGER through the ordinary blocking accessor -- which masks
+# that CPU on this architecture -- and one byte is pushed through the input IRQ
+# entry while the remote hold is open. What the entry must NOT do is wait for
+# that lock: on the unrepaired kernel it does, and `entry_us` reads out the
+# peer's whole 20 ms window.
+#
+# Four of the sixteen fields are the anti-vacuity set. `fg_unset_before=1` is
+# the precondition -- the deferring branch is only live while no foreground
+# pgrp is set, so a console that already had one cannot score.
+# `pm_busy_probe=1` is an independent try-lock reading that the peer really
+# owned the lock at the instant of the injection. `hold_us` is the peer's own
+# measurement of that window, pinned to at least five digits so a hold that
+# collapsed cannot pass. `pm_blocking_acquires=0` is the property itself: a
+# production counter that each of the 3 blocking PROCESS_MANAGER accessors
+# bumps while the entry's no-blocking scope is open.
+#
+# `entry_us` is pinned to at most three digits -- under 1 ms against a 20 ms
+# hold -- and the selfcheck below runs that pin against both readings before it
+# is used to score a boot.
+# claim-lint:ok: the 13 scoring legs behind this pin are recorded in
+# docs/planning/green-program/irq-locks/serials/821/05-a64-gate-mutations.txt
+TTY_IRQ_PM_ORACLE_PATTERN='\[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=[0-9]+:pm_busy_probe=1:hold_us=[2-9][0-9]{4,}:entry_us=[0-9]{1,3}:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold\]'
+# TTY_IRQ_PM_SELFCHECK, for the reason IRQ_HOLD_SELFCHECK below gives: entry_us
+# is this gate's only gate-side reading that the entry did not sit out the
+# remote hold, so check that the pattern separates the two cases BEFORE it
+# scores any boot. The two samples are the values this branch actually
+# recorded: 2 us repaired, 20022 us with the blocking call restored
+# (docs/planning/green-program/irq-locks/serials/821/).
+tty_irq_pm_oracle_sample() {
+    printf '[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=%s:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]\n' "$1"
+}
+if tty_irq_pm_oracle_sample 20022 | grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN"; then
+    echo "FAIL: TTY_IRQ_PM_ORACLE_PATTERN accepts entry_us=20022, so this gate would score green on an input IRQ entry that waited out the whole remote hold"
+    exit 1
+fi
+if ! tty_irq_pm_oracle_sample 2 | grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN"; then
+    echo "FAIL: TTY_IRQ_PM_ORACLE_PATTERN rejects entry_us=2, the reading the repaired entry really records, so this gate can never pass"
+    exit 1
+fi
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'
 # #786 follow-on: the TTBR0 ASID census, emitted before userspace and at every
 # process exit. `untagged` counts publishes into `saved_process_cr3`/`next_cr3`
@@ -241,7 +281,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -443,6 +483,16 @@ score_serial() {
     fi
     if ! grep -qE "$IRQ_HOLD_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "IRQ-hold oracle marker missing or failed"
+        return 1
+    fi
+    # #821, pinned as the same pair for the same reason.
+    if grep -qF "[TTY_IRQ_PM_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
+        && grep -qE "TTY_IRQ_PM_ORACLE.*:FAIL(:[a-z_]+)?\]" "$serial_file" 2>/dev/null; then
+        echo "TTY input IRQ process-manager oracle reported failure ($(grep -aoE '\[TTY_IRQ_PM_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "TTY input IRQ process-manager oracle marker missing or failed"
         return 1
     fi
     if ! grep -qF "[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]" "$serial_file" 2>/dev/null; then

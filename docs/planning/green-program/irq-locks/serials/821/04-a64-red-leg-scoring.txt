@@ -1,0 +1,9 @@
+# The aarch64 red leg, scored by the gate that pins it.
+# Serial: 01-a64-red-unrepaired-serial.txt (this branch with input_char_nonblock's
+# deferral replaced by the blocking crate::process::current_pid() call).
+
+[TEST:syscall:tty_irq_pm_oracle:START]
+[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=2:deferred=0:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=2:pm_busy_probe=1:hold_us=20002:entry_us=20022:joined=1:adopted=0:adopted_pgrp=0:restored=1:FAIL:peer_hold]
+[TEST:syscall:tty_irq_pm_oracle:FAIL:the TTY input IRQ entry reached a blocking PROCESS_MANAGER acquisition]
+
+SCORE: FAIL - Boot test failure: [TEST:syscall:tty_irq_pm_oracle:FAIL:the TTY input IRQ entry reached a blocking PROCESS_MANAGER acquisition] (docs/planning/green-program/irq-locks/serials/821/01-a64-red-unrepaired-serial.txt)
