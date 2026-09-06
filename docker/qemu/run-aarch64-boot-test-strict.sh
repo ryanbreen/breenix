@@ -206,9 +206,10 @@ fi
 # docs/planning/green-program/irq-locks/serials/822/05-a64-gate-mutations.txt
 TTY_IRQ_FG_ORACLE_PATTERN='\[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=[1-9][0-9]*:processed=2:buffered=[1-9][0-9]*:irqs_enabled_before=1:holder_cpu=[0-9]+:fg_busy_probe=1:hold_us=[2-9][0-9]{4,}:entry_us=[0-9]{1,3}:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold\]'
 # TTY_IRQ_FG_SELFCHECK, for the reason TTY_IRQ_PM_SELFCHECK above gives. The two
-# samples are the values this branch actually recorded: 118 us repaired, and
-# 20022 us with a blocking acquisition restored
-# (docs/planning/green-program/irq-locks/serials/822/).
+# samples are the values this branch actually recorded: 116 us repaired -- the
+# reading in serials/822/02-a64-green-repaired-serial.txt, from a 20-boot run
+# whose 20 readings span 116..154 us -- and 20048 us with a blocking
+# acquisition restored, in serials/822/03-a64-red-blocking-lock-serial.txt.
 tty_irq_fg_oracle_sample() {
     printf '[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=%s:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]\n' "$1"
 }
@@ -216,8 +217,8 @@ if tty_irq_fg_oracle_sample 20022 | grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN"; then
     echo "FAIL: TTY_IRQ_FG_ORACLE_PATTERN accepts entry_us=20022, so this gate would score green on an input IRQ entry that waited out the whole foreground-pgrp hold"
     exit 1
 fi
-if ! tty_irq_fg_oracle_sample 118 | grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN"; then
-    echo "FAIL: TTY_IRQ_FG_ORACLE_PATTERN rejects entry_us=118, the reading the repaired entry really records, so this gate can never pass"
+if ! tty_irq_fg_oracle_sample 116 | grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN"; then
+    echo "FAIL: TTY_IRQ_FG_ORACLE_PATTERN rejects entry_us=116, the reading the repaired entry really records, so this gate can never pass"
     exit 1
 fi
 CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:baseline_reported=0:armed_reported=1:tid=[1-9][0-9]*:shape=ready_queued_nondispatching:queued_nondispatching=[1-9][0-9]*:queued_nondispatch_ms=[1-9][0-9]*:cpu_silence_ms=[1-9][0-9]*:joined=1:retired=[01]:PASS\]'

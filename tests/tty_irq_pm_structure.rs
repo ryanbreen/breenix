@@ -463,10 +463,18 @@ fn validate_deferred_arm(driver: &str) -> Result<(), String> {
         );
     }
     let mask = code_mask(entry);
-    let field = identifier_offsets(entry, &mask, "foreground_pgrp")
+    // #822 amended this anchor. The entry used to read the `foreground_pgrp`
+    // MUTEX here; it now reads the lock-free snapshot that round publishes,
+    // because that mutex is one a thread holds with interrupts unmasked. The
+    // branch this rule is about -- record the adoption, count the deferral --
+    // is unchanged, and so is what makes it findable: the first mention of the
+    // foreground pgrp in the entry, followed by the block that mention gates.
+    let field = identifier_offsets(entry, &mask, "foreground_pgrp_snapshot")
         .into_iter()
         .next()
-        .ok_or_else(|| "input_char_nonblock no longer reads foreground_pgrp".to_string())?;
+        .ok_or_else(|| {
+            "input_char_nonblock no longer reads the foreground-pgrp snapshot".to_string()
+        })?;
     let branch = braced_block(entry, &mask, field)
         .ok_or_else(|| "input_char_nonblock's foreground_pgrp test has no block".to_string())?;
     let branch = normalized_code(branch);
