@@ -1,0 +1,88 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-3e/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-3e/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-3e/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/fix-3e/target/ext2-aarch64.img
+Iterations: 20
+Requirement: 100% success rate (all 20 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 79823 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 80202 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 80503 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 80838 (<unknown process>)
+  [OK] Boot 4: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 81258 (<unknown process>)
+  [OK] Boot 5: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 81682 (<unknown process>)
+  [OK] Boot 6: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 82100 (<unknown process>)
+  [OK] Boot 7: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 82466 (<unknown process>)
+  [OK] Boot 8: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 82826 (<unknown process>)
+  [OK] Boot 9: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 83246 (<unknown process>)
+  [OK] Boot 10: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 83622 (<unknown process>)
+  [OK] Boot 11: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 84019 (<unknown process>)
+  [OK] Boot 12: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 84431 (<unknown process>)
+  [OK] Boot 13: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 84839 (<unknown process>)
+  [OK] Boot 14: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 85236 (<unknown process>)
+  [OK] Boot 15: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 85706 (<unknown process>)
+  [OK] Boot 16: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 86144 (<unknown process>)
+  [OK] Boot 17: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 86498 (<unknown process>)
+  [OK] Boot 18: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 86900 (<unknown process>)
+  [OK] Boot 19: SUCCESS
+QEMU HOST LOCK: host aarch64 QEMU count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 87283 (<unknown process>)
+  [OK] Boot 20: SUCCESS
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 20
+Successes: 20
+Failures: 0
+Success rate: 100%
+Duration: 214s
+
+=========================================
+PASS: 20/20 boots succeeded
+=========================================

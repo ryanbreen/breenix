@@ -118,9 +118,14 @@ ASID_CENSUS_PUBLISHED_PATTERN='\[TTBR0_ASID_CENSUS:untagged=[0-9]+:tagged=[1-9][
 # read the all-zero literal, and the forced-hold leg reddens this gate --
 # docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt,
 # 02-prod-boot1.txt and its 2 siblings, 05-runtime-anti-vacuity-strict-gate.txt
-PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+\]'
-PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0]'
+PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+:migration_refused=[0-9]+:stack_home_conflict=[0-9]+\]'
+PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]'
 PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
+
+# Slice 3e's pin-guard oracle is boot-tests scaffolding. The production kernel
+# builds with no features at all, so the line must not be here -- its presence
+# would mean a boot-tests-only probe reached a shipped kernel.
+PIN_GUARD_ORACLE_LITERAL='[PIN_GUARD_ORACLE:'
 CRASH_MARKERS_PATTERN='KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|soft lockup detected'
 
 OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_prod_profile"
@@ -505,6 +510,7 @@ ASID_CENSUS_PUBLISHED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PUBLISH
 PINNED_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$PINNED_CENSUS_PATTERN")
 PINNED_CENSUS_NONZERO_COUNT=$(pinned_nonzero_count "$SERIAL_FILE")
 PINNED_FIRST_HOLD_COUNT=$(marker_count "$SERIAL_FILE" "$PINNED_FIRST_HOLD_LITERAL")
+PIN_GUARD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$PIN_GUARD_ORACLE_LITERAL")
 CRASH_COUNT=$(crash_count "$SERIAL_FILE")
 
 if grep -qF '[BOOT_TESTS:FAIL' "$SERIAL_FILE" 2>/dev/null; then
@@ -602,6 +608,10 @@ fi
     echo "FAIL: a pinned worker's wake was held for want of a dispatching home CPU: $(grep -aF -m1 "$PINNED_FIRST_HOLD_LITERAL" "$SERIAL_FILE")"
     exit 1
 }
+[ "$PIN_GUARD_ORACLE_COUNT" -eq 0 ] || {
+    echo "FAIL: the boot-tests-only pin-guard oracle ran in the production profile: $(grep -aF -m1 "$PIN_GUARD_ORACLE_LITERAL" "$SERIAL_FILE")"
+    exit 1
+}
 [ "$CRASH_COUNT" -eq 0 ] || {
     echo "FAIL: crash marker detected"
     exit 1
@@ -627,6 +637,7 @@ echo "Observed TTBR0 ASID census untagged-publish line count: $ASID_CENSUS_UNTAG
 echo "Observed: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
 echo "Observed pinned-placement census marker count: $PINNED_CENSUS_COUNT"
 echo "Observed pinned-placement non-zero census line count: $PINNED_CENSUS_NONZERO_COUNT"
+echo "Observed pin-guard oracle line count (must be 0 in this profile): $PIN_GUARD_ORACLE_COUNT"
 echo "Observed: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0
