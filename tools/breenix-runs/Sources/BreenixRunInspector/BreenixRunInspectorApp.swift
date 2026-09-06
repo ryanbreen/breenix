@@ -55,7 +55,7 @@ struct InspectorRootView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Picker("Compare with", selection: $selectedComparisonRunID) {
                     Text("No comparison").tag(String?.none)
-                    ForEach(runs.filter { $0.id != detail.manifest.id }) { run in
+                    ForEach(runs.filter { $0.id != detail.manifest.id && $0.manifest.arch == detail.manifest.arch }) { run in
                         Text("\(run.row.arch) \(run.row.profile) \(run.row.timeText) \(run.row.verdictText)")
                             .tag(String?.some(run.id))
                     }

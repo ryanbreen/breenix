@@ -55,6 +55,35 @@ final class RunDiffTests: XCTestCase {
         XCTAssertEqual(result.markerCountDelta, [])
     }
 
+    func testCrossArchCompareThrowsArchMismatch() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+
+        let lhs = try storeFixtureRun(
+            fixtureName: "05-runtime-anti-vacuity-strict-serial.txt",
+            id: "20260905T190000Z-aarch64-testing-lhs",
+            arch: .aarch64,
+            verdict: .unknown,
+            store: store
+        )
+        let rhs = try storeFixtureRun(
+            fixtureName: "05-runtime-anti-vacuity-strict-serial.txt",
+            id: "20260905T191000Z-x86_64-testing-rhs",
+            arch: .x86_64,
+            verdict: .unknown,
+            store: store
+        )
+
+        XCTAssertThrowsError(try RunDiff.compare(lhs: lhs, rhs: rhs, store: store)) { error in
+            guard case RunDiffError.archMismatch(let lhsArch, let rhsArch) = error else {
+                return XCTFail("expected RunDiffError.archMismatch, got \(error)")
+            }
+            XCTAssertEqual(lhsArch, .aarch64)
+            XCTAssertEqual(rhsArch, .x86_64)
+        }
+    }
+
     func testHostFactsDeltaIsExplicitNotSampledWhenEitherSideIsNil() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -116,11 +145,12 @@ final class RunDiffTests: XCTestCase {
     private func storeFixtureRun(
         fixtureName: String,
         id: String,
+        arch: Arch = .aarch64,
         verdict: Verdict,
         store: RunStore
     ) throws -> RunManifest {
         let data = try Data(contentsOf: fixtureURL(fixtureName))
-        var manifest = sampleManifest(id: id, verdict: verdict)
+        var manifest = sampleManifest(id: id, arch: arch, verdict: verdict)
         manifest.serials = [SerialRef(name: "serial.txt", path: "serial.txt", bytes: data.count, stream: .single)]
         let runDirectory = try store.createRunDirectory(id: id)
         try data.write(to: runDirectory.appendingPathComponent("serial.txt"))
@@ -162,13 +192,14 @@ final class RunDiffTests: XCTestCase {
     private func sampleManifest(
         id: String,
         startedAt: Date = Date(timeIntervalSince1970: 1_788_633_600),
+        arch: Arch = .aarch64,
         verdict: Verdict
     ) -> RunManifest {
         RunManifest(
             id: id,
             startedAt: startedAt,
             endedAt: startedAt.addingTimeInterval(60),
-            arch: .aarch64,
+            arch: arch,
             profile: "testing",
             launcher: .imported,
             kernel: KernelIdentity(buildID: "006a9bb0022747", gitSHA: "7a19f550", gitDirty: true),

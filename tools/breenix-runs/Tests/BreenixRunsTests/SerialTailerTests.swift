@@ -15,7 +15,9 @@ final class SerialTailerTests: XCTestCase {
         Thread {
             for chunk in chunks {
                 Thread.sleep(forTimeInterval: 0.02)
-                append(chunk, to: serialURL)
+                append(chunk, to: serialURL) { message in
+                    XCTFail(message)
+                }
             }
             done.set(true)
             writerFinished.fulfill()
@@ -76,9 +78,13 @@ private final class LockedBool: @unchecked Sendable {
     }
 }
 
-private func append(_ data: Data, to url: URL) {
-    let handle = try! FileHandle(forWritingTo: url)
-    try! handle.seekToEnd()
-    handle.write(data)
-    try! handle.close()
+private func append(_ data: Data, to url: URL, onFailure: (String) -> Void) {
+    do {
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        handle.write(data)
+        try handle.close()
+    } catch {
+        onFailure("failed to append serial chunk to \(url.path): \(error)")
+    }
 }

@@ -82,6 +82,45 @@ final class RunInspectorLoaderTests: XCTestCase {
         XCTAssertEqual(firstHostFact.sourceFile, "gate-stdout.txt")
     }
 
+    func testLoadDiffMatchesDirectRunDiffCompareForFixtureSerials() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+
+        let lhs = try storeFixtureRun(
+            fixtureName: "05-runtime-anti-vacuity-strict-serial.txt",
+            id: "20260905T190000Z-aarch64-testing-lhs",
+            verdict: .gateScript(command: ["gate.sh"], exitCode: 0),
+            store: store
+        )
+        let rhs = try storeFixtureRun(
+            fixtureName: "testing-boot1-562-panic.txt",
+            id: "20260905T191000Z-aarch64-testing-rhs",
+            verdict: .fail("fixture panic"),
+            store: store
+        )
+
+        let expected = try RunDiff.compare(lhs: lhs, rhs: rhs, store: store)
+        let loaded = try await RunInspectorLoader.loadDiff(lhs: lhs, rhs: rhs, store: store)
+
+        XCTAssertEqual(loaded, expected)
+    }
+
+    private func storeFixtureRun(
+        fixtureName: String,
+        id: String,
+        verdict: Verdict,
+        store: RunStore
+    ) throws -> RunManifest {
+        let data = try Data(contentsOf: fixtureURL(fixtureName))
+        var manifest = sampleManifest(id: id, verdict: verdict)
+        manifest.serials = [SerialRef(name: "serial.txt", path: "serial.txt", bytes: data.count, stream: .single)]
+        let runDirectory = try store.createRunDirectory(id: id)
+        try data.write(to: runDirectory.appendingPathComponent("serial.txt"))
+        try store.writeManifest(manifest)
+        return try store.readManifest(id: id)
+    }
+
     private func fixtureURL(_ name: String) -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

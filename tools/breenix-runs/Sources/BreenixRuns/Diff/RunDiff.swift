@@ -118,8 +118,23 @@ public struct RunDiffResult: Equatable, Sendable {
     }
 }
 
+public enum RunDiffError: Error, Equatable, CustomStringConvertible {
+    case archMismatch(lhs: Arch, rhs: Arch)
+
+    public var description: String {
+        switch self {
+        case .archMismatch(let lhs, let rhs):
+            return "run diff arch mismatch: lhs \(lhs.rawValue), rhs \(rhs.rawValue)"
+        }
+    }
+}
+
 public enum RunDiff {
     public static func compare(lhs: RunManifest, rhs: RunManifest, store: RunStore) throws -> RunDiffResult {
+        guard lhs.arch == rhs.arch else {
+            throw RunDiffError.archMismatch(lhs: lhs.arch, rhs: rhs.arch)
+        }
+
         let lhsIndex = try RunDetailViewModel.scanSerials(manifest: lhs, store: store)
         let rhsIndex = try RunDetailViewModel.scanSerials(manifest: rhs, store: store)
         let lhsCatalog = try StageCatalog.load(for: lhs.arch)
@@ -334,22 +349,22 @@ public enum RunDiff {
         }
     }
 
-    private static func sampledText(_ sampled: Bool) -> String {
+    public static func sampledText(_ sampled: Bool) -> String {
         sampled ? "sampled" : "not sampled"
     }
 
-    private static func formatSignedSeconds(_ value: Double) -> String {
+    public static func formatSignedSeconds(_ value: Double) -> String {
         String(format: "%+.2fs", value)
     }
 
-    private static func formatSignedDouble(_ value: Double?) -> String {
+    public static func formatSignedDouble(_ value: Double?) -> String {
         guard let value else {
             return "unknown"
         }
         return String(format: "%+.2f", value)
     }
 
-    private static func formatSignedInt(_ value: Int) -> String {
+    public static func formatSignedInt(_ value: Int) -> String {
         String(format: "%+d", value)
     }
 }

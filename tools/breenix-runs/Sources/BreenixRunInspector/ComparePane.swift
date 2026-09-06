@@ -43,7 +43,7 @@ struct ComparePane: View {
                     case .notSampled(let lhsSampled, let rhsSampled):
                         EmptyTraceRow(
                             systemName: "externaldrive.badge.questionmark",
-                            text: "Not sampled: lhs=\(sampledText(lhsSampled)) rhs=\(sampledText(rhsSampled))"
+                            text: "Not sampled: lhs=\(RunDiff.sampledText(lhsSampled)) rhs=\(RunDiff.sampledText(rhsSampled))"
                         )
                     case .sampled(let values):
                         if values.hasDelta {
@@ -115,7 +115,7 @@ private struct HostFactsDeltaRow: View {
         VStack(alignment: .leading, spacing: 5) {
             Label("Start sample", systemImage: "externaldrive.connected.to.line.below")
                 .fontWeight(.semibold)
-            Text("wall=\(formatSignedSeconds(values.startWallDeltaSeconds)) qemu.aarch64=\(formatSignedInt(values.qemuPeersAarch64Delta)) qemu.x86_64=\(formatSignedInt(values.qemuPeersX86_64Delta)) loadavg1=\(formatSignedDouble(values.loadavg1Delta))")
+            Text("wall=\(RunDiff.formatSignedSeconds(values.startWallDeltaSeconds)) qemu.aarch64=\(RunDiff.formatSignedInt(values.qemuPeersAarch64Delta)) qemu.x86_64=\(RunDiff.formatSignedInt(values.qemuPeersX86_64Delta)) loadavg1=\(RunDiff.formatSignedDouble(values.loadavg1Delta))")
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -138,23 +138,4 @@ private struct VerdictDeltaRow: View {
         }
         .padding(.vertical, 4)
     }
-}
-
-private func sampledText(_ sampled: Bool) -> String {
-    sampled ? "sampled" : "not sampled"
-}
-
-private func formatSignedSeconds(_ value: Double) -> String {
-    String(format: "%+.2fs", value)
-}
-
-private func formatSignedDouble(_ value: Double?) -> String {
-    guard let value else {
-        return "unknown"
-    }
-    return String(format: "%+.2f", value)
-}
-
-private func formatSignedInt(_ value: Int) -> String {
-    String(format: "%+d", value)
 }
