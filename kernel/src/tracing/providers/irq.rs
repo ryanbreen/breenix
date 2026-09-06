@@ -266,12 +266,25 @@ mod ring_span_self_check {
 
     /// Wall-clock point (`tick_count * MS_PER_TICK`, arch-neutral: 1 ms/tick
     /// on aarch64, `PIT_HZ`-derived on x86) at which the one-shot measurement
-    /// fires. Chosen empirically (see the PR-2 round doc), not from the
-    /// ring-depth arithmetic: early enough to land before the userspace
-    /// bring-up traffic that otherwise swamps the ring, and late enough that
-    /// the unsampled baseline (`TICK_SAMPLE` = 1) has already wrapped CPU 0's
-    /// ring on its own `TIMER_TICK` volume alone, so the comparison is
-    /// measured, not assumed.
+    /// fires. Late enough that a meaningful number of ticks have flowed
+    /// through `trace_timer_tick`, early enough to land before userspace
+    /// bring-up traffic starts (see the PR-2 round doc, sections 2.2 and 9).
+    ///
+    /// This does NOT need to be tuned so the unsampled baseline wraps CPU
+    /// 0's ring by this point (an earlier version of this comment, and of
+    /// `report()` below, claimed exactly that -- see PR-2-2026-09-05.md
+    /// section 9 for why it was wrong on both counts: x86's 5x-slower PIT
+    /// tick rate meant this checkpoint's nominal tick count did not come
+    /// close to the ring's capacity there, and aarch64's own wrap timing
+    /// was itself close enough to this checkpoint, under normal boot-to-boot
+    /// host jitter, to sometimes go either way -- a real, measured ~8%
+    /// false-pass rate against a `TICK_SAMPLE = 1` mutation across the two
+    /// combined sample sets in that section). `report()`'s `ticks_total` /
+    /// `tick_events` ratio is what actually proves the guard is gating (see
+    /// its own doc comment), and does not depend on ring-wrap timing at
+    /// all, so this checkpoint only needs "enough ticks have happened for
+    /// the ratio to be meaningful" -- true within the first handful of
+    /// samples, well before 1 s on either architecture.
     const CHECK_AT_MS: u64 = 1_000;
 
     static CHECKED: AtomicBool = AtomicBool::new(false);
@@ -311,11 +324,16 @@ mod ring_span_self_check {
         let writes = buffer.write_index() as u64;
         let dropped = buffer.dropped_count();
 
-        let mut ticks = buffer
-            .iter_events()
-            .filter(|event| event.event_type == TIMER_TICK);
-        let oldest = ticks.next();
-        let newest = ticks.last().or(oldest);
+        let mut oldest = None;
+        let mut newest = None;
+        let mut tick_events: u64 = 0;
+        for event in buffer.iter_events().filter(|event| event.event_type == TIMER_TICK) {
+            if oldest.is_none() {
+                oldest = Some(event);
+            }
+            newest = Some(event);
+            tick_events += 1;
+        }
         let span_ms = match (oldest, newest) {
             (Some(oldest), Some(newest)) => {
                 let delta = newest.timestamp.saturating_sub(oldest.timestamp);
@@ -324,12 +342,33 @@ mod ring_span_self_check {
             _ => 0,
         };
 
+        // `ticks_total` is TIMER_TICK_TOTAL's own aggregate -- incremented
+        // unconditionally on each tick, with no sampling applied (see
+        // `trace_timer_tick` above) -- and `tick_events` is the count of
+        // TIMER_TICK-typed entries the ring is currently holding, counted in
+        // the same pass as `oldest`/`newest` above rather than a second
+        // traversal. Their ratio is a wall-clock-jitter-immune signal of
+        // whether the sampling guard is gating: a working guard holds
+        // `tick_events` near `ticks_total / TICK_SAMPLE` regardless of
+        // when in the boot this fires or whether the ring has wrapped,
+        // where `span_ms` alone (both quantities are timing measurements
+        // taken at the same instant, and can coincidentally agree even when
+        // the guard is not gating -- see PR-2-2026-09-05.md section 9,
+        // the aarch64-mutation-flaky finding) does not share. A guard that
+        // has been deleted (recording each tick unconditionally) makes this
+        // ratio collapse to ~1 regardless of timing.
+        let ticks_total = crate::tracing::providers::counters::TIMER_TICK_TOTAL.aggregate();
+
         raw_serial_str("[RING_SPAN:cpu=0:span_ms=");
         raw_serial_dec(span_ms);
         raw_serial_str(":writes=");
         raw_serial_dec(writes);
         raw_serial_str(":dropped=");
         raw_serial_dec(dropped);
+        raw_serial_str(":ticks_total=");
+        raw_serial_dec(ticks_total);
+        raw_serial_str(":tick_events=");
+        raw_serial_dec(tick_events);
         raw_serial_str("]");
         raw_serial_newline();
     }

@@ -1202,12 +1202,15 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     // once per boot (a relaxed-load latch guards it), from inside
     // trace_timer_tick -- the same timer-tick path the dump functions above
     // are exempted for -- and only in a `boot_tests` build, so a shipped
-    // kernel calls it 0 times. See
+    // kernel calls it 0 times. Count raised 4 -> 6 in this PR's fix round
+    // (PR-2-2026-09-05.md section 9): `report` gained two more
+    // `raw_serial_str` calls printing the new `ticks_total`/`tick_events`
+    // fields the jitter-immune sampling-ratio oracle reads. See
     // docs/planning/green-program/failure-capture/PR-2-2026-09-05.md.
     (
         "kernel/src/tracing/providers/irq.rs",
         "#[cfg(feature=boot_tests)] mod ring_span_self_check::fn report",
-        4,
+        6,
     ),
     (
         "kernel/src/tty/driver.rs",
