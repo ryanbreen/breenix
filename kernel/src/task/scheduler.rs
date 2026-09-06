@@ -574,6 +574,7 @@ fn count_pinned_migration_refusal(thread_id: u64) {
 /// this arm is a real one, and the parameter is carried only so the 1 call site
 /// reads the same in both profiles.
 #[cfg(not(all(target_arch = "aarch64", feature = "boot_tests")))]
+#[inline]
 fn count_pinned_migration_refusal(_thread_id: u64) {
     PINNED_MIGRATION_REFUSED.fetch_add(1, Ordering::Relaxed);
 }

@@ -18,9 +18,11 @@ PR 5 are started.
 
 `git diff --stat a0ec6cf8 a9d4bd3e` touches 64 files, and unlike the state the
 eval measured it **does** touch `kernel/src`: PR #888 and PR #894 changed
-`kernel/src/task/scheduler.rs` (+53/-0 in that stat), `kernel/src/main.rs`,
+`kernel/src/task/scheduler.rs` (+52/-1 in that stat, per
+`git diff --numstat a0ec6cf8 a9d4bd3e -- kernel/src`), `kernel/src/main.rs`,
 `kernel/src/main_aarch64.rs`, `kernel/src/interrupts/context_switch.rs` and
-five other kernel files. 14 of 14 `kernel/src` citations in the brief were
+four other kernel files (8 `kernel/src` files touched in total). 14 of 14
+`kernel/src` citations in the brief were
 re-derived by grep at `a9d4bd3e` before the first edit, and the ones that moved
 are tabulated below. The drift, brief line vs
 line at this head:
@@ -33,10 +35,10 @@ line at this head:
 | the guard's refusal `fetch_add` | `:4707` | `:4758` |
 | `run_pin_guard_oracle` | not cited by line | `:4819` |
 | probe pin stamp | `:4794-4795` | `:4846` |
-| probe pin clear | `:4849` | `:4899` |
+| probe pin clear | `:4849` | `:4900` |
 | `census_before` tuple | `:4799-4805` | `:4850-4856` |
-| `census_after` tuple | `:4828-4834` | `:4880-4886` |
-| `census_clean` | `:4859` | `:4909` |
+| `census_after` tuple | `:4828-4834` | `:4879-4885` |
+| `census_clean` | `:4859` | `:4910` |
 | `PINNED_MIGRATION_REFUSED` doc + claim-lint pair | `:437-438` | `:444-445` |
 | oracle exclusivity prose | `:543-553` | `:553-562` |
 | `emit_pin_guard_oracle` callers | `main_aarch64.rs:1365`, `main.rs:740` | `main_aarch64.rs:1365`, `main.rs:749` |
@@ -78,9 +80,12 @@ it landed on its own.
   deleted; `refused` reads `PIN_GUARD_ORACLE_REFUSED`.
 * `PINNED_MIGRATION_REFUSED` is added to both snapshot tuples, so
   `census_clean` covers 6 of the 6 fields the census emits rather than 5 of 6.
-* The exclusivity prose and the `claim-lint:ok` pair on the counter's doc are
-  rewritten, and the single-caller precondition is stated where the cumulative
-  `refused=` is read.
+* The exclusivity prose in `emit_pin_guard_oracle` is rewritten, with its own
+  new `claim-lint:ok` pair; the counter's doc gains a new paragraph, with a
+  second new `claim-lint:ok` pair appended below it -- the pre-existing pair
+  on that doc (`spawn_on_cpu`'s writer count) is untouched by this diff. The
+  single-caller precondition is stated where the cumulative `refused=` is
+  read.
 
 `tests/loopback_pump_structure.rs` gains three rules and six mutation tests.
 The counter set is discovered from the format arguments of
@@ -126,7 +131,7 @@ The RED text, from `01-ratchet-red-on-unmodified-kernel.txt`:
 ```
 no pinned-placement census counter is written downward: "a pinned-placement
 census counter is written downward at [\"kernel/src/task/scheduler.rs:574
-(PINNED_MIGRATION_REFUSED.fetch_sub()\"] ...
+(PINNED_MIGRATION_REFUSED.fetch_sub())\"] ...
 ```
 
 ```
@@ -270,9 +275,12 @@ claim-lint: python3 scripts/claim-lint.py --commit-msg <round-note msg>     -> e
 ```
 
 The 5 source findings, the 1 commit-message finding and the 11 findings in this
-note were repaired by rewording, not by annotation. The counts on the two
-claim-linted sentences this PR edits in `scheduler.rs` were re-derived by grep
-in this round.
+note were repaired by rewording, not by annotation. The counts on the two new
+claim-linted sentences this PR adds in `scheduler.rs` -- the counter's new
+doc paragraph and the rewritten exclusivity prose in `emit_pin_guard_oracle`
+-- were re-derived by grep in this round. The pre-existing claim-lint pair on
+the counter's doc (`spawn_on_cpu` as the field's writer) is untouched by this
+diff and was not re-verified here.
 
 ## 7. What is NOT claimed
 
@@ -295,3 +303,154 @@ in this round.
 * That an x86 boot gate was run. Only the three x86 builds were run, which is
   what the brief's step 5 asks for; the brief's gate step names the two aarch64
   gates only.
+
+## 8. Review fix round
+
+Six review findings against this round (F2, F3, F6, F8, F11, F12), each
+minor or nit severity, closed together as one fix round.
+
+* **F3** -- `kernel/src/main_aarch64.rs`'s comment above the two call sites
+  (`emit_pin_guard_oracle()` then `emit_pinned_placement_census()`) still said
+  the ordering mattered because "the probe subtracts its own contribution",
+  which is the mechanism section 2 of this round deleted. Reworded to name the
+  mechanism that replaced it: `count_pinned_migration_refusal` routes the
+  probe's own tid to `PIN_GUARD_ORACLE_REFUSED`, so any refusal it attributes
+  to a different thread during that window still needs to reach the census
+  before this line prints it.
+* **F12** -- the non-`boot_tests` definition of `count_pinned_migration_refusal`
+  (the plain `fetch_add` arm the `#[cfg(not(all(target_arch = "aarch64",
+  feature = "boot_tests")))]` selects: both x86 profiles plus the aarch64
+  non-`boot_tests` profile) had no `#[inline]`, unlike its sibling one-line
+  wrapper functions elsewhere in this file (5 of 5 checked -- `:231`, `:241`,
+  `:5863`, `:5876`, `:6352` before this round -- carry the attribute). Added
+  `#[inline]` to match that pattern. This is cost-of-shape only, as F12 itself
+  said: no logging, lock, allocation or I/O is on the path either way.
+* **F2** -- section 2 and section 6 of this note overstated what the diff did
+  to the `PINNED_MIGRATION_REFUSED` doc comment. The diff *adds* a new
+  paragraph and a new `claim-lint:ok` pair to that doc; it does not touch the
+  pre-existing pair on the same doc (`spawn_on_cpu` as the field's 1 mutating
+  writer), which the diff at `kernel/src/task/scheduler.rs:444-445` (a9d4bd3e
+  numbering) leaves byte-identical. Reworded both sections to say what
+  changed (a new paragraph, a new pair, appended) and what did not (the
+  existing pair, not re-verified in this round). Doc-only; no source line
+  changed for this finding, and no re-run was needed for it beyond the
+  no-source-diff check itself.
+* **F8** -- three numeric slips in section 1's baseline reporting, each
+  checked directly against the immutable `a9d4bd3e` blob (unaffected by
+  anything in this fix round, since `a9d4bd3e` predates it):
+  `git diff --numstat a0ec6cf8 a9d4bd3e -- kernel/src` reports
+  `52	1	kernel/src/task/scheduler.rs`, not the `+53/-0` this note first said;
+  the same numstat lists 8 `kernel/src` files touched in total, so the four
+  named plus "five other kernel files" should have read four; and in
+  `git show a9d4bd3e:kernel/src/task/scheduler.rs`, `census_after`'s tuple runs
+  `:4879-4885` (not `:4880-4886`, and `:4886` is a blank line),
+  `census_clean` is at `:4910` (not `:4909`, which is `on_home,`), and the
+  probe pin clear (`probe.cpu_affinity = None;`
+  (claim-lint:ok: "None" is Rust's `Option` variant, not the universal
+  quantifier, kernel/src/task/scheduler.rs)) is at `:4900` (not `:4899`, which
+  is the preceding `let mut probe = ...` line). All three corrected in
+  section 1's tables; `probe pin stamp` (`:4846`) and `census_before`
+  (`:4850-4856`) were checked in the same pass and are already correct, so
+  neither was touched.
+* **F11** -- `validate_census_counters_have_no_decrementing_writer` in
+  `tests/loopback_pump_structure.rs` built its offender message as
+  `format!("{path}:{line} ({counter}.{method})")` with `method` drawn from a
+  `lowering` array whose entries already carried their own opening
+  paren (`"fetch_sub("`, etc.), so the rendered text had one more `(` than
+  `)` -- observed verbatim as `...(PINNED_MIGRATION_REFUSED.fetch_sub()` in
+  both `01` and `03`'s stored evidence. Changed `lowering` to bare method
+  names and moved the opening paren into the two call sites that use it (the
+  `needle` search and the offender message), so the search behaviour is
+  unchanged (`needle` is byte-identical either way) and the message now reads
+  `...(PINNED_MIGRATION_REFUSED.fetch_sub())` with balanced parens.
+* **F6** -- `01-ratchet-red-on-unmodified-kernel.txt` and
+  `03-leg-i-reinserted-decrement-red.txt` were captured before the mid-round
+  fixture repair recorded in section 2's deviations, so their two rename-rule
+  panics cited `tests/loopback_pump_structure.rs:3826` and `:3815` where the
+  committed file (both before and after this fix round -- the repair touched
+  no line count) reads `:3836` and `:3825`. Rather than disclose the mismatch
+  and leave it standing, both files are regenerated in this round against the
+  exact committed ratchet, so the mismatch is closed rather than annotated:
+  - `01`: `kernel/src/task/scheduler.rs` checked out at `a9d4bd3e` (the
+    unmodified baseline), `tests/loopback_pump_structure.rs` at this round's
+    final committed bytes, `scripts/run-structure-tests.sh
+    loopback_pump_structure` -> exit 101, `test result: FAILED. 110 passed;
+    3 failed`, same three tests as before
+    (`census_counters_have_no_decrementing_writer`,
+    `census_rules_track_a_consistent_rename_of_every_counter`,
+    `oracle_snapshots_cover_the_census`), now citing `:3836` and `:3825` and
+    (from the F11 fix, captured in the same run) `fetch_sub())` with the
+    closing paren.
+  - `03`: `kernel/src/task/scheduler.rs` at this round's fixed bytes, with a
+    `PINNED_MIGRATION_REFUSED.fetch_sub(0, Ordering::Relaxed);` reinserted
+    directly after the `fetch_add` in `count_pinned_migration_refusal`'s
+    `boot_tests` arm (the same site and shape leg (i) used originally) ->
+    exit 101, `test result: FAILED. 111 passed; 2 failed`, naming
+    `scheduler.rs:571` -- the same line leg (i) named the first time, because
+    F12's `#[inline]` addition sits in the second, non-`boot_tests` definition
+    of `count_pinned_migration_refusal`, physically below the `boot_tests` arm
+    this mutation is inserted into, so the line numbers inside that first arm
+    are unmoved by F12. Reverted; `diff` against the pre-mutation file showed
+    0 residual bytes changed, and a re-run returned to `113 passed;
+    0 failed`.
+
+  Section 3's inline RED-text quote (the `fetch_sub()` excerpt) is also
+  corrected to `fetch_sub())`, taken from the regenerated `01`. Files `02`,
+  `04`, `05` and `06` were not regenerated: `04`/`05`/`06`'s line citations
+  (`:3836`/`:3830`, `:3866`) already matched the committed file before this
+  round (checked directly against `grep -n` on the committed bytes) and this
+  round's edits do not change `tests/loopback_pump_structure.rs`'s total line
+  count (the `lowering` array stays 5 entries across 7 lines; only string
+  contents moved), so 0 lines in those three files' citations moved. `02` was
+  re-run (`113 passed; 0 failed`, matching what it already said) but not
+  overwritten: the check above found 0 lines in it to correct.
+
+### Re-run after the fix
+
+| Suite / gate | Exit | Result |
+|---|---|---|
+| `loopback_pump_structure`, HEAD-with-fixes | 0 | `113 passed; 0 failed` (twice: once before the leg-i mutation, once after reverting it) |
+| `loopback_pump_structure`, `scheduler.rs`@`a9d4bd3e` (RED baseline, regenerated) | 101 | `110 passed; 3 failed`, same 3 tests, new citations |
+| `loopback_pump_structure`, leg (i) reinserted (regenerated) | 101 | `111 passed; 2 failed`, `scheduler.rs:571` |
+| aarch64 `boot_tests` build, `aarch64-breenix-kernel.json`, this host | 0 | 1 future-incompat notice from upstream `core`, no warning/error naming a file in this repo |
+| `docker/qemu/run-aarch64-boot-test-strict.sh 3` | 0 | 3/3 boots, `refused=3:census_clean=1:verdict=PASS`, `migration_refused=0` in the census line -- `serials/3f-pre/14-review-fix-round-strict-gate-3boots.txt` |
+
+The strict gate was re-run because this fix round edits `kernel/src` bytes
+(the `main_aarch64.rs` comment and the `scheduler.rs` `#[inline]`), even
+though neither is a behavioural change; `pgrep -fl qemu-system` before this
+gate run showed 0 processes running, and after it showed 0 processes left by
+this round (no process was killed by name).
+
+### What this fix round does NOT claim
+
+* That `04`, `05` or `06` were re-verified byte-for-byte in this round beyond
+  the `grep -n` check against the committed file described above -- they were
+  not re-run.
+* That the strict gate's `#[inline]` addition changes emitted code on any
+  profile. It was not measured; the gate confirms the boot still passes with
+  the byte present, not that codegen is identical either way.
+* That F2's untouched claim-lint pair (`spawn_on_cpu` as the field's 1
+  mutating writer) is itself correct. It was read, not re-derived, in this
+  round; whether `run_pin_guard_oracle`'s direct `cpu_affinity` writes bear on
+  that pair's scope is not evaluated here.
+
+### Claim discipline, this fix round
+
+```
+claim-lint: python3 scripts/claim-lint.py                             -> exit 1 (6 findings, universal-claim, in this section)
+claim-lint: python3 scripts/claim-lint.py                             -> exit 0 (after rewording those 6)
+claim-lint: python3 scripts/claim-lint.py                             -> exit 1 (1 finding, universal-claim, in this very paragraph)
+claim-lint: python3 scripts/claim-lint.py                             -> exit 0 (after annotating that one)
+claim-lint: python3 scripts/claim-lint.py --commit-msg <round-fix msg> -> exit 0
+```
+
+5 of the 6 first-pass findings were repaired by rewording. The 6th, against
+the `probe.cpu_affinity = None;` code-span quote in the F8 bullet, is
+annotated `claim-lint:ok` per the same idiom this note already uses for
+Rust's `cfg(all(...))` in section 2 and section 7 -- the flagged word names a
+Rust `Option` variant, not an empirical universal claim. Describing that
+annotation in this paragraph then tripped a 7th finding against the word
+`None` appearing here too (self-referential, the same shape section 6 of the
+original round note describes for its own claim-lint passes), closed with a
+second copy of the same annotation.
+(claim-lint:ok: "None" is Rust's `Option` variant, kernel/src/task/scheduler.rs)

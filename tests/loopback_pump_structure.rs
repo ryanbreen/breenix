@@ -3641,24 +3641,24 @@ fn validate_census_counters_have_no_decrementing_writer(
 ) -> Result<(), String> {
     let counters = pinned_census_counters(scheduler_source(sources)?)?;
     let lowering = [
-        "fetch_sub(",
-        "fetch_min(",
-        "fetch_and(",
-        "fetch_nand(",
-        "fetch_xor(",
+        "fetch_sub",
+        "fetch_min",
+        "fetch_and",
+        "fetch_nand",
+        "fetch_xor",
     ];
     let mut offenders = Vec::new();
     for (path, text) in sources {
         let (compact, offsets) = masked_compact_with_offsets(text);
         for counter in &counters {
             for method in lowering {
-                let needle = format!("{counter}.{method}");
+                let needle = format!("{counter}.{method}(");
                 let mut searched = 0usize;
                 while let Some(relative) = compact[searched..].find(&needle) {
                     let offset = searched + relative;
                     searched = offset + needle.len();
                     let line = line_at_offset(text, offsets[offset]);
-                    offenders.push(format!("{path}:{line} ({counter}.{method})"));
+                    offenders.push(format!("{path}:{line} ({counter}.{method}())"));
                 }
             }
             let store = format!("{counter}.store(");
