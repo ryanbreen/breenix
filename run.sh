@@ -33,16 +33,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
 cd "$BREENIX_ROOT"
 
-# #826/#834/R181: this script's native (non-Parallels, non-VMware)
-# qemu-system-aarch64 boot runs behind the host-wide lock in
+# #826/#834/#865/R181: this script's native (non-Parallels, non-VMware)
+# QEMU boot runs behind the host-wide lock in
 # docker/qemu/lib/qemu-host-lock.sh -- sourced unconditionally since arch is
-# runtime-selected, but only the arm64 leg below actually calls
-# qemu_host_lock_acquire (the lock serializes qemu-system-aarch64 boots
-# specifically; the x86_64 leg's qemu-system-x86_64 is outside its scope).
-# The Parallels and VMware code paths above this point boot a VM, not a
-# native qemu-system-aarch64 process, and exit before reaching here. #834
-# extends this lock's coverage from docker/qemu/*.sh (its original
-# #826/R181 scope) to run.sh as well.
+# runtime-selected, and both the arm64 and x86_64 legs below call
+# qemu_host_lock_acquire with their own binary name (#865 keeps one lock
+# domain per QEMU binary, so the two legs cooperate with a concurrent gate
+# lane running the same binary without contending with each other). The
+# Parallels and VMware code paths above this point boot a VM, not a native
+# QEMU process, and exit before reaching here. #834 extended this lock's
+# coverage from docker/qemu/*.sh (its original #826/R181 scope) to run.sh
+# as well; #865 closed the x86_64-leg gap this comment used to disclose.
 # shellcheck source=docker/qemu/lib/qemu-host-lock.sh
 source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
@@ -1111,6 +1112,12 @@ else
         TEST_BIN_OPTS="-drive if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off"
     fi
 
+    # #865: this is an interactive display session (Ctrl+C stops QEMU
+    # below) like the arm64 branch above, and takes the same host-wide
+    # lock -- one lock domain per QEMU binary, so this qemu-system-x86_64
+    # boot cooperates with a concurrent x86 gate lane without contending
+    # with a concurrent arm64 session.
+    qemu_host_lock_acquire qemu-system-x86_64
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -1137,13 +1144,12 @@ else
 fi
 
 QEMU_PID=$!
-if [ "$ARCH" = "arm64" ]; then
-    # F2: registers QEMU with the lock's own EXIT trap (see
-    # docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to
-    # just this script's own PID still kills QEMU instead of orphaning it
-    # with the lock free.
-    qemu_host_lock_track_pid "$QEMU_PID"
-fi
+# F2 (#835 idiom): registers QEMU with the lock's own EXIT trap (see
+# docker/qemu/lib/qemu-host-lock.sh) so a SIGTERM/SIGINT delivered to just
+# this script's own PID still kills QEMU instead of orphaning it with the
+# lock free. Both branches above now acquire a lock domain (#865), so this
+# is no longer arm64-only.
+qemu_host_lock_track_pid "$QEMU_PID"
 
 echo "Paste:     echo 'code' | ./scripts/paste.sh"
 echo "Monitor:   tcp://127.0.0.1:4444"

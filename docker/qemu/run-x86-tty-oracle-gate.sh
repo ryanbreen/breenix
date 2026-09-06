@@ -44,6 +44,11 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/#834/#865/R181: each of this gate's BOOTS qemu-system-x86_64 boots
+# runs behind the host-wide lock in lib/qemu-host-lock.sh (one lock domain
+# per QEMU binary), acquired and released once per boot iteration below.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container)
 # each invoking this script hardcode the identical /tmp/breenix_x86_tty_oracle
@@ -242,6 +247,7 @@ while [ "$boot" -le "$BOOTS" ]; do
     CURRENT_RUN_DIR="$RUN_DIR"
 
     echo "Booting the x86_64 production profile with the TTY oracle (boot $boot/$BOOTS)..."
+    qemu_host_lock_acquire qemu-system-x86_64
     qemu-system-x86_64 \
         -pflash "$OUTPUT_ROOT/OVMF_CODE.fd" \
         -pflash "$OUTPUT_ROOT/OVMF_VARS.fd" \
@@ -261,6 +267,7 @@ while [ "$boot" -le "$BOOTS" ]; do
         -serial "file:$RUN_DIR/serial_kernel.txt" \
         >"$RUN_DIR/qemu.log" 2>&1 &
     QEMU_PID=$!
+    qemu_host_lock_track_pid "$QEMU_PID"
 
     # This gate boots the identical profile run-x86-prod-profile-boot-test.sh
     # measures (steady state at 14s under TCG on beast) plus one extra spawn
@@ -278,6 +285,7 @@ while [ "$boot" -le "$BOOTS" ]; do
     kill "$QEMU_PID" 2>/dev/null || true
     wait "$QEMU_PID" 2>/dev/null || true
     QEMU_PID=""
+    qemu_host_lock_release
 
     # --- Crash checks first: a panic must be reported as a panic. ---
     CRASH_COUNT=$(crash_count)

@@ -69,6 +69,13 @@ trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# #865: serialize against other qemu-system-x86_64 lanes on this host --
+# this gate's own legs already run one at a time (see the per-leg poll loop
+# below), but a concurrent OTHER x86 gate on the same beast host would still
+# starve both under TCG the same way #865's own report describes.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+
 # R18/#797: per-lane output base. Defaulting to /tmp keeps a bare invocation
 # byte-identical to the other x86 gates' convention.
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
@@ -145,6 +152,14 @@ UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"
 echo "x86 SMP enumeration gate: booted image sha256 $(sha256sum "$BREENIX_ROOT/$UEFI_IMG" | awk '{ print $1 }')"
 
+# #865: acquired once for the whole leg loop below (each leg's own poll
+# loop below waits for that leg's QEMU_PID to exit or reach a terminal
+# marker, then kills and waits on it, before the next leg starts, so this
+# is one occupant of the x86 lock domain for the batch, matching
+# run-boot-parallel.sh's own batch-acquire shape), released once after the
+# loop completes.
+qemu_host_lock_acquire qemu-system-x86_64
+
 failures=0
 for smp in "${SMP_LEGS[@]}"; do
     OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_smp_enum_$smp"
@@ -170,6 +185,7 @@ for smp in "${SMP_LEGS[@]}"; do
         -serial "file:$OUTPUT_DIR/serial_kernel.txt" \
         >"$OUTPUT_DIR/qemu.log" 2>&1 &
     QEMU_PID=$!
+    qemu_host_lock_track_pid "$QEMU_PID"
 
     reached=false
     for _ in $(seq 1 "$POLL_BOUND_SECONDS"); do
@@ -226,6 +242,8 @@ for smp in "${SMP_LEGS[@]}"; do
         echo "  leg -smp $smp: serial at $OUTPUT_DIR"
     fi
 done
+
+qemu_host_lock_release
 
 if [ "$failures" -eq 0 ]; then
     echo "x86 SMP enumeration gate: PASS (${#SMP_LEGS[@]} leg(s): ${SMP_LEGS[*]})"

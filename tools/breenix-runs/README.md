@@ -9,8 +9,11 @@ swift build
 swift test
 ```
 
-`make app` now builds the debug `BreenixRunInspector` executable target and
+`make app` builds the release `BreenixRunInspector` executable target and
 creates an ad-hoc signed `Breenix Run Inspector.app` bundle in this directory.
+`make app-debug` builds the same bundle from a debug build instead, for a
+faster edit/build/launch loop (see DESIGN.md 2.4 for why a release build once
+crashed the compiler and how it was fixed).
 
 ## CLI and App
 

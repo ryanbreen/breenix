@@ -9,6 +9,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# #826/#834/#865/R181: this script's qemu-system-x86_64 boot runs behind the
+# host-wide lock in ../docker/qemu/lib/qemu-host-lock.sh (one lock domain
+# per QEMU binary).
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 # Find the UEFI image
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
@@ -96,7 +101,9 @@ echo "Running: ${QEMU_CMD[*]}"
 echo ""
 
 # Run QEMU
+qemu_host_lock_acquire qemu-system-x86_64
 "${QEMU_CMD[@]}"
+qemu_host_lock_release
 
 echo ""
 echo "========================================="

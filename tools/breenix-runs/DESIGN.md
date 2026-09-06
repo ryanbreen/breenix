@@ -369,28 +369,58 @@ that is correct and requires no notarization story.
 
 **Status: implemented in PR-6 (`Sources/BreenixRunInspector/**`, the
 `BreenixRunInspector` executable target in `Package.swift`, the real `make app`
-recipe in `Makefile`), with one correction found while landing it.** `make app`
-bundles the **debug** build, not release: `swift build --product
-BreenixRunInspector -c release` crashes this toolchain's `swift-frontend`
-(Swift 6.3.3, swiftlang-6.3.3.1.3) — an ownership-verifier assertion
-("Found outside of lifetime use?!") in the `CopyPropagation` SIL pass while
-compiling the pre-existing `RunShow.renderSubsystems` (PR-3,
-`Sources/BreenixRuns/Show/RunShow.swift:89`) at `-O` — reproduced directly with
-`swift build --product BreenixRunInspector -c release` at this file's current
-contents. This is a toolchain limitation on a SIL optimization pass, not a
-defect in `renderSubsystems`'s logic (`swift test` exercises the same code path
-and is green); `swift build`'s default debug configuration does not run this
-pass and is unaffected, which is why the `breenix-runs` CLI and the `swift
-test` acceptance in every other PR row have never hit it. `make app`'s `-c
-debug` choice sidesteps it rather than working around it in source, since
-`renderSubsystems` is correct and owned by PR-3, and a change made only to
-dodge a compiler crash it did not cause would be exactly the kind of
-unmotivated edit CLAUDE.md's Tier discipline warns against for hot-path files
-— `RunShow.swift` is not Tier-1/2, but the principle (fix code where the
-defect actually lives) still applies. Revisit if a future PR needs a release
-build (e.g. distributing the bundle outside this machine): either a newer
-Swift toolchain no longer hits this pass ordering, or `renderSubsystems` gets
-refactored as its own PR with the crash cited as the reason.
+recipe in `Makefile`), with one correction found while landing it, and the
+underlying crash fixed in #866.** `make app` originally bundled the **debug**
+build, not release: `swift build --product BreenixRunInspector -c release`
+crashed this toolchain's `swift-frontend` (Swift 6.3.3, swiftlang-6.3.3.1.3) —
+an ownership-verifier assertion ("Found outside of lifetime use?!") in the
+`CopyPropagation` SIL pass while compiling the pre-existing
+`RunShow.renderSubsystems` (PR-3, `Sources/BreenixRuns/Show/RunShow.swift:90`)
+at `-O`, reproduced directly with `swift build -c release --product
+BreenixRunInspector` against this file's contents before the #866 fix below.
+Full signature:
+
+```
+Begin Error in Function: '$s11BreenixRuns7RunShowO16renderSubsystems...'
+Found outside of lifetime use?!
+Value:   %470 = begin_borrow %429 : $StageState
+Consuming User:   end_borrow %470 : $StageState
+Non Consuming User:   switch_enum %472 : $StageOutcome, case #StageOutcome.reached!enumelt: bb46, ...
+...
+4.	While running pass #441094 SILFunctionTransform "CopyPropagation" on SILFunction
+    "...renderSubsystems(manifest:catalog:index:)" (at .../RunShow.swift:90:13)
+```
+
+This was a toolchain limitation on a SIL optimization pass, not a defect in
+`renderSubsystems`'s logic (`swift test` exercised the same code path and was
+green then, and still is); `swift build`'s default debug configuration does
+not run this pass, which is why the `breenix-runs` CLI build and `swift
+test` runs did not hit it before #866: neither path passes `-c release`,
+so this pass does not run on either.
+
+**#866 (this PR): restructured `renderSubsystems`, then switched `make app`
+to release.** The trace above names the exact shape that tripped the pass: a
+`begin_borrow` of a loop-local `StageState`, immediately followed by three
+separate `switch_enum`s against its `.outcome` field — one each for
+`isReached`, `isStoppedHere`, and `reachedLine`/`failureArm` — inside a
+single `for state in states { lines.append(...) }` loop that also mutated the
+enclosing `lines` array on each iteration. Splitting that loop body into its
+own function, `subsystemLines(for state: StageState) -> [String]`, called
+once per state from a loop that only appends the returned array, removes the
+pattern: each `state` is now consumed once, by value, inside a small leaf
+function with no enclosing-array mutation interleaved with its borrow
+lifetime. The per-state logic is byte-for-byte unchanged (same symbol
+selection, same padding, same stopped-here detail lines), so behavior is
+identical — `StageCatalogStateMachineTests` (which asserts the rendered
+`--subsystems` text, including `testShowSubsystemsColumnsAreActuallyAligned`
+and `testShowSubsystemsRendersStoredRunHighWaterMark`) passes unchanged, and
+the fix needed no new tests. With that split in place, `swift build -c
+release` completes clean for `BreenixRuns`, `breenix-runs`, and
+`BreenixRunInspector`, so `make app` now ships that build;
+`make app-debug` is the new name for the old `-c debug` recipe, kept as a
+faster edit/build/launch loop for day-to-day work. The toolchain bug itself
+was not filed upstream as part of this PR — worth doing if it recurs on a
+future function, but not required once the local trigger is gone.
 
 ### 2.5 App screens
 
@@ -1001,3 +1031,42 @@ consumes them.
   in a different shape than described.
 * **No CI.** This repo has no GitHub Actions; "the test you can run" means a command
   the operator runs locally.
+
+## Landing re-smoke (2026-09-06, worktree ld-866)
+
+Before opening the landing PR, this branch's fork point was checked against
+`origin/main`: `git merge-base --is-ancestor origin/main HEAD` succeeded, so
+`origin/main` (`9a275007`) was already an ancestor of this branch — main had
+not advanced since the branch forked, so `git merge --no-ff origin/main`
+reported "Already up to date." with no new merge commit and no conflicts.
+The branch head (`98de2fa2`) was then re-smoked directly:
+
+- `swift build -c release` from a clean `.build/` (3 of 3 products —
+  `BreenixRuns`, `breenix-runs`, `BreenixRunInspector`): `Build complete!
+  (9.70s)`, 0 warnings, 0 errors — confirming the `RunShow.renderSubsystems`
+  restructuring above still avoids the Swift 6.3.3 `CopyPropagation` crash
+  on a fresh build tree, not just an incremental one.
+- `swift test`: 88 tests, 0 failures, 0 unexpected — warning-free (the only
+  `warning:` lines in the run's output are `RunStoreTests`' own deliberate
+  corrupt-manifest fixture log lines, not compiler warnings).
+- `make app` (release path): rebuilt `BreenixRunInspector` via `swift build
+  --product BreenixRunInspector -c release`, bundled `Breenix Run
+  Inspector.app`, and ad-hoc signed it. `codesign -dv` on the bundle
+  confirmed `Format=app bundle with Mach-O thin (arm64)`,
+  `Signature=adhoc`. `/usr/bin/open`'d the bundle and left it running;
+  `pgrep -fl BreenixRunInspector` confirmed a live process (pid 15844)
+  running the `.app`'s own executable path.
+- All 41 of 41 `tests/*_structure.rs` suites at the repo root, each compiled
+  and run individually via `scripts/run-structure-tests.sh <stem>` (a
+  symlinked `rust-fork/` in the worktree was not needed — these suites are
+  std-only per that script's own header comment): 41 passed, 0 failed.
+- `python3 scripts/test_claim_lint.py`: exit 0 — the tool's documented MISS
+  cases (known, disclosed exemption gaps in the historical corpus, not
+  regressions) are unchanged from its own baseline; the suite itself
+  reports success.
+
+```
+claim-lint: scripts/claim-lint.py -> exit 0
+claim-lint: scripts/claim-lint.py --files <this doc> -> exit 0
+claim-lint: scripts/claim-lint.py --commit-msg <landing commit message> -> exit 0
+```
