@@ -823,6 +823,29 @@ report_gate_failure() {
     if [ -n "$QEMU_PID" ] && compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
         capture_lines="$(gcd_drain_and_report "$OUTPUT_DIR"/serial_*.txt)"
         printf '%s\n' "$capture_lines"
+    elif compgen -G "$OUTPUT_DIR/serial_*.txt" >/dev/null 2>&1; then
+        # review finding
+        # x86-prod-profile-capture-lines-locked-before-liveness-and-teardown-assertions:
+        # $QEMU_PID is only ever cleared to "" by the main flow's own kill,
+        # further down (right after the liveness stimulus window), and
+        # serial files only exist once QEMU has actually launched -- so
+        # reaching this branch (QEMU_PID empty, serial files present) means
+        # this handler fired from one of the ~40 assertions AFTER that
+        # kill: the liveness/wedge check or the teardown census, not the
+        # earlier `test "$reached" = true` this function's other branch
+        # covers. The main flow already committed to capture=n/a on the
+        # strength of steady state alone (its own CAPTURE_LINES=
+        # gcd_pass_report() call, right after that check) before any of
+        # those later assertions could run -- but reaching this handler at
+        # all means one of them just rejected the boot, so it is a genuine
+        # non-PASS outcome after all. QEMU is already dead, so there is
+        # nothing left to wait for, but the frozen files' real capture
+        # state is real evidence for a non-PASS outcome -- report it
+        # honestly instead of leaving capture_lines blank (which, unlike
+        # gcd_pass_report's explicit `n/a`, would write an empty
+        # capture_drain.txt with no marker at all for a confirmed FAIL).
+        capture_lines="$(gcd_classify_report "$OUTPUT_DIR"/serial_*.txt)"
+        printf '%s\n' "$capture_lines"
     fi
     if [ -n "$QEMU_PID" ]; then
         kill "$QEMU_PID" 2>/dev/null || true
