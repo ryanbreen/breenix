@@ -19,8 +19,24 @@ RUN_LOG="$RUN_DIR/run-${SHA}.log"
 CAPTURE_OUT="${F21_CAPTURE_OUT:-$RUN_DIR/capture-${SHA}.png}"
 SERIAL_COPY="$RUN_DIR/serial-${SHA}.log"
 SCRATCHPAD="${F21_SCRATCHPAD:-}"
+# #860: this invocation's own Parallels VM. git-bisect runs this script as a
+# fresh process per step, so a plain shell variable cannot carry a VM name
+# across steps -- VM_STATE_FILE (below) is the cross-invocation memory that
+# replaces the old pattern-sweep for that purpose.
 VM_NAME=""
 RUN_PID=""
+# #860: persists the name of the one Parallels VM this script's own lineage
+# (this RUN_DIR) most recently started, so the next invocation can reap
+# exactly that VM -- and only that VM -- if a prior step exited without a
+# clean stop (e.g. killed before its EXIT trap could run). Scoped to
+# RUN_DIR, which is itself per-lineage (F21_RUN_DIR), so two concurrent
+# bisect runs using different RUN_DIRs never share, read, or clear each
+# other's state file.
+# claim-lint:ok: #860 -- structural, not a measured claim: two shell
+# variables computed from two different F21_RUN_DIR values name two
+# different paths, so this file's own read/write/rm calls below cannot
+# reach each other's file.
+VM_STATE_FILE="$RUN_DIR/last-vm-name"
 
 log() {
     printf '[f21-bisect] %s\n' "$*"
@@ -44,6 +60,13 @@ cleanup() {
     if [ -n "${VM_NAME:-}" ]; then
         prlctl stop "$VM_NAME" --kill >/dev/null 2>&1 || true
         prlctl delete "$VM_NAME" >/dev/null 2>&1 || true
+        # #860: this invocation cleanly stopped/deleted the one VM it
+        # recorded as its own, so clear VM_STATE_FILE rather than leaving a
+        # now-deleted VM's name behind for the next invocation to (harmlessly
+        # but pointlessly) attempt to reap.
+        if [ -n "${VM_STATE_FILE:-}" ]; then
+            rm -f "$VM_STATE_FILE" 2>/dev/null || true
+        fi
     fi
     if [ -n "${RUN_PID:-}" ]; then
         kill "$RUN_PID" >/dev/null 2>&1 || true
@@ -79,28 +102,58 @@ rm -f "$RUN_LOG" "$CAPTURE_OUT" "${CAPTURE_OUT}.stats.json" "$SERIAL_COPY"
 log "testing ${SHA}"
 record "- ${SHA}: starting"
 
-# Best-effort cleanup before each VM run to avoid stale locks. Scoped to
-# breenix-* Parallels VMs by name (this script's own resource, launched via
-# ./run.sh --parallels below), not to bare qemu-system-x86* processes: this
+# Best-effort cleanup before each VM run to avoid stale locks left by a
+# PRIOR invocation of this same script -- git-bisect runs this script as a
+# fresh process per step, so there is no in-process $VM_NAME to fall back
+# on the way the EXIT trap above uses for the CURRENT run.
+#
+# #860: this used to be `prlctl list --all | awk '/breenix-/ {...}'` fed
+# into a stop+delete loop -- a bare host-wide name-pattern sweep that
+# reaped EVERY VM matching `breenix-`, not only one this script's own
+# lineage started. That could kill a different, concurrent Parallels-based
+# gate's VM, or a human's own long-running `breenix-dev` VM, out from
+# under it, purely because the name happened to match -- the same
+# kill-by-name-pattern hazard class #829/#849 fixed for
+# qemu-system-x86_64/qemu-system-aarch64 processes and Docker containers,
+# one resource type over. Replaced with a reap of exactly the one VM name
+# VM_STATE_FILE remembers this lineage having started (written below, the
+# moment this run's own VM_NAME is discovered, and cleared by a clean
+# EXIT-trap stop) -- never a pattern match, so a VM this script did not
+# itself start is never a candidate no matter what its name is. This
 # script never launches qemu-system-x86_64 itself (Parallels is a
 # hypervisor, not QEMU), so the #849-removed `pkill -9 qemu-system-x86` /
-# `killall -9 qemu-system-x86_64` here could only ever have reached a
-# DIFFERENT, unrelated x86 gate's own QEMU process running concurrently on
-# the same host.
-#
-# #860 (review, disclosed not fixed): the `/breenix-/` name-match below is
-# itself the identical kill-by-name-pattern hazard shape, one resource type
-# over (Parallels VMs, not qemu-ish processes/containers) -- it stops and
-# deletes ANY VM matching the pattern, not only one this invocation
-# started. Pre-existing (not introduced by #849), and outside #849's own
-# chartered scope (its ratchet in tests/qemu_kill_by_name_structure.rs is
-# scoped to qemu-ish pkill/killall/docker-kill shapes and correctly cannot
-# see `prlctl` at all). Not fixed here -- see #860.
-# claim-lint:ok: #849
-for old_vm in $(prlctl list --all 2>/dev/null | awk '/breenix-/ {print $NF}'); do
-    prlctl stop "$old_vm" --kill >/dev/null 2>&1 || true
-    prlctl delete "$old_vm" >/dev/null 2>&1 || true
-done
+# `killall -9 qemu-system-x86_64` here could likewise only ever have
+# reached a DIFFERENT, unrelated x86 gate's own QEMU process.
+# claim-lint:ok: #849,#860
+if [ -f "$VM_STATE_FILE" ]; then
+    PREV_VM_NAME="$(cat "$VM_STATE_FILE" 2>/dev/null || true)"
+    if [ -n "$PREV_VM_NAME" ]; then
+        log "reaping this lineage's own stale VM from a prior step: ${PREV_VM_NAME}"
+        prlctl stop "$PREV_VM_NAME" --kill >/dev/null 2>&1 || true
+        prlctl delete "$PREV_VM_NAME" >/dev/null 2>&1 || true
+    fi
+    rm -f "$VM_STATE_FILE" 2>/dev/null || true
+fi
+
+# #860 review round 1, finding F1: the reap above closes the
+# concurrent-VM-kill hazard only for the state-file-based path directly
+# above it. The `./run.sh` invocation a few lines below still calls
+# into run.sh's own two UN-fixed, unscoped
+# `for OLD_VM in $(prlctl list --all | grep 'breenix-' | awk '{print $NF}')`
+# sweep loops (run.sh's pre-build stop loop and its pre-launch
+# stop+delete loop) on every single invocation of this script -- there
+# is no flag or env var this script can pass to suppress them. So the
+# practical hazard #860 was filed to close -- a different, concurrent
+# Parallels-based gate, or a human's own long-running `breenix-dev` VM
+# sharing the `breenix-` name pattern, being stopped and deleted out
+# from under it -- remains live for this script's real end-to-end
+# behavior every time it runs, via that call, not only "elsewhere in
+# the tree." Tracked, not fixed here (small-PR mode, R157): #868.
+# claim-lint:ok: #860,#868 -- checked, not merely asserted, by
+# f21_bisect_verdict_sh_calls_run_sh_unconditionally in
+# tests/parallels_kill_by_name_structure.rs, which re-derives from this
+# script's own real text that the ./run.sh call below is present,
+# uncommented, and not gated behind any skip-sweep escape hatch.
 
 RUN_ARGS=(--parallels)
 RUN_HELP="$(./run.sh --help 2>/dev/null || true)"
@@ -118,6 +171,15 @@ for second in $(seq 1 "$VM_START_TIMEOUT"); do
     VM_NAME="$(awk '/^VM:/ {print $2}' "$RUN_LOG" 2>/dev/null | tail -1 || true)"
     if [ -n "$VM_NAME" ]; then
         log "VM started: ${VM_NAME}"
+        # #860: record this run's own VM name the moment it is known, so a
+        # hard kill of this script (before the EXIT trap can run) still
+        # leaves the next invocation exactly this one name to reap -- never
+        # a pattern to sweep by.
+        # claim-lint:ok: #860 -- structural: the reap block below reads
+        # only VM_STATE_FILE's literal contents into PREV_VM_NAME, never a
+        # `prlctl list` query, so nothing it stops/deletes can be
+        # pattern-matched.
+        printf '%s\n' "$VM_NAME" > "$VM_STATE_FILE"
         break
     fi
     if ! kill -0 "$RUN_PID" >/dev/null 2>&1; then
