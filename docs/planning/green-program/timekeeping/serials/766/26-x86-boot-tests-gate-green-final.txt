@@ -1,0 +1,49 @@
+=== x86 boot-tests gate + checkers + prod + smp, branch final bytes ff74f0d6, beast breenix-x86 (TCG), 2026-09-06 ===
+--- commit / tree ---
+ff74f0d65 test(766): withdraw the re-arming leg and keep the one both gates are green on
+4308:                        self.per_cpu_queues[target].push_front(tid);
+--- sha256 of the three files that decide these results ---
+2154e86dfd894deb8c9d854e484b144df9f615ddd5b5a4f29769fff0c69646f9  /root/breenix-p766/kernel/src/task/scheduler.rs
+04920c2d6788e1b8d8647936cd77effd31b53025a3cee7f4960b9eb3556f002f  /root/breenix-p766/kernel/src/task/timer_wake_oracle.rs
+eab37b482ba1a75653fa0f6126243e9513afe30e605927ef604a69bbb1c6f6da  /root/breenix-p766/docker/qemu/run-x86-boot-tests.sh
+--- build ---
+WARNCOUNT=0
+--- boot-tests gate verdict ---
+GREEN_GATE_EXIT=0
+x86 frame-custody gate run 1: PASS
+--- [TIMER_WAKE_LATENCY_ORACLE] (COM1) ---
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=53:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=612:window_ms=518:measured=1:PASS]
+--- TEST_TALLY ---
+TEST_TALLY: exited=110 nonzero=0 failed=[]
+--- clock_gettime_test Test 3 / Test 4 ---
+Test 3: Sub-millisecond precision
+p00r0   Elapsed: 164403 ns
+  PASS: Sub-millisecond precision (TSC active)
+Test 4: Nanosecond precision (not millisecond-aligned)
+  Millisecond-aligned samples: 0/10
+  PASS: Nanosecond precision confirmed
+--- t766 thread creation ---
+Added thread 1205 't766_peer'
+Added thread 1206 't766_peer'
+Added thread 1207 't766_peer'
+Added thread 1208 't766_peer'
+Added thread 1209 't766_peer'
+Added thread 1210 't766_peer'
+Added thread 1211 't766_peer'
+Added thread 1212 't766_peer'
+Added thread 1213 't766_sleeper'
+--- scripts/check-x86-dispatch-no-alloc.sh ---
+PASS: 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
+NOALLOC_EXIT=0
+--- scripts/check-critical-path-violations.sh ---
+CRITPATH_EXIT=1
+VIOLATION=21 TOTAL=274
+--- x86 production profile gate ---
+PROD_EXIT=0
+PASS: x86 production profile reached steady state with the teardown census at rest
+  steady state reached:         1
+  test-only marker 'TEST_TALLY:': 0
+  test-only marker '[TEST:': 0
+--- x86 smp enum gate ---
+SMP_EXIT=0
+[X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
