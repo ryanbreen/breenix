@@ -54,8 +54,9 @@ public enum RunShow {
             sections.append(renderMessages(index: serialIndex))
         }
         if options.traces {
-            let gateStdoutText = try store.readGateStdoutText(manifest: manifest)
-            sections.append(renderTraces(TracesViewModel.build(serialIndex: serialIndex, gateStdoutText: gateStdoutText)))
+            var traces = TracesViewModel.build(serialIndex: serialIndex, gateStdoutText: "")
+            traces.hostFacts += try store.readGateFacts(manifest: manifest)
+            sections.append(renderTraces(traces))
         }
 
         return sections.joined(separator: "\n\n")

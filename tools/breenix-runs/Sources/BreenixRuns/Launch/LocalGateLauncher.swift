@@ -166,7 +166,7 @@ public struct LocalGateLauncher {
         let startFacts = try HostFacts.sample(runner: runner, repoRoot: repoRoot, wallTime: startedAt)
         let scriptURL = repoRoot.appendingPathComponent("docker/qemu/\(options.profile.scriptName)")
         let command = [scriptURL.path, "\(options.boots)"]
-        let env = ["BREENIX_GATE_TMP": gateTmp.path]
+        let env = ["BREENIX_GATE_TMP": gateTmp.path, "BREENIX_RUNS_NO_IMPORT": "1"]
         let gateStdoutURL = runDirectory.appendingPathComponent("gate-stdout.txt")
         FileManager.default.createFile(atPath: gateStdoutURL.path, contents: nil)
         let gateOutputHandle = try FileHandle(forWritingTo: gateStdoutURL)

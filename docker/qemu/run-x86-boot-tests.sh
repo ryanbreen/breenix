@@ -84,12 +84,15 @@ report_gate_failure() {
         printf '%s\n' "${CAPTURE_LINES:-}" >"$failure_dir/capture_drain.txt" 2>/dev/null || true
         echo "  preserved failing serial + capture reading: $failure_dir"
     fi
+    breenix_runs_import_nonfatal "${OUTPUT_DIR:-}" x86_64 boot-tests FAIL "$exit_code" "${HOST_MS_START:-}" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
     exit "$exit_code"
 }
 trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
 
 COUNT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
+BREENIX_RUNS_GATE_ARGV=("$0" "$@")
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
 # BXCAP capture (if one is open) before this gate's own kill line runs, and
@@ -1332,4 +1335,5 @@ for i in $(seq 1 "$COUNT"); do
     fi
     echo "x86 frame-custody gate run $i: PASS"
     printf '%s\n' "$CAPTURE_LINES"
+    breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests PASS 0 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
 done

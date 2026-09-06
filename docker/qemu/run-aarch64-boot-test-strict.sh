@@ -22,6 +22,8 @@ set -e
 
 ITERATIONS=${1:-20}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
+BREENIX_RUNS_GATE_ARGV=("$0" "$@")
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
 # host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
@@ -1064,10 +1066,12 @@ run_single_test() {
         echo "  [OK] Boot $iteration: SUCCESS"
         echo "  $FACTS_LINE"
         printf '%s\n' "$CAPTURE_LINES" | sed 's/^/  /'
+        breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 strict PASS 0 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
         return 0
     fi
 
     report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE" "$CAPTURE_LINES"
+    breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 strict FAIL 1 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
     return 1
 }
 
