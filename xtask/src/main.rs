@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use serde::Serialize;
 use structopt::StructOpt;
 
 mod boot_stages;
@@ -219,6 +220,15 @@ enum Cmd {
     DnsTest,
     /// Boot ARM64 kernel and validate each boot stage sequentially.
     Arm64BootStages,
+    /// Dump the boot stage catalog for an architecture.
+    DumpBootStages {
+        /// Target architecture: aarch64/arm64 or x86_64/x86.
+        #[structopt(long, default_value = "aarch64")]
+        arch: String,
+        /// Emit the catalog as deterministic JSON.
+        #[structopt(long)]
+        json: bool,
+    },
     /// Boot kernel with BTRT feature, extract results via QMP pmemsave.
     BootTestBtrt {
         /// Target architecture: x86_64 or arm64
@@ -254,10 +264,72 @@ fn main() -> Result<()> {
         Cmd::KthreadStress => kthread_stress(),
         Cmd::DnsTest => dns_test(),
         Cmd::Arm64BootStages => run_boot_stages(&qemu_config::Arch::Arm64),
+        Cmd::DumpBootStages { arch, json } => dump_boot_stages(&arch, json),
         Cmd::BootTestBtrt { arch } => boot_test_btrt(&arch),
         Cmd::KthreadTest { arch } => kthread_test(&arch),
         Cmd::ParseBtrt { path, format } => parse_btrt_cmd(&path, &format),
     }
+}
+
+#[derive(Serialize)]
+struct BootStageCatalog<'a> {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u8,
+    arch: &'static str,
+    stages: Vec<BootStageRecord<'a>>,
+}
+
+#[derive(Serialize)]
+struct BootStageRecord<'a> {
+    name: &'a str,
+    marker: &'a str,
+    #[serde(rename = "failureMeaning")]
+    failure_meaning: &'a str,
+    #[serde(rename = "checkHint")]
+    check_hint: &'a str,
+}
+
+fn boot_stage_arch_name(arch: &qemu_config::Arch) -> &'static str {
+    match arch {
+        qemu_config::Arch::Arm64 => "aarch64",
+        qemu_config::Arch::X86_64 => "x86_64",
+    }
+}
+
+fn dump_boot_stages(arch: &str, json: bool) -> Result<()> {
+    let arch = qemu_config::Arch::from_str(arch)?;
+    let stages = boot_stages::get_boot_stages(&arch);
+
+    if json {
+        let catalog = BootStageCatalog {
+            schema_version: 1,
+            arch: boot_stage_arch_name(&arch),
+            stages: stages
+                .iter()
+                .map(|stage| BootStageRecord {
+                    name: stage.name,
+                    marker: stage.marker,
+                    failure_meaning: stage.failure_meaning,
+                    check_hint: stage.check_hint,
+                })
+                .collect(),
+        };
+        println!("{}", serde_json::to_string_pretty(&catalog)?);
+    } else {
+        println!(
+            "{} boot stages ({} total)",
+            boot_stage_arch_name(&arch),
+            stages.len()
+        );
+        for (index, stage) in stages.iter().enumerate() {
+            println!("{}. {}", index + 1, stage.name);
+            println!("   marker: {}", stage.marker);
+            println!("   means: {}", stage.failure_meaning);
+            println!("   check: {}", stage.check_hint);
+        }
+    }
+
+    Ok(())
 }
 
 /// Focused DNS test - only checks DNS-related boot stages
