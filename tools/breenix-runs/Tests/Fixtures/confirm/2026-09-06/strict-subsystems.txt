@@ -1,0 +1,187 @@
+Subsystems - aarch64, strict reached 19 / 184 stopped at #19
+✓ ARM64 kernel starting                              L3
+✓ Memory management ready                            L15
+✓ Timer calibrated                                   L17
+✓ GIC initialized                                    L27
+✓ UART interrupts enabled                            L36
+✓ Interrupts enabled                                 L38
+✓ Device drivers initialized                         L87
+✓ ext2 root filesystem mounted                       L109
+✓ devfs initialized                                  L111
+✓ devptsfs initialized                               L112
+✓ procfs initialized                                 L114
+✓ TTY subsystem initialized                          L115
+✓ Per-CPU data initialized                           L142
+✓ Process manager initialized                        L144
+✓ Scheduler initialized                              L146
+✓ Timer interrupt initialized                        L158
+✓ SMP CPUs online                                    L159
+✓ ARM64 boot complete                                L570
+✗ Test binary loading started                        -
+    means: Kernel did not enter test binary loading phase - testing feature may not be enabled
+    check: Check kernel built with --features testing and device_count > 0
+○ Test binaries loaded                               -
+○ Scheduler idle loop entered                        -
+○ Userspace hello printed                            -
+○ Userspace clock_gettime validated                  -
+○ Userspace brk syscall validated                    -
+○ Userspace mmap/munmap syscalls validated           -
+○ Diagnostic: Summary                                -
+○ Signal handler execution verified                  -
+○ Signal handler return verified                     -
+○ Signal register preservation verified              -
+○ sigaltstack() syscall verified                     -
+○ UDP socket created from userspace                  -
+○ UDP socket bound to port                           -
+○ UDP packet sent from userspace                     -
+○ UDP RX socket created and bound                    -
+○ UDP loopback packet sent                           -
+✓ UDP packet delivered to socket RX queue            L604
+○ UDP packet received from userspace                 -
+○ UDP RX data verified                               -
+○ UDP ephemeral port bind                            -
+○ UDP EADDRINUSE detection                           -
+○ UDP EAGAIN on empty queue                          -
+○ UDP multiple packets received                      -
+○ UDP socket test completed                          -
+○ TCP socket created                                 -
+○ TCP socket bound                                   -
+○ TCP socket listening                               -
+○ TCP client socket created                          -
+○ TCP connect executed                               -
+○ TCP accept executed                                -
+○ TCP shutdown executed                              -
+○ TCP shutdown unconnected rejected                  -
+○ TCP EADDRINUSE detected                            -
+○ TCP listen unbound rejected                        -
+○ TCP accept nonlisten rejected                      -
+○ TCP data test started                              -
+○ TCP data server listening                          -
+○ TCP data client connected                          -
+○ TCP data send                                      -
+○ TCP data accept                                    -
+○ TCP data recv                                      -
+○ TCP data verified                                  -
+○ TCP post-shutdown write test started               -
+○ TCP write after shutdown rejected with EPIPE       -
+○ TCP SHUT_RD test started                           -
+○ TCP SHUT_RD returns EOF                            -
+○ TCP SHUT_WR test started                           -
+○ TCP SHUT_WR succeeded                              -
+○ TCP bidirectional test started                     -
+○ TCP server->client data verified                   -
+○ TCP large data test started                        -
+○ TCP 256 bytes verified                             -
+○ TCP backlog test started                           -
+○ TCP backlog test passed                            -
+○ TCP ECONNREFUSED test started                      -
+○ TCP ECONNREFUSED test passed                       -
+○ TCP MSS test started                               -
+○ TCP MSS test passed                                -
+○ TCP multi-cycle test started                       -
+○ TCP multi-cycle test passed                        -
+○ TCP address test started                           -
+○ TCP address test passed                            -
+○ TCP simultaneous close test started                -
+○ TCP simultaneous close test passed                 -
+○ TCP half-close test started                        -
+○ TCP half-close test passed                         -
+○ TCP socket test passed                             -
+○ DNS google resolve                                 -
+○ DNS example resolve                                -
+○ DNS NXDOMAIN handling                              -
+○ DNS empty hostname                                 -
+○ DNS long hostname                                  -
+○ DNS txid varies                                    -
+○ DNS test completed                                 -
+○ HTTP port out of range                             -
+○ HTTP port non-numeric                              -
+○ HTTP empty host                                    -
+○ HTTP URL too long                                  -
+○ HTTP HTTPS rejection                               -
+○ HTTP invalid domain                                -
+○ HTTP example fetch                                 -
+○ HTTP test completed                                -
+○ Pipe IPC test passed                               -
+○ Unix socket test passed                            -
+○ SIGTERM kill test passed                           -
+○ SIGCHLD delivery test passed                       -
+○ Pause syscall test passed                          -
+○ Sigsuspend syscall test passed                     -
+○ Dup syscall test passed                            -
+○ Fcntl syscall test passed                          -
+○ Close-on-exec test passed                          -
+○ Pipe2 syscall test passed                          -
+○ Shell pipeline execution test passed               -
+○ Signal exec reset test passed                      -
+○ Waitpid test passed                                -
+○ Signal fork inheritance test passed                -
+○ WNOHANG timing test passed                         -
+○ Poll syscall test passed                           -
+○ Select syscall test passed                         -
+○ O_NONBLOCK pipe test passed                        -
+○ TTY layer test passed                              -
+○ Session syscall test passed                        -
+○ File read test passed                              -
+○ Getdents test passed                               -
+○ Lseek test passed                                  -
+○ Filesystem write test passed                       -
+○ Filesystem rename test passed                      -
+○ Large file test passed (indirect blocks)           -
+○ Directory ops test passed                          -
+○ Link ops test passed                               -
+○ Access syscall test passed                         -
+○ Devfs test passed                                  -
+○ CWD test passed                                    -
+○ Exec ext2 test start                               -
+○ Exec ext2 /bin OK                                  -
+○ Exec ext2 ENOENT OK                                -
+○ Exec ext2 EACCES OK                                -
+○ Exec ext2 ENOTDIR OK                               -
+○ Exec ext2 /bin/ls OK                               -
+○ Exec ext2 test passed                              -
+○ Block alloc test passed                            -
+○ true coreutil test passed                          -
+○ false coreutil test passed                         -
+○ head coreutil test passed                          -
+○ tail coreutil test passed                          -
+○ wc coreutil test passed                            -
+○ which coreutil test passed                         -
+○ cat coreutil test passed                           -
+○ ls coreutil test passed                            -
+○ Rust std println! works                            -
+○ Rust std Vec works                                 -
+○ Rust std String works                              -
+○ Rust std getrandom works                           -
+○ Rust std HashMap works                             -
+○ Rust std realloc preserves data                    -
+○ Rust std format! macro works                       -
+○ Rust std realloc shrink preserves data             -
+○ Rust std read() error handling works               -
+○ Rust std read() success with pipe works            -
+○ Rust std malloc boundary conditions work           -
+○ Rust std posix_memalign works                      -
+○ Rust std sbrk works                                -
+○ Rust std getpid/gettid works                       -
+○ Rust std posix_memalign error handling works       -
+○ Rust std close works                               -
+○ Rust std mprotect works                            -
+○ Rust std stub functions work                       -
+○ Rust std free(NULL) is safe                        -
+○ Rust std write edge cases work                     -
+○ Rust std mmap/munmap direct tests work             -
+○ Rust std thread::sleep works                       -
+○ Rust std thread::spawn and join work               -
+○ Ctrl-C (SIGINT) test passed                        -
+○ Fork memory isolation test passed                  -
+○ Fork state copy test passed                        -
+○ Fork pending signal test passed                    -
+○ CoW signal delivery test passed                    -
+○ CoW cleanup test passed                            -
+○ CoW sole owner test passed                         -
+○ CoW stress test passed                             -
+○ CoW read-only page sharing test passed             -
+○ Argv support test passed                           -
+○ Exec argv test passed                              -
+○ Exec stack argv test passed                        -
+○ FbInfo syscall test passed                         -

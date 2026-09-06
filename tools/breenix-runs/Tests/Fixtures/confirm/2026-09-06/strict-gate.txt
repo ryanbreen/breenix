@@ -1,0 +1,35 @@
+[GATE_PREFLIGHT:structure_suites=51/51:critical_path_lines=259:pinned=120]
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/target/ext2-aarch64.img
+Iterations: 1
+Requirement: 100% success rate (all 1 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 25326 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788732337334-1788732350148:qemu_at_start=0:load_at_start=10.34:qemu_at_end=1:load_at_end=9.43:qemu_cpu_s=23.40:guest_uptime_ms=12004:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 1
+Successes: 1
+Failures: 0
+Success rate: 100%
+Duration: 13s
+
+=========================================
+PASS: 1/1 boots succeeded
+=========================================

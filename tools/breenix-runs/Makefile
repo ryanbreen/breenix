@@ -15,13 +15,19 @@ ICNS_NAME := AppIcon.icns
 # below; not meant to be set directly on the command line.
 CONFIG ?= release
 
-.PHONY: build test catalog icon app app-debug bundle
+.PHONY: build test unit-test ui-smoke catalog icon app app-debug bundle
 
 build:
 	swift build
 
-test:
+test: unit-test
+	$(MAKE) ui-smoke
+
+unit-test:
 	swift test
+
+ui-smoke:
+	bash scripts/ui-smoke.sh
 
 catalog:
 	cd ../.. && cargo run -p xtask -- dump-boot-stages --arch aarch64 --json > tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-aarch64.json

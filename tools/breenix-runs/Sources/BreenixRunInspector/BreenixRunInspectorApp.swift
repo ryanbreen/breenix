@@ -81,14 +81,17 @@ struct InspectorRootView: View {
 
                 TabView {
                     SubsystemsPane(viewModel: detail.subsystems)
+                        .accessibilityIdentifier("pane-subsystems")
                         .tabItem {
                             Label("Subsystems", systemImage: "checklist")
                         }
                     MessagesPane(messages: detail.messages)
+                        .accessibilityIdentifier("pane-messages")
                         .tabItem {
                             Label("Messages", systemImage: "text.alignleft")
                         }
                     TracesPane(viewModel: detail.traces)
+                        .accessibilityIdentifier("pane-traces")
                         .tabItem {
                             Label("Traces", systemImage: "waveform.path.ecg")
                         }
