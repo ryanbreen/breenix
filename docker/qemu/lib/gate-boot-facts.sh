@@ -21,6 +21,15 @@
 #
 # Depends on qemu_host_lock_count() from lib/qemu-host-lock.sh for the QEMU
 # count fields -- callers must source that file first.
+#
+# #865: arch-portable. gbf_resolve_qemu_pid takes the QEMU binary name as
+# its second argument (default qemu-system-aarch64, matching
+# qemu_host_lock_acquire's own default) so an x86 caller can pass
+# qemu-system-x86_64 and get the same "walk past a timeout(1) wrapper to
+# the real QEMU child" behavior the aarch64 gates already rely on.
+# gbf_qemu_cpu_seconds, gbf_last_heartbeat_uptime_ms and gbf_emit_line take
+# no binary name -- they operate on a PID or a serial file already resolved
+# to the right process by the caller, and carry no arch-specific text.
 
 # Host wall clock in whole milliseconds since the epoch. macOS `date` has no
 # %N (that is GNU-only), so this uses the same `python3 -c
@@ -37,9 +46,28 @@ gbf_host_ms_now() {
 # the second field. Falls back to /proc/loadavg's own first field on a
 # Linux host, and to the literal string "NA" if neither source is
 # readable -- not a failure under the caller's `set -e`.
+#
+# #865: `|| true` on the sysctl assignment is load-bearing on Linux, not
+# decorative. `vm.loadavg` is a valid sysctl key on macOS (the only host
+# this file's 2 aarch64 callers run on); on the beast Linux host #865's 2
+# x86 callers added, it is not, so `sysctl -n vm.loadavg` exits nonzero.
+# The 2 x86 callers (unlike the 2 aarch64 ones) run under `set -o
+# pipefail`, which makes that failing first pipeline stage's nonzero
+# status the WHOLE PIPELINE's exit status even with stderr redirected
+# away and even though the last stage (`awk`) succeeds -- this is why the
+# hazard is latent on the 2 aarch64 callers regardless of host (no
+# pipefail to propagate the failure) and live only where both conditions
+# hold: pipefail AND a host where the sysctl key does not exist. The 4
+# callers run under `set -e`, under which a plain `v="$(pipeline)"`
+# assignment with no `|| true` is a simple command whose failure is fatal
+# -- not merely "$v ends up empty, fall through to the /proc/loadavg
+# branch below" the way the rest of this function's own logic intends.
+# Caught live on beast running run-x86-boot-tests.sh #865 added: the gate
+# aborted at this exact line before the /proc/loadavg fallback ran, with
+# no GATE_BOOT_FACTS line printed for that boot.
 gbf_load_1m() {
     local v
-    v="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
+    v="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')" || true
     if [ -n "$v" ]; then
         printf '%s' "$v"
         return
@@ -65,17 +93,32 @@ gbf_load_1m() {
 # CPU time as "QEMU's CPU time" would silently misreport a boot at
 # ~0.00s regardless of how busy QEMU actually was. This walks one level
 # down via `pgrep -P` to find that child; a
-# caller that instead backgrounds qemu-system-aarch64 directly (no
+# caller that instead backgrounds the QEMU binary directly (no
 # `timeout` in front of it) has $QEMU_PID already pointing at the right
 # process, which the `comm=` check below detects and returns unchanged.
+# `$2` names which QEMU binary to look for (default qemu-system-aarch64,
+# matching qemu_host_lock_acquire's own default) -- an x86 caller passes
+# qemu-system-x86_64 so this resolves the right child under a `timeout`
+# wrapper there too (e.g. the fs-fault gate's x86 leg).
 gbf_resolve_qemu_pid() {
     local wrapper_pid="$1"
+    local qemu_bin="${2:-qemu-system-aarch64}"
     local comm child
-    comm="$(ps -o comm= -p "$wrapper_pid" 2>/dev/null | tr -d ' ')"
+    # #865: `|| true` is load-bearing, the same hazard gbf_load_1m's own
+    # comment documents in detail: on the 2 x86 callers (which run under
+    # `set -o pipefail`), `ps` exiting nonzero for an already-gone PID
+    # makes the whole pipeline's status nonzero even though `tr`
+    # (downstream of it) succeeds, and `set -e` (the 4 callers of this
+    # file run under it) treats this bare assignment's failure as fatal.
+    # This function's own callers can legitimately reach it with an
+    # already-gone `wrapper_pid` (a boot whose QEMU process died on its
+    # own before the caller's poll loop's own bound was reached), so this
+    # is not a hypothetical for the 2 callers it can bite.
+    comm="$(ps -o comm= -p "$wrapper_pid" 2>/dev/null | tr -d ' ')" || true
     case "$comm" in
-        *qemu-system-aarch64) printf '%s' "$wrapper_pid"; return ;;
+        *"$qemu_bin") printf '%s' "$wrapper_pid"; return ;;
     esac
-    child="$(pgrep -P "$wrapper_pid" -x qemu-system-aarch64 2>/dev/null | head -1)"
+    child="$(pgrep -P "$wrapper_pid" -x "$qemu_bin" 2>/dev/null | head -1)"
     if [ -n "$child" ]; then
         printf '%s' "$child"
     else
@@ -86,15 +129,20 @@ gbf_resolve_qemu_pid() {
 # QEMU's own accumulated CPU time (user+system), converted from `ps -o
 # time=`'s own [[dd-]hh:]mm:ss[.ss] display to whole (fractional) seconds.
 # `pid` MUST already be qemu-system-aarch64's own pid -- resolve it with
-# gbf_resolve_qemu_pid first if the caller launched via `timeout`. MUST be
-# sampled before the caller's own `kill $QEMU_PID` -- ps has no output
-# for a PID that is already gone, which this function reports as "NA"
-# rather than 0 (0 would misreport a boot killed too late to sample, as if
-# QEMU had burned no CPU at all).
+# gbf_resolve_qemu_pid first if the caller launched via `timeout`. Intended
+# to be sampled before the caller's own `kill $QEMU_PID` for a live CPU-time
+# reading, but a PID that already exited on its own (before the caller's
+# poll loop's own bound was reached) is exactly what the "NA" branch below
+# is for, not merely a boot killed too late to sample -- ps has no output
+# for a PID that is already gone, which is this function's cue to report
+# "NA" rather than the misleading 0 (0 would claim QEMU burned no CPU at
+# all). #865: `|| true` on the assignment is what lets that branch be
+# reached at all -- see gbf_resolve_qemu_pid's own comment on the identical
+# `set -o pipefail` + `set -e` hazard, caught live on beast the same way.
 gbf_qemu_cpu_seconds() {
     local pid="$1"
     local raw
-    raw="$(ps -o time= -p "$pid" 2>/dev/null | tr -d ' ')"
+    raw="$(ps -o time= -p "$pid" 2>/dev/null | tr -d ' ')" || true
     if [ -z "$raw" ]; then
         printf 'NA'
         return
@@ -114,8 +162,21 @@ gbf_qemu_cpu_seconds() {
 # The guest's own last `[heartbeat] ... uptime_ms=N` field in the serial
 # file -- the guest-side clock reading the host-side wall-clock facts this
 # file gathers are compared against. "NA" when the file has no heartbeat
-# line (a boot that died before userspace, or has not written a serial
-# file at all).
+# line (a boot that died before userspace, has not written a serial file
+# at all, or -- #865's own x86 callers -- an arch/profile whose init
+# service does not print this literal marker).
+#
+# #865: `|| true` on the assignment is the same `set -o pipefail` + `set
+# -e` hazard gbf_load_1m and gbf_resolve_qemu_pid's own comments document,
+# in its "no match at all" shape rather than their "command not found"
+# shape: a zero-match first grep exits nonzero, and unlike the pgrep-into-
+# head chains elsewhere in this file, the SECOND grep here also sees empty
+# input and ALSO exits nonzero (`tail`/`cut` downstream of it exit 0 on
+# empty input either way, which does not save the pipeline under
+# pipefail's own "last command to exit nonzero" rule). Caught live on
+# beast running one of #865's x86 callers, where this literal marker did
+# not appear in the captured serial -- confirming the zero-match case is
+# real on x86, not only a theoretical one this fix guards preemptively.
 gbf_last_heartbeat_uptime_ms() {
     local serial_file="$1"
     local val
@@ -124,7 +185,7 @@ gbf_last_heartbeat_uptime_ms() {
         return
     fi
     val="$(grep -aoE '\[heartbeat\][^]]*uptime_ms=[0-9]+' "$serial_file" 2>/dev/null \
-        | grep -aoE 'uptime_ms=[0-9]+' | tail -1 | cut -d= -f2)"
+        | grep -aoE 'uptime_ms=[0-9]+' | tail -1 | cut -d= -f2)" || true
     if [ -z "$val" ]; then
         printf 'NA'
     else

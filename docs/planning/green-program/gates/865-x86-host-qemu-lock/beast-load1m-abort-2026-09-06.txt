@@ -1,0 +1,33 @@
+# #865 gbf_load_1m set -e/pipefail abort, first observed on beast
+
+Host: beast, Incus container breenix-x86 (Debian, Linux)
+Clone: /root/breenix-x86lock (gates/x86-host-qemu-lock @ b2a99c295)
+Command: BREENIX_GATE_TMP=/root/breenix-x86lock-tmp-a ./docker/qemu/run-x86-boot-tests.sh 1
+Log: /root/breenix-x86lock-tmp-a/run.log (tail, at the point of failure)
+
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:507, exit 1)
+  failing command: LOAD_AT_START="$(gbf_load_1m)"
+
+Root cause: docker/qemu/lib/gate-boot-facts.sh's gbf_load_1m ran
+  v="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
+with no `|| true`. `vm.loadavg` is a valid sysctl(8) key on macOS (the
+only host this file's two aarch64 callers had ever run on before this
+branch); on this Linux container it is not, so `sysctl` exits nonzero.
+Under `set -o pipefail` (this gate sets it; the aarch64 callers do not)
+that failing first stage makes the whole pipeline's exit status nonzero
+even though the last stage (`awk`) succeeds, and under `set -e` (the 4
+callers of this file, including this one, each set that) the bare
+assignment's failure aborted the whole gate at this line -- before the /proc/loadavg fallback a few lines
+down in the same function ever ran.
+
+Fix: `|| true` on the assignment, matching the pattern already used
+elsewhere in this same file for the identical hazard (see
+docker/qemu/lib/qemu-host-lock.sh's qemu_host_lock_count, which already
+wraps its own pgrep pipelines the same way). Two more assignments in the
+same file had the identical latent shape (gbf_resolve_qemu_pid,
+gbf_qemu_cpu_seconds: `ps ... | tr -d ' '` failing when the sampled PID
+has already exited; gbf_last_heartbeat_uptime_ms: a two-stage grep
+failing when the serial has no `[heartbeat]` marker, which each x86
+gate boot hits since the x86 profile does not print that literal) and
+got the same fix in this same commit.

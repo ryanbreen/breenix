@@ -42,14 +42,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# #826/#834/R181: sourced unconditionally since this harness's --arch is
-# runtime-selected, but only the aarch64 branch below actually calls
-# qemu_host_lock_acquire -- the host-wide lock in
-# docker/qemu/lib/qemu-host-lock.sh serializes qemu-system-aarch64 boots
-# specifically, and this script's x86_64 leg (qemu-system-x86_64) is outside
-# that lock's scope, same as run.sh's x86_64 leg. #834 extends this lock's
-# coverage from docker/qemu/*.sh (its original #826/R181 scope) to scripts/
-# as well.
+# #826/#834/#865/R181: sourced unconditionally since this harness's --arch
+# is runtime-selected, and both branches below now call
+# qemu_host_lock_acquire "$QEMU_BIN" -- the host-wide lock in
+# docker/qemu/lib/qemu-host-lock.sh keeps one lock domain per QEMU binary
+# (#865), so the aarch64 and x86_64 legs each cooperate with a concurrent
+# gate lane running the same binary, without contending with each other.
+# #834 extended this lock's coverage from docker/qemu/*.sh (its original
+# #826/R181 scope) to scripts/ as well; #865 closed the x86_64-leg gap this
+# comment used to disclose here (and in run.sh's own x86_64 leg).
 # shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
@@ -215,7 +216,7 @@ if [ "$ARCH" = "aarch64" ]; then
         exit 1
     fi
     cp "$EXT2_DISK" "$OUTPUT_DIR/ext2-writable.img"
-    qemu_host_lock_acquire
+    qemu_host_lock_acquire "$QEMU_BIN"
     "$QEMU_BIN" \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL_BIN" \
@@ -260,6 +261,7 @@ else
     fi
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
+    qemu_host_lock_acquire "$QEMU_BIN"
     "$QEMU_BIN" \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -274,6 +276,9 @@ else
         -gdb "tcp::$GDB_PORT" \
         >"$OUTPUT_DIR/qemu.log" 2>&1 &
     QEMU_PID=$!
+    # F2: registers QEMU with the lock's own EXIT trap, the same reason the
+    # aarch64 branch above does.
+    qemu_host_lock_track_pid "$QEMU_PID"
 fi
 
 echo "QEMU started (PID: $QEMU_PID); letting the kernel run ${SETTLE_SECONDS}s to record events..."

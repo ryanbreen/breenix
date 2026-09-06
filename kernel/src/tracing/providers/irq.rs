@@ -254,20 +254,37 @@ pub fn trace_heartbeat_marker(payload: u32) {
 /// (the Tier-1 `kernel/src/interrupts/timer.rs` on x86 and the critical-path
 /// `kernel/src/arch_impl/aarch64/timer_interrupt.rs`) call directly and
 /// unconditionally on each tick, so it is held to the same rules as the ISR
-/// that reaches it even though `boot_tests` does not ship: the one-shot
-/// latch check is a single relaxed load, and the reporting path that fires
-/// exactly once uses only the lock-free `raw_serial_*` writers
-/// `tracing::output`'s own panic-safe dump functions use -- no lock, no
-/// allocation, no `format!`.
+/// that reaches it even though `boot_tests` does not ship: no lock, no
+/// allocation, no `format!` -- and, since #847, no serial write either.
 ///
-/// See docs/planning/green-program/failure-capture/PR-2-2026-09-05.md.
+/// # The tick does not print (#847, ruling R188)
+///
+/// This module used to serialize its result to the UART from inside the
+/// tick, with the lock-free `raw_serial_*` writers, precisely because the
+/// logger's own lock is unavailable in an ISR. On a `-smp 4` aarch64 boot
+/// that lock-freedom let another CPU's serial line interleave byte-for-byte
+/// with this one on the shared UART, corrupting the marker text (#847
+/// quotes two captured specimens; the strict gate then scored the boot
+/// "Ring-span self-check marker missing" -- a false FAIL).
+///
+/// The measurement stays here, where the numbers are meaningful: it is taken
+/// at the `CHECK_AT_MS` checkpoint, from the tick that crosses it, against
+/// the ring as it stands at that instant. What moved is the PRINTING. This
+/// module now publishes the six numbers to atomics and sets a ready flag;
+/// `kernel/src/test_framework/registry.rs`'s `ring_span_report` boot test
+/// claims them from thread context and emits the `[RING_SPAN:...]` line
+/// through `serial_println!` -- the locked, interrupt-masked writer the
+/// framework's `[TEST:...]` markers go through -- so the two serialize
+/// against each other instead of racing.
+///
+/// See docs/planning/green-program/failure-capture/PR-2-2026-09-05.md and
+/// docs/planning/green-program/failure-capture/847-RING-SPAN-THREAD-PRINT-2026-09-06.md.
 #[cfg(feature = "boot_tests")]
-mod ring_span_self_check {
-    use core::sync::atomic::{AtomicBool, Ordering};
+pub(crate) mod ring_span_self_check {
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
     use super::TIMER_TICK;
     use crate::tracing::core::TRACE_BUFFERS;
-    use crate::tracing::output::{raw_serial_dec, raw_serial_newline, raw_serial_str};
     use crate::tracing::timestamp::timestamp_to_nanos;
 
     /// Wall-clock point (`tick_count * MS_PER_TICK`, arch-neutral: 1 ms/tick
@@ -278,22 +295,73 @@ mod ring_span_self_check {
     ///
     /// This does NOT need to be tuned so the unsampled baseline wraps CPU
     /// 0's ring by this point (an earlier version of this comment, and of
-    /// `report()` below, claimed exactly that -- see PR-2-2026-09-05.md
-    /// section 9 for why it was wrong on both counts: x86's 5x-slower PIT
-    /// tick rate meant this checkpoint's nominal tick count did not come
-    /// close to the ring's capacity there, and aarch64's own wrap timing
-    /// was itself close enough to this checkpoint, under normal boot-to-boot
-    /// host jitter, to sometimes go either way -- a real, measured ~8%
-    /// false-pass rate against a `TICK_SAMPLE = 1` mutation across the two
-    /// combined sample sets in that section). `report()`'s `ticks_total` /
-    /// `tick_events` ratio is what actually proves the guard is gating (see
-    /// its own doc comment), and does not depend on ring-wrap timing at
-    /// all, so this checkpoint only needs "enough ticks have happened for
-    /// the ratio to be meaningful" -- true within the first handful of
-    /// samples, well before 1 s on either architecture.
+    /// the reporting path below, claimed exactly that -- see
+    /// PR-2-2026-09-05.md section 9 for why it was wrong on both counts:
+    /// x86's 5x-slower PIT tick rate meant this checkpoint's nominal tick
+    /// count did not come close to the ring's capacity there, and aarch64's
+    /// own wrap timing was itself close enough to this checkpoint, under
+    /// normal boot-to-boot host jitter, to sometimes go either way -- a
+    /// real, measured ~8% false-pass rate against a `TICK_SAMPLE = 1`
+    /// mutation across the two combined sample sets in that section). The
+    /// `ticks_total` / `tick_events` ratio is what actually proves the guard
+    /// is gating (see `publish` below), and does not depend on ring-wrap
+    /// timing at all, so this checkpoint only needs "enough ticks have
+    /// happened for the ratio to be meaningful" -- true within the first
+    /// handful of samples, well before 1 s on either architecture.
     const CHECK_AT_MS: u64 = 1_000;
 
+    /// The per-CPU ring this check reads. Published beside the numbers
+    /// rather than baked into the marker text, so the thread-context printer
+    /// has no independent idea of which ring produced them.
+    const MEASURED_CPU: u32 = 0;
+
+    /// One-shot latch for the MEASUREMENT: `publish` runs at most once per
+    /// boot, from one tick on one CPU, so a published slot is not rewritten
+    /// afterwards.
+    ///
+    /// claim-lint:ok: #847 -- this is a property of the `swap` in `observe`
+    /// below, which a reader can check against the ten lines it names, not a
+    /// measured rate.
     static CHECKED: AtomicBool = AtomicBool::new(false);
+
+    /// Publication slots. Written by `publish` with `Relaxed` stores; their
+    /// visibility to a reader is carried by `READY`'s release store below,
+    /// which is the ordering edge the printer takes.
+    static CPU: AtomicU32 = AtomicU32::new(0);
+    static SPAN_MS: AtomicU64 = AtomicU64::new(0);
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    static DROPPED: AtomicU64 = AtomicU64::new(0);
+    static TICKS_TOTAL: AtomicU64 = AtomicU64::new(0);
+    static TICK_EVENTS: AtomicU64 = AtomicU64::new(0);
+
+    /// Publication flag. `publish` stores `true` with `Release` AFTER the six
+    /// slots above; a reader that observes `true` with `Acquire` therefore
+    /// sees those six stores. A reader that observes `false` returns without
+    /// touching a slot, so a half-written set is not observable through this
+    /// module's own accessors.
+    ///
+    /// claim-lint:ok: #847 -- an ordering argument about the two accessors
+    /// directly below (`is_ready`, `claim`), readable in place; it is not a
+    /// measurement.
+    static READY: AtomicBool = AtomicBool::new(false);
+
+    /// Exactly-once latch for the PRINT. The measurement fires once; this
+    /// makes the marker print once too, no matter how many callers reach
+    /// `claim` (the aarch64 registry executor and the x86 direct gate call
+    /// are separate call sites, and a build with both active must still emit
+    /// one line).
+    static CLAIMED: AtomicBool = AtomicBool::new(false);
+
+    /// The published measurement, handed to the thread-context printer.
+    #[derive(Clone, Copy)]
+    pub(crate) struct RingSpanReport {
+        pub(crate) cpu: u32,
+        pub(crate) span_ms: u64,
+        pub(crate) writes: u64,
+        pub(crate) dropped: u64,
+        pub(crate) ticks_total: u64,
+        pub(crate) tick_events: u64,
+    }
 
     /// Called on each tick; returns immediately once latched. The
     /// comparison and the latch load are the only per-tick cost this adds.
@@ -309,22 +377,56 @@ mod ring_span_self_check {
         if CHECKED.swap(true, Ordering::AcqRel) {
             return;
         }
-        report();
+        publish();
+    }
+
+    /// Whether the measurement has been published yet. The waiting side of
+    /// the registry test spins on this.
+    pub(crate) fn is_ready() -> bool {
+        READY.load(Ordering::Acquire)
+    }
+
+    /// Take the published measurement, once. The result is empty before the
+    /// measurement is published, and empty for a second caller once one
+    /// caller has taken it.
+    pub(crate) fn claim() -> Option<RingSpanReport> {
+        if !READY.load(Ordering::Acquire) {
+            return None;
+        }
+        if CLAIMED.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        // Safe to read relaxed: the acquire load above pairs with `publish`'s
+        // release store, and `publish` runs at most once, so no writer can be
+        // racing these loads.
+        Some(RingSpanReport {
+            cpu: CPU.load(Ordering::Relaxed),
+            span_ms: SPAN_MS.load(Ordering::Relaxed),
+            writes: WRITES.load(Ordering::Relaxed),
+            dropped: DROPPED.load(Ordering::Relaxed),
+            ticks_total: TICKS_TOTAL.load(Ordering::Relaxed),
+            tick_events: TICK_EVENTS.load(Ordering::Relaxed),
+        })
     }
 
     /// Reads CPU 0's ring with the same raw-pointer idiom
-    /// `tracing::output::dump_buffer` uses, and prints
-    /// `[RING_SPAN:cpu=0:span_ms=<N>:writes=<W>:dropped=<D>]`. `span_ms` is
-    /// the delta between the oldest and newest live `TIMER_TICK` entries --
-    /// see the module doc comment for why it is filtered to that type.
-    fn report() {
+    /// `tracing::output::dump_buffer` uses, and PUBLISHES
+    /// `cpu`/`span_ms`/`writes`/`dropped`/`ticks_total`/`tick_events`.
+    /// `span_ms` is the delta between the oldest and newest live
+    /// `TIMER_TICK` entries -- see the module doc comment for why it is
+    /// filtered to that type.
+    ///
+    /// This writes no serial output: see the module doc comment's "#847"
+    /// section. It runs in the tick, so it takes no lock, makes no heap
+    /// allocation, does no string formatting and performs no I/O.
+    fn publish() {
         // SAFETY: read-only access to CPU 0's own ring buffer, from CPU 0's
         // own timer-tick path with no concurrent writer of this slot (single
         // writer per per-CPU buffer, and the current tick's own write, if
         // any, already landed above before this function is reached).
         let buffer = unsafe {
             let buffers_ptr = core::ptr::addr_of!(TRACE_BUFFERS);
-            &(*buffers_ptr)[0]
+            &(*buffers_ptr)[MEASURED_CPU as usize]
         };
 
         let writes = buffer.write_index() as u64;
@@ -365,17 +467,15 @@ mod ring_span_self_check {
         // ratio collapse to ~1 regardless of timing.
         let ticks_total = crate::tracing::providers::counters::TIMER_TICK_TOTAL.aggregate();
 
-        raw_serial_str("[RING_SPAN:cpu=0:span_ms=");
-        raw_serial_dec(span_ms);
-        raw_serial_str(":writes=");
-        raw_serial_dec(writes);
-        raw_serial_str(":dropped=");
-        raw_serial_dec(dropped);
-        raw_serial_str(":ticks_total=");
-        raw_serial_dec(ticks_total);
-        raw_serial_str(":tick_events=");
-        raw_serial_dec(tick_events);
-        raw_serial_str("]");
-        raw_serial_newline();
+        CPU.store(MEASURED_CPU, Ordering::Relaxed);
+        SPAN_MS.store(span_ms, Ordering::Relaxed);
+        WRITES.store(writes, Ordering::Relaxed);
+        DROPPED.store(dropped, Ordering::Relaxed);
+        TICKS_TOTAL.store(ticks_total, Ordering::Relaxed);
+        TICK_EVENTS.store(tick_events, Ordering::Relaxed);
+        // Release: publishes the six stores above to any thread that reads
+        // `READY` with acquire. This is the whole ordering contract between
+        // the tick and the printer.
+        READY.store(true, Ordering::Release);
     }
 }
