@@ -7,6 +7,15 @@ set -e
 COUNT=${1:-10}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/#834/#865/R181: this script's own COUNT qemu-system-x86_64 containers
+# are deliberately launched concurrently WITH EACH OTHER (its own internal
+# parallelism, matching run-boot-parallel.sh's x86 twin) -- the host-wide
+# lock in lib/qemu-host-lock.sh adds exclusion against a DIFFERENT script's
+# x86 boot lane running at the same time on the same host, acquired once
+# before the launch loop and released once after the wait loop, treating
+# this whole COUNT-container batch as one occupant of the x86 lock domain.
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 # #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
 # invoking this script hardcode the identical /tmp/breenix_kthread_$i path, so
 # one lane's rm -rf/mkdir can clobber another lane's in-flight run. Defaulting
@@ -39,6 +48,9 @@ echo "Image: $UEFI_IMG"
 # matches any breenix-qemu container currently running, including a
 # concurrent invocation's still-running one.
 declare -a CONTAINER_NAMES=()
+declare -a RUNNER_PIDS=()
+
+qemu_host_lock_acquire qemu-system-x86_64
 
 # Create output directories and launch containers
 for i in $(seq 1 $COUNT); do
@@ -65,6 +77,8 @@ for i in $(seq 1 $COUNT); do
             -serial file:/output/serial_user.txt \
             -serial file:/output/serial_kernel.txt \
         &>/dev/null &
+    RUNNER_PIDS[$i]=$!
+    qemu_host_lock_track_pid "${RUNNER_PIDS[$i]}"
     echo "  Started test $i"
 done
 
@@ -96,6 +110,9 @@ done
 for i in $(seq 1 $COUNT); do
     docker stop -t 5 "${CONTAINER_NAMES[$i]}" >/dev/null 2>&1 || true
 done
+# #865: this batch's own COUNT containers are each reaped above, so the x86
+# lock domain is freed here rather than deferred to script exit.
+qemu_host_lock_release
 
 echo ""
 echo "========================================="

@@ -1,16 +1,53 @@
 #!/bin/bash
-# #826/#827/R181: shared host-wide lock that serializes qemu-system-aarch64
-# boots on this Mac.
+# #826/#827/#834/#865/R181: shared host-wide lock that serializes QEMU boots,
+# one lock domain per QEMU binary.
 #
 # R181's own measurement: 4-6 concurrent qemu-system-aarch64 processes on
 # this host ran the guest clock at 37-53% of wall-clock, which then falsely
 # reds the strict gate's ~18s poll ceiling (#826) even though the guest was
-# healthy and simply starved of host CPU. Each docker/qemu/*.sh script that
-# launches qemu-system-aarch64 is expected to `source` this file and wrap
-# each launch between qemu_host_lock_acquire and qemu_host_lock_release, so
-# "at most one aarch64 QEMU boot alive on this host at a time" is mechanical
+# healthy and simply starved of host CPU. #865 found the identical shape on
+# the beast x86 host: several qemu-system-x86_64 TCG lanes running
+# concurrently starve each other and hit the same kind of false timing
+# ceiling (Run Inspector run 20260906T014135Z-x86_64-gate-864a: boot=900s
+# total=1081s, failed on clock_gettime_test -- the #631/#766 timing
+# signature -- while other lanes were booting). Each docker/qemu/*.sh or
+# scripts/*.sh script that launches a QEMU binary is expected to `source`
+# this file and wrap each launch between qemu_host_lock_acquire and
+# qemu_host_lock_release, so
+# "at most one <arch> QEMU boot alive on this host at a time" is mechanical
 # rather than an operating discipline ("check pgrep, then launch") each
 # gate author has to remember and re-derive by hand.
+#
+# ARCHITECTURE AWARENESS (#865): the three functions below that need to
+# know which QEMU binary is in play -- qemu_host_lock_dir,
+# qemu_host_lock_count, qemu_host_lock_acquire -- take the binary name
+# (`qemu-system-aarch64` or `qemu-system-x86_64`) as their first argument,
+# defaulting to `qemu-system-aarch64` when omitted so the ~30 aarch64 call
+# sites that predate #865 and call e.g. `qemu_host_lock_acquire` bare keep
+# working byte-for-byte. A non-empty first argument that is neither of
+# those two literals (a typo, e.g. `qemu-system-x86`) is refused via
+# `_qhl_resolve_bin` below -- exit 1 with a FAIL line on stderr -- rather
+# than silently treated as `qemu-system-aarch64` by a `case ... *)`
+# default arm, which would otherwise pick the wrong lock domain and the
+# wrong `pgrep` target with no indication anything was wrong.
+# qemu_host_lock_release and qemu_host_lock_track_pid
+# need no such argument -- they operate on this process's own global lock
+# state (`_QHL_LOCK_DIR`, `_QHL_TRACKED_PIDS`), already scoped to whichever
+# binary the matching acquire call was made for. An x86 caller passes the
+# binary name
+# explicitly: `qemu_host_lock_acquire qemu-system-x86_64`. This is one lock
+# PER BINARY NAME, not one global lock -- an aarch64 boot and an x86 boot on
+# the same host do not contend with each other (they are different QEMU
+# binaries competing for different CPU-emulation resources; #865's own
+# report is x86 lanes starving x86 lanes on the beast host, whose own
+# process table carries 0 qemu-system-aarch64 entries), so each binary gets
+# its own lock directory
+# (`a64-qemu.lock` / `x86-qemu.lock` under the same cache root) and its own
+# `pgrep -x <binary>` census. A THIRD kind of exclusion ("only one QEMU of
+# any arch, host-wide") is not what this file provides -- #865's own audit
+# found 0 call sites in this repo asking for it (the beast x86 host's
+# process table carries 0 aarch64 QEMU entries, and the Mac's native
+# aarch64 gates do not also launch x86 QEMU while they run).
 #
 # LOCK IMPLEMENTATION: macOS ships no flock(1). This uses an atomic mkdir
 # as the lock primitive (mkdir either succeeds and creates the directory,
@@ -69,46 +106,95 @@ _QHL_LOCK_DIR=""
 _QHL_DISABLED=0
 _QHL_TRAP_INSTALLED=0
 _QHL_TRACKED_PIDS=()
+_QHL_RESOLVED_BIN=""
 
-# The directory this lock's atomic mkdir acquires. Not the file the
-# top-of-file comment's "flock on <path>" language names literally -- the
-# configured/default value IS that path, used directly as the mkdir target,
-# since mkdir (not a plain file) is this implementation's atomic primitive.
-qemu_host_lock_dir() {
-    if [ -n "${BREENIX_QEMU_LOCK:-}" ] && [ "$BREENIX_QEMU_LOCK" != "off" ]; then
-        printf '%s\n' "$BREENIX_QEMU_LOCK"
-    else
-        printf '%s\n' "${HOME:-/tmp}/.cache/breenix/a64-qemu.lock"
-    fi
+# Resolves $1 to a known QEMU binary name into the global
+# _QHL_RESOLVED_BIN, defaulting to qemu-system-aarch64 when $1 is empty
+# (the pre-#865 bare-call shape, see the ARCHITECTURE AWARENESS header
+# comment) and returns 0. On a non-empty $1 that is neither
+# qemu-system-aarch64 nor qemu-system-x86_64 -- a typo, e.g.
+# qemu-system-x86 -- prints a FAIL line to stderr, clears
+# _QHL_RESOLVED_BIN, and returns 1 (#865 F1: this used to be a silent
+# `case ... *)` fallthrough to the aarch64 lock domain and pgrep target
+# in both qemu_host_lock_dir and qemu_host_lock_count). 3/3 call sites
+# below invoke it as a plain function call --
+# `_qhl_resolve_bin "${1:-}" || exit 1` -- not via `$( )` command
+# substitution, so the `exit 1` on an unrecognized name runs in the SAME
+# shell as the caller (qemu_host_lock_dir/qemu_host_lock_count's own
+# bodies already execute inside whatever subshell their own caller's
+# command substitution created; qemu_host_lock_acquire's body runs
+# directly in the calling script's shell) rather than being swallowed by
+# an extra throwaway subshell this helper would otherwise add.
+_qhl_resolve_bin() {
+    _QHL_RESOLVED_BIN="${1:-qemu-system-aarch64}"
+    case "$_QHL_RESOLVED_BIN" in
+        qemu-system-aarch64|qemu-system-x86_64)
+            return 0
+            ;;
+        *)
+            echo "QEMU HOST LOCK: FAIL -- unrecognized QEMU binary name: '$_QHL_RESOLVED_BIN' (expected qemu-system-aarch64 or qemu-system-x86_64)" >&2
+            _QHL_RESOLVED_BIN=""
+            return 1
+            ;;
+    esac
 }
 
-# Host-wide count of qemu-system-aarch64 processes. Native launches (bare,
-# under nice(1), or the exec'd child of timeout(1)) are counted via a
-# process-name match (`pgrep -x`), not a full-command-line search: GNU
-# coreutils timeout forks a monitoring parent that keeps
-# `timeout N qemu-system-aarch64 ...` as its OWN argv for the child's whole
-# life (found live: `pgrep -f qemu-system-aarch64` during a real
-# timeout-wrapped boot returned that parent's PID and the child's PID both,
-# double-counting one boot as two -- nice(1) execs in place and does not
-# have this problem). Docker-wrapped launches (run-aarch64-test.sh,
-# run-aarch64-userspace.sh, run-aarch64-interactive.sh) are counted
-# separately: their actual qemu-system-aarch64 process runs inside
-# Docker's own Linux VM, invisible to this host's process table, so the
-# host-side `docker run ... qemu-system-aarch64` CLI invocation blocking
-# for the container's life is the visible proxy, matched by a
-# full-command-line pattern narrow enough not to pick up an unrelated
-# process that merely mentions the token. Not used to kill anything --
-# observational only, printed so a human or a launch log can see what this
-# host was carrying at the moment of a lock acquisition.
+# The directory this lock's atomic mkdir acquires, for the QEMU binary named
+# in $1 (default qemu-system-aarch64, see the ARCHITECTURE AWARENESS header
+# comment). Not the file the top-of-file comment's "flock on <path>"
+# language names literally -- the configured/default value IS that path,
+# used directly as the mkdir target, since mkdir (not a plain file) is this
+# implementation's atomic primitive. BREENIX_QEMU_LOCK, when set to a real
+# path, overrides the default for WHICHEVER binary the caller asked for --
+# it is one override knob shared by both arches, matching its existing
+# single-knob shape rather than growing an a64/x86-specific pair of
+# variables no caller has ever needed.
+qemu_host_lock_dir() {
+    _qhl_resolve_bin "${1:-}" || exit 1
+    local qemu_bin="$_QHL_RESOLVED_BIN"
+    if [ -n "${BREENIX_QEMU_LOCK:-}" ] && [ "$BREENIX_QEMU_LOCK" != "off" ]; then
+        printf '%s\n' "$BREENIX_QEMU_LOCK"
+        return
+    fi
+    case "$qemu_bin" in
+        qemu-system-x86_64)
+            printf '%s\n' "${HOME:-/tmp}/.cache/breenix/x86-qemu.lock"
+            ;;
+        *)
+            printf '%s\n' "${HOME:-/tmp}/.cache/breenix/a64-qemu.lock"
+            ;;
+    esac
+}
+
+# Host-wide count of the QEMU binary named in $1 (default
+# qemu-system-aarch64). Native launches (bare, under nice(1), or the exec'd
+# child of timeout(1)) are counted via a process-name match (`pgrep -x`),
+# not a full-command-line search: GNU coreutils timeout forks a monitoring
+# parent that keeps `timeout N <qemu_bin> ...` as its OWN argv for the
+# child's whole life (found live: `pgrep -f qemu-system-aarch64` during a
+# real timeout-wrapped boot returned that parent's PID and the child's PID
+# both, double-counting one boot as two -- nice(1) execs in place and does
+# not have this problem). Docker-wrapped launches (run-aarch64-test.sh,
+# run-aarch64-userspace.sh, run-aarch64-interactive.sh, and their x86 twins)
+# are counted separately: their actual QEMU process runs inside Docker's own
+# Linux VM, invisible to this host's process table, so the host-side
+# `docker run ... <qemu_bin>` CLI invocation blocking for the container's
+# life is the visible proxy, matched by a full-command-line pattern narrow
+# enough not to pick up an unrelated process that merely mentions the
+# token. Not used to kill anything -- observational only, printed so a
+# human or a launch log can see what this host was carrying at the moment
+# of a lock acquisition.
 qemu_host_lock_count() {
+    _qhl_resolve_bin "${1:-}" || exit 1
+    local qemu_bin="$_QHL_RESOLVED_BIN"
     # pgrep exits 1 (not an error) when no process matches, and with a caller
     # running `set -o pipefail` that would make either pipeline below "fail"
     # and, for the bare `count="$(qemu_host_lock_count)"` assignment this
     # function feeds, trip the caller's `set -e` -- an empty host is not a
     # failure, so pgrep's own exit status is swallowed in both legs.
     local native docker_wrapped
-    native="$( { pgrep -x qemu-system-aarch64 2>/dev/null || true; } | wc -l | tr -d ' ')"
-    docker_wrapped="$( { pgrep -f 'docker run.*qemu-system-aarch64' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+    native="$( { pgrep -x "$qemu_bin" 2>/dev/null || true; } | wc -l | tr -d ' ')"
+    docker_wrapped="$( { pgrep -f "docker run.*$qemu_bin" 2>/dev/null || true; } | wc -l | tr -d ' ')"
     echo $((native + docker_wrapped))
 }
 
@@ -172,10 +258,14 @@ _qhl_verdict_banner() {
     fi
 }
 
-# Blocking acquire. Prints the host aarch64 QEMU count on each call (locked
-# or not). When locked and contended, prints a wait message roughly once per
-# 30s span (poll granularity is 1s; the message is not itself the poll interval).
+# Blocking acquire for the QEMU binary named in $1 (default
+# qemu-system-aarch64, see the ARCHITECTURE AWARENESS header comment).
+# Prints the host count for that binary on each call (locked or not). When
+# locked and contended, prints a wait message roughly once per 30s span
+# (poll granularity is 1s; the message is not itself the poll interval).
 qemu_host_lock_acquire() {
+    _qhl_resolve_bin "${1:-}" || exit 1
+    local qemu_bin="$_QHL_RESOLVED_BIN"
     _qhl_chain_exit_trap
     if [ -n "${BREENIX_QEMU_LOCK:-}" ] && [ "$BREENIX_QEMU_LOCK" != "off" ]; then
         case "$BREENIX_QEMU_LOCK" in
@@ -187,16 +277,16 @@ qemu_host_lock_acquire() {
         esac
     fi
     local count
-    count="$(qemu_host_lock_count)"
+    count="$(qemu_host_lock_count "$qemu_bin")"
     if [ "${BREENIX_QEMU_LOCK:-}" = "off" ]; then
         _QHL_DISABLED=1
-        echo "QEMU HOST LOCK: DISABLED (BREENIX_QEMU_LOCK=off) -- host aarch64 QEMU count now: $count -- NOT serializing" >&2
+        echo "QEMU HOST LOCK: DISABLED (BREENIX_QEMU_LOCK=off) -- host $qemu_bin count now: $count -- NOT serializing" >&2
         return 0
     fi
-    echo "QEMU HOST LOCK: host aarch64 QEMU count before acquire: $count" >&2
+    echo "QEMU HOST LOCK: host $qemu_bin count before acquire: $count" >&2
 
     local lock_dir waited=0 next_message=30
-    lock_dir="$(qemu_host_lock_dir)"
+    lock_dir="$(qemu_host_lock_dir "$qemu_bin")"
     mkdir -p "$(dirname "$lock_dir")" 2>/dev/null || true
 
     while ! mkdir "$lock_dir" 2>/dev/null; do
@@ -210,7 +300,7 @@ qemu_host_lock_acquire() {
             fi
         fi
         if [ "$waited" -ge "$next_message" ]; then
-            echo "QEMU HOST LOCK: waiting for $lock_dir (${waited}s elapsed, host aarch64 QEMU count=$(qemu_host_lock_count))..." >&2
+            echo "QEMU HOST LOCK: waiting for $lock_dir (${waited}s elapsed, host $qemu_bin count=$(qemu_host_lock_count "$qemu_bin"))..." >&2
             next_message=$((next_message + 30))
         fi
         sleep 1

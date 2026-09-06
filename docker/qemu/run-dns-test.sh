@@ -9,6 +9,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# #826/#834/#865/R181: this script's qemu-system-x86_64 boot runs behind the
+# host-wide lock in lib/qemu-host-lock.sh (one lock domain per QEMU binary).
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # Build Docker image if needed
 IMAGE_NAME="breenix-qemu"
@@ -66,6 +70,7 @@ cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
 # Run QEMU inside Docker
 # - Uses SLIRP networking (user mode) which provides DNS at 10.0.2.3
 # - TCG acceleration (software emulation) - slower but isolated
+qemu_host_lock_acquire qemu-system-x86_64
 timeout 120 docker run --rm \
     --name "$CONTAINER_NAME" \
     -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
@@ -99,6 +104,7 @@ timeout 120 docker run --rm \
     &
 
 QEMU_PID=$!
+qemu_host_lock_track_pid "$QEMU_PID"
 
 # Wait for DNS test markers
 echo "Waiting for DNS test completion..."

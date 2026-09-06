@@ -54,9 +54,13 @@ set -E
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# #826/R181: serializes qemu-system-aarch64 boots host-wide (aarch64 leg
-# only -- see the ARCH branch below; the x86 leg is unchanged, beast has no
-# equivalent contention and is out of this lane's scope).
+# #826/#865/R181: serializes QEMU boots host-wide, one lock domain per QEMU
+# binary -- see the ARCH branch below, which acquires the aarch64 or x86
+# domain depending on which leg is running. #865 closed the gap this
+# comment used to disclose (the x86 leg reaching beast with no lock of its
+# own): the shared qemu_host_lock_release call after the poll loop below is
+# a no-op on a leg that skipped its own acquire, so no ARCH-conditional
+# release was needed to add the x86 leg's own acquire.
 # shellcheck source=lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
@@ -265,6 +269,7 @@ if [ "$ARCH" = "aarch64" ]; then
 else
     cp target/ovmf/x64/code.fd "$OUTPUT_DIR/OVMF_CODE.fd"
     cp target/ovmf/x64/vars.fd "$OUTPUT_DIR/OVMF_VARS.fd"
+    qemu_host_lock_acquire qemu-system-x86_64
     timeout "${X86_BOOT_TIMEOUT:-1800}" qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -280,6 +285,9 @@ else
         -serial "file:$OUTPUT_DIR/serial_user.txt" \
         -serial "file:$OUTPUT_DIR/serial_kernel.txt" >"$OUTPUT_DIR/qemu.log" 2>&1 &
     QEMU_PID=$!
+    # F2: registers this PID with the x86 host lock's own EXIT trap, the
+    # same reason the aarch64 branch above does.
+    qemu_host_lock_track_pid "$QEMU_PID"
     LIVENESS_PATTERN='USERSPACE TEST COMPLETE'
 fi
 
