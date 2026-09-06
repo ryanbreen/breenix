@@ -1198,20 +1198,27 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/output.rs", "fn raw_serial_hex", 2),
     ("kernel/src/tracing/output.rs", "fn raw_serial_hex16", 1),
     ("kernel/src/tracing/output.rs", "fn raw_serial_str", 1),
-    // failure-trace-capture PR-2's ring-span self-check. It fires at most
-    // once per boot (a relaxed-load latch guards it), from inside
-    // trace_timer_tick -- the same timer-tick path the dump functions above
-    // are exempted for -- and only in a `boot_tests` build, so a shipped
-    // kernel calls it 0 times. Count raised 4 -> 6 in this PR's fix round
-    // (PR-2-2026-09-05.md section 9): `report` gained two more
-    // `raw_serial_str` calls printing the new `ticks_total`/`tick_events`
-    // fields the jitter-immune sampling-ratio oracle reads. See
-    // docs/planning/green-program/failure-capture/PR-2-2026-09-05.md.
-    (
-        "kernel/src/tracing/providers/irq.rs",
-        "#[cfg(feature=boot_tests)] mod ring_span_self_check::fn report",
-        6,
-    ),
+    // failure-trace-capture PR-2's ring-span self-check USED TO BE an anchor
+    // here: `mod ring_span_self_check::fn report`, 6 unlocked
+    // `raw_serial_str` calls, justified as "fires at most once per boot, from
+    // inside trace_timer_tick, where the logger's lock is unavailable".
+    //
+    // #847 (ruling R188) removed it from this census by removing the writes.
+    // The justification was sound about the lock and wrong about the
+    // consequence: a `-smp 4` aarch64 boot showed another CPU's serial line
+    // interleaving byte-for-byte with those 6 writes on the shared UART,
+    // corrupting the `[RING_SPAN:...]` marker the strict gate pins (~1 boot in
+    // 10). The tick now publishes its numbers to atomics and
+    // kernel/src/test_framework/registry.rs's `ring_span_report` boot test
+    // prints the marker from thread context through `serial_println!` -- the
+    // locked writer -- so the site is not an unlocked multi-byte writer any
+    // more and has no anchor. The 70 -> 69 anchor count (717 -> 711 call
+    // sites) is deliberate; see
+    // docs/planning/green-program/failure-capture/847-RING-SPAN-THREAD-PRINT-2026-09-06.md.
+    //
+    // NOT claimed: that the remaining anchors below are safe from the same
+    // interleaving. They are the same accepted trade-off #847 describes; what
+    // changed is one writer that did not have to make it.
     (
         "kernel/src/tty/driver.rs",
         "impl TtyDevice::fn send_signal_to_foreground_nonblock",

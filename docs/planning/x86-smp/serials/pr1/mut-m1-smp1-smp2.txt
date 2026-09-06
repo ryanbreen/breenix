@@ -1,0 +1,24 @@
+=== MUTATION M1: madt_cpus hardcoded to 1 in smp::init ===
+HEAD: e2717b8829c45472d29aefe723d72f143a8d00f3
+--- git diff ---
+diff --git a/kernel/src/arch_impl/x86_64/smp.rs b/kernel/src/arch_impl/x86_64/smp.rs
+index 78dcb3530..938ada4d0 100644
+--- a/kernel/src/arch_impl/x86_64/smp.rs
++++ b/kernel/src/arch_impl/x86_64/smp.rs
+@@ -211,3 +211,3 @@ pub fn init(rsdp_phys: Option<u64>, physical_memory_offset: u64) {
+                 (
+-                    census.processor_entries,
++                    1, // MUTATION M1: was census.processor_entries
+                     census.enabled_entries,
+420:x86 SMP enumeration gate: booted image sha256 d2bc32114b5c1fd8e17c3229bbc8771f0b7b66c9febfdd33b06f8c7c68c96d05
+421:=== leg -smp 1 ===
+422:  leg -smp 1: marker [X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
+423:  leg -smp 1: PASS
+424:=== leg -smp 2 ===
+425:  leg -smp 2: FAIL (no marker matching madt_cpus=2:enabled=2:...:online=1)
+426:    found: [X86_SMP_ENUM:madt_cpus=1:enabled=2:x2apic=0:bsp_apic_id=0:cpuid_logical=2:present=1:online=1:max_cpus=1:src=madt:reason=none]
+427:  leg -smp 2: serial at /root/breenix-smp1-tmp/breenix_x86_smp_enum_2
+428:x86 SMP enumeration gate: FAIL (1 of 2 leg(s) red)
+429:x86 SMP enumeration gate: FAIL (set -e abort at docker/qemu/run-x86-smp-enum-gate.sh:238, exit 1)
+430:  failing command: false
+674:<S>[SW]<I>GATE_EXIT=1

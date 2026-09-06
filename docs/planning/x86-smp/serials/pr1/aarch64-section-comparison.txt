@@ -1,0 +1,79 @@
+=== aarch64 boot_tests kernel: branch vs base, section by section ===
+host: Mac (aarch64-apple-darwin), worktree scratchpad/fix-smp1
+branch bytes: the three kernel/src files this PR edits, present
+base bytes:   the same three files at origin/main 39169922 (git stash), the two new
+              x86 modules moved out of the tree
+build: cargo build --release --features boot_tests --target aarch64-breenix-kernel.json \
+         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+
+--- file sizes and sha256 ---
+9ce5e4140196d1311ced810043f472f7e357f7f3de7790650ff3cb5a19b89401  /tmp/kernel-a64-base1.elf
+002f3b3fa5bded345688fba520fec025e704939e58c92854c9625d06ca268b01  /tmp/kernel-a64-base2.elf
+f31576850f85b3b428d617941860664cbebf27ed5ac40e0ffd2e5ff5567930dc  /tmp/kernel-a64-branch.elf
+b9238b551c67c6cd120ed2711339a39785e7fa0019a482a62ec65a4bd9577b5d  /tmp/kernel-a64-branch2.elf
+4039992 /tmp/kernel-a64-base1.elf
+4039992 /tmp/kernel-a64-base2.elf
+4039624 /tmp/kernel-a64-branch.elf
+4039624 /tmp/kernel-a64-branch2.elf
+
+--- two builds of the SAME (base) source differ in 5 bytes: the BREENIX_BUILD_ID timestamp
+    kernel/build.rs stamps into .rodata ---
+$ cmp -l /tmp/kernel-a64-base1.elf /tmp/kernel-a64-base2.elf | wc -l
+       5
+
+--- section headers: only .strtab changes size ---
+16c16
+<  12 .strtab            00053025 0000000000000000 0000000000000000 
+---
+>  12 .strtab            00053192 0000000000000000 0000000000000000 
+
+--- allocatable section contents ---
+== .text
+fa1b6ee58e8887fb657909d5481f182c15f6c579efcf5de44a2c15e14fc24583  /tmp/sec-branch2.text.bin
+fa1b6ee58e8887fb657909d5481f182c15f6c579efcf5de44a2c15e14fc24583  /tmp/sec-base2.text.bin
+== .rodata
+2966d5ff9bf3b1306c24d70178a43280214148b49d8592b8c3fbf2e36ce7c019  /tmp/sec-branch2.rodata.bin
+5cc26679b46c3e0a4a6403d63e5eefa0ee4ddfa3b5650d13e5b11dc8121e7bfb  /tmp/sec-base2.rodata.bin
+== .data
+29f9f00e59d09457dcace5cdf03815a1dc92aa4986560c63bf2633856abbddfd  /tmp/sec-branch2.data.bin
+29f9f00e59d09457dcace5cdf03815a1dc92aa4986560c63bf2633856abbddfd  /tmp/sec-base2.data.bin
+== .init_array
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  /tmp/sec-branch2.init_array.bin
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  /tmp/sec-base2.init_array.bin
+
+--- .rodata: 107 differing bytes, and what they are ---
+$ cmp -l sec-base2.rodata.bin sec-branch2.rodata.bin | wc -l
+     107
+first 6 differences (the BREENIX_BUILD_ID string), then the 24-byte stride:
+ 15084  61  62
+ 15085 142  61
+ 15086 144  60
+ 15088 146 145
+ 15089 145  66
+ 15090 145  60
+ 27809  53  66
+ 27857 123 136
+ 27881 123 136
+ 27905 151 164
+ 27929 201 214
+ 27953 202 215
+ 27977 207 222
+ 28001 212 225
+(24 bytes is sizeof(core::panic::Location); the differing field is its line number,
+ each +11 -- the number of lines this PR adds above those call sites in scheduler.rs)
+
+--- .strtab: 746 of 4058 symbols differ, in LLVM's internal-linkage suffix only ---
+symbol-name lines that differ between the two ELFs:
+     746
+     746
+one pair, base then branch (the Rust hash 17h...E is identical; the .llvm.<n> suffix is not):
+ b _ZN6kernel14test_framework29PHASE_ONE_LIVENESS_STARTED_AT17h9fa7e3508db7f597E.0.llvm.11305852382865257463
+ b _ZN6kernel14test_framework29PHASE_ONE_LIVENESS_STARTED_AT17h9fa7e3508db7f597E.0.llvm.11268635235642874615
+
+--- re-taken at the branch head e2717b88 (after the claim-lint rewordings) ---
+The rewordings touch acpi.rs and smp.rs, which arch_impl/mod.rs gates behind
+#[cfg(target_arch = "x86_64")], plus the gate script and the ratchet, so the
+aarch64 kernel is rebuilt from the same source as branch2 above. .text at the
+head against .text at the base:
+fa1b6ee58e8887fb657909d5481f182c15f6c579efcf5de44a2c15e14fc24583  /tmp/sec-head.text.bin
+fa1b6ee58e8887fb657909d5481f182c15f6c579efcf5de44a2c15e14fc24583  /tmp/sec-base2.text.bin

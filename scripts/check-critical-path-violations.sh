@@ -50,6 +50,52 @@ CRITICAL_FILES=(
 
     # Scheduler (called from context switch during timer interrupt)
     "task/scheduler.rs"
+
+    # BXCAP failure-trace capture. A DIRECTORY entry (trailing slash): the
+    # `.rs` files under kernel/src/capture/ are enumerated from disk and
+    # checked -- 4 of 4 today -- so a file added to the module is covered the
+    # day it is added rather than the day someone remembers to list it here.
+    # The emitter runs from fault handlers and masked interrupt context, so
+    # it carries the extra capture-scoped denylist below on top of the shared
+    # one.
+    "capture/"
+)
+
+# Additional patterns prohibited ONLY under kernel/src/capture/.
+#
+# These are not in the shared list above because the shared list applies to
+# files that legitimately contain them: task/scheduler.rs takes locks and
+# allocates by its nature, and flagging it for that would make this script
+# useless. The capture path is different -- it is entered from a fault
+# handler or a masked interrupt, where a blocking lock deadlocks and an
+# allocation takes the heap lock from interrupt context.
+#
+#   \.lock()        a BLOCKING lock acquisition. `try_lock()` does not match
+#                   this pattern (there is no `.` before `lock` in
+#                   `.try_lock()`), which is the distinction: the capture may
+#                   ASK for a lock, it may not WAIT for one.
+#   try_dump_state  the scheduler's allocating dump. It builds two `alloc`
+#                   vectors while holding the guard; `try_liveness_snapshot`
+#                   is the fixed-size, allocation-free sibling the capture
+#                   uses instead. Named explicitly because it is the one
+#                   wrong turn that LOOKS non-blocking.
+#   alloc::, Vec, String, Box, vec!, to_string
+#                   heap allocation in any spelling this tree uses.
+#   unwrap(), expect(, panic!
+#                   a panic from inside a capture re-enters the panic path
+#                   the capture is meant to report from.
+CAPTURE_PROHIBITED_PATTERNS=(
+    '\.lock()'
+    'try_dump_state'
+    'alloc::'
+    'Vec<'
+    'String'
+    'Box<'
+    'vec!'
+    'to_string'
+    'unwrap()'
+    'expect('
+    'panic!'
 )
 
 # Prohibited patterns - these use locks or formatting which is forbidden
@@ -88,7 +134,16 @@ check_file() {
 
     local file_has_violations=0
 
-    for pattern in "${PROHIBITED_PATTERNS[@]}"; do
+    # The capture path carries the shared list plus its own; the other
+    # critical files carry the shared list alone.
+    local patterns=("${PROHIBITED_PATTERNS[@]}")
+    case "$relative_path" in
+        capture/*|*/capture/*)
+            patterns+=("${CAPTURE_PROHIBITED_PATTERNS[@]}")
+            ;;
+    esac
+
+    for pattern in "${patterns[@]}"; do
         # Use grep to find matches, excluding comments
         # Note: This is a simple check - doesn't handle all edge cases
         if grep -n "$pattern" "$file" 2>/dev/null | grep -v "^[^:]*:[[:space:]]*//"; then
@@ -107,6 +162,28 @@ check_all_critical_files() {
 
     for critical_file in "${CRITICAL_FILES[@]}"; do
         local full_path="$KERNEL_DIR/$critical_file"
+
+        # A directory entry expands to the .rs files beneath it. An entry
+        # that expands to 0 files is an ERROR, not a quiet pass: a renamed
+        # or deleted directory must not read as "no violations here".
+        if [[ "$critical_file" == */ ]]; then
+            local matched=0
+            local member
+            while IFS= read -r member; do
+                [[ -n "$member" ]] || continue
+                matched=$((matched + 1))
+                check_file "$member"
+            done < <(find "$full_path" -type f -name '*.rs' 2>/dev/null | sort)
+            if [[ $matched -eq 0 ]]; then
+                echo -e "${RED}ERROR${NC}: critical directory ${YELLOW}$critical_file${NC} matched no .rs file."
+                echo "This script checked nothing there. Fix the entry rather than deleting it."
+                found_violations=1
+            else
+                echo "  $critical_file: $matched file(s) checked"
+            fi
+            continue
+        fi
+
         if [[ -f "$full_path" ]]; then
             check_file "$full_path"
         fi

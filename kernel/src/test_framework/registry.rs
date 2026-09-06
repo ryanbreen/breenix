@@ -1758,6 +1758,122 @@ fn test_timer_monotonic() -> TestResult {
 }
 
 // =============================================================================
+// Ring-span report print site (#847, ruling R188)
+// =============================================================================
+
+/// How long `test_ring_span_report` waits for the tick path to publish its
+/// measurement before giving up: 3000 ms of guest monotonic time, three
+/// times the 1000 ms `CHECK_AT_MS` checkpoint the publisher fires at.
+///
+/// The wait is bounded twice over, because a wait that cannot end would hang
+/// the boot rather than fail it:
+///
+/// 1. By this deadline, read from `get_monotonic_time()`.
+/// 2. By an entry check on the interrupt flag. Only a timer tick can publish
+///    the measurement, and only a timer tick advances the clock this deadline
+///    is read from -- so with interrupts masked at the call site, neither the
+///    flag nor the deadline could ever move, and the loop would spin forever.
+///    That case reports "not published" immediately instead of spinning.
+const RING_SPAN_READY_TIMEOUT_MS: u64 = 3_000;
+
+/// Spin until the ring-span self-check has published, or the deadline passes.
+///
+/// This spins rather than yielding on purpose: on x86 the call site sits in
+/// the boot-test gate window, where #567 says a test that schedules can
+/// poison the boot thread's resume context. Interrupts are enabled here, so
+/// the timer tick that does the publishing still runs, and this thread is
+/// still preemptible -- the spin gives up the CPU the same way any other
+/// interruptible busy-wait in this file does.
+fn wait_for_ring_span_ready(timeout_ms: u64) -> bool {
+    use crate::tracing::providers::irq::ring_span_self_check;
+
+    if ring_span_self_check::is_ready() {
+        return true;
+    }
+    if !crate::arch_interrupts_enabled() {
+        return false;
+    }
+    let deadline = crate::time::get_monotonic_time().saturating_add(timeout_ms);
+    while crate::time::get_monotonic_time() < deadline {
+        if ring_span_self_check::is_ready() {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    ring_span_self_check::is_ready()
+}
+
+/// Print the ring-depth self-check's `[RING_SPAN:...]` marker, from thread
+/// context, through the locked serial writer.
+///
+/// #847: the measurement itself is taken inside `trace_timer_tick` (it has to
+/// be -- it reads the ring at a checkpoint defined in ticks), but the tick
+/// must not PRINT. It used to, with the lock-free `raw_serial_*` writers,
+/// because the logger's lock is unavailable in an ISR; on a `-smp 4` aarch64
+/// boot that let another CPU's serial line interleave byte-for-byte with this
+/// marker on the shared UART and corrupt it, which the strict gate then
+/// scored as "Ring-span self-check marker missing" -- a false FAIL on an
+/// otherwise-passing boot. Ruling R188: the tick publishes, this test prints.
+///
+/// `serial_println!` here is the locked, interrupt-masked writer this
+/// framework's own `[TEST:...]` markers go through
+/// (kernel/src/test_framework/executor.rs), so this marker and those lines
+/// serialize against each other instead of racing.
+///
+/// The emitted line shape is unchanged from what the tick used to write, and
+/// both gate regexes that read it are unchanged with it.
+fn test_ring_span_report() -> TestResult {
+    use crate::tracing::providers::irq::ring_span_self_check;
+
+    if !wait_for_ring_span_ready(RING_SPAN_READY_TIMEOUT_MS) {
+        return TestResult::Fail("ring-span self-check did not publish before its deadline");
+    }
+
+    // `claim` is latched: at most one caller per boot gets the report, so the
+    // marker is emitted exactly once even where both this test and the x86
+    // direct gate below are compiled in. A second caller reaching here is not
+    // a failure -- the line it would have printed already exists.
+    if let Some(report) = ring_span_self_check::claim() {
+        crate::serial_println!(
+            "[RING_SPAN:cpu={}:span_ms={}:writes={}:dropped={}:ticks_total={}:tick_events={}]",
+            report.cpu,
+            report.span_ms,
+            report.writes,
+            report.dropped,
+            report.ticks_total,
+            report.tick_events
+        );
+    }
+
+    TestResult::Pass
+}
+
+/// The `ring_span_report` test's x86 call site.
+///
+/// x86 does not dispatch the staged registry executor (that is behind
+/// `x86_staged_registry`, off by default because of #567), so the registry
+/// entry on its own does not run there -- and the x86 boot-test gate pins the
+/// `[RING_SPAN:...]` marker. This is the same shape `run_x86_loopback_gates`
+/// above uses for the same reason: call the test function directly and emit
+/// its own `[TEST:...]` markers.
+///
+/// It does not schedule -- it spins on an atomic with interrupts already
+/// enabled and writes two serial lines -- so it is not subject to the #567
+/// constraint that keeps the four scheduling registry tests deferred on x86.
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+pub fn run_x86_ring_span_gate() {
+    crate::serial_println!("[TEST:timer:ring_span_report:START]");
+    let result = test_ring_span_report();
+    match result {
+        TestResult::Pass => crate::serial_println!("[TEST:timer:ring_span_report:PASS]"),
+        _ => crate::serial_println!(
+            "[TEST:timer:ring_span_report:FAIL:{}]",
+            result.failure_message().unwrap_or("test failed")
+        ),
+    }
+}
+
+// =============================================================================
 // Logging Test Functions (Phase 4d)
 // =============================================================================
 
@@ -7650,6 +7766,22 @@ static TIMER_TESTS: &[TestDef] = &[
         func: test_timer_quantum_reset_aarch64,
         arch: Arch::Aarch64,
         timeout_ms: 2000,
+        stage: TestStage::EarlyBoot,
+    },
+    // #847 (ruling R188): the print site for the ring-depth self-check's
+    // `[RING_SPAN:...]` marker. The measurement is taken in the timer tick;
+    // this test claims the published numbers and emits them through the
+    // locked serial writer, so the marker does not interleave with another
+    // CPU's serial line. `Arch::Any` because the marker is pinned by both the
+    // aarch64 strict gate and the x86 boot-test gate; on x86 the executor
+    // that would run this is off by default (#567), so `run_x86_ring_span_gate`
+    // calls the same function directly, and the print latch holds the marker
+    // to one line if both paths are live at once.
+    TestDef {
+        name: "ring_span_report",
+        func: test_ring_span_report,
+        arch: Arch::Any,
+        timeout_ms: 5000,
         stage: TestStage::EarlyBoot,
     },
 ];

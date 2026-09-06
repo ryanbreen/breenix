@@ -1,0 +1,15 @@
+# docker/qemu/run-x86-boot-tests.sh 1 at branch head e2717b88, beast /root/breenix-smp1
+# BREENIX_GATE_TMP=/root/breenix-smp1-tmp
+
+--- verdict lines (grep PASS|FAIL|GATE_EXIT over the gate transcript) ---
+13:PASS: 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
+432:x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0
+446:[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unre
+449:[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+453:[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=23:ms=115:ticks_after=23:ticks_nonzero=1:in_range=1:PASS]
+454:x86 frame-custody gate run 1: PASS
+455:GATE_EXIT=0
+
+
+--- the enumeration marker in this gate's own boot ---
+/root/breenix-smp1-tmp/breenix_x86_boot_tests_1/serial_kernel.txt:[X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]

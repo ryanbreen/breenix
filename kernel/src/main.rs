@@ -184,8 +184,18 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             panic!("Cannot initialize memory without physical memory mapping");
         }
     };
+    let rsdp_addr = boot_info.rsdp_addr.into_option();
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
+
+    // #814 PR-1 / #629: enumerate the processors the firmware reports and
+    // answer the CPU-count question from that enumeration instead of from a
+    // compile-time constant. This reads four fixed ACPI tables through the
+    // bootloader's physical-memory window, which is why it runs after
+    // memory::init has installed the master kernel page table. It starts no
+    // processor: see kernel/src/arch_impl/x86_64/smp.rs for what `online=1` in
+    // the marker it emits does and does not claim.
+    kernel::arch_impl::x86_64::smp::init(rsdp_addr, physical_memory_offset.as_u64());
 
     // Initialize BTRT (requires memory for virt_to_phys and serial for output)
     #[cfg(feature = "btrt")]
@@ -684,6 +694,17 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         kernel::tracing::providers::teardown::run_x86_kernel_stack_ownership_gate();
         kernel::tracing::providers::teardown::run_x86_tombstone_join_gate();
     }
+
+    // #847 (ruling R188): the x86 print site for the ring-depth self-check's
+    // `[RING_SPAN:...]` marker, which the timer tick now publishes rather than
+    // writes. Placed AFTER the gate block above, not inside it: this call can
+    // spin (bounded) waiting for the publication, and the gates above pin
+    // absolute frame, page-table and kernel-stack counts that a preemption
+    // window opened between two of them could move. Interrupts are still
+    // enabled here -- `interrupts::disable()` comes below, after the oracles --
+    // which is what lets the publishing tick run.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    kernel::test_framework::registry::run_x86_ring_span_gate();
 
     // #728 ext2 lock-discipline repro oracle (test profile only, feature
     // `ext2_lock_race`). Needs a running scheduler/timer/preemption, so it
