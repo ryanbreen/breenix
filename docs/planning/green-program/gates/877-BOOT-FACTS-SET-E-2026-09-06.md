@@ -249,6 +249,53 @@ alongside an unrelated live fault, not the fault's absence.
 No new x86 timing-signature reds (#631/#766) on either boot; neither gate
 needed a retry.
 
+## Fix round: review finding F1 (precision of the `|| true` check)
+
+Review finding F1 on this round's own ratchet
+(`tests/gate_boot_facts_pipefail_structure.rs:151`): the census's
+`rest.starts_with("|| true")` check is a plain string-prefix test, so a
+hypothetical future fallback token that merely starts with the same 7
+bytes -- e.g. `|| trueish_flag` -- would pass it even though it is a
+different, longer shell token, not `|| true`. Real-world probability is
+very low (nobody names a shell word `trueish_flag` right after `||`), and
+the finding did not claim the current file is wrong: the real file's 5
+assignments each carry the literal `|| true` (5/5, verified by re-reading
+`docker/qemu/lib/gate-boot-facts.sh`), and the pre-fix census still
+correctly reddened `["child"]` against `d41d8f3c`.
+
+Fixed by replacing the bare `starts_with` call with a new
+`has_true_fallback(rest: &str) -> bool` helper that additionally checks
+for a word boundary: after stripping the `"|| true"` prefix, the next
+byte (if any) must not be ASCII-alphanumeric or `_`, so `|| true` is
+accepted, `|| true # comment` is accepted, and `|| trueish_flag` /
+`|| true_but_not_quite` / `|| trueXYZ` are rejected. A direct unit test,
+`has_true_fallback_requires_a_word_boundary_after_true`, exercises both
+sides against the helper itself, independent of whether such a token ever
+appears in the real file.
+
+Re-run of the ratchet suite, this branch's HEAD (`gate-boot-facts.sh`
+itself unchanged, so no beast x86 gate re-run was needed this round):
+
+```
+scripts/run-structure-tests.sh gate_boot_facts_pipefail_structure
+  test has_true_fallback_requires_a_word_boundary_after_true          ... ok
+  test every_command_substitution_assignment_has_a_pipefail_fallback  ... ok
+  test pipefail_fallback_census_is_not_vacuous                        ... ok
+  test gate_boot_facts_lib_has_no_syntax_errors                       ... ok
+  test gbf_helpers_survive_pipefail_with_a_nonexistent_pid_on_every_bash_here ... ok
+  test result: ok. 5 passed; 0 failed
+```
+
+The last of those five is
+`gbf_helpers_survive_pipefail_with_a_nonexistent_pid_on_every_bash_here`,
+the "helper under `set -euo pipefail` on both bashes" test, and its own
+run above passed on both `/bin/bash` (3.2.57) and the Homebrew `bash` on
+`PATH` (5.3.15) on this machine (2/2 candidates this suite checks for).
+
+```
+python3 scripts/claim-lint.py -> exit 0
+```
+
 ## Scope note
 
 `docker/qemu/lib/gate-boot-facts.sh` itself is unchanged by this round --

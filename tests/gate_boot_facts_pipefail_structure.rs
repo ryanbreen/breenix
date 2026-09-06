@@ -66,6 +66,67 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// Whether `rest` (the trimmed text immediately after an assignment's
+/// closing `)"`) opens with the literal shell token `|| true`, as opposed
+/// to merely sharing its first 7 characters -- `rest.starts_with("|| true")`
+/// alone would also accept `|| trueish_flag` or any other token beginning
+/// with those same 7 bytes, since `str::starts_with` does not check for a
+/// word boundary after the needle. Require that the byte right after
+/// `true` (if any) not be an identifier character, matching how a shell
+/// itself would tokenize `|| true` apart from a longer word.
+fn has_true_fallback(rest: &str) -> bool {
+    match rest.strip_prefix("|| true") {
+        None => false,
+        Some(after) => !after
+            .as_bytes()
+            .first()
+            .is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_'),
+    }
+}
+
+/// #877 F1: `has_true_fallback` must require a word boundary after
+/// `true`, not merely a shared 7-byte prefix -- a plain
+/// `rest.starts_with("|| true")` would wrongly accept a token like
+/// `|| trueish_flag` that only happens to start with the same 5 letters
+/// `true`. This test asserts that behavior directly against the helper,
+/// independent of whether any such token exists in the real file today.
+#[test]
+fn has_true_fallback_requires_a_word_boundary_after_true() {
+    // Real shapes: the file's 5 real `|| true` assignments (see the
+    // census above) must still be accepted.
+    assert!(has_true_fallback("|| true"), "bare `|| true` at end of line");
+    assert!(
+        has_true_fallback("|| true # trailing comment"),
+        "`|| true` followed by a space is still `|| true`"
+    );
+
+    // The precision gap #877 F1 named: a token that shares `|| true`'s
+    // first 7 bytes but is a different, longer identifier must NOT be
+    // accepted as a `|| true` fallback.
+    assert!(
+        !has_true_fallback("|| trueish_flag"),
+        "`|| trueish_flag` is a different token, not `|| true`, and must \
+         not be accepted just because it shares a 7-byte prefix"
+    );
+    assert!(
+        !has_true_fallback("|| true_but_not_quite"),
+        "an identifier continuing past `true` with `_` must not be \
+         accepted as the `|| true` fallback"
+    );
+    assert!(
+        !has_true_fallback("|| trueXYZ"),
+        "an identifier continuing past `true` with alnum chars must not \
+         be accepted as the `|| true` fallback"
+    );
+
+    // Not a `|| true` fallback at all.
+    assert!(!has_true_fallback(""), "empty rest has no fallback");
+    assert!(
+        !has_true_fallback("|| false"),
+        "a different fallback command is not `|| true`"
+    );
+}
+
 /// Each `IDENT="$(...)"` command-substitution assignment in
 /// `gate-boot-facts.sh` whose `$(...)` is NOT immediately followed by
 /// `|| true` -- the fallback this file's own comments document as
@@ -148,7 +209,7 @@ fn assignments_missing_pipefail_fallback(lib_text: &str) -> Vec<String> {
             );
 
             let rest = line[close_paren + 2..].trim_start();
-            if !rest.starts_with("|| true") {
+            if !has_true_fallback(rest) {
                 missing.push(ident);
             }
             scan_from = close_paren + 1;
