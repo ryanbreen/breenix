@@ -13,7 +13,10 @@ swift test
 creates an ad-hoc signed `Breenix Run Inspector.app` bundle in this directory.
 `make app-debug` builds the same bundle from a debug build instead, for a
 faster edit/build/launch loop (see DESIGN.md 2.4 for why a release build once
-crashed the compiler and how it was fixed).
+crashed the compiler and how it was fixed). The bundle carries the icon
+committed at `Icon/AppIcon.icns`; `make icon` regenerates that file from
+`Icon/generate-icon.swift` (see DESIGN.md 2.6) and only needs to be re-run
+when the icon design itself changes.
 
 ## CLI and App
 
