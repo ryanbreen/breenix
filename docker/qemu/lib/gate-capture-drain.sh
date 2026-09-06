@@ -44,14 +44,21 @@
 # which has exactly those two steps -- docker/qemu/lib/gate-capture-drain.sh.
 #
 # All bounds are overridable so a caller -- or a test -- can shrink them or
-# disable draining outright (the four env-var reads immediately below).
+# disable draining outright. These four are read fresh, INSIDE
+# gcd_drain_and_report's own body below, one `local` assignment per name --
+# not cached here at source time -- specifically so a caller can prefix the
+# env var onto the function CALL itself
+# (`BREENIX_GATE_DRAIN_SETTLE_MS=50 gcd_drain_and_report ...`), the exact
+# invocation shape tests/gate_capture_drain_structure.rs's oracle test uses.
+# A top-level assignment here would cache whatever the ambient environment
+# held at `source` time, permanently, before any such per-call prefix could
+# ever be seen -- silently ignoring it. GCD_LAST_EVENTS_N (how many trailing
+# [BXCAP:EV] records last_events= carries) is read the same way, for the
+# same reason.
 # claim-lint:ok: tests/gate_capture_drain_structure.rs's oracle test
-# overrides three of the four to shrink them for test speed.
-GCD_SETTLE_MS="${BREENIX_GATE_DRAIN_SETTLE_MS:-300}"
-GCD_QUIET_MS="${BREENIX_GATE_DRAIN_QUIET_MS:-250}"
-GCD_MAX_MS="${BREENIX_GATE_DRAIN_MAX_MS:-3000}"
-# How many trailing [BXCAP:EV] records last_events= carries.
-GCD_LAST_EVENTS_N="${BREENIX_GATE_DRAIN_EVENTS_N:-8}"
+# overrides three of the four to shrink them for test speed, on the function
+# call itself; the local reads inside gcd_drain_and_report's own body below
+# are what makes that override actually reach the wait it prefixes.
 # BREENIX_GATE_DRAIN_DISABLE=1 skips both waits in gcd_drain_and_report and
 # classifies the file exactly as it stands the instant this function is
 # called -- i.e. the file as it would have looked had the caller's kill line
@@ -237,6 +244,16 @@ GCD_EOF
 gcd_drain_and_report() {
     local settle_ms=0 wait_ms=0 total_ms
     local cls capture seq edge cpu records events
+    # Read fresh here, not off a source-time-cached global -- see this
+    # file's header comment above GCD_SETTLE_MS's old assignment for why:
+    # a caller prefixing the env var onto THIS call
+    # (`BREENIX_GATE_DRAIN_SETTLE_MS=50 gcd_drain_and_report ...`) has to
+    # reach a read that happens after that prefix takes effect, which a
+    # top-level assignment executed once at `source` time cannot be.
+    local GCD_SETTLE_MS="${BREENIX_GATE_DRAIN_SETTLE_MS:-300}"
+    local GCD_QUIET_MS="${BREENIX_GATE_DRAIN_QUIET_MS:-250}"
+    local GCD_MAX_MS="${BREENIX_GATE_DRAIN_MAX_MS:-3000}"
+    local GCD_LAST_EVENTS_N="${BREENIX_GATE_DRAIN_EVENTS_N:-8}"
 
     if [ "${BREENIX_GATE_DRAIN_DISABLE:-}" != "1" ]; then
         # Step 1: the unconditional flat settle -- catches a kill landing
