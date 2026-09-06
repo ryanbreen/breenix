@@ -347,6 +347,20 @@ cleanup() {
                     ended_by="scored_pass"
                 else
                     ended_by="scored_fail"
+                    # review finding
+                    # aarch64-gates-drain-decision-uses-provisional-not-final-verdict,
+                    # half (a): PROD_ENDED_BY_LOOP="early_pass" chose the
+                    # 0-cost gcd_pass_report path (bsshd had reached), but
+                    # the assertion chain below it went on to reject the
+                    # boot anyway -- a genuine scored_fail. QEMU is already
+                    # dead here (the main flow's own kill, above, already
+                    # ran before any of those assertions could run), so
+                    # there is nothing left to wait for, but the frozen
+                    # file's ACTUAL capture state is real evidence for what
+                    # is, by definition, a non-PASS outcome -- report it
+                    # honestly instead of leaving the pass path's
+                    # capture=n/a in place.
+                    CAPTURE_LINES="$(gcd_classify_report "$SERIAL_FILE")"
                 fi
                 ;;
             *)
@@ -359,6 +373,11 @@ cleanup() {
                 fi
                 ;;
         esac
+        # PROD_DEADLINE_SERIAL's only job was VERDICT_SERIAL_FILE's rescore
+        # above -- remove it so this boot's evidence directory keeps exactly
+        # the files it did before this fix, not an extra snapshot a later
+        # tool (tools/breenix-runs's importer) has no reason to expect.
+        rm -f "${PROD_DEADLINE_SERIAL:-}"
         facts_line="$(gbf_emit_line 1 "$PROD_HOST_MS_START" "$PROD_HOST_MS_END" \
             "$PROD_QEMU_AT_START" "$PROD_LOAD_AT_START" \
             "$PROD_QEMU_AT_END" "$PROD_LOAD_AT_END" \
@@ -523,6 +542,24 @@ if [ -n "${BREENIX_PROD_FORCE_FAIL:-}" ]; then
     PROD_ENDED_BY_LOOP="forced_fail"
 fi
 
+# review finding
+# aarch64-gates-drain-decision-uses-provisional-not-final-verdict: freeze a
+# byte-for-byte copy of the serial file THE INSTANT the poll loop above
+# stops. Every assertion further down that decides this boot's pass/fail
+# verdict reads VERDICT_SERIAL_FILE, not $SERIAL_FILE directly, from this
+# point on -- so gcd_drain_and_report's own wait (which the CAPTURE_LINES
+# decision just below may trigger, deliberately keeping QEMU alive up to
+# BREENIX_GATE_DRAIN_SETTLE_MS + BREENIX_GATE_DRAIN_MAX_MS longer so it can
+# finish writing an open capture) cannot itself move which side of the poll
+# loop's own deadline this boot lands on. gcd_drain_and_report itself still
+# reads the LIVE file ($SERIAL_FILE, unchanged below) so the capture
+# evidence it reports keeps benefiting from that extra time; only the
+# pass/fail verdict is pinned to this snapshot. Plain (non-local), like
+# PROD_ENDED_BY_LOOP and CAPTURE_LINES, so cleanup() can also read it.
+PROD_DEADLINE_SERIAL="$OUTPUT_DIR/serial.deadline.txt"
+cp -f "$SERIAL_FILE" "$PROD_DEADLINE_SERIAL" 2>/dev/null || : > "$PROD_DEADLINE_SERIAL"
+VERDICT_SERIAL_FILE="$PROD_DEADLINE_SERIAL"
+
 # failure-trace-capture PR-5: on any outcome that does not already read as a
 # pass right here, drain the guest's BXCAP capture (if one is open) BEFORE
 # this boot's kill line runs, further down -- deliberately placed before the
@@ -556,36 +593,45 @@ QEMU_PID=""
 qemu_host_lock_release
 fi
 
-PROD_SEAM_ABSENT_COUNT=$(marker_count "$SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")
-KERNEL_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
-SCHED_STRAND_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$SCHED_STRAND_ORACLE_LITERAL")
-STRAND_INJECT_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$STRAND_INJECT_ORACLE_LITERAL")
-FCNTL_PM_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$FCNTL_PM_ORACLE_LITERAL")
-IRQ_HOLD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$IRQ_HOLD_ORACLE_LITERAL")
-RING_SPAN_COUNT=$(marker_count "$SERIAL_FILE" "$RING_SPAN_LITERAL")
-BXCAP_SELFTEST_COUNT=$(marker_count "$SERIAL_FILE" "$BXCAP_SELFTEST_LITERAL")
-INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
-BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
-BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
-POLL_TCP_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_ORACLE_LITERAL")
-POLL_TCP_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_ORACLE_FAIL_LITERAL")
-POLL_TCP_READY_LOST_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_READY_LOST_LITERAL")
-POLL_TCP_TIMEOUT_COUNT=$(marker_count "$SERIAL_FILE" "$POLL_TCP_TIMEOUT_LITERAL")
-TTY_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$TTY_ORACLE_LITERAL")
-TTY_ORACLE_FAIL_COUNT=$(marker_count "$SERIAL_FILE" "$TTY_ORACLE_FAIL_LITERAL")
-BSSHD_COUNT=$(marker_count "$SERIAL_FILE" "$BSSHD_LITERAL")
-ASID_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PATTERN")
-ASID_CENSUS_UNTAGGED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_UNTAGGED_PATTERN")
-ASID_CENSUS_PUBLISHED_COUNT=$(pattern_count "$SERIAL_FILE" "$ASID_CENSUS_PUBLISHED_PATTERN")
-PINNED_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$PINNED_CENSUS_PATTERN")
-PINNED_CENSUS_NONZERO_COUNT=$(pinned_nonzero_count "$SERIAL_FILE")
-PINNED_FIRST_HOLD_COUNT=$(marker_count "$SERIAL_FILE" "$PINNED_FIRST_HOLD_LITERAL")
-PIN_GUARD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$PIN_GUARD_ORACLE_LITERAL")
-CRASH_COUNT=$(crash_count "$SERIAL_FILE")
+# review finding
+# aarch64-gates-drain-decision-uses-provisional-not-final-verdict: the
+# live-boot branch above sets VERDICT_SERIAL_FILE to the deadline snapshot;
+# BREENIX_PROD_SCORE_ONLY replay mode never runs that branch at all (no live
+# boot, no drain, nothing for a snapshot to protect against), so it falls
+# back to $SERIAL_FILE here -- which by then already IS $SCORE_ONLY_SERIAL,
+# unaffected, exactly as before this fix.
+VERDICT_SERIAL_FILE="${VERDICT_SERIAL_FILE:-$SERIAL_FILE}"
 
-if grep -qF '[BOOT_TESTS:FAIL' "$SERIAL_FILE" 2>/dev/null; then
+PROD_SEAM_ABSENT_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$PROD_SEAM_ABSENT_LITERAL")
+KERNEL_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$KERNEL_ORACLE_LITERAL")
+SCHED_STRAND_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$SCHED_STRAND_ORACLE_LITERAL")
+STRAND_INJECT_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$STRAND_INJECT_ORACLE_LITERAL")
+FCNTL_PM_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$FCNTL_PM_ORACLE_LITERAL")
+IRQ_HOLD_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$IRQ_HOLD_ORACLE_LITERAL")
+RING_SPAN_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$RING_SPAN_LITERAL")
+BXCAP_SELFTEST_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$BXCAP_SELFTEST_LITERAL")
+INIT_EXIT_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$INIT_EXIT_LITERAL")
+BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
+BLOCK_EINTR_ORACLE_FAIL_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$BLOCK_EINTR_ORACLE_FAIL_LITERAL")
+POLL_TCP_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$POLL_TCP_ORACLE_LITERAL")
+POLL_TCP_ORACLE_FAIL_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$POLL_TCP_ORACLE_FAIL_LITERAL")
+POLL_TCP_READY_LOST_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$POLL_TCP_READY_LOST_LITERAL")
+POLL_TCP_TIMEOUT_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$POLL_TCP_TIMEOUT_LITERAL")
+TTY_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$TTY_ORACLE_LITERAL")
+TTY_ORACLE_FAIL_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$TTY_ORACLE_FAIL_LITERAL")
+BSSHD_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$BSSHD_LITERAL")
+ASID_CENSUS_COUNT=$(pattern_count "$VERDICT_SERIAL_FILE" "$ASID_CENSUS_PATTERN")
+ASID_CENSUS_UNTAGGED_COUNT=$(pattern_count "$VERDICT_SERIAL_FILE" "$ASID_CENSUS_UNTAGGED_PATTERN")
+ASID_CENSUS_PUBLISHED_COUNT=$(pattern_count "$VERDICT_SERIAL_FILE" "$ASID_CENSUS_PUBLISHED_PATTERN")
+PINNED_CENSUS_COUNT=$(pattern_count "$VERDICT_SERIAL_FILE" "$PINNED_CENSUS_PATTERN")
+PINNED_CENSUS_NONZERO_COUNT=$(pinned_nonzero_count "$VERDICT_SERIAL_FILE")
+PINNED_FIRST_HOLD_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$PINNED_FIRST_HOLD_LITERAL")
+PIN_GUARD_ORACLE_COUNT=$(marker_count "$VERDICT_SERIAL_FILE" "$PIN_GUARD_ORACLE_LITERAL")
+CRASH_COUNT=$(crash_count "$VERDICT_SERIAL_FILE")
+
+if grep -qF '[BOOT_TESTS:FAIL' "$VERDICT_SERIAL_FILE" 2>/dev/null; then
     BOOT_TEST_FAIL_LINE=$(grep -ahoE '\[TEST:[^]]*:FAIL:[^]]*\]' \
-        "$SERIAL_FILE" 2>/dev/null | head -1 || true)
+        "$VERDICT_SERIAL_FILE" 2>/dev/null | head -1 || true)
     echo "FAIL: boot test failure: ${BOOT_TEST_FAIL_LINE:-[TEST:<missing>:FAIL:<missing>]}"
     exit 1
 fi
@@ -639,7 +685,7 @@ fi
     exit 1
 }
 [ "$POLL_TCP_ORACLE_FAIL_COUNT" -eq 0 ] || {
-    echo "FAIL: Poll TCP oracle reported failure: $(grep -aF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$SERIAL_FILE" | tail -1)"
+    echo "FAIL: Poll TCP oracle reported failure: $(grep -aF "$POLL_TCP_ORACLE_FAIL_LITERAL" "$VERDICT_SERIAL_FILE" | tail -1)"
     exit 1
 }
 [ "$POLL_TCP_TIMEOUT_COUNT" -ge 1 ] || {
@@ -647,7 +693,7 @@ fi
     exit 1
 }
 [ "$POLL_TCP_READY_LOST_COUNT" -eq 0 ] || {
-    echo "FAIL: Kernel reported a lost TCP readiness publication (#693): $(grep -aF "$POLL_TCP_READY_LOST_LITERAL" "$SERIAL_FILE" | tail -1)"
+    echo "FAIL: Kernel reported a lost TCP readiness publication (#693): $(grep -aF "$POLL_TCP_READY_LOST_LITERAL" "$VERDICT_SERIAL_FILE" | tail -1)"
     exit 1
 }
 [ "$TTY_ORACLE_COUNT" -ge 1 ] || {
@@ -655,7 +701,7 @@ fi
     exit 1
 }
 [ "$TTY_ORACLE_FAIL_COUNT" -eq 0 ] || {
-    echo "FAIL: TTY oracle reported failure: $(grep -aF "$TTY_ORACLE_FAIL_LITERAL" "$SERIAL_FILE" | tail -1)"
+    echo "FAIL: TTY oracle reported failure: $(grep -aF "$TTY_ORACLE_FAIL_LITERAL" "$VERDICT_SERIAL_FILE" | tail -1)"
     exit 1
 }
 [ "$BSSHD_COUNT" -ge 1 ] || {
@@ -667,7 +713,7 @@ fi
     exit 1
 }
 [ "$ASID_CENSUS_UNTAGGED_COUNT" -eq 0 ] || {
-    echo "FAIL: TTBR0 ASID census reported an untagged process-root publish: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | grep -E ':untagged=[1-9]' | tail -1)"
+    echo "FAIL: TTBR0 ASID census reported an untagged process-root publish: $(grep -aoE "$ASID_CENSUS_PATTERN" "$VERDICT_SERIAL_FILE" | grep -E ':untagged=[1-9]' | tail -1)"
     exit 1
 }
 [ "$ASID_CENSUS_PUBLISHED_COUNT" -ge 1 ] || {
@@ -679,15 +725,15 @@ fi
     exit 1
 }
 [ "$PINNED_CENSUS_NONZERO_COUNT" -eq 0 ] || {
-    echo "FAIL: pinned-placement census reported a field above zero: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | grep -vxF "$PINNED_CENSUS_ZERO_LITERAL" | tail -1)"
+    echo "FAIL: pinned-placement census reported a field above zero: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$VERDICT_SERIAL_FILE" | grep -vxF "$PINNED_CENSUS_ZERO_LITERAL" | tail -1)"
     exit 1
 }
 [ "$PINNED_FIRST_HOLD_COUNT" -eq 0 ] || {
-    echo "FAIL: a pinned worker's wake was held for want of a dispatching home CPU: $(grep -aF -m1 "$PINNED_FIRST_HOLD_LITERAL" "$SERIAL_FILE")"
+    echo "FAIL: a pinned worker's wake was held for want of a dispatching home CPU: $(grep -aF -m1 "$PINNED_FIRST_HOLD_LITERAL" "$VERDICT_SERIAL_FILE")"
     exit 1
 }
 [ "$PIN_GUARD_ORACLE_COUNT" -eq 0 ] || {
-    echo "FAIL: the boot-tests-only pin-guard oracle ran in the production profile: $(grep -aF -m1 "$PIN_GUARD_ORACLE_LITERAL" "$SERIAL_FILE")"
+    echo "FAIL: the boot-tests-only pin-guard oracle ran in the production profile: $(grep -aF -m1 "$PIN_GUARD_ORACLE_LITERAL" "$VERDICT_SERIAL_FILE")"
     exit 1
 }
 [ "$CRASH_COUNT" -eq 0 ] || {
@@ -696,9 +742,9 @@ fi
 }
 
 echo "PASS: production profile reached bsshd with the futex oracle seam absent"
-echo "Observed: $(grep -F -m 1 "$PROD_SEAM_ABSENT_LITERAL" "$SERIAL_FILE")"
-echo "Observed: $(grep -F -m 1 "$INIT_EXIT_LITERAL" "$SERIAL_FILE")"
-echo "Observed: $(grep -F -m 1 "$BSSHD_LITERAL" "$SERIAL_FILE")"
+echo "Observed: $(grep -F -m 1 "$PROD_SEAM_ABSENT_LITERAL" "$VERDICT_SERIAL_FILE")"
+echo "Observed: $(grep -F -m 1 "$INIT_EXIT_LITERAL" "$VERDICT_SERIAL_FILE")"
+echo "Observed: $(grep -F -m 1 "$BSSHD_LITERAL" "$VERDICT_SERIAL_FILE")"
 echo "Observed kernel oracle marker count: $KERNEL_ORACLE_COUNT"
 echo "Observed fcntl contention oracle marker count: $FCNTL_PM_ORACLE_COUNT"
 echo "Observed IRQ-hold oracle marker count: $IRQ_HOLD_ORACLE_COUNT"
@@ -714,10 +760,10 @@ echo "Observed TTY oracle marker count: $TTY_ORACLE_COUNT"
 echo "Observed TTY oracle failure count: $TTY_ORACLE_FAIL_COUNT"
 echo "Observed TTBR0 ASID census marker count: $ASID_CENSUS_COUNT"
 echo "Observed TTBR0 ASID census untagged-publish line count: $ASID_CENSUS_UNTAGGED_COUNT"
-echo "Observed: $(grep -aoE "$ASID_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
+echo "Observed: $(grep -aoE "$ASID_CENSUS_PATTERN" "$VERDICT_SERIAL_FILE" | tail -1)"
 echo "Observed pinned-placement census marker count: $PINNED_CENSUS_COUNT"
 echo "Observed pinned-placement non-zero census line count: $PINNED_CENSUS_NONZERO_COUNT"
 echo "Observed pin-guard oracle line count (must be 0 in this profile): $PIN_GUARD_ORACLE_COUNT"
-echo "Observed: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
+echo "Observed: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$VERDICT_SERIAL_FILE" | tail -1)"
 echo "Observed crash marker count: $CRASH_COUNT"
 cleanup 0

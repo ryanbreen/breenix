@@ -292,3 +292,27 @@ gcd_pass_report() {
     printf '[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]\n'
     printf '[CAPTURE_DRAIN_EVENTS:last_events=n/a]\n'
 }
+
+# A third, zero-wait entry point alongside gcd_drain_and_report and
+# gcd_pass_report -- for a caller that already chose gcd_pass_report because
+# its own provisional read said PASS, then later learns (from its own
+# authoritative, final verdict) that this boot was actually a FAIL. By that
+# point the caller's kill has already run: QEMU is dead, nothing more will
+# ever be written, so there is nothing left to wait FOR -- but the file's
+# real, final capture state is still genuine evidence for what is, by
+# definition, a non-PASS outcome, and reporting it honestly (drain_ms=0,
+# because no wait was done, not because none applied) beats leaving the
+# PASS path's capture=n/a in place on a boot that did not, in the end, pass.
+# Same two-line wire format as gcd_drain_and_report and gcd_pass_report.
+gcd_classify_report() {
+    local cls capture seq edge cpu records events
+    cls="$(gcd_classify "$@")"
+    IFS=' ' read -r capture seq edge cpu records <<GCD_CLS_EOF
+$cls
+GCD_CLS_EOF
+    events="$(gcd_last_events "${GCD_LAST_EVENTS_N:-${BREENIX_GATE_DRAIN_EVENTS_N:-8}}" "$@")"
+
+    printf '[CAPTURE_DRAIN:capture=%s:seq=%s:edge=%s:cpu=%s:records=%s:drain_ms=0]\n' \
+        "$capture" "$seq" "$edge" "$cpu" "$records"
+    printf '[CAPTURE_DRAIN_EVENTS:last_events=%s]\n' "$events"
+}
