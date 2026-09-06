@@ -387,10 +387,10 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
         .copied()
         .filter(|name| name.ends_with("_nonblock"))
         .collect();
-    if roots.len() < 5 {
+    if roots.len() < 6 {
         return Err(format!(
             "driver.rs declares {} interrupt-context entries (names ending in _nonblock); this \
-             rule was written against 6 and a census that shrank below 5 is a rule that stopped \
+             rule was written against 6 and a census that shrank below 6 is a rule that stopped \
              looking",
             roots.len()
         ));
@@ -973,18 +973,19 @@ fn deliberately_broken_copies_redden_the_rules() {
         "leg I reddened for the wrong reason: {error}"
     );
 
-    // Leg J -- the census itself shrinks. A rule that stopped looking is a
-    // rule that passes forever.
+    // Leg J -- the entry both architectures' input interrupts reach is renamed
+    // out from under the rule, while the census's own COUNT is left at 6. Leg L
+    // measures the count; this leg measures the named entry.
     let census_gone = replace_once(
         &driver,
         "    pub fn input_char_nonblock(&self, c: u8) -> bool {",
-        "    pub fn input_char_blocking_renamed(&self, c: u8) -> bool {",
+        "    pub fn input_char_from_irq_nonblock(&self, c: u8) -> bool {",
     );
     assert_ne!(census_gone, driver, "leg J's mutation must apply");
     let error = validate_irq_entry_takes_no_foreground_pgrp_lock(&census_gone)
         .expect_err("leg J: rule 1 has to redden when its own census loses the entry");
     assert!(
-        error.contains("input_char_nonblock"),
+        error.contains("no longer declares input_char_nonblock"),
         "leg J reddened for the wrong reason: {error}"
     );
 
@@ -1005,6 +1006,22 @@ fn deliberately_broken_copies_redden_the_rules() {
     assert!(
         error.contains("in that order"),
         "leg K reddened for the wrong reason: {error}"
+    );
+
+    // Leg L -- the census's own count shrinks, by a root renamed out of the
+    // `_nonblock` convention. One unit of slack here is one interrupt entry
+    // that stopped being swept.
+    let census_shrank = replace_once(
+        &driver,
+        "    fn wake_blocked_readers_nonblock() {",
+        "    fn wake_blocked_readers_from_irq() {",
+    );
+    assert_ne!(census_shrank, driver, "leg L's mutation must apply");
+    let error = validate_irq_entry_takes_no_foreground_pgrp_lock(&census_shrank)
+        .expect_err("leg L: rule 1 has to redden when its census shrinks");
+    assert!(
+        error.contains("shrank below 6"),
+        "leg L reddened for the wrong reason: {error}"
     );
 
     // Leg M -- the `serial_println!` restored on the interrupt-side signal
