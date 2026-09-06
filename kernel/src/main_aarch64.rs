@@ -1255,6 +1255,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         );
     }
 
+    // RED SCAFFOLD for failure-capture PR-7: the same insertion point the fixed
+    // branch uses, so both runs arm at the same place in boot.
+    #[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
+    kernel::capture_lockup_oracle::run_lockup_capture_oracle();
+
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]

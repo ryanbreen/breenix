@@ -79,6 +79,10 @@ pub mod capture;
 // of it: that directory forbids `panic!` and this module's job is to raise one.
 #[cfg(feature = "capture_panic_oracle")]
 pub mod capture_oracle;
+// RED SCAFFOLD for failure-capture PR-7: the same oracle module the fixed
+// branch carries, so both runs construct the identical hold.
+#[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
+pub mod capture_lockup_oracle;
 // Kernel log ring buffer for /proc/kmsg
 pub mod log_buffer;
 // Parallel boot test framework and BTRT

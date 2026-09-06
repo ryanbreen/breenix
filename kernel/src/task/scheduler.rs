@@ -1245,6 +1245,29 @@ pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot>
     })
 }
 
+/// RED SCAFFOLD for failure-capture PR-7: the same masked hold helper the fixed
+/// branch carries, so both runs strand the identical real guard.
+///
+/// The guard is taken with `try_lock_scheduler` inside `without_interrupts`,
+/// `guard.as_ref()` must yield an initialized scheduler, and the guard stays
+/// alive inside that masked closure until `body` returns. Refusal is returned
+/// explicitly as `false`; there is no blocking acquisition, no guard leak and no
+/// force-unlock.
+#[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
+pub fn with_lockup_oracle_hold<F: FnOnce()>(body: F) -> bool {
+    without_interrupts(|| {
+        let Some(guard) = try_lock_scheduler() else {
+            return false;
+        };
+        if guard.as_ref().is_none() {
+            return false;
+        }
+        body();
+        drop(guard);
+        true
+    })
+}
+
 /// Try to get a snapshot of scheduler state without blocking.
 /// Returns None if the scheduler lock is held (which is itself diagnostic).
 ///

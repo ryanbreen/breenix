@@ -224,6 +224,20 @@ pub fn record_exit_kick_gate_watchdog_heartbeat() {
     EXIT_KICK_GATE_WATCHDOG_HEARTBEAT.fetch_add(1, Ordering::Relaxed);
 }
 
+/// RED SCAFFOLD for failure-capture PR-7. Read-only accessor, identical to the
+/// fixed branch's, so the coordinator samples the same counter on both runs.
+#[cfg(feature = "capture_lockup_oracle")]
+pub fn exit_kick_gate_watchdog_heartbeat() -> u64 {
+    EXIT_KICK_GATE_WATCHDOG_HEARTBEAT.load(Ordering::Relaxed)
+}
+
+/// RED SCAFFOLD for failure-capture PR-7. The detector's real threshold, so the
+/// hold is the same length on both runs.
+#[cfg(feature = "capture_lockup_oracle")]
+pub fn lockup_threshold_ticks() -> u64 {
+    LOCKUP_THRESHOLD_TICKS
+}
+
 /// Initialize the timer interrupt system
 ///
 /// Sets up the virtual timer to fire periodically for scheduling.
@@ -1058,6 +1072,14 @@ fn check_soft_lockup(cpu0_tick: u64) {
 
 /// Dump diagnostic state when a soft lockup is detected.
 /// Uses only lock-free serial output — safe to call from interrupt context.
+///
+/// RED SCAFFOLD ONLY. These two attributes are the one NONSEMANTIC difference
+/// between this branch and origin/main: without them the optimiser can fold
+/// this function away and the binary guard would report a missing root, which
+/// is a tooling failure and not the allocation red the run is looking for. The
+/// body below is main's, unchanged.
+#[cold]
+#[inline(never)]
 fn dump_lockup_state(stall_ticks: u64) {
     raw_serial_str(b"\n\n!!! SOFT LOCKUP DETECTED !!!\n");
     raw_serial_str(b"No context switch for ~");

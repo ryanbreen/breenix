@@ -123,6 +123,9 @@ capture_selftest = ["boot_tests"]
 # (scripts/check-critical-path-violations.sh) forbids `panic!`, and rightly:
 # the emitter must not panic, only the thing that summons it may.
 capture_panic_oracle = ["boot_tests"]
+# RED SCAFFOLD for failure-capture PR-7. Same feature as the fixed branch, so
+# both runs hold for the same number of ticks and score the same receipts.
+capture_lockup_oracle = ["boot_tests"]
 # Anti-vacuity leg for the emitter's byte budget: shrinks
 # `BXCAP_BUDGET_BYTES` to a size a normal capture cannot fit, so a boot built
 # with this must report `truncated=1` and a non-empty `sections_skipped=`. A
