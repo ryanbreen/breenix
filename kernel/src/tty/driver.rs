@@ -826,7 +826,16 @@ impl TtyDevice {
     /// This runs from IRQ context and acquires PROCESS_MANAGER (level 2) and
     /// SCHEDULER (level 1) via `with_scheduler`. It must NOT use serial_println!
     /// (acquires SERIAL1, level 4) because SCHEDULER is a higher-priority lock.
-    /// Uses raw UART for diagnostic output on ARM64.
+    /// Its diagnostic is a raw UART write on both architectures.
+    ///
+    /// The x86_64 arm printed through `serial_println!` until this round --
+    /// `SERIAL1.lock()`, blocking, taken from an interrupt entry while the
+    /// `PROCESS_MANAGER` guard above it is still held, which is the acquisition
+    /// the paragraph above forbids and the one scheduler.rs's lock-order
+    /// comment names ("never acquire SERIAL1 while holding SCHEDULER or
+    /// PROCESS_MANAGER"). It also formatted a string on that path. Both are
+    /// gone; what is left writes bytes straight at the UART.
+    /// claim-lint:ok: kernel/src/task/scheduler.rs:21 is the quoted line.
     #[allow(dead_code)]
     fn send_signal_to_process_nonblock(pid: ProcessId, sig: u32) {
         use crate::process;
@@ -845,25 +854,18 @@ impl TtyDevice {
                 if let Some(proc) = pm.get_process_mut(pid) {
                     proc.signals.set_pending(sig);
 
-                    // Lock-free diagnostic output
+                    // Lock-free diagnostic output, one write per architecture
+                    // and the same subject on both. The signal number and the
+                    // pid are NOT written here: they are already published
+                    // lock-free, by the census stores at the top of this
+                    // function, and read back from thread context.
                     #[cfg(target_arch = "aarch64")]
                     {
                         crate::serial_aarch64::raw_serial_str(b"[TTY] sig sent to PID\n");
                     }
                     #[cfg(target_arch = "x86_64")]
                     {
-                        let sig_name = match sig {
-                            SIGINT => "SIGINT",
-                            SIGQUIT => "SIGQUIT",
-                            SIGTSTP => "SIGTSTP",
-                            _ => "UNKNOWN",
-                        };
-                        crate::serial_println!(
-                            "TTY: Sent {} to process {} (PID {}) [nonblock]",
-                            sig_name,
-                            proc.name,
-                            pid.as_u64()
-                        );
+                        crate::tracing::output::raw_serial_str("[TTY] sig sent to PID\n");
                     }
 
                     // CRITICAL: Wake the thread if it's blocked so it can receive the signal.
