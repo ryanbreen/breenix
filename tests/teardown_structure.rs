@@ -1064,11 +1064,22 @@ fn scheduler_lock_irq_shape_failures(sources: &[(String, String)]) -> Vec<String
 
 /// Ratchet against same-CPU IRQ self-deadlock on the scheduler lock (#790).
 ///
-/// Scope, as measured rather than asserted: the census reaches 28 acquisition
-/// sites in 27 functions below `kernel/src`, of which 22 are admitted by a
+/// Scope, as measured rather than asserted: the census reaches 31 acquisition
+/// sites in 30 functions below `kernel/src`, of which 25 are admitted by a
 /// local mask shape and 6 by reverse-call-graph derivation. The instrumented
 /// per-site classification is recorded at
 /// docs/planning/green-program/aarch64-testing/789-slice2/.
+///
+/// Those numbers are a running measurement, not a pin: nothing here asserts
+/// them, so a new masked acquisition is admitted by its SHAPE and this prose
+/// is what has to be re-read against the printed totals. It said 28/27/22/6
+/// when failure-capture PR-7 ran the suite; before that PR added its own site
+/// the tree already printed 30/29/24/6 -- sites, functions and locally-masked
+/// each two higher, for reasons unrelated to PR-7. PR-7's own site --
+/// `task::scheduler::with_lockup_oracle_hold`, admitted locally, with no
+/// exemption and no name in this file -- added one more to each of those same
+/// three counts, landing at the current 31/30/25/6. Caller-derived stayed 6
+/// throughout.
 ///
 /// A site is admitted locally when it is lexically inside an
 /// `arch_without_interrupts`/`without_interrupts` closure, or inside the false
