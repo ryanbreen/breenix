@@ -1,21 +1,22 @@
 //! `BXCAP v1` record writer: bounded, lock-free, allocation-free.
 //!
-//! Every byte a capture emits goes through this writer. It exists so the
-//! emitter has exactly one place where the byte budget is enforced and
-//! exactly one place where the output primitive is chosen.
+//! A capture's bytes go through this writer, which is the one place the
+//! byte budget is enforced and the one place the output primitive is
+//! chosen.
 //!
 //! # What this writer may use, and why
 //!
 //! Only `crate::tracing::output::raw_serial_char`, which is a single port
 //! write on x86_64 and a single volatile MMIO store on aarch64. It takes no
-//! lock, allocates nothing, and calls nothing that does. Everything above it
-//! here is integer arithmetic over a stack array. That is the whole reason
-//! the capture path can run from a fault handler or a masked interrupt.
+//! lock and performs no allocation, and neither does its one callee. The
+//! code above it here is integer arithmetic over a stack array. That is the
+//! reason the capture path can run from a fault handler or a masked
+//! interrupt.
 //!
 //! # The bound
 //!
 //! `BXCAP_BUDGET_BYTES` caps the bytes of section content one capture emits.
-//! `put()` is the single enforcement point: once `remaining` reaches zero it
+//! `put()` is the single enforcement point: once `remaining` reaches 0 it
 //! latches `truncated` and drops the byte. The `BEGIN` and `END` lines are
 //! written with the budget suspended (`budgeted = false`), because they are
 //! the bracketing contract a reader uses to tell a complete capture from a
@@ -37,18 +38,18 @@ use crate::tracing::output::raw_serial_char;
 
 /// Schema major version. A decoder refuses a record set whose `v=` it does
 /// not know rather than mis-decoding it. Bumped on a field removal or a
-/// semantic change, never on an addition.
+/// semantic change, not on an addition.
 pub const BXCAP_VERSION: u64 = 1;
 
 /// Bytes of section content one capture may emit, enforced in `put()`.
 ///
 /// Sized from the per-section record caps in `sections.rs`
 /// (`BXCAP_MAX_EVENTS` + `BXCAP_MAX_COUNTERS` + one row per CPU + three
-/// fixed rows) against the widest record shape each of those emits, which
-/// comes to roughly 5 KiB on a boot with every section populated. 8 KiB
-/// leaves headroom for longer counter names without the normal case ever
-/// reaching the cap, and still bounds a runaway at a size a serial log
-/// absorbs.
+/// fixed rows) against the widest record shape each of those emits: 4752 to
+/// 4799 bytes measured on the 2 committed aarch64 fixtures under
+/// docs/planning/green-program/failure-capture/serials/pr3/. 8 KiB leaves
+/// headroom for longer counter names without the ordinary case reaching the
+/// cap, and still bounds a runaway at a size a serial log absorbs.
 #[cfg(not(feature = "capture_selftest_tiny_budget"))]
 pub const BXCAP_BUDGET_BYTES: u32 = 8192;
 
@@ -62,8 +63,9 @@ pub const BXCAP_BUDGET_BYTES: u32 = 512;
 
 /// Bounded writer over the raw serial primitive.
 ///
-/// Not `Copy`, not `Clone`, and never stored: one is constructed on the
-/// stack per capture and dropped when the capture returns.
+/// Not `Copy` and not `Clone`: one is constructed on the stack per capture
+/// and dropped when the capture returns, so there is no writer to outlive
+/// it.
 pub struct Writer {
     remaining: u32,
     records: u32,
@@ -201,8 +203,8 @@ impl Writer {
     }
 
     /// A `key=value` whose value is a caller-supplied literal. Values carry
-    /// no spaces by the schema, and every caller in this module passes a
-    /// literal from a fixed set, so there is nothing to escape.
+    /// no spaces by the schema, and the callers in this module pass literals
+    /// from a fixed set, so there is no escaping to do.
     pub fn kv_text(&mut self, key: &str, value: &str) {
         self.put(b' ');
         self.text(key);
@@ -232,7 +234,7 @@ impl Writer {
     }
 
     /// If the budget cut a record mid-line, put the terminator back so the
-    /// `END` line starts at column zero and a line-oriented reader sees it.
+    /// `END` line starts at column 0 and a line-oriented reader sees it.
     pub fn close_dangling_record(&mut self) {
         if self.in_record {
             self.in_record = false;

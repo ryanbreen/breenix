@@ -10,16 +10,16 @@
 //!
 //! # What a source denylist is worth, stated plainly
 //!
-//! It sees the spellings it lists, in the files it reads, and nothing else.
-//! It cannot see an allocation reached two frames down inside a callee that
-//! is not itself named here. The plan's answer to that is a binary guard
+//! It sees the spellings it lists, in the files it reads, and no more than
+//! that. It cannot see an allocation reached two frames down inside a callee
+//! that is not itself named here. The plan's answer to that is a binary guard
 //! modelled on `scripts/check-x86-dispatch-no-alloc.sh`; PR-3 does not build
 //! one (see the round doc's "what is NOT claimed"), so what this suite
 //! offers is the fast local signal, not an authority. The one callee that
 //! matters most is pinned by name instead: the capture reaches the
-//! scheduler only through `try_liveness_snapshot`, which fills fixed-size
-//! arrays, and never through `try_dump_state`, which builds two `alloc`
-//! vectors while holding the guard.
+//! scheduler through `try_liveness_snapshot`, which fills fixed-size arrays,
+//! and not through `try_dump_state`, which builds two `alloc` vectors while
+//! holding the guard.
 //!
 //! # Census-anchored, not line-pinned
 //!
@@ -43,7 +43,7 @@ fn read(rel: &str) -> String {
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", full.display()))
 }
 
-/// Every `.rs` file under `kernel/src/capture/`, recursively.
+/// The `.rs` files under `kernel/src/capture/`, recursively.
 fn capture_sources() -> Vec<(String, String)> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).expect("kernel/src/capture must exist") {
@@ -146,8 +146,8 @@ fn the_only_output_primitive_is_the_raw_serial_writer() {
         record.contains("use crate::tracing::output::raw_serial_char;"),
         "record.rs must write through raw_serial_char, the lock-free primitive"
     );
-    // Every other capture source goes through the Writer rather than
-    // reaching for a second output path of its own.
+    // The other capture sources go through the Writer rather than reaching
+    // for a second output path of their own.
     for (name, body) in capture_sources() {
         if name.ends_with("record.rs") {
             continue;
@@ -300,7 +300,7 @@ fn the_shell_guard_covers_the_capture_directory() {
         "{CRITICAL_PATH_SCRIPT} must carry the capture-scoped denylist; the shared list \
          cannot contain `.lock()` because task/scheduler.rs legitimately does"
     );
-    // A directory entry that matches nothing must be an error, not a pass.
+    // A directory entry that matches no file must be an error, not a pass.
     assert!(
         script.contains("matched no .rs file"),
         "{CRITICAL_PATH_SCRIPT} must fail when a critical DIRECTORY entry expands to \

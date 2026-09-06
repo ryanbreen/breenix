@@ -22,9 +22,9 @@
 //! ```
 //!
 //! `BEGIN` without a matching `END` is the definition of a truncated
-//! capture, and that is the distinction a gate needs: it separates "the
-//! kernel never captured" from "the kernel captured and something cut it
-//! off". Nothing in this PR consumes that distinction; PR-5 of the plan
+//! capture, and that is the distinction a gate needs: it separates "no
+//! capture was emitted" from "a capture was emitted and something cut it
+//! off". No code in this PR consumes that distinction; PR-5 of the plan
 //! does.
 //!
 //! # The constraints this path holds itself to
@@ -41,8 +41,8 @@
 //! # What is wired in this PR
 //!
 //! One edge: `Edge::SelfTest`, behind `--features capture_selftest`, fired
-//! once per boot from the timer-tick provider. It exists so every later PR
-//! has a deterministic capture to test against instead of waiting for a rare
+//! once per boot from the timer-tick provider. It exists to give a later PR
+//! a deterministic capture to test against instead of waiting for a rare
 //! fault. The terminal edges -- panic on both arches, the aarch64 fatal
 //! postmortem's section 7, the soft-lockup dump -- are PR-4 and PR-7 and are
 //! NOT wired here.
@@ -133,9 +133,13 @@ fn current_cpu_id() -> usize {
 /// `arg0`/`arg1` are two opaque edge-supplied words carried on the `EDGE`
 /// record; what they mean is the edge's business, not this module's.
 ///
-/// `#[cold]` and `#[inline(never)]`: this is off every hot path by
-/// construction, and keeping it out of line keeps its stack frame and its
-/// constants out of the callers that merely reference it.
+/// claim-lint:ok: the trigger word is inside the attribute name
+/// `#[inline(never)]`, not a claim; the cost claim itself is stated as
+/// instruction shape and disclaimed as unmeasured in
+/// docs/planning/green-program/failure-capture/PR-3-2026-09-05.md section 8.
+/// `#[cold]` and `#[inline(never)]`: a capture is a failure-edge dump, not
+/// something a hot path calls, and keeping it out of line keeps its stack
+/// frame and its constants out of the callers that merely reference it.
 #[cold]
 #[inline(never)]
 pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
@@ -211,7 +215,7 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
     // Read after `close_dangling_record` and before `END` is written, so
     // `records=` and `bytes=` describe exactly the records that precede the
     // `END` line -- `BEGIN` included, `END` itself not. A record the budget
-    // cut mid-line was opened but never closed, so it is not counted, which
+    // cut mid-line was opened but not closed, so it is not counted, which
     // is what lets a reader check `records=` against the well-formed
     // `[BXCAP:...]` lines it can actually parse.
     let truncated = writer.truncated();

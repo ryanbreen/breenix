@@ -378,8 +378,8 @@ TEST_ONLY_MARKERS=(
     # failure-trace-capture PR-3's BXCAP self-test edge, which is
     # `capture_selftest`-only. The VALUE, not the `[BXCAP:` token: the emitter
     # is deliberately not feature-gated, because PR-4 wires it to the shipped
-    # kernel's panic and fault edges, so `[BXCAP:` here would be asserting a
-    # production boot never faults -- a claim the crash-marker checks already
+    # kernel's panic and fault edges, so `[BXCAP:` here would be asserting the
+    # absence of a production fault -- a claim the crash-marker checks already
     # make properly, and not the one this list is for.
     'edge=SELFTEST'
     'Testing features enabled'

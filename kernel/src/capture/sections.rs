@@ -2,10 +2,10 @@
 //!
 //! Order is "cheapest and most lock-free first": `EDGE` and `CPU` read only
 //! per-CPU registers and statics, `EV`/`CNT`/`RING` read the lock-free trace
-//! substrate, and `THR` -- the only section that wants the scheduler lock --
-//! goes last and never waits for it.
+//! substrate, and `THR` -- the one section that wants the scheduler lock --
+//! goes last and does not wait for it.
 //!
-//! Every section returns `bool`: `true` when it emitted its content, `false`
+//! A section returns `bool`: `true` when it emitted its content, `false`
 //! when it refused or the budget stopped it. A `false` leaves that section's
 //! bit clear in the capture's `completed` word, which is what `END`'s
 //! `sections_skipped=` reports.
@@ -35,7 +35,7 @@ pub const SECTION_CNT: u32 = 3;
 pub const SECTION_RING: u32 = 4;
 pub const SECTION_THR: u32 = 5;
 
-/// Every section bit set. `sections_skipped = SECTIONS_ALL & !completed`.
+/// The 6 section bits set. `sections_skipped = SECTIONS_ALL & !completed`.
 pub const SECTIONS_ALL: u64 = (1 << 6) - 1;
 
 /// Newest ring events emitted, per capture. Caps the `EV` section
@@ -75,8 +75,8 @@ pub fn edge(writer: &mut Writer, kind: &str, arg0: u64, arg1: u64) -> bool {
 ///
 /// One row, for this CPU only. A peer CPU's per-CPU block is reachable only
 /// through its own base register, so a row for it would be a guess; the
-/// scheduler-side view of the other CPUs is what `THR` carries. Every field
-/// here is a register or atomic read, hence `q=exact`.
+/// scheduler-side view of the other CPUs is what `THR` carries. The 6 fields
+/// here are register or atomic reads, hence `q=exact`.
 pub fn cpu(writer: &mut Writer) -> bool {
     use crate::arch_impl::current::percpu as hal_percpu;
     use crate::arch_impl::PerCpuOps;
@@ -155,7 +155,7 @@ pub fn events(writer: &mut Writer, cpu_id: usize) -> bool {
 /// Deliberately NOT `snapshot_all_counters()`: that returns
 /// `[CounterSnapshot; 224]` by value, which is roughly 19 KiB of stack on a
 /// path that may be a fault handler running on an already-deep stack.
-/// Iterating the registry reads one aggregate at a time and copies nothing.
+/// Iterating the registry reads one aggregate at a time into a register.
 pub fn counters(writer: &mut Writer) -> bool {
     let mut emitted = 0usize;
     for counter in crate::tracing::counter::list_counters() {
@@ -220,9 +220,13 @@ pub fn ring(writer: &mut Writer, cpu_id: usize) -> bool {
 /// `try_liveness_snapshot` masks local interrupts for its guard's whole
 /// window and acquires the scheduler lock with `try_lock`, so it returns
 /// `None` rather than blocking when the lock is busy. It fills fixed-size
-/// arrays and allocates nothing, which is why the capture calls it and not
-/// `try_dump_state` -- that one builds two `alloc` vectors while holding the
-/// guard, which is the shape a capture path must not reach.
+/// arrays and performs no allocation, which is why the capture calls it and
+/// not `try_dump_state` -- that one builds two `alloc` vectors while holding
+/// the guard, which is the shape a capture path must not reach.
+/// claim-lint:ok: the flagged word is Rust's `Option::None`, not a claim;
+/// the allocation-free property is pinned by
+/// tests/capture_path_lock_free_structure.rs and by the `try_dump_state`
+/// entry in scripts/check-critical-path-violations.sh.
 ///
 /// SAMPLED EARLY, EMITTED LAST, on purpose. The rows appear at the end of
 /// the capture so a fault inside the bulk `EV`/`CNT` sections cannot cost
@@ -241,6 +245,10 @@ pub fn sample_threads(cpu_id: usize) -> Option<crate::task::scheduler::Scheduler
 /// A `None` from `sample_threads` is not an error path to be silent about:
 /// it is emitted as `[BXCAP:NOTE sched_lock_held]`, the section's bit stays
 /// clear in `sections_skipped=`, and the capture continues to its `END`.
+/// claim-lint:ok: the flagged word is Rust's `Option::None`, not a claim;
+/// the refusal-is-stated behaviour is pinned by
+/// tests/capture_path_lock_free_structure.rs and shown on a real boot in
+/// docs/planning/green-program/failure-capture/serials/pr3/aarch64-selftest-sched-lock-held.txt
 pub fn threads(
     writer: &mut Writer,
     sampled: Option<crate::task::scheduler::SchedulerLivenessSnapshot>,

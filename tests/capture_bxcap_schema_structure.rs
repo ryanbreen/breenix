@@ -1,9 +1,9 @@
 //! The `BXCAP v1` oracle: a minimal decoder, run over committed self-test
 //! serials.
 //!
-//! This is PR-3's red-to-green leg in the form the plan asks for. `main` has
-//! no `[BXCAP:` bytes at all, so every assertion below is red there for the
-//! trivial reason that there is nothing to decode; what makes the suite
+//! This is PR-3's red-to-green leg in the form the plan asks for. `main`
+//! emits no `[BXCAP:` bytes, so the assertions below are red there for the
+//! trivial reason that there is no capture to decode; what makes the suite
 //! worth keeping afterwards is that it is a real decoder, and it fails on a
 //! capture that is malformed as well as on one that is missing.
 //!
@@ -38,10 +38,11 @@
 //!
 //! # Anti-vacuity
 //!
-//! Every assertion body is reachable from a `#[should_panic]` leg that
-//! damages a fixture in memory -- strip the version, drop the `END`, delete
-//! a section, decrement `records=` -- and asserts the decoder rejects it.
-//! Without those, a decoder that returned early would read as green.
+//! 8 `#[should_panic]` legs damage a fixture in memory -- strip the version,
+//! bump it to an unknown one, drop the `END`, delete a section, decrement
+//! `records=`, drop the refusal note, contradict the verdict, overstate
+//! `bytes=` -- and assert the decoder rejects each. Without those, a decoder
+//! that returned early would read as green.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -111,8 +112,8 @@ fn parse_scalar(raw: &str) -> Option<u64> {
     }
 }
 
-/// Decode one line into a record, or `None` if the line is not a well-formed
-/// `[BXCAP:...]` record.
+/// Decode one line into a record. A line that is not a well-formed
+/// `[BXCAP:...]` record yields no record.
 ///
 /// "Well-formed" is deliberately strict: the line must start with `[BXCAP:`
 /// and end with `]`. A record the emitter's byte budget cut mid-line has no
@@ -165,14 +166,14 @@ fn decode_line(line: &str) -> Option<Record> {
 struct Capture {
     begin: Record,
     end: Record,
-    /// Every well-formed record from `BEGIN` up to but NOT including `END`.
+    /// The well-formed records from `BEGIN` up to but NOT including `END`.
     records: Vec<Record>,
     /// Lines between the brackets that did not decode. At most one, and only
     /// when the byte budget cut a record.
     undecodable: Vec<String>,
 }
 
-/// Every `[BXCAP:` line in `serial` must be CRLF-terminated.
+/// A `[BXCAP:` line in `serial` must be CRLF-terminated.
 ///
 /// The schema names `\r\n` as the record terminator and the emitter writes
 /// it, so the fixture has to show it. `.gitattributes` marks these files
@@ -275,7 +276,7 @@ fn decode_capture(serial: &str) -> Capture {
     }
 }
 
-/// The contract every capture must satisfy, whatever its outcome.
+/// The contract a capture must satisfy, whatever its outcome.
 fn assert_capture_contract(name: &str, capture: &Capture) {
     let seq_begin = capture.begin.u64("seq");
     let seq_end = capture.end.u64("seq");
@@ -357,9 +358,10 @@ fn assert_capture_contract(name: &str, capture: &Capture) {
              sections_skipped (got note={has_note} skipped={skipped:#x})"
         );
     } else {
-        // A truncated capture never reached THR at all, and `truncated=1`
-        // with THR's bit set is that explanation. Demanding the refusal note
-        // here would demand a section the budget stopped before.
+        // A truncated capture stopped before THR was reached, and
+        // `truncated=1` with THR's bit set is that explanation. Demanding
+        // the refusal note here would demand a section the budget stopped
+        // before.
         assert!(
             thr_skipped,
             "{name}: truncated capture with no THR rows must still set THR's bit in \
@@ -504,8 +506,8 @@ fn selftest_capture_with_the_scheduler_read_refused_still_reports_everything_els
     let serial = fixture("aarch64-selftest-sched-lock-held.txt");
     let capture = decode_capture(&serial);
     assert_capture_contract("sched-lock-held", &capture);
-    // The point of the section order: a refused THR costs THR and nothing
-    // above it.
+    // The point of the section order: a refused THR costs THR alone, and
+    // leaves the sections above it intact.
     assert_untruncated_sections("sched-lock-held", &capture);
     assert_byte_bound("sched-lock-held", &capture, false);
 

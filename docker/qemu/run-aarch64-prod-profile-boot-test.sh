@@ -73,8 +73,8 @@ RING_SPAN_LITERAL='[RING_SPAN:cpu='
 # on the `edge=SELFTEST` VALUE rather than on the `[BXCAP:` token: the emitter
 # itself is not feature-gated, because PR-4 wires it to the panic and fault
 # edges of the SHIPPED kernel. Asserting `[BXCAP:` absent would then be
-# asserting that a production boot never faults, which is a different claim
-# and one this gate's crash-marker checks already make properly. What is
+# asserting the absence of a production fault, which is a different claim and
+# one this gate's crash-marker checks already make properly. What is
 # boot-profile-specific is the self-test edge, and that is what this counts.
 BXCAP_SELFTEST_LITERAL='edge=SELFTEST'
 # This proves init resumed after waiting for the self-limiting driver.

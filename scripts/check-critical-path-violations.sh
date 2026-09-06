@@ -51,12 +51,13 @@ CRITICAL_FILES=(
     # Scheduler (called from context switch during timer interrupt)
     "task/scheduler.rs"
 
-    # BXCAP failure-trace capture. A DIRECTORY entry (trailing slash): every
-    # `.rs` under kernel/src/capture/ is checked, so a file added to the
-    # module is covered the day it is added rather than the day someone
-    # remembers to list it here. The emitter runs from fault handlers and
-    # masked interrupt context, so it carries the extra capture-scoped
-    # denylist below on top of the shared one.
+    # BXCAP failure-trace capture. A DIRECTORY entry (trailing slash): the
+    # `.rs` files under kernel/src/capture/ are enumerated from disk and
+    # checked -- 4 of 4 today -- so a file added to the module is covered the
+    # day it is added rather than the day someone remembers to list it here.
+    # The emitter runs from fault handlers and masked interrupt context, so
+    # it carries the extra capture-scoped denylist below on top of the shared
+    # one.
     "capture/"
 )
 
@@ -71,8 +72,8 @@ CRITICAL_FILES=(
 #
 #   \.lock()        a BLOCKING lock acquisition. `try_lock()` does not match
 #                   this pattern (there is no `.` before `lock` in
-#                   `.try_lock()`), which is the whole distinction: the
-#                   capture may ASK for a lock, it may never WAIT for one.
+#                   `.try_lock()`), which is the distinction: the capture may
+#                   ASK for a lock, it may not WAIT for one.
 #   try_dump_state  the scheduler's allocating dump. It builds two `alloc`
 #                   vectors while holding the guard; `try_liveness_snapshot`
 #                   is the fixed-size, allocation-free sibling the capture
@@ -133,8 +134,8 @@ check_file() {
 
     local file_has_violations=0
 
-    # The capture path carries the shared list plus its own; every other
-    # critical file carries the shared list alone.
+    # The capture path carries the shared list plus its own; the other
+    # critical files carry the shared list alone.
     local patterns=("${PROHIBITED_PATTERNS[@]}")
     case "$relative_path" in
         capture/*|*/capture/*)
@@ -162,9 +163,9 @@ check_all_critical_files() {
     for critical_file in "${CRITICAL_FILES[@]}"; do
         local full_path="$KERNEL_DIR/$critical_file"
 
-        # A directory entry expands to every .rs file beneath it. An entry
-        # that matches nothing is an ERROR, not a quiet pass: a renamed or
-        # deleted directory must not read as "no violations here".
+        # A directory entry expands to the .rs files beneath it. An entry
+        # that expands to 0 files is an ERROR, not a quiet pass: a renamed
+        # or deleted directory must not read as "no violations here".
         if [[ "$critical_file" == */ ]]; then
             local matched=0
             local member
