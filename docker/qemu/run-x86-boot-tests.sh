@@ -441,6 +441,37 @@ TIMER_SCALE_ORACLE_PASS_PATTERN='\[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_be
 # span_ms is kept as an informational, non-gating liveness print only.
 RING_SPAN_PATTERN='\[RING_SPAN:cpu=0:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+:ticks_total=[0-9]+:tick_events=[0-9]+\]'
 RING_SPAN_RATIO_FLOOR=10
+# #766: wake-to-dispatch latency. One kthread sleeps 10 ms against an absolute
+# monotonic deadline while 8 CPU-bound kthreads are runnable; the oracle reports
+# `wake_instant - deadline`. Before the fix, `wake_expired_timers` enqueued a
+# thread whose deadline had already passed at the TAIL of the single x86 ready
+# queue, so the wake cost a full round robin -- #766 measured p90 2592 ms and
+# max 10318 ms over 324 trials, and #631's `clock_gettime_test` Test 3 red is
+# that same quantity seen from userspace. The fix enqueues at the head, which
+# bounds the wait by the running thread's remaining quantum plus one tick:
+# 10 ticks * 5 ms + 5 ms = 55 ms on this profile. `bound_ms=100` is that plus a
+# TCG jitter allowance; `quantum_ms` and `round_ms` are printed so the
+# arithmetic can be redone from the line. The remaining fields are pinned
+# because the marker's own PASS also requires them, so a gate that re-derives
+# them cannot be satisfied by a verdict that drifted.
+TIMER_WAKE_LATENCY_ORACLE_PREFIX='[TIMER_WAKE_LATENCY_ORACLE:'
+TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=[1-9][0-9]*:peers_started=8:peers_spinning=8:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
+# Anti-vacuity preflights on that pattern, in the shape the aarch64 strict gate
+# uses for its own oracle patterns: a sample carrying the pre-fix reading must
+# be REJECTED, and a sample carrying a real measured reading must be ACCEPTED.
+# Without the first, a gate could score green on a line it did not really
+# constrain; without the second, this gate could not pass.
+timer_wake_oracle_sample() {
+    printf '[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=%s:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2"
+}
+if timer_wake_oracle_sample 2592 FAIL | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
+    echo "x86 frame-custody gate preflight: TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN accepts the pre-#766 reading (overrun_ms=2592, FAIL), so this gate would score green on the round-robin wake latency it exists to catch"
+    false
+fi
+if ! timer_wake_oracle_sample 41 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN"; then
+    echo "x86 frame-custody gate preflight: TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN rejects overrun_ms=41, a reading the repaired dispatch really records, so this gate cannot pass"
+    false
+fi
 # Thirteen oracle/counter lines are pinned by the success chain below; fields are exact except for the bounded boot-state-dependent KSTACK_OWNER fields documented above.
 # Ten launched test programs, one smoke_hello_time (the RING3_SMOKE process
 # kernel_main_continue creates after the twelve disk-loaded ones), one
@@ -617,6 +648,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qF "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$SCHED_STRAND_ORACLE_PATTERN" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$CENSUS_WIDEN_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -1068,6 +1101,14 @@ for i in $(seq 1 "$COUNT"); do
     test -n "$RING_SPAN_TICK_EVENTS"
     test "$RING_SPAN_TICK_EVENTS" -gt 0
     test "$RING_SPAN_TICKS_TOTAL" -ge "$((RING_SPAN_TICK_EVENTS * RING_SPAN_RATIO_FLOOR))"
+    # (6) #766: the wake-to-dispatch latency oracle, emitted once and passing.
+    # Pinning the emission count at 1 as well as the PASS line means a FAIL
+    # emission cannot hide behind a later PASS, and a deleted call site cannot
+    # pass this gate by silence.
+    test "$(grep -h -F -c -- "$TIMER_WAKE_LATENCY_ORACLE_PREFIX" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    test "$(grep -h -E -c "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
+        "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
@@ -1122,6 +1163,9 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TIMER_SCALE_ORACLE_LINE"
     echo "$RING_SPAN_LINE"
+    TIMER_WAKE_LATENCY_ORACLE_LINE=$(grep -h -F -- "$TIMER_WAKE_LATENCY_ORACLE_PREFIX" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$TIMER_WAKE_LATENCY_ORACLE_LINE"
     if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (BOOT_TESTS:FAIL, KERNEL PANIC, or panic! marker present)"

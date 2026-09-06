@@ -233,6 +233,28 @@ PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
 PIN_GUARD_ORACLE_PATTERN='\[PIN_GUARD_ORACLE:aarch64:'
 PIN_GUARD_ORACLE_PASS_LITERAL=':verdict=PASS]'
 
+# #766's wake-to-dispatch latency leg, aarch64 arm. The same leg runs on both
+# architectures so the two can be read against each other; this arm is a
+# regression guard rather than evidence about the x86 mechanism, because
+# aarch64 has MAX_CPUS ready queues and a 1 ms tick, and it already passed
+# before the #766 fix. What it protects is the fix itself: a change to
+# `wake_expired_timers` that regresses dispatch of an already-late wake fails
+# here as well as on x86. `bound_ms=100` is a kernel constant; the mechanism
+# bound on this arch is 10 ticks * 1 ms + 1 ms = 11 ms, and `quantum_ms` and
+# `round_ms` are on the line so the arithmetic can be redone from it.
+TIMER_WAKE_LATENCY_ORACLE_PATTERN='\[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=[0-9]+:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=[1-9][0-9]*:peers_started=8:peers_spinning=8:backstops=0:setup_ms=[0-9]+:window_ms=[0-9]+:measured=1:PASS\]'
+timer_wake_oracle_sample() {
+    printf '[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=%s:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=120:window_ms=430:measured=1:%s]\n' "$1" "$2"
+}
+if timer_wake_oracle_sample 2592 FAIL | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN"; then
+    echo "FAIL: TIMER_WAKE_LATENCY_ORACLE_PATTERN accepts a failing verdict at overrun_ms=2592, so this gate would score green on the wake latency it exists to catch"
+    exit 1
+fi
+if ! timer_wake_oracle_sample 9 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN"; then
+    echo "FAIL: TIMER_WAKE_LATENCY_ORACLE_PATTERN rejects overrun_ms=9, the reading this arm really records, so this gate can never pass"
+    exit 1
+fi
+
 # R157/ASID-01: the scoring-only entry point further down scores a serial that
 # was captured earlier, so it needs no kernel, no disk and no preflight. Those
 # checks are guarded on this being empty; the scoring rules themselves are not
@@ -281,7 +303,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -461,6 +483,18 @@ score_serial() {
     fi
     if ! grep -qE "$CENSUS_WIDEN_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Census widening mutation oracle marker missing or failed"
+        return 1
+    fi
+    # #766, pinned as a pair for the reason the oracles above are: the FAIL
+    # scan names what went wrong even where the pattern check would already
+    # have rejected the boot, and it also catches a verdict line whose fields
+    # drift out of the pattern for some other reason.
+    if grep -qE '\[TIMER_WAKE_LATENCY_ORACLE:[^]]*:FAIL' "$serial_file" 2>/dev/null; then
+        echo "Timer wake latency oracle reported failure ($(grep -aoE '\[TIMER_WAKE_LATENCY_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "Timer wake latency oracle marker missing or failed"
         return 1
     fi
     # #796, pinned as a pair: the FAIL scan names what went wrong even when the

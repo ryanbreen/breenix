@@ -73,6 +73,11 @@ TTY_IRQ_PM_ORACLE_LITERAL='[TTY_IRQ_PM_ORACLE:'
 # -- so this is the 6th boot_tests-only marker asserted absent here, and a
 # count of 0 on the shipped profile is a reading, not an assumption.
 RING_SPAN_LITERAL='[RING_SPAN:cpu='
+# #766's wake-to-dispatch latency leg is boot_tests-only for the same reason as
+# the oracles above: it makes 8 kernel threads CPU-bound on purpose. This is the
+# 7th boot_tests-only marker asserted absent here, and a count of 0 on the
+# shipped profile is a reading, not an assumption.
+TIMER_WAKE_LATENCY_ORACLE_LITERAL='[TIMER_WAKE_LATENCY_ORACLE:'
 # failure-trace-capture PR-3's BXCAP self-test edge is `capture_selftest`-only
 # (kernel/Cargo.toml; the feature is NOT implied by boot_tests and no gate
 # builds it), so this is the 7th test-only marker asserted absent here. Pinned
@@ -520,6 +525,7 @@ FCNTL_PM_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$FCNTL_PM_ORACLE_LITERAL")
 IRQ_HOLD_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$IRQ_HOLD_ORACLE_LITERAL")
 TTY_IRQ_PM_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$TTY_IRQ_PM_ORACLE_LITERAL")
 RING_SPAN_COUNT=$(marker_count "$SERIAL_FILE" "$RING_SPAN_LITERAL")
+TIMER_WAKE_LATENCY_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$TIMER_WAKE_LATENCY_ORACLE_LITERAL")
 BXCAP_SELFTEST_COUNT=$(marker_count "$SERIAL_FILE" "$BXCAP_SELFTEST_LITERAL")
 INIT_EXIT_COUNT=$(marker_count "$SERIAL_FILE" "$INIT_EXIT_LITERAL")
 BLOCK_EINTR_ORACLE_COUNT=$(marker_count "$SERIAL_FILE" "$BLOCK_EINTR_ORACLE_LITERAL")
@@ -577,6 +583,10 @@ fi
 }
 [ "$RING_SPAN_COUNT" -eq 0 ] || {
     echo "FAIL: boot_tests-only ring-span self-check marker was present"
+    exit 1
+}
+[ "$TIMER_WAKE_LATENCY_ORACLE_COUNT" -eq 0 ] || {
+    echo "FAIL: boot_tests-only timer wake latency oracle marker was present"
     exit 1
 }
 [ "$BXCAP_SELFTEST_COUNT" -eq 0 ] || {
@@ -665,6 +675,7 @@ echo "Observed fcntl contention oracle marker count: $FCNTL_PM_ORACLE_COUNT"
 echo "Observed IRQ-hold oracle marker count: $IRQ_HOLD_ORACLE_COUNT"
 echo "Observed TTY input IRQ oracle marker count: $TTY_IRQ_PM_ORACLE_COUNT"
 echo "Observed ring-span self-check marker count: $RING_SPAN_COUNT"
+echo "Observed timer wake latency oracle marker count: $TIMER_WAKE_LATENCY_ORACLE_COUNT"
 echo "Observed BXCAP self-test edge count: $BXCAP_SELFTEST_COUNT"
 echo "Observed block EINTR oracle marker count: $BLOCK_EINTR_ORACLE_COUNT"
 echo "Observed block EINTR oracle failure count: $BLOCK_EINTR_ORACLE_FAIL_COUNT"
