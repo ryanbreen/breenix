@@ -731,28 +731,6 @@ pub fn emit_pin_guard_oracle() {
     }
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
-fn retain_cpu_affine_test_thread(
-    queue: &mut VecDeque<u64>,
-    thread_id: u64,
-    current_cpu: usize,
-) -> bool {
-    // Zero means "no pinned thread" in BOOT_TEST_CPU_AFFINITY, and 0 is also the
-    // no-thread sentinel: no live thread carries it, so a zero here can only be
-    // an empty affinity slot.
-    if thread_id == 0 {
-        return false;
-    }
-    let target_cpu = BOOT_TEST_CPU_AFFINITY
-        .iter()
-        .position(|slot| slot.load(Ordering::Acquire) == thread_id);
-    if target_cpu.is_none() || target_cpu == Some(current_cpu) {
-        return false;
-    }
-    queue.push_back(thread_id);
-    true
-}
-
 /// Threads work-stealing declined to take because their saved kernel SP stands
 /// in another CPU's per-CPU stack slot. Never reset; reported in the fatal
 /// postmortem next to the custody refusals.
@@ -1901,6 +1879,25 @@ pub struct Scheduler {
 
     /// Per-thread all-CPU grace targets for kernel-stack reclamation.
     retirement_grace: alloc::vec::Vec<RetirementGrace>,
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn retain_cpu_affine_test_thread(
+    queue: &mut VecDeque<u64>,
+    thread_id: u64,
+    current_cpu: usize,
+) -> bool {
+    if thread_id == 0 {
+        return false;
+    }
+    let target_cpu = BOOT_TEST_CPU_AFFINITY
+        .iter()
+        .position(|slot| slot.load(Ordering::Acquire) == thread_id);
+    if target_cpu.is_none() || target_cpu == Some(current_cpu) {
+        return false;
+    }
+    queue.push_back(thread_id);
+    true
 }
 
 impl Scheduler {

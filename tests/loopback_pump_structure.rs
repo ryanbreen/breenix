@@ -4158,6 +4158,98 @@ fn retention_helper_name(source: &str) -> Result<String, String> {
     Ok(helpers[0].name.clone())
 }
 
+// Keep aarch64 string tokens visible for cfg checks, while comments and other
+// strings remain masked. A comment containing the literal cannot supply it.
+fn compact_code_with_aarch64_literal(source: &str) -> String {
+    let mask = code_mask(source);
+    let mut normalized: Vec<u8> = source
+        .bytes()
+        .zip(&mask)
+        .map(|(byte, live)| if *live { byte } else { b' ' })
+        .collect();
+    let mut at = 0;
+    while at < mask.len() {
+        if mask[at] {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < mask.len() && !mask[at] {
+            at += 1;
+        }
+        if &source[start..at] == "\"aarch64\"" {
+            normalized[start..at].copy_from_slice(b"\"aarch64\"");
+        }
+    }
+    compact_whitespace(&String::from_utf8(normalized).expect("masked Rust source"))
+}
+
+#[test]
+fn aarch64_literal_mask_rejects_comment_and_string_decoys() {
+    for source in [
+        r#"#[cfg(target_arch = /* "aarch64" */ "x86_64")]"#,
+        r#"// #[cfg(target_arch = "aarch64")]
+#[cfg(target_arch = "x86_64")]"#,
+        r##"r#"#[cfg(target_arch = "aarch64")]"#"##,
+    ] {
+        assert!(!compact_code_with_aarch64_literal(source).contains("aarch64"));
+    }
+    assert_eq!(
+        compact_code_with_aarch64_literal(r#"#[cfg(target_arch = "aarch64")]"#),
+        r#"#[cfg(target_arch="aarch64")]"#
+    );
+}
+
+fn validate_retention_helper_placement(source: &str) -> Result<(), String> {
+    let name = retention_helper_name(source)?;
+    let spans = function_spans(source);
+    let test = spans
+        .iter()
+        .position(|span| span.name == "retain_cpu_affine_test_thread")
+        .ok_or("missing test retention helper")?;
+    if spans.get(test + 1).is_none_or(|span| span.name != name) {
+        return Err(
+            "source retention helper must immediately follow the test retention helper".into(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn rescue_retention_helpers_are_adjacent() {
+    validate_retention_helper_placement(&repo_text("kernel/src/task/scheduler.rs")).unwrap();
+}
+
+#[test]
+fn rescue_retention_placement_rejects_intervening_function() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let name = retention_helper_name(&source).unwrap();
+    let at = source.find(&format!("    fn {name}(")).unwrap();
+    let mutated = format!("{}fn unrelated() {{}}\n{}", &source[..at], &source[at..]);
+    assert!(validate_retention_helper_placement(&mutated).is_err());
+}
+
+#[test]
+fn rescue_retention_rejects_wrong_kick_architecture() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "retain_cpu_affine_thread").unwrap();
+    let kick =
+        "#[cfg(target_arch = \"aarch64\")]\n            self.send_resched_ipi_to_cpu(pin.cpu);";
+    let sites: Vec<_> = body.match_indices(kick).collect();
+    assert_eq!(sites.len(), 3, "exercise every kick disposition");
+    for (offset, _) in sites {
+        for arch in ["x86_64", "riscv64"] {
+            let mut changed = body.to_string();
+            changed.replace_range(offset..offset + kick.len(), &kick.replace("aarch64", arch));
+            let mutated = source.replacen(body, &changed, 1);
+            assert!(
+                validate_rescue_retention(&mutated).is_err(),
+                "kick at {offset} accepted {arch}"
+            );
+        }
+    }
+}
+
 fn validate_rescue_retention(source: &str) -> Result<(), String> {
     let sites = rescue_retention_sites(source);
     if sites.is_empty() { return Err("rescue pop/guard census is empty".into()); }
@@ -4190,11 +4282,11 @@ fn validate_rescue_retention(source: &str) -> Result<(), String> {
     if body.contains("fetch_add") || body.contains("send_resched") {
         return Err("retention must neither count nor kick".into());
     }
-    let guard = compact_code(function_body(source, "retain_cpu_affine_thread").ok_or("missing guard")?);
+    let guard = compact_code_with_aarch64_literal(function_body(source, "retain_cpu_affine_thread").ok_or("missing guard")?);
     for disposition in [
-        "self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=)]self.send_resched_ipi_to_cpu(pin.cpu);returntrue;",
-        "self.hold_pinned_wake_for_home(thread_id);#[cfg(target_arch=)]self.send_resched_ipi_to_cpu(pin.cpu);",
-        "else{self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=)]self.send_resched_ipi_to_cpu(pin.cpu);}",
+        "self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);returntrue;",
+        "self.hold_pinned_wake_for_home(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);",
+        "else{self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);}",
     ] {
         if !guard.contains(disposition) { return Err(format!("guard disposition missing aarch64 targeted kick: {disposition}")); }
     }
