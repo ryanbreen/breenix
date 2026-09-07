@@ -60,7 +60,10 @@ EXPECTED_ARMS=(
     ignored_signal
 )
 
-gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "blocking I/O oracle gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)" >&2
+    false
+fi
 cd "$BREENIX_ROOT"
 ./userspace/programs/build.sh --arch "$ARCH" 2>&1 | tee "$OUTPUT_ROOT/userspace-build.log"
 if grep -Eq '^[[:space:]]*(warning|error)(\[|:)' "$OUTPUT_ROOT/userspace-build.log"; then
