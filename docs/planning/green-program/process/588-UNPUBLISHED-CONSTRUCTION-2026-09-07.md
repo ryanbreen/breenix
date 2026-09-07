@@ -80,6 +80,25 @@ claim-lint:ok: issue 588; serials under docs/planning/green-program/process/seri
 | build_process_with_argv_at (aarch64): create_main_thread_with_sp | UnpublishedProcess |
 | build_process_with_argv_at (aarch64): row insert | terminal, guard committed |
 
+The row insert is terminal for the four builders themselves, but not for the
+two init entry points that call one of them: `create_init_process_at` (x86,
+`kernel/src/process/manager.rs:583-590`) and
+`create_init_process_with_argv_at` (aarch64, same file, 1268-1276) each run
+`build_process_at`/`build_process_with_argv_at`, then `?`, then
+`hold_init_publication`. `hold_init_publication`'s `init row has no main
+thread` arm (`manager.rs:242-244`) calls `remove_process`, which
+unconditionally drops the just-inserted row (`manager.rs:1841`,
+`drop(self.take_row_unconditionally(pid))`); the row's page table then hits
+`Drop for ProcessPageTable` with `Disposition::Undecided`
+(`kernel/src/memory/process_memory.rs:2022-2027`) -- issue 588's exact defect,
+one step past this table's terminal row. Not reachable today: `set_main_thread`
+precedes `processes.insert` in all 4 of 4 image-loading builders
+(`manager.rs:571`/582, 785/794, 1035/1049, 1250/1263), so the `None` arm
+`hold_init_publication` checks for cannot fire from these callers, and no
+oracle in this round drives it. The table above is scoped to the four
+builders' own fallible steps and does not cover this caller-side step.
+claim-lint:ok: #588; manager.rs:242-244,583-590,1841,1268-1276; process_memory.rs:2022-2027
+
 ## Why the stack frames are not freed by the release
 
 `release_mapped_leaves` only releases leaves it holds a custody record for, and
@@ -173,10 +192,16 @@ moves from n in 0..4 to n in 4..8, because the four builders now also contain
 
 | gate | bytes | result |
 | --- | --- | --- |
-| scripts/run-structure-tests.sh, each of the 63 tests/*_structure.rs files | branch HEAD, Mac | 63/63 suites pass |
+| scripts/run-structure-tests.sh, each of the 62 tests/*_structure.rs files | branch HEAD, Mac | 62/62 suites pass |
 | docker/qemu/run-aarch64-boot-test-strict.sh 3 | branch HEAD, Mac | 3/3 boots, PASS |
 | docker/qemu/run-aarch64-prod-profile-boot-test.sh | branch HEAD, Mac | PASS |
 | docker/qemu/run-x86-boot-tests.sh 1 | branch HEAD, beast | PASS on the 4th attempt; the 3 earlier attempts are attributed below |
+
+`docker/qemu/run-aarch64-full-test.sh` also carries the new
+`INIT_DESIGNATION_ORACLE` literal (updated to keep its grep in sync), but that
+gate was not run this round -- it is not exercised evidence, only a literal
+kept from going stale. I diffed it against the strict gate's literal above:
+byte-identical.
 
 Logs and serials under `docs/planning/green-program/process/serials/588/`:
 * `red-aarch64-native-main-manager.txt`
@@ -212,7 +237,7 @@ bytes: `gate_capture_drain_structure` 3 of 3 green,
 red runs shows five tests reporting `has been running for over 60 seconds`).
 Both are host-load sensitive under the parallel preflight and neither reads
 anything this branch changes; both are green on the Mac at these bytes in the
-63 of 63 run above. No x86 red in this round is unattributed.
+62 of 62 run above. No x86 red in this round is unattributed.
 
 ## Claim-lint
 
@@ -220,15 +245,36 @@ anything this branch changes; both are green on the Mac at these bytes in the
     claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/msg-code.txt -> exit 0
     claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/msg-docs.txt -> exit 0
 
+The round's third commit (79755f9d, the gate-transcript add) went in without
+its own recorded line, an omission against the CLAUDE.md "record each
+invocation" rule, not a red -- reconstructed here:
+
+    claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/msg-79755f9d.txt -> exit 0
+
 ## Not claimed
 
-* The oracle drives two construction failures, and on aarch64 both fail inside
-  the ELF loader before any leaf mapping is recorded. The leaf-return equalities
-  in the oracle are therefore satisfied with 0 of 0 leaves on that architecture
-  and say nothing about leaf release there; what moved on aarch64 is the table
-  and root return (construct_roots_retired 0 to 2, construct_residual 2 to 0).
-  Whether the x86 workloads record a leaf is stated by the x86 gate serial, not
-  assumed here.
+* The oracle drives two construction failures, and both driven workloads
+  (`too_small_image`, `out_of_bounds_segment_image`) fail inside
+  `load_elf_into_page_table` before any leaf mapping is recorded, on both
+  architectures: the x86 bounds check
+  (`if file_start + file_size > data.len()`, `kernel/src/elf.rs:457`) rejects
+  the same 120-byte, `p_offset=120`/`p_filesz=1` image `out_of_bounds_segment_image`
+  builds for aarch64. `construct_leaf_balance` is `construct_leaf_recorded -
+  construct_leaf_returned` (`teardown.rs:5228`); it does not print
+  `construct_leaf_recorded` itself, so a marker value of 0 cannot distinguish
+  0-of-0 leaves from n-of-n. Both new leaf equalities (`leaves released ==
+  leaves recorded`, `leaf frames returned == leaves recorded`) are therefore
+  satisfied 0==0 on both architectures and do not establish leaf release on
+  either; what moved on aarch64 is the table and root return
+  (construct_roots_retired 0 to 2, construct_residual 2 to 0). Both driven
+  failures land inside `load_elf_into_page_table`, a boundary this round's own
+  table assigns to `UnpublishedPageTable`, the pre-existing exec carrier -- no
+  boot in this round executes `UnpublishedProcess::drop`, the new guard,
+  since `commit_preserves_live_table_for_gate` (`unpublished.rs:104-129`)
+  calls `commit()` and then `UnpublishedPageTable::from_box` directly rather
+  than letting an armed guard drop; so the red-to-green oracle delta is
+  evidence for the old carrier's exactness, not the new guard's.
+  claim-lint:ok: #588; teardown.rs:5228; elf.rs:457; unpublished.rs:104-129
 * No failure was injected at the later boundaries (stack allocation, stack
   mapping, TLS, argv, main-thread creation). Those boundaries are covered by the
   structure ratchet and by reading the code, not by an executed error path.
