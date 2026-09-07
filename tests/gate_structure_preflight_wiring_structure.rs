@@ -135,3 +135,44 @@ fn missing_wiring_validator_rejects_a_gate_with_the_call_site_removed() {
 fn missing_wiring_validator_rejects_a_gate_with_neither() {
     assert!(!carries_preflight_wiring("#!/bin/bash\necho hello\n"));
 }
+
+// Both gates boot the timed isolation fixtures before the service oracles.
+fn capture_window_defaults(strict: &str, service: &str) -> (u64, u64) {
+    let strict_values: Vec<_> = strict.lines()
+        .filter_map(|line| line.trim().strip_prefix("timeout \"${BREENIX_STRICT_TIMEOUT_SECONDS:-"))
+        .map(|tail| tail.split_once('}').expect("strict timeout expansion").0
+            .parse::<u64>().expect("numeric strict capture default"))
+        .collect();
+    let service_values: Vec<_> = service.lines()
+        .filter_map(|line| line.strip_prefix("BOOT_TIMEOUT="))
+        .map(|value| value.parse::<u64>().expect("numeric service capture default"))
+        .collect();
+    assert_eq!(strict_values.len(), 1, "unique active strict capture default");
+    assert_eq!(service_values.len(), 1, "unique service capture default");
+    assert!(strict_values[0] > 0);
+    (strict_values[0], service_values[0])
+}
+
+#[test]
+fn service_sequence_capture_window_covers_strict() {
+    let (strict, service) = capture_window_defaults(
+        &repo_text("docker/qemu/run-aarch64-boot-test-strict.sh"),
+        &repo_text("docker/qemu/run-aarch64-service-sequence-gate.sh"),
+    );
+    assert!(service >= strict,
+        "service-sequence capture {service}s is shorter than strict {strict}s");
+}
+
+#[test]
+fn service_sequence_capture_window_45_mutation_is_rejected() {
+    let strict_source = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
+    let service_source = repo_text("docker/qemu/run-aarch64-service-sequence-gate.sh");
+    let (strict, service) = capture_window_defaults(&strict_source, &service_source);
+    assert!(service >= strict);
+    let mutated = service_source.replacen(
+        &format!("BOOT_TIMEOUT={service}"), "BOOT_TIMEOUT=45", 1);
+    assert_ne!(mutated, service_source, "mutation must change the shipped source");
+    let (strict, service) = capture_window_defaults(&strict_source, &mutated);
+    assert_eq!(service, 45);
+    assert!(service < strict, "45s regression must fail the capture-window ordering");
+}
