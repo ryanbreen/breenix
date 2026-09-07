@@ -1,0 +1,1 @@
+{"schemaVersion": 1, "id": "cfe7f246-6d18-47fe-be0b-f545fbf9c6b3", "arch": "aarch64", "profile": "strict", "verdict": "PASS", "exitCode": 0, "startedAt": "2026-09-07T19:56:52.631000+00:00", "endedAt": "2026-09-07T19:57:50.818548+00:00", "command": ["docker/qemu/.946-strict-max.sh", "1"], "serials": ["serial.txt"], "captures": ["gate_boot_facts.txt"]}

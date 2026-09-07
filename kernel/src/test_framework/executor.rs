@@ -834,16 +834,7 @@ fn run_subsystem_stage_tests(id: SubsystemId, target_stage: TestStage) {
                 passed_count += 1;
             }
             TestResult::Fail(msg) => {
-                if matches!(test_name, "loopback_recv_wake_when_idle" | "loopback_recv_wake_under_load") {
-                    let policy = super::registry::guest_budget::POLICY;
-                    serial_println!(
-                        "[TEST:{}:{}:FAIL:{}:extension_cap_ms={}:extension_bound_ms={}]",
-                        id_name, test_name, msg, policy.max_extension_ms,
-                        super::registry::guest_budget::extension_bound_ms(policy),
-                    );
-                } else {
-                    serial_println!("[TEST:{}:{}:FAIL:{}]", id_name, test_name, msg);
-                }
+                serial_println!("[TEST:{}:{}:FAIL:{}]", id_name, test_name, msg);
                 mark_failed(id);
                 failed_count += 1;
             }

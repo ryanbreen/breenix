@@ -1,0 +1,20 @@
+== compiling block_request_lifetime_structure ==
+== running block_request_lifetime_structure  ==
+
+running 13 tests
+test completion_wait_census_ignores_comments_and_string_literals ... ok
+test completion_wait_validator_rejects_interruptible_synthetic_source ... ok
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test block_eintr_oracle_marker_is_pinned_in_the_gates ... ok
+test every_discovered_aarch64_boot_tests_gate_rejects_boot_test_failures ... ok
+test gate_poison_validator_rejects_synthetic_regressions ... ok
+test driver_guard_wedge_call_population_is_pinned ... ok
+test driver_release_on_drop_false_population_is_pinned ... ok
+test drivers_have_no_unpaired_keep_locked_escape ... ok
+test every_release_on_drop_false_arm_latches_wedged ... ok
+test driver_completion_wait_population_is_pinned ... ok
+test drivers_have_no_interruptible_completion_waits ... ok
+test every_wedged_driver_gate_refuses_inside_lock ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
