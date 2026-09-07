@@ -335,3 +335,182 @@ PASS: 1/1 boots succeeded
   behavior -- the commands quoted above ran on the Mac only, in this
   worktree; the original #890 issue's beast figure was not re-measured by
   this round.
+
+## Round-2 review: findings deferred, no code changes this pass
+
+The round-2 review in this session's external `REVIEW.md` (not committed
+in this repository), at
+`/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/h890/REVIEW.md`,
+found 5 MAJOR, 3 MINOR, and 3 NIT findings against `a2f52108`.
+This fix pass was assigned 0/11 findings to close: the 11/11 findings listed
+below remain deferred to a future dedicated round, not resolved.
+
+- **MAJOR-A:** Plain `mod helper;` without a `#[path]` attribute is invisible to the cache key, allowing helper edits to reuse a stale binary.
+- **MAJOR-B:** Spaced include arguments, raw-string paths, a multi-line `#[path]` attribute, and `concat!`-composed paths bypass the scan regex and allow stale cache hits.
+- **MAJOR-C:** A `#[path]` module nested inside an inline `mod` block resolves relative to the wrong directory in the scanner, leaving the compiler's real dependency unhashed.
+- **MAJOR-D:** An arbitrary compile-time `env!(...)` value is absent from the cache key, so changing it can reuse a binary containing the old value.
+- **MAJOR-E:** `RUSTC_BOOTSTRAP` changes compiler behavior without changing the compiler-version signal or being included separately in the cache key.
+- **MINOR-1:** The doc's prior claim-lint record reports 2 files checked, while the actual diff contains 3 files.
+- **MINOR-2:** The doc's prior claim-lint record lacks the `--files` and `--commit-msg` invocation lines required by `CLAUDE.md`.
+- **MINOR-3:** The inherited, untouched comment in `docker/qemu/lib/gate-structure-preflight.sh` says the runner does not cache or reuse binaries, which is factually wrong after the cache change.
+- **NIT-1:** The doc's unqualified `git diff --exit-code` command compares the working tree with the index and does not establish the surrounding claim of byte-identity against the merge-base.
+- **NIT-2:** The doc imprecisely implies the key file is compiled, although it is written with `printf` before being renamed.
+- **NIT-3:** A raw string literal containing include-looking text is scanned as a dependency, folding an irrelevant file into the key and causing unnecessary over-invalidation.
+
+This is a documentation-only round: the gate doc is the sole edited file;
+no files under `scripts/`, `tests/`, or `docker/` are touched.
+The reruns below exercise the existing suites and do not resolve the deferred
+findings.
+
+**Pinned cache suite** — run from the repository root:
+`bash scripts/run-structure-tests.sh structure_suite_cache_structure` (exit 0).
+Full combined stdout/stderr, verbatim:
+
+```text
+== structure-test cache: hit (reusing compiled structure_suite_cache_structure) ==
+== running structure_suite_cache_structure  ==
+
+running 10 tests
+test identical_source_reuses_the_compiled_binary_on_the_second_call ... ok
+test zero_value_env_var_does_not_bypass_a_warm_cache ... ok
+test a_corrupted_cached_binary_is_treated_as_a_miss_and_recompiled ... ok
+test no_cache_env_var_bypasses_a_warm_cache ... ok
+test a_changed_source_byte_invalidates_the_cache_and_recompiles ... ok
+test a_zero_byte_cached_binary_is_treated_as_a_miss_and_recompiled ... ok
+test a_change_to_an_included_path_module_invalidates_the_cache_and_recompiles ... ok
+test two_checkouts_sharing_one_cache_directory_never_reuse_each_others_binary ... ok
+test nested_include_forms_resolve_from_their_own_files_and_ignore_escaped_literals ... ok
+test two_concurrent_invocations_on_a_cold_cache_both_succeed_and_produce_one_valid_binary ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+
+```
+
+**Default invocation** — run from the repository root:
+`bash scripts/run-structure-tests.sh` (no arguments; exit 0).
+Full combined stdout/stderr, verbatim:
+
+```text
+== structure-test cache: hit (reusing compiled teardown_structure) ==
+== running teardown_structure  ==
+
+running 92 tests
+test code_mask_reports_only_real_code_occurrences ... ok
+test arm64_stack_bitmap_is_irqsafe_by_type_and_release_order ... ok
+test direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass ... ok
+test benign_reclaim_nesting_has_a_distinct_counter ... ok
+test both_complete_wait_arms_claim_before_they_copy ... ok
+test deliberately_broken_timer_delay_variants_fail_the_ratchet ... ok
+test fixed_tmp_rm_rf_violation_rule_is_not_vacuous ... ok
+test exec_detach_oracle_pins_pre_exec_group_reachability_control ... ok
+test function_body_is_lexically_scoped_and_exactly_named ... ok
+test gate_producer_validator_rejects_arch_any_double_registration ... ok
+test blocking_family_ratchets_are_registered_and_nonvacuous ... ok
+test deferred_reclamation_census_rejects_an_added_operation ... ok
+test aarch64_reclamation_stays_outside_the_masked_scheduler_window ... ok
+test deferred_reclamation_census_rejects_each_missing_teardown_operation ... ok
+test creating_dispatch_refusal_oracle_is_registered_and_pinned ... ok
+test gate_scripts_route_per_run_output_under_breenix_gate_tmp ... ok
+test gate_scripts_with_verdict_trap_have_no_preempting_exits ... ok
+test direct_x86_teardown_gates_keep_only_aarch64_registry_producers ... ok
+test all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates ... ok
+test item_path_is_cfg_and_impl_scoped ... ok
+test kernel_stack_gate_scripts_keep_ownership_evidence_pinned ... ok
+test kernel_stack_gate_validator_rejects_a_deleted_pin ... ok
+test aarch64_exit_kick_waits_are_progress_bounded ... ok
+test init_group_refusal_oracle_is_registered_and_directly_reachable ... ok
+test init_shell_role_is_conferred_by_argument_not_pid ... ok
+test kernel_stack_ownership_oracle_measures_by_slot_identity ... ok
+test kernel_stack_ownership_gate_launch_is_exact ... ok
+test kernel_stack_ownership_gate_launch_validator_rejects_missing_producers ... ok
+test init_identity_mechanism_is_cfg_free ... ok
+test leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture ... ok
+test kernel_stack_release_ordering_is_structural ... ok
+test oversized_reclaim_failures_name_every_root_proof_blocker ... ok
+test kstack_identity_validator_rejects_the_unsound_reads ... ok
+test p5b_gate_scripts_keep_refusal_evidence_pinned ... ok
+test nonowning_reclaim_queue_paths_are_bounded_and_fail_closed ... ok
+test kernel_stack_release_validator_rejects_unsafe_mutations ... ok
+test p6a_retire_arm_stays_outside_masked_and_queue_held_windows ... ok
+test production_boot_and_heartbeat_emit_root_custody_summary ... ok
+test init_row_builders_insert_only_after_all_fallible_steps ... ok
+test qemu_accelerator_is_opt_in_allowlisted_and_defaults_to_tcg ... ok
+test qemu_accelerator_validator_rejects_unvalidated_environment_input ... ok
+test reclaim_bracket_fixture_is_accepted_so_the_mutations_below_are_meaningful ... ok
+test reclaim_bracket_validator_rejects_a_deleted_disable ... ok
+test reclaim_bracket_validator_rejects_a_deleted_refusal_arm_enable ... ok
+test reclaim_bracket_validator_rejects_a_deleted_release_enable ... ok
+test reclaim_bracket_validator_rejects_a_disable_hoisted_above_the_boot_owner_return ... ok
+test reclaim_bracket_validator_rejects_a_disable_hoisted_above_the_context_violation_return ... ok
+test reclaim_bracket_validator_rejects_a_disable_taken_after_the_claim ... ok
+test reclaim_bracket_validator_rejects_an_interrupt_mask_in_place_of_a_preempt_bracket ... ok
+test reclaim_nesting_validator_rejects_context_violation_conflation ... ok
+test reclaim_progress_park_unpark_arms_follow_cpu_topology ... ok
+test reclaim_progress_topology_validator_rejects_arch_selection_and_a_skipped_counter ... ok
+test reclaim_queue_validator_rejects_a_blocking_enqueue_lock ... ok
+test root_custody_summary_validator_rejects_a_boot_tests_only_emitter ... ok
+test rust_fork_library_override_validator_rejects_hardcoded_paths ... ok
+test rust_fork_library_paths_are_overrideable_in_both_builders ... ok
+test box_leak_box_new_census_rejects_a_sixth_site ... ok
+test every_external_schedule_from_kernel_call_reclaims_immediately_beforehand ... ok
+test shadow_root_clears_are_observable_in_production_counters ... ok
+test shadow_root_counter_validator_rejects_an_uncounted_clear ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test the_production_reclaim_claim_runs_with_preemption_disabled ... ok
+test timer_delay_retry_is_gated_on_proven_host_starvation ... ok
+test production_boot_and_heartbeat_emit_the_tombstone_census ... ok
+test try_manager_is_a_masked_acquisition_on_every_arch ... ok
+test try_manager_mask_ratchet_is_not_vacuous ... ok
+test box_leak_box_new_census_is_empty_and_nonvacuous ... ok
+test verdict_trap_no_preempting_exit_rule_catches_inline_exit_shapes ... ok
+test verdict_trap_no_preempting_exit_rule_is_not_vacuous ... ok
+test x86_leaf_timing_oracle_has_an_exec_root_producer_in_its_window ... ok
+test x86_production_profile_gate_prompt_liveness_failure_routes_through_verdict ... ok
+test x86_production_profile_gate_prompt_liveness_ratchet_is_not_vacuous ... ok
+test x86_production_profile_gate_ratchet_is_not_vacuous ... ok
+test x86_production_profile_gate_verdict_discipline_holds ... ok
+test tombstone_row_state_is_the_single_authority ... ok
+test blocking_primitive_census_sees_pub_crate_members ... ok
+test x86_teardown_gates_are_direct_reachable_and_exactly_once ... ok
+test init_pid_reservation_is_single_sourced ... ok
+test phase_one_retirement_fence_and_lock_domains_are_structural ... ok
+test hardcoded_init_pid_shapes_are_confined_to_the_reservation ... ok
+test process_row_map_mutations_are_authority_scoped ... ok
+test debt4_row_removal_routes_through_the_join_on_both_arches ... ok
+test process_page_table_custody_ratchets_are_exact ... ok
+test keyed_row_lookups_go_through_the_tombstone_predicates ... ok
+test frame_ledger_return_and_initialization_ratchets_are_exact ... ok
+test current_teardown_bypass_surface_is_exact ... ok
+test drop_body_static_locks_are_irqsafe_by_derived_census ... ok
+test scheduler_lock_acquisitions_are_irq_safe_by_shape ... ok
+test init_designation_authority_is_closed ... ok
+test v3_structural_closures_are_exact ... ok
+test scheduler_lock_irq_shape_ratchet_is_not_vacuous ... ok
+test deliberately_broken_variants_fail_the_ratchet ... ok
+
+test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.18s
+
+```
+
+**Claim-lint record for this documentation-only pass:**
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/890-round2-note-commit.txt -> exit 0
+```
+
+The bare invocation reported:
+
+```text
+claim-lint: clean (3 file(s) checked, changed hunks vs 6346f2c53817).
+```
+
+The commit-message invocation reported:
+
+```text
+claim-lint: clean commit message (../../../../../../../../tmp/890-round2-note-commit.txt).
+```
+
+After adding this record, the same two commands were re-run; both exited 0.
+The bare lint's 3-file count covers the branch diff against `6346f2c53817`,
+including the earlier implementation; this pass edits only the gate doc.
