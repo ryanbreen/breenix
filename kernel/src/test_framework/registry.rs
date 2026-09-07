@@ -2998,8 +2998,17 @@ fn run_loopback_recv_wake_test_inner(
     // the two instants, never that one was idle throughout.
     // claim-lint:ok: 2 point samples is the count of `idle_cpu_bitmap` reads
     // this function takes, 2 of 2; see #586.
-    let idle_before = scheduler::thread_placement_facts(reader_tid)
-        .map_or(0u32, |facts| facts.idle_cpu_bitmap);
+    //
+    // `thread_placement_facts` returning `None` here means "the scheduler
+    // was unavailable", not "no CPU was idle" -- its own doc comment above
+    // says the two are separate. `idle_before_sampled` keeps that fact alive
+    // past the `map_or` below so the emitter can still tell them apart.
+    // claim-lint:ok: the doc comment cited is
+    // `thread_placement_facts`'s own, kernel/src/task/scheduler.rs:5977-5979;
+    // see #586.
+    let idle_before_facts = scheduler::thread_placement_facts(reader_tid);
+    let idle_before_sampled = idle_before_facts.is_some();
+    let idle_before = idle_before_facts.map_or(0u32, |facts| facts.idle_cpu_bitmap);
 
     sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS);
 
@@ -3113,6 +3122,16 @@ fn run_loopback_recv_wake_test_inner(
     let elapsed_tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
     let elapsed_ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
     let ctx_delta = ctx_after.wrapping_sub(ctx_before);
+    // Same collapse as `idle_before` above, on the deadline-side sample: a
+    // `None` here means "unavailable", not "idle_cpu_bitmap of 0". A set bit
+    // in the union can only be written by a sample that succeeded, so the
+    // ambiguity is confined to the case where the union is exactly zero;
+    // `idle_cpus_sampled` is what lets the emitter print `unavailable` in that
+    // one case instead of a `0x0` indistinguishable from "sampled and nothing
+    // was idle".
+    // claim-lint:ok: the confinement is `IdleCpusSlot::fmt`'s own `if` guard
+    // below (`bits == 0 && !sampled`), 1 of 1 producer; see #586.
+    let idle_cpus_sampled = idle_before_sampled || placement.is_some();
     let idle_cpus = idle_before | placement.map_or(0u32, |facts| facts.idle_cpu_bitmap);
 
     // The guest is credited with having executed across the window when it
@@ -3150,16 +3169,63 @@ fn run_loopback_recv_wake_test_inner(
     };
     let test_token = if with_load { "under_load" } else { "when_idle" };
 
-    // A `queued_cpu` of `none` is printed rather than a sentinel number so
-    // no reader has to know which integer meant "not queued".
-    // claim-lint:ok: the 2 printed forms are this type's own 2 Display arms,
+    // `queued_cpu` and `queued_idx` each have THREE states, not two:
+    // queued at a value, sampled-and-not-queued-anywhere, and
+    // sample-unavailable (`thread_placement_facts` returned `None` because
+    // `with_scheduler` declined -- its own doc comment above says this is
+    // separate from "not queued anywhere"). Folding both no-value cases into
+    // one `none` token -- which `placement.and_then(...)` does, because
+    // `and_then` cannot see whether the outer `Option` or the inner one was
+    // the source of the `None` -- prints the same bytes for two different
+    // fault classes. `PlacementSlot` keeps a third, explicit `unavailable`
+    // token for the case the doc comment says is separate.
+    // claim-lint:ok: the 3 printed forms are this type's own 3 `match` arms,
     // 1 of 1 producer; see #586.
-    struct OptSlot(Option<usize>);
-    impl core::fmt::Display for OptSlot {
+    enum PlacementSlot {
+        Value(usize),
+        NotQueued,
+        Unavailable,
+    }
+    impl PlacementSlot {
+        fn of(
+            placement: Option<scheduler::ThreadPlacementFacts>,
+            field: impl FnOnce(scheduler::ThreadPlacementFacts) -> Option<usize>,
+        ) -> Self {
+            match placement.map(field) {
+                Some(Some(value)) => PlacementSlot::Value(value),
+                Some(None) => PlacementSlot::NotQueued,
+                None => PlacementSlot::Unavailable,
+            }
+        }
+    }
+    impl core::fmt::Display for PlacementSlot {
         fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            match self.0 {
-                Some(value) => write!(formatter, "{}", value),
-                None => formatter.write_str("none"),
+            match self {
+                PlacementSlot::Value(value) => write!(formatter, "{value}"),
+                PlacementSlot::NotQueued => formatter.write_str("none"),
+                PlacementSlot::Unavailable => formatter.write_str("unavailable"),
+            }
+        }
+    }
+
+    // `idle_cpus` is a union of two point samples (see `idle_before` and
+    // `idle_cpus_sampled` above); a set bit is proof one of them succeeded,
+    // so the only ambiguous byte is a union that reads exactly zero with
+    // neither sample available -- indistinguishable from "sampled, and no
+    // CPU was idle" unless this type says otherwise.
+    // claim-lint:ok: the zero-ambiguity claim is the same read of `idle_cpus`
+    // and `idle_cpus_sampled` that produced them above, 1 of 1 producer each;
+    // see #586.
+    struct IdleCpusSlot {
+        bits: u32,
+        sampled: bool,
+    }
+    impl core::fmt::Display for IdleCpusSlot {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            if self.bits == 0 && !self.sampled {
+                formatter.write_str("unavailable")
+            } else {
+                write!(formatter, "0x{:x}", self.bits)
             }
         }
     }
@@ -3175,7 +3241,7 @@ fn run_loopback_recv_wake_test_inner(
     // docs/planning/green-program/network/586-PR2-2026-09-07.md and #586.
     let emit_wake_budget = || {
         crate::serial_println!(
-            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus=0x{:x}:woke_ms={}:verdict={}]",
+            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:woke_ms={}:verdict={}]",
             arch_token,
             test_token,
             LOOPBACK_WAKE_BUDGET_MS,
@@ -3184,9 +3250,12 @@ fn run_loopback_recv_wake_test_inner(
             ctx_delta,
             0u64,
             reader_state_token,
-            OptSlot(placement.and_then(|facts| facts.queued_cpu)),
-            OptSlot(placement.and_then(|facts| facts.queued_index)),
-            idle_cpus,
+            PlacementSlot::of(placement, |facts| facts.queued_cpu),
+            PlacementSlot::of(placement, |facts| facts.queued_index),
+            IdleCpusSlot {
+                bits: idle_cpus,
+                sampled: idle_cpus_sampled,
+            },
             wake_ms,
             verdict,
         );
