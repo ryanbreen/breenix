@@ -17,8 +17,20 @@ fn six_gates_source_and_call_the_post_verdict_importer() {
             .filter(|line| !line.starts_with('#')).collect();
         assert!(code.iter().any(|line| line.starts_with("source ")
             && line.contains("/lib/run-inspector-import.sh")), "{name}: missing importer source");
-        assert!(code.iter().any(|line| line.starts_with("breenix_runs_import_nonfatal ")),
-            "{name}: missing post-verdict import call");
+        let expected_calls: usize = match name {
+            "run-aarch64-boot-test-strict.sh" => 2,
+            "run-aarch64-prod-profile-boot-test.sh" => 1,
+            "run-aarch64-testing-profile-boot-test.sh" => 1,
+            "run-x86-boot-tests.sh" => 2,
+            "run-x86-gate.sh" => 1,
+            "run-x86-prod-profile-boot-test.sh" => 2,
+            _ => panic!("{name}: no expected call count on file for this script"),
+        };
+        let call_count = code.iter()
+            .filter(|line| line.starts_with("breenix_runs_import_nonfatal "))
+            .count();
+        assert_eq!(call_count, expected_calls,
+            "{name}: expected {expected_calls} breenix_runs_import_nonfatal call site(s), found {call_count}");
 
         for (offset, line) in lines.iter().enumerate()
             .filter(|(_, line)| line.starts_with("breenix_runs_import_nonfatal "))
