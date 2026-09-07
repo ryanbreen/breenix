@@ -9119,7 +9119,7 @@ fn test_pipe_eof() -> TestResult {
     }
 
     // Close the write end
-    pipe.close_write();
+    pipe.close_write().deliver();
 
     // Now read should return EOF (0 bytes)
     match pipe.read(&mut buf) {
@@ -9140,7 +9140,7 @@ fn test_pipe_broken() -> TestResult {
     let mut pipe = PipeBuffer::new();
 
     // Close the read end
-    pipe.close_read();
+    pipe.close_read().deliver();
 
     // Write should fail with EPIPE
     let write_data = b"test";

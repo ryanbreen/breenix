@@ -63,7 +63,7 @@ impl FifoEntry {
         if let Some(ref buffer) = self.buffer {
             buffer.clone()
         } else {
-            let buffer = Arc::new(Mutex::new(PipeBuffer::new()));
+            let buffer = Arc::new(Mutex::new(PipeBuffer::new_zero_refs()));
             self.buffer = Some(buffer.clone());
             buffer
         }
@@ -109,10 +109,6 @@ impl FifoEntry {
     pub fn remove_reader(&mut self) {
         if self.readers > 0 {
             self.readers -= 1;
-            // Also update the pipe buffer's reader count
-            if let Some(ref buffer) = self.buffer {
-                buffer.lock().close_read();
-            }
         }
     }
 
@@ -120,10 +116,6 @@ impl FifoEntry {
     pub fn remove_writer(&mut self) {
         if self.writers > 0 {
             self.writers -= 1;
-            // Also update the pipe buffer's writer count
-            if let Some(ref buffer) = self.buffer {
-                buffer.lock().close_write();
-            }
         }
     }
 

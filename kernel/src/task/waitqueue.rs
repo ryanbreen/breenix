@@ -161,6 +161,30 @@ impl WaitQueueHead {
         });
     }
 
+    /// Drain the waitqueue for a context that must not acquire the
+    /// scheduler lock inline (P-2/#919). Unlike `wake_up()`, this skips the
+    /// `in_interrupt_context()` branch and the `wake_waitqueue_thread()` arm:
+    /// each popped waiter goes straight to
+    /// `scheduler::isr_unblock_for_io()`, lock-free in the common case (a
+    /// per-CPU atomic-CAS buffer drained by the next `schedule()`) --
+    /// mutation-tested by `deferred_delivery_never_touches_the_scheduler_lock`
+    /// in `tests/pipe_fifo_blocking_structure.rs`. See the "Lock Ordering
+    /// Discipline" note atop `scheduler.rs`: SCHEDULER (Level 1) is not to be
+    /// acquired while the caller holds PROCESS_MANAGER (Level 2), which is
+    /// the situation `Process::close_all_fds()`'s callers are in
+    /// (`Process::terminate()`'s 4 identified callers each hold PM there --
+    /// see `Process::close_all_fds()`'s own comment). The buffer's own
+    /// full-buffer fallback can still take the scheduler lock; this is the
+    /// same degraded path `isr_unblock_for_io()`'s other callers already
+    /// accept.
+    pub fn wake_up_deferred(&self) {
+        self.with_waiters(|waiters| {
+            while let Some(waiter) = waiters.pop_front() {
+                crate::task::scheduler::isr_unblock_for_io(waiter.tid());
+            }
+        });
+    }
+
     /// Wake the first waiter, if any.
     pub fn wake_up_one(&self) {
         self.with_waiters(|waiters| {
@@ -246,6 +270,12 @@ impl WaitQueueHead {
     #[cfg(feature = "boot_tests")]
     pub(crate) fn waiter_count(&self) -> usize {
         self.with_waiters(|waiters| waiters.len())
+    }
+
+    /// Read-only membership for the boot-only blocking I/O observer.
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn contains_waiter(&self, tid: u64) -> bool {
+        self.with_waiters(|waiters| waiters.iter().any(|waiter| waiter.tid == tid))
     }
 
     #[cfg(test)]

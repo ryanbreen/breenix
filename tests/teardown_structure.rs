@@ -8579,7 +8579,7 @@ fn process_row_map_mutations_are_authority_scoped() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 
     let raw_removal = manager.replacen(
-        "        self.remove_process(provisional_pid);",
+        "        drop(self.remove_process(provisional_pid));",
         "        self.processes.remove(&provisional_pid);",
         1,
     );
@@ -8600,8 +8600,8 @@ fn process_row_map_mutations_are_authority_scoped() {
     );
 
     let retained = manager.replacen(
-        "    pub fn remove_process(&mut self, pid: ProcessId) {",
-        "    pub fn remove_process(&mut self, pid: ProcessId) {\n        self.processes.retain(|_, _| true);",
+        "    pub fn remove_process(&mut self, pid: ProcessId) -> Option<Process> {",
+        "    pub fn remove_process(&mut self, pid: ProcessId) -> Option<Process> {\n        self.processes.retain(|_, _| true);",
         1,
     );
     assert_ne!(retained, manager, "process-row retain injection anchor");

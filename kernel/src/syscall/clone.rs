@@ -93,7 +93,7 @@ pub fn sys_clone(
     if !manager.admit_clone_into(parent_pid) {
         return SyscallResult::Err(super::errno::EAGAIN as u64);
     }
-    let (parent_cr3, parent_tg_id, parent_cwd, parent_fd_table) = {
+    let (parent_cr3, parent_tg_id, parent_cwd) = {
         let process = manager
             .get_process(parent_pid)
             .expect("admitted clone parent remains present under process-manager guard");
@@ -114,7 +114,7 @@ pub fn sys_clone(
         // Thread group ID: inherit from parent or use parent's pid
         let tg_id = process.thread_group_id.unwrap_or(parent_pid.as_u64());
 
-        (cr3, tg_id, process.cwd.clone(), process.fd_table.clone())
+        (cr3, tg_id, process.cwd.clone())
     };
 
     // P5b: refuse a CLONE_VM join into the designated init's thread group. This returns
@@ -267,7 +267,10 @@ pub fn sys_clone(
 
     // Share file descriptors if CLONE_FILES
     if flags & CLONE_FILES != 0 {
-        child_process.fd_table = parent_fd_table;
+        child_process.fd_table = manager
+            .get_process(parent_pid)
+            .expect("parent remains present under PM during clone")
+            .fd_table.clone();
     }
 
     // Set clear_child_tid for thread exit notification

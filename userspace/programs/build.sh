@@ -161,6 +161,8 @@ STD_BINARIES=(
     "getdents_test"
     "pipe_test"
     "pipe2_test"
+    "pipe_fifo_blocking_oracle"
+    "pipe_fifo_blocking_supervisor"
     "dup_test"
     "fcntl_test"
     "poll_test"

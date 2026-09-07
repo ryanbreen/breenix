@@ -1,0 +1,45 @@
+import pathlib, os, subprocess, shutil, json, hashlib
+root = pathlib.Path.cwd()
+mut = root.parent / 'mutation-wt'
+serials = root / 'docs/planning/green-program/ipc/serials/813-a'
+files = ['kernel/src/ipc/pipe.rs', 'kernel/src/syscall/blocking_io.rs']
+def restore():
+    for f in files: shutil.copy2(root/f, mut/f)
+def archive(work, name):
+    log = (work/'.gate-tmp'/f'{name}.log').read_text()
+    out = pathlib.Path(next(x[11:] for x in log.splitlines() if x.startswith('Artifacts: ')))
+    text = (out/'boot_1/serial.txt').read_text()
+    shutil.copy2(out/'boot_1/serial.txt', serials/f'arm-boot_tests-{name}-serial.txt')
+    shutil.copy2(work/'.gate-tmp'/f'{name}.log', serials/f'arm-boot_tests-{name}-gate.txt')
+    return text
+def run(work, name, expected):
+    env = dict(os.environ, TMPDIR=str(work/'.tmp'), BREENIX_GATE_TMP=str(work/'.gate-tmp'), BREENIX_GATE_SKIP_STRUCTURE='1', BREENIX_RUST_FORK_LIBRARY='/Users/wrb/fun/code/breenix/rust-fork/library')
+    with (work/'.gate-tmp'/f'{name}.log').open('w') as out:
+        result = subprocess.run(['bash','docker/qemu/run-blocking-io-oracle-gate.sh','--arch','aarch64','--program','pipe_fifo_blocking_oracle','--boots','1'],cwd=work,env=env,stdout=out,stderr=subprocess.STDOUT)
+    text = archive(work,name)
+    print(name, 'exit', result.returncode, flush=True)
+    if expected:
+        assert result.returncode != 0
+        for kind in ['pipe','fifo']:
+            assert f'{kind}:{expected}:verdict=FAIL' in text, text[-3000:]
+    else:
+        assert result.returncode == 0, text[-3000:]
+        assert '[PIPE_WRITE_SUMMARY:aarch64:passed=26:failed=0]' in text
+oracle = 'userspace/programs/src/pipe_fifo_blocking_oracle.rs'
+shutil.copy2(root/oracle, mut/oracle)
+for name, file, old, new, arm in [
+    ('v2-mutation-drain', files[0], '        if read > 0 {\n            self.write_waiters.wake_up();\n        }\n', '', 'full_block'),
+    ('v2-mutation-peer-close', files[0], 'writers: last_reader.then(|| self.write_waiters.clone()),', 'writers: (last_reader && false).then(|| self.write_waiters.clone()),', 'last_reader'),
+    ('v2-mutation-blocking-eagain', files[1], 'if is_nonblocking {', 'if is_nonblocking || !is_nonblocking {', 'full_block'),
+    ('v2-mutation-success-without-copy', files[0], 'self.buffer[self.write_pos] = buf[written];', 'if buf.len() <= 8 { self.buffer[self.write_pos] = buf[written]; }', 'full_block'),
+    ('v2-mutation-ignored-handler', oracle, 'signal::Sigaction::ignore()', 'signal::Sigaction::new(caught_signal)', 'ignored_signal'),
+]:
+    restore()
+    shutil.copy2(root/oracle, mut/oracle)
+    p=mut/file; source=p.read_text(); assert source.count(old)==1; p.write_text(source.replace(old,new))
+    try: run(mut,name,arm)
+    finally:
+        restore()
+        shutil.copy2(root/oracle, mut/oracle)
+    run(root,name.replace('mutation-','accepted-after-'),None)
+print('All revised-oracle runtime mutation pairs completed',flush=True)

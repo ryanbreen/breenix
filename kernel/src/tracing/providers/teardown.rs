@@ -1714,6 +1714,8 @@ fn retirement_oracle_quiesce_deadline() -> u64 {
 
 #[cfg(feature = "boot_tests")]
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -1825,11 +1827,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable during baseline reap");
             };
-            manager.remove_process(immediate.0);
+            retired_rows.push(manager.remove_process(immediate.0));
             if let Some(parent) = manager.get_process_mut(parent_pid) {
                 parent.children.retain(|pid| *pid != immediate.0);
             }
         }
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
     }
 
     let mut pairing_child_pids = [0u64; 64];
@@ -1968,11 +1972,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable during pairing reap");
             };
-            manager.remove_process(child.0);
+            retired_rows.push(manager.remove_process(child.0));
             if let Some(parent) = manager.get_process_mut(parent_pid) {
                 parent.children.retain(|pid| *pid != child.0);
             }
         }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
         core::mem::drop(child.2);
     }
 
@@ -2226,8 +2232,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         if let Some(parent) = manager.get_process_mut(parent_pid) {
             crate::task::process_task::release_process_resources(parent);
         }
-        manager.remove_process(parent_pid);
+        retired_rows.push(manager.remove_process(parent_pid));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     #[cfg(target_arch = "x86_64")]
     {
@@ -2244,9 +2252,11 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 crate::task::process_task::release_process_resources(parent);
                 reclaim
             };
-            manager.remove_process(parent_pid);
+            retired_rows.push(manager.remove_process(parent_pid));
             reclaim
         };
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
         let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
@@ -2558,6 +2568,8 @@ pub fn run_x86_retire_cohort_gate() {
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     use crate::test_framework::registry::TestResult;
     use x86_64::VirtAddr;
 
@@ -2620,6 +2632,7 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
     let stale_before = FRAME_RETURN_REFUSED_STALE.aggregate();
     let untracked_before = FRAME_RETURN_REFUSED_UNTRACKED.aggregate();
     let root_slot_refused_before = PT_ROOT_SLOT_REFUSED.aggregate();
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     let (plain, plain_kept, with_argv, argv_kept, name_kept) = {
         let mut manager_guard = crate::process::manager();
         let Some(manager) = manager_guard.as_mut() else {
@@ -2627,14 +2640,19 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
                 "process manager unavailable for failed exec production-path arm",
             );
         };
-        let plain = manager.exec_process(parent_pid, &corrupt, Some("corrupt_exec"));
+        let plain = manager.exec_process(parent_pid, &corrupt, Some("corrupt_exec"), &mut closes);
         let plain_kept = manager
             .get_process(parent_pid)
             .map(|process| process.page_table.is_some())
             .unwrap_or(false);
         let argv: [&[u8]; 1] = [b"corrupt_exec\0"];
-        let with_argv =
-            manager.exec_process_with_argv(parent_pid, &corrupt, Some("corrupt_exec"), &argv);
+        let with_argv = manager.exec_process_with_argv(
+            parent_pid,
+            &corrupt,
+            Some("corrupt_exec"),
+            &argv,
+            &mut closes,
+        );
         let argv_kept = manager
             .get_process(parent_pid)
             .map(|process| process.page_table.is_some())
@@ -2898,11 +2916,13 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable during exec cohort reap");
             };
-            manager.remove_process(child.0);
+            retired_rows.push(manager.remove_process(child.0));
             if let Some(parent) = manager.get_process_mut(parent_pid) {
                 parent.children.retain(|pid| *pid != child.0);
             }
         }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
     }
 
     let quiesce_deadline = retirement_oracle_quiesce_deadline();
@@ -3065,9 +3085,11 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
             crate::task::process_task::release_process_resources(parent);
             reclaim
         };
-        manager.remove_process(parent_pid);
+        retired_rows.push(manager.remove_process(parent_pid));
         reclaim
     };
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
     crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
     let cleanup_deadline = retirement_oracle_quiesce_deadline();
     while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64()) != (false, false) {
@@ -3137,6 +3159,7 @@ fn take_pending_signal_for_test(pid: crate::process::ProcessId, sig: u32) -> boo
 
 #[cfg(feature = "boot_tests")]
 pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -3206,11 +3229,12 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         pid: crate::process::ProcessId,
         elf: &[u8],
         with_argv: bool,
+        closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(), &'static str> {
         if with_argv {
             let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
             manager
-                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv)
+                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv, closes)
                 .map(|(_, _, commit)| {
                     // #721 m1: deliberately not applied. This oracle reads detach/
                     // refusal state straight off the process row and tears the row
@@ -3222,7 +3246,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                 })
         } else {
             manager
-                .exec_process(pid, elf, Some("exec_detach_oracle"))
+                .exec_process(pid, elf, Some("exec_detach_oracle"), closes)
                 .map(|_| ())
         }
     }
@@ -3232,6 +3256,8 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         unavailable_reason: &'static str,
         missing_reason: &'static str,
     ) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let thread_id = {
             let manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_ref() else {
@@ -3257,7 +3283,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             return Err(missing_reason);
         }
         manager.remove_from_ready_queue(pid);
-        manager.remove_process(pid);
+        retired_rows.push(manager.remove_process(pid));
         Ok(())
     }
 
@@ -3266,6 +3292,8 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         unavailable_reason: &'static str,
         missing_reason: &'static str,
     ) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let reclaim = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -3280,9 +3308,11 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                 reclaim
             };
             manager.remove_from_ready_queue(pid);
-            manager.remove_process(pid);
+            retired_rows.push(manager.remove_process(pid));
             reclaim
         };
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         crate::task::process_task::enqueue_process_reclaim(reclaim);
         let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false) {
@@ -3420,7 +3450,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable for exec detach failure arm");
             };
-            invoke_exec(manager, member_pid, &corrupt, with_argv)
+            invoke_exec(manager, member_pid, &corrupt, with_argv, &mut closes)
         };
         let (failed_inherited_cr3, failed_thread_group_id) = {
             let manager_guard = crate::process::manager();
@@ -3487,7 +3517,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                         "process manager unavailable for exec detach sibling arm",
                     );
                 };
-                invoke_exec(manager, member_pid, &valid, with_argv)
+                invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
             };
             let (refused_inherited_cr3, refused_thread_group_id) = {
                 let manager_guard = crate::process::manager();
@@ -3545,7 +3575,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable for exec detach success arm");
             };
-            invoke_exec(manager, member_pid, &valid, with_argv)
+            invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
         };
         let mut detached = false;
         let mut root_is_fresh = false;
@@ -3873,6 +3903,8 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
         probe_reference_clear: [bool; 3],
         retirement_blockers: &mut [bool; 3],
     ) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let reclaim = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -3918,8 +3950,10 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
             };
             crate::task::process_task::release_process_resources(process);
             manager.remove_from_ready_queue(pid);
-            manager.remove_process(pid);
+            retired_rows.push(manager.remove_process(pid));
         }
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         crate::task::process_task::enqueue_process_reclaim(reclaim);
         Ok(())
     }
@@ -4335,6 +4369,8 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
         unavailable_reason: &'static str,
         missing_reason: &'static str,
     ) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let thread_id = {
             let manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_ref() else {
@@ -4353,7 +4389,7 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
             return Err(unavailable_reason);
         };
         manager.remove_from_ready_queue(pid);
-        manager.remove_process(pid);
+        retired_rows.push(manager.remove_process(pid));
         Ok(())
     }
 
@@ -4555,6 +4591,8 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
 
 #[cfg(feature = "boot_tests")]
 pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -4692,8 +4730,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         if manager.designated_init().is_some() && first_failure.is_none() {
             first_failure = Some("init designation A1 changed the init designation");
         }
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A2: reject a PT_LOAD whose file data lies outside the image, after the
     // process page table has been constructed.
@@ -4736,8 +4776,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         if manager.designated_init().is_some() && first_failure.is_none() {
             first_failure = Some("init designation A2 changed the init designation");
         }
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     let construct_used_after = frame_allocator_used_frames();
     let designation_used_before = construct_used_after;
@@ -4776,8 +4818,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         if manager.designated_init().is_some() && first_failure.is_none() {
             first_failure = Some("init designation A3 changed the init designation");
         }
-        manager.remove_process(probe);
+        retired_rows.push(manager.remove_process(probe));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A4: a ticket cannot outlive the row it names.
     {
@@ -4791,7 +4835,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         );
         match manager.hold_init_publication(reserved) {
             Ok(ticket) => {
-                manager.remove_process(reserved);
+                retired_rows.push(manager.remove_process(reserved));
                 match manager.designate_init(ticket) {
                     Err(_) => refused += 1,
                     Ok(_) if first_failure.is_none() => {
@@ -4809,6 +4853,8 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             first_failure = Some("init designation A4 changed the init designation");
         }
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A5: a terminated reserved row cannot be designated.
     {
@@ -4844,8 +4890,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             first_failure = Some("init designation A5 changed the init designation");
         }
         manager.remove_from_ready_queue(reserved);
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A6: a clean reserved row is designated and published exactly once.
     {
@@ -4979,12 +5027,14 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         let Some(manager) = manager_guard.as_mut() else {
             return TestResult::Fail("process manager unavailable for init designation A9");
         };
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
         if manager.designated_init().is_some() && first_failure.is_none() {
             first_failure = Some("init designation A9 did not retire the authority");
         }
         retired += 1;
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A10: without a designated init, reparenting is a defined no-op.
     let (parent2, child2) = {
@@ -5071,7 +5121,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             return TestResult::Fail("process manager unavailable for init designation cleanup");
         };
         for pid in [parent_pid, child_pid, parent2, child2] {
-            manager.remove_process(pid);
+            retired_rows.push(manager.remove_process(pid));
         }
         if manager.get_process(reserved).is_some() && first_failure.is_none() {
             first_failure = Some("init designation cleanup left the reserved row live");
@@ -5080,6 +5130,8 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             first_failure = Some("init designation cleanup left the authority installed");
         }
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     let accepted_delta = init_designation_accepted().saturating_sub(accepted_before);
     let refused_delta = init_designation_refused().saturating_sub(refused_before);
@@ -5165,6 +5217,8 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
 
 #[cfg(feature = "boot_tests")]
 pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -5329,9 +5383,9 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
         }
 
         manager.remove_from_ready_queue(other);
-        manager.remove_process(other);
+        retired_rows.push(manager.remove_process(other));
         manager.remove_from_ready_queue(reserved);
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
 
         let rows_after = manager.process_count();
         let designation_residual = usize::from(manager.designated_init().is_some());
@@ -5348,6 +5402,8 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
             designation_residual,
         )
     };
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     let refusal_counter_after = init_group_refusals_total();
     let refusal_counter_delta = refusal_counter_after as i64 - refusal_counter_before as i64;
@@ -5517,6 +5573,8 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     }
 
     fn retire_and_remove_owned_row(pid: crate::process::ProcessId) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let reclaim = {
             let mut manager_guard = crate::process::manager();
             let manager = manager_guard
@@ -5531,9 +5589,11 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
                 reclaim
             };
             manager.remove_from_ready_queue(pid);
-            manager.remove_process(pid);
+            retired_rows.push(manager.remove_process(pid));
             reclaim
         };
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         crate::task::process_task::enqueue_process_reclaim(reclaim);
         let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false) {

@@ -1,0 +1,4 @@
+clean exit 0 expected 0
+code-warning exit 1 expected 1
+error exit 1 expected 1
+other-core-nightly exit 1 expected 1

@@ -1,0 +1,3 @@
+claim-lint: clean (106 file(s) checked, changed hunks vs 5c53ba590bbd).
+claim-lint: 599 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 2 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/ipc/serials/813-a/.gitattributes, userspace/programs/Cargo.toml
