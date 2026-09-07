@@ -1,0 +1,5 @@
+tests/teardown_structure.rs:17807: [universal-claim] Issue 947: all five C4 and all three C5 legs remain independently present.
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 1 finding(s) across 23 file(s) [changed hunks vs 9f79cb71969f]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 180 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
