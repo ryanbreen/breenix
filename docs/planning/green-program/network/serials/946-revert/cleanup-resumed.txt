@@ -1,0 +1,4 @@
+revision=dce7a93dcd49833455cb58ae870d930382f2a64d
+Lane-scoped QEMU processes after gates: 0
+
+No name-based termination; other lanes untouched.
