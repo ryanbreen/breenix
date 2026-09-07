@@ -1,0 +1,44 @@
+fix(522,c5): anchor the test-phase liveness budget at test-phase entry
+
+One 65-second clock, published at kernel entry, served both the aarch64
+secondary-CPU bring-up wait and the P20 exit-kick gate. The gate tested that
+inherited anchor ahead of its own ceilings, so time spent in initialization was
+time the gate's 45-second allowance no longer had.
+
+Split it into two separately named budgets with separate anchors, in
+kernel/src/test_framework/mod.rs:
+
+  INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS = 40_000  (kernel entry)
+  TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS     = 60_000  (test-phase entry)
+
+kernel/src/main_aarch64.rs publishes and reads only the initialization anchor.
+40_000 equals that wait's own boot_tests local absolute ceiling
+(SMP_ONLINE_ABSOLUTE_CEILING_SECONDS = 40), so bring-up is bounded no more
+tightly than before. kernel/src/test_framework/executor.rs publishes the
+test-phase anchor at the top of run_all_tests, before any test kthread is
+spawned. kernel/src/tracing/providers/teardown.rs spends the test-phase budget.
+
+Neither window is larger than the 65-second clock they replace. The 8s
+first-progress floor, 3s no-progress window, 15s per-wait ceiling and 45s gate
+ceiling are unchanged, and so is the classification order PhaseOneCeiling >
+GateCeiling > AbsoluteCeiling > NoProgress > CounterStall. The gate now emits an
+anchor_age_at_gate_entry_ms breadcrumb; it read 1961, 1802 and 2564 ms over the
+three strict boots, so the budget remaining at gate entry covers the whole 45s
+ceiling.
+
+Oracle: exit_kick_budget_anchor_isolation, a boot_tests-only aarch64 fixture
+that burns a bounded 6-second pre-test interval and then classifies the same
+frozen target three ways. With the inherited pre-burn anchor it gets zero window
+and returns cause=phase_one_ceiling target=none; with the post-burn test-phase
+anchor it gets its full first-progress window and returns cause=no_progress
+target=worker_1; with a target whose own counter keeps advancing it runs to
+cause=gate_ceiling target=none, so a real whole-gate overrun is still the gate
+ceiling. 3 of 3 boots.
+
+Ratchet: tests/teardown_structure.rs::test_phase_budget_is_anchored_at_test_phase_entry
+pins the anchor's publication site, the separately named initialization
+watchdog, the gate's budget source, the ceiling headroom and the oracle's legs.
+Re-anchoring at kernel entry reddens it.
+
+Co-Authored-By: Ryan Breen <rbreen@getfastr.com>
+Co-Authored-By: Claude Code <noreply@anthropic.com>

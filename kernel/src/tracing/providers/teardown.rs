@@ -1714,6 +1714,8 @@ fn retirement_oracle_quiesce_deadline() -> u64 {
 
 #[cfg(feature = "boot_tests")]
 pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -1825,11 +1827,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable during baseline reap");
             };
-            manager.remove_process(immediate.0);
+            retired_rows.push(manager.remove_process(immediate.0));
             if let Some(parent) = manager.get_process_mut(parent_pid) {
                 parent.children.retain(|pid| *pid != immediate.0);
             }
         }
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
     }
 
     let mut pairing_child_pids = [0u64; 64];
@@ -1968,11 +1972,13 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable during pairing reap");
             };
-            manager.remove_process(child.0);
+            retired_rows.push(manager.remove_process(child.0));
             if let Some(parent) = manager.get_process_mut(parent_pid) {
                 parent.children.retain(|pid| *pid != child.0);
             }
         }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
         core::mem::drop(child.2);
     }
 
@@ -2226,8 +2232,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         if let Some(parent) = manager.get_process_mut(parent_pid) {
             crate::task::process_task::release_process_resources(parent);
         }
-        manager.remove_process(parent_pid);
+        retired_rows.push(manager.remove_process(parent_pid));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     #[cfg(target_arch = "x86_64")]
     {
@@ -2244,9 +2252,11 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 crate::task::process_task::release_process_resources(parent);
                 reclaim
             };
-            manager.remove_process(parent_pid);
+            retired_rows.push(manager.remove_process(parent_pid));
             reclaim
         };
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
         let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
@@ -2558,6 +2568,8 @@ pub fn run_x86_retire_cohort_gate() {
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
 pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     use crate::test_framework::registry::TestResult;
     use x86_64::VirtAddr;
 
@@ -2620,6 +2632,7 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
     let stale_before = FRAME_RETURN_REFUSED_STALE.aggregate();
     let untracked_before = FRAME_RETURN_REFUSED_UNTRACKED.aggregate();
     let root_slot_refused_before = PT_ROOT_SLOT_REFUSED.aggregate();
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     let (plain, plain_kept, with_argv, argv_kept, name_kept) = {
         let mut manager_guard = crate::process::manager();
         let Some(manager) = manager_guard.as_mut() else {
@@ -2627,14 +2640,19 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
                 "process manager unavailable for failed exec production-path arm",
             );
         };
-        let plain = manager.exec_process(parent_pid, &corrupt, Some("corrupt_exec"));
+        let plain = manager.exec_process(parent_pid, &corrupt, Some("corrupt_exec"), &mut closes);
         let plain_kept = manager
             .get_process(parent_pid)
             .map(|process| process.page_table.is_some())
             .unwrap_or(false);
         let argv: [&[u8]; 1] = [b"corrupt_exec\0"];
-        let with_argv =
-            manager.exec_process_with_argv(parent_pid, &corrupt, Some("corrupt_exec"), &argv);
+        let with_argv = manager.exec_process_with_argv(
+            parent_pid,
+            &corrupt,
+            Some("corrupt_exec"),
+            &argv,
+            &mut closes,
+        );
         let argv_kept = manager
             .get_process(parent_pid)
             .map(|process| process.page_table.is_some())
@@ -2898,11 +2916,13 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable during exec cohort reap");
             };
-            manager.remove_process(child.0);
+            retired_rows.push(manager.remove_process(child.0));
             if let Some(parent) = manager.get_process_mut(parent_pid) {
                 parent.children.retain(|pid| *pid != child.0);
             }
         }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
     }
 
     let quiesce_deadline = retirement_oracle_quiesce_deadline();
@@ -3065,9 +3085,11 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
             crate::task::process_task::release_process_resources(parent);
             reclaim
         };
-        manager.remove_process(parent_pid);
+        retired_rows.push(manager.remove_process(parent_pid));
         reclaim
     };
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
     crate::task::process_task::enqueue_process_reclaim(parent_reclaim);
     let cleanup_deadline = retirement_oracle_quiesce_deadline();
     while crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64()) != (false, false) {
@@ -3137,6 +3159,7 @@ fn take_pending_signal_for_test(pid: crate::process::ProcessId, sig: u32) -> boo
 
 #[cfg(feature = "boot_tests")]
 pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -3206,11 +3229,12 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         pid: crate::process::ProcessId,
         elf: &[u8],
         with_argv: bool,
+        closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(), &'static str> {
         if with_argv {
             let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
             manager
-                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv)
+                .exec_process_with_argv(pid, elf, Some("exec_detach_oracle"), &argv, closes)
                 .map(|(_, _, commit)| {
                     // #721 m1: deliberately not applied. This oracle reads detach/
                     // refusal state straight off the process row and tears the row
@@ -3222,7 +3246,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                 })
         } else {
             manager
-                .exec_process(pid, elf, Some("exec_detach_oracle"))
+                .exec_process(pid, elf, Some("exec_detach_oracle"), closes)
                 .map(|_| ())
         }
     }
@@ -3232,6 +3256,8 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         unavailable_reason: &'static str,
         missing_reason: &'static str,
     ) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let thread_id = {
             let manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_ref() else {
@@ -3257,7 +3283,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             return Err(missing_reason);
         }
         manager.remove_from_ready_queue(pid);
-        manager.remove_process(pid);
+        retired_rows.push(manager.remove_process(pid));
         Ok(())
     }
 
@@ -3266,6 +3292,8 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         unavailable_reason: &'static str,
         missing_reason: &'static str,
     ) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let reclaim = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -3280,9 +3308,11 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                 reclaim
             };
             manager.remove_from_ready_queue(pid);
-            manager.remove_process(pid);
+            retired_rows.push(manager.remove_process(pid));
             reclaim
         };
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         crate::task::process_task::enqueue_process_reclaim(reclaim);
         let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false) {
@@ -3420,7 +3450,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable for exec detach failure arm");
             };
-            invoke_exec(manager, member_pid, &corrupt, with_argv)
+            invoke_exec(manager, member_pid, &corrupt, with_argv, &mut closes)
         };
         let (failed_inherited_cr3, failed_thread_group_id) = {
             let manager_guard = crate::process::manager();
@@ -3487,7 +3517,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                         "process manager unavailable for exec detach sibling arm",
                     );
                 };
-                invoke_exec(manager, member_pid, &valid, with_argv)
+                invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
             };
             let (refused_inherited_cr3, refused_thread_group_id) = {
                 let manager_guard = crate::process::manager();
@@ -3545,7 +3575,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable for exec detach success arm");
             };
-            invoke_exec(manager, member_pid, &valid, with_argv)
+            invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
         };
         let mut detached = false;
         let mut root_is_fresh = false;
@@ -3873,6 +3903,8 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
         probe_reference_clear: [bool; 3],
         retirement_blockers: &mut [bool; 3],
     ) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let reclaim = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -3918,8 +3950,10 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
             };
             crate::task::process_task::release_process_resources(process);
             manager.remove_from_ready_queue(pid);
-            manager.remove_process(pid);
+            retired_rows.push(manager.remove_process(pid));
         }
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         crate::task::process_task::enqueue_process_reclaim(reclaim);
         Ok(())
     }
@@ -4335,6 +4369,8 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
         unavailable_reason: &'static str,
         missing_reason: &'static str,
     ) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let thread_id = {
             let manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_ref() else {
@@ -4353,7 +4389,7 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
             return Err(unavailable_reason);
         };
         manager.remove_from_ready_queue(pid);
-        manager.remove_process(pid);
+        retired_rows.push(manager.remove_process(pid));
         Ok(())
     }
 
@@ -4555,6 +4591,8 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
 
 #[cfg(feature = "boot_tests")]
 pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -4692,8 +4730,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         if manager.designated_init().is_some() && first_failure.is_none() {
             first_failure = Some("init designation A1 changed the init designation");
         }
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A2: reject a PT_LOAD whose file data lies outside the image, after the
     // process page table has been constructed.
@@ -4736,8 +4776,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         if manager.designated_init().is_some() && first_failure.is_none() {
             first_failure = Some("init designation A2 changed the init designation");
         }
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     let construct_used_after = frame_allocator_used_frames();
     let designation_used_before = construct_used_after;
@@ -4776,8 +4818,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         if manager.designated_init().is_some() && first_failure.is_none() {
             first_failure = Some("init designation A3 changed the init designation");
         }
-        manager.remove_process(probe);
+        retired_rows.push(manager.remove_process(probe));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A4: a ticket cannot outlive the row it names.
     {
@@ -4791,7 +4835,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         );
         match manager.hold_init_publication(reserved) {
             Ok(ticket) => {
-                manager.remove_process(reserved);
+                retired_rows.push(manager.remove_process(reserved));
                 match manager.designate_init(ticket) {
                     Err(_) => refused += 1,
                     Ok(_) if first_failure.is_none() => {
@@ -4809,6 +4853,8 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             first_failure = Some("init designation A4 changed the init designation");
         }
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A5: a terminated reserved row cannot be designated.
     {
@@ -4844,8 +4890,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             first_failure = Some("init designation A5 changed the init designation");
         }
         manager.remove_from_ready_queue(reserved);
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A6: a clean reserved row is designated and published exactly once.
     {
@@ -4979,12 +5027,14 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         let Some(manager) = manager_guard.as_mut() else {
             return TestResult::Fail("process manager unavailable for init designation A9");
         };
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
         if manager.designated_init().is_some() && first_failure.is_none() {
             first_failure = Some("init designation A9 did not retire the authority");
         }
         retired += 1;
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     // A10: without a designated init, reparenting is a defined no-op.
     let (parent2, child2) = {
@@ -5071,7 +5121,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             return TestResult::Fail("process manager unavailable for init designation cleanup");
         };
         for pid in [parent_pid, child_pid, parent2, child2] {
-            manager.remove_process(pid);
+            retired_rows.push(manager.remove_process(pid));
         }
         if manager.get_process(reserved).is_some() && first_failure.is_none() {
             first_failure = Some("init designation cleanup left the reserved row live");
@@ -5080,6 +5130,8 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             first_failure = Some("init designation cleanup left the authority installed");
         }
     }
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     let accepted_delta = init_designation_accepted().saturating_sub(accepted_before);
     let refused_delta = init_designation_refused().saturating_sub(refused_before);
@@ -5165,6 +5217,8 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
 
 #[cfg(feature = "boot_tests")]
 pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -5329,9 +5383,9 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
         }
 
         manager.remove_from_ready_queue(other);
-        manager.remove_process(other);
+        retired_rows.push(manager.remove_process(other));
         manager.remove_from_ready_queue(reserved);
-        manager.remove_process(reserved);
+        retired_rows.push(manager.remove_process(reserved));
 
         let rows_after = manager.process_count();
         let designation_residual = usize::from(manager.designated_init().is_some());
@@ -5348,6 +5402,8 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
             designation_residual,
         )
     };
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     let refusal_counter_after = init_group_refusals_total();
     let refusal_counter_delta = refusal_counter_after as i64 - refusal_counter_before as i64;
@@ -5517,6 +5573,8 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     }
 
     fn retire_and_remove_owned_row(pid: crate::process::ProcessId) -> Result<(), &'static str> {
+        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+        let mut retired_rows = alloc::vec::Vec::new();
         let reclaim = {
             let mut manager_guard = crate::process::manager();
             let manager = manager_guard
@@ -5531,9 +5589,11 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
                 reclaim
             };
             manager.remove_from_ready_queue(pid);
-            manager.remove_process(pid);
+            retired_rows.push(manager.remove_process(pid));
             reclaim
         };
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         crate::task::process_task::enqueue_process_reclaim(reclaim);
         let cleanup_deadline = retirement_oracle_quiesce_deadline();
         while crate::task::process_task::boot_reclaim_locations(pid.as_u64()) != (false, false) {
@@ -6533,11 +6593,14 @@ pub fn run_x86_kernel_stack_ownership_gate() {
     );
 }
 
-// P20 retains its calibrated 45s local ceiling, but both it and P17 consume
-// one 65s budget anchored near kernel entry. Thus P17 + P20 <= 65s and the
-// 90s Phase-1 harness keeps 90s - 65s = 25s for other tests and overhead.
-// This does not constrain the realistic starvation evidence: <=10s total,
-// with the longest observed individual wait about 8s.
+// P20 retains its calibrated 45s local ceiling, and now genuinely receives it:
+// the enclosing budget is the 60s test-phase budget anchored at test-phase
+// entry, not a clock started at kernel entry that P17 has already spent. P17 is
+// bounded separately by the 40s initialization watchdog. The measured distance
+// from test-phase entry to this gate's entry is about 2.4-2.7s, so the budget
+// remaining at gate entry still covers the whole 45s ceiling. This does not
+// constrain the realistic starvation evidence: <=10s total, with the longest
+// observed individual wait about 8s.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;
 
@@ -6563,8 +6626,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     // plus that worker's exit stages. A separate
     // 15-second per-wait ceiling and one 45-second gate ceiling remain hard
     // backstops across late-true recoveries. The gate is additionally capped by
-    // the shared 65-second Phase-1 liveness clock that also bounds SMP bring-up,
-    // so the two watchdogs cannot compose past the external harness. Resched SGIs
+    // the 60-second test-phase liveness budget, which is anchored at test-phase
+    // entry rather than at kernel entry, so initialization cannot spend this
+    // gate's window; SMP bring-up is bounded by its own initialization
+    // watchdog. 60s exceeds the 45s gate ceiling by enough that the budget
+    // remaining when this gate is entered still covers that ceiling, so a
+    // genuine whole-gate overrun is still classified as the gate ceiling. Resched SGIs
     // are re-sent every 50ms. Each re-kick also records a boot-test-only CPU-0
     // watchdog heartbeat, preventing the generic five-second soft-lockup detector
     // from preempting this gate's worker-specific verdict. This observes the
@@ -6652,7 +6719,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     "exit_kick_gate: gate liveness ceiling exhausted before this wait's condition was observed (not a per-CPU stall)"
                 }
                 Self::PhaseOneCeiling => {
-                    "exit_kick_gate: shared Phase-1 liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)"
+                    "exit_kick_gate: Phase-1 test-phase liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)"
                 }
                 Self::CounterStall => {
                     "exit_kick_gate: CNTVCT stalled while enforcing wait deadline"
@@ -6720,7 +6787,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         condition_expected: u64,
         progress: P,
         kick_cpus: &[usize],
-        phase_one_started_at: u64,
+        test_phase_started_at: u64,
         gate_started_at: u64,
     ) -> Result<(), WaitFailureKind>
     where
@@ -6778,10 +6845,10 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 counter_frequency_hz,
                 GATE_CEILING_MILLISECONDS,
             );
-        let phase_one_ceiling_ticks =
+        let test_phase_ceiling_ticks =
             crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
                 counter_frequency_hz,
-                crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
             );
         let re_kick_ticks =
             crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
@@ -6824,8 +6891,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             iterations = iterations.wrapping_add(1);
             let elapsed = crate::arch_impl::aarch64::timer::elapsed_ticks(now, wait_start);
             let mut failure = None;
-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, phase_one_started_at)
-                >= phase_one_ceiling_ticks
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, test_phase_started_at)
+                >= test_phase_ceiling_ticks
             {
                 failure = Some(WaitFailureKind::PhaseOneCeiling);
             }
@@ -6864,7 +6931,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
                     WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS,
                     WaitFailureKind::PhaseOneCeiling => {
-                        crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS
+                        crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS
                     }
                     WaitFailureKind::CounterStall
                     | WaitFailureKind::CounterUnavailable
@@ -6944,7 +7011,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         workers: [(&'static str, &dyn Fn() -> u64); 3],
         target_complete: D,
         kick_cpus: &[usize],
-        phase_one_started_at: u64,
+        test_phase_started_at: u64,
         gate_started_at: u64,
     ) -> Result<(), (WaitFailureKind, Option<&'static str>)>
     where
@@ -7004,10 +7071,10 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 counter_frequency_hz,
                 GATE_CEILING_MILLISECONDS,
             );
-        let phase_one_ceiling_ticks =
+        let test_phase_ceiling_ticks =
             crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
                 counter_frequency_hz,
-                crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
             );
         let re_kick_ticks =
             crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
@@ -7067,8 +7134,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             iterations = iterations.wrapping_add(1);
             let elapsed = crate::arch_impl::aarch64::timer::elapsed_ticks(now, wait_start);
             let mut failure = None;
-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, phase_one_started_at)
-                >= phase_one_ceiling_ticks
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, test_phase_started_at)
+                >= test_phase_ceiling_ticks
             {
                 failure = Some(WaitFailureKind::PhaseOneCeiling);
             }
@@ -7107,7 +7174,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
                     WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS,
                     WaitFailureKind::PhaseOneCeiling => {
-                        crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS
+                        crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS
                     }
                     WaitFailureKind::CounterStall
                     | WaitFailureKind::CounterUnavailable
@@ -7192,7 +7259,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         handle: &crate::task::kthread::KthreadHandle,
         work_progress: P,
         kick_cpus: &[usize],
-        phase_one_started_at: u64,
+        test_phase_started_at: u64,
         gate_started_at: u64,
     ) -> Result<(), WaitFailureKind>
     where
@@ -7232,7 +7299,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 workers: [0; 3],
             },
             kick_cpus,
-            phase_one_started_at,
+            test_phase_started_at,
             gate_started_at,
         )?;
         if crate::task::kthread::kthread_join(handle).is_err() {
@@ -7260,15 +7327,29 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
 
     record_exit_kick_gate_watchdog_heartbeat();
-    let phase_one_started_at = match crate::test_framework::phase_one_liveness_started_at() {
+    let test_phase_started_at = match crate::test_framework::test_phase_liveness_started_at() {
         Some(started_at) => started_at,
         None => {
             return TestResult::Fail(
-                "exit_kick_gate: shared Phase-1 liveness budget anchor unavailable",
+                "exit_kick_gate: test-phase liveness budget anchor unavailable",
             )
         }
     };
     let gate_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+    // Report how much of the enclosing budget was already spent when this gate
+    // started. Anchored at test-phase entry this stays small, so the gate keeps
+    // its full local allowance; anchored at kernel entry it grew with boot time.
+    {
+        let counter_frequency_hz = crate::arch_impl::aarch64::timer::frequency_hz();
+        crate::serial_println!(
+            "[exit_kick_gate] budget_anchor=test_phase anchor_age_at_gate_entry_ms={} budget_ms={} gate_ceiling_ms={}",
+            crate::arch_impl::aarch64::timer::elapsed_ticks(gate_started_at, test_phase_started_at)
+                .saturating_mul(1_000)
+                / counter_frequency_hz.max(1),
+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+            GATE_CEILING_MILLISECONDS,
+        );
+    }
     let _exit_progress_guard = KthreadExitProgressGuard::arm();
 
     struct BrokenV3Slot {
@@ -7418,7 +7499,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         1,
         || WaitProgress::work(publisher_a_progress.load(Ordering::Acquire)),
         &[PUBLISHER_A_CPU],
-        phase_one_started_at,
+        test_phase_started_at,
         gate_started_at,
     ) {
         // `hook` is dropped on return, releasing publisher A from its hold.
@@ -7471,7 +7552,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         1,
         || WaitProgress::work(publisher_b_progress.load(Ordering::Acquire)),
         &[PUBLISHER_B_CPU],
-        phase_one_started_at,
+        test_phase_started_at,
         gate_started_at,
     ) {
         // `hook` is dropped on return, releasing publisher A from its hold.
@@ -7496,7 +7577,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_b,
         || publisher_b_progress.load(Ordering::Acquire),
         &[PUBLISHER_B_CPU],
-        phase_one_started_at,
+        test_phase_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -7508,7 +7589,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_a,
         || publisher_a_progress.load(Ordering::Acquire),
         &[PUBLISHER_A_CPU],
-        phase_one_started_at,
+        test_phase_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -7973,7 +8054,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         ],
         |target, _| accounting.workers_ready_bits.load(Ordering::Acquire) & (1 << target) != 0,
         &worker_cpus,
-        phase_one_started_at,
+        test_phase_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(match target {
@@ -7994,7 +8075,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_a,
         &storm_publisher_a_progress,
         &worker_cpus,
-        phase_one_started_at,
+        test_phase_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -8008,7 +8089,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &publisher_b,
         &storm_publisher_b_progress,
         &worker_cpus,
-        phase_one_started_at,
+        test_phase_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -8022,7 +8103,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         &observer,
         &storm_observer_progress,
         &worker_cpus,
-        phase_one_started_at,
+        test_phase_started_at,
         gate_started_at,
     ) {
         return TestResult::Fail(
@@ -8175,7 +8256,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                     "exit_kick_gate: gate liveness ceiling exhausted before this wait's condition was observed (not a per-CPU stall)"
                 }
                 Self::PhaseOneCeiling => {
-                    "exit_kick_gate: shared Phase-1 liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)"
+                    "exit_kick_gate: Phase-1 test-phase liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)"
                 }
                 Self::CounterStall => {
                     "exit_kick_gate: CNTVCT stalled while enforcing wait deadline"
@@ -8243,7 +8324,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
         condition_expected: u64,
         progress: P,
         kick_cpus: &[usize],
-        phase_one_started_at: u64,
+        test_phase_started_at: u64,
         gate_started_at: u64,
     ) -> Result<(), WaitFailureKind>
     where
@@ -8301,10 +8382,10 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 counter_frequency_hz,
                 GATE_CEILING_MILLISECONDS,
             );
-        let phase_one_ceiling_ticks =
+        let test_phase_ceiling_ticks =
             crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
                 counter_frequency_hz,
-                crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
             );
         let re_kick_ticks =
             crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
@@ -8347,8 +8428,8 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
             iterations = iterations.wrapping_add(1);
             let elapsed = crate::arch_impl::aarch64::timer::elapsed_ticks(now, wait_start);
             let mut failure = None;
-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, phase_one_started_at)
-                >= phase_one_ceiling_ticks
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, test_phase_started_at)
+                >= test_phase_ceiling_ticks
             {
                 failure = Some(WaitFailureKind::PhaseOneCeiling);
             }
@@ -8387,7 +8468,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                     WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
                     WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS,
                     WaitFailureKind::PhaseOneCeiling => {
-                        crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS
+                        crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS
                     }
                     WaitFailureKind::CounterStall
                     | WaitFailureKind::CounterUnavailable
@@ -8467,7 +8548,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
         workers: [(&'static str, &dyn Fn() -> u64); 3],
         target_complete: D,
         kick_cpus: &[usize],
-        phase_one_started_at: u64,
+        test_phase_started_at: u64,
         gate_started_at: u64,
     ) -> Result<(), (WaitFailureKind, Option<&'static str>)>
     where
@@ -8527,10 +8608,10 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 counter_frequency_hz,
                 GATE_CEILING_MILLISECONDS,
             );
-        let phase_one_ceiling_ticks =
+        let test_phase_ceiling_ticks =
             crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
                 counter_frequency_hz,
-                crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
             );
         let re_kick_ticks =
             crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
@@ -8586,8 +8667,8 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
             iterations = iterations.wrapping_add(1);
             let elapsed = crate::arch_impl::aarch64::timer::elapsed_ticks(now, wait_start);
             let mut failure = None;
-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, phase_one_started_at)
-                >= phase_one_ceiling_ticks
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, test_phase_started_at)
+                >= test_phase_ceiling_ticks
             {
                 failure = Some(WaitFailureKind::PhaseOneCeiling);
             }
@@ -8626,7 +8707,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                     WaitFailureKind::AbsoluteCeiling => ABSOLUTE_WAIT_CEILING_MILLISECONDS,
                     WaitFailureKind::GateCeiling => GATE_CEILING_MILLISECONDS,
                     WaitFailureKind::PhaseOneCeiling => {
-                        crate::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS
+                        crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS
                     }
                     WaitFailureKind::CounterStall
                     | WaitFailureKind::CounterUnavailable
@@ -8711,7 +8792,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
         handle: &crate::task::kthread::KthreadHandle,
         work_progress: P,
         kick_cpus: &[usize],
-        phase_one_started_at: u64,
+        test_phase_started_at: u64,
         gate_started_at: u64,
     ) -> Result<(), WaitFailureKind>
     where
@@ -8751,7 +8832,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 workers: [0; 3],
             },
             kick_cpus,
-            phase_one_started_at,
+            test_phase_started_at,
             gate_started_at,
         )?;
         if crate::task::kthread::kthread_join(handle).is_err() {
@@ -8815,9 +8896,31 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
     if frequency == 0 {
         return TestResult::Fail("exit-kick isolation counter unavailable");
     }
-    let Some(phase_one_started_at) = crate::test_framework::phase_one_liveness_started_at() else {
-        return TestResult::Fail("exit-kick isolation Phase-1 anchor unavailable");
+    let Some(test_phase_started_at) = crate::test_framework::test_phase_liveness_started_at() else {
+        return TestResult::Fail("exit-kick isolation test-phase anchor unavailable");
     };
+    // #522 C5 fix pass (V-8): this test is a second, deeper consumer of the
+    // same test_phase_liveness budget the real exit_kick_gate spends -- its
+    // five scenarios' own ceilings sum to about 39 seconds of that shared
+    // budget (versus the real gate's own 2-3 seconds), yet only the real
+    // gate's `exit_kick_protocol_gate_test` reported how much of the budget
+    // was already spent on entry. Report it here too, so the truncation
+    // condition the budget_anchor breadcrumb exists to make visible is
+    // visible for every consumer of the budget, not only the shallowest one.
+    // claim-lint:ok: #522 C5 fix pass V-8; pinned by
+    // tests/teardown_structure.rs::fix_pass_v8_worker_isolation_reports_budget_anchor_age,
+    // which reddens if this breadcrumb is removed.
+    {
+        let entry_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+        crate::serial_println!(
+            "[exit_kick_worker_isolation] budget_anchor=test_phase anchor_age_at_entry_ms={} budget_ms={} scenario_ceiling_ms={}",
+            crate::arch_impl::aarch64::timer::elapsed_ticks(entry_started_at, test_phase_started_at)
+                .saturating_mul(1_000)
+                / frequency.max(1),
+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+        );
+    }
     // Completion needs TWO own increments, so the frozen worker does not complete.
     // The two live siblings continue doing work even after their completion bits.
     // This distinguishes the old union's 15s ceiling from the independent 8s floor.
@@ -8889,7 +8992,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 3,
                 || WaitProgress::workers(progress()),
                 &worker_cpus,
-                phase_one_started_at,
+                test_phase_started_at,
                 started_at,
             ).map_err(|failure| (failure, None))
         } else {
@@ -8905,7 +9008,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 ],
                 |target, _| accounting.completed.load(Ordering::Acquire) & (1 << target) != 0,
                 &worker_cpus,
-                phase_one_started_at,
+                test_phase_started_at,
                 started_at,
             )
         };
@@ -8925,7 +9028,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
             if let Err(failure) = join_with_resched(
                 "isolation_cleanup", handle,
                 || accounting.progress[target].load(Ordering::Acquire),
-                &worker_cpus, phase_one_started_at, cleanup_started_at,
+                &worker_cpus, test_phase_started_at, cleanup_started_at,
             ) {
                 return TestResult::Fail(failure.message("exit-kick isolation cleanup stalled"));
             }
@@ -8974,4 +9077,248 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
         }
     }
     TestResult::Pass
+}
+
+
+/// #522 C5 oracle: the test-phase liveness budget must be anchored at
+/// test-phase entry, so a slow pre-test interval cannot consume a later
+/// gate's promised local window, while a genuine whole-gate overrun must
+/// still be classified as the gate ceiling.
+///
+/// The fixture burns a real, bounded pre-test interval, then runs the same
+/// deadline classifier twice over an identical frozen target: once with the
+/// pre-burn "kernel entry" anchor the previous code fed this gate, and once
+/// with the post-burn "test-phase entry" anchor this change introduces.
+/// The budgets are scaled down so the whole oracle fits in about eleven
+/// seconds of wall clock; the real gate's own anchoring is pinned by
+/// tests/teardown_structure.rs and reported by its budget_anchor breadcrumb.
+/// The ceiling order here is the real gate's: test-phase budget, then gate
+/// ceiling, then absolute wait ceiling, then no-progress.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub fn exit_kick_budget_anchor_isolation_test() -> crate::test_framework::registry::TestResult {
+    use crate::arch_impl::aarch64::timer_interrupt::record_exit_kick_gate_watchdog_heartbeat;
+    use crate::test_framework::registry::TestResult;
+
+    // Scaled analogues of the real gate's constants. The ordering relations
+    // that matter are preserved: no_progress < first_progress < gate <
+    // absolute, and gate < test_phase, so a whole-gate overrun still reports
+    // the gate ceiling rather than being pre-empted by the enclosing budget.
+    const FIXTURE_PRE_TEST_DELAY_MILLISECONDS: u64 = 6_000;
+    const FIXTURE_TEST_PHASE_BUDGET_MILLISECONDS: u64 = 5_000;
+    const FIXTURE_GATE_CEILING_MILLISECONDS: u64 = 3_000;
+    const FIXTURE_ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 4_000;
+    const FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 2_000;
+    const FIXTURE_NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 1_000;
+    const FIXTURE_TARGET_NAME: &str = "worker_1";
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FixtureCause {
+        TestPhaseCeiling,
+        GateCeiling,
+        AbsoluteCeiling,
+        NoProgress,
+    }
+
+    impl FixtureCause {
+        fn cause(self) -> &'static str {
+            match self {
+                // The same cause strings the real gate emits, so this oracle
+                // and the gate stay readable by one consumer.
+                Self::TestPhaseCeiling => "phase_one_ceiling",
+                Self::GateCeiling => "gate_ceiling",
+                Self::AbsoluteCeiling => "absolute_ceiling",
+                Self::NoProgress => "no_progress",
+            }
+        }
+    }
+
+    fn ticks_to_milliseconds(ticks: u64, counter_frequency_hz: u64) -> u64 {
+        ticks.saturating_mul(1_000) / counter_frequency_hz.max(1)
+    }
+
+    fn burn_milliseconds(counter_frequency_hz: u64, milliseconds: u64) {
+        let ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            milliseconds,
+        );
+        let start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+        while crate::arch_impl::aarch64::timer::elapsed_ticks(
+            crate::arch_impl::aarch64::timer::rdtsc_serialized(),
+            start,
+        ) < ticks
+        {
+            record_exit_kick_gate_watchdog_heartbeat();
+            // Yield the CPU rather than spinning it, so this deliberate delay
+            // does not starve the strand-injection oracle idle handoffs.
+            crate::task::strand_oracle::sleep_sample_period();
+        }
+    }
+
+    /// Run one wait whose condition stays unmet for the whole leg, classifying
+    /// it in the real gate order. target_progresses picks between a frozen
+    /// target, whose own progress counter stays at its initial value, and a
+    /// healthy-but-unfinished target whose counter advances each iteration and
+    /// so keeps the no-progress window re-armed.
+    /// claim-lint:ok: #522 C5; all three legs are read back in
+    /// docs/planning/green-program/tracing/522-C5-2026-09-07.md (3 of 3 boots).
+    fn classify_wait(
+        counter_frequency_hz: u64,
+        budget_anchor: u64,
+        target_progresses: bool,
+    ) -> (FixtureCause, Option<&'static str>, u64) {
+        let to_ticks = |milliseconds| {
+            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+                counter_frequency_hz,
+                milliseconds,
+            )
+        };
+        let test_phase_ceiling_ticks = to_ticks(FIXTURE_TEST_PHASE_BUDGET_MILLISECONDS);
+        let gate_ceiling_ticks = to_ticks(FIXTURE_GATE_CEILING_MILLISECONDS);
+        let absolute_ceiling_ticks = to_ticks(FIXTURE_ABSOLUTE_WAIT_CEILING_MILLISECONDS);
+        let first_progress_ticks = to_ticks(FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS);
+        let no_progress_ticks = to_ticks(FIXTURE_NO_PROGRESS_WINDOW_MILLISECONDS);
+
+        let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+        let gate_started_at = wait_start;
+        let mut last_advance = wait_start;
+        let mut target_progress = 0u64;
+        loop {
+            record_exit_kick_gate_watchdog_heartbeat();
+            let now = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+            if target_progresses {
+                target_progress = target_progress.saturating_add(1);
+                last_advance = now;
+            }
+            let _ = target_progress;
+            let elapsed = crate::arch_impl::aarch64::timer::elapsed_ticks(now, wait_start);
+            let no_progress_deadline_elapsed =
+                crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance, wait_start)
+                    .saturating_add(no_progress_ticks);
+            let progress_deadline_elapsed =
+                core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);
+
+            let mut failure = None;
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, budget_anchor)
+                >= test_phase_ceiling_ticks
+            {
+                failure = Some((FixtureCause::TestPhaseCeiling, None));
+            }
+            if failure.is_none()
+                && crate::arch_impl::aarch64::timer::elapsed_ticks(now, gate_started_at)
+                    >= gate_ceiling_ticks
+            {
+                failure = Some((FixtureCause::GateCeiling, None));
+            }
+            if failure.is_none() && elapsed >= absolute_ceiling_ticks {
+                failure = Some((FixtureCause::AbsoluteCeiling, None));
+            }
+            if failure.is_none() && elapsed >= progress_deadline_elapsed {
+                failure = Some((FixtureCause::NoProgress, Some(FIXTURE_TARGET_NAME)));
+            }
+            if let Some((cause, target)) = failure {
+                return (
+                    cause,
+                    target,
+                    ticks_to_milliseconds(elapsed, counter_frequency_hz),
+                );
+            }
+            crate::task::strand_oracle::sleep_sample_period();
+        }
+    }
+
+    let counter_frequency_hz = crate::arch_impl::aarch64::timer::frequency_hz();
+    if counter_frequency_hz == 0 {
+        return TestResult::Fail("exit-kick budget anchor oracle counter unavailable");
+    }
+    if crate::test_framework::test_phase_liveness_started_at().is_none() {
+        return TestResult::Fail("exit-kick budget anchor oracle test-phase anchor unavailable");
+    }
+
+    // The pre-burn instant stands in for the anchor inherited from kernel
+    // entry; the post-burn instant stands in for test-phase entry.
+    let pre_test_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+    burn_milliseconds(counter_frequency_hz, FIXTURE_PRE_TEST_DELAY_MILLISECONDS);
+    let burned_milliseconds = ticks_to_milliseconds(
+        crate::arch_impl::aarch64::timer::elapsed_ticks(
+            crate::arch_impl::aarch64::timer::rdtsc_serialized(),
+            pre_test_started_at,
+        ),
+        counter_frequency_hz,
+    );
+    crate::serial_println!(
+        "[exit_kick_budget_anchor] pre_test_delay_ms={} fixture_budget_ms={} fixture_gate_ceiling_ms={}",
+        burned_milliseconds,
+        FIXTURE_TEST_PHASE_BUDGET_MILLISECONDS,
+        FIXTURE_GATE_CEILING_MILLISECONDS,
+    );
+
+    let mut verdict = TestResult::Pass;
+    for (scenario, anchor_name, inherit_pre_test_anchor, target_progresses) in [
+        ("inherited_kernel_entry_anchor", "inherited", true, false),
+        ("test_phase_entry_anchor", "test_phase", false, false),
+        ("gate_window_exhaustion", "test_phase", false, true),
+    ] {
+        // Each test_phase leg models one gate entered at its own phase entry.
+        // The real gate enters shortly after the real anchor; its distance is
+        // reported by the gate budget_anchor breadcrumb.
+        let budget_anchor = if inherit_pre_test_anchor {
+            pre_test_started_at
+        } else {
+            crate::arch_impl::aarch64::timer::rdtsc_serialized()
+        };
+        let budget_age_at_entry_milliseconds = ticks_to_milliseconds(
+            crate::arch_impl::aarch64::timer::elapsed_ticks(
+                crate::arch_impl::aarch64::timer::rdtsc_serialized(),
+                budget_anchor,
+            ),
+            counter_frequency_hz,
+        );
+        let (cause, target, elapsed_milliseconds) =
+            classify_wait(counter_frequency_hz, budget_anchor, target_progresses);
+        crate::serial_println!(
+            "[exit_kick_budget_anchor] scenario={} anchor={} cause={} target={} elapsed_ms={} budget_age_at_entry_ms={}",
+            scenario,
+            anchor_name,
+            cause.cause(),
+            target.unwrap_or("none"),
+            elapsed_milliseconds,
+            budget_age_at_entry_milliseconds,
+        );
+        let accepted = match scenario {
+            // Control: the inherited anchor is already older than the budget,
+            // so the wait gets no window at all and cannot name a target.
+            "inherited_kernel_entry_anchor" => {
+                cause == FixtureCause::TestPhaseCeiling
+                    && target.is_none()
+                    && elapsed_milliseconds <= 500
+            }
+            // Treatment: the wait receives its full local first-progress
+            // window and reaches its own target-naming verdict.
+            "test_phase_entry_anchor" => {
+                cause == FixtureCause::NoProgress
+                    && target == Some(FIXTURE_TARGET_NAME)
+                    && elapsed_milliseconds >= FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS
+                    && elapsed_milliseconds
+                        <= FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS
+                            + FIXTURE_NO_PROGRESS_WINDOW_MILLISECONDS
+            }
+            // Real exhaustion: progress keeps advancing, so the no-progress
+            // window stays re-armed and the whole-gate overrun is still
+            // reported as the gate ceiling.
+            // claim-lint:ok: #522 C5; 3 of 3 boots read gate_ceiling here in
+            // docs/planning/green-program/tracing/522-C5-2026-09-07.md.
+            _ => {
+                cause == FixtureCause::GateCeiling
+                    && target.is_none()
+                    && elapsed_milliseconds >= FIXTURE_GATE_CEILING_MILLISECONDS
+                    && elapsed_milliseconds
+                        < FIXTURE_ABSOLUTE_WAIT_CEILING_MILLISECONDS
+                            + FIXTURE_NO_PROGRESS_WINDOW_MILLISECONDS
+            }
+        };
+        if !accepted && verdict.is_pass() {
+            verdict = TestResult::Fail("exit-kick budget anchor oracle scenario misclassified");
+        }
+    }
+    verdict
 }

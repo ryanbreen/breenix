@@ -1,0 +1,18 @@
+docs(522,c5): round note, serials and the polling-allowlist budget reading
+
+Adds docs/planning/green-program/tracing/522-C5-2026-09-07.md with the
+before/after marker lines, the three oracle legs read back from 3 of 3 strict
+boots, the ratchet mutation transcript, the gate verdicts and a not-claimed
+list. Preserves the round's serials under
+docs/planning/green-program/tracing/serials/522-c5/: three strict boot serials
+and their boot-facts files, the strict and production gate transcripts, the
+structure-suite transcript, the build log, the mutation red and reverted-green
+transcripts, the mutation's gate-preflight refusal, the claim-lint output and
+both commit messages.
+
+docs/polling-allowlist.md now reads 60 seconds from the test-phase entry anchor
+for the P20 enclosing-ceiling expiry, in place of 65 seconds from the shared
+kernel-entry anchor.
+
+Co-Authored-By: Ryan Breen <rbreen@getfastr.com>
+Co-Authored-By: Claude Code <noreply@anthropic.com>

@@ -548,10 +548,29 @@ impl Process {
                 }
                 match fd_entry.kind {
                     FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
+                        // #919/P-2: deliver the reader-closed notification now,
+                        // via the PM-safe deferred path. Process::terminate()
+                        // has 4 identified callers; reading each call site
+                        // shows 4 of 4 hold PM at this point --
+                        // context_switch.rs:1400, manager.rs's
+                        // exit_process_locked, and both
+                        // signal/delivery.rs default-action arms -- so a
+                        // direct wake_up() would risk acquiring SCHEDULER
+                        // (Level 1) while PM (Level 2) is held, which this
+                        // file's "Lock Ordering Discipline" note
+                        // (scheduler.rs) forbids. deliver_deferred() instead
+                        // buffers the wake lock-free; the buffer's own mutex
+                        // is released before delivery (temporary drops at the
+                        // `let` statement's semicolon).
+                        let notifications = buffer.lock().close_read();
+                        notifications.deliver_deferred();
                     }
                     FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
+                        // #919/P-2: close_write() itself has no new-writer
+                        // notification to deliver (writers, not readers,
+                        // closed); its legacy read-waiter EOF wake is
+                        // unaffected and stays inline.
+                        let _should_notify = buffer.lock().close_write();
                     }
                     FdKind::TcpListener(port) => {
                         crate::net::tcp::tcp_listener_ref_dec(port);
@@ -579,11 +598,16 @@ impl Process {
                     }
                     FdKind::FifoRead(path, buffer) => {
                         crate::ipc::fifo::close_fifo_read(&path);
-                        buffer.lock().close_read();
+                        // #919/P-2: deliver via the PM-safe deferred path
+                        // (see the PipeRead arm above).
+                        let notifications = buffer.lock().close_read();
+                        notifications.deliver_deferred();
                     }
                     FdKind::FifoWrite(path, buffer) => {
                         crate::ipc::fifo::close_fifo_write(&path);
-                        buffer.lock().close_write();
+                        // #919/P-2: no new-writer notification here either;
+                        // see the PipeWrite arm above.
+                        let _should_notify = buffer.lock().close_write();
                     }
                     _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
                 }
@@ -606,10 +630,29 @@ impl Process {
                 }
                 match fd_entry.kind {
                     FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
+                        // #919/P-2: deliver the reader-closed notification now,
+                        // via the PM-safe deferred path. Process::terminate()
+                        // has 4 identified callers; reading each call site
+                        // shows 4 of 4 hold PM at this point --
+                        // context_switch.rs:1400, manager.rs's
+                        // exit_process_locked, and both
+                        // signal/delivery.rs default-action arms -- so a
+                        // direct wake_up() would risk acquiring SCHEDULER
+                        // (Level 1) while PM (Level 2) is held, which this
+                        // file's "Lock Ordering Discipline" note
+                        // (scheduler.rs) forbids. deliver_deferred() instead
+                        // buffers the wake lock-free; the buffer's own mutex
+                        // is released before delivery (temporary drops at the
+                        // `let` statement's semicolon).
+                        let notifications = buffer.lock().close_read();
+                        notifications.deliver_deferred();
                     }
                     FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
+                        // #919/P-2: close_write() itself has no new-writer
+                        // notification to deliver (writers, not readers,
+                        // closed); its legacy read-waiter EOF wake is
+                        // unaffected and stays inline.
+                        let _should_notify = buffer.lock().close_write();
                     }
                     FdKind::TcpListener(port) => {
                         crate::net::tcp::tcp_listener_ref_dec(port);
@@ -637,11 +680,16 @@ impl Process {
                     }
                     FdKind::FifoRead(path, buffer) => {
                         crate::ipc::fifo::close_fifo_read(&path);
-                        buffer.lock().close_read();
+                        // #919/P-2: deliver via the PM-safe deferred path
+                        // (see the PipeRead arm above).
+                        let notifications = buffer.lock().close_read();
+                        notifications.deliver_deferred();
                     }
                     FdKind::FifoWrite(path, buffer) => {
                         crate::ipc::fifo::close_fifo_write(&path);
-                        buffer.lock().close_write();
+                        // #919/P-2: no new-writer notification here either;
+                        // see the PipeWrite arm above.
+                        let _should_notify = buffer.lock().close_write();
                     }
                     _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
                 }

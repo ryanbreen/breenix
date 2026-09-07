@@ -9180,7 +9180,7 @@ fn test_pipe_eof() -> TestResult {
     }
 
     // Close the write end
-    pipe.close_write();
+    pipe.close_write().deliver();
 
     // Now read should return EOF (0 bytes)
     match pipe.read(&mut buf) {
@@ -9201,7 +9201,7 @@ fn test_pipe_broken() -> TestResult {
     let mut pipe = PipeBuffer::new();
 
     // Close the read end
-    pipe.close_read();
+    pipe.close_read().deliver();
 
     // Write should fail with EPIPE
     let write_data = b"test";
@@ -10259,6 +10259,14 @@ static PROCESS_TESTS: &[TestDef] = &[
         func: crate::tracing::providers::teardown::exit_kick_worker_window_isolation_test,
         arch: Arch::Aarch64,
         timeout_ms: 90000,
+        stage: TestStage::PostScheduler,
+    },
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "exit_kick_budget_anchor_isolation",
+        func: crate::tracing::providers::teardown::exit_kick_budget_anchor_isolation_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000,
         stage: TestStage::PostScheduler,
     },
     #[cfg(feature = "receipt_drop_test")]

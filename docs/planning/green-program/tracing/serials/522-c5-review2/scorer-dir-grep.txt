@@ -1,0 +1,2 @@
+$ grep -rn "Timeout waiting for CPUs\|initialization watchdog ceiling\|initialization watchdog anchor unavailable\|liveness budget anchor unavailable\|test-phase anchor unavailable\|exit_kick_gate" docker/ scripts/ xtask/
+exit=1

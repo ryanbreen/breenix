@@ -1,0 +1,17 @@
+== compiling teardown_structure ==
+== running teardown_structure fix_pass_v8_worker_isolation_reports_budget_anchor_age ==
+
+running 1 test
+
+thread 'fix_pass_v8_worker_isolation_reports_budget_anchor_age' panicked at /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/tests/teardown_structure.rs:17502:5:
+assertion failed: provider.contains("\"[exit_kick_worker_isolation] budget_anchor=test_phase anchor_age_at_entry_ms={} budget_ms={} scenario_ceiling_ms={}\",")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fix_pass_v8_worker_isolation_reports_budget_anchor_age ... FAILED
+
+failures:
+
+failures:
+    fix_pass_v8_worker_isolation_reports_budget_anchor_age
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 99 filtered out; finished in 0.00s
+
