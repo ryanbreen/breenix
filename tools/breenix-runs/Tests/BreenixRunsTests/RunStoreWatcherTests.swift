@@ -3,6 +3,18 @@ import Foundation
 import XCTest
 
 final class RunStoreWatcherTests: XCTestCase {
+    func testPollIntervalIsClampedToAMinimumToPreventNearContinuousPolling() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+
+        let tooFast = RunStoreWatcher(store: store, pollInterval: 0, onChange: {})
+        XCTAssertEqual(tooFast.pollInterval, RunStoreWatcher.minimumPollInterval)
+
+        let generous = RunStoreWatcher(store: store, pollInterval: 30, onChange: {})
+        XCTAssertEqual(generous.pollInterval, 30)
+    }
+
     func testCheckNowFiresOnChangeWhenIndexModificationTimeChanges() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

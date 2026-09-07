@@ -4,8 +4,13 @@ import Foundation
 /// Mutable polling state is protected by lock; callbacks execute outside that lock.
 /// Callers must arrange their own callback isolation (the root model hops to MainActor).
 public final class RunStoreWatcher: @unchecked Sendable {
+    /// Filesystem-stat polling has no benefit below this cadence; a caller
+    /// requesting a smaller interval is clamped here rather than allowed to
+    /// spin the poll timer.
+    public static let minimumPollInterval: TimeInterval = 1
+
     private let store: RunStore
-    private let pollInterval: TimeInterval
+    let pollInterval: TimeInterval
     private let onChange: () -> Void
     private let lock = NSLock()
     private var timer: DispatchSourceTimer?
@@ -14,7 +19,7 @@ public final class RunStoreWatcher: @unchecked Sendable {
 
     public init(store: RunStore, pollInterval: TimeInterval = 5, onChange: @escaping () -> Void) {
         self.store = store
-        self.pollInterval = pollInterval
+        self.pollInterval = max(pollInterval, Self.minimumPollInterval)
         self.onChange = onChange
     }
 
