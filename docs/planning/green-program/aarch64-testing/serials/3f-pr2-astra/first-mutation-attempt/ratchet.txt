@@ -1,0 +1,26 @@
+revision=35d9bc4d1845bce7bdd0246e435fb65b0232a13a
+working-tree=ASTRA V-4/V-5 fixes
+kernel/src/task/scheduler.rs sha256=6b59c9c4bccf155bcf48a647a3b5c8297a99a92073536921c07162ad4ef9e745
+tests/loopback_pump_structure.rs sha256=0ac8523bb7258c95df3ee1e555b23d14a037f2fd0117f12f3ab2a25930435b95
+command=['python3', 'docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/mutation-driver.py']
+{'name': 'i-delete-call', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'ii-call-after-guard', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'iii-taking-queue', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'iv-drop-home-equality', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'v-drop-stack-decline', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'vi-count-stack-conflict', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'vii-drop-offline-decline', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'viii-delete-kick-1', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'viii-delete-kick-2', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'viii-delete-kick-3', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'ix-wrong-arch-1-x86_64', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'ix-wrong-arch-1-riscv64', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'ix-wrong-arch-2-x86_64', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'ix-wrong-arch-2-riscv64', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'ix-wrong-arch-3-x86_64', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'ix-wrong-arch-3-riscv64', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'x-separated-helpers', 'result': 'RED', 'exit': 101, 'restored': True}
+{'name': 'green-rename', 'result': 'UNEXPECTED', 'exit': 101, 'restored': True}
+unexpected mutation result
+
+exit=1

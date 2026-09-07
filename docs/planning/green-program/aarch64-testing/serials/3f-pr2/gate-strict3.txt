@@ -1,0 +1,7 @@
+revision=34b36142f4be8d4d3af07e105e258a73e6ca7ac2
+cb485256b885472ea9b1ba6b31d400651df0c98f4a0183c85b45f896f4d271f9  target/aarch64-breenix-kernel/release/kernel-aarch64
+[GATE_PREFLIGHT:structure_suites=63/64:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 64 structure suite(s) red: coreproof_sites_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.gate-tmp/breenix_gate_structure_preflight.zFyslP)
+GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
+exit=1
+lane_qemu_pids_terminated=[]

@@ -1,0 +1,3 @@
+claim-lint: clean (42 file(s) checked, changed hunks vs 5a96f7fbadc1).
+claim-lint: 87 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 5 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2/beast-interrupted-build.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/failed-candidate.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2/strict-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/toolchain-softfloat.patch

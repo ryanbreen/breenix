@@ -1,0 +1,474 @@
+diff --git a/kernel/src/task/scheduler.rs b/kernel/src/task/scheduler.rs
+index 7bd3a782..357b34d7 100644
+--- a/kernel/src/task/scheduler.rs
++++ b/kernel/src/task/scheduler.rs
+@@ -46,10 +46,10 @@
+ //! the SERIAL1 contention is less severe. The `#[cfg(target_arch = "x86_64")]`
+ //! guards on `log_serial_println!` calls in this file reflect that difference.
+ 
+-use super::thread::{CpuContext, VirtAddr};
+-use super::thread::{Thread, ThreadState};
+ #[cfg(feature = "boot_tests")]
+ use super::thread::ThreadPrivilege;
++use super::thread::{CpuContext, VirtAddr};
++use super::thread::{Thread, ThreadState};
+ use crate::log_serial_println;
+ use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
+ use core::cmp::Reverse;
+@@ -300,9 +300,8 @@ impl<T> core::ops::Deref for CacheLinePadded<T> {
+ 
+ #[cfg(target_arch = "aarch64")]
+ static SCHED_DIAG_CALL_COUNT: [CacheLinePadded<AtomicU64>;
+-    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+-    CacheLinePadded(AtomicU64::new(0))
+-}; crate::arch_impl::aarch64::constants::MAX_CPUS];
++    crate::arch_impl::aarch64::constants::MAX_CPUS] =
++    [const { CacheLinePadded(AtomicU64::new(0)) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+ 
+ #[cfg(target_arch = "aarch64")]
+ const _: () = assert!(
+@@ -732,6 +731,42 @@ pub fn emit_pin_guard_oracle() {
+     }
+ }
+ 
++impl Scheduler {
++    /// Restore a rescue candidate already placed on its online worker home.
++    /// Offline homes and stack disagreements fall through to the migration
++    /// guard's counted dispositions. Restoring membership does not kick the CPU.
++    fn retain_pinned_worker_on_source_queue(&mut self, source_cpu: usize, thread_id: u64) -> bool {
++        if super::thread::CPU_PINS_STAMPED.load(Ordering::Relaxed) == 0 {
++            return false;
++        }
++        if source_cpu >= self.online_cpu_count() {
++            return false;
++        }
++        let Some(thread) = self.get_thread(thread_id) else {
++            return false;
++        };
++        if thread.state == ThreadState::Terminated {
++            return false;
++        }
++        let Some(pin) = thread.cpu_affinity else {
++            return false;
++        };
++        if !pin.per_cpu_worker || pin.cpu != source_cpu {
++            return false;
++        }
++        #[cfg(target_arch = "aarch64")]
++        if let Some(slot) =
++            crate::arch_impl::aarch64::constants::percpu_stack_slot_of(thread.context.sp)
++        {
++            if slot != pin.cpu {
++                return false;
++            }
++        }
++        self.per_cpu_queues[source_cpu].push_back(thread_id);
++        true
++    }
++}
++
+ #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+ fn retain_cpu_affine_test_thread(
+     queue: &mut VecDeque<u64>,
+@@ -1054,11 +1089,7 @@ pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static
+             return Err("departure probe current thread already named a ready queue");
+         }
+ 
+-        let cardinality_before = scheduler
+-            .per_cpu_queues
+-            .iter()
+-            .map(VecDeque::len)
+-            .sum();
++        let cardinality_before = scheduler.per_cpu_queues.iter().map(VecDeque::len).sum();
+         scheduler.per_cpu_queues[cpu].push_back(tid);
+         scheduler.block_current();
+ 
+@@ -1089,11 +1120,7 @@ pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static
+             .iter()
+             .zip(membership_before_unblock)
+             .any(|(queue, was_member)| queue.contains(&tid) != was_member);
+-        let cardinality_after = scheduler
+-            .per_cpu_queues
+-            .iter()
+-            .map(VecDeque::len)
+-            .sum();
++        let cardinality_after = scheduler.per_cpu_queues.iter().map(VecDeque::len).sum();
+ 
+         Ok(DepartureProbe {
+             queued_after_block,
+@@ -2059,10 +2086,12 @@ impl Scheduler {
+                 ) {
+                     continue;
+                 }
+-                // Slice 3e: a per-CPU worker is not rescued onto the rescuing
+-                // CPU. Its work lives in the stalled CPU's per-CPU state, so
+-                // moving it here would read the wrong state; the guard puts it
+-                // back on its home CPU, or holds its wake for that CPU.
++                // Preserve an online worker's existing home membership before
++                // asking the guard to dispose of a migration. Offline homes
++                // and stack conflicts still reach the guard's counted arms.
++                if self.retain_pinned_worker_on_source_queue(cpu, thread_id) {
++                    continue;
++                }
+                 if self.retain_cpu_affine_thread(thread_id, current_cpu) {
+                     continue;
+                 }
+@@ -2501,6 +2530,9 @@ impl Scheduler {
+                     // re-route above because that route is a hardware fact
+                     // about which CPU owns the stack under the thread's saved
+                     // SP, and a software pin cannot overrule it.
++                    if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
++                        continue;
++                    }
+                     if self.retain_cpu_affine_thread(n, current_cpu) {
+                         continue;
+                     }
+@@ -2572,6 +2604,9 @@ impl Scheduler {
+                             }
+                             // Slice 3e: the same-thread branch of the same
+                             // steal, with the same disposition.
++                            if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
++                                continue;
++                            }
+                             if self.retain_cpu_affine_thread(n, current_cpu) {
+                                 continue;
+                             }
+@@ -2729,25 +2764,17 @@ impl Scheduler {
+ 
+         #[cfg(not(feature = "coreproof_mut_pending_next"))]
+         {
+-            if self
+-                .cpu_state
+-                .iter()
+-                .any(|state| state.idle_thread == tid)
++            if self.cpu_state.iter().any(|state| state.idle_thread == tid)
+                 || self
+                     .cpu_state
+                     .iter()
+                     .any(|state| state.current_thread == Some(tid))
+-                || self
+-                    .per_cpu_queues
+-                    .iter()
+-                    .any(|queue| queue.contains(&tid))
++                || self.per_cpu_queues.iter().any(|queue| queue.contains(&tid))
+                 || self
+                     .cpu_state
+                     .iter()
+                     .any(|state| state.previous_thread == Some(tid))
+-                || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(
+-                    tid,
+-                )
++                || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(tid)
+             {
+                 return;
+             }
+@@ -2810,14 +2837,17 @@ impl Scheduler {
+             return false;
+         }
+ 
+-        let Some((queue_cpu, position)) = self.per_cpu_queues.iter().enumerate().find_map(
+-            |(queue_cpu, queue)| {
+-                queue
+-                    .iter()
+-                    .position(|queued_tid| *queued_tid == tid)
+-                    .map(|position| (queue_cpu, position))
+-            },
+-        ) else {
++        let Some((queue_cpu, position)) =
++            self.per_cpu_queues
++                .iter()
++                .enumerate()
++                .find_map(|(queue_cpu, queue)| {
++                    queue
++                        .iter()
++                        .position(|queued_tid| *queued_tid == tid)
++                        .map(|position| (queue_cpu, position))
++                })
++        else {
+             return false;
+         };
+         if self.per_cpu_queues[queue_cpu].remove(position) != Some(tid) {
+@@ -3016,6 +3046,9 @@ impl Scheduler {
+                     // re-route above because that route is a hardware fact
+                     // about which CPU owns the stack under the thread's saved
+                     // SP, and a software pin cannot overrule it.
++                    if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
++                        continue;
++                    }
+                     if self.retain_cpu_affine_thread(n, current_cpu) {
+                         continue;
+                     }
+@@ -3085,6 +3118,9 @@ impl Scheduler {
+                             }
+                             // Slice 3e: the same-thread branch of the same
+                             // steal, with the same disposition.
++                            if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
++                                continue;
++                            }
+                             if self.retain_cpu_affine_thread(n, current_cpu) {
+                                 continue;
+                             }
+@@ -4816,10 +4852,10 @@ impl Scheduler {
+     /// Keep a CPU-pinned thread on the CPU its pin names, instead of letting a
+     /// migration site move it somewhere else.
+     ///
+-    /// This is the guard slice 3d's census owed. 11 of 11 functions in this
+-    /// file that push a thread id onto a `per_cpu_queues` slot call it before
+-    /// they push, and the answer decides whether the caller's own placement
+-    /// stands:
++    /// Rescue pops first consult `retain_pinned_worker_on_source_queue` to
++    /// restore workers already on their online home. Candidates it declines
++    /// reach this guard, as do the migration census' other placement paths.
++    /// The answer decides whether the caller's proposed placement stands:
+     ///
+     /// * `false` -- the caller places the thread exactly as it would have. An
+     ///   unpinned thread takes this answer on 1 of 1 reachable arm, so its path
+@@ -4935,6 +4971,8 @@ impl Scheduler {
+             // caller proposed: a placement needs no delivery, so a hold here
+             // would only add a step.
+             self.per_cpu_queues[pin.cpu].push_back(thread_id);
++            #[cfg(target_arch = "aarch64")]
++            self.send_resched_ipi_to_cpu(pin.cpu);
+             return true;
+         }
+         // The home CPU is not accepting wakeups, which is slice 3d's hold: the
+@@ -4954,8 +4992,12 @@ impl Scheduler {
+         // tested by `pinned_wake_is_waiting_here`, which slice 3d recorded
+         if self.pinned_wake_is_waiting_here(thread_id, pin.cpu) {
+             self.hold_pinned_wake_for_home(thread_id);
++            #[cfg(target_arch = "aarch64")]
++            self.send_resched_ipi_to_cpu(pin.cpu);
+         } else {
+             self.per_cpu_queues[pin.cpu].push_back(thread_id);
++            #[cfg(target_arch = "aarch64")]
++            self.send_resched_ipi_to_cpu(pin.cpu);
+         }
+         true
+     }
+diff --git a/tests/loopback_pump_structure.rs b/tests/loopback_pump_structure.rs
+index 21231c32..dc71ed32 100644
+--- a/tests/loopback_pump_structure.rs
++++ b/tests/loopback_pump_structure.rs
+@@ -3221,6 +3221,9 @@ fn pin_guard_call_validator_rejects_a_discarded_answer() {
+ /// this function to count it into the same gate-failing counter arm 7 uses,
+ /// rather than leaving 4 arms where a violated pin moves a thread in silence.
+ fn validate_percpu_stack_reroute_counts_a_pin_conflict(source: &str) -> Result<(), String> {
++    if compact_code(source).matches("PINNED_STACK_HOME_CONFLICT.fetch_add(").count() != 2 {
++        return Err("PINNED_STACK_HOME_CONFLICT requires its two documented writers".into());
++    }
+     let body = function_body(source, "percpu_stack_home_cpu")
+         .ok_or("kernel/src/task/scheduler.rs defines no percpu_stack_home_cpu reroute")?;
+     let compact = compact_code(body);
+@@ -4103,3 +4106,212 @@ fn code_mask_raw_string_close_preserves_next_byte() {
+         assert!(mask[offset], "raw-string close swallowed the next byte");
+     }
+ }
++
++// PR 2: discover rescue candidates from peer-queue pops, anchored to the
++// migration census' function spans and comment/string mask. Names and counts
++// of retention call sites are deliberately not an input to this rule.
++#[derive(Debug)]
++struct RescueRetentionSite {
++    function: String,
++    ordinal: usize,
++    queue: String,
++    tid: String,
++    between: String,
++}
++
++fn rescue_retention_sites(source: &str) -> Vec<RescueRetentionSite> {
++    let mut sites = Vec::new();
++    for span in function_spans(source) {
++        let body = compact_code(&source[span.open..=span.close]);
++        for (ordinal, (offset, _)) in body.match_indices(".pop_front()").enumerate() {
++            let before = &body[..offset];
++            let Some(queue_start) = before.rfind("self.per_cpu_queues[") else { continue };
++            let queue = &before[queue_start + "self.per_cpu_queues[".len()..];
++            let Some(queue) = queue.strip_suffix(']') else { continue };
++            if queue == "current_cpu" { continue; }
++            let Some(binding) = before[..queue_start].rfind("letSome(") else { continue };
++            let binding = &before[binding + "letSome(".len()..queue_start];
++            let Some((tid, _)) = binding.split_once(")=") else { continue };
++            let after = &body[offset + ".pop_front()".len()..];
++            // Bound the candidate's window by the next pop: a later rescue
++            // cannot discharge an earlier candidate's obligation.
++            let window = after.split(".pop_front()").next().unwrap();
++            let guard = format!("self.retain_cpu_affine_thread({tid},current_cpu)");
++            if let Some(guard_at) = window.find(&guard) {
++                sites.push(RescueRetentionSite {
++                    function: span.name.clone(), ordinal, queue: queue.into(), tid: tid.into(),
++                    between: window[..guard_at].into(),
++                });
++            }
++        }
++    }
++    sites
++}
++
++fn retention_helper_name(source: &str) -> Result<String, String> {
++    let helpers: Vec<_> = function_spans(source).into_iter().filter(|span| {
++        let body = compact_code(&source[span.open..=span.close]);
++        body.contains("self.per_cpu_queues[source_cpu].push_back(thread_id)")
++            && body.contains("CPU_PINS_STAMPED.load")
++    }).collect();
++    if helpers.len() != 1 { return Err(format!("expected one source-queue retention helper, found {}", helpers.len())); }
++    Ok(helpers[0].name.clone())
++}
++
++fn validate_rescue_retention(source: &str) -> Result<(), String> {
++    let sites = rescue_retention_sites(source);
++    if sites.is_empty() { return Err("rescue pop/guard census is empty".into()); }
++    let name = retention_helper_name(source);
++    let mut errors = Vec::new();
++    for site in &sites {
++        let call = name.as_ref().map(|name| format!("ifself.{name}({},{}){{continue;}}", site.queue, site.tid));
++        if !call.as_ref().is_ok_and(|call| site.between.contains(call)) {
++            errors.push(format!("kernel/src/task/scheduler.rs:{} pop {} queue {} tid {}: missing source retention before guard", site.function, site.ordinal, site.queue, site.tid));
++        }
++    }
++    if !errors.is_empty() { return Err(errors.join("\n")); }
++    let name = name?;
++    let body = compact_code(function_body(source, &name).unwrap());
++    let arms = [
++        "ifsuper::thread::CPU_PINS_STAMPED.load(Ordering::Relaxed)==0{returnfalse;}",
++        "ifsource_cpu>=self.online_cpu_count(){returnfalse;}",
++        "letSome(thread)=self.get_thread(thread_id)else{returnfalse;};",
++        "ifthread.state==ThreadState::Terminated{returnfalse;}",
++        "letSome(pin)=thread.cpu_affinityelse{returnfalse;};",
++        "if!pin.per_cpu_worker||pin.cpu!=source_cpu{returnfalse;}",
++        "ifletSome(slot)=crate::arch_impl::aarch64::constants::percpu_stack_slot_of(thread.context.sp){ifslot!=pin.cpu{returnfalse;}}",
++        "self.per_cpu_queues[source_cpu].push_back(thread_id);true",
++    ];
++    let mut cursor = 0;
++    for arm in arms {
++        let Some(at) = body[cursor..].find(arm) else { return Err(format!("kernel/src/task/scheduler.rs:{name}: missing/changed retention arm {arm}")); };
++        cursor += at + arm.len();
++    }
++    if body.contains("fetch_add") || body.contains("send_resched") {
++        return Err("retention must neither count nor kick".into());
++    }
++    let guard = compact_code(function_body(source, "retain_cpu_affine_thread").ok_or("missing guard")?);
++    for disposition in [
++        "self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=)]self.send_resched_ipi_to_cpu(pin.cpu);returntrue;",
++        "self.hold_pinned_wake_for_home(thread_id);#[cfg(target_arch=)]self.send_resched_ipi_to_cpu(pin.cpu);",
++        "else{self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=)]self.send_resched_ipi_to_cpu(pin.cpu);}",
++    ] {
++        if !guard.contains(disposition) { return Err(format!("guard disposition missing aarch64 targeted kick: {disposition}")); }
++    }
++    validate_percpu_stack_reroute_counts_a_pin_conflict(source)
++}
++
++#[test]
++fn rescue_retention_census() {
++    let source = repo_text("kernel/src/task/scheduler.rs");
++    validate_rescue_retention(&source).unwrap_or_else(|error| panic!("{error}"));
++}
++
++/// Execute the source's reclaim/retention/guard bodies on isolated host state.
++/// This extends the pin-guard probe's queue staging with a fourth rescue leg;
++/// the offline case deliberately counts a discard, so it runs in a fresh
++/// process rather than contaminating a live boot's placement census. Hardware
++/// dispatch, SGI delivery and stack address decoding are outside this harness.
++fn forced_retention_probe(offline: bool) {
++    let source = repo_text("kernel/src/task/scheduler.rs");
++    let helper = retention_helper_name(&source).expect("retention helper");
++    let mut harness = String::from(r#"
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use std::collections::VecDeque;
++const MAX_CPUS: usize = 4;
++const CPU_STALL_TICKS: u64 = 20;
++const PIN_GUARD_ORACLE_HELD: usize = 255;
++static PINNED_HOME_CPU_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
++static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
++static PINNED_PUBLISH_DISCARDED: AtomicU64 = AtomicU64::new(0);
++static PINNED_HOLD_PEN_MIGRATED: AtomicU64 = AtomicU64::new(0);
++static PINNED_MIGRATION_REFUSED: AtomicU64 = AtomicU64::new(0);
++static PINNED_STACK_HOME_CONFLICT: AtomicU64 = AtomicU64::new(0);
++static PIN_GUARD_ORACLE_PROBE_TID: AtomicU64 = AtomicU64::new(7);
++static PIN_GUARD_ORACLE_REFUSED: AtomicU64 = AtomicU64::new(0);
++static ENQUEUE_OFFLINE_RECLAIMED: AtomicU64 = AtomicU64::new(0);
++static ENQUEUE_STALLED_RECLAIMED: AtomicU64 = AtomicU64::new(0);
++mod thread { pub static CPU_PINS_STAMPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); }
++mod time { pub fn get_ticks() -> u64 { 100 } }
++mod arch_impl { pub mod aarch64 { pub mod constants { pub fn percpu_stack_slot_of(sp: u64) -> Option<usize> { assert_eq!(sp, 0); None } } } }
++mod tracing { pub mod output { pub fn raw_serial_str(s: &str) { print!("{s}"); } pub fn raw_serial_dec(n: u64) { print!("{n}"); } } }
++fn arch_can_dispatch_here() -> bool { true }
++#[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
++#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
++struct Context { sp: u64 }
++struct Thread { state: ThreadState, cpu_affinity: Option<CpuPin>, context: Context }
++struct CpuState { last_schedule_ticks: u64, current_thread: Option<u64>, previous_thread: Option<u64>, pending_next: Option<u64> }
++mod scheduler {
++use super::*;
++struct Scheduler { per_cpu_queues: [VecDeque<u64>; MAX_CPUS], cpu_state: [CpuState; MAX_CPUS], thread: Thread }
++impl Scheduler {
++fn current_cpu_id() -> usize { 0 }
++fn online_cpu_count(&self) -> usize { 2 }
++fn get_thread(&self, tid: u64) -> Option<&Thread> { (tid == 7).then_some(&self.thread) }
++fn get_thread_mut(&mut self, tid: u64) -> Option<&mut Thread> { (tid == 7).then_some(&mut self.thread) }
++fn is_in_deferred_requeue(&self, tid: u64) -> bool { assert_eq!(tid, 7); false }
++fn send_resched_ipi_to_cpu(&self, cpu: usize) { assert!(cpu < MAX_CPUS); }
++"#);
++    for (name, signature) in [
++        (helper.as_str(), format!("fn {helper}(&mut self, source_cpu: usize, thread_id: u64) -> bool")),
++        ("reclaim_unschedulable_cpu_queues", "fn reclaim_unschedulable_cpu_queues(&mut self)".into()),
++        ("retain_cpu_affine_thread", "fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool".into()),
++        ("cpu_accepts_wakeups", "fn cpu_accepts_wakeups(&self, cpu: usize) -> bool".into()),
++        ("cpu_dispatch_stale", "fn cpu_dispatch_stale(&self, cpu: usize) -> bool".into()),
++        ("pinned_wake_is_waiting_here", "fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool".into()),
++        ("hold_pinned_wake_for_home", "fn hold_pinned_wake_for_home(&self, thread_id: u64)".into()),
++        ("pin_guard_oracle_where", "fn pin_guard_oracle_where(&self, tid: u64) -> usize".into()),
++    ] {
++        let body = function_body(&source, name).expect("production/probe method body")
++            .replace("#[cfg(all(target_arch = \"aarch64\", feature = \"boot_tests\"))]", "#[cfg(any())]")
++            .replace("#[cfg(target_arch = \"aarch64\")]", "#[cfg(all())]");
++        harness.push_str(&format!("{signature} {body}\n"));
++    }
++    harness.push_str("}\nfn count_pinned_migration_refusal(thread_id: u64)");
++    harness.push_str(function_body(&source, "count_pinned_migration_refusal").unwrap());
++    harness.push_str(r#"
++pub fn run(offline: bool) {
++    let home = if offline { 2 } else { 1 };
++    let mut s = Scheduler {
++        per_cpu_queues: std::array::from_fn(|_| VecDeque::new()),
++        cpu_state: std::array::from_fn(|_| CpuState { last_schedule_ticks: 0, current_thread: None, previous_thread: None, pending_next: None }),
++        thread: Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: home, per_cpu_worker: true }), context: Context { sp: 0 } },
++    };
++    assert!(offline || s.cpu_dispatch_stale(home));
++    s.per_cpu_queues[home].push_back(7);
++    s.reclaim_unschedulable_cpu_queues();
++    assert_eq!(s.pin_guard_oracle_where(7), if offline { 0 } else { home });
++    assert_eq!(s.per_cpu_queues.iter().map(VecDeque::len).sum::<usize>(), 1);
++    assert_eq!(PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed), u64::from(offline));
++    assert_eq!(s.thread.cpu_affinity.is_none(), offline);
++    assert_eq!(PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed), 0);
++    assert!(!PINNED_HOME_CPU_UNAVAILABLE_MARKED.load(Ordering::Relaxed));
++    assert_eq!(PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed), 0);
++    assert_eq!(PIN_GUARD_ORACLE_REFUSED.load(Ordering::Relaxed), 0);
++    assert_eq!(PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed), 0);
++    println!("forced-{}-home: queue={} discard={} pin_cleared={} held=0 refused=0 first_marker=false PASS", if offline { "offline" } else { "stalled" }, s.pin_guard_oracle_where(7), PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed), s.thread.cpu_affinity.is_none());
++}
++}
++"#);
++    harness.push_str(&format!("fn main() {{ scheduler::run({offline}); }}\n"));
++    let scratch = std::env::temp_dir().join(format!("retention-probe-{}-{offline}", std::process::id()));
++    fs::create_dir_all(&scratch).unwrap();
++    let input = scratch.join("probe.rs");
++    let binary = scratch.join("probe");
++    fs::write(&input, harness).unwrap();
++    let build = std::process::Command::new("rustc").args(["--edition=2021", "-Dwarnings"])
++        .arg(&input).arg("-o").arg(&binary).output().unwrap();
++    assert!(build.status.success(), "host probe compile: {}", String::from_utf8_lossy(&build.stderr));
++    let run = std::process::Command::new(&binary).output().unwrap();
++    let stdout = String::from_utf8_lossy(&run.stdout);
++    println!("{stdout}");
++    assert!(run.status.success(), "probe failed: {}", String::from_utf8_lossy(&run.stderr));
++    assert!(!stdout.contains("[PINNED_HOME_CPU_UNAVAILABLE:first:"));
++    fs::remove_dir_all(scratch).unwrap();
++}
++
++#[test]
++fn forced_stalled_home_retention() { forced_retention_probe(false); }
++
++#[test]
++fn forced_offline_home_declines_retention() { forced_retention_probe(true); }

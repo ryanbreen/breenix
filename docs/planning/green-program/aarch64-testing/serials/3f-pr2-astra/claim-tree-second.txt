@@ -1,0 +1,7 @@
+revision=612309cdbe70a5c706b1270fafdb23caece1f412
+command=python3 scripts/claim-lint.py
+claim-lint: clean (113 file(s) checked, changed hunks vs 5a96f7fbadc1).
+claim-lint: 86 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 11 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/first-mutation-attempt/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2/beast-interrupted-build.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-prod-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-strict3-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-retry-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/failed-candidate.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2/strict-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/toolchain-softfloat.patch
+
+exit=0

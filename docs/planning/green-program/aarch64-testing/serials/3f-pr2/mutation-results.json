@@ -1,0 +1,80 @@
+[
+  {
+    "name": "i-delete-call",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "ii-call-after-guard",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "iii-taking-queue",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "iv-drop-home-equality",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "v-drop-stack-decline",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "vi-count-stack-conflict",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "vii-drop-offline-decline",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "viii-delete-kick-1",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "viii-delete-kick-2",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "viii-delete-kick-3",
+    "result": "RED",
+    "exit": 101,
+    "restored": true
+  },
+  {
+    "name": "green-rename",
+    "result": "GREEN",
+    "exit": 0,
+    "restored": true
+  },
+  {
+    "name": "green-trivia",
+    "result": "GREEN",
+    "exit": 0,
+    "restored": true
+  },
+  {
+    "name": "green-sixth-site",
+    "result": "GREEN",
+    "exit": 0,
+    "restored": true
+  }
+]

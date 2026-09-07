@@ -1,0 +1,34 @@
+claim-lint: python3 scripts/claim-lint.py -> exit 1
+docs/planning/green-program/aarch64-testing/3F-PR2-2026-09-07.md:233: [universal-claim] The human authorized resumption on `bb5d3114adb9d5a1cb2e0f392f144a5ccede0062`. All continuation gate transcripts record that revision. No kernel, test, gate or fixture source was changed during continuation; the prior corrected source mu...
+    -> unquantified absolute ('All') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+docs/planning/green-program/aarch64-testing/3F-PR2-2026-09-07.md:253: [universal-claim] The strict raw serials are `continuation-strict3-boot1-serial.txt`, `continuation-strict3-boot2-serial.txt`, and `continuation-strict3-boot3-serial.txt`, all under `serials/3f-pr2/` and revision-stamped. Each contains the passing three-l...
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph (cited path `continuation-strict3-boot1-serial.txt`, `continuation-strict3-boot2-serial.txt` does not resolve, so it does not count as evidence)
+docs/planning/green-program/aarch64-testing/3F-PR2-2026-09-07.md:309: [unproven-claim] Also not claimed: a repair of 761 or 803, H10's PR 2b bound, daemon conversion or pin stamping from PR 4a/4b, a required presence oracle from PR 5, or a live-boot nonzero placement census. Full PROOF ONCE acceptance and x86 build/boot ac...
+    -> 'PROOF' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+
+claim-lint: 3 finding(s) across 59 file(s) [changed hunks vs 5a96f7fbadc1]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 87 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 9 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2/beast-interrupted-build.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/failed-candidate.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2/strict-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/toolchain-softfloat.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-prod-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-strict3-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-retry-preflight.tar.gz
+
+claim-lint: python3 scripts/claim-lint.py --files .tmp/continuation-issue-comment.md -> exit 0
+claim-lint: clean (1 file(s) checked, whole files).
+
+claim-lint: python3 scripts/claim-lint.py --files .tmp/continuation-pr-body.md -> exit 0
+claim-lint: clean (1 file(s) checked, whole files).
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: clean (61 file(s) checked, changed hunks vs 5a96f7fbadc1).
+claim-lint: 87 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 9 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2/beast-interrupted-build.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/failed-candidate.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2/strict-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/toolchain-softfloat.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-prod-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-strict3-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-retry-preflight.tar.gz
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/continuation-commit-msg.txt -> exit 0
+claim-lint: clean commit message (.tmp/continuation-commit-msg.txt).
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: clean (61 file(s) checked, changed hunks vs 5a96f7fbadc1).
+claim-lint: 87 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 9 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2/beast-interrupted-build.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/failed-candidate.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2/strict-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/toolchain-softfloat.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-prod-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-strict3-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-retry-preflight.tar.gz
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/continuation-commit-msg.txt -> exit 0
+claim-lint: clean commit message (.tmp/continuation-commit-msg.txt).
+

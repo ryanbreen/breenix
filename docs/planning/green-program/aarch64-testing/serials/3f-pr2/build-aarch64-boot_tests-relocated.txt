@@ -1,0 +1,5 @@
+revision=34b36142f4be8d4d3af07e105e258a73e6ca7ac2 plus helper relocation
+c49a43770cacf8838ced0b5a7d2d280abf58ac37e305fb830d8f541ab1e2daf9  kernel/src/task/scheduler.rs
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 6.39s
+exit=0
