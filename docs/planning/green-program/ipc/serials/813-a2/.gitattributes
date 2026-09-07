@@ -1,0 +1,3 @@
+# Preserve raw machine output, including CRLF and terminal whitespace.
+*.log -text -whitespace
+*.txt -text -whitespace

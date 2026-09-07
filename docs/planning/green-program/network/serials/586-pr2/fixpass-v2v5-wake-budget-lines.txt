@@ -1,0 +1,2 @@
+387:[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=151:elapsed_ctr_ms=202:ctx_delta=94:extensions=0:reader_state=terminated:queued_cpu=none:queued_idx=none:idle_cpus=0x0:woke_ms=898:verdict=ok]
+441:[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=under_load:budget_ms=200:elapsed_tick_ms=154:elapsed_ctr_ms=201:ctx_delta=349:extensions=0:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:woke_ms=1090:verdict=ok]

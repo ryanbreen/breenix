@@ -523,7 +523,13 @@ fn close_call_census_requires_delivery_or_the_documented_fault_carveout() {
         all_function_bodies(&lex(&source), &mut funcs);
         for (name, body) in funcs {
             let exception = is_process && name == "close_all_fds";
-            scan(&body, exception, &mut ordinary, &mut discarded, &mut deferred);
+            scan(
+                &body,
+                exception,
+                &mut ordinary,
+                &mut discarded,
+                &mut deferred,
+            );
         }
         if is_process {
             assert_eq!(source.matches("#919/P-2").count(), 8);
@@ -555,11 +561,16 @@ fn deferred_delivery_uses_lock_free_wake(waitqueue: &str, pipe: &str) -> Result<
     if !body.contains("isr_unblock_for_io(waiter.tid())") {
         return Err("missing lock-free wake");
     }
-    if body.contains("wake_waitqueue_thread") || body.contains("with_scheduler") || body.contains("wake_waiter(")
+    if body.contains("wake_waitqueue_thread")
+        || body.contains("with_scheduler")
+        || body.contains("wake_waiter(")
     {
         return Err("touches the scheduler lock");
     }
-    if !contains(&function(pipe, "deliver_deferred"), "queue.wake_up_deferred()") {
+    if !contains(
+        &function(pipe, "deliver_deferred"),
+        "queue.wake_up_deferred()",
+    ) {
         return Err("deliver_deferred does not route to the deferred wake");
     }
     if contains(&function(pipe, "deliver_deferred"), "queue.wake_up()") {
@@ -589,7 +600,10 @@ fn deferred_delivery_never_touches_the_scheduler_lock() {
         "crate::task::scheduler::isr_unblock_for_io(waiter.tid());\
                 crate::task::scheduler::wake_waitqueue_thread(waiter.tid());",
     );
-    assert_ne!(mutated_wq, waitqueue, "mutation must change a real call site");
+    assert_ne!(
+        mutated_wq, waitqueue,
+        "mutation must change a real call site"
+    );
     assert_eq!(
         deferred_delivery_uses_lock_free_wake(&mutated_wq, &pipe),
         Err("touches the scheduler lock")
@@ -601,7 +615,10 @@ fn deferred_delivery_never_touches_the_scheduler_lock() {
         "crate::task::scheduler::isr_unblock_for_io(waiter.tid());",
         "",
     );
-    assert_ne!(dropped_wq, waitqueue, "mutation must change a real call site");
+    assert_ne!(
+        dropped_wq, waitqueue,
+        "mutation must change a real call site"
+    );
     assert_eq!(
         deferred_delivery_uses_lock_free_wake(&dropped_wq, &pipe),
         Err("missing lock-free wake")
@@ -855,4 +872,61 @@ fn observation_seam_is_boot_only_and_queries_do_not_wake() {
         query.contains("ThreadState::BlockedOnIO") && query.contains("thread.blocked_in_syscall")
     );
     assert!(query.rfind("copy_to_user(").unwrap() > query.find("with_thread_mut(").unwrap());
+}
+
+fn aggregate_writev(source: &str) -> bool {
+    let body = compact(&function(source, "sys_writev"));
+    body.contains("length<=crate::ipc::pipe::PIPE_BUFasu64")
+        && body.contains(
+            "crate::ipc::FdKind::PipeWrite(buffer)|crate::ipc::FdKind::FifoWrite(_,buffer)",
+        )
+        && body.contains("forvectorin&vectors")
+        && body.contains("copy_from_user(addressas*constu8)")
+        && body.contains(
+            "return super::blocking_io::write_pipe(&buffer,&gathered,nonblocking);"
+                .replace(' ', "")
+                .as_str(),
+        )
+        && body.find("write_pipe(") < body.find("handlers::sys_write(")
+}
+
+#[test]
+fn writev_aggregate_atomicity_rejects_per_iovec_mutation() {
+    let source = read("kernel/src/syscall/iovec.rs");
+    assert!(
+        aggregate_writev(&source),
+        "small pipe/FIFO writev must gather into one transfer"
+    );
+    let mutation = source.replace(
+        "return super::blocking_io::write_pipe(&buffer, &gathered, nonblocking);",
+        "for vector in &vectors { handlers::sys_write(fd, vector.iov_base, vector.iov_len); }",
+    );
+    assert_ne!(mutation, source);
+    assert!(
+        !aggregate_writev(&mutation),
+        "per-iovec mutation must be rejected"
+    );
+}
+
+fn retained_wait_identity(source: &str, waitqueue: &str) -> bool {
+    let body = compact(&function(source, "wait_prepared"));
+    let finish = compact(&function(waitqueue, "finish_wait_for"));
+    body.matches("current_thread_id()").count() == 1
+        && body.find("let tid=".replace(' ', "").as_str()) < body.find("preempt_enable()")
+        && body.contains("queue.take_waiter(tid);queue.finish_wait_for(tid);")
+        && finish.contains("self.remove_waiter(tid)")
+        && finish.contains("with_thread_mut(tid,")
+        && !finish.contains("current_thread_id")
+}
+
+#[test]
+fn prepared_wait_retains_identity_for_both_cleanup_operations() {
+    let source = read("kernel/src/syscall/blocking_io.rs");
+    let queue = read("kernel/src/task/waitqueue.rs");
+    assert!(retained_wait_identity(&source, &queue));
+    let mutation = source.replace("queue.take_waiter(tid);", "if let Some(tid) = crate::task::scheduler::current_thread_id() { queue.take_waiter(tid); }");
+    assert_ne!(mutation, source);
+    assert!(!retained_wait_identity(&mutation, &queue));
+    let mutation = source.replace("queue.finish_wait_for(tid);", "queue.finish_wait();");
+    assert!(!retained_wait_identity(&mutation, &queue));
 }

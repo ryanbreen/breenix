@@ -1,0 +1,17 @@
+Revision: c2ff822d2f5bf948a4f39bada9f75905c2e1eca4
+Command: rustfmt --check --edition 2021 kernel/src/ipc/fd.rs kernel/src/ipc/fifo.rs kernel/src/ipc/poll.rs kernel/src/process/manager.rs kernel/src/syscall/blocking_io.rs kernel/src/syscall/iovec.rs kernel/src/task/waitqueue.rs
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/kernel/src/process/manager.rs:778:
+         // create_main_thread's hardcoded stack_top-16 (precheck C3 — x86 had no
+         // SP-carrying thread creator before this).
+         let thread =
+[31m-            self.create_main_thread_with_sp(
+(B[m[31m-                &mut *process,
+(B[m[31m-                stack_top,
+(B[m[31m-                VirtAddr::new(initial_rsp),
+(B[m[31m-            )?;
+(B[m[32m+            self.create_main_thread_with_sp(&mut *process, stack_top, VirtAddr::new(initial_rsp))?;
+(B[m         process.set_main_thread(thread);
+ 
+         log::info!(
+
+Exit: 1

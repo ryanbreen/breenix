@@ -62,6 +62,8 @@ EXPECTED_ARMS=(
     signal_before
     signal_after
     ignored_signal
+    writev_atomic
+    no_writer_eof
 )
 
 if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then

@@ -1,0 +1,7 @@
+docs(ipc): record A2 landing verification and refresh source citations
+
+Normalize one process-manager wrapping difference from the main merge.
+Record transcript provenance and deferred whole-kernel formatting finding.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

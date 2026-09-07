@@ -66,8 +66,9 @@ case "$BREENIX_GATE_TMP" in
     /*) ;;
     *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
 esac
-# construct_residual is the counted frame residue of the two construction-failure arms read off a measured green run, and it is architecture-specific (4 on x86, 2 on aarch64) because the two page-table constructors record different table-frame counts.
-INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
+# construct_undecided=0 and construct_residual=0 hold for the two failures this oracle actually drives: both land in load_elf_into_page_table, the UnpublishedPageTable-owned boundary (issue 588's boundary table in the round doc). The oracle injects no failure at any UnpublishedProcess-owned boundary (stack allocation, stack mapping, TLS, argv, main-thread creation) on this run, so these zeros cover construction-time failures, not every error exit in the builders. construct_leaf_balance and construct_commit_balance are the leaf-return and commit-preservation deltas of the same two driven boundaries. None of these is architecture-specific any more.
+# claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=0:construct_residual=0:construct_roots_retired=2:construct_leaf_balance=0:construct_commit_balance=0:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
 # driven=2 proves both handoff seams ran; stage1/2 return, wake, and park fields
 # expose D1/D2. stage3_elapsed_ok=1 proves the interval the oracle measured

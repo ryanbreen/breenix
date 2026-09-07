@@ -114,8 +114,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             // through this one function, with no PM guard active here, so this
             // was the one call site actually reachable unmasked on both
             // architectures.
-            let has_data =
-                crate::socket::udp::with_locked_masked(socket, |s| s.has_data());
+            let has_data = crate::socket::udp::with_locked_masked(socket, |s| s.has_data());
             if (events & events::POLLIN) != 0 && has_data {
                 revents |= events::POLLIN;
             }
