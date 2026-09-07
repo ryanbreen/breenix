@@ -119,3 +119,14 @@ one more round trip: the first draft's opening sentence used an unquantified
 "every quantitative claim" and `python3 scripts/claim-lint.py` flagged it
 (exit 1); rewording to "24 quantitative claims ... 24 of 24" cleared it
 (`python3 scripts/claim-lint.py` -> exit 0).
+
+## Landing
+
+Merged `origin/main` (`af5d7a3cd5cbfbe275347f74750cc6456331edb9`) into this
+branch with `git merge origin/main`, merge commit
+`b8dd833d04e229afef9bee2cc937b101bd9ebe82`; no conflicts, so
+`tests/teardown_structure.rs` needed no side-taking. `bash
+scripts/run-structure-tests.sh <stem>` was then run for the 62
+`tests/*_structure.rs` files present at that merge commit (the 22 from the
+table above plus 40 more), and 62 of 62 runs exited 0.
+
