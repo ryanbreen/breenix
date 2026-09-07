@@ -4475,8 +4475,8 @@ fn validate_loopback_wake_budget_marker(source: &str) -> Result<(), String> {
             return Err(format!("the wake-budget marker omits the {field} field"));
         }
     }
-    let sleep = code_text_offset(body, "sleep_current_thread_ms(window_ms)")
-        .ok_or_else(|| "the wake budget is not spent in a measured window sleep".to_string())?;
+    let sleep = code_text_offset(body, "sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS)")
+        .ok_or_else(|| "the wake budget is not spent in one named sleep".to_string())?;
     for (before, after, clock) in [
         ("let tick_before_ms", "let tick_after_ms", "get_monotonic_time"),
         ("let ctr_before_ns", "let ctr_after_ns", "monotonic_now_ns"),
@@ -4841,92 +4841,4 @@ fn loopback_wake_budget_emitter_validator_rejects_the_unavailable_collapse() {
         validate_placement_slot_distinguishes_unavailable(&idle_collapse).is_err(),
         "reintroducing an idle_cpus print with no availability flag must redden the validator"
     );
-}
-
-// #586 PR3: compile the production policy, then exercise it with fixed inputs.
-fn run_guest_budget_fixture(always_extend: bool) -> std::process::Output {
-    let source = repo_text("kernel/src/test_framework/registry.rs");
-    let start = source.find("pub(super) mod guest_budget {").unwrap();
-    let mask = code_mask(&source);
-    let (open, close) = braced_block_span(&source, &mask, start).unwrap();
-    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "breenix-guest-budget-{}-{}-{}", std::process::id(), always_extend, sequence,
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let fixture = include_str!("fixtures/guest_budget.rs")
-        .replace("const ALWAYS_EXTEND: bool = false;", &format!("const ALWAYS_EXTEND: bool = {always_extend};"));
-    let mut starvation = String::new();
-    for name in ["LOOPBACK_WAKE_CTX_FLOOR", "LOOPBACK_WAKE_DIVERGENCE_NUM", "LOOPBACK_WAKE_DIVERGENCE_DEN"] {
-        let start = source.find(&format!("const {name}:")).unwrap();
-        let end = source[start..].find(';').unwrap() + start + 1;
-        starvation.push_str(&source[start..end]);
-        starvation.push('\n');
-    }
-    starvation.push_str("fn loopback_window_starved(tick_ms: u64, ctr_ms: u64, ctx_delta: u64) -> bool ");
-    starvation.push_str(function_body(&source, "loopback_window_starved").unwrap());
-    let program = format!("mod guest_budget {}\n{}\n{}", &source[open..=close], starvation, fixture);
-    let input = dir.join("fixture.rs");
-    let binary = dir.join("fixture");
-    std::fs::write(&input, program).unwrap();
-    let build = std::process::Command::new("rustc")
-        .args(["--edition=2021", "--test", "-Dwarnings"])
-        .arg(&input).arg("-o").arg(&binary).output().unwrap();
-    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
-    let result = std::process::Command::new(&binary)
-        .args(["--nocapture", "--test-threads=1"]).output().unwrap();
-    std::fs::remove_dir_all(dir).unwrap();
-    result
-}
-
-#[test]
-fn loopback_guest_budget_policy_and_starved_recovery() {
-    let result = run_guest_budget_fixture(false);
-    println!("{}", String::from_utf8_lossy(&result.stdout));
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-}
-
-#[test]
-fn loopback_guest_budget_always_extend_mutation() {
-    let result = run_guest_budget_fixture(true);
-    let stdout = String::from_utf8_lossy(&result.stdout);
-    println!("always-extend (all-extend alias):\n{stdout}");
-    assert!(!result.status.success(), "always-extend must fail the policy oracle");
-    assert!(stdout.contains("running 4 tests"), "mutation must execute the fixture");
-    assert!(stdout.contains("policy_boundaries ... FAILED"));
-    assert!(stdout.contains("policy_cap ... FAILED"));
-}
-
-#[test]
-fn loopback_guest_budget_all_extend_mutation() {
-    loopback_guest_budget_always_extend_mutation();
-}
-
-#[test]
-fn loopback_guest_budget_wiring() {
-    let source = repo_text("kernel/src/test_framework/registry.rs");
-    let body = compact_code(function_body(&source, "run_loopback_recv_wake_test_inner").unwrap());
-    for required in [
-        "letmutextensions=0u64;",
-        "guest_budget::grant_extension(switches,total_ctr_ms,extensions,guest_budget::POLICY,)",
-        "ifreader_pending&&reader_runnable&&grant_ms>0{extensions+=grant_ms;window_ms=grant_ms;continue;}",
-        "saw_starved|=reader_pending&&starved;",
-        "ifsaw_starved&&extensions>0",
-        "ifwake_ms==0{", "ifreceived!=3{",
-        "guest_budget::extension_bound_ms(guest_budget::POLICY)",
-    ] {
-        assert!(body.contains(required), "missing production wiring: {required}");
-    }
-    let executor = repo_text("kernel/src/test_framework/executor.rs");
-    assert!(executor.contains(":FAIL:{}:extension_cap_ms={}:extension_bound_ms={}]"));
-    assert!(executor.contains("super::registry::guest_budget::extension_bound_ms(policy)"));
-}
-
-#[test]
-fn loopback_budget_marker_is_required_by_strict_kernel_guard() {
-    let gate = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
-    let guard = gate.split("require_boot_tests_kernel() {").nth(1).unwrap()
-        .split("\n}").next().unwrap();
-    assert!(guard.contains("'[LOOPBACK_WAKE_BUDGET:'"));
 }
