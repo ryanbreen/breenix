@@ -1,0 +1,22 @@
+Revision: c98d7cc77e2298f46fbc796d3d74cd7575a18d1e
+== compiling green_program_envelope_structure ==
+== running green_program_envelope_structure  ==
+
+running 14 tests
+test item4_mutation_proof ... ok
+test aarch64_gate_scripts_boot_smp_4 ... ok
+test item5_mutation_proof ... ok
+test item1_mutation_proof ... ok
+test x86_syscall_dispatch_enosys_stubs_are_exactly_gettime ... ok
+test x86_tty_oracle_runs_with_no_persistent_background_process ... ok
+test aarch64_tty_oracle_runs_with_exactly_one_persistent_background_process ... ok
+test x86_gate_scripts_mount_ext2_readonly ... ok
+test boot_tests_registry_stays_kthread_only ... ok
+test x86_gate_scripts_boot_smp_1 ... ok
+test item2_mutation_proof ... ok
+test item3_mutation_proof ... ok
+test aarch64_syscall_dispatch_enosys_stubs_are_exactly_archprctl ... ok
+test aarch64_gate_scripts_mount_ext2_writable ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

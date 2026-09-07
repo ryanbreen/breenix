@@ -1,0 +1,18 @@
+Revision: c98d7cc77e2298f46fbc796d3d74cd7575a18d1e
+== compiling serial_line_atomicity_structure ==
+== running serial_line_atomicity_structure  ==
+
+running 10 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test periodic_guard_validator_rejects_a_synthetic_unlocked_writer ... ok
+test tty_validator_rejects_per_byte_serial_writes ... ok
+test tty_writes_line_segments_through_atomic_serial_path ... ok
+test every_serial_module_has_a_single_lock_batched_writer ... ok
+test unlocked_multi_byte_serial_writes_are_never_periodic ... ok
+test census_validator_rejects_a_synthetic_unlocked_multi_byte_writer ... ok
+test raw_serial_primitive_census_is_pinned ... ok
+test primitive_census_validator_rejects_a_differently_named_uart_writer ... ok
+test unlocked_multi_byte_serial_write_census_is_pinned ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+

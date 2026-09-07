@@ -109,3 +109,32 @@ claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/docs-commit.txt -> e
 Claim lint validates prose shape, not oracle execution; the gate and serial evidence supply the execution results. Files with evidence-only extensions outside claim-lint's supported set are reported as skipped, not represented as linted source. Kernel source diff against the base is empty. The gate's PID-scoped cleanup terminated its four QEMU children; a final process inspection found no QEMU using this lane's kernel path. Other lanes' processes were left running.
 
 Additional not-claimed: the standard-library build-only patch is not an upstream toolchain fix or a shared-toolchain modification.
+
+
+## Landing
+
+The supplied PROSE findings list was empty (0 findings). The round document was checked explicitly:
+
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/gates/928-SS-CAPTURE-WINDOW-2026-09-07.md -> exit 0
+
+After `git fetch origin`, `git merge --no-commit --no-ff origin/main` found origin/main 62924b4739870b344a78cd16cf4099c774ea48e9 already contained in HEAD. There was no merge conflict or new local merge commit. The integrated tip tested was c98d7cc77e2298f46fbc796d3d74cd7575a18d1e. The PR is to use a merge commit on GitHub.
+
+The userspace ELFs and ext2 image were copied again from the requested main worktree. The fresh soft-float build used the previously documented lane-local library patch and returned exit 0 without compiler warnings or errors (`serials/928-ss-window/landing-build.log`). Input hashes are in `serials/928-ss-window/landing-inputs.sha256`.
+
+| Command | Result at c98d7cc77e2298f46fbc796d3d74cd7575a18d1e | Transcript |
+| --- | --- | --- |
+| `bash scripts/run-structure-tests.sh` | exit 0; 103/103 tests | `serials/928-ss-window/landing-structure.log` |
+| `bash docker/qemu/run-aarch64-boot-test-strict.sh 1` | exit 0; 1/1 boots; fixed cortex-a72 profile; preflight 64/64 suites, 993/993 tests | `serials/928-ss-window/landing-strict1.log` |
+| `bash docker/qemu/run-aarch64-service-sequence-gate.sh --boots 2` | exit 0; max 2/2 GREEN, cortex-a72 2/2 GREEN; combined 4/4 GREEN | `serials/928-ss-window/landing-serviceSeq2x2.log` |
+
+The four service-sequence captures reached GREEN at 69 seconds each. The default 90-second capture windows were used. No structure-skip variable was set. Raw strict and service-sequence captures plus preflight transcripts are in `serials/928-ss-window/landing-captures/`; `serials/928-ss-window/landing-SHA256SUMS` records their hashes and the landing transcript hashes. Gate transcripts identify the revision they ran at. The following landing commit adds documentation and evidence; it does not change tested code.
+
+Landing commit and planned GitHub merge message checks:
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/landing-commit.txt -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/merge-commit.txt -> exit 0
+
+Not claimed: a fresh 50-boot battery, a population reliability bound, a kernel fix, reduced fixture runtime, an upstream standard-library fix, or strict-gate coverage of max (the strict script fixes cortex-a72). Fixture-runtime follow-up remains issue 947. The branch's kernel commit log relative to origin/main is empty.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --files .tmp/pr-body.md -> exit 0
