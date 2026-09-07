@@ -7050,8 +7050,12 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                     crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance[target], wait_start)
                         .saturating_add(no_progress_ticks),
                 );
-                // Completed targets no longer owe progress. At workers_ready,
-                // a nonzero own counter accompanies that worker's readiness publication.
+                // Completed targets no longer owe progress. `target_complete`
+                // must derive completeness from the same write the caller's
+                // aggregate `condition_value` reads (a shared readiness
+                // bitmask here), so a target cannot be marked complete
+                // before it has actually contributed to that aggregate
+                // condition (#522 review finding W-1).
                 if !target_complete(target, progress_current.workers[target])
                     && elapsed >= target_deadline && stalled_target.is_none()
                 {
@@ -7568,6 +7572,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     const TOTAL_ATTEMPTS: u64 = ATTEMPTS_PER_PUBLISHER * 2;
     const PID_A: u64 = 10;
     const PID_B: u64 = PID_A + EXIT_KICK_BUCKETS as u64;
+    // Bit positions in `Accounting::workers_ready_bits`, one per worker.
+    // Setting a worker's bit IS the write the aggregate `workers_ready`
+    // wait's condition reads (`.count_ones()`), so a worker cannot be
+    // marked target_complete before it has actually contributed to the
+    // aggregate (#522 review finding W-1).
+    const WORKER_BIT_A: u64 = 1 << 0;
+    const WORKER_BIT_B: u64 = 1 << 1;
+    const WORKER_BIT_OBSERVER: u64 = 1 << 2;
 
     struct OracleRow {
         pid: AtomicU64,
@@ -7575,7 +7587,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     }
 
     struct Accounting {
-        workers_ready: AtomicU64,
+        workers_ready_bits: AtomicU64,
         start: AtomicBool,
         abort: AtomicBool,
         publisher_a_cpu_mask: AtomicU64,
@@ -7606,7 +7618,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             .collect::<Vec<_>>(),
     );
     let accounting = Arc::new(Accounting {
-        workers_ready: AtomicU64::new(0),
+        workers_ready_bits: AtomicU64::new(0),
         start: AtomicBool::new(false),
         abort: AtomicBool::new(false),
         publisher_a_cpu_mask: AtomicU64::new(0),
@@ -7684,7 +7696,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                         .publisher_b_progress
                         .fetch_add(1, Ordering::Release);
                 }
-                accounting.workers_ready.fetch_add(1, Ordering::Release);
+                let worker_bit = if pid == PID_A { WORKER_BIT_A } else { WORKER_BIT_B };
+                accounting.workers_ready_bits.fetch_or(worker_bit, Ordering::Release);
                 while !accounting.start.load(Ordering::Acquire) {
                     if accounting.abort.load(Ordering::Acquire) {
                         return;
@@ -7852,8 +7865,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 .observer_progress
                 .fetch_add(1, Ordering::Release);
             observer_accounting
-                .workers_ready
-                .fetch_add(1, Ordering::Release);
+                .workers_ready_bits
+                .fetch_or(WORKER_BIT_OBSERVER, Ordering::Release);
             while !observer_accounting.start.load(Ordering::Acquire) {
                 if observer_accounting.abort.load(Ordering::Acquire) {
                     return;
@@ -7950,7 +7963,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
     if let Err((failure, target)) = spin_with_resched_workers(
         "workers_ready",
-        || accounting.workers_ready.load(Ordering::Acquire),
+        || accounting.workers_ready_bits.load(Ordering::Acquire).count_ones() as u64,
         |value| value == 3,
         3,
         [
@@ -7958,7 +7971,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             ("worker_2", &|| accounting.publisher_b_progress.load(Ordering::Acquire)),
             ("worker_3", &|| accounting.observer_progress.load(Ordering::Acquire)),
         ],
-        |_, progress| progress != 0,
+        |target, _| accounting.workers_ready_bits.load(Ordering::Acquire) & (1 << target) != 0,
         &worker_cpus,
         phase_one_started_at,
         gate_started_at,

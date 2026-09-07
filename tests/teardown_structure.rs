@@ -9987,6 +9987,40 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
             "workers_ready dependency union lost {counter}"
         );
     }
+    // W-1 fix pin (#522 review): the aggregate `workers_ready` condition
+    // and each worker's `target_complete` completeness check must derive
+    // from the SAME write -- a shared per-worker readiness bitmask -- so a
+    // worker cannot be marked complete before it has actually contributed
+    // to the aggregate. Before the fix, target_complete tested each
+    // worker's own progress counter (`progress != 0`), which goes nonzero
+    // one store before workers_ready was bumped for that worker; a CPU
+    // freezing in that gap was permanently excluded from NoProgress
+    // attribution. Mutation proof: reverting target_complete to
+    // `|_, progress| progress != 0` must redden this test.
+    assert!(
+        storm_union.contains("workers_ready_bits.load(Ordering::Acquire).count_ones() as u64"),
+        "workers_ready's aggregate condition must read the shared readiness bitmask"
+    );
+    assert!(
+        storm_union.contains("workers_ready_bits.load(Ordering::Acquire) & (1 << target) != 0"),
+        "workers_ready's per-worker completeness check must test the same bitmask, not raw progress"
+    );
+    assert!(
+        !storm_union.contains("progress != 0"),
+        "workers_ready target_complete regressed to the vacuous nonzero-progress heuristic (#522 W-1)"
+    );
+    assert_eq!(
+        gate.split_whitespace().collect::<String>().matches("workers_ready_bits.fetch_or(").count(),
+        2,
+        "publisher and observer readiness publication must each set their own bit exactly once"
+    );
+    assert!(
+        !gate.contains("workers_ready.fetch_add("),
+        "the pre-fix per-worker counter increment on workers_ready must not reappear"
+    );
+    for bit in ["WORKER_BIT_A", "WORKER_BIT_B", "WORKER_BIT_OBSERVER"] {
+        assert!(gate.contains(bit), "missing readiness bit constant {bit}");
+    }
     for (progress_source, counter) in [
         ("storm_publisher_a_progress", "publisher_a_progress"),
         ("storm_publisher_b_progress", "publisher_b_progress"),
@@ -9995,9 +10029,10 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         let declaration = gate
             .find(&format!("let {progress_source} ="))
             .unwrap_or_else(|| panic!("missing {progress_source} declaration"));
-        let call = gate[declaration..]
+        let body_start = declaration + format!("let {progress_source} =").len();
+        let call = gate[body_start..]
             .find(';')
-            .map(|end| &gate[declaration..declaration + end])
+            .map(|end| &gate[body_start..body_start + end])
             .expect("storm progress closure terminator");
         assert!(
             call.contains(counter),
