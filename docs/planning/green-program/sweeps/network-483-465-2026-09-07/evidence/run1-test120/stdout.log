@@ -1,0 +1,610 @@
+
+=========================================
+Breenix on Parallels Desktop
+=========================================
+
+[1/4] Building UEFI loader...
+    Updating git repository `https://github.com/rust-osdev/bootloader.git`
+    Updating crates.io index
+     Locking 154 packages to latest compatible versions
+      Adding aarch64-cpu v9.4.0 (available: v11.2.0)
+      Adding acpi v5.2.0 (available: v6.1.1)
+      Adding az v1.2.1 (available: v1.3.0)
+      Adding pic8259 v0.10.4 (available: v0.11.0)
+      Adding spin v0.9.9 (available: v0.12.3)
+      Adding tock-registers v0.8.1 (available: v0.10.1)
+      Adding uart_16550 v0.3.2 (available: v0.8.0)
+      Adding uefi v0.33.0 (available: v0.37.0)
+      Adding x86_64 v0.15.4 (available: v0.15.5)
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling syn v1.0.109
+   Compiling bitflags v2.13.1
+   Compiling bit_field v0.10.3
+   Compiling log v0.4.34
+   Compiling uguid v2.2.1
+   Compiling cfg-if v1.0.4
+   Compiling ucs2 v0.3.3
+   Compiling acpi v5.2.0
+   Compiling syn v2.0.119
+   Compiling ptr_meta_derive v0.2.0
+   Compiling uefi-macros v0.17.0
+   Compiling ptr_meta v0.2.0
+   Compiling uefi-raw v0.9.0
+   Compiling uefi v0.33.0
+   Compiling parallels-loader v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/parallels-loader)
+    Finished `release` profile [optimized] target(s) in 3.30s
+
+[2/4] Building kernel...
+   Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+   Compiling autocfg v1.5.1
+   Compiling az v1.2.1
+   Compiling crossbeam-utils v0.8.23
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/kernel)
+   Compiling num-traits v0.2.19
+   Compiling alloc v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling byteorder v1.5.0
+   Compiling pin-project-lite v0.2.17
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.34
+   Compiling tock-registers v0.8.1
+   Compiling micromath v2.1.0
+   Compiling futures-core v0.3.34
+   Compiling conquer-util v0.3.0
+   Compiling log v0.4.34
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling rlibc v1.0.0
+   Compiling lock_api v0.4.14
+   Compiling conquer-once v0.4.0
+   Compiling aarch64-cpu v9.4.0
+   Compiling futures-util v0.3.34
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.9
+   Compiling linked_list_allocator v0.10.6
+   Compiling crossbeam-queue v0.3.14
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+    Finished `release` profile [optimized] target(s) in 10.53s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+
+[3/4] Building userspace binaries (aarch64)...
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: aarch64
+
+[1/3] Building libbreenix-libc (aarch64)...
+  Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+  Compiling libbreenix v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libbreenix)
+  Compiling libbreenix-libc v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libbreenix-libc)
+  Finished `release` profile [optimized] target(s) in 4.11s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (aarch64)...
+  Updating crates.io index
+  Locking 10 packages to latest compatible versions
+  Compiling compiler_builtins v0.1.160 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/core)
+  Compiling libc v0.2.174 (/Users/wrb/fun/code/breenix-parallels/libs/libc)
+  Compiling std v0.0.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/std)
+  Compiling rustc-std-workspace-core v1.99.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/rustc-std-workspace-core)
+  Compiling alloc v0.0.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/alloc)
+  Compiling panic_abort v0.0.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/panic_abort)
+  Compiling cfg-if v1.0.1
+  Compiling rustc-demangle v0.1.25
+  Compiling unwind v0.0.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/unwind)
+  Compiling rustc-std-workspace-alloc v1.99.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/rustc-std-workspace-alloc)
+  Compiling panic_unwind v0.0.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/panic_unwind)
+  Compiling std_detect v0.1.5 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/stdarch/crates/std_detect)
+  Compiling hashbrown v0.15.4
+  Compiling rustc-std-workspace-std v1.99.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/rustc-std-workspace-std)
+  Compiling rustc-literal-escaper v0.0.2
+  Compiling proc_macro v0.0.0 (/Users/wrb/fun/code/breenix-parallels/rust-fork/library/proc_macro)
+  Compiling libfont v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libfont)
+  Compiling noto-sans-mono-bitmap v0.3.2
+  Compiling libbreenix v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libbreenix)
+  Compiling libimg v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libimg)
+  Compiling breenish-js v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/breenish-js)
+  Compiling libgfx v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libgfx)
+  Compiling libbui v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libbui)
+  Compiling libicon v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libicon)
+  Compiling libcollab v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/libcollab)
+  Compiling breengel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/libs/breengel)
+  Compiling userspace-programs v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/userspace/programs)
+  Finished `release` profile [optimized] target(s) in 16.70s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (351192 bytes)
+  Installed exec_smoke.elf (290896 bytes)
+  Installed exec_smoke_target.elf (294528 bytes)
+  Installed fork_smoke.elf (297160 bytes)
+  Installed block_eintr_oracle.elf (304720 bytes)
+  Installed poll_tcp_oracle.elf (320896 bytes)
+  Installed futex_handoff_oracle.elf (296040 bytes)
+  Installed tty_oracle.elf (338232 bytes)
+  Installed df_preempt_oracle.elf (288848 bytes)
+  Installed syscall_enosys.elf (290136 bytes)
+  Installed clock_gettime_test.elf (295064 bytes)
+  Installed file_read_test.elf (292288 bytes)
+  Installed lseek_test.elf (292512 bytes)
+  Installed fs_write_test.elf (293392 bytes)
+  Installed fs_rename_test.elf (297304 bytes)
+  Installed fs_large_file_test.elf (292264 bytes)
+  Installed fs_directory_test.elf (293512 bytes)
+  Installed fs_link_test.elf (293224 bytes)
+  Installed access_test.elf (291488 bytes)
+  Installed devfs_test.elf (292520 bytes)
+  Installed cwd_test.elf (292472 bytes)
+  Installed getdents_test.elf (294192 bytes)
+  Installed pipe_test.elf (299224 bytes)
+  Installed pipe2_test.elf (304256 bytes)
+  Installed dup_test.elf (305672 bytes)
+  Installed fcntl_test.elf (299608 bytes)
+  Installed poll_test.elf (304808 bytes)
+  Installed select_test.elf (304536 bytes)
+  Installed epoll_test.elf (292712 bytes)
+  Installed nonblock_test.elf (303960 bytes)
+  Installed brk_test.elf (292848 bytes)
+  Installed signal_handler_test.elf (297992 bytes)
+  Installed signal_return_test.elf (299272 bytes)
+  Installed signal_regs_test.elf (298584 bytes)
+  Installed sigaltstack_test.elf (305256 bytes)
+  Installed sigsuspend_test.elf (304784 bytes)
+  Installed pause_test.elf (299368 bytes)
+  Installed tty_test.elf (300200 bytes)
+  Installed session_test.elf (304784 bytes)
+  Installed unix_socket_test.elf (323112 bytes)
+  Installed unix_named_socket_test.elf (310376 bytes)
+  Installed fifo_test.elf (317264 bytes)
+  Installed fork_test.elf (298096 bytes)
+  Installed fork_memory_test.elf (304304 bytes)
+  Installed fork_state_test.elf (304960 bytes)
+  Installed waitpid_test.elf (298912 bytes)
+  Installed exec_argv_test.elf (291200 bytes)
+  Installed cloexec_test.elf (307520 bytes)
+  Installed kill_process_group_test.elf (299264 bytes)
+  Installed sigchld_test.elf (292008 bytes)
+  Installed sigkill_teardown_test.elf (327112 bytes)
+  Installed sigchld_job_test.elf (294600 bytes)
+  Installed ctrl_c_test.elf (298648 bytes)
+  Installed job_control_test.elf (294536 bytes)
+  Installed signal_fork_test.elf (298760 bytes)
+  Installed signal_exec_test.elf (299680 bytes)
+  Installed wnohang_timing_test.elf (292464 bytes)
+  Installed fork_pending_signal_test.elf (297632 bytes)
+  Installed shell_pipe_test.elf (293152 bytes)
+  Installed pipeline_test.elf (305664 bytes)
+  Installed cow_cleanup_test.elf (292336 bytes)
+  Installed cow_sole_owner_test.elf (297664 bytes)
+  Installed cow_stress_test.elf (293640 bytes)
+  Installed cow_readonly_test.elf (293448 bytes)
+  Installed cow_signal_test.elf (299136 bytes)
+  Installed resolution.elf (301688 bytes)
+  Installed init_shell.elf (389608 bytes)
+  Installed argv_test.elf (298144 bytes)
+  Installed job_table_test.elf (308472 bytes)
+  Installed test_mmap.elf (291928 bytes)
+  Installed clonevm_exec_test.elf (289648 bytes)
+  Installed stdin_test.elf (291824 bytes)
+  Installed true_test.elf (291864 bytes)
+  Installed false_test.elf (291872 bytes)
+  Installed echo_argv_test.elf (291696 bytes)
+  Installed mkdir_argv_test.elf (292168 bytes)
+  Installed rm_argv_test.elf (291800 bytes)
+  Installed cp_mv_argv_test.elf (292856 bytes)
+  Installed nonblock_eagain_test.elf (293448 bytes)
+  Installed blocking_recv_test.elf (298040 bytes)
+  Installed tcp_client_test.elf (297288 bytes)
+  Installed wait_stress.elf (306272 bytes)
+  Installed simple_exit.elf (276784 bytes)
+  Installed simple_exit0.elf (276792 bytes)
+  Installed spawn_smoke_target.elf (276800 bytes)
+  Installed counter.elf (290408 bytes)
+  Installed spinner.elf (290440 bytes)
+  Installed hello_time.elf (290296 bytes)
+  Installed heartbeat.elf (303576 bytes)
+  Installed xhci_counters.elf (292232 bytes)
+  Installed fbinfo_test.elf (297464 bytes)
+  Installed demo.elf (304128 bytes)
+  Installed bounce.elf (388032 bytes)
+  Installed rectangles.elf (305368 bytes)
+  Installed particles.elf (304320 bytes)
+  Installed confetti.elf (303656 bytes)
+  Installed tones.elf (294432 bytes)
+  Installed fart.elf (302520 bytes)
+  Installed http_test.elf (624384 bytes)
+  Installed register_init_test.elf (288848 bytes)
+  Installed head_test.elf (293288 bytes)
+  Installed tail_test.elf (293240 bytes)
+  Installed wc_test.elf (297840 bytes)
+  Installed which_test.elf (293112 bytes)
+  Installed cat_test.elf (293528 bytes)
+  Installed ls_test.elf (298576 bytes)
+  Installed exec_stack_argv_test.elf (292848 bytes)
+  Installed exec_from_ext2_test.elf (298744 bytes)
+  Installed pipe_fork_test.elf (305048 bytes)
+  Installed pipe_concurrent_test.elf (304288 bytes)
+  Installed fs_block_alloc_test.elf (304600 bytes)
+  Installed cow_oom_test.elf (292744 bytes)
+  Installed signal_test.elf (298240 bytes)
+  Installed alarm_test.elf (293336 bytes)
+  Installed itimer_test.elf (293800 bytes)
+  Installed timer_test.elf (291456 bytes)
+  Installed sleep_debug_test.elf (304544 bytes)
+  Installed pipe_refcount_test.elf (316576 bytes)
+  Installed udp_socket_test.elf (309816 bytes)
+  Installed tcp_socket_test.elf (318800 bytes)
+  Installed tcp_dup_listener_test.elf (300024 bytes)
+  Installed tcp_cloexec_exec_test.elf (305176 bytes)
+  Installed tcp_blocking_test.elf (324200 bytes)
+  Installed concurrent_recv_stress.elf (303432 bytes)
+  Installed dns_test.elf (307056 bytes)
+  Installed net_test.elf (303296 bytes)
+  Installed http_fetch_test.elf (618328 bytes)
+  Installed loopback_wake_test.elf (301696 bytes)
+  Installed syscall_diagnostic_test.elf (289040 bytes)
+  Installed pty_test.elf (293560 bytes)
+  Installed signal_exec_check.elf (291048 bytes)
+  Installed bsh.elf (739472 bytes)
+  Installed bwm.elf (432104 bytes)
+  Installed btop.elf (294600 bytes)
+  Installed burl.elf (641776 bytes)
+  Installed init.elf (298632 bytes)
+  Installed telnetd.elf (298200 bytes)
+  Installed blogd.elf (291096 bytes)
+  Installed btrace.elf (311448 bytes)
+  Installed bless.elf (295624 bytes)
+  Installed bcheck.elf (422288 bytes)
+  Installed biconkit.elf (362216 bytes)
+  Installed guskit.elf (540656 bytes)
+  Installed bterm.elf (480656 bytes)
+  Installed blog.elf (471992 bytes)
+  Installed bfontpicker.elf (489200 bytes)
+  Installed blauncher.elf (460824 bytes)
+  Installed bsshd.elf (455224 bytes)
+  Installed bssh.elf (463008 bytes)
+
+========================================
+  STD BUILD COMPLETE (aarch64)
+  Installed: 149 binaries
+========================================
+  Userspace build successful
+
+[4/4] Creating ext2 data disk image...
+Creating ext2 disk image...
+  Arch: aarch64
+  Output: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/target/ext2-aarch64.img
+  Size: 256MB
+  Payload: 62MB (userspace binaries + fonts)
+  Minimum image size for this payload: 93MB (incl. ext2 overhead + headroom)
+  Using Docker to create ext2 filesystem...
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 45 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+  Binaries in /bin:
+total 15814
+drwxr-xr-x    2 root     root          1024 Sep  7 05:14 .
+drwxr-xr-x   12 root     root          1024 Sep  7 05:14 ..
+-rwxr-xr-x    1 root     root        422288 Sep  7 05:14 bcheck
+-rwxr-xr-x    1 root     root        489200 Sep  7 05:14 bfontpicker
+-rwxr-xr-x    1 root     root        362216 Sep  7 05:14 biconkit
+-rwxr-xr-x    1 root     root        460824 Sep  7 05:14 blauncher
+-rwxr-xr-x    1 root     root        295624 Sep  7 05:14 bless
+-rwxr-xr-x    1 root     root        304720 Sep  7 05:14 block_eintr_oracle
+-rwxr-xr-x    1 root     root        471992 Sep  7 05:14 blog
+-rwxr-xr-x    1 root     root        388032 Sep  7 05:14 bounce
+-rwxr-xr-x    1 root     root        739472 Sep  7 05:14 bsh
+-rwxr-xr-x    1 root     root        463008 Sep  7 05:14 bssh
+-rwxr-xr-x    1 root     root        455224 Sep  7 05:14 bsshd
+-rwxr-xr-x    1 root     root        480656 Sep  7 05:14 bterm
+-rwxr-xr-x    1 root     root        294600 Sep  7 05:14 btop
+-rwxr-xr-x    1 root     root        311448 Sep  7 05:14 btrace
+-rwxr-xr-x    1 root     root        641776 Sep  7 05:14 burl
+-rwxr-xr-x    1 root     root        432104 Sep  7 05:14 bwm
+-rwxr-xr-x    1 root     root        303432 Sep  7 05:14 concurrent_recv_stress
+-rwxr-xr-x    1 root     root        303656 Sep  7 05:14 confetti
+-rwxr-xr-x    1 root     root        290408 Sep  7 05:14 counter
+-rwxr-xr-x    1 root     root        304128 Sep  7 05:14 demo
+-rwxr-xr-x    1 root     root        288848 Sep  7 05:14 df_preempt_oracle
+-rwxr-xr-x    1 root     root        290896 Sep  7 05:14 exec_smoke
+-rwxr-xr-x    1 root     root        294528 Sep  7 05:14 exec_smoke_target
+-rwxr-xr-x    1 root     root        302520 Sep  7 05:14 fart
+-rwxr-xr-x    1 root     root        297160 Sep  7 05:14 fork_smoke
+-rwxr-xr-x    1 root     root        296040 Sep  7 05:14 futex_handoff_oracle
+-rwxr-xr-x    1 root     root        540656 Sep  7 05:14 guskit
+-rwxr-xr-x    1 root     root        303576 Sep  7 05:14 heartbeat
+-rwxr-xr-x    1 root     root        290296 Sep  7 05:14 hello_time
+-rwxr-xr-x    1 root     root        351192 Sep  7 05:14 hello_world
+-rwxr-xr-x    1 root     root        389608 Sep  7 05:14 init_shell
+-rwxr-xr-x    1 root     root        304320 Sep  7 05:14 particles
+-rwxr-xr-x    1 root     root        320896 Sep  7 05:14 poll_tcp_oracle
+-rwxr-xr-x    1 root     root        305368 Sep  7 05:14 rectangles
+-rwxr-xr-x    1 root     root        301688 Sep  7 05:14 resolution
+-rwxr-xr-x    1 root     root        291048 Sep  7 05:14 signal_exec_check
+-rwxr-xr-x    1 root     root        276784 Sep  7 05:14 simple_exit
+-rwxr-xr-x    1 root     root        276792 Sep  7 05:14 simple_exit0
+-rwxr-xr-x    1 root     root        276800 Sep  7 05:14 spawn_smoke_target
+-rwxr-xr-x    1 root     root        290440 Sep  7 05:14 spinner
+-rwxr-xr-x    1 root     root        290136 Sep  7 05:14 syscall_enosys
+-rwxr-xr-x    1 root     root        294432 Sep  7 05:14 tones
+-rwxr-xr-x    1 root     root        338232 Sep  7 05:14 tty_oracle
+-rwxr-xr-x    1 root     root        306272 Sep  7 05:14 wait_stress
+-rwxr-xr-x    1 root     root        292232 Sep  7 05:14 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 30471
+drwxr-xr-x    2 root     root          5120 Sep  7 05:14 .
+drwxr-xr-x    3 root     root          1024 Sep  7 05:14 ..
+-rwxr-xr-x    1 root     root        291488 Sep  7 05:14 access_test
+-rwxr-xr-x    1 root     root        293336 Sep  7 05:14 alarm_test
+-rwxr-xr-x    1 root     root        298144 Sep  7 05:14 argv_test
+-rwxr-xr-x    1 root     root        298040 Sep  7 05:14 blocking_recv_test
+-rwxr-xr-x    1 root     root        292848 Sep  7 05:14 brk_test
+-rwxr-xr-x    1 root     root        293528 Sep  7 05:14 cat_test
+-rwxr-xr-x    1 root     root        295064 Sep  7 05:14 clock_gettime_test
+-rwxr-xr-x    1 root     root        307520 Sep  7 05:14 cloexec_test
+-rwxr-xr-x    1 root     root        289648 Sep  7 05:14 clonevm_exec_test
+-rwxr-xr-x    1 root     root        292336 Sep  7 05:14 cow_cleanup_test
+-rwxr-xr-x    1 root     root        292744 Sep  7 05:14 cow_oom_test
+-rwxr-xr-x    1 root     root        293448 Sep  7 05:14 cow_readonly_test
+-rwxr-xr-x    1 root     root        299136 Sep  7 05:14 cow_signal_test
+-rwxr-xr-x    1 root     root        297664 Sep  7 05:14 cow_sole_owner_test
+-rwxr-xr-x    1 root     root        293640 Sep  7 05:14 cow_stress_test
+-rwxr-xr-x    1 root     root        292856 Sep  7 05:14 cp_mv_argv_test
+-rwxr-xr-x    1 root     root        298648 Sep  7 05:14 ctrl_c_test
+-rwxr-xr-x    1 root     root        292472 Sep  7 05:14 cwd_test
+-rwxr-xr-x    1 root     root        292520 Sep  7 05:14 devfs_test
+-rwxr-xr-x    1 root     root        307056 Sep  7 05:14 dns_test
+-rwxr-xr-x    1 root     root        305672 Sep  7 05:14 dup_test
+-rwxr-xr-x    1 root     root        291696 Sep  7 05:14 echo_argv_test
+-rwxr-xr-x    1 root     root        292712 Sep  7 05:14 epoll_test
+-rwxr-xr-x    1 root     root        291200 Sep  7 05:14 exec_argv_test
+-rwxr-xr-x    1 root     root        298744 Sep  7 05:14 exec_from_ext2_test
+-rwxr-xr-x    1 root     root        292848 Sep  7 05:14 exec_stack_argv_test
+-rwxr-xr-x    1 root     root        291872 Sep  7 05:14 false_test
+-rwxr-xr-x    1 root     root        297464 Sep  7 05:14 fbinfo_test
+-rwxr-xr-x    1 root     root        299608 Sep  7 05:14 fcntl_test
+-rwxr-xr-x    1 root     root        317264 Sep  7 05:14 fifo_test
+-rwxr-xr-x    1 root     root        292288 Sep  7 05:14 file_read_test
+-rwxr-xr-x    1 root     root        304304 Sep  7 05:14 fork_memory_test
+-rwxr-xr-x    1 root     root        297632 Sep  7 05:14 fork_pending_signal_test
+-rwxr-xr-x    1 root     root        304960 Sep  7 05:14 fork_state_test
+-rwxr-xr-x    1 root     root        298096 Sep  7 05:14 fork_test
+-rwxr-xr-x    1 root     root        304600 Sep  7 05:14 fs_block_alloc_test
+-rwxr-xr-x    1 root     root        293512 Sep  7 05:14 fs_directory_test
+-rwxr-xr-x    1 root     root        292264 Sep  7 05:14 fs_large_file_test
+-rwxr-xr-x    1 root     root        293224 Sep  7 05:14 fs_link_test
+-rwxr-xr-x    1 root     root        297304 Sep  7 05:14 fs_rename_test
+-rwxr-xr-x    1 root     root        293392 Sep  7 05:14 fs_write_test
+-rwxr-xr-x    1 root     root        294192 Sep  7 05:14 getdents_test
+-rwxr-xr-x    1 root     root        293288 Sep  7 05:14 head_test
+-rwxr-xr-x    1 root     root        618328 Sep  7 05:14 http_fetch_test
+-rwxr-xr-x    1 root     root        624384 Sep  7 05:14 http_test
+-rwxr-xr-x    1 root     root        293800 Sep  7 05:14 itimer_test
+-rwxr-xr-x    1 root     root        294536 Sep  7 05:14 job_control_test
+-rwxr-xr-x    1 root     root        308472 Sep  7 05:14 job_table_test
+-rwxr-xr-x    1 root     root        299264 Sep  7 05:14 kill_process_group_test
+-rwxr-xr-x    1 root     root        301696 Sep  7 05:14 loopback_wake_test
+-rwxr-xr-x    1 root     root        298576 Sep  7 05:14 ls_test
+-rwxr-xr-x    1 root     root        292512 Sep  7 05:14 lseek_test
+-rwxr-xr-x    1 root     root        292168 Sep  7 05:14 mkdir_argv_test
+-rwxr-xr-x    1 root     root        303296 Sep  7 05:14 net_test
+-rwxr-xr-x    1 root     root        293448 Sep  7 05:14 nonblock_eagain_test
+-rwxr-xr-x    1 root     root        303960 Sep  7 05:14 nonblock_test
+-rwxr-xr-x    1 root     root        299368 Sep  7 05:14 pause_test
+-rwxr-xr-x    1 root     root        304256 Sep  7 05:14 pipe2_test
+-rwxr-xr-x    1 root     root        304288 Sep  7 05:14 pipe_concurrent_test
+-rwxr-xr-x    1 root     root        305048 Sep  7 05:14 pipe_fork_test
+-rwxr-xr-x    1 root     root        316576 Sep  7 05:14 pipe_refcount_test
+-rwxr-xr-x    1 root     root        299224 Sep  7 05:14 pipe_test
+-rwxr-xr-x    1 root     root        305664 Sep  7 05:14 pipeline_test
+-rwxr-xr-x    1 root     root        304808 Sep  7 05:14 poll_test
+-rwxr-xr-x    1 root     root        293560 Sep  7 05:14 pty_test
+-rwxr-xr-x    1 root     root        288848 Sep  7 05:14 register_init_test
+-rwxr-xr-x    1 root     root        291800 Sep  7 05:14 rm_argv_test
+-rwxr-xr-x    1 root     root        304536 Sep  7 05:14 select_test
+-rwxr-xr-x    1 root     root        304784 Sep  7 05:14 session_test
+-rwxr-xr-x    1 root     root        293152 Sep  7 05:14 shell_pipe_test
+-rwxr-xr-x    1 root     root        305256 Sep  7 05:14 sigaltstack_test
+-rwxr-xr-x    1 root     root        294600 Sep  7 05:14 sigchld_job_test
+-rwxr-xr-x    1 root     root        292008 Sep  7 05:14 sigchld_test
+-rwxr-xr-x    1 root     root        327112 Sep  7 05:14 sigkill_teardown_test
+-rwxr-xr-x    1 root     root        299680 Sep  7 05:14 signal_exec_test
+-rwxr-xr-x    1 root     root        298760 Sep  7 05:14 signal_fork_test
+-rwxr-xr-x    1 root     root        297992 Sep  7 05:14 signal_handler_test
+-rwxr-xr-x    1 root     root        298584 Sep  7 05:14 signal_regs_test
+-rwxr-xr-x    1 root     root        299272 Sep  7 05:14 signal_return_test
+-rwxr-xr-x    1 root     root        298240 Sep  7 05:14 signal_test
+-rwxr-xr-x    1 root     root        304784 Sep  7 05:14 sigsuspend_test
+-rwxr-xr-x    1 root     root        304544 Sep  7 05:14 sleep_debug_test
+-rwxr-xr-x    1 root     root        291824 Sep  7 05:14 stdin_test
+-rwxr-xr-x    1 root     root        289040 Sep  7 05:14 syscall_diagnostic_test
+-rwxr-xr-x    1 root     root        293240 Sep  7 05:14 tail_test
+-rwxr-xr-x    1 root     root        324200 Sep  7 05:14 tcp_blocking_test
+-rwxr-xr-x    1 root     root        297288 Sep  7 05:14 tcp_client_test
+-rwxr-xr-x    1 root     root        305176 Sep  7 05:14 tcp_cloexec_exec_test
+-rwxr-xr-x    1 root     root        300024 Sep  7 05:14 tcp_dup_listener_test
+-rwxr-xr-x    1 root     root        318800 Sep  7 05:14 tcp_socket_test
+-rwxr-xr-x    1 root     root        291928 Sep  7 05:14 test_mmap
+-rwxr-xr-x    1 root     root        291456 Sep  7 05:14 timer_test
+-rwxr-xr-x    1 root     root        291864 Sep  7 05:14 true_test
+-rwxr-xr-x    1 root     root        300200 Sep  7 05:14 tty_test
+-rwxr-xr-x    1 root     root        309816 Sep  7 05:14 udp_socket_test
+-rwxr-xr-x    1 root     root        310376 Sep  7 05:14 unix_named_socket_test
+-rwxr-xr-x    1 root     root        323112 Sep  7 05:14 unix_socket_test
+-rwxr-xr-x    1 root     root        298912 Sep  7 05:14 waitpid_test
+-rwxr-xr-x    1 root     root        297840 Sep  7 05:14 wc_test
+-rwxr-xr-x    1 root     root        293112 Sep  7 05:14 which_test
+-rwxr-xr-x    1 root     root        292464 Sep  7 05:14 wnohang_timing_test
+  Test files:
+-rw-r--r--    1 root     root           679 Sep  7 05:14 /mnt/ext2/etc/init.js
+-rw-r--r--    1 root     root           445 Sep  7 05:14 /mnt/ext2/etc/fonts.conf
+-rw-r--r--    1 root     root           349 Sep  7 05:14 /mnt/ext2/etc/hotkeys.conf
+-rw-r--r--    1 root     root            26 Sep  7 05:14 /mnt/ext2/etc/group
+-rw-r--r--    1 root     root           367 Sep  7 05:14 /mnt/ext2/etc/bshrc
+-rw-r--r--    1 root     root            83 Sep  7 05:14 /mnt/ext2/etc/passwd
+-rw-r--r--    1 root     root             0 Sep  7 05:14 /mnt/ext2/empty.txt
+-rw-r--r--    1 root     root            19 Sep  7 05:14 /mnt/ext2/trunctest.txt
+-rw-r--r--    1 root     root            20 Sep  7 05:14 /mnt/ext2/deep/path/to/file/data.txt
+-rwxr-xr-x    1 root     root        298632 Sep  7 05:14 /mnt/ext2/sbin/init
+-rwxr-xr-x    1 root     root        298200 Sep  7 05:14 /mnt/ext2/sbin/telnetd
+-rwxr-xr-x    1 root     root        291096 Sep  7 05:14 /mnt/ext2/sbin/blogd
+-rw-r--r--    1 root     root            20 Sep  7 05:14 /mnt/ext2/test/nested.txt
+-rw-r--r--    1 root     root        309408 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r--    1 root     root        598060 Sep  7 05:14 /mnt/ext2/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r--    1 root     root        744936 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r--    1 root     root        876576 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r--    1 root     root        212340 Sep  7 05:14 /mnt/ext2/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r--    1 root     root        757076 Sep  7 05:14 /mnt/ext2/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r--    1 root     root       2049096 Sep  7 05:14 /mnt/ext2/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r--    1 root     root        646340 Sep  7 05:14 /mnt/ext2/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r--    1 root     root        300724 Sep  7 05:14 /mnt/ext2/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r--    1 root     root        276932 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r--    1 root     root       1209508 Sep  7 05:14 /mnt/ext2/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r--    1 root     root        273900 Sep  7 05:14 /mnt/ext2/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r--    1 root     root        351884 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r--    1 root     root        488584 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r--    1 root     root        282844 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r--    1 root     root        205748 Sep  7 05:14 /mnt/ext2/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r--    1 root     root       1708408 Sep  7 05:14 /mnt/ext2/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r--    1 root     root        108684 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r--    1 root     root        183700 Sep  7 05:14 /mnt/ext2/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r--    1 root     root       1887192 Sep  7 05:14 /mnt/ext2/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r--    1 root     root        340712 Sep  7 05:14 /mnt/ext2/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r--    1 root     root        260364 Sep  7 05:14 /mnt/ext2/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r--    1 root     root        212196 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r--    1 root     root        160316 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r--    1 root     root        312352 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r--    1 root     root        532636 Sep  7 05:14 /mnt/ext2/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r--    1 root     root        135580 Sep  7 05:14 /mnt/ext2/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r--    1 root     root        359048 Sep  7 05:14 /mnt/ext2/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r--    1 root     root        656568 Sep  7 05:14 /mnt/ext2/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r--    1 root     root            17 Sep  7 05:14 /mnt/ext2/hello.txt
+-rw-r--r--    1 root     root           111 Sep  7 05:14 /mnt/ext2/lines.txt
+
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/target/ext2-aarch64.img
+  /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/testdata/ext2-aarch64.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+
+Creating FAT32 EFI disk image...
+  Loader: 88064 bytes
+  Kernel: 3192088 bytes
+
+Creating Parallels disks...
+  Patched 1 partition(s) to EFI System Partition type
+  EFI disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/target/parallels/breenix-efi.hdd
+  ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/target/parallels/breenix-ext2.hdd (256MB)
+
+--- Configuring Parallels VM ---
+VM name: breenix-1788758111
+  Cleaning up old VM: breenix-1788749740
+Stopping the VM...
+Removing the VM...
+The VM has been successfully removed.
+Creating fresh VM 'breenix-1788758111'...
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
+Remove the serial0 device.
+
+The VM has been successfully configured.
+Creating hdd0 (+) sata:0 image='/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
+Creating hdd1 (+) sata:1 image='/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/v483/wt/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
+  hdd0: EFI boot disk (FAT32) at sata:0
+  hdd1: ext2 data disk at sata:1
+
+The VM has been successfully configured.
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
+
+--- Starting VM ---
+Starting the VM...
+The VM has been successfully started.
+
+=========================================
+Breenix running on Parallels
+=========================================
+VM:     breenix-1788758111
+Serial: /tmp/breenix-parallels-serial.log
+Stop:   prlctl stop breenix-1788758111 --kill
+
+Test mode: waiting 120s for boot...
+
+=== Screenshot ===
+ERROR: No Parallels window found matching 'breenix-1788758111'
+Capture the VM screen...
+The VM screen is stored in /tmp/breenix-screenshot.png.
+Screenshot: /tmp/breenix-screenshot.png
+
+Serial log: /tmp/breenix-parallels-serial.log
+Screenshot: /tmp/breenix-screenshot.png
