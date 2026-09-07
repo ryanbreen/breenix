@@ -163,6 +163,8 @@ STD_BINARIES=(
     "pipe2_test"
     "pipe_fifo_blocking_oracle"
     "pipe_fifo_blocking_supervisor"
+    "unix_stream_blocking_oracle"
+    "unix_stream_blocking_supervisor"
     "dup_test"
     "fcntl_test"
     "poll_test"

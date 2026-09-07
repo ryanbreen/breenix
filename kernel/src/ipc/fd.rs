@@ -698,7 +698,8 @@ impl Drop for FdTable {
                     }
                     FdKind::UnixStream(socket) => {
                         // Close the Unix socket endpoint
-                        socket.lock().close();
+                        let notifications = socket.lock().close();
+                        notifications.deliver();
                         log::debug!("FdTable::drop() - closed Unix stream socket fd {}", i);
                     }
                     FdKind::UnixSocket(socket) => {

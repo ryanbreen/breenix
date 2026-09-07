@@ -3,10 +3,11 @@
 //! Provides AF_UNIX socket support for local inter-process communication.
 //! Currently supports SOCK_STREAM via socketpair().
 
+use crate::task::waitqueue::WaitQueueHead;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 /// Default buffer size for Unix stream sockets (64 KB)
 const UNIX_SOCKET_BUFFER_SIZE: usize = 65536;
@@ -24,6 +25,9 @@ pub struct UnixStreamPair {
     waiters_a: Mutex<Vec<u64>>,
     /// Threads waiting to read on endpoint B (waiting for data in buffer_a_to_b)
     waiters_b: Mutex<Vec<u64>>,
+    /// Writers on each endpoint, independent of the legacy read waiters.
+    write_waiters_a: Arc<WaitQueueHead>,
+    write_waiters_b: Arc<WaitQueueHead>,
     /// Endpoint A closed
     closed_a: Mutex<bool>,
     /// Endpoint B closed
@@ -38,6 +42,8 @@ impl UnixStreamPair {
             buffer_b_to_a: Mutex::new(VecDeque::with_capacity(UNIX_SOCKET_BUFFER_SIZE)),
             waiters_a: Mutex::new(Vec::new()),
             waiters_b: Mutex::new(Vec::new()),
+            write_waiters_a: Arc::new(WaitQueueHead::new()),
+            write_waiters_b: Arc::new(WaitQueueHead::new()),
             closed_a: Mutex::new(false),
             closed_b: Mutex::new(false),
         }
@@ -89,61 +95,17 @@ impl UnixStreamSocket {
         (socket_a, socket_b)
     }
 
-    /// Write data to the socket (sends to peer)
-    ///
-    /// Returns the number of bytes written, or an error code.
-    pub fn write(&self, data: &[u8]) -> Result<usize, i32> {
-        // Check if peer is closed
-        let peer_closed = match self.endpoint {
-            UnixEndpoint::A => *self.pair.closed_b.lock(),
-            UnixEndpoint::B => *self.pair.closed_a.lock(),
-        };
-
-        if peer_closed {
-            return Err(crate::syscall::errno::EPIPE);
+    /// Snapshot the direction without retaining the endpoint mutex while asleep.
+    pub(crate) fn writer(&self) -> UnixWriter {
+        UnixWriter {
+            pair: self.pair.clone(),
+            endpoint: self.endpoint,
         }
+    }
 
-        // Get the buffer to write to (peer's read buffer)
-        let buffer = match self.endpoint {
-            UnixEndpoint::A => &self.pair.buffer_a_to_b,
-            UnixEndpoint::B => &self.pair.buffer_b_to_a,
-        };
-
-        // Write data to buffer
-        let mut buf = buffer.lock();
-
-        // Check available space
-        let available = UNIX_SOCKET_BUFFER_SIZE.saturating_sub(buf.len());
-        if available == 0 {
-            if self.nonblocking {
-                return Err(crate::syscall::errno::EAGAIN);
-            }
-            // For blocking mode, we'd need to block here
-            // For now, just write nothing and return EAGAIN
-            return Err(crate::syscall::errno::EAGAIN);
-        }
-
-        let to_write = data.len().min(available);
-        for &byte in &data[..to_write] {
-            buf.push_back(byte);
-        }
-
-        drop(buf);
-
-        // Wake waiting readers on the peer endpoint
-        let waiters = match self.endpoint {
-            UnixEndpoint::A => &self.pair.waiters_b,
-            UnixEndpoint::B => &self.pair.waiters_a,
-        };
-
-        let waiter_ids: Vec<u64> = waiters.lock().clone();
-        for thread_id in waiter_ids {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(thread_id);
-            });
-        }
-
-        Ok(to_write)
+    /// Readiness and transfer share the guarded transmit-space definition.
+    pub fn has_write_space(&self) -> bool {
+        self.writer().state().has_write_space()
     }
 
     /// Read data from the socket (receives from peer)
@@ -185,6 +147,14 @@ impl UnixStreamSocket {
             buf[i] = rx_buf.pop_front().unwrap();
         }
 
+        drop(rx_buf);
+        if to_read > 0 {
+            let writers = match self.endpoint {
+                UnixEndpoint::A => &self.pair.write_waiters_b,
+                UnixEndpoint::B => &self.pair.write_waiters_a,
+            };
+            writers.wake_up();
+        }
         Ok(to_read)
     }
 
@@ -227,7 +197,7 @@ impl UnixStreamSocket {
     }
 
     /// Mark this endpoint as closed and wake any waiters on peer
-    pub fn close(&self) {
+    pub fn close(&self) -> UnixCloseNotifications {
         // Mark ourselves as closed
         match self.endpoint {
             UnixEndpoint::A => *self.pair.closed_a.lock() = true,
@@ -244,6 +214,106 @@ impl UnixStreamSocket {
         for thread_id in waiter_ids {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(thread_id);
+            });
+        }
+        let writers = match self.endpoint {
+            UnixEndpoint::A => self.pair.write_waiters_b.clone(),
+            UnixEndpoint::B => self.pair.write_waiters_a.clone(),
+        };
+        UnixCloseNotifications { writers }
+    }
+}
+
+/// Owned peer-writer notification; closed-flag and endpoint guards must drop
+/// before delivery. Caller-owned PM uses the established deferred wake route.
+#[must_use = "deliver Unix close notifications after releasing object guards"]
+pub struct UnixCloseNotifications {
+    writers: Arc<WaitQueueHead>,
+}
+
+impl UnixCloseNotifications {
+    pub fn deliver(self) {
+        self.writers.wake_up();
+    }
+
+    /// Uses PR A's PM-context mechanism, including issue 936's residual caveat.
+    pub fn deliver_deferred(self) {
+        self.writers.wake_up_deferred();
+    }
+}
+
+/// Owned direction handle used after the descriptor and endpoint locks drop.
+pub(crate) struct UnixWriter {
+    pair: Arc<UnixStreamPair>,
+    endpoint: UnixEndpoint,
+}
+
+/// Lock order: transmit buffer -> peer closed flag -> wait queue -> scheduler.
+/// Keep both guards through publication so neither drain nor close loses a wake.
+pub(crate) struct UnixWriteState<'a> {
+    buffer: MutexGuard<'a, VecDeque<u8>>,
+    peer_closed: MutexGuard<'a, bool>,
+}
+
+impl UnixWriteState<'_> {
+    pub(crate) fn has_write_space(&self) -> bool {
+        !*self.peer_closed && self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE
+    }
+
+    pub(crate) fn peer_closed(&self) -> bool {
+        *self.peer_closed
+    }
+
+    pub(crate) fn copy(&mut self, data: &[u8]) -> usize {
+        if !self.has_write_space() {
+            return 0;
+        }
+        let count = data.len().min(UNIX_SOCKET_BUFFER_SIZE - self.buffer.len());
+        self.buffer.extend(&data[..count]);
+        count
+    }
+}
+
+impl UnixWriter {
+    pub(crate) fn state(&self) -> UnixWriteState<'_> {
+        let (buffer, closed) = match self.endpoint {
+            UnixEndpoint::A => (&self.pair.buffer_a_to_b, &self.pair.closed_b),
+            UnixEndpoint::B => (&self.pair.buffer_b_to_a, &self.pair.closed_a),
+        };
+        let buffer = buffer.lock();
+        let peer_closed = closed.lock();
+        UnixWriteState {
+            buffer,
+            peer_closed,
+        }
+    }
+
+    pub(crate) fn queue(&self) -> Arc<WaitQueueHead> {
+        match self.endpoint {
+            UnixEndpoint::A => self.pair.write_waiters_a.clone(),
+            UnixEndpoint::B => self.pair.write_waiters_b.clone(),
+        }
+    }
+
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn witness(&self, tid: u64) -> (u64, u64, u64) {
+        let state = self.state();
+        (
+            self.queue().contains_waiter(tid) as u64,
+            state.buffer.len() as u64,
+            UNIX_SOCKET_BUFFER_SIZE as u64,
+        )
+    }
+
+    pub(crate) fn wake_readers(&self) {
+        let waiters = match self.endpoint {
+            UnixEndpoint::A => &self.pair.waiters_b,
+            UnixEndpoint::B => &self.pair.waiters_a,
+        };
+        let ids = waiters.lock().clone();
+        for tid in ids {
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.unblock(tid);
             });
         }
     }
