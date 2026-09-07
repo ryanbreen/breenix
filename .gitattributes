@@ -160,3 +160,6 @@ docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/**/*.lo
 # a CRLF normalisation would both edit preserved evidence and invalidate the
 # digest that cites it.
 docs/planning/green-program/aarch64-testing/serials/606-recurrence-2026-09-06/*.txt -text
+
+# #908: preserve raw guest-console CR bytes in proof captures and re-recorded fixture.
+docs/planning/green-program/irq-locks/serials/908/**/*.txt -text
