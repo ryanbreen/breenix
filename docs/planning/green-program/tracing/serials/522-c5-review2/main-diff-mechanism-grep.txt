@@ -1,0 +1,2 @@
+$ git diff fbe821714094..4bec5d74 -- kernel/src/tracing/providers/teardown.rs kernel/src/main_aarch64.rs kernel/src/test_framework/ docs/polling-allowlist.md docker/qemu/lib/ scripts/run-structure-tests.sh scripts/claim-lint.py | grep -iE "exit_kick_gate|phase_one|test_phase|initialization_watchdog"
+exit=1
