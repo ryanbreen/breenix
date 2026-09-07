@@ -1,5 +1,11 @@
 # Breenix OS Project Roadmap
 
+Issue #855 follow-up: 2048-entry shared trace rings with diagnostic sampling
+settled at 1024/8192 retained 1801/1638/1793 ms in three strict boots, after
+the sample-only plateau. See
+[the round evidence](green-program/tracing/SCHED-DIAG-855-2026-09-07.md).
+
+
 This is the master project roadmap for Breenix OS: current development status,
 completed phases, in-progress work, and planned work. Update after each PR
 merge and when starting new work.

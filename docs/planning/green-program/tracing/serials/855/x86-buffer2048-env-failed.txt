@@ -1,0 +1,34 @@
+# Provenance: gate=bash docker/qemu/run-x86-boot-tests.sh 1; exit=127; host=beast/breenix-x86; checkout=/root/breenix-855; branch=tracing/855-ring-window; base_commit=e63edadbc10e69c926c3245ef864a17ef0b6b4a9; features=boot_tests,testing,external_test_bins; TRACE_BUFFER_SIZE=2048; TRACE_DIAG_SAMPLE=1024 (aarch64-only); TRACE_SCHED_DIAG_SAMPLE=8192 (aarch64-only)
+From https://github.com/ryanbreen/breenix
+   504d36679..e63edadbc  tracing/855-ring-window -> origin/tracing/855-ring-window
+Already on 'tracing/855-ring-window'
+Your branch is behind 'origin/tracing/855-ring-window' by 2 commits, and can be fast-forwarded.
+  (use "git pull" to update your local branch)
+Updating 504d36679..e63edadbc
+Fast-forward
+ docs/planning/STRUCTURED_CI_BOOT_TEST_PLAN.md      |   2 +-
+ docs/planning/TRACING_FRAMEWORK_DESIGN.md          |   4 +-
+ docs/planning/TRACING_FRAMEWORK_IMPLEMENTATION.md  |   6 +-
+ .../failure-capture/PLAN-2026-09-05.md             |   4 +-
+ .../tracing/SCHED-DIAG-855-2026-09-07.md           |  23 +-
+ .../serials/855/aarch64-sched16384-build.txt       |   4 +
+ .../serials/855/aarch64-sched8192-build.txt        |   4 +
+ .../serials/855/sched16384-structure-ratchet.txt   |  16 +
+ .../tracing/serials/855/x86-sched16384-gate.txt    | 501 +++++++++++++++++++++
+ kernel/src/task/scheduler.rs                       |   5 +-
+ kernel/src/tracing/buffer.rs                       |  19 +-
+ kernel/src/tracing/providers/irq.rs                |   2 +-
+ tests/ctx_diag_ring_sample_structure.rs            |  33 ++
+ 13 files changed, 602 insertions(+), 21 deletions(-)
+ create mode 100644 docs/planning/green-program/tracing/serials/855/aarch64-sched16384-build.txt
+ create mode 100644 docs/planning/green-program/tracing/serials/855/aarch64-sched8192-build.txt
+ create mode 100644 docs/planning/green-program/tracing/serials/855/sched16384-structure-ratchet.txt
+ create mode 100644 docs/planning/green-program/tracing/serials/855/x86-sched16384-gate.txt
+e63edadbc10e69c926c3245ef864a17ef0b6b4a9
+[GATE_PREFLIGHT:skipped=1:reason=rustc not found on PATH -- cannot compile tests/*_structure.rs]
+  RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
+x86 frame-custody gate: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:600, exit 127)
+  failing command: cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
+X86_GATE_EXIT=127
+docker/qemu/run-x86-boot-tests.sh: line 600: cargo: command not found
+Error: Command not found
