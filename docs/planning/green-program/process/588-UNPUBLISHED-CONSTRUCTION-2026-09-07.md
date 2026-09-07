@@ -181,11 +181,11 @@ moves from n in 0..4 to n in 4..8, because the four builders now also contain
 Logs and serials under `docs/planning/green-program/process/serials/588/`:
 * `red-aarch64-native-main-manager.txt`
 * `green-aarch64-strict-boot1.txt`
-* `green-aarch64-strict-3boots.log`
+* `green-aarch64-strict-3boots.txt`
 * `green-aarch64-prod-profile-serial.txt`
-* `green-aarch64-prod-profile.log`
+* `green-aarch64-prod-profile-gate.txt`
 * `green-x86-boot-tests-serial.txt`
-* `green-x86-boot-tests.log`
+* `green-x86-boot-tests-gate.txt`
 * `x86-run1-891-ksoftirqd-panic-serial.txt`
 
 ### x86 attempts on beast
