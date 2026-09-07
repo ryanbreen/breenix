@@ -4150,6 +4150,7 @@ const THREAD_STATE_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_userspace => Ready", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_with_id => Ready", 1),
     ("kernel/src/test_framework/registry.rs", "fn run_census_widen_oracle => Running", 2),
+    ("kernel/src/test_framework/registry.rs", "fn run_loopback_recv_wake_test_inner => Running", 1),
 ];
 /// Census D: `use … ThreadState as ALIAS` renamings. Censuses A and C resolve
 /// same-file aliases into their needle set, but a renaming that is re-exported
