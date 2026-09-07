@@ -61,6 +61,43 @@ final class ImporterTests: XCTestCase {
         XCTAssertEqual(manifest.captures.map(\.name), ["gate_boot_facts.txt"])
     }
 
+    func testReimportRefusesWhenDeclaredSetDropsPreviouslyRecordedEvidence() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        provenance.captures.append("old.txt")
+        try Data("old capture\n".utf8).write(to: evidence.appendingPathComponent("old.txt"))
+        let sidecar = evidence.appendingPathComponent("run-inspector.json")
+        try RunStore.encoder.encode(provenance).write(to: sidecar)
+        let importer = Importer(store: store)
+        let first = try importer.importPath(evidence)
+        let id = try XCTUnwrap(first.imported.first?.id)
+        XCTAssertEqual(Set(try store.readManifest(id: id).captures.map(\.name)),
+                       ["gate_boot_facts.txt", "old.txt"])
+
+        // Re-import: drop old.txt from the declared set, change serial.txt's
+        // bytes, and add a new capture -- the combined shape from the review's
+        // own reproduction.
+        provenance.captures = ["gate_boot_facts.txt", "new.txt"]
+        try Data("changed bytes\n".utf8).write(to: evidence.appendingPathComponent("serial.txt"))
+        try Data("new capture\n".utf8).write(to: evidence.appendingPathComponent("new.txt"))
+        try RunStore.encoder.encode(provenance).write(to: sidecar)
+        let second = try importer.importPath(evidence)
+
+        XCTAssertTrue(second.imported.isEmpty,
+            "a re-import that would drop tracked evidence must not report success")
+        XCTAssertEqual(second.skipped.count, 1)
+        XCTAssertTrue(second.skipped.first?.reason.contains("old.txt") == true)
+
+        let manifestAfter = try store.readManifest(id: id)
+        XCTAssertEqual(Set(manifestAfter.captures.map(\.name)), ["gate_boot_facts.txt", "old.txt"],
+            "manifest must still list the previously tracked evidence")
+        let serialBytes = try Data(contentsOf: store.runDirectory(id: id).appendingPathComponent("serial.txt"))
+        XCTAssertEqual(String(decoding: serialBytes, as: UTF8.self), "Breenix ARM64 Kernel Starting\n",
+            "a refused re-import must not overwrite bytes already in the store")
+    }
+
     func testReimportPicksUpEvidenceTheSidecarNewlyDeclares() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

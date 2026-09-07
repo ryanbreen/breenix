@@ -534,6 +534,20 @@ public struct Importer {
             RunManifest.makeImportedID(serialData: firstSerialData, sourcePath: sourceURL.standardizedFileURL.path)
         if fileManager.fileExists(atPath: store.manifestURL(id: id).path),
            let existingManifest = try? store.readManifest(id: id) {
+            if let provenance = provenance {
+                let existingNames = Set(existingManifest.serials.map(\.name) + existingManifest.captures.map(\.name))
+                let declaredNames = Set(provenance.serials + provenance.captures)
+                guard existingNames.isSubset(of: declaredNames) else {
+                    // A re-import must never silently drop evidence the store
+                    // already tracks -- refuse instead of rebuilding the
+                    // inventory out from under it.
+                    result.skipped.append(ImportSkip(
+                        path: sourceURL.path,
+                        reason: "run-inspector.json re-import would drop previously recorded evidence: "
+                            + existingNames.subtracting(declaredNames).sorted().joined(separator: ", ")))
+                    return
+                }
+            }
             let declaredGrew = provenance.map { declaredInventoryGrew($0, comparedTo: existingManifest) } ?? false
             if !declaredGrew {
                 result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path, alreadyExisted: true))
