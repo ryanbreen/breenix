@@ -98,7 +98,7 @@ Source inspection:
 
 These bounded fixes remove actual repeated filesystem traversals, but the CPU/system timing split does not establish those reads as the dominant cost. Context and teardown repeatedly compute code masks and item censuses, while ttbr0 repeatedly scans function bodies and instruction-install inventories. Those parsers are untouched per scope. No parsing-cost reduction is claimed.
 
-Background load: `uptime` during baseline context reported 4.40/2.03/2.31, then during fixed context 2.78/2.30/2.36; `ps -axo pid,etime,%cpu,command` sample showed context at ~499% CPU and no competing rustc process. Main agent reports a ~1.2s fixture-suite proof briefly overlapped baseline plus editing, but no kernel builds. No claim of isolated/idle-host measurement.
+Background load: `uptime` during baseline context reported 4.40/2.03/2.31, then during fixed context 2.78/2.30/2.36; `ps -axo pid,etime,%cpu,command` sample showed context at ~499% CPU and no competing rustc process. The fixture-suite proof's own `finished in 1.19s` line (`/tmp/890-proof/fixture-fixed.log`) shows it briefly overlapped baseline plus editing, but no kernel builds. No claim of isolated/idle-host measurement.
 
 One initial post-edit context compile failed with E0308/E0277 due to owned String/PathBuf call sites receiving cached references. Fixed by source.clone() and comparing borrowed PathBuf; failure log retained at `/tmp/890-profile/context_restore_structure.compile-failure.log`. No successful command was repeated to improve timing.
 
@@ -332,6 +332,7 @@ mutation context) were corrected before committing. Final invocations:
 ```text
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/890-proof/commit-message.txt -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/890-proof/commit-message-f8d2b7d4.txt -> exit 0
 ```
 
 ## 2026-09-06 Astra fix pass: P-1, P-2, P-12a mutation evidence
