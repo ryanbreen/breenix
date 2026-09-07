@@ -10200,6 +10200,14 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 90000,
         stage: TestStage::PostScheduler,
     },
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "exit_kick_budget_anchor_isolation",
+        func: crate::tracing::providers::teardown::exit_kick_budget_anchor_isolation_test,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000,
+        stage: TestStage::PostScheduler,
+    },
     #[cfg(feature = "receipt_drop_test")]
     TestDef {
         name: "retirement_receipt_drop_gate",

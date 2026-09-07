@@ -1,0 +1,72 @@
+fix(522,c5,review-r1): close V-1 watchdog tightness and V-3 harness-timeout overrun
+
+Review round 1 of #522 C5 (docs/planning/green-program/tracing/522-C5-2026-09-07.md)
+returned four findings; this commit closes the two majors in kernel code
+plus one minor breadcrumb, and updates the ratchets in the same commit as
+the source they pin, per this repository's own convention.
+
+V-1: the initialization watchdog (kernel/src/test_framework/mod.rs,
+INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS) was anchored at kernel entry
+at the same magnitude as the SMP bring-up wait's own local absolute ceiling
+(main_aarch64.rs, SMP_ONLINE_ABSOLUTE_CEILING_SECONDS), which is timed from
+that wait's own later `start`. Because the watchdog's anchor is strictly
+earlier, a same-magnitude watchdog reaches its deadline first whenever real
+initialization work makes the gap between the two anchors nonzero, which it
+does on any real boot with nonzero pre-wait init time -- the local ceiling's own "absolute ceiling"
+diagnostic was unreachable, contradicting the "not a tighter bound" claim
+published alongside it. Fixed by computing the watchdog's real per-boot
+ceiling in main_aarch64.rs as max(published floor, local ceiling + measured
+gap + margin), where the gap is sampled fresh via rdtsc on the current
+boot; by construction the watchdog cannot undercut the local ceiling's window. A new
+INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS = 3 constant keeps the
+watchdog's deadline strictly later than the local ceiling's, not tied with
+it. The fired-message now reports the real computed ceiling instead of the
+raw floor constant.
+
+V-3: the pre-fix pair (40,000ms watchdog + 60,000ms test-phase budget)
+summed to 100,000ms, past the strict harness's 90,000ms hard timeout
+(docker/qemu/run-aarch64-boot-test-strict.sh). TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS
+could not safely shrink: the same budget is also spent, after the real gate,
+by exit_kick_worker_window_isolation_test (~39s) and
+exit_kick_budget_anchor_isolation_test (~11s), so a healthy boot already
+uses ~52s of the 60s. SMP_ONLINE_ABSOLUTE_CEILING_SECONDS and
+SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS (pre-existing, not previously touched
+by this lane) were halved instead (40/20 to 15/10, preserving their 2:1
+ratio), still 1.5x/1.875x over the documented realistic worst case, and
+INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS's published floor was reduced
+40,000 to 20,000ms -- V-1's fix is what makes that reduction safe. The pair
+now sums to 80,000ms, ten seconds inside the hard timeout.
+
+V-8: exit_kick_worker_window_isolation_test is a second, deeper consumer of
+the same test-phase budget the real gate spends, but reported no
+budget_anchor breadcrumb on entry. It now reports one, mirroring the real
+gate's format.
+
+V-6 (tests/teardown_structure.rs only, no kernel change): the pre-existing
+headroom ratchet compared two u64 literals bound in its own body rather than
+reading the real source constants. A new parse_u64_const helper reads real
+`const NAME: u64 = ...;` values out of source text, and two new tests use it.
+
+Four new tests close the four findings, one per finding
+(fix_pass_v1_watchdog_not_tighter_than_local_ceiling,
+fix_pass_v3_watchdog_and_test_phase_budgets_fit_under_hard_timeout,
+fix_pass_v6_headroom_ratchet_reads_real_values,
+fix_pass_v8_worker_isolation_reports_budget_anchor_age), each proven
+non-vacuous by a targeted mutation that reddens it, reverted. The
+pre-existing test_phase_budget_is_anchored_at_test_phase_entry mutation
+(re-anchor at kernel entry) was re-run at these bytes and still reddens.
+Two pre-existing literal-string pins of the old 40/20-second SMP constants
+(aarch64_exit_kick_waits_are_progress_bounded) were updated in this same
+commit.
+
+Verification: scripts/run-structure-tests.sh teardown_structure, 100
+passed, 0 failed (also six other structure-test files that read the same
+three source files, all green individually). One aarch64 strict boot
+(docker/qemu/run-aarch64-boot-test-strict.sh 1), exit 0,
+[GATE_PREFLIGHT:structure_suites=62/62], boot ended_by=scored_pass with no
+[smp] Timeout waiting for CPUs line and no exit_kick_gate:.*unresponsive
+failure. python3 scripts/claim-lint.py: exit 0. No x86 code moved, no beast
+leg run. Full evidence and narrative in
+docs/planning/green-program/tracing/522-C5-2026-09-07.md (separate commit).
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

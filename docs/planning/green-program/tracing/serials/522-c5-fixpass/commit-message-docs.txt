@@ -1,0 +1,24 @@
+docs(522,c5,review-r1): round doc fix-pass section, polling-allowlist correction, evidence
+
+Appends a "Fix pass (review round 1)" section to
+docs/planning/green-program/tracing/522-C5-2026-09-07.md closing V-1, V-3,
+V-6, V-8 (see the paired kernel/tests commit for the source change), fixes
+the false "not a tighter bound" / "no sooner than before" claims and the
+V-6/V-8/V-3 overstatements the original round doc made in place, and
+records a correction to already-pushed commit 5ff98320's own body (not by
+rewriting history, per this repository's dfa6e21c precedent).
+
+Also updates docs/polling-allowlist.md's P17 and P20 entries, which still
+described the pre-#522-C5 single 65-second shared clock and had not been
+updated when that round separated it into two -- an unrelated staleness this
+fix pass's own review surfaced while reading the same mechanism.
+
+Evidence: docs/planning/green-program/tracing/serials/522-c5-fixpass/
+(claim-lint-tree.txt, mutation transcripts for V-1/V-3/V-8 and the
+pre-existing anchoring mutation, structure-tests-final.txt, one strict
+aarch64 boot's serial and gate_boot_facts).
+
+Verification: python3 scripts/claim-lint.py, exit 0, whole tree. No kernel
+code, gate logic, or test assertions changed in this commit.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

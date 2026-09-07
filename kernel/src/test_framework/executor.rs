@@ -320,6 +320,14 @@ pub fn advance_stage_marker_only(stage: TestStage) {
 /// tests complete. Later stages run via advance_to_stage().
 /// Returns the total number of failed tests.
 pub fn run_all_tests() -> u32 {
+    // Test-phase entry. The boot-test phase's liveness watchdogs are anchored
+    // here, not at kernel entry, so initialization time cannot consume the
+    // per-gate windows the test phase promises. The separately named
+    // initialization watchdog bounds pre-test CPU bring-up.
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+    super::begin_test_phase_liveness_budget(
+        crate::arch_impl::aarch64::timer::rdtsc_serialized(),
+    );
     crate::task::strand_oracle::start();
     crate::task::ret_zero_pc_oracle::start();
     crate::task::percpu_stack_oracle::start();

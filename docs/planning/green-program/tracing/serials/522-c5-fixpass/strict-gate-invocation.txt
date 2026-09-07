@@ -1,0 +1,47 @@
+[GATE_PREFLIGHT:structure_suites=62/62:critical_path_lines=260:pinned=120]
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   5f15e084060dbc38ee20a1f3731db27347af3f9b1817c8ce99d0ad396a3a5136
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h61ecf85f7d566472E
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/target/ext2-aarch64.img
+Iterations: 1
+Requirement: 100% success rate (all 1 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 41894 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788780673085-1788780732379:qemu_at_start=0:load_at_start=7.07:qemu_at_end=1:load_at_end=4.84:qemu_cpu_s=91.36:guest_uptime_ms=58319:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 1
+Successes: 1
+Failures: 0
+Success rate: 100%
+Duration: 67s
+
+=========================================
+PASS: 1/1 boots succeeded
+=========================================
