@@ -126,6 +126,10 @@ fn assert_gate(source: &str) {
                 .ends_with("' \"$OUTPUT_DIR/serial_user.txt\""),
         "gate assertions must be bare"
     );
+    assert!(
+        code.contains("END { exit !(started == 1 && passed == 1 && failed == 0) }"),
+        "gate predicate must require exactly one start, one pass, zero fail"
+    );
 }
 
 #[test]
@@ -225,6 +229,30 @@ fn wrapping_gate_in_if_would_be_caught() {
     assert_gate(&source);
     let block = gate_block(&source);
     assert_gate(&source.replace(block, &format!("if true; then\n{block}\nfi\n")));
+}
+
+#[test]
+#[should_panic(
+    expected = "gate predicate must require exactly one start, one pass, zero fail"
+)]
+fn weakening_started_equality_would_be_caught() {
+    let source = read(SCRIPT);
+    assert_gate(&source);
+    let block = gate_block(&source);
+    let mutated = block.replace("started == 1", "started >= 1");
+    assert_gate(&source.replace(block, &mutated));
+}
+
+#[test]
+#[should_panic(
+    expected = "gate predicate must require exactly one start, one pass, zero fail"
+)]
+fn weakening_failed_equality_would_be_caught() {
+    let source = read(SCRIPT);
+    assert_gate(&source);
+    let block = gate_block(&source);
+    let mutated = block.replace("failed == 0", "failed <= 1");
+    assert_gate(&source.replace(block, &mutated));
 }
 
 fn unique_temp_dir(tag: &str) -> PathBuf {

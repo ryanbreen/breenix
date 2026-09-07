@@ -563,3 +563,317 @@ The documentation is committed separately. Replacing a remotely published WIP
 requires a non-fast-forward branch update; the final push uses an explicit
 lease on `e3aa05972d3aad6cdfa617c8522fb29e431d12ef` to avoid overwriting any
 unexpected remote work.
+
+## Astra fix pass — F3 closed, 2026-09-06
+
+Review-pass finding F3, quoted verbatim from
+`/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/slot1/REVIEW.md`:
+
+```text
+F3 (minor, code). tests/tracing_provider_gate_structure.rs:103-186.
+Claim: The 17-test structure suite pins the presence of the gate's marker
+strings and its bare-assertion shape (no `if`), but does not pin the awk
+predicate's own comparison operators, so a regression in the comparison
+logic itself would not be caught by this suite even though the real script
+currently behaves correctly.
+Evidence: in-memory mutating the extracted awk block's `started == 1` to
+`started >= 1` and replaying all 5 existing run_oracle fixtures
+(baseline/positive/duplicate-pass/missing-start/fail-alongside-pass) against
+both the original and mutated predicate gave identical (correct) results
+under the mutation — none of the fixtures exercises a duplicate-START
+serial. Separately confirmed the actual current (unmutated) script correctly
+rejects a duplicate-START serial today (exit 1). No live defect: only a
+coverage gap in the test suite.
+```
+
+The fifth `assert!` in `assert_gate` pins the exact predicate substring.
+The two new `should_panic` tests exercise the started and failed operator
+mutations in memory. Actual diff:
+
+```bash
+git diff -- tests/tracing_provider_gate_structure.rs
+```
+
+```diff
+diff --git a/tests/tracing_provider_gate_structure.rs b/tests/tracing_provider_gate_structure.rs
+index 3a9190dc..27853cb6 100644
+--- a/tests/tracing_provider_gate_structure.rs
++++ b/tests/tracing_provider_gate_structure.rs
+@@ -126,6 +126,10 @@ fn assert_gate(source: &str) {
+                 .ends_with("' \"$OUTPUT_DIR/serial_user.txt\""),
+         "gate assertions must be bare"
+     );
++    assert!(
++        code.contains("END { exit !(started == 1 && passed == 1 && failed == 0) }"),
++        "gate predicate must require exactly one start, one pass, zero fail"
++    );
+ }
+
+ #[test]
+@@ -227,6 +231,30 @@ fn wrapping_gate_in_if_would_be_caught() {
+     assert_gate(&source.replace(block, &format!("if true; then\n{block}\nfi\n")));
+ }
+
++#[test]
++#[should_panic(
++    expected = "gate predicate must require exactly one start, one pass, zero fail"
++)]
++fn weakening_started_equality_would_be_caught() {
++    let source = read(SCRIPT);
++    assert_gate(&source);
++    let block = gate_block(&source);
++    let mutated = block.replace("started == 1", "started >= 1");
++    assert_gate(&source.replace(block, &mutated));
++}
++
++#[test]
++#[should_panic(
++    expected = "gate predicate must require exactly one start, one pass, zero fail"
++)]
++fn weakening_failed_equality_would_be_caught() {
++    let source = read(SCRIPT);
++    assert_gate(&source);
++    let block = gate_block(&source);
++    let mutated = block.replace("failed == 0", "failed <= 1");
++    assert_gate(&source.replace(block, &mutated));
++}
++
+ fn unique_temp_dir(tag: &str) -> PathBuf {
+     let path = std::env::temp_dir().join(format!(
+         "tracing-provider-{tag}-{}-{}",
+```
+
+The recorded baseline above is 17 tests; this pass runs 19 (17 → 19).
+
+```bash
+bash scripts/run-structure-tests.sh tracing_provider_gate_structure
+```
+
+```text
+== compiling tracing_provider_gate_structure ==
+== running tracing_provider_gate_structure  ==
+
+running 19 tests
+test gate_requires_provider_markers_from_com1_with_bare_assertions ... ok
+test removing_provider_gate_block_would_be_caught - should panic ... ok
+test weakening_started_equality_would_be_caught - should panic ... ok
+test printing_pass_unconditionally_would_be_caught - should panic ... ok
+test wrapper_uses_shipping_cfg_and_result_dependent_markers ... ok
+test weakening_failed_equality_would_be_caught - should panic ... ok
+test wrapping_gate_in_if_would_be_caught - should panic ... ok
+test removing_direct_call_would_be_caught - should panic ... ok
+test direct_call_is_after_ring_span_before_next_disable_with_shipping_cfg ... ok
+test registry_dispatches_provider_only_on_aarch64 ... ok
+test moving_direct_call_past_nearest_disable_would_be_caught - should panic ... ok
+test restoring_arch_any_duplicate_registration_would_be_caught - should panic ... ok
+test gating_direct_call_on_staged_executor_would_be_caught - should panic ... ok
+test gating_wrapper_on_staged_executor_would_be_caught - should panic ... ok
+test exactly_one_start_and_pass_is_accepted ... ok
+test archived_baseline_without_provider_markers_is_rejected ... ok
+test fail_alongside_pass_is_rejected ... ok
+test duplicate_pass_is_rejected ... ok
+test missing_start_is_rejected ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+```
+
+Full discovery command (exit 0):
+
+```bash
+(cd tests && find . -maxdepth 1 -type f -name '*_structure.rs' -print | sed 's|^\./||; s/\.rs$//' | sort) \
+  | while read -r stem; do
+      echo "=== $stem ===";
+      bash scripts/run-structure-tests.sh "$stem" || echo "RED: $stem";
+    done
+```
+
+Full stdout and stderr are saved at
+`/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/slot1/evidence/fixpass-all-structure.txt`.
+The following are the actual suite headers and result lines, in output order:
+
+```text
+=== aarch64_testing_profile_structure ===
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== block_request_lifetime_structure ===
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+=== capture_bxcap_schema_structure ===
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== capture_path_lock_free_structure ===
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+=== context_restore_structure ===
+test result: ok. 97 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 55.59s
+=== coreproof_component_h_structure ===
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== coreproof_coverage_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== coreproof_mutation_register_structure ===
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+=== coreproof_sites_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== critical_path_logging_census_structure ===
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+=== degenerate_transfer_fd_validation_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== dispatch_fact_census_structure ===
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== dispatch_path_lock_free_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== dispatch_strand_census_structure ===
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== dma_and_log_sink_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== entry_point_df_structure ===
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+=== exec_lock_order_structure ===
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+=== exit_tally_structure ===
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+=== ext2_disk_size_structure ===
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== ext2_lock_structure ===
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== fcntl_pm_contention_gate_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== fork_lock_order_structure ===
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== gate_boot_facts_pipefail_structure ===
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+=== gate_boot_facts_structure ===
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== gate_capture_drain_structure ===
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+=== gate_structure_preflight_wiring_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== green_program_envelope_structure ===
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== lockup_capture_guard_structure ===
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.17s
+=== loopback_pump_structure ===
+test result: ok. 104 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.28s
+=== masked_binary_load_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== mmap_floor_structure ===
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+=== net_lock_structure ===
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+=== parallels_kill_by_name_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== poll_tcp_gate_wiring_structure ===
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== preempt_bracket_structure ===
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== qemu_host_lock_structure ===
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== qemu_kill_by_name_structure ===
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+=== ring_span_report_site_structure ===
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== serial_line_atomicity_structure ===
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+=== signal_eintr_predicate_structure ===
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== strand_handoff_structure ===
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+=== syscall_return_register_structure ===
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+=== teardown_structure ===
+test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.57s
+=== terminal_edge_capture_structure ===
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+=== timer_wake_dispatch_structure ===
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== trace_ring_depth_structure ===
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== tracing_provider_gate_structure ===
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+=== ttbr0_shadow_reconciliation_structure ===
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.71s
+=== tty_irq_fg_structure ===
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.80s
+=== tty_irq_pm_structure ===
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+=== tty_oracle_structure ===
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== x86_smp_enum_structure ===
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+```
+
+Parsed tally:
+
+```text
+52 discovered suites passed; 0 RED; 792 tests passed; 0 tests failed
+```
+
+Compared with the recorded baseline of 52 suites and 790 tests, the two
+new tests account for the increase to 792; the suite count stays 52.
+
+Scope evidence before this append:
+
+```bash
+git status --short --branch
+git diff --stat
+```
+
+```text
+## tracing/x86-provider-gate...origin/tracing/x86-provider-gate
+ M tests/tracing_provider_gate_structure.rs
+ tests/tracing_provider_gate_structure.rs | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+```
+
+No files under `kernel/src/`, `kernel/Cargo.toml`, or
+`docker/qemu/run-x86-boot-tests.sh` changed in this pass. Therefore the
+aarch64 kernel was not rebuilt, the aarch64 strict boot gate was not re-run,
+and the beast x86 gates were not re-run. This closes only the F3 test-suite
+coverage gap; it does not fix a kernel or script defect.
+
+## Not claimed
+
+- This addendum does not claim a live defect existed in `docker/qemu/run-x86-boot-tests.sh`; F3 reports a correctly behaving script and a coverage gap.
+- This addendum does not claim to close F1, F2, F4, or F5; those are out of scope.
+- This addendum does not claim any kernel or aarch64/x86 gate was re-run.
+
+### Claim-lint invocation record for this addendum
+
+The first tree check returned exit 1 on the final clause in the
+Not claimed list. The sentence now attributes the correctly behaving script
+and coverage gap to F3. The initial output was:
+
+```text
+docs/planning/green-program/tracing/X86-PROVIDER-GATE-2026-09-06.md:833: [universal-claim] - This addendum does not claim a live defect existed in `docker/qemu/run-x86-boot-tests.sh`; none did.
+    -> unquantified absolute ('none') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 1 finding(s) across 5 file(s) [changed hunks vs 5bfc7077af7d]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 164 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+```
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 1 (initial wording)
+claim-lint: python3 scripts/claim-lint.py -> exit 0 (revised wording)
+claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/slot1-fixpass-commit-msg.txt -> exit 0
+```
+
+Final invocation output:
+
+```text
+claim-lint: clean (5 file(s) checked, changed hunks vs 5bfc7077af7d).
+claim-lint: 164 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: clean commit message (../../../../../../../../tmp/slot1-fixpass-commit-msg.txt).
+```
+
+The evidence-record prose also triggered a tree check (exit 1), repeated
+once to capture its output; both invocations used `python3 scripts/claim-lint.py`.
+That prose was revised to identify the clause without repeating its wording.
+
+```text
+docs/planning/green-program/tracing/X86-PROVIDER-GATE-2026-09-06.md:839: [universal-claim] The first tree check returned exit 1 on the phrase "none did" in the Not claimed list. The sentence now attributes the correctly behaving script and coverage gap to F3. The initial output was:
+    -> unquantified absolute ('none') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 1 finding(s) across 5 file(s) [changed hunks vs 5bfc7077af7d]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 164 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+```
+
+`git diff --check` initially returned exit 2 for the two blank context lines
+in the quoted diff (lines 611 and 616, "trailing whitespace"). Their single
+context spaces were removed from this Markdown quotation.
