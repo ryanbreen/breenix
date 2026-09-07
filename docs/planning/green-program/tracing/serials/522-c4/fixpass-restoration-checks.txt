@@ -1,0 +1,6 @@
+W-1 single-line mutation restoration: byte-identical to pre-mutation fixed source.
+W-7 single-line mutation restoration: byte-identical to pre-mutation fixed source.
+Fixed source SHA256: 25447dda97d281b8ed91c41a22c73a8f24cb8e89fe3131b209a784225503f8e0
+Isolation fixture and remaining suffix: byte-identical to baseline HEAD 0a8bf7679afaac704598578ac54ca7e01173b7af.
+Kernel prefix before exit_kick_protocol_gate_test: byte-identical to baseline HEAD.
+Both mutation restorations were followed by the whole teardown structure suite: exit 0, 94 passed, 0 failed.

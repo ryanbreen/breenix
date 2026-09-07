@@ -1,0 +1,13 @@
+docs(522,c4): record boot proofs and repair fixture coexistence
+
+Archive the C4 round, mutation transcripts, strict and production boot
+proofs, and per-worker isolation summaries. Document the failed strict
+run and its fixture scheduling repair: use timer sleeps between worker
+updates so the concurrent strand oracle can exercise idle handoffs.
+Update the strict poll-loop test anchor from the old 12-iteration default
+to 60 without changing its crash-or-complete-score assertions.
+
+C4 only. C5 remains outside this work; C6 belongs to the separately merged
+#922 lane and its 522-F5-C6 round document. No PR is opened here.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
