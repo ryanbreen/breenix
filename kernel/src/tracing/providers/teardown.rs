@@ -541,7 +541,10 @@ counter!(
 counter!(PT_SHADOW_ROOT_CLEARED, "Saved x86 process roots cleared");
 counter!(CLONE_ADMISSION_ADMITTED, "Clone admissions accepted");
 counter!(CLONE_ADMISSION_REFUSED, "Clone admissions refused");
-counter!(CLONE_INIT_GROUP_REFUSED, "CLONE_VM joins refused into the designated init group");
+counter!(
+    CLONE_INIT_GROUP_REFUSED,
+    "CLONE_VM joins refused into the designated init group"
+);
 counter!(
     INIT_ORDINARY_PID_ALLOCATIONS,
     "Ordinary process IDs allocated from next_pid"
@@ -1653,9 +1656,7 @@ fn retirement_oracle_clock_now() -> u64 {
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 fn retirement_oracle_clock_delta(milliseconds: u64) -> u64 {
-    crate::arch_impl::aarch64::timer::frequency_hz()
-        .saturating_mul(milliseconds)
-        / 1000
+    crate::arch_impl::aarch64::timer::frequency_hz().saturating_mul(milliseconds) / 1000
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
@@ -1913,18 +1914,11 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 return TestResult::Fail("process manager unavailable during pairing fork");
             };
             #[cfg(target_arch = "aarch64")]
-            let fork_result = manager.fork_process_aarch64(
-                parent_pid,
-                parent_context.clone(),
-                child_page_table,
-            );
+            let fork_result =
+                manager.fork_process_aarch64(parent_pid, parent_context.clone(), child_page_table);
             #[cfg(target_arch = "x86_64")]
-            let fork_result = manager.fork_process_with_page_table(
-                parent_pid,
-                None,
-                None,
-                child_page_table,
-            );
+            let fork_result =
+                manager.fork_process_with_page_table(parent_pid, None, None, child_page_table);
             let child_pid = match fork_result {
                 Ok(pid) => pid,
                 Err(_) => return TestResult::Fail("pairing fork failed"),
@@ -1977,16 +1971,16 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 parent.children.retain(|pid| *pid != child.0);
             }
         }
-    // #813: PM scope ended; release removed rows before further observations.
-    retired_rows.clear();
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
         core::mem::drop(child.2);
     }
 
     let quiesce_deadline = retirement_oracle_quiesce_deadline();
     loop {
         crate::task::scheduler::nudge_retirement_grace_for_test();
-        let boundary_deadline = retirement_oracle_clock_now()
-            .saturating_add(retirement_oracle_clock_delta(1));
+        let boundary_deadline =
+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
         while retirement_oracle_clock_now() < boundary_deadline {
             core::hint::spin_loop();
         }
@@ -2044,8 +2038,8 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         .map(|pid| boot_test_pid_counts(*pid).kernel_stack_slot_returns)
         .sum::<u64>();
     #[cfg(target_arch = "x86_64")]
-    let cohort_recorded = expected_tables * pairing_child_pids.len() as u64
-        + expected_pending_old_tables;
+    let cohort_recorded =
+        expected_tables * pairing_child_pids.len() as u64 + expected_pending_old_tables;
     #[cfg(target_arch = "x86_64")]
     let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;
     #[cfg(target_arch = "aarch64")]
@@ -2263,8 +2257,8 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
             != (false, false)
         {
             crate::task::scheduler::nudge_retirement_grace_for_test();
-            let boundary_deadline = retirement_oracle_clock_now()
-                .saturating_add(retirement_oracle_clock_delta(1));
+            let boundary_deadline =
+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
             while retirement_oracle_clock_now() < boundary_deadline {
                 core::hint::spin_loop();
             }
@@ -2273,8 +2267,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
                 break;
             }
         }
-        if crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
-            != (false, false)
+        if crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64()) != (false, false)
         {
             return TestResult::Fail("pairing parent deferred cleanup did not quiesce");
         }
@@ -2317,9 +2310,9 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 /// on it.
 #[cfg(feature = "boot_tests")]
 pub fn tombstone_join_oracle_test() -> crate::test_framework::registry::TestResult {
-    use crate::test_framework::registry::TestResult;
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
+    use crate::test_framework::registry::TestResult;
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
 
@@ -2921,8 +2914,8 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
                 parent.children.retain(|pid| *pid != child.0);
             }
         }
-    // #813: PM scope ended; release removed rows before further observations.
-    retired_rows.clear();
+        // #813: PM scope ended; release removed rows before further observations.
+        retired_rows.clear();
     }
 
     let quiesce_deadline = retirement_oracle_quiesce_deadline();
@@ -3029,13 +3022,13 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
         if counts.table_frames_recorded
             != (EXEC_COHORT_SUPERSEDED_PER_CHILD as u64 + 1) * expected_tables
         {
-            return TestResult::Fail(
-                "exec cohort per-PID anti-vacuity table count was not exact",
-            );
+            return TestResult::Fail("exec cohort per-PID anti-vacuity table count was not exact");
         }
     }
     if roots_retired_delta != cohort_roots {
-        return TestResult::Fail("exec cohort global root retirement did not match the per-PID sum");
+        return TestResult::Fail(
+            "exec cohort global root retirement did not match the per-PID sum",
+        );
     }
     if table_frames_returned_delta != cohort_returned {
         return TestResult::Fail("exec cohort global table return did not match the per-PID sum");
@@ -4718,10 +4711,8 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             return TestResult::Fail("process manager unavailable for init designation A1");
         };
         #[cfg(target_arch = "x86_64")]
-        let construction = manager.create_init_process(
-            alloc::string::String::from("init_oracle_a1"),
-            &image,
-        );
+        let construction =
+            manager.create_init_process(alloc::string::String::from("init_oracle_a1"), &image);
         #[cfg(target_arch = "aarch64")]
         let construction = {
             let argv = [b"/sbin/init".as_slice()];
@@ -4758,10 +4749,8 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             return TestResult::Fail("process manager unavailable for init designation A2");
         };
         #[cfg(target_arch = "x86_64")]
-        let construction = manager.create_init_process(
-            alloc::string::String::from("init_oracle_a2"),
-            &image,
-        );
+        let construction =
+            manager.create_init_process(alloc::string::String::from("init_oracle_a2"), &image);
         #[cfg(target_arch = "aarch64")]
         let construction = {
             let argv = [b"/sbin/init".as_slice()];
@@ -4811,15 +4800,13 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         LEAF_MAPPINGS_RECORDED.aggregate() - construct_leaf_recorded_before;
     let construct_leaf_released =
         LEAF_MAPPINGS_RELEASED.aggregate() - construct_leaf_released_before;
-    let construct_leaf_returned =
-        LEAF_FRAMES_RETURNED.aggregate() - construct_leaf_returned_before;
+    let construct_leaf_returned = LEAF_FRAMES_RETURNED.aggregate() - construct_leaf_returned_before;
     let construct_tables_recorded =
         PT_TABLE_FRAMES_RECORDED.aggregate() - construct_tables_recorded_before;
     let construct_tables_returned =
         PT_TABLE_FRAMES_RETURNED.aggregate() - construct_tables_returned_before;
     let construct_roots_retired = PT_ROOTS_RETIRED.aggregate() - construct_roots_retired_before;
-    let construct_mid_retire =
-        PT_ROOT_DROPPED_MID_RETIRE.aggregate() - construct_mid_retire_before;
+    let construct_mid_retire = PT_ROOT_DROPPED_MID_RETIRE.aggregate() - construct_mid_retire_before;
     let construct_frames_lost = PT_RETIRE_FRAMES_LOST.aggregate() - construct_frames_lost_before;
     let construct_refusals = (FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate()
         - construct_live_refused_before)
@@ -4965,8 +4952,9 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
                 match manager.designate_init(ticket) {
                     Ok(publication) => {
                         if manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
-                            first_failure =
-                                Some("designated init row reached the run queue before publication");
+                            first_failure = Some(
+                                "designated init row reached the run queue before publication",
+                            );
                         }
                         accepted += 1;
                         if publication.pid() != reserved && first_failure.is_none() {
@@ -4974,12 +4962,14 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
                                 Some("init designation A6 publication named the wrong PID");
                         }
                         if manager.designated_init() != Some(reserved) && first_failure.is_none() {
-                            first_failure = Some("init designation A6 did not install the authority");
+                            first_failure =
+                                Some("init designation A6 did not install the authority");
                         }
                         let thread = manager.publish_init(publication);
                         published += 1;
                         if !manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
-                            first_failure = Some("init designation A6 publication missed the ready queue");
+                            first_failure =
+                                Some("init designation A6 publication missed the ready queue");
                         }
                         drop(thread);
                     }
@@ -5048,15 +5038,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         child.parent = Some(parent_pid);
         manager.insert_process(parent_pid, parent);
         manager.insert_process(child_pid, child);
-        if !manager.reparent_children_to_init(parent_pid, &[child_pid])
-            && first_failure.is_none()
-        {
+        if !manager.reparent_children_to_init(parent_pid, &[child_pid]) && first_failure.is_none() {
             first_failure = Some("init designation A8 reparent operation reported no change");
         }
-        if manager
-            .get_process(child_pid)
-            .and_then(|row| row.parent)
-            != Some(reserved)
+        if manager.get_process(child_pid).and_then(|row| row.parent) != Some(reserved)
             && first_failure.is_none()
         {
             first_failure = Some("init designation A8 did not reparent the child");
@@ -5189,8 +5174,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
     let refused_delta = init_designation_refused().saturating_sub(refused_before);
     let retired_delta = init_designation_retired().saturating_sub(retired_before);
     let publications_delta = init_publications().saturating_sub(publications_before);
-    let reparent_children_delta =
-        init_reparent_children().saturating_sub(reparent_children_before);
+    let reparent_children_delta = init_reparent_children().saturating_sub(reparent_children_before);
     let reparent_skipped_delta =
         init_reparent_skipped_no_init().saturating_sub(reparent_skipped_before);
     let ordinary_allocated =
@@ -5382,10 +5366,7 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
         let mut none_probes = 0u64;
         let mut none_refusals = 0u64;
         for derived_tg_id in [crate::process::RESERVED_INIT_PID, other.as_u64(), u64::MAX] {
-            let refused = crate::syscall::clone::refuses_init_group_clone(
-                manager,
-                derived_tg_id,
-            );
+            let refused = crate::syscall::clone::refuses_init_group_clone(manager, derived_tg_id);
             none_probes += 1;
             none_refusals += u64::from(refused);
         }
@@ -6162,8 +6143,7 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
     // process-manager guard held by this CPU.
     let creation_counters_before = crate::task::scheduler::creation_lock_order_counters();
     let guard = crate::process::manager();
-    let injection_saw_pm_held =
-        crate::task::scheduler::probe_publication_lock_order_injection();
+    let injection_saw_pm_held = crate::task::scheduler::probe_publication_lock_order_injection();
     drop(guard);
     let creation_counters = crate::task::scheduler::creation_lock_order_counters();
     let injected_delta = creation_counters
@@ -6636,10 +6616,7 @@ pub fn run_x86_init_designation_gate() {
     crate::serial_println!("[TEST:process:init_designation_oracle:START]");
     let result = init_designation_oracle_test();
     if !result.is_pass() {
-        crate::serial_println!(
-            "[TEST:process:init_designation_oracle:FAIL:{:?}]",
-            result
-        );
+        crate::serial_println!("[TEST:process:init_designation_oracle:FAIL:{:?}]", result);
     }
     assert!(result.is_pass(), "x86 init designation oracle gate failed");
 }
@@ -6908,41 +6885,34 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             return Err(WaitFailureKind::CounterUnavailable);
         }
 
-        let first_progress_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                FIRST_PROGRESS_WINDOW_MILLISECONDS,
-            );
-        let no_progress_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                NO_PROGRESS_WINDOW_MILLISECONDS,
-            );
-        let absolute_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
-            );
-        let gate_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                GATE_CEILING_MILLISECONDS,
-            );
-        let test_phase_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
-            );
-        let re_kick_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                RESCHED_REKICK_INTERVAL_MILLISECONDS,
-            );
-        let breadcrumb_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                BREADCRUMB_INTERVAL_MILLISECONDS,
-            );
+        let first_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            FIRST_PROGRESS_WINDOW_MILLISECONDS,
+        );
+        let no_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            NO_PROGRESS_WINDOW_MILLISECONDS,
+        );
+        let absolute_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+        );
+        let gate_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            GATE_CEILING_MILLISECONDS,
+        );
+        let test_phase_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+        );
+        let re_kick_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            RESCHED_REKICK_INTERVAL_MILLISECONDS,
+        );
+        let breadcrumb_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            BREADCRUMB_INTERVAL_MILLISECONDS,
+        );
         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
         record_exit_kick_gate_watchdog_heartbeat();
         let mut last_advance = wait_start;
@@ -6967,7 +6937,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             }
             let no_progress_deadline_elapsed =
                 crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance, wait_start)
-                .saturating_add(no_progress_ticks);
+                    .saturating_add(no_progress_ticks);
             let progress_deadline_elapsed =
                 core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);
 
@@ -6992,10 +6962,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 failure = Some(WaitFailureKind::NoProgress);
             }
             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
-                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
-                    now,
-                    last_counter_sample,
-                );
+                let counter_delta =
+                    crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_counter_sample);
                 if counter_delta == 0 {
                     failure = Some(WaitFailureKind::CounterStall);
                 }
@@ -7052,9 +7020,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 };
             }
 
-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
-                >= re_kick_ticks
-            {
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick) >= re_kick_ticks {
                 for &cpu in kick_cpus {
                     crate::arch_impl::aarch64::gic::send_sgi(
                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
@@ -7134,41 +7100,34 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
             return Err((WaitFailureKind::CounterUnavailable, None));
         }
 
-        let first_progress_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                FIRST_PROGRESS_WINDOW_MILLISECONDS,
-            );
-        let no_progress_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                NO_PROGRESS_WINDOW_MILLISECONDS,
-            );
-        let absolute_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
-            );
-        let gate_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                GATE_CEILING_MILLISECONDS,
-            );
-        let test_phase_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
-            );
-        let re_kick_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                RESCHED_REKICK_INTERVAL_MILLISECONDS,
-            );
-        let breadcrumb_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                BREADCRUMB_INTERVAL_MILLISECONDS,
-            );
+        let first_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            FIRST_PROGRESS_WINDOW_MILLISECONDS,
+        );
+        let no_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            NO_PROGRESS_WINDOW_MILLISECONDS,
+        );
+        let absolute_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+        );
+        let gate_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            GATE_CEILING_MILLISECONDS,
+        );
+        let test_phase_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+        );
+        let re_kick_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            RESCHED_REKICK_INTERVAL_MILLISECONDS,
+        );
+        let breadcrumb_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            BREADCRUMB_INTERVAL_MILLISECONDS,
+        );
         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
         record_exit_kick_gate_watchdog_heartbeat();
         let mut last_advance = [wait_start; 3];
@@ -7197,8 +7156,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 }
                 let target_deadline = core::cmp::max(
                     first_progress_ticks,
-                    crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance[target], wait_start)
-                        .saturating_add(no_progress_ticks),
+                    crate::arch_impl::aarch64::timer::elapsed_ticks(
+                        last_advance[target],
+                        wait_start,
+                    )
+                    .saturating_add(no_progress_ticks),
                 );
                 // Completed targets no longer owe progress. `target_complete`
                 // must derive completeness from the same write the caller's
@@ -7207,7 +7169,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 // before it has actually contributed to that aggregate
                 // condition (#522 review finding W-1).
                 if !target_complete(target, progress_current.workers[target])
-                    && elapsed >= target_deadline && stalled_target.is_none()
+                    && elapsed >= target_deadline
+                    && stalled_target.is_none()
                 {
                     stalled_target = Some(target);
                     progress_deadline_elapsed = target_deadline;
@@ -7235,10 +7198,8 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 failure = Some(WaitFailureKind::NoProgress);
             }
             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
-                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
-                    now,
-                    last_counter_sample,
-                );
+                let counter_delta =
+                    crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_counter_sample);
                 if counter_delta == 0 {
                     failure = Some(WaitFailureKind::CounterStall);
                 }
@@ -7303,9 +7264,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 };
             }
 
-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
-                >= re_kick_ticks
-            {
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick) >= re_kick_ticks {
                 for &cpu in kick_cpus {
                     crate::arch_impl::aarch64::gic::send_sgi(
                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
@@ -7860,8 +7819,14 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                         .publisher_b_progress
                         .fetch_add(1, Ordering::Release);
                 }
-                let worker_bit = if pid == PID_A { WORKER_BIT_A } else { WORKER_BIT_B };
-                accounting.workers_ready_bits.fetch_or(worker_bit, Ordering::Release);
+                let worker_bit = if pid == PID_A {
+                    WORKER_BIT_A
+                } else {
+                    WORKER_BIT_B
+                };
+                accounting
+                    .workers_ready_bits
+                    .fetch_or(worker_bit, Ordering::Release);
                 while !accounting.start.load(Ordering::Acquire) {
                     if accounting.abort.load(Ordering::Acquire) {
                         return;
@@ -8052,14 +8017,11 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
                 if observer_accounting.abort.load(Ordering::Acquire) {
                     return;
                 }
-                let publishers_done = observer_accounting
-                    .publishers_done
-                    .load(Ordering::Acquire);
+                let publishers_done = observer_accounting.publishers_done.load(Ordering::Acquire);
                 if publishers_done > publishers_done_seen {
-                    observer_accounting.observer_progress.fetch_add(
-                        publishers_done - publishers_done_seen,
-                        Ordering::Release,
-                    );
+                    observer_accounting
+                        .observer_progress
+                        .fetch_add(publishers_done - publishers_done_seen, Ordering::Release);
                     publishers_done_seen = publishers_done;
                 }
                 if publishers_done_seen == 2 {
@@ -8127,13 +8089,24 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
 
     if let Err((failure, target)) = spin_with_resched_workers(
         "workers_ready",
-        || accounting.workers_ready_bits.load(Ordering::Acquire).count_ones() as u64,
+        || {
+            accounting
+                .workers_ready_bits
+                .load(Ordering::Acquire)
+                .count_ones() as u64
+        },
         |value| value == 3,
         3,
         [
-            ("worker_1", &|| accounting.publisher_a_progress.load(Ordering::Acquire)),
-            ("worker_2", &|| accounting.publisher_b_progress.load(Ordering::Acquire)),
-            ("worker_3", &|| accounting.observer_progress.load(Ordering::Acquire)),
+            ("worker_1", &|| {
+                accounting.publisher_a_progress.load(Ordering::Acquire)
+            }),
+            ("worker_2", &|| {
+                accounting.publisher_b_progress.load(Ordering::Acquire)
+            }),
+            ("worker_3", &|| {
+                accounting.observer_progress.load(Ordering::Acquire)
+            }),
         ],
         |target, _| accounting.workers_ready_bits.load(Ordering::Acquire) & (1 << target) != 0,
         &worker_cpus,
@@ -8448,41 +8421,34 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
             return Err(WaitFailureKind::CounterUnavailable);
         }
 
-        let first_progress_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                FIRST_PROGRESS_WINDOW_MILLISECONDS,
-            );
-        let no_progress_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                NO_PROGRESS_WINDOW_MILLISECONDS,
-            );
-        let absolute_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
-            );
-        let gate_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                GATE_CEILING_MILLISECONDS,
-            );
-        let test_phase_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
-            );
-        let re_kick_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                RESCHED_REKICK_INTERVAL_MILLISECONDS,
-            );
-        let breadcrumb_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                BREADCRUMB_INTERVAL_MILLISECONDS,
-            );
+        let first_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            FIRST_PROGRESS_WINDOW_MILLISECONDS,
+        );
+        let no_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            NO_PROGRESS_WINDOW_MILLISECONDS,
+        );
+        let absolute_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+        );
+        let gate_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            GATE_CEILING_MILLISECONDS,
+        );
+        let test_phase_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+        );
+        let re_kick_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            RESCHED_REKICK_INTERVAL_MILLISECONDS,
+        );
+        let breadcrumb_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            BREADCRUMB_INTERVAL_MILLISECONDS,
+        );
         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
         record_exit_kick_gate_watchdog_heartbeat();
         let mut last_advance = wait_start;
@@ -8507,7 +8473,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
             }
             let no_progress_deadline_elapsed =
                 crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance, wait_start)
-                .saturating_add(no_progress_ticks);
+                    .saturating_add(no_progress_ticks);
             let progress_deadline_elapsed =
                 core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);
 
@@ -8532,10 +8498,8 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 failure = Some(WaitFailureKind::NoProgress);
             }
             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
-                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
-                    now,
-                    last_counter_sample,
-                );
+                let counter_delta =
+                    crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_counter_sample);
                 if counter_delta == 0 {
                     failure = Some(WaitFailureKind::CounterStall);
                 }
@@ -8592,9 +8556,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 };
             }
 
-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
-                >= re_kick_ticks
-            {
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick) >= re_kick_ticks {
                 for &cpu in kick_cpus {
                     crate::arch_impl::aarch64::gic::send_sgi(
                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
@@ -8674,41 +8636,34 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
             return Err((WaitFailureKind::CounterUnavailable, None));
         }
 
-        let first_progress_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                FIRST_PROGRESS_WINDOW_MILLISECONDS,
-            );
-        let no_progress_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                NO_PROGRESS_WINDOW_MILLISECONDS,
-            );
-        let absolute_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
-            );
-        let gate_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                GATE_CEILING_MILLISECONDS,
-            );
-        let test_phase_ceiling_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
-            );
-        let re_kick_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                RESCHED_REKICK_INTERVAL_MILLISECONDS,
-            );
-        let breadcrumb_ticks =
-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                BREADCRUMB_INTERVAL_MILLISECONDS,
-            );
+        let first_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            FIRST_PROGRESS_WINDOW_MILLISECONDS,
+        );
+        let no_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            NO_PROGRESS_WINDOW_MILLISECONDS,
+        );
+        let absolute_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+        );
+        let gate_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            GATE_CEILING_MILLISECONDS,
+        );
+        let test_phase_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+        );
+        let re_kick_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            RESCHED_REKICK_INTERVAL_MILLISECONDS,
+        );
+        let breadcrumb_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+            counter_frequency_hz,
+            BREADCRUMB_INTERVAL_MILLISECONDS,
+        );
         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
         record_exit_kick_gate_watchdog_heartbeat();
         let mut last_advance = [wait_start; 3];
@@ -8737,13 +8692,17 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 }
                 let target_deadline = core::cmp::max(
                     first_progress_ticks,
-                    crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance[target], wait_start)
-                        .saturating_add(no_progress_ticks),
+                    crate::arch_impl::aarch64::timer::elapsed_ticks(
+                        last_advance[target],
+                        wait_start,
+                    )
+                    .saturating_add(no_progress_ticks),
                 );
                 // Completed targets no longer owe progress. At workers_ready,
                 // a nonzero own counter accompanies that worker's readiness publication.
                 if !target_complete(target, progress_current.workers[target])
-                    && elapsed >= target_deadline && stalled_target.is_none()
+                    && elapsed >= target_deadline
+                    && stalled_target.is_none()
                 {
                     stalled_target = Some(target);
                     progress_deadline_elapsed = target_deadline;
@@ -8771,10 +8730,8 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 failure = Some(WaitFailureKind::NoProgress);
             }
             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
-                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
-                    now,
-                    last_counter_sample,
-                );
+                let counter_delta =
+                    crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_counter_sample);
                 if counter_delta == 0 {
                     failure = Some(WaitFailureKind::CounterStall);
                 }
@@ -8839,9 +8796,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 };
             }
 
-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
-                >= re_kick_ticks
-            {
+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick) >= re_kick_ticks {
                 for &cpu in kick_cpus {
                     crate::arch_impl::aarch64::gic::send_sgi(
                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
@@ -8981,7 +8936,8 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
     if frequency == 0 {
         return TestResult::Fail("exit-kick isolation counter unavailable");
     }
-    let Some(test_phase_started_at) = crate::test_framework::test_phase_liveness_started_at() else {
+    let Some(test_phase_started_at) = crate::test_framework::test_phase_liveness_started_at()
+    else {
         return TestResult::Fail("exit-kick isolation test-phase anchor unavailable");
     };
     // #522 C5 fix pass (V-8): this test is a second, deeper consumer of the
@@ -9031,30 +8987,34 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
         let mut spawn_failed = false;
         for target in 0..3 {
             let worker = Arc::clone(&accounting);
-            match crate::task::kthread::kthread_run_on_cpu_for_test(move || {
-                worker.progress[target].fetch_add(1, Ordering::Release);
-                while !worker.start.load(Ordering::Acquire) {
-                    if worker.abort.load(Ordering::Acquire) {
-                        return;
-                    }
-                    crate::task::scheduler::yield_current();
-                }
-                let mut completion_published = false;
-                while !worker.abort.load(Ordering::Acquire) {
-                    if frozen != Some(target) {
-                        worker.progress[target].fetch_add(1, Ordering::Release);
-                        if !completion_published {
-                            worker.completed.fetch_or(1 << target, Ordering::Release);
-                            completion_published = true;
+            match crate::task::kthread::kthread_run_on_cpu_for_test(
+                move || {
+                    worker.progress[target].fetch_add(1, Ordering::Release);
+                    while !worker.start.load(Ordering::Acquire) {
+                        if worker.abort.load(Ordering::Acquire) {
+                            return;
                         }
+                        crate::task::scheduler::yield_current();
                     }
-                    // Leave idle handoffs available to the concurrent strand
-                    // injection oracle during these deliberate fixture waits.
-                    // A 50ms sleep still advances live counters well within the
-                    // 300ms no-progress window; the frozen counter stays at one.
-                    crate::task::strand_oracle::sleep_sample_period();
-                }
-            }, names[target], worker_cpus[target]) {
+                    let mut completion_published = false;
+                    while !worker.abort.load(Ordering::Acquire) {
+                        if frozen != Some(target) {
+                            worker.progress[target].fetch_add(1, Ordering::Release);
+                            if !completion_published {
+                                worker.completed.fetch_or(1 << target, Ordering::Release);
+                                completion_published = true;
+                            }
+                        }
+                        // Leave idle handoffs available to the concurrent strand
+                        // injection oracle during these deliberate fixture waits.
+                        // A 50ms sleep still advances live counters well within the
+                        // 300ms no-progress window; the frozen counter stays at one.
+                        crate::task::strand_oracle::sleep_sample_period();
+                    }
+                },
+                names[target],
+                worker_cpus[target],
+            ) {
                 Ok(handle) => handles.push(handle),
                 Err(_) => {
                     spawn_failed = true;
@@ -9080,7 +9040,8 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                 &worker_cpus,
                 test_phase_started_at,
                 started_at,
-            ).map_err(|failure| (failure, None))
+            )
+            .map_err(|failure| (failure, None))
         } else {
             spin_with_resched_workers(
                 scenario,
@@ -9100,8 +9061,10 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
         };
         let elapsed_ms = ticks_to_milliseconds(
             crate::arch_impl::aarch64::timer::elapsed_ticks(
-                crate::arch_impl::aarch64::timer::rdtsc_serialized(), started_at,
-            ), frequency,
+                crate::arch_impl::aarch64::timer::rdtsc_serialized(),
+                started_at,
+            ),
+            frequency,
         );
         let final_progress = progress();
         let completed = accounting.completed.load(Ordering::Acquire);
@@ -9112,9 +9075,12 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
         let mut joined = 0;
         for (target, handle) in handles.iter().enumerate() {
             if let Err(failure) = join_with_resched(
-                "isolation_cleanup", handle,
+                "isolation_cleanup",
+                handle,
                 || accounting.progress[target].load(Ordering::Acquire),
-                &worker_cpus, test_phase_started_at, cleanup_started_at,
+                &worker_cpus,
+                test_phase_started_at,
+                cleanup_started_at,
             ) {
                 return TestResult::Fail(failure.message("exit-kick isolation cleanup stalled"));
             }
@@ -9132,28 +9098,40 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
             return TestResult::Fail("exit-kick isolation spawn/join incomplete");
         }
         if let Some(frozen) = frozen {
-            if final_progress[frozen] != 1 || completed != (7 & !(1 << frozen))
+            if final_progress[frozen] != 1
+                || completed != (7 & !(1 << frozen))
                 || (0..3).any(|i| i != frozen && final_progress[i] <= 2)
             {
-                return TestResult::Fail("exit-kick isolation did not establish frozen/live workers");
+                return TestResult::Fail(
+                    "exit-kick isolation did not establish frozen/live workers",
+                );
             }
             if union {
                 if !matches!(result, Err((WaitFailureKind::AbsoluteCeiling, None)))
                     || elapsed_ms < ABSOLUTE_WAIT_CEILING_MILLISECONDS
                     || elapsed_ms > ABSOLUTE_WAIT_CEILING_MILLISECONDS + 2_000
                 {
-                    return TestResult::Fail("exit-kick isolation union did not mask stall until absolute ceiling");
+                    return TestResult::Fail(
+                        "exit-kick isolation union did not mask stall until absolute ceiling",
+                    );
                 }
             } else {
-                crate::serial_println!("[exit_kick_worker_isolation] expected_failure={}", failure_messages[frozen]);
+                crate::serial_println!(
+                    "[exit_kick_worker_isolation] expected_failure={}",
+                    failure_messages[frozen]
+                );
                 if !matches!(result, Err((WaitFailureKind::NoProgress, Some(name))) if name == names[frozen])
                     || elapsed_ms < FIRST_PROGRESS_WINDOW_MILLISECONDS
-                    || elapsed_ms > FIRST_PROGRESS_WINDOW_MILLISECONDS + NO_PROGRESS_WINDOW_MILLISECONDS
+                    || elapsed_ms
+                        > FIRST_PROGRESS_WINDOW_MILLISECONDS + NO_PROGRESS_WINDOW_MILLISECONDS
                 {
-                    return TestResult::Fail("exit-kick isolation wrong target or per-worker deadline");
+                    return TestResult::Fail(
+                        "exit-kick isolation wrong target or per-worker deadline",
+                    );
                 }
             }
-        } else if result.is_err() || completed != 7
+        } else if result.is_err()
+            || completed != 7
             || final_progress.iter().any(|value| *value < 2)
             || elapsed_ms >= FIRST_PROGRESS_WINDOW_MILLISECONDS / 2
         {

@@ -7888,7 +7888,7 @@ fn validate_pr1c_retirement_oracles(sources: &[(String, String)]) -> Result<(), 
         "if kstack_returns != pairing_child_pids.len() as u64 {",
         "pairing sentinel hierarchy cost changed between children",
     ] {
-        if !gate.contains(required) {
+        if !gate.split_whitespace().collect::<Vec<_>>().join(" ").contains(required) {
             return Err(());
         }
     }
@@ -9924,7 +9924,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "storm observer progress/exit stalled; a worker CPU (1/2/3) is unresponsive",
     ] {
         assert!(
-            gate.contains(required),
+            gate.split_whitespace().collect::<Vec<_>>().join(" ").contains(required),
             "missing exit-kick bound: {required}"
         );
     }
@@ -9956,13 +9956,13 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "progress_current.workers[target] > last_progress.workers[target]",
         "last_progress.workers[target] = progress_current.workers[target];",
         "last_advance[target] = now;",
-        "elapsed_ticks(last_advance[target], wait_start)",
+        "elapsed_ticks(last_advance[target], wait_start,)",
         "!target_complete(target, progress_current.workers[target])",
         "elapsed >= target_deadline",
         "stalled_target = Some(target);",
         "stalled_target.map(|i| workers[i].0)",
     ] {
-        assert!(worker_wait.contains(required), "missing per-worker window: {required}");
+        assert!(worker_wait.split_whitespace().collect::<String>().contains(&required.split_whitespace().collect::<String>()), "missing per-worker window: {required}");
     }
     assert!(!worker_wait.contains("advanced_from("));
     assert!(!worker_wait.contains("last_advance.fill("));
@@ -9995,7 +9995,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "final_progress[frozen] != 1", "final_progress[i] <= 2",
         "struct StormAbortGuard", "core::mem::drop(abort_guard);", "joined != 3",
     ] {
-        assert!(fixture.contains(required), "missing isolation fixture proof: {required}");
+        assert!(fixture.split_whitespace().collect::<Vec<_>>().join(" ").contains(required), "missing isolation fixture proof: {required}");
     }
     let strict = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
     assert!(strict.contains("BREENIX_STRICT_TIMEOUT_SECONDS:-90"));
@@ -10034,7 +10034,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     // attribution. Mutation proof: reverting target_complete to
     // `|_, progress| progress != 0` must redden this test.
     assert!(
-        storm_union.contains("workers_ready_bits.load(Ordering::Acquire).count_ones() as u64"),
+        storm_union.split_whitespace().collect::<String>().contains("workers_ready_bits.load(Ordering::Acquire).count_ones()asu64"),
         "workers_ready's aggregate condition must read the shared readiness bitmask"
     );
     assert!(
@@ -10101,7 +10101,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "observer_progress",
     ] {
         assert!(
-            gate.contains(required),
+            gate.split_whitespace().collect::<Vec<_>>().join(" ").contains(required),
             "observer progress is not tied to a genuine state transition: {required}"
         );
     }
