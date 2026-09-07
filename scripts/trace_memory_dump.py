@@ -2,9 +2,10 @@
 """
 Trace memory dump parser and validator for Breenix.
 
-This parses a raw dump of the kernel's `TRACE_BUFFERS` array — produced by
-`scripts/test_tracing_via_gdb.sh`, which owns QEMU and GDB — and validates that
-the tracing subsystem actually recorded usable events.
+This parses an aarch64 QMP ELF core (with --kernel for symbols) or a raw dump
+of the kernel's `TRACE_BUFFERS` array, and validates that the tracing subsystem
+actually recorded usable events. Raw dumps are produced by
+`scripts/test_tracing_via_gdb.sh`, which owns QEMU and GDB.
 
 The tracing structures it decodes:
 - TraceEvent:     16 bytes (u64 timestamp, u16 event_type, u8 cpu_id, u8 flags,
@@ -21,11 +22,13 @@ events decoded as UNKNOWN.
 
 Usage:
     python3 scripts/trace_memory_dump.py --parse <dump.bin> [--max-cpus N] --validate
+    python3 scripts/trace_memory_dump.py --parse <core.elf> --kernel <kernel-elf> --validate
 """
 
 import re
 import sys
 import struct
+import subprocess
 import argparse
 from pathlib import Path
 from dataclasses import dataclass
@@ -196,6 +199,72 @@ def buffer_stride() -> int:
     return ((entries + TRACE_BUFFER_METADATA + 63) // 64) * 64
 
 
+def extract_core_buffers(handle, kernel: str, max_cpus: int) -> bytes:
+    """Extract the .bss ring through the aarch64 flat HHDM mapping.
+
+    linker.ld rebases the image by KERNEL_VIRT_BASE; boot.S zeroes .bss
+    before enabling the MMU by subtracting that same base. No page-table
+    walk is involved. ELF64 sizes/fields below are the ELF file ABI.
+    """
+    linker = BREENIX_ROOT / "kernel/src/arch_impl/aarch64/linker.ld"
+    match = re.search(r"^KERNEL_VIRT_BASE\s*=\s*(0[xX][0-9a-fA-F_]+);",
+                      linker.read_text(), re.M)
+    if not match:
+        raise SystemExit("Error: could not read KERNEL_VIRT_BASE from %s" % linker)
+    base = int(match.group(1).replace("_", ""), 16)
+    try:
+        symbols = subprocess.check_output(["nm", kernel], text=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit("Error: nm could not read %s: %s" % (kernel, error))
+    addresses = [int(fields[0], 16) for line in symbols.splitlines()
+                 if len(fields := line.split()) == 3 and fields[-1] == "TRACE_BUFFERS"]
+    if len(addresses) != 1:
+        raise SystemExit("Error: expected exactly one TRACE_BUFFERS symbol in %s" % kernel)
+    va = addresses[0]
+    pa = va & ~base
+    if va < base or pa != va - base:
+        raise SystemExit("Error: TRACE_BUFFERS VA %#x is outside the flat HHDM" % va)
+    total_size = buffer_stride() * max_cpus
+    handle.seek(0)
+    header = handle.read(64)
+    if len(header) != 64 or header[:6] != b"\x7fELF\x02\x01":
+        raise SystemExit("Error: expected a little-endian ELF64 core header")
+    fields = struct.unpack("<16sHHIQQQIHHHHHH", header)
+    if fields[1] != 4 or fields[2] != 183 or fields[3] != 1:
+        raise SystemExit("Error: expected an aarch64 ELF core (ET_CORE)")
+    phoff, phentsize, phnum = fields[5], fields[9], fields[10]
+    # This host's QEMU core reports e_ehsize=8 despite its full ELF64 header.
+    # Read the fixed ABI header above and use e_phoff, not e_ehsize, to
+    # locate the table; segment bounds below still require real file bytes.
+    if phentsize != 56 or phnum == 0 or phnum == 0xffff:
+        raise SystemExit("Error: unsupported ELF program-header layout")
+    handle.seek(0, 2)
+    file_size = handle.tell()
+    if phoff + phentsize * phnum > file_size:
+        raise SystemExit("Error: truncated ELF program-header table")
+    segments = []
+    for index in range(phnum):
+        handle.seek(phoff + index * phentsize)
+        kind, flags, offset, vaddr, paddr, filesz, memsz, align = struct.unpack(
+            "<IIQQQQQQ", handle.read(phentsize))
+        if kind == 1:  # PT_LOAD: p_paddr is the guest-physical base.
+            segments.append((paddr, filesz, offset))
+    for paddr, filesz, offset in segments:
+        if paddr <= pa and pa + total_size <= paddr + filesz:
+            position = offset + pa - paddr
+            if position + total_size > file_size:
+                raise SystemExit("Error: truncated PT_LOAD for TRACE_BUFFERS; segments=%r" % segments)
+            handle.seek(position)
+            data = handle.read(total_size)
+            if len(data) != total_size:
+                raise SystemExit("Error: short TRACE_BUFFERS read; segments=%r" % segments)
+            print("ELF core: TRACE_BUFFERS VA=%#x PA=%#x bytes=%d" % (va, pa, total_size))
+            return data
+    raise SystemExit("Error: no PT_LOAD contains TRACE_BUFFERS [%#x, %#x); "
+                     "segments (p_paddr, p_filesz, p_offset)=%r"
+                     % (pa, pa + total_size, segments))
+
+
 def parse_trace_buffers(data: bytes, max_cpus: int) -> List[TraceCpuBuffer]:
     """Parse a raw memory dump of the TRACE_BUFFERS array."""
     stride = buffer_stride()
@@ -236,7 +305,7 @@ def parse_counter(data: bytes, name: str, max_cpus: int) -> TraceCounter:
     return TraceCounter(name=name, per_cpu=per_cpu)
 
 
-def validate_trace_buffers(buffers: List[TraceCpuBuffer]) -> Tuple[bool, List[str]]:
+def validate_trace_buffers(buffers: List[TraceCpuBuffer], total_events=None) -> Tuple[bool, List[str]]:
     """Validate that the dump shows a live, correctly-decoded tracing subsystem.
 
     Every check below can fail. The point of this harness is that an empty or
@@ -246,7 +315,8 @@ def validate_trace_buffers(buffers: List[TraceCpuBuffer]) -> Tuple[bool, List[st
     messages = []
     success = True
 
-    total_events = sum(b.count() for b in buffers)
+    if total_events is None:
+        total_events = sum(b.count() for b in buffers)
     if total_events == 0:
         messages.append("FAIL: no trace events recorded in any CPU buffer")
         success = False
@@ -371,7 +441,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Parse and validate a Breenix TRACE_BUFFERS memory dump"
     )
-    parser.add_argument("--parse", "-p", required=True, help="Raw TRACE_BUFFERS dump to parse")
+    parser.add_argument("--parse", "-p", required=True, help="Raw TRACE_BUFFERS dump or aarch64 ELF core to parse")
+    parser.add_argument("--kernel", help="Kernel ELF for symbols (required for an ELF core)")
     parser.add_argument("--validate", "-v", action="store_true", help="Validate trace contents")
     parser.add_argument(
         "--max-cpus",
@@ -385,8 +456,17 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.max_cpus < 1:
+        parser.error("--max-cpus must be positive")
     with open(args.parse, "rb") as handle:
-        data = handle.read()
+        is_core = handle.read(4) == b"\x7fELF"
+        handle.seek(0)
+        if is_core:
+            if not args.kernel:
+                parser.error("--kernel is required when --parse names an ELF core")
+            data = extract_core_buffers(handle, args.kernel, args.max_cpus)
+        else:
+            data = handle.read()
 
     buffers = parse_trace_buffers(data, args.max_cpus)
 
@@ -401,6 +481,9 @@ def main():
             % (buffer.cpu_id, buffer.count(), buffer.write_idx, buffer.dropped)
         )
 
+    total_events = sum(b.count() for b in buffers)
+    print("TRACE_DECODED_EVENTS:%d" % total_events)
+
     if args.events:
         print("\nEvents:")
         for buffer in buffers:
@@ -412,7 +495,7 @@ def main():
                     print("  %s" % event)
 
     if args.validate:
-        success, messages = validate_trace_buffers(buffers)
+        success, messages = validate_trace_buffers(buffers, total_events)
         print("\nValidation results:")
         for message in messages:
             print("  %s" % message)
