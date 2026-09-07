@@ -1603,7 +1603,7 @@ fn strict_gate_poll_loop_stops_only_on_crash_or_complete_score() {
     );
 
     let poll_tail = run_single_test
-        .split_once("for POLL in $(seq 1 \"${BREENIX_STRICT_POLL_ITERATIONS:-12}\"); do\n")
+        .split_once("for POLL in $(seq 1 \"${BREENIX_STRICT_POLL_ITERATIONS:-60}\"); do\n")
         .map(|(_, tail)| tail)
         .expect("strict-gate poll-loop anchor");
     let (poll_loop, after_poll_loop) = poll_tail

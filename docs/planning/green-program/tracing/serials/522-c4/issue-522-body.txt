@@ -1,0 +1,53 @@
+Follow-ups from the merge review (review-attempt-12) of PR #521, which fixed #519 (the flaky `exit_kick_protocol_gate` SMP-liveness gap). All four items below were explicitly rated **non-blocking** during review and the PR was merged, but per the "any failure you find is your problem" project rule they are tracked here rather than dropped.
+
+### C4 — multi-target waits use a summed union with a shared 8s floor, not strict per-target windows
+`kernel/src/tracing/providers/teardown.rs`, `WaitProgress::workers` (teardown.rs:1283-1291, sums into `.work`); `storm_publisher_a_join` wait (teardown.rs:2405-2410).
+
+> Standing ruling (3) requires, for multi-target waits, "per-TARGET windows … each target its own 8 s first-schedule grace + 3 s no-progress window, FAIL names the target", with windows keyed to counters that advance **iff the awaited kthread itself executed**. The implementation instead uses:
+> 1. a **summed union** with one shared 8 s floor for `workers_ready` (`WaitProgress::workers`, teardown.rs:1283-1291, sums into `.work`);
+> 2. a deliberate **cross-target union** for `storm_publisher_a_join` (`observer_progress` is not a counter that advances iff publisher A executed);
+> 3. FAIL text naming a CPU *set* — `"a worker CPU (1/2/3) is unresponsive"` — rather than the target.
+>
+> The `WaitProgress.workers[3]` array is carried purely for the evidence line and is never consulted by `advanced_from` (:1293-1295 compares only `.work` and `.exit`).
+>
+> Per C3 the detection property still holds and the target *is* recoverable from `worker_N_progress_start/final` in the evidence line, so this is not a coverage removal. But it is a mechanism deviation from an explicit ruling, and `tests/teardown_structure.rs` now **pins** the deviation (`assert!(publisher_a_progress.contains("observer_progress"))`, `assert!(storm_union.contains(counter))` for all three), which makes it harder to correct later.
+
+Concrete symptom cited elsewhere in the review: a wedged `storm_publisher_a` is caught only via the 15s `ABSOLUTE_WAIT_CEILING_MILLISECONDS` fallback rather than the intended ~11s window, because the observer's continued activity re-arms publisher A's no-progress window.
+
+### C5 — NEW false-FAIL path: the shared Phase-1 ceiling is anchored at kernel entry, not gate entry
+`kernel/src/tracing/providers/teardown.rs:1506-1510`, `kernel/src/test_framework/mod.rs:395`, `kernel/src/main_aarch64.rs:388`.
+
+> The Phase-1 anchor is taken at `main_aarch64.rs:388` — before `.dma` zeroing, before all driver init, before SMP release, before boot tests. The gate's first wait fails with `PhaseOneCeiling` if 65 s of wall clock has elapsed *since kernel entry*. The gate's effective budget is therefore `65 s − (kernel entry → gate)`, not 45 s.
+>
+> Consequence: under sufficient host starvation a **slow-but-perfectly-healthy** boot can FAIL the exit-kick gate with `"exit_kick_gate: shared Phase-1 liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)"`. That is a *new* false-FAIL mode introduced by this diff — the exact failure class #519 exists to eliminate, relocated rather than removed. Mitigations: the measured realistic figure is ≈ 10 s total, the message is explicitly non-blaming, and it is grep-distinct from the canonical per-CPU signature. But the mode is real and should be stated in the PR description.
+>
+> The same argument applies more weakly to the 45 s `gate_ceiling`: 8 waits × 15 s = 120 s of per-wait headroom far exceeds the 45 s aggregate, so a run where several waits each burn 8-10 s ends on a non-CPU-naming `gate_ceiling` FAIL rather than a target-naming one.
+
+### C6 — six new failure classes no longer match the canonical `exit_kick_gate:.*unresponsive` grep
+`kernel/src/tracing/providers/teardown.rs:1324-1345`.
+
+> `WaitFailureKind::{GateCeiling, PhaseOneCeiling, CounterStall, CounterUnavailable, ProgressUnavailable, JoinFailed}` deliberately do **not** emit `exit_kick_gate:.*unresponsive`, and `teardown_structure.rs` asserts they never can (`assert!(!failure_message.contains("unresponsive"))`). Classification-wise this is right — don't blame an innocent CPU. But SPEC §2 designates `exit_kick_gate:.*unresponsive` as "the canonical grep pattern for gate scripts", so any gate script built from that spec will now silently miss six real failure classes. Nothing is *hidden* (the suite-level `[BOOT_TESTS:FAIL]` still fires and `TestResult::Fail` still propagates), but `clean-gate.sh` / `starved-gate.sh` and any successor should be widened to `exit_kick_gate:` or `\[exit_kick_gate\] cause=`.
+
+Action: audit and widen any CI/gate script currently matching the old `exit_kick_gate:.*unresponsive` signature (this includes but is not limited to `clean-gate.sh` / `starved-gate.sh`).
+
+### F5 — latent off-by-one in the new test-helper raw-string scanner
+`tests/teardown_structure.rs:120-124`, in the rewritten `function_body` scanner:
+
+> ```rust
+> if let Some(hashes) = raw_string_hashes {
+>     if byte == b'"' && …all '#'… {
+>         raw_string_hashes = None;
+>         index += hashes + 1;
+>     }
+>     index += 1;
+>     continue;
+> }
+> ```
+> On close, `index` advances by `hashes + 2` — one byte too far (`hashes` `#`s + the `"` = `hashes + 1`). For `r"…"` (hashes = 0) it swallows the byte immediately after the closing quote. If that byte were a `}` the brace depth would be wrong and `function_body` would return a truncated or over-long body, silently weakening every assertion made against it.
+>
+> Currently latent: I grepped all seven scanned files and none of the extracted bodies contains a raw string. The new fixture test at `:136-155` happens to place `;` in the swallowed position, so the bug is masked by its own test. Fix: move the trailing `index += 1;` into an `else`.
+
+---
+
+Context: PR #521 (merged as 306d665c67a42ce792e605759f278eb938ca4cf3) fixed #519. The findings above come from `review-attempt-12.md`, the review that cleared the PR for merge — all four items were explicitly rated non-blocking at merge time.
+

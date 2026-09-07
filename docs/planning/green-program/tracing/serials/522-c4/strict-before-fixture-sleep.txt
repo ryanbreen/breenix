@@ -1,0 +1,66 @@
+[GATE_PREFLIGHT:structure_suites=61/61:critical_path_lines=260:pinned=120]
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t522c4/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t522c4/wt/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t522c4/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   21d53fc233f23f592f39338d3ab6d25bb8a9ea1b0bfc262fd78dd2d38fed3fc4
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h61ecf85f7d566472E
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t522c4/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t522c4/wt/target/ext2-aarch64.img
+Iterations: 3
+Requirement: 100% success rate (all 3 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 59072 (<unknown process>)
+  [FAIL] Boot 1: Scheduler strand injection oracle marker missing or failed (1351 lines); serial: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t522c4/wt/.gate-tmp/breenix_aarch64_strict_failures/20260907T075831Z-boot1.txt
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788767816146-1788767911202:qemu_at_start=0:load_at_start=7.32:qemu_at_end=0:load_at_end=8.99:qemu_cpu_s=NA:guest_uptime_ms=89357:ended_by=hard_timeout]
+  [CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=300]
+  [CAPTURE_DRAIN_EVENTS:last_events=none]
+  [QMP_DUMP:capture=partial:reason=qmp_socket_missing:core=-:decoded_events=-:dump_ms=16]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 66973 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+  [GATE_BOOT_FACTS:boot=2:host_ms=1788767912186-1788767962334:qemu_at_start=0:load_at_start=8.99:qemu_at_end=1:load_at_end=9.92:qemu_cpu_s=137.31:guest_uptime_ms=49301:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 71332 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+  [GATE_BOOT_FACTS:boot=3:host_ms=1788767963479-1788768012083:qemu_at_start=0:load_at_start=9.92:qemu_at_end=1:load_at_end=8.44:qemu_cpu_s=134.69:guest_uptime_ms=48128:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 3
+Successes: 2
+Failures: 1
+Success rate: 66%
+Duration: 197s
+
+Failed iterations: 1
+
+=========================================
+FAIL: Only 2/3 boots succeeded
+=========================================
+
+This indicates a regression or timing bug that needs investigation.
+Serial output from failed boots can be found in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t522c4/wt/.gate-tmp/breenix_aarch64_strict_N/

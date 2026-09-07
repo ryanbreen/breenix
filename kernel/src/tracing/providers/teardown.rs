@@ -8846,8 +8846,11 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                             completion_published = true;
                         }
                     }
-                    crate::task::scheduler::yield_current();
-                    core::hint::spin_loop();
+                    // Leave idle handoffs available to the concurrent strand
+                    // injection oracle during these deliberate multi-second waits.
+                    // A 50ms sleep still advances live counters well within the
+                    // 3s no-progress window; the frozen counter stays at one.
+                    crate::task::strand_oracle::sleep_sample_period();
                 }
             }, names[target], worker_cpus[target]) {
                 Ok(handle) => handles.push(handle),
