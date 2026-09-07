@@ -1,0 +1,9 @@
+== compiling aarch64_testing_profile_structure ==
+== running aarch64_testing_profile_structure  ==
+
+running 2 tests
+test the_testing_profile_gate_scores_committed_serials_with_the_same_code ... ok
+test the_testing_profile_gate_detects_and_classifies_a_soft_lockup ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
