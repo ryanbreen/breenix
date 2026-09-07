@@ -152,3 +152,11 @@ docs/planning/green-program/irq-locks/serials/823/**/*.txt -text
 # run.sh emit are part of the preserved evidence the sweep's dispositions
 # quote by line number, and a CRLF normalisation would edit it.
 docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/**/*.log -text
+
+# #606 2026-09-06 recurrence serial: a raw aarch64 QEMU serial capture from the
+# max-profile service-sequence gate, kept byte-exact for the same reason as the
+# captures above -- the CR bytes the guest console emits are part of the
+# evidence, and the recorded sha256 digest is a digest of these exact bytes, so
+# a CRLF normalisation would both edit preserved evidence and invalidate the
+# digest that cites it.
+docs/planning/green-program/aarch64-testing/serials/606-recurrence-2026-09-06/*.txt -text
