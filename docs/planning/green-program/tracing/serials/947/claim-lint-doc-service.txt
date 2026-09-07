@@ -1,0 +1,3 @@
+claim-lint: clean (53 file(s) checked, changed hunks vs 9f79cb71969f).
+claim-lint: 180 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 2 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/tracing/serials/947/service-cortex-a72-census.tsv, docs/planning/green-program/tracing/serials/947/service-max-census.tsv

@@ -1,0 +1,12 @@
+AUDIT_REVISION=62988b29cf6e5800e7ef5c56c1aad630649569fd
+reverify/boot-only.log: compile_diagnostics=0
+reverify/full.log: compile_diagnostics=0
+reverify/oracle-fixed.log: compile_diagnostics=0
+reverify/precommit-fixture.log: compile_diagnostics=0
+reverify/precommit.log: compile_diagnostics=0
+reverify/prod.log: compile_diagnostics=0
+reverify/userspace-setup.log: compile_diagnostics=0
+breenix_813_x86_64.wdsXnx/kernel-build.log: compile_diagnostics=0
+breenix_813_x86_64.wdsXnx/userspace-build.log: compile_diagnostics=0
+breenix_x86_boot_tests_only.LMopbd/build.log: compile_diagnostics=0
+breenix_x86_boot_tests_only.LMopbd/image-build.log: compile_diagnostics=0

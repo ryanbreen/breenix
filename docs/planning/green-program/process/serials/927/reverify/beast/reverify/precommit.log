@@ -1,0 +1,6 @@
+REVISION=62988b29cf6e5800e7ef5c56c1aad630649569fd
+COMMAND=cargo build --release --features testing,external_test_bins --bin qemu-uefi
+   Compiling kernel v0.1.0 (/root/breenix-x927b/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-x927b)
+    Finished `release` profile [optimized] target(s) in 15.01s
+COMMAND_EXIT=0

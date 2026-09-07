@@ -1,0 +1,16 @@
+revision=9f79cb71969fe9b9832b1ff921e148a76170a850
+status= M kernel/src/tracing/providers/teardown.rs
+ M tests/teardown_structure.rs
+?? docs/planning/green-program/tracing/947-FIXTURE-COST-2026-09-07.md
+?? docs/planning/green-program/tracing/serials/947/
+
+kernel/src/tracing/providers/teardown.rs sha256=9b8f162803547cfeff41b09c217e459307d8c4e21acecd081bd5e5b7acec02af
+tests/teardown_structure.rs sha256=402569b94e4a443bf90f6f8c6b4e8eeae2250e3f46990f1a710db55e8c9b26aa
+target/aarch64-breenix-kernel/release/kernel-aarch64 sha256=8eafc21664f75c04b672cb5c93db614afda1b77e945182a37c8945dad2f6e365
+command=cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 7.67s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+
+exit=0

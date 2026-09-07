@@ -1,31 +1,7 @@
-//! Wiring ratchet for R191/PR-1 (the gate-tooling round). Pins that the four
-//! boot gates `docker/qemu/run-aarch64-boot-test-strict.sh`, `docker/qemu/
-//! run-aarch64-prod-profile-boot-test.sh`, `docker/qemu/run-x86-boot-tests.sh`
-//! and `docker/qemu/run-x86-prod-profile-boot-test.sh` each call the shared
-//! `docker/qemu/lib/gate-structure-preflight.sh::gate_structure_preflight`
-//! before booting anything, per `docs/planning/green-program/gates/
-//! GATE-TOOLING-STRUCTURE-PREFLIGHT-PR1-2026-09-06.md`.
-//!
-//! # Why a literal list of four filenames, not a derived census
-//!
-//! Other wiring ratchets in this tree (e.g. `tests/
-//! poll_tcp_gate_wiring_structure.rs`) derive their target set from a shared
-//! predicate over each script under `docker/qemu/` and `scripts/`, so a NEW
-//! gate that starts asserting some verdict is swept in automatically without
-//! anyone updating a list. That shape does not fit here: this suite is not
-//! discovering "whichever gates currently do X" -- it is pinning that these
-//! four SPECIFIC gates (the four callers this round's own dispatching brief
-//! named, and the same four `docker/qemu/lib/gate-structure-preflight.sh`'s
-//! own header documents) keep the wiring this round put there. A fifth boot
-//! gate this repository adds later is not implicitly in this pin's scope;
-//! wiring it in is that future round's own explicit decision, the same way
-//! `tests/critical_path_logging_census_structure.rs`'s `ZERO_PIN_FILES` is a
-//! deliberate three-file literal list rather than a derived one.
-//!
-//! Host-side only: a text read of the four gate scripts and the shared lib
-//! file, no kernel build or QEMU boot. Run: `cargo test --test
-//! gate_structure_preflight_wiring_structure` or `scripts/
-//! run-structure-tests.sh gate_structure_preflight_wiring_structure`.
+//! Pins the shared preflight in the four original boot gates and the service
+//! sequence gate added by issue 947 review V-3. The explicit target list
+//! identifies the five gates covered by this suite.
+//! Run through scripts/run-structure-tests.sh.
 
 use std::fs;
 use std::path::PathBuf;
@@ -39,9 +15,9 @@ fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
 }
 
-/// The four gates this round wires the preflight into. See the module doc
-/// for why this is a literal list rather than a derived census.
+/// The five explicitly covered gates.
 const TARGET_GATES: &[&str] = &[
+    "docker/qemu/run-aarch64-service-sequence-gate.sh",
     "docker/qemu/run-aarch64-boot-test-strict.sh",
     "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
     "docker/qemu/run-x86-boot-tests.sh",
@@ -114,22 +90,19 @@ fn shared_lib_defines_the_preflight_function_and_its_marker_line() {
 /// untouched -- the shape a careless edit that deletes the `if !
 /// gate_structure_preflight ...; then ... fi` block's call, but not its
 /// header-comment mention or its `source` line, would produce. Must redden
-/// on that one gate specifically, not on any of the other three.
+/// on that one gate specifically, not on any of the other four.
 #[test]
 fn missing_wiring_validator_rejects_a_gate_with_the_call_site_removed() {
-    let mut texts = target_gate_texts();
-    let target = "docker/qemu/run-aarch64-boot-test-strict.sh";
-    let (_, text) = texts
-        .iter_mut()
-        .find(|(name, _)| *name == target)
-        .expect("target gate present in TARGET_GATES");
-    *text = text.replace(CALL_LITERAL, "");
-    let missing = missing_wiring(&texts);
-    assert_eq!(missing, vec![target.to_owned()]);
+    for target in TARGET_GATES {
+        let mut texts = target_gate_texts();
+        let (_, text) = texts.iter_mut().find(|(name, _)| name == target).unwrap();
+        *text = text.replace(CALL_LITERAL, "");
+        assert_eq!(missing_wiring(&texts), vec![target.to_string()]);
+    }
 }
 
 /// Anti-vacuity: a gate script with neither the source line nor the call
-/// literal (the shape each of the four gates had before this round)
+/// literal (the shape each of the original four gates had before this round)
 /// must be rejected outright, not silently treated as "not applicable".
 #[test]
 fn missing_wiring_validator_rejects_a_gate_with_neither() {
@@ -175,4 +148,14 @@ fn service_sequence_capture_window_45_mutation_is_rejected() {
     let (strict, service) = capture_window_defaults(&strict_source, &mutated);
     assert_eq!(service, 45);
     assert!(service < strict, "45s regression must fail the capture-window ordering");
+}
+
+#[test]
+fn service_preflight_precedes_build_and_aborts_on_failure() {
+    let service = repo_text("docker/qemu/run-aarch64-service-sequence-gate.sh");
+    let call = service.find(CALL_LITERAL).expect("service preflight call");
+    assert!(call < service.find("if $REBUILD; then").unwrap());
+    assert!(service[..call].trim_end().ends_with("if !"));
+    let failure = &service[call..service[call..].find("\nfi").unwrap() + call];
+    assert!(failure.contains("exit 1"));
 }

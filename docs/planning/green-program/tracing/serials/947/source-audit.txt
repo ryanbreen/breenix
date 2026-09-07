@@ -1,0 +1,27 @@
+revision=6c627a6b60b0fd678b2908fddf8ae6ed2112af3a
+Production prefix before C4: byte-identical to parent
+kernel/src/tracing/providers/teardown.rs:6688: const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;
+kernel/src/tracing/providers/teardown.rs:6730:     const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;
+kernel/src/tracing/providers/teardown.rs:6731:     const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;
+kernel/src/tracing/providers/teardown.rs:6732:     const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 15_000;
+kernel/src/tracing/providers/teardown.rs:6733:     const GATE_CEILING_MILLISECONDS: u64 = EXIT_KICK_GATE_CEILING_MILLISECONDS;
+kernel/src/tracing/providers/teardown.rs:8260: pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::registry::TestResult {
+kernel/src/tracing/providers/teardown.rs:8270:     const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 800;
+kernel/src/tracing/providers/teardown.rs:8271:     const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 300;
+kernel/src/tracing/providers/teardown.rs:8272:     const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 1_500;
+kernel/src/tracing/providers/teardown.rs:8273:     const GATE_CEILING_MILLISECONDS: u64 = 4_500;
+kernel/src/tracing/providers/teardown.rs:9166:         "[exit_kick_worker_isolation] fixture_elapsed_ms={}",
+kernel/src/tracing/providers/teardown.rs:9192: pub fn exit_kick_budget_anchor_isolation_test() -> crate::test_framework::registry::TestResult {
+kernel/src/tracing/providers/teardown.rs:9200:     const FIXTURE_PRE_TEST_DELAY_MILLISECONDS: u64 = 1_200;
+kernel/src/tracing/providers/teardown.rs:9201:     const FIXTURE_TEST_PHASE_BUDGET_MILLISECONDS: u64 = 1_000;
+kernel/src/tracing/providers/teardown.rs:9202:     const FIXTURE_GATE_CEILING_MILLISECONDS: u64 = 600;
+kernel/src/tracing/providers/teardown.rs:9203:     const FIXTURE_ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 800;
+kernel/src/tracing/providers/teardown.rs:9204:     const FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 400;
+kernel/src/tracing/providers/teardown.rs:9205:     const FIXTURE_NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 200;
+kernel/src/tracing/providers/teardown.rs:9206:     const FIXTURE_TARGET_NAME: &str = "worker_1";
+kernel/src/tracing/providers/teardown.rs:9418:         "[exit_kick_budget_anchor] fixture_elapsed_ms={}",
+tests/teardown_structure.rs:17778: fn exit_kick_fixture_summed_budget_under_ten_seconds() {
+tests/teardown_structure.rs:17809: fn exit_kick_scaled_fixture_legs_remain_present() {
+kernel/src/test_framework/mod.rs:66: pub const INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS: u64 = 20_000;
+kernel/src/test_framework/mod.rs:105: pub const TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS: u64 = 60_000;
+9/9 mutation restored source hashes match HEAD; red exit 101 and one failed; green exit 0

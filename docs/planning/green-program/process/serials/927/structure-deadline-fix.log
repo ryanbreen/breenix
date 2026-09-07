@@ -1,0 +1,36 @@
+REVISION=e8e16061d2aa3f483643fc036ce15d2033b8740e + x86 900-second host deadline
+== compiling x86_boot_tests_profile_structure ==
+== running x86_boot_tests_profile_structure  ==
+
+running 6 tests
+test gate_builds_only_boot_tests_and_reuses_cohort_pins ... ok
+test x86_oracle_allows_the_same_cohort_startup_window ... ok
+test supplied_page_table_fork_is_profile_independent ... ok
+test mutation_testing_only_cow_is_rejected ... ok
+test mutation_missing_completion_is_rejected ... ok
+test mutation_cow_error_before_parent_restore_is_rejected ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== compiling pipe_fifo_blocking_structure ==
+== running pipe_fifo_blocking_structure  ==
+
+running 15 tests
+test parser::parser_tracks_renames_negation_formatting_and_extracted_errors ... ok
+test prepared_sleep_owns_no_guard_and_cleans_up_eintr ... ok
+test observation_seam_is_boot_only_and_queries_do_not_wake ... ok
+test close_delivery_releases_pm_before_cleanup ... ok
+test parser::blocking_eagain_mutations_fail_the_live_helper_census ... ok
+test poll_and_transfer_share_one_readiness_predicate ... ok
+test gate_scores_the_drivers_emitted_arm_set_and_mutations_fail ... ok
+test writer_queue_notifications_atomic_copy_and_progress_exist ... ok
+test deferred_delivery_never_touches_the_scheduler_lock ... ok
+test new_writer_close_notifications_are_owned_and_deferred ... ok
+test parser::repaired_families_have_no_blocking_eagain_exit ... ok
+test queue_wake_copy_and_threshold_mutations_are_detected ... ok
+test dup_exec_and_row_drop_keep_cleanup_outside_pm ... ok
+test close_call_census_requires_delivery_or_the_documented_fault_carveout ... ok
+test every_removed_process_row_is_retained_past_the_callers_pm_guard ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+

@@ -1,0 +1,4 @@
+docs/planning/green-program/tracing/947-FIXTURE-COST-2026-09-07.md:365: [universal-claim] V-1 is addressed inline in Measurements by explicitly marking the historical tested revision UNKNOWN and limiting the comparison to timing observations. Deferred code findings: none (the supplied list was empty).
+    -> unquantified absolute ('none') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 1 finding(s) across 1 file(s) [whole files]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.

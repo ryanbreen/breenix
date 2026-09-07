@@ -1,0 +1,17 @@
+REVISION=62988b29cf6e5800e7ef5c56c1aad630649569fd
+2184:    pub fn fork_process_with_page_table(
+2272:            let cow_result = super::fork::setup_cow_pages_with_vmas(
+2280:            let pages_shared = cow_result?;
+2423:            let cow_result = super::fork::setup_cow_pages_with_vmas(
+2558:            let cow_result = super::fork::setup_cow_pages_with_vmas(
+2942:    pub fn fork_process_with_context(
+3033:            let cow_result = super::fork::setup_cow_pages_with_vmas(
+3040:            parent_mut.page_table = Some(parent_page_table);
+3041:            let pages_shared = cow_result?;
+1930:                Err(_) => return TestResult::Fail("pairing fork failed"),
+5998:                                            manager.fork_process_with_context(parent_pid, None)
+6031:                                            "ownership fork constructor failed",
+tests/x86_boot_tests_profile_structure.rs:30:fn supplied_page_table_fork_is_profile_independent() {
+tests/x86_boot_tests_profile_structure.rs:99:fn context_fork_is_profile_independent() {
+tests/x86_boot_tests_profile_structure.rs:123:fn oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms() {
+tests/gate_capture_drain_structure.rs:385:fn drain_disabled_reads_partial_drain_enabled_reads_complete_same_race() {

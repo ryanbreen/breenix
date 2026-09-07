@@ -125,6 +125,15 @@ CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:bas
 # (the #549/#551/[[gate-target-fidelity-528]] census-not-literal lesson).
 EXPECTED_MMIO_DEVICES=$(grep -cE -- '^[[:space:]]*-device virtio-[a-z]*-device' "${BASH_SOURCE[0]}")
 
+# Run this gate's structure suites before building or booting.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)"
+    exit 1
+fi
+
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."
     (cd "$BREENIX_ROOT" && cargo build --release --features boot_tests \

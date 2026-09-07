@@ -1,0 +1,47 @@
+REVISION=19427ef42612d14bb4cc4474a7dd460cdc850a03
+BASE=0x10000000000 ELF=/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845
+add symbol table from file "/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845" with all sections offset by 0x10000000000
+0x000000000000fff0 in ?? ()
+Hardware assisted breakpoint 1 at 0x100001c85d0
+
+Breakpoint 1, 0x00000100001c85d0 in kernel::tracing::providers::teardown::fork_exit_defer_reclaim_pairing_test ()
+PAIRING ENTRY
+0x100003f2440:	11
+0x100003e2dc0:	0
+0x100004a8e70 <_ZN6kernel6memory15frame_allocator15NEXT_FREE_FRAME17h6e74a83bd6085e4dE>:	17230
+Hardware assisted breakpoint 2 at 0x100002402c0
+
+Breakpoint 2, 0x00000100002402c0 in kernel::process::manager::ProcessManager::fork_process_with_page_table ()
+PAIRING FORK HIT=1; zero-based iteration=0
+rdi            0xffffc900000ff7e0  -60473138481184
+rsi            0x100003fa520       1099515798816
+rdx            0x3                 3
+rsp            0xffffc900000fddb0  0xffffc900000fddb0
+rip            0x100002402c0       0x100002402c0 <kernel::process::manager::ProcessManager::fork_process_with_page_table>
+#0  0x00000100002402c0 in kernel::process::manager::ProcessManager::fork_process_with_page_table ()
+#1  0x00000100001ca504 in kernel::tracing::providers::teardown::fork_exit_defer_reclaim_pairing_test ()
+#2  0x0000000000000002 in ?? ()
+#3  0x0000444444600ae8 in ?? ()
+#4  0x0000000000000000 in ?? ()
+0x100003f2440:	11
+0x100003e2dc0:	0
+0x100004a8e70 <_ZN6kernel6memory15frame_allocator15NEXT_FREE_FRAME17h6e74a83bd6085e4dE>:	17230
+Temporary breakpoint 3 at 0x100001ca504
+
+Temporary breakpoint 3, 0x00000100001ca504 in kernel::tracing::providers::teardown::fork_exit_defer_reclaim_pairing_test ()
+FORK RETURN RESULT (Rust Result discriminant, string pointer, string length)
+0xffffc900000ff7e0:	0x0000010000090f33	0x000000000000002d
+0xffffc900000ff7f0:	0x0000000000000000
+0x2d:	<error: Cannot access memory at address 0x2d>
+0x100003f2440:	11
+0x100003e2dc0:	0
+0x100004a8e70 <_ZN6kernel6memory15frame_allocator15NEXT_FREE_FRAME17h6e74a83bd6085e4dE>:	17230
+[Inferior 1 (process 1) detached]
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000100000bb501 in ?? ()
+CORRECTION: Result<ProcessId, &str> uses a pointer niche, no separate discriminant. First word is Err pointer, second word is length 45.
+$1 = "Cannot implement fork without testing feature"
+0xffffc900000ff7e0:	0x0000010000090f33	0x000000000000002d
+0xffffc900000ff7f0:	0x0000000000000000
+[Inferior 1 (process 1) detached]

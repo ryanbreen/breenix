@@ -1,0 +1,6 @@
+docs/planning/green-program/tracing/947-FIXTURE-COST-2026-09-07.md:265: [universal-claim] The nine original fixture mutations were rerun individually: five C4 scenario removals, three C5 scenario removals, and restoring the 15,000 ms C4 absolute window. Each red exited 101 and each restoration exited 0 in this round's `mutati...
+    -> unquantified absolute ('All') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph (cited path `mutation-*-{red,green}.txt` does not resolve, so it does not count as evidence)
+
+claim-lint: 1 finding(s) across 92 file(s) [changed hunks vs 9f79cb71969f]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 215 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 2 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/tracing/serials/947/service-cortex-a72-census.tsv, docs/planning/green-program/tracing/serials/947/service-max-census.tsv

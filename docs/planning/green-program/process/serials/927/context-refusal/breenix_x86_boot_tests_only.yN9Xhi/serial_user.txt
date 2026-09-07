@@ -1,0 +1,192 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 16384000, width: 2560, height: 1600, pixel_format: Bgr, bytes_per_pixel: 4, stride: 2560 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001d7d3000,
+    metadata: 5701624,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: ad2c4, mem_size: ad2c4, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: ad2d0, virtual_addr: ae2d0, physical_addr: ae2d0, file_size: 2ea751, mem_size: 2ea751, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 397a28, virtual_addr: 399a28, physical_addr: 399a28, file_size: 43f80, mem_size: 445d8, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 3dba00, virtual_addr: 3dea00, physical_addr: 3dea00, file_size: 36340, mem_size: d89a0, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x100000b7ec0
+INFO : Creating GDT at PhysAddr(0x240000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x100000b7ec0)
+[TEST:process:frame_custody_refusal_gate:START]
+[TEST:process:frame_custody_refusal_gate:PASS]
+[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
+[TEST:process:page_table_custody_disposition_gate:START]
+[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=16502:used_after=16502:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0]
+[TEST:process:page_table_custody_disposition_gate:PASS]
+[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]
+PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0b
+PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+PCI_FN_TOTAL 8
+[ INFO] scheduler::schedule() returned (boot marker)
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=21:ms=105:ticks_after=21:ticks_nonzero=1:in_range=1:PASS]
+[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=20:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold]
+
+[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:fg_busy_probe=1:entry_us=1132:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:local_hold]
+[DISPATCH_FACT_ORACLE:x86:facts=10:legs=10:moved_by_one=10:moved_wrong=0:irqs_enabled_before=1:PASS]
+[TEST:process:retirement_fence_gate:START]
+[TEST:process:retirement_fence_gate:PASS]
+[TEST:process:reclaim_progress_gate:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:reclaim_progress_gate:PASS]
+[TEST:process:x86_retire_cohort:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[TEST:process:x86_retire_cohort:PASS]
+[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
+[TEST:process:x86_exec_cohort:START]
+[SW]<K>[SW]<1>[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
+[SW]<K>[SW]<1>[TEST:process:x86_exec_cohort:PASS]
+[TEST:process:exec_detach_oracle:START]
+manager.create_process: ENTRY - name='exec_detach_leader', elf_size=180
+manager.create_process: Generating PID
+manager.create_process: Generated PID 85
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ELF loaded, entry=0x40000000
+manager.create_process: Restoring kernel mappings
+manager.create_process: Kernel mappings restored
+manager.create_process: Creating Process struct
+manager.create_process: Process struct created, heap_start=0x40201000
+manager.create_process: Allocating user stack
+manager.create_process: User stack allocated at 0x7fffff011000
+manager.create_process: Mapping user stack into process page table
+manager.create_process: User stack mapped successfully
+manager.create_process: Creating main thread
+manager.create_process: Main thread created
+manager.create_process: Main thread set on process
+manager.create_process: Inserting process into process table
+manager.create_process: SUCCESS - returning PID 85
+manager.create_process: Adding PID 85 to ready queue
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[TEST:process:exec_detach_oracle:PASS]
+[TEST:process:clone_admission_oracle:START]
+[PMGUARD] creating dispatch refused tid=173 pid=92
+[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[TEST:process:clone_admission_oracle:PASS]
+[TEST:process:init_designation_oracle:START]
+manager.create_process: ENTRY - name='init_oracle_a1', elf_size=8
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+manager.create_process: ENTRY - name='init_oracle_a2', elf_size=120
+manager.create_process: Generating PID
+manager.create_process: Generated PID 1
+manager.create_process: Creating ProcessPageTable
+manager.create_process: ProcessPageTable created
+manager.create_process: Loading ELF into page table
+[SW]<K>[SW]<1>[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[TEST:process:init_designation_oracle:PASS]
+[TEST:process:init_group_refusal_oracle:START]
+[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[TEST:process:init_group_refusal_oracle:PASS]
+[TEST:process:kernel_stack_ownership_oracle:START]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=1:fork_owned=1:slot_returns_exact_one=1:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=0:foreign_returned=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1081:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1073:pub_sched_owned=1073:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=3:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=0:reconciliation_skew_bound=0:balance=4]
+[TEST:process:kernel_stack_ownership_oracle:FAIL:Fail("ownership fork constructor failed")]
+KERNEL PANIC: panicked at kernel/src/tracing/providers/teardown.rs:6590:5:
+x86 kernel-stack ownership oracle gate failed
+[BXCAP:BEGIN v=1 seq=0 edge=PANIC cpu=0 ts=1038000410781 tsfreq=2400983400 uptime_ms=206280 arch=x86_64]
+[BXCAP:EDGE kind=PANIC a0=0x19be a1=0x5]
+[BXCAP:CPU cpu=0 preempt=0 nr=0 hardirq=0 softirq=0 uptime_ms=206280 q=exact]
+[BXCAP:EV cpu=0 i=2016 ts=1032290223063 type=0x606 n=STACK_MAP p=101 f=0x0]
+[BXCAP:EV cpu=0 i=2017 ts=1032450291105 type=0x601 n=FORK_EXIT p=101 f=0x0]
+[BXCAP:EV cpu=0 i=2018 ts=1032464865681 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
+[BXCAP:EV cpu=0 i=2019 ts=1032465064191 type=0x20 n=UNKNOWN p=847824 f=0x4]
+[BXCAP:EV cpu=0 i=2020 ts=1032476326161 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
+[BXCAP:EV cpu=0 i=2021 ts=1032476496225 type=0x20 n=UNKNOWN p=2096466 f=0x85]
+[BXCAP:EV cpu=0 i=2022 ts=1032485000268 type=0xa00 n=UNKNOWN p=101 f=0x0]
+[BXCAP:EV cpu=0 i=2023 ts=1032559857408 type=0x102 n=TIMER_TICK p=40976 f=0x0]
+[BXCAP:EV cpu=0 i=2024 ts=1032751816875 type=0x102 n=TIMER_TICK p=40992 f=0x0]
+[BXCAP:EV cpu=0 i=2025 ts=1032943954815 type=0x102 n=TIMER_TICK p=41008 f=0x0]
+[BXCAP:EV cpu=0 i=2026 ts=1033135717788 type=0x102 n=TIMER_TICK p=41024 f=0x0]
+[BXCAP:EV cpu=0 i=2027 ts=1033327644399 type=0x102 n=TIMER_TICK p=41040 f=0x0]
+[BXCAP:EV cpu=0 i=2028 ts=1033519617696 type=0x102 n=TIMER_TICK p=41056 f=0x0]
+[BXCAP:EV cpu=0 i=2029 ts=1033711569231 type=0x102 n=TIMER_TICK p=41072 f=0x0]
+[BXCAP:EV cpu=0 i=2030 ts=1033903559688 type=0x102 n=TIMER_TICK p=41088 f=0x0]
+[BXCAP:EV cpu=0 i=2031 ts=1034095530792 type=0x102 n=TIMER_TICK p=41104 f=0x0]
+[BXCAP:EV cpu=0 i=2032 ts=1034115606411 type=0xa01 n=UNKNOWN p=101 f=0x0]
+[BXCAP:EV cpu=0 i=2033 ts=1036267690836 type=0x102 n=TIMER_TICK p=41120 f=0x0]
+[BXCAP:EV cpu=0 i=2034 ts=1036269045762 type=0xa00 n=UNKNOWN p=100 f=0x0]
+[BXCAP:EV cpu=0 i=2035 ts=1036313893167 type=0x1 n=CTX_SWITCH_ENTRY p=65540 f=0x0]
+[BXCAP:EV cpu=0 i=2036 ts=1036314173154 type=0x20 n=UNKNOWN p=2559135 f=0x4]
+[BXCAP:EV cpu=0 i=2037 ts=1036327793775 type=0x1 n=CTX_SWITCH_ENTRY p=262145 f=0x0]
+[BXCAP:EV cpu=0 i=2038 ts=1036328009799 type=0x20 n=UNKNOWN p=2096466 f=0x85]
+[BXCAP:EV cpu=0 i=2039 ts=1036483102629 type=0x102 n=TIMER_TICK p=41136 f=0x0]
+[BXCAP:EV cpu=0 i=2040 ts=1036675066104 type=0x102 n=TIMER_TICK p=41152 f=0x0]
+[BXCAP:EV cpu=0 i=2041 ts=1036867047687 type=0x102 n=TIMER_TICK p=41168 f=0x0]
+[BXCAP:EV cpu=0 i=2042 ts=1037059074285 type=0x102 n=TIMER_TICK p=41184 f=0x0]
+[BXCAP:EV cpu=0 i=2043 ts=1037251034016 type=0x102 n=TIMER_TICK p=41200 f=0x0]
+[BXCAP:EV cpu=0 i=2044 ts=1037442993120 type=0x102 n=TIMER_TICK p=41216 f=0x0]
+[BXCAP:EV cpu=0 i=2045 ts=1037634930933 type=0x102 n=TIMER_TICK p=41232 f=0x0]
+[BXCAP:EV cpu=0 i=2046 ts=1037826923160 type=0x102 n=TIMER_TICK p=41248 f=0x0]
+[BXCAP:EV cpu=0 i=2047 ts=1037904672513 type=0xa01 n=UNKNOWN p=100 f=0x0]
+[BXCAP:CNT NET_RX_FRAME_TOTAL=3]
+[BXCAP:CNT NET_RX_ARP_TOTAL=2]
+[BXCAP:CNT NET_RX_SOFTIRQ_ENTRY_TOTAL=4]
+[BXCAP:CNT NET_RX_SOFTIRQ_EXIT_TOTAL=4]
+[BXCAP:CNT TEARDOWN_ENTRY_EXIT=168]
+[BXCAP:CNT EXIT_FIRST_REQUESTS=83]
+[BXCAP:CNT EXIT_REPEAT_REQUESTS=162]
+[BXCAP:CNT TEARDOWN_DEFER=90]
+[BXCAP:CNT TEARDOWN_RECLAIM=107]
+[BXCAP:CNT FD_CLOSES_UNDER_PM=252]
+[BXCAP:CNT RECLAIM_DRAIN_NESTED_REFUSED=1]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_EPOCH=1]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_HW=1]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_SHADOW=2]
+[BXCAP:CNT ROOT_PROOF_BLOCKED_LIVE_ROW=5]
+[BXCAP:CNT RETIRE_EMPTY_ONLINE_MASK=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_DOUBLE=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_STALE=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_NEVER_ALLOCATED=1]
+[BXCAP:CNT FRAME_RETURN_REFUSED_UNTRACKED=1]
+[BXCAP:CNT FRAME_DUPLICATE_ALLOC_REFUSED=3]
+[BXCAP:CNT FRAME_LOST_CONTENDED=3]
+[BXCAP:CNT LEAF_MAPPINGS_RECORDED=491]
+[BXCAP:CNT LEAF_MAPPINGS_RELEASED=490]
+[BXCAP:CNT LEAF_FRAMES_RETURNED=474]
+[BXCAP:CNT PT_TABLE_FRAMES_RECORDED=1353]
+[BXCAP:CNT PT_ROOT_ABANDONED_NO_ARCH=1]
+[BXCAP:CNT PT_ROOT_ABANDONED_TERMINATED=1]
+[BXCAP:CNT PT_ROOT_DROPPED_UNDECIDED=4]
+[BXCAP:CNT PT_ROOTS_RETIRED=151]
+[BXCAP:CNT PT_TABLE_FRAMES_RETURNED=1492]
+[BXCAP:CNT PT_RETIRE_FRAMES_LOST=2]
+[BXCAP:RING cpu=0 writes=4301 dropped=2253 kept=2048 span_us=236746468 enabled=1]
+[BXCAP:THR cpu=0 cur=1 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=1 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=2 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=3 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=4 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=5 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=6 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:THR cpu=7 cur=0 rq=0 threads=4 blocked=3 q=exact]
+[BXCAP:END v=1 seq=0 edge=PANIC verdict=complete records=76 bytes=4590 truncated=0 sections_skipped=0x0]

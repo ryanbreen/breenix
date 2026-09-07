@@ -1,0 +1,958 @@
+== compiling teardown_rustfmt_structure ==
+== running teardown_rustfmt_structure  ==
+
+running 1 test
+test teardown_provider_is_rustfmt_clean ... FAILED
+
+failures:
+
+---- teardown_provider_is_rustfmt_clean stdout ----
+
+thread 'teardown_provider_is_rustfmt_clean' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/tests/teardown_rustfmt_structure.rs:12:5:
+full-provider rustfmt failed: Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:541:
+ counter!(PT_SHADOW_ROOT_CLEARED, "Saved x86 process roots cleared");
+ counter!(CLONE_ADMISSION_ADMITTED, "Clone admissions accepted");
+ counter!(CLONE_ADMISSION_REFUSED, "Clone admissions refused");
+[31m-counter!(CLONE_INIT_GROUP_REFUSED, "CLONE_VM joins refused into the designated init group");
+(B[m counter!(
+[32m+    CLONE_INIT_GROUP_REFUSED,
+(B[m[32m+    "CLONE_VM joins refused into the designated init group"
+(B[m[32m+);
+(B[m[32m+counter!(
+(B[m     INIT_ORDINARY_PID_ALLOCATIONS,
+     "Ordinary process IDs allocated from next_pid"
+ );
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:1653:
+ 
+ #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+ fn retirement_oracle_clock_delta(milliseconds: u64) -> u64 {
+[31m-    crate::arch_impl::aarch64::timer::frequency_hz()
+(B[m[31m-        .saturating_mul(milliseconds)
+(B[m[31m-        / 1000
+(B[m[32m+    crate::arch_impl::aarch64::timer::frequency_hz().saturating_mul(milliseconds) / 1000
+(B[m }
+ 
+ #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:1913:
+                 return TestResult::Fail("process manager unavailable during pairing fork");
+             };
+             #[cfg(target_arch = "aarch64")]
+[31m-            let fork_result = manager.fork_process_aarch64(
+(B[m[31m-                parent_pid,
+(B[m[31m-                parent_context.clone(),
+(B[m[31m-                child_page_table,
+(B[m[31m-            );
+(B[m[32m+            let fork_result =
+(B[m[32m+                manager.fork_process_aarch64(parent_pid, parent_context.clone(), child_page_table);
+(B[m             #[cfg(target_arch = "x86_64")]
+[31m-            let fork_result = manager.fork_process_with_page_table(
+(B[m[31m-                parent_pid,
+(B[m[31m-                None,
+(B[m[31m-                None,
+(B[m[31m-                child_page_table,
+(B[m[31m-            );
+(B[m[32m+            let fork_result =
+(B[m[32m+                manager.fork_process_with_page_table(parent_pid, None, None, child_page_table);
+(B[m             let child_pid = match fork_result {
+                 Ok(pid) => pid,
+                 Err(_) => return TestResult::Fail("pairing fork failed"),
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:1977:
+                 parent.children.retain(|pid| *pid != child.0);
+             }
+         }
+[31m-    // #813: PM scope ended; release removed rows before further observations.
+(B[m[31m-    retired_rows.clear();
+(B[m[32m+        // #813: PM scope ended; release removed rows before further observations.
+(B[m[32m+        retired_rows.clear();
+(B[m         core::mem::drop(child.2);
+     }
+ 
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:1985:
+     let quiesce_deadline = retirement_oracle_quiesce_deadline();
+     loop {
+         crate::task::scheduler::nudge_retirement_grace_for_test();
+[31m-        let boundary_deadline = retirement_oracle_clock_now()
+(B[m[31m-            .saturating_add(retirement_oracle_clock_delta(1));
+(B[m[32m+        let boundary_deadline =
+(B[m[32m+            retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+(B[m         while retirement_oracle_clock_now() < boundary_deadline {
+             core::hint::spin_loop();
+         }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:2044:
+         .map(|pid| boot_test_pid_counts(*pid).kernel_stack_slot_returns)
+         .sum::<u64>();
+     #[cfg(target_arch = "x86_64")]
+[31m-    let cohort_recorded = expected_tables * pairing_child_pids.len() as u64
+(B[m[31m-        + expected_pending_old_tables;
+(B[m[32m+    let cohort_recorded =
+(B[m[32m+        expected_tables * pairing_child_pids.len() as u64 + expected_pending_old_tables;
+(B[m     #[cfg(target_arch = "x86_64")]
+     let allocator_balance = allocator_used_after as i64 - allocator_used_before as i64;
+     #[cfg(target_arch = "aarch64")]
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:2263:
+             != (false, false)
+         {
+             crate::task::scheduler::nudge_retirement_grace_for_test();
+[31m-            let boundary_deadline = retirement_oracle_clock_now()
+(B[m[31m-                .saturating_add(retirement_oracle_clock_delta(1));
+(B[m[32m+            let boundary_deadline =
+(B[m[32m+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+(B[m             while retirement_oracle_clock_now() < boundary_deadline {
+                 core::hint::spin_loop();
+             }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:2273:
+                 break;
+             }
+         }
+[31m-        if crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64())
+(B[m[31m-            != (false, false)
+(B[m[32m+        if crate::task::process_task::boot_reclaim_locations(parent_pid.as_u64()) != (false, false)
+(B[m         {
+             return TestResult::Fail("pairing parent deferred cleanup did not quiesce");
+         }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:2317:
+ /// on it.
+ #[cfg(feature = "boot_tests")]
+ pub fn tombstone_join_oracle_test() -> crate::test_framework::registry::TestResult {
+[31m-    use crate::test_framework::registry::TestResult;
+(B[m     #[cfg(not(target_arch = "x86_64"))]
+     use crate::memory::arch_stub::VirtAddr;
+[32m+    use crate::test_framework::registry::TestResult;
+(B[m     #[cfg(target_arch = "x86_64")]
+     use x86_64::VirtAddr;
+ 
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:2921:
+                 parent.children.retain(|pid| *pid != child.0);
+             }
+         }
+[31m-    // #813: PM scope ended; release removed rows before further observations.
+(B[m[31m-    retired_rows.clear();
+(B[m[32m+        // #813: PM scope ended; release removed rows before further observations.
+(B[m[32m+        retired_rows.clear();
+(B[m     }
+ 
+     let quiesce_deadline = retirement_oracle_quiesce_deadline();
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:3029:
+         if counts.table_frames_recorded
+             != (EXEC_COHORT_SUPERSEDED_PER_CHILD as u64 + 1) * expected_tables
+         {
+[31m-            return TestResult::Fail(
+(B[m[31m-                "exec cohort per-PID anti-vacuity table count was not exact",
+(B[m[31m-            );
+(B[m[32m+            return TestResult::Fail("exec cohort per-PID anti-vacuity table count was not exact");
+(B[m         }
+     }
+     if roots_retired_delta != cohort_roots {
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:3038:
+[31m-        return TestResult::Fail("exec cohort global root retirement did not match the per-PID sum");
+(B[m[32m+        return TestResult::Fail(
+(B[m[32m+            "exec cohort global root retirement did not match the per-PID sum",
+(B[m[32m+        );
+(B[m     }
+     if table_frames_returned_delta != cohort_returned {
+         return TestResult::Fail("exec cohort global table return did not match the per-PID sum");
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:4718:
+             return TestResult::Fail("process manager unavailable for init designation A1");
+         };
+         #[cfg(target_arch = "x86_64")]
+[31m-        let construction = manager.create_init_process(
+(B[m[31m-            alloc::string::String::from("init_oracle_a1"),
+(B[m[31m-            &image,
+(B[m[31m-        );
+(B[m[32m+        let construction =
+(B[m[32m+            manager.create_init_process(alloc::string::String::from("init_oracle_a1"), &image);
+(B[m         #[cfg(target_arch = "aarch64")]
+         let construction = {
+             let argv = [b"/sbin/init".as_slice()];
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:4758:
+             return TestResult::Fail("process manager unavailable for init designation A2");
+         };
+         #[cfg(target_arch = "x86_64")]
+[31m-        let construction = manager.create_init_process(
+(B[m[31m-            alloc::string::String::from("init_oracle_a2"),
+(B[m[31m-            &image,
+(B[m[31m-        );
+(B[m[32m+        let construction =
+(B[m[32m+            manager.create_init_process(alloc::string::String::from("init_oracle_a2"), &image);
+(B[m         #[cfg(target_arch = "aarch64")]
+         let construction = {
+             let argv = [b"/sbin/init".as_slice()];
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:4811:
+         LEAF_MAPPINGS_RECORDED.aggregate() - construct_leaf_recorded_before;
+     let construct_leaf_released =
+         LEAF_MAPPINGS_RELEASED.aggregate() - construct_leaf_released_before;
+[31m-    let construct_leaf_returned =
+(B[m[31m-        LEAF_FRAMES_RETURNED.aggregate() - construct_leaf_returned_before;
+(B[m[32m+    let construct_leaf_returned = LEAF_FRAMES_RETURNED.aggregate() - construct_leaf_returned_before;
+(B[m     let construct_tables_recorded =
+         PT_TABLE_FRAMES_RECORDED.aggregate() - construct_tables_recorded_before;
+     let construct_tables_returned =
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:4819:
+         PT_TABLE_FRAMES_RETURNED.aggregate() - construct_tables_returned_before;
+     let construct_roots_retired = PT_ROOTS_RETIRED.aggregate() - construct_roots_retired_before;
+[31m-    let construct_mid_retire =
+(B[m[31m-        PT_ROOT_DROPPED_MID_RETIRE.aggregate() - construct_mid_retire_before;
+(B[m[32m+    let construct_mid_retire = PT_ROOT_DROPPED_MID_RETIRE.aggregate() - construct_mid_retire_before;
+(B[m     let construct_frames_lost = PT_RETIRE_FRAMES_LOST.aggregate() - construct_frames_lost_before;
+     let construct_refusals = (FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate()
+         - construct_live_refused_before)
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:4965:
+                 match manager.designate_init(ticket) {
+                     Ok(publication) => {
+                         if manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+[31m-                            first_failure =
+(B[m[31m-                                Some("designated init row reached the run queue before publication");
+(B[m[32m+                            first_failure = Some(
+(B[m[32m+                                "designated init row reached the run queue before publication",
+(B[m[32m+                            );
+(B[m                         }
+                         accepted += 1;
+                         if publication.pid() != reserved && first_failure.is_none() {
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:4974:
+                                 Some("init designation A6 publication named the wrong PID");
+                         }
+                         if manager.designated_init() != Some(reserved) && first_failure.is_none() {
+[31m-                            first_failure = Some("init designation A6 did not install the authority");
+(B[m[32m+                            first_failure =
+(B[m[32m+                                Some("init designation A6 did not install the authority");
+(B[m                         }
+                         let thread = manager.publish_init(publication);
+                         published += 1;
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:4981:
+                         if !manager.remove_from_ready_queue(reserved) && first_failure.is_none() {
+[31m-                            first_failure = Some("init designation A6 publication missed the ready queue");
+(B[m[32m+                            first_failure =
+(B[m[32m+                                Some("init designation A6 publication missed the ready queue");
+(B[m                         }
+                         drop(thread);
+                     }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:5048:
+         child.parent = Some(parent_pid);
+         manager.insert_process(parent_pid, parent);
+         manager.insert_process(child_pid, child);
+[31m-        if !manager.reparent_children_to_init(parent_pid, &[child_pid])
+(B[m[31m-            && first_failure.is_none()
+(B[m[31m-        {
+(B[m[32m+        if !manager.reparent_children_to_init(parent_pid, &[child_pid]) && first_failure.is_none() {
+(B[m             first_failure = Some("init designation A8 reparent operation reported no change");
+         }
+[31m-        if manager
+(B[m[31m-            .get_process(child_pid)
+(B[m[31m-            .and_then(|row| row.parent)
+(B[m[31m-            != Some(reserved)
+(B[m[32m+        if manager.get_process(child_pid).and_then(|row| row.parent) != Some(reserved)
+(B[m             && first_failure.is_none()
+         {
+             first_failure = Some("init designation A8 did not reparent the child");
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:5189:
+     let refused_delta = init_designation_refused().saturating_sub(refused_before);
+     let retired_delta = init_designation_retired().saturating_sub(retired_before);
+     let publications_delta = init_publications().saturating_sub(publications_before);
+[31m-    let reparent_children_delta =
+(B[m[31m-        init_reparent_children().saturating_sub(reparent_children_before);
+(B[m[32m+    let reparent_children_delta = init_reparent_children().saturating_sub(reparent_children_before);
+(B[m     let reparent_skipped_delta =
+         init_reparent_skipped_no_init().saturating_sub(reparent_skipped_before);
+     let ordinary_allocated =
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:5382:
+         let mut none_probes = 0u64;
+         let mut none_refusals = 0u64;
+         for derived_tg_id in [crate::process::RESERVED_INIT_PID, other.as_u64(), u64::MAX] {
+[31m-            let refused = crate::syscall::clone::refuses_init_group_clone(
+(B[m[31m-                manager,
+(B[m[31m-                derived_tg_id,
+(B[m[31m-            );
+(B[m[32m+            let refused = crate::syscall::clone::refuses_init_group_clone(manager, derived_tg_id);
+(B[m             none_probes += 1;
+             none_refusals += u64::from(refused);
+         }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:6162:
+     // process-manager guard held by this CPU.
+     let creation_counters_before = crate::task::scheduler::creation_lock_order_counters();
+     let guard = crate::process::manager();
+[31m-    let injection_saw_pm_held =
+(B[m[31m-        crate::task::scheduler::probe_publication_lock_order_injection();
+(B[m[32m+    let injection_saw_pm_held = crate::task::scheduler::probe_publication_lock_order_injection();
+(B[m     drop(guard);
+     let creation_counters = crate::task::scheduler::creation_lock_order_counters();
+     let injected_delta = creation_counters
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:6636:
+     crate::serial_println!("[TEST:process:init_designation_oracle:START]");
+     let result = init_designation_oracle_test();
+     if !result.is_pass() {
+[31m-        crate::serial_println!(
+(B[m[31m-            "[TEST:process:init_designation_oracle:FAIL:{:?}]",
+(B[m[31m-            result
+(B[m[31m-        );
+(B[m[32m+        crate::serial_println!("[TEST:process:init_designation_oracle:FAIL:{:?}]", result);
+(B[m     }
+     assert!(result.is_pass(), "x86 init designation oracle gate failed");
+ }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:6908:
+             return Err(WaitFailureKind::CounterUnavailable);
+         }
+ 
+[31m-        let first_progress_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                FIRST_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let no_progress_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                NO_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let absolute_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let gate_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                GATE_CEILING_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let test_phase_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let re_kick_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                RESCHED_REKICK_INTERVAL_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let breadcrumb_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                BREADCRUMB_INTERVAL_MILLISECONDS,
+(B[m[31m-            );
+(B[m[32m+        let first_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            FIRST_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let no_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            NO_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let absolute_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let gate_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            GATE_CEILING_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let test_phase_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let re_kick_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            RESCHED_REKICK_INTERVAL_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let breadcrumb_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            BREADCRUMB_INTERVAL_MILLISECONDS,
+(B[m[32m+        );
+(B[m         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+         record_exit_kick_gate_watchdog_heartbeat();
+         let mut last_advance = wait_start;
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:6967:
+             }
+             let no_progress_deadline_elapsed =
+                 crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance, wait_start)
+[31m-                .saturating_add(no_progress_ticks);
+(B[m[32m+                    .saturating_add(no_progress_ticks);
+(B[m             let progress_deadline_elapsed =
+                 core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);
+ 
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:6992:
+                 failure = Some(WaitFailureKind::NoProgress);
+             }
+             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
+[31m-                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
+(B[m[31m-                    now,
+(B[m[31m-                    last_counter_sample,
+(B[m[31m-                );
+(B[m[32m+                let counter_delta =
+(B[m[32m+                    crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_counter_sample);
+(B[m                 if counter_delta == 0 {
+                     failure = Some(WaitFailureKind::CounterStall);
+                 }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:7052:
+                 };
+             }
+ 
+[31m-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
+(B[m[31m-                >= re_kick_ticks
+(B[m[31m-            {
+(B[m[32m+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick) >= re_kick_ticks {
+(B[m                 for &cpu in kick_cpus {
+                     crate::arch_impl::aarch64::gic::send_sgi(
+                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:7134:
+             return Err((WaitFailureKind::CounterUnavailable, None));
+         }
+ 
+[31m-        let first_progress_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                FIRST_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let no_progress_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                NO_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let absolute_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let gate_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                GATE_CEILING_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let test_phase_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let re_kick_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                RESCHED_REKICK_INTERVAL_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let breadcrumb_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                BREADCRUMB_INTERVAL_MILLISECONDS,
+(B[m[31m-            );
+(B[m[32m+        let first_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            FIRST_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let no_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            NO_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let absolute_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let gate_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            GATE_CEILING_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let test_phase_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let re_kick_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            RESCHED_REKICK_INTERVAL_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let breadcrumb_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            BREADCRUMB_INTERVAL_MILLISECONDS,
+(B[m[32m+        );
+(B[m         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+         record_exit_kick_gate_watchdog_heartbeat();
+         let mut last_advance = [wait_start; 3];
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:7197:
+                 }
+                 let target_deadline = core::cmp::max(
+                     first_progress_ticks,
+[31m-                    crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance[target], wait_start)
+(B[m[31m-                        .saturating_add(no_progress_ticks),
+(B[m[32m+                    crate::arch_impl::aarch64::timer::elapsed_ticks(
+(B[m[32m+                        last_advance[target],
+(B[m[32m+                        wait_start,
+(B[m[32m+                    )
+(B[m[32m+                    .saturating_add(no_progress_ticks),
+(B[m                 );
+                 // Completed targets no longer owe progress. `target_complete`
+                 // must derive completeness from the same write the caller's
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:7207:
+                 // before it has actually contributed to that aggregate
+                 // condition (#522 review finding W-1).
+                 if !target_complete(target, progress_current.workers[target])
+[31m-                    && elapsed >= target_deadline && stalled_target.is_none()
+(B[m[32m+                    && elapsed >= target_deadline
+(B[m[32m+                    && stalled_target.is_none()
+(B[m                 {
+                     stalled_target = Some(target);
+                     progress_deadline_elapsed = target_deadline;
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:7235:
+                 failure = Some(WaitFailureKind::NoProgress);
+             }
+             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
+[31m-                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
+(B[m[31m-                    now,
+(B[m[31m-                    last_counter_sample,
+(B[m[31m-                );
+(B[m[32m+                let counter_delta =
+(B[m[32m+                    crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_counter_sample);
+(B[m                 if counter_delta == 0 {
+                     failure = Some(WaitFailureKind::CounterStall);
+                 }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:7303:
+                 };
+             }
+ 
+[31m-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
+(B[m[31m-                >= re_kick_ticks
+(B[m[31m-            {
+(B[m[32m+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick) >= re_kick_ticks {
+(B[m                 for &cpu in kick_cpus {
+                     crate::arch_impl::aarch64::gic::send_sgi(
+                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:7860:
+                         .publisher_b_progress
+                         .fetch_add(1, Ordering::Release);
+                 }
+[31m-                let worker_bit = if pid == PID_A { WORKER_BIT_A } else { WORKER_BIT_B };
+(B[m[31m-                accounting.workers_ready_bits.fetch_or(worker_bit, Ordering::Release);
+(B[m[32m+                let worker_bit = if pid == PID_A {
+(B[m[32m+                    WORKER_BIT_A
+(B[m[32m+                } else {
+(B[m[32m+                    WORKER_BIT_B
+(B[m[32m+                };
+(B[m[32m+                accounting
+(B[m[32m+                    .workers_ready_bits
+(B[m[32m+                    .fetch_or(worker_bit, Ordering::Release);
+(B[m                 while !accounting.start.load(Ordering::Acquire) {
+                     if accounting.abort.load(Ordering::Acquire) {
+                         return;
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8052:
+                 if observer_accounting.abort.load(Ordering::Acquire) {
+                     return;
+                 }
+[31m-                let publishers_done = observer_accounting
+(B[m[31m-                    .publishers_done
+(B[m[31m-                    .load(Ordering::Acquire);
+(B[m[32m+                let publishers_done = observer_accounting.publishers_done.load(Ordering::Acquire);
+(B[m                 if publishers_done > publishers_done_seen {
+[31m-                    observer_accounting.observer_progress.fetch_add(
+(B[m[31m-                        publishers_done - publishers_done_seen,
+(B[m[31m-                        Ordering::Release,
+(B[m[31m-                    );
+(B[m[32m+                    observer_accounting
+(B[m[32m+                        .observer_progress
+(B[m[32m+                        .fetch_add(publishers_done - publishers_done_seen, Ordering::Release);
+(B[m                     publishers_done_seen = publishers_done;
+                 }
+                 if publishers_done_seen == 2 {
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8127:
+ 
+     if let Err((failure, target)) = spin_with_resched_workers(
+         "workers_ready",
+[31m-        || accounting.workers_ready_bits.load(Ordering::Acquire).count_ones() as u64,
+(B[m[32m+        || {
+(B[m[32m+            accounting
+(B[m[32m+                .workers_ready_bits
+(B[m[32m+                .load(Ordering::Acquire)
+(B[m[32m+                .count_ones() as u64
+(B[m[32m+        },
+(B[m         |value| value == 3,
+         3,
+         [
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8134:
+[31m-            ("worker_1", &|| accounting.publisher_a_progress.load(Ordering::Acquire)),
+(B[m[31m-            ("worker_2", &|| accounting.publisher_b_progress.load(Ordering::Acquire)),
+(B[m[31m-            ("worker_3", &|| accounting.observer_progress.load(Ordering::Acquire)),
+(B[m[32m+            ("worker_1", &|| {
+(B[m[32m+                accounting.publisher_a_progress.load(Ordering::Acquire)
+(B[m[32m+            }),
+(B[m[32m+            ("worker_2", &|| {
+(B[m[32m+                accounting.publisher_b_progress.load(Ordering::Acquire)
+(B[m[32m+            }),
+(B[m[32m+            ("worker_3", &|| {
+(B[m[32m+                accounting.observer_progress.load(Ordering::Acquire)
+(B[m[32m+            }),
+(B[m         ],
+         |target, _| accounting.workers_ready_bits.load(Ordering::Acquire) & (1 << target) != 0,
+         &worker_cpus,
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8448:
+             return Err(WaitFailureKind::CounterUnavailable);
+         }
+ 
+[31m-        let first_progress_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                FIRST_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let no_progress_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                NO_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let absolute_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let gate_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                GATE_CEILING_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let test_phase_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let re_kick_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                RESCHED_REKICK_INTERVAL_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let breadcrumb_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                BREADCRUMB_INTERVAL_MILLISECONDS,
+(B[m[31m-            );
+(B[m[32m+        let first_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            FIRST_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let no_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            NO_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let absolute_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let gate_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            GATE_CEILING_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let test_phase_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let re_kick_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            RESCHED_REKICK_INTERVAL_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let breadcrumb_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            BREADCRUMB_INTERVAL_MILLISECONDS,
+(B[m[32m+        );
+(B[m         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+         record_exit_kick_gate_watchdog_heartbeat();
+         let mut last_advance = wait_start;
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8507:
+             }
+             let no_progress_deadline_elapsed =
+                 crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance, wait_start)
+[31m-                .saturating_add(no_progress_ticks);
+(B[m[32m+                    .saturating_add(no_progress_ticks);
+(B[m             let progress_deadline_elapsed =
+                 core::cmp::max(first_progress_ticks, no_progress_deadline_elapsed);
+ 
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8532:
+                 failure = Some(WaitFailureKind::NoProgress);
+             }
+             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
+[31m-                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
+(B[m[31m-                    now,
+(B[m[31m-                    last_counter_sample,
+(B[m[31m-                );
+(B[m[32m+                let counter_delta =
+(B[m[32m+                    crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_counter_sample);
+(B[m                 if counter_delta == 0 {
+                     failure = Some(WaitFailureKind::CounterStall);
+                 }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8592:
+                 };
+             }
+ 
+[31m-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
+(B[m[31m-                >= re_kick_ticks
+(B[m[31m-            {
+(B[m[32m+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick) >= re_kick_ticks {
+(B[m                 for &cpu in kick_cpus {
+                     crate::arch_impl::aarch64::gic::send_sgi(
+                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8674:
+             return Err((WaitFailureKind::CounterUnavailable, None));
+         }
+ 
+[31m-        let first_progress_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                FIRST_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let no_progress_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                NO_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let absolute_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let gate_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                GATE_CEILING_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let test_phase_ceiling_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let re_kick_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                RESCHED_REKICK_INTERVAL_MILLISECONDS,
+(B[m[31m-            );
+(B[m[31m-        let breadcrumb_ticks =
+(B[m[31m-            crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[31m-                counter_frequency_hz,
+(B[m[31m-                BREADCRUMB_INTERVAL_MILLISECONDS,
+(B[m[31m-            );
+(B[m[32m+        let first_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            FIRST_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let no_progress_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            NO_PROGRESS_WINDOW_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let absolute_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let gate_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            GATE_CEILING_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let test_phase_ceiling_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let re_kick_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            RESCHED_REKICK_INTERVAL_MILLISECONDS,
+(B[m[32m+        );
+(B[m[32m+        let breadcrumb_ticks = crate::arch_impl::aarch64::timer::milliseconds_to_ticks(
+(B[m[32m+            counter_frequency_hz,
+(B[m[32m+            BREADCRUMB_INTERVAL_MILLISECONDS,
+(B[m[32m+        );
+(B[m         let wait_start = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+         record_exit_kick_gate_watchdog_heartbeat();
+         let mut last_advance = [wait_start; 3];
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8737:
+                 }
+                 let target_deadline = core::cmp::max(
+                     first_progress_ticks,
+[31m-                    crate::arch_impl::aarch64::timer::elapsed_ticks(last_advance[target], wait_start)
+(B[m[31m-                        .saturating_add(no_progress_ticks),
+(B[m[32m+                    crate::arch_impl::aarch64::timer::elapsed_ticks(
+(B[m[32m+                        last_advance[target],
+(B[m[32m+                        wait_start,
+(B[m[32m+                    )
+(B[m[32m+                    .saturating_add(no_progress_ticks),
+(B[m                 );
+                 // Completed targets no longer owe progress. At workers_ready,
+                 // a nonzero own counter accompanies that worker's readiness publication.
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8745:
+                 if !target_complete(target, progress_current.workers[target])
+[31m-                    && elapsed >= target_deadline && stalled_target.is_none()
+(B[m[32m+                    && elapsed >= target_deadline
+(B[m[32m+                    && stalled_target.is_none()
+(B[m                 {
+                     stalled_target = Some(target);
+                     progress_deadline_elapsed = target_deadline;
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8771:
+                 failure = Some(WaitFailureKind::NoProgress);
+             }
+             if failure.is_none() && iterations % CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS == 0 {
+[31m-                let counter_delta = crate::arch_impl::aarch64::timer::elapsed_ticks(
+(B[m[31m-                    now,
+(B[m[31m-                    last_counter_sample,
+(B[m[31m-                );
+(B[m[32m+                let counter_delta =
+(B[m[32m+                    crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_counter_sample);
+(B[m                 if counter_delta == 0 {
+                     failure = Some(WaitFailureKind::CounterStall);
+                 }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8839:
+                 };
+             }
+ 
+[31m-            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick)
+(B[m[31m-                >= re_kick_ticks
+(B[m[31m-            {
+(B[m[32m+            if crate::arch_impl::aarch64::timer::elapsed_ticks(now, last_re_kick) >= re_kick_ticks {
+(B[m                 for &cpu in kick_cpus {
+                     crate::arch_impl::aarch64::gic::send_sgi(
+                         crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:8981:
+     if frequency == 0 {
+         return TestResult::Fail("exit-kick isolation counter unavailable");
+     }
+[31m-    let Some(test_phase_started_at) = crate::test_framework::test_phase_liveness_started_at() else {
+(B[m[32m+    let Some(test_phase_started_at) = crate::test_framework::test_phase_liveness_started_at()
+(B[m[32m+    else {
+(B[m         return TestResult::Fail("exit-kick isolation test-phase anchor unavailable");
+     };
+     // #522 C5 fix pass (V-8): this test is a second, deeper consumer of the
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:9031:
+         let mut spawn_failed = false;
+         for target in 0..3 {
+             let worker = Arc::clone(&accounting);
+[31m-            match crate::task::kthread::kthread_run_on_cpu_for_test(move || {
+(B[m[31m-                worker.progress[target].fetch_add(1, Ordering::Release);
+(B[m[31m-                while !worker.start.load(Ordering::Acquire) {
+(B[m[31m-                    if worker.abort.load(Ordering::Acquire) {
+(B[m[31m-                        return;
+(B[m[32m+            match crate::task::kthread::kthread_run_on_cpu_for_test(
+(B[m[32m+                move || {
+(B[m[32m+                    worker.progress[target].fetch_add(1, Ordering::Release);
+(B[m[32m+                    while !worker.start.load(Ordering::Acquire) {
+(B[m[32m+                        if worker.abort.load(Ordering::Acquire) {
+(B[m[32m+                            return;
+(B[m[32m+                        }
+(B[m[32m+                        crate::task::scheduler::yield_current();
+(B[m                     }
+[31m-                    crate::task::scheduler::yield_current();
+(B[m[31m-                }
+(B[m[31m-                let mut completion_published = false;
+(B[m[31m-                while !worker.abort.load(Ordering::Acquire) {
+(B[m[31m-                    if frozen != Some(target) {
+(B[m[31m-                        worker.progress[target].fetch_add(1, Ordering::Release);
+(B[m[31m-                        if !completion_published {
+(B[m[31m-                            worker.completed.fetch_or(1 << target, Ordering::Release);
+(B[m[31m-                            completion_published = true;
+(B[m[32m+                    let mut completion_published = false;
+(B[m[32m+                    while !worker.abort.load(Ordering::Acquire) {
+(B[m[32m+                        if frozen != Some(target) {
+(B[m[32m+                            worker.progress[target].fetch_add(1, Ordering::Release);
+(B[m[32m+                            if !completion_published {
+(B[m[32m+                                worker.completed.fetch_or(1 << target, Ordering::Release);
+(B[m[32m+                                completion_published = true;
+(B[m[32m+                            }
+(B[m                         }
+[32m+                        // Leave idle handoffs available to the concurrent strand
+(B[m[32m+                        // injection oracle during these deliberate fixture waits.
+(B[m[32m+                        // A 50ms sleep still advances live counters well within the
+(B[m[32m+                        // 300ms no-progress window; the frozen counter stays at one.
+(B[m[32m+                        crate::task::strand_oracle::sleep_sample_period();
+(B[m                     }
+[31m-                    // Leave idle handoffs available to the concurrent strand
+(B[m[31m-                    // injection oracle during these deliberate fixture waits.
+(B[m[31m-                    // A 50ms sleep still advances live counters well within the
+(B[m[31m-                    // 300ms no-progress window; the frozen counter stays at one.
+(B[m[31m-                    crate::task::strand_oracle::sleep_sample_period();
+(B[m[31m-                }
+(B[m[31m-            }, names[target], worker_cpus[target]) {
+(B[m[32m+                },
+(B[m[32m+                names[target],
+(B[m[32m+                worker_cpus[target],
+(B[m[32m+            ) {
+(B[m                 Ok(handle) => handles.push(handle),
+                 Err(_) => {
+                     spawn_failed = true;
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:9080:
+                 &worker_cpus,
+                 test_phase_started_at,
+                 started_at,
+[31m-            ).map_err(|failure| (failure, None))
+(B[m[32m+            )
+(B[m[32m+            .map_err(|failure| (failure, None))
+(B[m         } else {
+             spin_with_resched_workers(
+                 scenario,
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:9100:
+         };
+         let elapsed_ms = ticks_to_milliseconds(
+             crate::arch_impl::aarch64::timer::elapsed_ticks(
+[31m-                crate::arch_impl::aarch64::timer::rdtsc_serialized(), started_at,
+(B[m[31m-            ), frequency,
+(B[m[32m+                crate::arch_impl::aarch64::timer::rdtsc_serialized(),
+(B[m[32m+                started_at,
+(B[m[32m+            ),
+(B[m[32m+            frequency,
+(B[m         );
+         let final_progress = progress();
+         let completed = accounting.completed.load(Ordering::Acquire);
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:9112:
+         let mut joined = 0;
+         for (target, handle) in handles.iter().enumerate() {
+             if let Err(failure) = join_with_resched(
+[31m-                "isolation_cleanup", handle,
+(B[m[32m+                "isolation_cleanup",
+(B[m[32m+                handle,
+(B[m                 || accounting.progress[target].load(Ordering::Acquire),
+[31m-                &worker_cpus, test_phase_started_at, cleanup_started_at,
+(B[m[32m+                &worker_cpus,
+(B[m[32m+                test_phase_started_at,
+(B[m[32m+                cleanup_started_at,
+(B[m             ) {
+                 return TestResult::Fail(failure.message("exit-kick isolation cleanup stalled"));
+             }
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:9132:
+             return TestResult::Fail("exit-kick isolation spawn/join incomplete");
+         }
+         if let Some(frozen) = frozen {
+[31m-            if final_progress[frozen] != 1 || completed != (7 & !(1 << frozen))
+(B[m[32m+            if final_progress[frozen] != 1
+(B[m[32m+                || completed != (7 & !(1 << frozen))
+(B[m                 || (0..3).any(|i| i != frozen && final_progress[i] <= 2)
+             {
+[31m-                return TestResult::Fail("exit-kick isolation did not establish frozen/live workers");
+(B[m[32m+                return TestResult::Fail(
+(B[m[32m+                    "exit-kick isolation did not establish frozen/live workers",
+(B[m[32m+                );
+(B[m             }
+             if union {
+                 if !matches!(result, Err((WaitFailureKind::AbsoluteCeiling, None)))
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:9142:
+                     || elapsed_ms < ABSOLUTE_WAIT_CEILING_MILLISECONDS
+                     || elapsed_ms > ABSOLUTE_WAIT_CEILING_MILLISECONDS + 2_000
+                 {
+[31m-                    return TestResult::Fail("exit-kick isolation union did not mask stall until absolute ceiling");
+(B[m[32m+                    return TestResult::Fail(
+(B[m[32m+                        "exit-kick isolation union did not mask stall until absolute ceiling",
+(B[m[32m+                    );
+(B[m                 }
+             } else {
+[31m-                crate::serial_println!("[exit_kick_worker_isolation] expected_failure={}", failure_messages[frozen]);
+(B[m[32m+                crate::serial_println!(
+(B[m[32m+                    "[exit_kick_worker_isolation] expected_failure={}",
+(B[m[32m+                    failure_messages[frozen]
+(B[m[32m+                );
+(B[m                 if !matches!(result, Err((WaitFailureKind::NoProgress, Some(name))) if name == names[frozen])
+                     || elapsed_ms < FIRST_PROGRESS_WINDOW_MILLISECONDS
+[31m-                    || elapsed_ms > FIRST_PROGRESS_WINDOW_MILLISECONDS + NO_PROGRESS_WINDOW_MILLISECONDS
+(B[m[32m+                    || elapsed_ms
+(B[m[32m+                        > FIRST_PROGRESS_WINDOW_MILLISECONDS + NO_PROGRESS_WINDOW_MILLISECONDS
+(B[m                 {
+[31m-                    return TestResult::Fail("exit-kick isolation wrong target or per-worker deadline");
+(B[m[32m+                    return TestResult::Fail(
+(B[m[32m+                        "exit-kick isolation wrong target or per-worker deadline",
+(B[m[32m+                    );
+(B[m                 }
+             }
+[31m-        } else if result.is_err() || completed != 7
+(B[m[32m+        } else if result.is_err()
+(B[m[32m+            || completed != 7
+(B[m             || final_progress.iter().any(|value| *value < 2)
+             || elapsed_ms >= FIRST_PROGRESS_WINDOW_MILLISECONDS / 2
+         {
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    teardown_provider_is_rustfmt_clean
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
