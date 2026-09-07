@@ -1,0 +1,4 @@
+891ae034f8c0bb5de0b9ad400cf6524a7e92645c
+source_diff_exit=0
+46:warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+2a8657374dea30a8150f2fa9057ad8c876ebff52b3315f3f2f780826f952e859  target/aarch64-breenix-kernel/release/kernel-aarch64

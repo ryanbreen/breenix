@@ -1,0 +1,4 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 74978 (<unknown process>)
+[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=2000296:armed=0:acquired=1:holder_cpu=3:pm_busy_probe=0:calls=0:eagain=0:first_errno=18446744073709551615:first_wait_us=0:hold_safety=0:hold_done=1:joined=1:FAIL:arming_timeout]
+[FCNTL_PM_ARM_OBSERVATION:induced_same_cpu:select_cpu=1:peer=1:pin_cpu=1:entry_ticks=299282375:entry_cpu=3:held_from=299286250:arm_start=174251062:final_active=0:cancel_ticks=299271312:done_ticks=299792875:pre_unpin_ticks=299271562]

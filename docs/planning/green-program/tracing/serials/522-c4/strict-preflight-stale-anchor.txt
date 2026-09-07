@@ -1,0 +1,3 @@
+[GATE_PREFLIGHT:structure_suites=60/61:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 61 structure suite(s) red: strand_handoff_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t522c4/wt/.gate-tmp/breenix_gate_structure_preflight.pMfMCx)
+GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)

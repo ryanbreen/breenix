@@ -1,0 +1,1 @@
+{"number":869,"state":"OPEN","title":"aarch64 strict gate: fcntl contention oracle reds with FAIL:arming_timeout (arm_wait_us=2000241, armed=0, acquired=1) - 1 of 40 boots","url":"https://github.com/ryanbreen/breenix/issues/869"}

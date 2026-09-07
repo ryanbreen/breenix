@@ -1,0 +1,5 @@
+891ae034f8c0bb5de0b9ad400cf6524a7e92645c
+29cd64be8c28979f4366d528c5fafa0c0e7a6a1c1be928c0ba8da8e4c2fb8345  target/aarch64-breenix-kernel/release/kernel-aarch64
+QEMU emulator version 11.0.3
+Copyright (c) 2003-2026 Fabrice Bellard and the QEMU Project developers
+{ 13.63 28.63 19.32 }

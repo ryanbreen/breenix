@@ -376,11 +376,30 @@ impl Drop for Fixture {
     }
 }
 
+fn qmp_tool_available() -> bool {
+    Command::new("bash")
+        .args(["-c", "command -v socat >/dev/null 2>&1"])
+        .status()
+        .expect("bash must run the QMP tool availability check")
+        .success()
+}
+
 #[test]
 fn fake_qmp_dump_precedes_sigterm_even_when_decode_fails() {
     let mut fixture = Fixture::new(Some("success"));
     let (out, elapsed) = fixture.run(false, 8);
     fixture.terminate(); // the next action, mirroring the gate's first SIGTERM
+    if !qmp_tool_available() {
+        eprintln!("fake_qmp_dump_precedes_sigterm_even_when_decode_fails: socat missing; asserting qmp_tool_missing");
+        assert!(
+            out.starts_with("[QMP_DUMP:capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms="),
+            "{out}"
+        );
+        assert_eq!(out.lines().count(), 1);
+        assert!(elapsed.as_secs_f64() < 12.0);
+        return;
+    }
+    eprintln!("fake_qmp_dump_precedes_sigterm_even_when_decode_fails: socat present; asserting capture and SIGTERM ordering");
     assert!(out.starts_with("[QMP_DUMP:capture=complete:"), "{out}");
     assert!(
         out.contains(":decoded_events=-:"),
@@ -437,6 +456,17 @@ fn missing_socket_and_hung_dump_are_partial_and_bounded() {
     assert!(elapsed.as_secs_f64() < 2.0);
     let hanging = Fixture::new(Some("hang"));
     let (out, elapsed) = hanging.run(false, 3);
+    if !qmp_tool_available() {
+        eprintln!("missing_socket_and_hung_dump_are_partial_and_bounded: socat missing; asserting qmp_tool_missing for hang");
+        assert!(
+            out.contains("capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms="),
+            "{out}"
+        );
+        assert!(elapsed.as_secs_f64() < 10.0, "timeout took {elapsed:?}");
+        assert_eq!(hanging.log(), "", "missing tool sent QMP commands");
+        return;
+    }
+    eprintln!("missing_socket_and_hung_dump_are_partial_and_bounded: socat present; asserting QMP timeout after dump command");
     assert!(out.contains("capture=partial:reason=qmp_timeout:"), "{out}");
     assert!(elapsed.as_secs_f64() < 10.0, "timeout took {elapsed:?}");
     assert!(

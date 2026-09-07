@@ -1,0 +1,87 @@
+from pathlib import Path
+p=Path('kernel/Cargo.toml');s=p.read_text().replace('[features]\n','[features]\nfcntl_pm_arm_observation = ["boot_tests"]\n');p.write_text(s)
+p=Path('kernel/src/test_framework/registry.rs');s=p.read_text()
+module='''// Private investigative negative control; removed before acceptance builds.
+#[cfg(all(target_arch = "aarch64", feature = "fcntl_pm_arm_observation"))]
+mod fcntl_pm_arm_observation {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    // select CPU, chosen peer, pin CPU, body entry ticks/CPU, held_from,
+    // arm_start, final ACTIVE, cancellation ticks, completion ticks, pre-unpin.
+    static VALUES: [AtomicU64; 11] = [const { AtomicU64::new(u64::MAX) }; 11];
+    pub(super) fn record(index: usize, value: u64) {
+        VALUES[index].store(value, Ordering::Relaxed);
+    }
+    pub(super) fn cpu() -> u64 {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id()
+    }
+    pub(super) fn stamp(index: usize) {
+        record(index, crate::tracing::trace_timestamp());
+    }
+    pub(super) fn same_cpu(peer: Option<usize>) -> Option<usize> {
+        peer.map(|_| {
+            let chosen = cpu();
+            record(1, chosen);
+            chosen as usize
+        })
+    }
+    pub(super) fn emit() {
+        let values = VALUES.each_ref().map(|value| value.load(Ordering::Relaxed));
+        crate::serial_println!(
+            "[FCNTL_PM_ARM_OBSERVATION:induced_same_cpu:select_cpu={}:peer={}:pin_cpu={}:entry_ticks={}:entry_cpu={}:held_from={}:arm_start={}:final_active={}:cancel_ticks={}:done_ticks={}:pre_unpin_ticks={}]",
+            values[0], values[1], values[2], values[3], values[4], values[5],
+            values[6], values[7], values[8], values[9], values[10],
+        );
+    }
+}
+
+'''
+pos=s.index('/// Keep a test-oracle driver');s=s[:pos]+module+s[pos:]
+a=s.index('fn fcntl_pm_holder_body()');b=s.index('\n/// Keep a test-oracle driver',a) if '\n/// Keep a test-oracle driver' in s[a:] else -1
+# Scope changes to holder only, excluding the observation module.
+b=s.index('\n#[cfg(target_arch = "aarch64")]\nfn fcntl_pm_setfd_once',a)
+r=s[a:b]
+r=r.replace('without_interrupts(|| {\n', '''without_interrupts(|| {
+        #[cfg(feature = "fcntl_pm_arm_observation")]
+        {
+            fcntl_pm_arm_observation::stamp(3);
+            fcntl_pm_arm_observation::record(4, fcntl_pm_arm_observation::cpu());
+        }
+''',1)
+r=r.replace('        let held_from = crate::tracing::trace_timestamp();','''        let held_from = crate::tracing::trace_timestamp();
+        #[cfg(feature = "fcntl_pm_arm_observation")]
+        fcntl_pm_arm_observation::record(5, held_from);''')
+r=r.replace('    FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);','''    #[cfg(feature = "fcntl_pm_arm_observation")]
+    fcntl_pm_arm_observation::stamp(9);
+    FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);''')
+s=s[:a]+r+s[b:]
+a=s.index('pub fn run_fcntl_pm_contention_oracle()');b=s.index('\n#[cfg(target_arch = "aarch64")]\nfn test_fcntl',a)
+r=s[a:b]
+r=r.replace('        let mut driver_pin = Some(TestOracleDriverPin::enter());', '''        let mut driver_pin = Some(TestOracleDriverPin::enter());
+        #[cfg(feature = "fcntl_pm_arm_observation")]
+        fcntl_pm_arm_observation::record(2, fcntl_pm_arm_observation::cpu());''')
+r=r.replace('        let peer = live_peer_cpu_for_test();','''        #[cfg(feature = "fcntl_pm_arm_observation")]
+        fcntl_pm_arm_observation::record(0, fcntl_pm_arm_observation::cpu());
+        let peer = live_peer_cpu_for_test();''')
+r=r.replace('        if let Some(peer) = peer {','''        #[cfg(feature = "fcntl_pm_arm_observation")]
+        let peer = fcntl_pm_arm_observation::same_cpu(peer);
+        if let Some(peer) = peer {''')
+r=r.replace('                    let arm_start = crate::tracing::trace_timestamp();','''                    let arm_start = crate::tracing::trace_timestamp();
+                    #[cfg(feature = "fcntl_pm_arm_observation")]
+                    fcntl_pm_arm_observation::record(6, arm_start);''')
+r=r.replace('                    if FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {','''                    let final_active = FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire);
+                    #[cfg(feature = "fcntl_pm_arm_observation")]
+                    fcntl_pm_arm_observation::record(7, u64::from(final_active));
+                    if final_active {''')
+needle='                    FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);'
+pos=r.rindex(needle);r=r[:pos]+'''                    #[cfg(feature = "fcntl_pm_arm_observation")]
+                    fcntl_pm_arm_observation::stamp(8);
+'''+r[pos:]
+r=r.replace('                    drop(driver_pin.take());','''                    #[cfg(feature = "fcntl_pm_arm_observation")]
+                    fcntl_pm_arm_observation::stamp(10);
+                    drop(driver_pin.take());''')
+r=r.replace('        return arm.result();','''        #[cfg(feature = "fcntl_pm_arm_observation")]
+        if hold_done == 1 && joined == 1 {
+            fcntl_pm_arm_observation::emit();
+        }
+        return arm.result();''')
+s=s[:a]+r+s[b:];p.write_text(s)

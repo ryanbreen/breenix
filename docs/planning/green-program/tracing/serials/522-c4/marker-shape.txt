@@ -1,0 +1,31 @@
+Compared first (real gate) print_wait_evidence in 1648b840^ and HEAD d6fed392: byte-identical.
+markerShapeChanged: false
+
+    fn print_wait_evidence(evidence: WaitEvidence<'_>) {
+        // Keep evidence on the bracketed prefix. Only permanent FAIL messages
+        // use `exit_kick_gate:` so late_true=1 recovery cannot match the
+        // canonical `exit_kick_gate:.*unresponsive` failure grep.
+        crate::serial_println!(
+            "[exit_kick_gate] wait={} cause={} elapsed_ms={} window_budget_ms={} re_kick_sgis={} cpus_online={} condition_current={} condition_expected={} progress_work_start={} progress_work_final={} progress_exit_start={} progress_exit_final={} worker_1_progress_start={} worker_1_progress_final={} worker_2_progress_start={} worker_2_progress_final={} worker_3_progress_start={} worker_3_progress_final={} last_advance_ms_ago={} late_true={}",
+            evidence.wait_name,
+            evidence.failure.cause(),
+            evidence.elapsed_ms,
+            evidence.window_budget_ms,
+            evidence.re_kick_sgis,
+            crate::arch_impl::aarch64::smp::cpus_online(),
+            evidence.condition_current,
+            evidence.condition_expected,
+            evidence.progress_start.work,
+            evidence.progress_final.work,
+            evidence.progress_start.exit,
+            evidence.progress_final.exit,
+            evidence.progress_start.workers[0],
+            evidence.progress_final.workers[0],
+            evidence.progress_start.workers[1],
+            evidence.progress_final.workers[1],
+            evidence.progress_start.workers[2],
+            evidence.progress_final.workers[2],
+            evidence.last_advance_ms_ago,
+            evidence.late_true as u8,
+        );
+    }

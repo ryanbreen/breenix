@@ -1,0 +1,43 @@
+== compiling ext2_lock_structure ==
+== running ext2_lock_structure  ==
+
+running 36 tests
+test negative_marker_text_changed_is_rejected ... ok
+test negative_bare_prepare_to_wait_is_rejected ... ok
+test negative_aarch64_loses_interrupts_enabled_is_rejected ... ok
+test negative_missing_accessor_call_is_rejected ... ok
+test negative_marker_print_deleted_from_record_park_is_rejected ... ok
+test negative_missing_raw_write_site_is_rejected ... ok
+test negative_missing_can_sleep_gate_is_rejected ... ok
+test negative_missing_record_park_call_is_rejected ... ok
+test ext2_acquire_write_itself_calls_checked_wait ... ok
+test ext2_record_park_itself_prints_the_marker ... ok
+test negative_missing_release_in_drop_is_rejected ... ok
+test negative_missing_spin_fallback_is_rejected ... ok
+test ext2_acquire_itself_calls_record_park ... ok
+test negative_park_loop_deleted_from_one_function_is_rejected ... ok
+test negative_raw_fetch_add_alongside_record_park_is_rejected ... ok
+test ext2_acquire_itself_calls_checked_wait ... ok
+test negative_raw_fetch_add_instead_of_record_park_is_rejected ... ok
+test can_sleep_predicate_arch_split_is_correct ... ok
+test ext2_acquire_is_can_sleep_gated_with_a_spin_fallback ... ok
+test negative_raw_read_added_outside_the_three_functions_is_rejected ... ok
+test negative_raw_read_regression_is_rejected ... ok
+test negative_never_using_checked_wait_is_rejected ... ok
+test ext2_acquire_write_itself_calls_record_park ... ok
+test negative_run_one_reset_call_deleted_is_rejected ... ok
+test ext2_acquire_write_is_can_sleep_gated_with_a_spin_fallback ... ok
+test negative_third_raw_write_site_is_rejected ... ok
+test negative_wake_before_release_is_rejected ... ok
+test negative_x86_preempt_count_weakened_to_greater_than_zero_is_rejected ... ok
+test negative_x86_regains_interrupts_enabled_is_rejected ... ok
+test acquisition_paths_use_only_the_checked_timed_wait ... ok
+test run_one_itself_resets_the_park_marker ... ok
+test read_guard_drop_releases_before_waking ... ok
+test write_guard_drop_releases_before_waking ... ok
+test is_mounted_is_home_mounted_and_home_mount_id_route_through_the_accessor ... ok
+test no_raw_ext2_read_write_exists_file_wide ... ok
+test x86_can_sleep_preempt_count_check_is_exact_one ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
