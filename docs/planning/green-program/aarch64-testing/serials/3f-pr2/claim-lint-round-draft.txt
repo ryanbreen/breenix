@@ -1,0 +1,6 @@
+docs/planning/green-program/aarch64-testing/3F-PR2-2026-09-07.md:65: [unproven-claim] H3: the guard's home-accepting enqueue, hold, and not-waiting-here enqueue each call `send_resched_ipi_to_cpu(pin.cpu)` under aarch64 cfg. The helper's restoration push sends no kick. The five wake-path holds and the hold method are unch...
+    -> 'prove' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+
+claim-lint: 1 finding(s) across 29 file(s) [changed hunks vs 5a96f7fbadc1]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 87 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 1 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2/mutation-results.json

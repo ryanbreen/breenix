@@ -1,0 +1,202 @@
+   Compiling compiler_builtins v0.1.160 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core)
+error[E0432]: unresolved imports `core::arch::aarch64::uint8x8_t`, `core::arch::aarch64::vqtbl1q_u8`, `core::arch::aarch64::vtbl1_u8`
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/swizzle_dyn.rs:23:35
+   |
+23 |         use core::arch::aarch64::{uint8x8_t, vqtbl1q_u8, vtbl1_u8};
+   |                                   ^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^ no `vtbl1_u8` in `core_arch::arch::aarch64`
+   |                                   |          |
+   |                                   |          no `vqtbl1q_u8` in `core_arch::arch::aarch64`
+   |                                   no `uint8x8_t` in `core_arch::arch::aarch64`
+
+error[E0412]: cannot find type `float32x2_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:21:39
+   |
+21 |     from_transmute! { unsafe f32x2 => float32x2_t }
+   |                                       ^^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `float32x4_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:22:39
+   |
+22 |     from_transmute! { unsafe f32x4 => float32x4_t }
+   |                                       ^^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `uint8x8_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:24:38
+   |
+24 |     from_transmute! { unsafe u8x8 => uint8x8_t }
+   |                                      ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `uint8x16_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:25:39
+   |
+25 |     from_transmute! { unsafe u8x16 => uint8x16_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `int8x8_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:26:38
+   |
+26 |     from_transmute! { unsafe i8x8 => int8x8_t }
+   |                                      ^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `int8x16_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:27:39
+   |
+27 |     from_transmute! { unsafe i8x16 => int8x16_t }
+   |                                       ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `poly8x8_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:28:38
+   |
+28 |     from_transmute! { unsafe u8x8 => poly8x8_t }
+   |                                      ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `poly8x16_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:29:39
+   |
+29 |     from_transmute! { unsafe u8x16 => poly8x16_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `uint16x4_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:31:39
+   |
+31 |     from_transmute! { unsafe u16x4 => uint16x4_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `uint16x8_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:32:39
+   |
+32 |     from_transmute! { unsafe u16x8 => uint16x8_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `int16x4_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:33:39
+   |
+33 |     from_transmute! { unsafe i16x4 => int16x4_t }
+   |                                       ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `int16x8_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:34:39
+   |
+34 |     from_transmute! { unsafe i16x8 => int16x8_t }
+   |                                       ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `poly16x4_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:35:39
+   |
+35 |     from_transmute! { unsafe u16x4 => poly16x4_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `poly16x8_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:36:39
+   |
+36 |     from_transmute! { unsafe u16x8 => poly16x8_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `uint32x2_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:38:39
+   |
+38 |     from_transmute! { unsafe u32x2 => uint32x2_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `uint32x4_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:39:39
+   |
+39 |     from_transmute! { unsafe u32x4 => uint32x4_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `int32x2_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:40:39
+   |
+40 |     from_transmute! { unsafe i32x2 => int32x2_t }
+   |                                       ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `int32x4_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:41:39
+   |
+41 |     from_transmute! { unsafe i32x4 => int32x4_t }
+   |                                       ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `uint64x1_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:43:46
+   |
+43 |     from_transmute! { unsafe Simd<u64, 1> => uint64x1_t }
+   |                                              ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `uint64x2_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:44:39
+   |
+44 |     from_transmute! { unsafe u64x2 => uint64x2_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `int64x1_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:45:46
+   |
+45 |     from_transmute! { unsafe Simd<i64, 1> => int64x1_t }
+   |                                              ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `int64x2_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:46:39
+   |
+46 |     from_transmute! { unsafe i64x2 => int64x2_t }
+   |                                       ^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `poly64x1_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:47:46
+   |
+47 |     from_transmute! { unsafe Simd<u64, 1> => poly64x1_t }
+   |                                              ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `poly64x2_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:48:39
+   |
+48 |     from_transmute! { unsafe u64x2 => poly64x2_t }
+   |                                       ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `float64x1_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:72:46
+   |
+72 |     from_transmute! { unsafe Simd<f64, 1> => float64x1_t }
+   |                                              ^^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `float64x2_t` in this scope
+  --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vendor/arm.rs:73:39
+   |
+73 |     from_transmute! { unsafe f64x2 => float64x2_t }
+   |                                       ^^^^^^^^^^^ not found in this scope
+
+error[E0119]: conflicting implementations of trait `TryFrom<&[_]>` for type `vector::Simd<_, _>`
+    --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vector.rs:1067:1
+     |
+1067 | / impl<T, const N: usize> TryFrom<&[T]> for Simd<T, N>
+1068 | | where
+1069 | |     LaneCount<N>: SupportedLaneCount,
+1070 | |     T: SimdElement,
+     | |___________________^ conflicting implementation for `vector::Simd<_, _>`
+     |
+    ::: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/convert/mod.rs:813:1
+     |
+813  | / impl<T, U> TryFrom<U> for T
+814  | | where
+815  | |     U: Into<T>,
+     | |_______________- first implementation here
+
+error[E0119]: conflicting implementations of trait `TryFrom<&mut [_]>` for type `vector::Simd<_, _>`
+    --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/../../portable-simd/crates/core_simd/src/vector.rs:1080:1
+     |
+1080 | / impl<T, const N: usize> TryFrom<&mut [T]> for Simd<T, N>
+1081 | | where
+1082 | |     LaneCount<N>: SupportedLaneCount,
+1083 | |     T: SimdElement,
+     | |___________________^ conflicting implementation for `vector::Simd<_, _>`
+     |
+    ::: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core/src/convert/mod.rs:813:1
+     |
+813  | / impl<T, U> TryFrom<U> for T
+814  | | where
+815  | |     U: Into<T>,
+     | |_______________- first implementation here
+
+Some errors have detailed explanations: E0119, E0412, E0432.
+For more information about an error, try `rustc --explain E0119`.
+error: could not compile `core` (lib) due to 29 previous errors
