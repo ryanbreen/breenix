@@ -1,0 +1,4 @@
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/revert-message.txt -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg /Users/wrb/fun/code/breenix/.git/worktrees/wt9/COMMIT_EDITMSG -> exit 0

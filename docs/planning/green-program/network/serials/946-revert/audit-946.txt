@@ -1,0 +1,97 @@
+# Audit of PR 946 — acceptance incomplete; code correction required
+
+Audit date: 2026-09-07. Ran `git fetch -q origin` first in `/Users/wrb/fun/code/breenix` (exit 0). Committed-file citations below use fetched `origin/main` = `5be3ac04804741e4af3b662af5dd9ef36e94468a`. The inspected kernel, executor, strict gate and loopback structure test have no diff from merge `62924b47` to that head. Read-only repository audit: no checkout, repository edit, commit, build, boot, push, merge, or process termination was performed. The audit document and a committed-source copy of the claim linter were written only in this audit scratch directory.
+
+Contract: external `PLAN-586.md`, Q4 PR 3 acceptance, three forced legs, closing conditions 3–4, and Q2 R182 fixture list; ledger `/Users/wrb/.claude/workflow-ledgers/breenix-r22-minimal-2026-08-03.jsonl:1008`, ruling R220. R220 says “extension only when the guest is measurably not executing” and “verdict=dispatch ... stays RED and gate-failing”; it requires bounded, counted, printed extensions and the recorded always-extend ratchet outcome at land. The requested strict 3 + starvation + production 1 is also audited here. PLAN-586 additionally lists service-sequence 25+25; it is not silently dropped.
+
+“NOT executed” below means no execution receipt in the committed PR-3 evidence set, with the documents explicitly identifying missing runs where cited. It is not a claim about uncommitted or undisclosed runs elsewhere. Host fixture output is not a guest boot receipt.
+
+| Contract item | Finding and committed evidence |
+| --- | --- |
+| Extensions only on measured starvation | IMPLEMENTED INCORRECTLY. `kernel/src/test_framework/registry.rs:3056` computes `starved`, but `:3072` grants with `if reader_pending && reader_runnable && grant_ms > 0`. The starvation value is absent from the guard and policy arguments. No extended guest execution was captured. |
+| Finite bound and printed accounting | IMPLEMENTED; nonextended print path EXECUTED. `registry.rs:2613` sets `HARD_CAP_MS=200`; `:2626` computes initial budget plus capped extension allowance; `:2639` subtracts used allowance; `:3073` accumulates granted milliseconds. `:3307` emits extensions, cap, and bound. Landing `docs/planning/net/586-pr3/serials/serial.txt:414` prints `extensions=0:extension_cap_ms=200:extension_bound_ms=400`. No boot proves cap exhaustion or extended-failure output. |
+| Strict marker list updated | IMPLEMENTED at `docker/qemu/run-aarch64-boot-test-strict.sh:415`: the kernel-image profile guard includes `'[LOOPBACK_WAKE_BUDGET:'`. `tests/loopback_pump_structure.rs:4927` checks that guard. This is an ELF literal requirement, not a new serial score-only requirement. |
+| New starvation harness | IMPLEMENTED as `docker/qemu/run-aarch64-starved-loop.sh:1`. Shell syntax check EXECUTED per landing round doc `:26`; actual loop NOT executed. Implementation round doc `docs/planning/586-pr3/round-doc.md:84`–90 explicitly limits it to shell validation. Script `:57` delegates strict boots; `:74`–85 reads each serial and requires strict exit 0 plus at least one recovered idle test. |
+| R182 fixture re-record | NOT executed. Neither required fixture appears in `git diff 70aec756..62924b47 --stat`. Neither committed fixture contains `LOOPBACK_WAKE_BUDGET`. Canonical draft `docs/planning/green-program/network/586-PR3-2026-09-07.md:71`–73 says re-recording remains unrun. Landing round doc `docs/planning/net/586-pr3/round-doc.md:17` asserts it is unnecessary because main did not advance and another suite is absent; that does not discharge the supplied PLAN-586 requirement. The narrower technical observation is that the actual change grew the ELF guard, not the serial scorer. |
+| Wake-defect injection remains red with verdict=wake | NOT executed as a real boot. Canonical draft `:29`–36 records the unresolved permanent-suppression semantics; `:71`–72 says the three boot mutations remain unrun. Host fixture `tests/fixtures/guest_budget.rs:72`–75 simulates a blocked reader and other failures. |
+| Extension-deleted reproduces starved red | NOT executed as a real boot. `docs/planning/586-pr3/serials/policy-mutations.txt:11`–12 says `fixture: before verdict=starved extensions=0 FAIL` then `fixture: after verdict=starved extensions=100 PASS`. These are deterministic host outputs, as implementation round doc `:47` and `:84`–86 explicitly state. |
+| Always-extend makes wake-defect boot green AND ratchet red | NOT executed as the required combined real-boot control. A host ratchet red WAS executed: policy transcript `:19`–35 records four child fixture failures; `:57`–60 records successful parent mutation checks. An earlier source-guard deletion also failed: `docs/planning/green-program/network/serials/586-pr3/always-extend-ratchet.txt:7` says “extension must require a pending runnable reader, measured starvation and remaining capacity”; `:19` records `exit=101`. That earlier validator describes the draft, not the merged guard. Neither transcript records a wake-defect guest PASS. |
+| Real verdict=starved, extensions>0, test PASS | NOT executed. Landing serial `:414` has `test=when_idle ... ctx_delta=92:extensions=0 ... verdict=ok`, followed by `[TEST:network:loopback_recv_wake_when_idle:PASS]` at `:415`. `:446` has `test=under_load ... ctx_delta=315:extensions=0 ... verdict=ok`, with PASS at `:447`. Landing round doc `:36`–37 explicitly declines recovery evidence. |
+| Strict 3 | NOT executed as a three-boot proof. Strict 1 WAS executed: `docs/planning/net/586-pr3/serials/strict.txt:23` says `Iterations: 1`; `:48` says `PASS: 1/1 boots succeeded`. Sidecar `gate_boot_facts.txt:1` says `[GATE_BOOT_FACTS:boot=1:host_ms=1788803391066-1788803450603:qemu_at_start=0:load_at_start=5.08:qemu_at_end=1:load_at_end=7.10:qemu_cpu_s=88.46:guest_uptime_ms=59355:ended_by=scored_pass]`. This supports one scored boot, not strict 3 or starvation. |
+| Production 1 | NOT executed. Canonical draft `:71`–72 explicitly lists production 1 unrun. Landing doc `:29`–37 and its serials record only strict 1; no production receipt is present in these PR-3 directories. |
+| Service-sequence 25+25 | NOT executed in the committed PR-3 evidence. The captured gate identifies itself as strict at `strict.txt:19` and has one iteration. The PR-3 file inventory contains no service-sequence run. This PLAN-586 obligation is separate from strict 3. |
+| R220 battery attribution deletion | NOT established by committed PR-3 files. Canonical draft `:72`–73 declines justification for deletion. R220(d) requires deletion at PR-3 land; the attribution roster is external battery bookkeeping, so repository evidence cannot certify its update. Confirm and record its disposition without treating the missing acceptance proofs as satisfied. |
+
+Additional executed work: landing `serials/strict.txt:1` records `structure_suites=64/64`; landing `serials/loopback.txt:134` records `128 passed; 0 failed`. The implementation doc `:67`–70 records a boot_tests build with the existing pinned-core warning; landing doc `:20`–24 says no rebuild occurred during landing. Consequently the one boot is evidence for the existing ELF, with SHA256 recorded in `strict.txt:9`, not evidence of a fresh merged-head build. Build provenance should be explicit in the follow-up.
+
+## Document locations and authority
+
+There are three PR-3 round documents, plus the roadmap pointer:
+
+1. `docs/planning/green-program/network/586-PR3-2026-09-07.md`: required canonical location. Lines 1 and 6–7 label an incomplete draft with no boots; lines 13–17 describe an obsolete four-extension policy. It is historical draft evidence, not an accurate final-code description or complete landing account.
+2. `docs/planning/586-pr3/round-doc.md`: implementation-stage account, introduced with implementation commit `61994692`. Lines 11–19 describe the replacement CAP; lines 79–90 admit eligibility is independent of starvation and evidence is a host fixture. It is authoritative for what that implementation stage claims, but its pending strict/commit status is superseded by the landing receipt.
+3. `docs/planning/net/586-pr3/round-doc.md`: latest landing account, added by `8465739e`; lines 5 and 31–37 link the implementation account and record strict 1. This is the authoritative committed account of the actual landing run, supported by raw serials, but cannot override PLAN-586/R220. Its “optional” contention wording at line 52 and fixture waiver at line 17 conflict with the supplied acceptance contract.
+4. `docs/planning/PROJECT_ROADMAP.md:14`–15: summary and link to the landing account; it is not another round doc.
+
+Evidence directories are `docs/planning/green-program/network/serials/586-pr3/` (draft build, structure and old source mutation), `docs/planning/586-pr3/serials/` (replacement policy/build/host tests), and `docs/planning/net/586-pr3/serials/` (landing checks and one strict boot). Preserve provenance and chronology; a later document does not transform host tests into guest evidence. No existing single document is an authoritative, complete acceptance record. Consolidate into the required green-program document, with the contract authoritative for acceptance and raw receipts authoritative for execution.
+
+## Merged code versus the design
+
+The requested `git diff 70aec756..62924b47 --stat` reports 33 files changed, 2525 insertions, 52 deletions. Functional scope: registry 149 changed lines, executor 11, strict gate 2, new starvation script 86, new host fixture 76, and loopback structure suite 92. The other changes are documents/serials and roadmap. The two R182 serial fixtures are not changed. Merge history is implementation `61994692`, landing evidence `8465739e`, merge `62924b47` at 2026-09-07T13:51:58-04:00.
+
+**codeMatchesContract = false.** This conclusion follows from the source independently of missing proof. At `registry.rs:2633`–2648 the grant function accepts no tick-clock input or starved boolean. It refuses fewer than 30 switches, then grants 50 or 100 ms based on elapsed counter time versus 75%/90% of allocated sleep. At `:3072` the caller does not require `starved`. The existing measured classifier is context delta below 30 OR counter/tick ratio above 4 (`:2652`–2655, `:2670`, `:2686`–2687).
+
+Concrete source-derived counterexample, not an executed test: pending Ready reader, tick=200 ms, counter=200 ms, switches=30, used extensions=0. The classifier says nonstarved, yet the policy grants 100 ms. If the reader runs during that extra interval and receives three bytes, `:3364`–3365 returns Pass. Thus an initial dispatch failure can be hidden. Conversely a low-switch starved window gets zero from the current policy. Simply recording `saw_starved` does not constrain grants.
+
+A terminal emitted `verdict=dispatch` still implies a missing wake stamp and returns Fail (`:3210`–3217, `:3331`–3345); executor `kernel/src/test_framework/executor.rs:837`–850 emits Fail and marks failure, and strict `:532`–537 rejects aggregate boot failures. However, that is weaker than refusing an extension and failing at the first measured dispatch deadline. Furthermore `:3208` gives remembered starvation precedence even when a later uncompleted window is dispatch; preserve a terminal defect verdict rather than hiding it behind earlier starvation.
+
+The finite allocation part is sound by inspection: initial 200 ms plus at most 200 ms extra, printed bound 400 ms. This is a cap on requested sleep, not host wall time. `extensions` is accumulated milliseconds, not a number of grants (implementation doc `:31`–33); make units explicit or add a separate grant count if retaining the plan's count grammar. Normal terminal pass/fail emits the budget marker; early setup failures bypass that emitter, although executor now prints cap/bound on their Fail marker.
+
+Tests also need correction: `tests/loopback_pump_structure.rs:4913` pins the guard without starvation. Its current always-extend test mutates a wrapper in the host fixture (`tests/fixtures/guest_budget.rs:4`–8), not the production guard. The green host suite therefore does not certify the R220 condition.
+
+## Follow-up PR remediation and commands
+
+The commands below are a future execution plan, not commands run during this audit. Run in a newly authorized isolated follow-up checkout at a recorded revision; use its own absolute TMPDIR/BREENIX_GATE_TMP. Do not reuse another lane's checkout or existing ELF without provenance.
+
+1. Restore grant eligibility to pending, observed runnable, measured starved, and finite remaining allowance. Align the helper with the classifier so low-switch starvation is not automatically refused by the opposite context threshold. Keep first-deadline wake/dispatch failures red. Record a recovered starvation verdict only for a successful recovery; retain terminal defect classification on failures. Update tests to exercise the production decision with both divergent and normal clocks, including the concrete dispatch counterexample above. Mutation of the production starvation guard must fail the ratchet; retain finite-cap tests. State extension units/count unambiguously.
+2. Resolve the always-extend experiment semantics before claiming acceptance. Permanent waiter-wake suppression cannot become a PASS merely from bounded waiting while a nonzero wake stamp and three bytes remain mandatory (canonical draft `:29`–36). A time-bounded delayed-wake injection may make the requested comparison meaningful, but it requires an explicit contract clarification; it must not silently replace the #545-shaped permanent suppression. Do not weaken the success checks to manufacture the requested outcome.
+3. Build and run corrected-source proofs, capturing command, revision, patch, ELF hash, exit status, full serial and sidecars. Existing executable commands are:
+
+```bash
+export TMPDIR="$PWD/.audit946-tmp"
+export BREENIX_GATE_TMP="$PWD/.audit946-gates"
+mkdir -p "$TMPDIR" "$BREENIX_GATE_TMP"
+set -o pipefail
+bash scripts/run-structure-tests.sh
+bash scripts/run-structure-tests.sh loopback_pump_structure
+bash scripts/run-structure-tests.sh loopback_pump_structure loopback_guest_budget
+cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+BREENIX_GATE_TMP="$PWD/.audit946-gates/strict" bash docker/qemu/run-aarch64-boot-test-strict.sh 3
+BREENIX_GATE_TMP="$PWD/.audit946-gates/starved" bash docker/qemu/run-aarch64-starved-loop.sh 100 14
+BREENIX_GATE_TMP="$PWD/.audit946-gates/service" bash docker/qemu/run-aarch64-service-sequence-gate.sh --boots 25 --profile both
+BREENIX_GATE_TMP="$PWD/.audit946-gates/prod" bash docker/qemu/run-aarch64-prod-profile-boot-test.sh
+```
+
+Ensure the required userspace/ext2 inputs are prepared in that follow-up checkout. Production gate builds the production kernel itself; run it after boot_tests legs or rebuild boot_tests before returning to them. A starved loop with zero recovered boots fails its own acceptance even if strict passes. Preserve failures and report the observed recovery rate; do not relabel an unexercised run as success.
+
+4. Three real-boot mutation legs remain required. There is no committed PR-3 command implementing these injections. Author and commit reviewable mutation patches/harness in the follow-up, then record their exact application and restoration commands. After applying the wake-suppression patch, rebuild using the exact cargo command above and run `BREENIX_GATE_TMP="$PWD/.audit946-gates/wake-defect" bash docker/qemu/run-aarch64-boot-test-strict.sh 1`; require wake FAIL and nonzero gate exit. After applying the extension-deleted patch to restored corrected source, rebuild and run `BREENIX_GATE_TMP="$PWD/.audit946-gates/no-extension" bash docker/qemu/run-aarch64-starved-loop.sh 100 14`; require a captured starved wake-test FAIL, not merely zero recoveries or an unrelated gate failure. For the agreed always-extend plus wake-defect combination, rebuild and run `BREENIX_GATE_TMP="$PWD/.audit946-gates/always-extend" bash docker/qemu/run-aarch64-boot-test-strict.sh 1` and `bash scripts/run-structure-tests.sh loopback_pump_structure`; require the specified wake-test PASS and a failing production-guard ratchet. Exact patch commands cannot honestly be supplied before those missing patches and disputed semantics exist. Record mutation diffs/hashes and restoration; rerun the unmutated positive proofs on the final source.
+5. Re-record both PLAN-586/R182 fixtures from actual corrected-head boots: strict serial to `tests/fixtures/udp-socket-lock-aarch64-serial.txt`; production serial to `docs/planning/green-program/aarch64-testing/serials/slice3e/02-prod-boot1-serial.txt`. Copy the full captured serials without hand-inserting markers; record origin revision/profile. Production should retain its appropriate absence of boot_tests markers. Validate with:
+
+```bash
+BREENIX_STRICT_SCORE_ONLY="$PWD/tests/fixtures/udp-socket-lock-aarch64-serial.txt" bash docker/qemu/run-aarch64-boot-test-strict.sh 1
+BREENIX_PROD_SCORE_ONLY="$PWD/docs/planning/green-program/aarch64-testing/serials/slice3e/02-prod-boot1-serial.txt" bash docker/qemu/run-aarch64-prod-profile-boot-test.sh
+bash scripts/run-structure-tests.sh loopback_pump_structure
+bash scripts/run-structure-tests.sh ttbr0_shadow_reconciliation_structure
+bash scripts/run-structure-tests.sh tty_irq_fg_structure
+bash scripts/run-structure-tests.sh tty_irq_pm_structure
+```
+
+6. Consolidate into ONE `docs/planning/green-program/network/586-PR3-2026-09-07.md`: final policy, contract deviations/rulings, historical strict 1, new evidence matrix, mutation outcomes, fixture provenance, build-warning disposition and explicit remaining work. Move/cross-reference serials with collision-free names and preserved bytes. Remove the two competing round docs after transferring their evidence and update the roadmap link. Verify the external battery roster disposition required by R220(d); do not assert issue closure from this PR's present evidence.
+
+```bash
+python3 scripts/claim-lint.py --files docs/planning/green-program/network/586-PR3-2026-09-07.md
+```
+
+This is a code-and-proof follow-up, not a documentation-only repair.
+
+Audit validation: `python3 scripts/claim-lint.py --files AUDIT-946.md --repo-root /Users/wrb/fun/code/breenix` returned exit 0: `claim-lint: clean (1 file(s) checked, whole files).` The script used is the byte-for-byte `git show origin/main:scripts/claim-lint.py` copy under this audit directory; no repository script was edited.
