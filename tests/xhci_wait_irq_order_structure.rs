@@ -40,7 +40,7 @@
 //! cannot satisfy a check that only looks at code, and `deliberately_broken_
 //! copies_redden_the_rules` demonstrates that at the bottom of this file by
 //! mutating in-memory copies back to each pre-fix ordering (plus one comment
-//! that lies about it) and asserting each rule reddens (8 of 8 mutations).
+//! that lies about it) and asserting each rule reddens (11 of 11 mutations).
 //!
 //! This is a narrow structural invariant over one file's call-site ordering,
 //! not hardware-race emulation or a general Rust control-flow checker.
@@ -377,8 +377,16 @@ fn doorbell_call_callers(source: &str) -> Result<Vec<(usize, String)>, String> {
         while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
             cursor -= 1;
         }
-        if source[..cursor].ends_with("fn") {
-            // The definition site: `fn ring_doorbell(...) { ... }`.
+        let is_definition_site = cursor >= 2
+            && mask[cursor - 2]
+            && mask[cursor - 1]
+            && &source[cursor - 2..cursor] == "fn";
+        if is_definition_site {
+            // The definition site: `fn ring_doorbell(...) { ... }`. Both
+            // bytes of "fn" must themselves be code (not inside a comment
+            // or string) -- a comment that happens to end in the literal
+            // text "fn" must not cause a real call site to be mistaken for
+            // this definition (#482 review fix pass, X-7).
             continue;
         }
         let containing = enclosing_function(&spans, offset).ok_or_else(|| {
@@ -398,7 +406,13 @@ fn write32_calls_targeting_db_base(source: &str) -> Result<Vec<usize>, String> {
     let mut hits = Vec::new();
     for offset in identifier_offsets(source, &mask, "write32") {
         let mut cursor = offset + "write32".len();
-        while cursor < bytes.len() && mask[cursor] && bytes[cursor].is_ascii_whitespace() {
+        // Skip both whitespace AND any masked-out span (a comment) between
+        // the identifier and its opening paren -- matching the same
+        // "!mask[cursor] || whitespace" idiom `function_spans` already uses
+        // above, so a comment token here cannot make this call evade the
+        // scan the way a bare whitespace-only skip did (#482 review fix
+        // pass, X-8).
+        while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
             cursor += 1;
         }
         if bytes.get(cursor) != Some(&b'(') {
@@ -940,5 +954,55 @@ fn deliberately_broken_copies_redden_the_rules() {
     assert!(
         validate_activation_arms_before_probe(&activation_reordered).is_err(),
         "must redden when activation queues its probe before enabling the SPI"
+    );
+
+    // --- Mutation 9 (#482 review fix pass, X-16): same command-ordering
+    // revert as Mutation 1, but the lying comment now quotes the 7/7 marker
+    // string `validate_command_arms_before_publish` searches for, VERBATIM
+    // -- a stronger adversary than Mutation 1b's differently-worded lie.
+    // Proves `first_code_occurrence`'s mask-based matching ignores an
+    // occurrence even when its bytes are byte-identical to the real
+    // needle, because the occurrence sits inside a comment. ---
+    let command_reverted_with_needle_comment = replace_once(
+        &command_reverted,
+        "    let transient_irq = enable_irq_for_wait(state);\n",
+        "    // Already correct, honest: XHCI_COMMAND_WAITING.store(true, Ordering::Relaxed); enable_irq_for_wait(state); enqueue_command(trb); ring_doorbell(state, 0, 0); wait_timeout_uninterruptible(0); XHCI_COMMAND_WAITING.store(false, Ordering::Relaxed); disable_transient_irq_after_wait(state, transient_irq);\n    let transient_irq = enable_irq_for_wait(state);\n",
+    );
+    assert!(
+        validate_command_arms_before_publish(&command_reverted_with_needle_comment).is_err(),
+        "a comment quoting every marker string verbatim must not satisfy the positional \
+         check -- only the real (still-wrong-order) code occurrences may count"
+    );
+
+    // --- Mutation 10 (#482 review fix pass, X-7): an unclassified fifth
+    // doorbell caller (same shape as Mutation 5) whose `ring_doorbell(`
+    // call is immediately preceded, modulo whitespace only, by a comment
+    // that itself ends in the literal text `fn`. Proves the definition-site
+    // exclusion in `doorbell_call_callers` reads the code mask, not raw
+    // text, when deciding whether an occurrence is the
+    // `fn ring_doorbell(...)` definition -- a comment ending in `fn` must
+    // not cause a real call to be silently dropped from the census. ---
+    let rogue_caller_after_fn_comment = format!(
+        "{fixed}\n\nfn rogue_doorbell_caller_482_comment(state: &XhciState) {{\n    // returns fn\n    ring_doorbell(state, 9, 9);\n}}\n"
+    );
+    assert!(
+        validate_doorbell_census(&rogue_caller_after_fn_comment).is_err(),
+        "must redden when an unclassified caller's ring_doorbell( call is preceded \
+         (modulo whitespace) by a comment ending in the literal text `fn`"
+    );
+
+    // --- Mutation 11 (#482 review fix pass, X-8): a raw db_base write via
+    // write32 with a comment between the identifier and its opening paren
+    // (`write32 /* ... */ (state.db_base, 0)`). Proves Rule 2's write32(
+    // scan skips comments, not only whitespace, when locating the call's
+    // argument list -- the same evasion Mutation 7 proves for a bare
+    // `write32(...)` call, one token gap harder. ---
+    let evading_write_commented = format!(
+        "{fixed}\n\nfn evading_doorbell_write_482_commented(state: &XhciState) {{\n    write32 /* doorbell */ (state.db_base, 0);\n}}\n"
+    );
+    assert!(
+        validate_db_base_write_pinned_to_ring_doorbell(&evading_write_commented).is_err(),
+        "must redden when a direct db_base write32( call has a comment between the \
+         identifier and its opening paren"
     );
 }

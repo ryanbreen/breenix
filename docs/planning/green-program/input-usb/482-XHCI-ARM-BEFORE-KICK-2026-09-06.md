@@ -64,7 +64,7 @@ untouched.
 
 ## 3. Structural ratchet
 
-`tests/xhci_wait_irq_order_structure.rs` (new, 946 lines). Std-only,
+`tests/xhci_wait_irq_order_structure.rs` (introduced by this round; extended in §10). Std-only,
 compiled directly via `rustc --test` per this repo's
 `scripts/run-structure-tests.sh` convention (no `cargo test` — see that
 script's header on why). Reuses the `code_mask`/`identifier_offsets`/
@@ -122,12 +122,30 @@ stopped matching the real code would be caught:
   it (the function does not call `ring_doorbell(`), then that rule 2 does.
 - Mutation 8: `activate_msi_if_ready_locked` reordered to queue its probe
   before enabling the SPI → rule 8 reddens.
+- Mutation 9 (review fix pass, X-16): same command-arm revert as Mutation 1,
+  but the lying comment now quotes the 7/7 marker strings
+  `validate_command_arms_before_publish` searches for, verbatim → rule 3
+  still reddens (a comment byte-identical to the real needle still doesn't
+  satisfy a positional, mask-based check).
+- Mutation 10 (review fix pass, X-7): an unclassified fifth doorbell caller
+  whose `ring_doorbell(` call is preceded, modulo whitespace, by a comment
+  ending in the literal text `fn` → rule 1 still reddens (the
+  definition-site exclusion no longer trusts raw text across a comment
+  boundary).
+- Mutation 11 (review fix pass, X-8): a raw `db_base` write via `write32`
+  with a comment between the identifier and its opening paren → rule 2
+  still reddens (the call-site scan now skips comments, not only
+  whitespace, between `write32` and `(`).
 
 Local result: `bash scripts/run-structure-tests.sh xhci_wait_irq_order_structure`
 → **10/10 tests green** (9 positive rules/sanity + the mutation leg covering
-8 mutations). The full strict-gate structure preflight (below) shows
+11 mutations, after this round's own review fix pass added three — see
+§10). The full strict-gate structure preflight quoted in §5's table
+(the original round's boot gate, unchanged by this fix pass) shows
 `structure_suites=54/54` — this file is included and discovered
-automatically, no closed name list to edit.
+automatically, no closed name list to edit; §10 records this fix pass's own
+host-side (no-boot) re-run of the full preflight against the now-55-file
+tree.
 
 ## 4. Claim-lint
 
@@ -150,13 +168,55 @@ each boot). Screen-lock was checked before every leg that injects input via
 (`/opt/homebrew/bin/python3 -c "import Quartz; ...CGSSessionScreenIsLocked"` —
 `0` every time this round; no wait was ever needed).
 
+The 9/9 confirmed `cargo build` logs behind the runs in the table below (baseline
+×3, launcher-smoke ×3, and `type-filter/run2-pass` — confirmed via each
+preserved `run-sh.log`; lifecycle ×2 — confirmed via each `run-sh-stdout.txt`)
+record the identical pre-existing toolchain future-incompatibility notice on
+`core v0.0.0` (`warning: the following packages contain code that will be
+rejected by a future version of Rust: core v0.0.0 (...)`). It is the only
+warning any of these nine confirmed build logs produce, predates this
+round's `xhci.rs` change (a toolchain/nightly note about the `core` crate,
+unrelated to the USB driver), and is disclosed once here rather than
+repeated per row — the strict-gate row below states it too, for that row's
+own separate build.
+
 | Leg | Invocation | Result |
 |---|---|---|
 | **Failing baseline** (unmodified `origin/main` @ `45daec35`, separate worktree) | `bash scripts/parallels/launcher-smoke.sh --max-inject-retries 0 --timeout 1200` | **3/3 RESULT: PASS** — no failure caught in 3 attempts. Consistent with the RCA's own characterization of an intermittent race (2/6 in the prior evidence sweep); this session did not reproduce a fresh failure on main. All three preserved (`serials/482/baseline/run{1,2,3}/`). |
-| Original failing workload (fixed branch) | `bash scripts/parallels/launcher-smoke.sh --max-inject-retries 0 --timeout 1200` | **3/3 RESULT: PASS.** Each run: real mouse+keyboard+composite-device enumeration through device/configuration descriptors, `[bterm] config:` and `[bterm] spawned child pid=` both observed. Preserved: `serials/482/launcher-smoke/run{1,2,3}/`. |
+| Original failing workload (fixed branch) | `bash scripts/parallels/launcher-smoke.sh --max-inject-retries 0 --timeout 1200` | **3/3 RESULT: PASS.** Each run: `hid-poll-line.txt` (grepped from the full `$SERIAL_LOG`) shows `start_hid_polling`'s real per-device slot/DCI summary for mouse+keyboard+its NKRO/composite report — reached only after `configure_hid` succeeds for both devices — and `[bterm] config:`/`[bterm] spawned child pid=` are both observed in each `serial-excerpt.txt`. Preserved: `serials/482/launcher-smoke/run{1,2,3}/`. See the evidence-fidelity note below the table for what raw `[xhci]` descriptor traffic is and is not additionally preserved per run. |
 | Carried type-filter check | `bash scripts/parallels/launcher-smoke.sh --max-inject-retries 0 --timeout 1200 --type-filter` | **1/1 RESULT: PASS**, on the second attempt. The first attempt hit an unrelated stall in init's boot-time self-test battery at `CLONEVM_EXEC_TEST: second stage` (clone/exec, not xHCI — full xHCI enumeration had already completed cleanly, slots 1/2/3, before the stall; see §6). Killed and preserved as a non-xHCI finding at `serials/482/type-filter/run1-stalled-clonevm-unrelated/`; the retry passed cleanly and is preserved at `serials/482/type-filter/run2-pass/result.txt`. |
 | Passive lifecycle comparison | `./run.sh --parallels --test 120` | **2/2**: clean enumeration (slots 1/2/3, no `enum_failed` line), full service lifecycle reached, bwm compositing live (~200 fps) at the end of both 120s windows. Preserved: `serials/482/lifecycle/run{1,2}/` (serial log + run.sh stdout + screenshot each). |
 | Standing aarch64 QEMU regression gate | `./docker/qemu/run-aarch64-boot-test-strict.sh 3` (on a fresh `cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`, 0 warnings besides the pre-existing toolchain future-incompat notice) | **3/3 boots succeeded** (100%), structure preflight `structure_suites=54/54`. Preserved: `serials/482/strict-gate/strict-gate-3boots.txt`. |
+
+**Evidence-fidelity note on raw `[xhci]` descriptor traffic (fixed-branch
+legs above):** the 4/4 fixed-branch runs cited in the table
+(`launcher-smoke/run{1,2,3}` and `type-filter/run2-pass`) preserve
+`hid-poll-line.txt`, grepped from the authoritative, un-truncated
+`$SERIAL_LOG` — not from `serial-excerpt.txt`, which starts at the
+launcher-trigger event and does not cover early boot. Raw `[xhci]`
+port-scan/EnableSlot descriptor-fetch lines are additionally preserved
+verbatim in `run-sh.log` for `launcher-smoke/run1` and `run3` (44 matching
+lines each). They are NOT present in `launcher-smoke/run2`'s or
+`type-filter/run2-pass`'s `run-sh.log` (0 matching lines in either — those
+two `run-sh.log` files captured only the build/deploy phase, not the tailed
+guest serial, an evidence-capture gap in this round's harness invocation
+rather than a device- or enumeration-level difference: both runs' own
+`hid-poll-line.txt` reports the identical successful `mouse=slot1/dci3 ...
+kbd=slot2/dci3 nkro=dci5` summary as run1/run3). This fix pass hardens
+`launcher-smoke.sh` (§10 below) to always capture the raw `[xhci]` trail
+into a dedicated `xhci-enum-excerpt.txt` per run going forward; it does not
+retroactively regenerate evidence for the four runs already completed
+above.
+
+**`launcher-smoke/run1`'s post-enter capture:** `smoke-log.txt` records
+`capture (post-enter) failed (non-fatal); see capture.log` at 22:12:48;
+`capture.log` shows three capture attempts against a black/near-black frame
+(the harness's own VirGL-warmup non-fatal path — this leg's PASS verdict
+does not depend on the post-enter screenshot). `display-post-enter.png` and
+`display-post-enter.png.stats.json` are accordingly absent from `run1`'s
+evidence directory (present for `run2`, `run3`, and
+`type-filter/run2-pass`); this was not called out in the table above and is
+disclosed here (X-22).
 
 **Manual input leg** (at least once on a qualifying boot, per the acceptance
 spec): performed on a fresh, dedicated boot (`breenix-1788749740`).
@@ -198,7 +258,8 @@ spec): performed on a fresh, dedicated boot (`breenix-1788749740`).
   for whoever next needs guest-side telnet access.
 
 **Mutation testing** (structural ratchet): 10/10 tests pass on the real
-source; all 8 named mutations independently redden their target rule (§3).
+source; the 11 numbered mutations (plus variant 1b) redden their target
+rule (§3), including the three added in this review fix pass (§10).
 
 ## 6. The type-filter leg's first attempt: an unrelated stall, not an xHCI failure
 
@@ -281,3 +342,128 @@ no x86 analogue and no x86 leg was run for this mechanism.
   `--no-build`; caught before it produced evidence, killed, and restarted
   without the flag to match the plan's exact invocation letter-for-letter
   (§5's lifecycle row reflects only the corrected run).
+
+## 10. Review fix pass (astra:low, 2026-09-06/07): six findings closed
+
+A review of this round's own PR found six findings against `tests/
+xhci_wait_irq_order_structure.rs`, `scripts/parallels/launcher-smoke.sh`,
+and this doc (X-2, X-6, X-7, X-8, X-16, X-22). The 6/6 findings required no change to
+`kernel/src/drivers/usb/xhci.rs` or any other kernel Rust source, so no
+Parallels or QEMU boot was run for this pass.
+
+1. **X-7** (`doorbell_call_callers`'s definition-site check trusted raw
+   text, not the code mask, so a real call site preceded by a comment
+   ending in the literal text `fn` would be silently dropped from the
+   census): fixed to require both bytes of the matched `"fn"` be code
+   (`mask[...] == true`), not merely present in the raw string. Mutation 10
+   (new) proves a call site hidden this way is caught after the fix and was
+   not caught before it (added to the mutation leg, not run standalone,
+   since it depends on Fix 1).
+2. **X-8** (`write32_calls_targeting_db_base`'s whitespace-only skip
+   stopped at a comment between `write32` and its opening paren instead of
+   skipping through it, evading Rule 2): fixed to skip any masked-out span
+   (comment or string) as well as whitespace, matching the same idiom this
+   file's own `function_spans` already uses. Mutation 11 (new) proves the
+   evasion is caught after the fix.
+3. **X-16** (Mutation 1b's lying comment used different words than the
+   checker's own search strings, so it didn't exercise the stronger claim
+   that a comment quoting those strings verbatim also fails to satisfy a
+   positional check): Mutation 9 (new) adds that stronger adversary; it
+   passes on the unmodified checker code (no bug here, a test-coverage gap
+   only).
+4. **X-2** (2/4 fixed-branch launcher-smoke/type-filter runs
+   this round preserved zero raw `[xhci]` descriptor-enumeration lines
+   anywhere in their evidence directory, only the one-line
+   `start_hid_polling` summary; the doc's evidence table implied uniform
+   descriptor-level coverage): `launcher-smoke.sh` now greps `$SERIAL_LOG`
+   for every `[xhci]` line into a new `$EVIDENCE_DIR/xhci-enum-excerpt.txt`
+   per run, always written (pass or fail), pinned by new file
+   `tests/launcher_smoke_xhci_evidence_structure.rs`; §5's evidence table
+   and a new evidence-fidelity paragraph were corrected to state precisely
+   what this round's four already-completed runs do and do not preserve
+   (this fix does not retroactively regenerate their evidence).
+5. **X-6** (the pre-existing toolchain future-incompatibility warning was
+   disclosed only for the strict-gate row, not the nine other confirmed
+   build logs that also print it): §5's lead-in now discloses it once for
+   those nine confirmed build logs, in addition to the separate strict build.
+6. **X-22** (`launcher-smoke/run1`'s non-fatal post-enter capture failure
+   was not called out in the evidence table): disclosed in the new
+   evidence-fidelity paragraph in §5.
+
+**Structural ratchet re-run (host-side, no boot):**
+
+```
+== compiling xhci_wait_irq_order_structure ==
+== running xhci_wait_irq_order_structure  ==
+
+running 10 tests
+test the_synchronous_and_async_censuses_agree ... ok
+test wait_for_prepared_transfer_does_no_gic_arming_of_its_own ... ok
+test control_transfer_arms_before_it_publishes_any_ep0_trb ... ok
+test submit_command_and_wait_arms_before_it_publishes ... ok
+test prepare_transfer_wait_arms_after_software_prep_and_returns_the_flag ... ok
+test activation_arms_the_spi_before_queueing_its_probe ... ok
+test the_doorbell_mmio_write_is_pinned_to_ring_doorbell ... ok
+test every_direct_doorbell_caller_is_classified ... ok
+test hid_transfer_and_msi_probe_stay_asynchronous ... ok
+test deliberately_broken_copies_redden_the_rules ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+```
+
+```
+== compiling launcher_smoke_xhci_evidence_structure ==
+== running launcher_smoke_xhci_evidence_structure  ==
+
+running 2 tests
+test launcher_smoke_captures_raw_xhci_enum_trail ... ok
+test deliberately_broken_copy_reddens_the_rule ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Full host-side structure-suite preflight (55/55 `tests/*_structure.rs` files,
+including the new one added by this pass), invoked from the repo root:
+
+```bash
+source docker/qemu/lib/gate-structure-preflight.sh
+mkdir -p /tmp/x482-fixpass-preflight
+gate_structure_preflight "$PWD" /tmp/x482-fixpass-preflight
+```
+
+```
+[GATE_PREFLIGHT:structure_suites=55/55:critical_path_lines=260:pinned=120]
+```
+
+**Why no Parallels/QEMU boot this pass:** 6/6 fixes are confined to two
+structure test files, a Parallels harness *script* (not kernel code), and
+this doc; `kernel/src/drivers/usb/xhci.rs` is unchanged, verified by
+`git diff --stat` against the base of this pass (recorded below) showing no
+`kernel/` path. `bash -n scripts/parallels/launcher-smoke.sh` (syntax check
+only) confirmed the script edit is syntactically valid; the new structural
+ratchet above (`tests/launcher_smoke_xhci_evidence_structure.rs`) pins the
+capture line's presence going forward. The next real
+`launcher-smoke.sh` run, whenever this branch or its successor next
+exercises it, will be the first to carry the new `xhci-enum-excerpt.txt`
+evidence file.
+
+Pre-pass base: `20af0b18a741af28446a3cc59e6aeaa176f94544`.
+Command: `git diff --stat 20af0b18a741af28446a3cc59e6aeaa176f94544 -- kernel/`
+(includes uncommitted changes); repeated after committing as
+`git diff --stat 20af0b18a741af28446a3cc59e6aeaa176f94544..HEAD -- kernel/`.
+Exact output:
+
+```
+
+```
+
+**Claim-lint:**
+
+The initial prose check exited 1 with 12 findings in the supplied wording.
+Quantified the flagged counts and reworded comments; no test behavior changed
+and no claim-lint suppression annotations were added. Final results:
+
+```
+claim-lint: python3 scripts/claim-lint.py                              -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/x482-fixpass-commit-msg.txt -> exit 0
+```
