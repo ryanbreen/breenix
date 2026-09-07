@@ -1,0 +1,13 @@
+revision=bb5d3114adb9d5a1cb2e0f392f144a5ccede0062
+First preflight used default worker count (cap 8), default suite timeout 300 seconds.
+Observed beast uptime: 17:00:40 load average: 30.79, 13.00, 6.86.
+Observed context_restore_structure process elapsed 04:46 before preflight completion; transcript ends without a test verdict.
+Preflight aggregates timeout/nonzero exits as status 1 (docker/qemu/lib/gate-structure-preflight.sh:167-170).
+Interpretation: context suite exhausted its 300-second budget under contention; no SCSI/I/O error was observed.
+QMP fixture separately failed at tests/gate_qmp_backstop_structure.rs:472 (hang must reach dump).
+Single authorized retry: BREENIX_STRUCTURE_JOBS=2, unchanged default 300-second timeout and all assertions.
+Retry: observed context_restore_structure elapsed 04:50 before its termination; transcript again ends without test verdict.
+Retry verdict: 63/64, context_restore_structure only; exit 1 before kernel build or QEMU.
+Retry QMP suite: 15 passed, 0 failed, 4.38 seconds.
+Retry host observation: 17:09:02 load average: 23.55, 18.34, 12.14.
+No further retry performed.
