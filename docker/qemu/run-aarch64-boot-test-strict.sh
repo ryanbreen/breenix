@@ -412,7 +412,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[LOOPBACK_WAKE_BUDGET:' ':max_extensions=' ':extension_ms=' ':extension_bound_ms=' '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -536,6 +536,18 @@ score_serial() {
         echo "Boot test failure: ${boot_test_fail_line:-[TEST:<missing>:FAIL:<missing>]}"
         return 1
     fi
+    # A dispatch/wake failure is fatal even before the aggregate summary arrives.
+    if grep -qE '\[TEST:network:loopback_recv_wake_(when_idle|under_load):FAIL:' "$serial_file"; then
+        echo "Loopback wake test failed"
+        return 1
+    fi
+    local wake_test
+    for wake_test in when_idle under_load; do
+        if ! grep -qE "\[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=$wake_test:budget_ms=200:elapsed_tick_ms=[0-9]+:elapsed_ctr_ms=[0-9]+:ctx_delta=[0-9]+:extensions=[0-4]:max_extensions=4:extension_ms=[0-9]+:extension_bound_ms=1000:.*:verdict=(ok|starved)\]" "$serial_file"; then
+            echo "Loopback wake budget marker missing or failed: $wake_test"
+            return 1
+        fi
+    done
     if ! grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" \
         "$serial_file" 2>/dev/null; then
         echo "Userspace not detected"
