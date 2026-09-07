@@ -1,0 +1,5 @@
+revision=290152b19545388a099056988714d132cbea4ff7
+configured_timeout_seconds=300
+log_to_status_birth_seconds=300.0087230205536
+status=1
+No test-result summary; timeout terminated the suite. No QEMU boot.

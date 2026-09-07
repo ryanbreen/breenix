@@ -1,0 +1,41 @@
+290152b19545388a099056988714d132cbea4ff7
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure loopback_guest_budget ==
+
+running 2 tests
+
+thread 'loopback_guest_budget_guard_and_always_extend_mutation' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/tests/loopback_pump_structure.rs:4873:48:
+called `Result::unwrap()` on an `Err` value: "extension must require measured starvation and finite capacity"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test loopback_guest_budget_guard_and_always_extend_mutation ... FAILED
+error: unused variable: `runnable`
+ --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/.tmp/loopback-policy-33996/policy.rs:5:29
+  |
+5 | }} fn eligible(pending:bool,runnable:bool,starved:bool,extensions:u64)->bool {{
+  |                             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_runnable`
+  |
+  = note: `-D unused-variables` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(unused_variables)]`
+
+error: unused variable: `starved`
+ --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/.tmp/loopback-policy-33996/policy.rs:5:43
+  |
+5 | }} fn eligible(pending:bool,runnable:bool,starved:bool,extensions:u64)->bool {{
+  |                                           ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_starved`
+
+error: aborting due to 2 previous errors
+
+
+thread 'loopback_guest_budget_production_policy_cases' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/tests/loopback_pump_structure.rs:4909:5:
+assertion failed: std::process::Command::new("rustc").arg("--edition=2021").arg("-Dwarnings").arg(&src).arg("-o").arg(&bin).status().unwrap().success()
+test loopback_guest_budget_production_policy_cases ... FAILED
+
+failures:
+
+failures:
+    loopback_guest_budget_guard_and_always_extend_mutation
+    loopback_guest_budget_production_policy_cases
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 130 filtered out; finished in 0.05s
+
+ratchet_exit=101

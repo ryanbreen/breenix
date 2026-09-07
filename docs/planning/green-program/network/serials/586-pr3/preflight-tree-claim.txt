@@ -1,0 +1,3 @@
+claim-lint: clean (30 file(s) checked, changed hunks vs 9f79cb71969f).
+claim-lint: 107 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 3 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/network/serials/586-pr3/fixture-recording/run.json, docs/planning/green-program/network/serials/586-pr3/fixture-recording/source.patch, docs/planning/green-program/network/serials/586-pr3/local-core-softfloat.patch

@@ -1,0 +1,20 @@
+290152b19545388a099056988714d132cbea4ff7
+== compiling tty_irq_fg_structure ==
+== running tty_irq_fg_structure  ==
+
+running 11 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test both_boot_test_gates_pin_the_oracle_and_both_production_gates_pin_its_absence ... ok
+test tiocspgrp_still_refuses_the_value_the_sentinel_uses ... ok
+test the_foreground_pgrp_detector_is_wired_to_the_scope ... ok
+test every_foreground_pgrp_acquisition_counts_itself ... ok
+test each_interrupt_side_reader_reads_the_snapshot ... ok
+test no_tty_interrupt_entry_acquires_the_foreground_pgrp_mutex ... ok
+test the_snapshot_is_published_inside_the_mutex ... ok
+test no_tty_interrupt_entry_prints_through_a_lock ... ok
+test deliberately_broken_copies_redden_the_rules ... ok
+test the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.32s
+
+exit=0

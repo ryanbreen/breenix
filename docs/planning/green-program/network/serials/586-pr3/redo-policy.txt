@@ -1,0 +1,10 @@
+base_revision=9f79cb71969fe9b9832b1ff921e148a76170a850 source=uncommitted-worktree-draft (not a committed-revision receipt)
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure loopback_guest_budget ==
+
+running 2 tests
+test loopback_guest_budget_guard_and_always_extend_mutation ... ok
+test loopback_guest_budget_production_policy_cases ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 130 filtered out; finished in 0.08s
+

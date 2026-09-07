@@ -1,0 +1,5 @@
+kernel/src/test_framework/registry.rs:4706: [universal-claim] Seed the all-CPU retirement grace, then let scheduler boundaries advance around each halt before trying reclamation again. Keep this bounded attempt so `retired` remains useful evidence, but do not gate the verdict on it: retirement is a...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 1 finding(s) across 9 file(s) [changed hunks vs 9f79cb71969f]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 107 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).

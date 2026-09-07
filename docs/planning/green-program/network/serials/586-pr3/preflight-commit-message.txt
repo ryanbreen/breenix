@@ -1,0 +1,8 @@
+net(586 PR 3): align marker census and tracing ratchet with formatted source
+
+Keep field fragments separate from the bracketed profile marker census.
+Pin the rustfmt-produced PASS arm braces in the tracing-provider ratchet.
+The two affected structure suites pass after strict preflight exposed them.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

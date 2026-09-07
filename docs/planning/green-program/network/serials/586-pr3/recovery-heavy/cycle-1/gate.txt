@@ -1,0 +1,4 @@
+archived_driver_provenance: revision=290152b19545388a099056988714d132cbea4ff7 cycle=1; attributed from enclosing run.txt; original gate output follows
+[GATE_PREFLIGHT:structure_suites=63/64:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 64 structure suite(s) red: context_restore_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/.gate-tmp/recovery-heavy/cycle-1/breenix_gate_structure_preflight.cXhpym)
+GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)

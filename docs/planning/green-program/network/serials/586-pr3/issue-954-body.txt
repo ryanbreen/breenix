@@ -1,0 +1,13 @@
+The 586 PR 3 redo needs a contract decision about its always-extend control. Code is on `net/586-pr3-guest-execution-budget-v2`, with the measured guard at commit `290152b19545388a099056988714d132cbea4ff7`.
+
+The requested control says that always extending must turn the wake-defect boot green. The audited injection permanently returns from `wake_connection_waiters` for the loopback reader's port. Bounded waiting cannot restore that suppressed wake while preserving the mandatory wake stamp and three received bytes.
+
+Real aarch64 boots executed in this redo:
+
+- `docs/planning/green-program/network/serials/586-pr3/wake-defect/serial.txt`: `extensions=0`, `verdict=wake`, loopback when-idle FAIL. Restored-source strict score-only rejected the loopback FAIL directly.
+- `docs/planning/green-program/network/serials/586-pr3/always-extend/serial.txt`: the same permanent suppression plus unconditional pending-reader extension granted four windows (`extension_ms=800`) and still produced `verdict=wake` and loopback when-idle FAIL.
+- `docs/planning/green-program/network/serials/586-pr3/always-extend/guard-only.txt`: the actual production-guard ratchet rejected the mutation at runtime, exit 101. This satisfies the red-ratchet requirement, but does not make the guest control green.
+
+AUDIT-946 explicitly requires contract clarification before substituting a time-bounded delayed wake. Decide whether such an additional control is authorized, while retaining the permanent-suppression red leg. No success criterion was weakened and no delayed-wake substitute was silently used.
+
+The single acceptance record is `docs/planning/green-program/network/586-PR3-2026-09-07.md`; its evidence commit is being finalized on the same branch. Recovery and extension-deleted starvation reproduction remain tracked under 586. This issue does not request closing 586 or accepting unexecuted proofs.
