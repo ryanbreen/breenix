@@ -1,0 +1,8 @@
+revision=46d23edf61284b392139b4154aa170e4adb4094e
+kernel/src/tracing/providers/teardown.rs:6707:     const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;
+kernel/src/tracing/providers/teardown.rs:8243:     const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 800;
+kernel/src/tracing/providers/teardown.rs:9144:         "[exit_kick_worker_isolation] fixture_elapsed_ms={}",
+kernel/src/tracing/providers/teardown.rs:9182:     const FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 400;
+kernel/src/tracing/providers/teardown.rs:9396:         "[exit_kick_budget_anchor] fixture_elapsed_ms={}",
+tests/teardown_structure.rs:17778: fn exit_kick_fixture_summed_budget_under_ten_seconds() {
+docker/qemu/run-aarch64-service-sequence-gate.sh:132: if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then

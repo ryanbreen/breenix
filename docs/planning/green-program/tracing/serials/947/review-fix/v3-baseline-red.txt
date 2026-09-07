@@ -1,0 +1,42 @@
+== compiling gate_structure_preflight_wiring_structure ==
+== running gate_structure_preflight_wiring_structure  ==
+
+running 7 tests
+test missing_wiring_validator_rejects_a_gate_with_neither ... ok
+test shared_lib_defines_the_preflight_function_and_its_marker_line ... ok
+test service_preflight_precedes_build_and_aborts_on_failure ... FAILED
+test service_sequence_capture_window_covers_strict ... ok
+test every_target_gate_calls_the_structure_preflight ... FAILED
+test missing_wiring_validator_rejects_a_gate_with_the_call_site_removed ... FAILED
+test service_sequence_capture_window_45_mutation_is_rejected ... ok
+
+failures:
+
+---- service_preflight_precedes_build_and_aborts_on_failure stdout ----
+
+thread 'service_preflight_precedes_build_and_aborts_on_failure' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/tests/gate_structure_preflight_wiring_structure.rs:184:43:
+service preflight call
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- every_target_gate_calls_the_structure_preflight stdout ----
+
+thread 'every_target_gate_calls_the_structure_preflight' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/tests/gate_structure_preflight_wiring_structure.rs:86:5:
+assertion `left == right` failed: gate(s) missing the structure-preflight wiring: ["docker/qemu/run-aarch64-service-sequence-gate.sh"]
+  left: ["docker/qemu/run-aarch64-service-sequence-gate.sh"]
+ right: []
+
+---- missing_wiring_validator_rejects_a_gate_with_the_call_site_removed stdout ----
+
+thread 'missing_wiring_validator_rejects_a_gate_with_the_call_site_removed' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/tests/gate_structure_preflight_wiring_structure.rs:129:5:
+assertion `left == right` failed
+  left: ["docker/qemu/run-aarch64-service-sequence-gate.sh", "docker/qemu/run-aarch64-boot-test-strict.sh"]
+ right: ["docker/qemu/run-aarch64-boot-test-strict.sh"]
+
+
+failures:
+    every_target_gate_calls_the_structure_preflight
+    missing_wiring_validator_rejects_a_gate_with_the_call_site_removed
+    service_preflight_precedes_build_and_aborts_on_failure
+
+test result: FAILED. 4 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

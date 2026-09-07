@@ -1,0 +1,12 @@
+revision=9f79cb71969fe9b9832b1ff921e148a76170a850 + 947 working diff; mutation=after_healthy; state=green
+source_sha256=9b8f162803547cfeff41b09c217e459307d8c4e21acecd081bd5e5b7acec02af
+command=bash scripts/run-structure-tests.sh teardown_structure exit_kick_scaled_fixture_legs_remain_present
+== compiling teardown_structure ==
+== running teardown_structure exit_kick_scaled_fixture_legs_remain_present ==
+
+running 1 test
+test exit_kick_scaled_fixture_legs_remain_present ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.01s
+
+exit=0

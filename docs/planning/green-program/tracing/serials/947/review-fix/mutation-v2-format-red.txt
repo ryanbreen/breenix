@@ -1,0 +1,31 @@
+revision=54f33c141600fc464a1a52fdccf6575154d5083b + review diff
+== compiling teardown_rustfmt_structure ==
+== running teardown_rustfmt_structure  ==
+
+running 1 test
+test teardown_provider_is_rustfmt_clean ... FAILED
+
+failures:
+
+---- teardown_provider_is_rustfmt_clean stdout ----
+
+thread 'teardown_provider_is_rustfmt_clean' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/tests/teardown_rustfmt_structure.rs:12:5:
+full-provider rustfmt failed: Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel/src/tracing/providers/teardown.rs:4:
+ //! producers. Counters owned by later phases remain registered and readable
+ //! here without an increment site yet.
+ 
+[31m-use  crate::tracing::counter::{register_counter, TraceCounter};
+(B[m[32m+use crate::tracing::counter::{register_counter, TraceCounter};
+(B[m use crate::tracing::provider::{register_provider, TraceProvider};
+ use core::sync::atomic::{AtomicU64, Ordering};
+ 
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    teardown_provider_is_rustfmt_clean
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+exit=101

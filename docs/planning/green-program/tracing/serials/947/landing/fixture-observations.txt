@@ -1,0 +1,48 @@
+strict-boot1-serial.txt:569: [exit_kick_worker_isolation] scenario=before_union_worker_1 start=1
+strict-boot1-serial.txt:573: [exit_kick_worker_isolation] scenario=before_union_worker_1 elapsed_ms=1505 cause=absolute_ceiling target=none progress=[1, 31, 31] completed=6 joined=3
+strict-boot1-serial.txt:574: [exit_kick_worker_isolation] scenario=after_worker_1 start=1
+strict-boot1-serial.txt:580: [exit_kick_worker_isolation] scenario=after_worker_1 elapsed_ms=802 cause=no_progress target=worker_1 progress=[1, 17, 17] completed=6 joined=3
+strict-boot1-serial.txt:582: [exit_kick_worker_isolation] scenario=after_worker_2 start=1
+strict-boot1-serial.txt:584: [exit_kick_worker_isolation] scenario=after_worker_2 elapsed_ms=801 cause=no_progress target=worker_2 progress=[17, 1, 17] completed=5 joined=3
+strict-boot1-serial.txt:586: [exit_kick_worker_isolation] scenario=after_worker_3 start=1
+strict-boot1-serial.txt:588: [exit_kick_worker_isolation] scenario=after_worker_3 elapsed_ms=806 cause=no_progress target=worker_3 progress=[18, 17, 1] completed=3 joined=3
+strict-boot1-serial.txt:590: [exit_kick_worker_isolation] scenario=after_healthy start=1
+strict-boot1-serial.txt:591: [exit_kick_worker_isolation] scenario=after_healthy elapsed_ms=1 cause=success target=none progress=[2, 2, 2] completed=7 joined=3
+strict-boot1-serial.txt:593: [exit_kick_worker_isolation] fixture_elapsed_ms=4086
+strict-boot1-serial.txt:596: [exit_kick_budget_anchor] pre_test_delay_ms=1212 fixture_budget_ms=1000 fixture_gate_ceiling_ms=600
+strict-boot1-serial.txt:597: [exit_kick_budget_anchor] scenario=inherited_kernel_entry_anchor anchor=inherited cause=phase_one_ceiling target=none elapsed_ms=0 budget_age_at_entry_ms=1212
+strict-boot1-serial.txt:598: [exit_kick_budget_anchor] scenario=test_phase_entry_anchor anchor=test_phase cause=no_progress target=worker_1 elapsed_ms=405 budget_age_at_entry_ms=0
+strict-boot1-serial.txt:614: [exit_kick_budget_anchor] scenario=gate_window_exhaustion anchor=test_phase cause=gate_ceiling target=none elapsed_ms=609 budget_age_at_entry_ms=0
+strict-boot1-serial.txt:615: [exit_kick_budget_anchor] fixture_elapsed_ms=2229
+service-max-boot1-serial.txt:568: [exit_kick_worker_isolation] scenario=before_union_worker_1 start=1
+service-max-boot1-serial.txt:572: [exit_kick_worker_isolation] scenario=before_union_worker_1 elapsed_ms=1503 cause=absolute_ceiling target=none progress=[1, 31, 31] completed=6 joined=3
+service-max-boot1-serial.txt:573: [exit_kick_worker_isolation] scenario=after_worker_1 start=1
+service-max-boot1-serial.txt:575: [exit_kick_worker_isolation] scenario=after_worker_1 elapsed_ms=803 cause=no_progress target=worker_1 progress=[1, 17, 17] completed=6 joined=3
+service-max-boot1-serial.txt:577: [exit_kick_worker_isolation] scenario=after_worker_2 start=1
+service-max-boot1-serial.txt:583: [exit_kick_worker_isolation] scenario=after_worker_2 elapsed_ms=804 cause=no_progress target=worker_2 progress=[17, 1, 17] completed=5 joined=3
+service-max-boot1-serial.txt:585: [exit_kick_worker_isolation] scenario=after_worker_3 start=1
+service-max-boot1-serial.txt:587: [exit_kick_worker_isolation] scenario=after_worker_3 elapsed_ms=801 cause=no_progress target=worker_3 progress=[17, 17, 1] completed=3 joined=3
+service-max-boot1-serial.txt:589: [exit_kick_worker_isolation] scenario=after_healthy start=1
+service-max-boot1-serial.txt:590: [exit_kick_worker_isolation] scenario=after_healthy elapsed_ms=2 cause=success target=none progress=[2, 2, 2] completed=7 joined=3
+service-max-boot1-serial.txt:592: [exit_kick_worker_isolation] fixture_elapsed_ms=4031
+service-max-boot1-serial.txt:595: [exit_kick_budget_anchor] pre_test_delay_ms=1210 fixture_budget_ms=1000 fixture_gate_ceiling_ms=600
+service-max-boot1-serial.txt:596: [exit_kick_budget_anchor] scenario=inherited_kernel_entry_anchor anchor=inherited cause=phase_one_ceiling target=none elapsed_ms=0 budget_age_at_entry_ms=1210
+service-max-boot1-serial.txt:597: [exit_kick_budget_anchor] scenario=test_phase_entry_anchor anchor=test_phase cause=no_progress target=worker_1 elapsed_ms=405 budget_age_at_entry_ms=0
+service-max-boot1-serial.txt:598: [exit_kick_budget_anchor] scenario=gate_window_exhaustion anchor=test_phase cause=gate_ceiling target=none elapsed_ms=613 budget_age_at_entry_ms=0
+service-max-boot1-serial.txt:599: [exit_kick_budget_anchor] fixture_elapsed_ms=2232
+service-cortex-a72-boot1-serial.txt:568: [exit_kick_worker_isolation] scenario=before_union_worker_1 start=1
+service-cortex-a72-boot1-serial.txt:571: [exit_kick_worker_isolation] scenario=before_union_worker_1 elapsed_ms=1503 cause=absolute_ceiling target=none progress=[1, 31, 31] completed=6 joined=3
+service-cortex-a72-boot1-serial.txt:572: [exit_kick_worker_isolation] scenario=after_worker_1 start=1
+service-cortex-a72-boot1-serial.txt:575: [exit_kick_worker_isolation] scenario=after_worker_1 elapsed_ms=802 cause=no_progress target=worker_1 progress=[1, 17, 17] completed=6 joined=3
+service-cortex-a72-boot1-serial.txt:577: [exit_kick_worker_isolation] scenario=after_worker_2 start=1
+service-cortex-a72-boot1-serial.txt:579: [exit_kick_worker_isolation] scenario=after_worker_2 elapsed_ms=802 cause=no_progress target=worker_2 progress=[17, 1, 17] completed=5 joined=3
+service-cortex-a72-boot1-serial.txt:581: [exit_kick_worker_isolation] scenario=after_worker_3 start=1
+service-cortex-a72-boot1-serial.txt:587: [exit_kick_worker_isolation] scenario=after_worker_3 elapsed_ms=801 cause=no_progress target=worker_3 progress=[17, 17, 1] completed=3 joined=3
+service-cortex-a72-boot1-serial.txt:589: [exit_kick_worker_isolation] scenario=after_healthy start=1
+service-cortex-a72-boot1-serial.txt:590: [exit_kick_worker_isolation] scenario=after_healthy elapsed_ms=1 cause=success target=none progress=[2, 2, 2] completed=7 joined=3
+service-cortex-a72-boot1-serial.txt:592: [exit_kick_worker_isolation] fixture_elapsed_ms=4015
+service-cortex-a72-boot1-serial.txt:595: [exit_kick_budget_anchor] pre_test_delay_ms=1212 fixture_budget_ms=1000 fixture_gate_ceiling_ms=600
+service-cortex-a72-boot1-serial.txt:596: [exit_kick_budget_anchor] scenario=inherited_kernel_entry_anchor anchor=inherited cause=phase_one_ceiling target=none elapsed_ms=0 budget_age_at_entry_ms=1212
+service-cortex-a72-boot1-serial.txt:597: [exit_kick_budget_anchor] scenario=test_phase_entry_anchor anchor=test_phase cause=no_progress target=worker_1 elapsed_ms=404 budget_age_at_entry_ms=0
+service-cortex-a72-boot1-serial.txt:598: [exit_kick_budget_anchor] scenario=gate_window_exhaustion anchor=test_phase cause=gate_ceiling target=none elapsed_ms=605 budget_age_at_entry_ms=0
+service-cortex-a72-boot1-serial.txt:599: [exit_kick_budget_anchor] fixture_elapsed_ms=2224
