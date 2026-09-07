@@ -1,0 +1,11 @@
+parallel-1/boot-1: loopback_pass=1 reader_exit_15=0
+parallel-1/boot-2: loopback_pass=1 reader_exit_15=0
+parallel-1/boot-3: loopback_pass=1 reader_exit_15=0
+parallel-1/boot-4: loopback_pass=1 reader_exit_15=0
+parallel-1/boot-5: loopback_pass=1 reader_exit_15=0
+parallel-2/boot-1: loopback_pass=1 reader_exit_15=0
+parallel-2/boot-2: loopback_pass=1 reader_exit_15=0
+parallel-2/boot-3: loopback_pass=1 reader_exit_15=0
+parallel-2/boot-4: loopback_pass=1 reader_exit_15=0
+parallel-2/boot-5: loopback_pass=1 reader_exit_15=0
+TOTAL: boots=10 loopback_pass=10 reader_exit_15=0
