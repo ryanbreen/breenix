@@ -1,0 +1,17 @@
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure loopback_wake_classification_reads_reader_state ==
+
+running 1 test
+
+thread 'loopback_wake_classification_reads_reader_state' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586/wt/tests/loopback_pump_structure.rs:2115:6:
+the loopback wake diagnostic classifies from delivery AND reader state: "a loopback wake classification claims \"never woken\" -- no fact this selector reads can prove that (#586)"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test loopback_wake_classification_reads_reader_state ... FAILED
+
+failures:
+
+failures:
+    loopback_wake_classification_reads_reader_state
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 116 filtered out; finished in 0.01s
+
