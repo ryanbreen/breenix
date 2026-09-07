@@ -1,0 +1,4 @@
+distinct=1936 dominant=(10, 10, 25) dom_frac=0.0896
+big_color_buckets=12 blue_baseline=False red_baseline=False
+coherent_region=bucket=(3, 3, 9) frac=0.1462 bbox=(0, 457, 1279, 863) bbox_frac=0.4424 fill_frac=0.3306
+VERDICT=PASS

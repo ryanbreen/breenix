@@ -1,0 +1,4 @@
+distinct=48 dominant=(0, 0, 0) dom_frac=0.9870
+big_color_buckets=1 blue_baseline=False red_baseline=False
+coherent_region=None
+VERDICT=FAIL

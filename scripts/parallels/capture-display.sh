@@ -1,9 +1,64 @@
 #!/bin/bash
-# Capture the guest display for a Parallels VM without requiring a visible
-# desktop window. Prints the final PNG path on stdout; diagnostics go to stderr.
+# Capture the guest display for a Parallels VM.
+#
+# Two independent capture methods are tried, in order:
+#   1. `prlctl capture` -- Parallels' own backend-level screen capture. This
+#      works whether or not the VM has a visible on-screen window, and is the
+#      only method that has ever succeeded from this harness (see #917 RCA
+#      below).
+#   2. A Core Graphics window capture (`screencapture -l<window-id>`) -- only
+#      useful when Parallels Desktop.app itself has an actual window open for
+#      this VM. When the harness starts a VM via `prlctl start` with no GUI
+#      open, Parallels does not create such a window (0 of 12 Parallels-owned
+#      CGWindowList entries observed in either state --
+#      docs/planning/green-program/gui/evidence/windowlist-no-vm.txt), so
+#      this method is expected to find nothing in that mode; it exists for
+#      the case where a human has the Parallels Desktop app open and the
+#      VM's window visible.
+#
+# #917 RCA (docs/planning/green-program/gui/PARALLELS-CAPTURE-2026-09-07.md):
+# the window-matching code this replaced matched on `kCGWindowName`
+# containing the VM's name. `CGWindowListCopyWindowInfo`, inspected both
+# during a running boot and with no Breenix VM running at all
+# (docs/planning/green-program/gui/evidence/windowlist-no-vm.txt: 12/12
+# Parallels-owned windows, 0/12 with a non-empty `kCGWindowName`), showed
+# Parallels does not set a per-VM window title -- so a title-substring match
+# cannot succeed by construction, matching the 6/6 identical failures (of
+# the runs that reached this step) in
+# docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/.
+# This version drops title matching and instead requires a window owned by
+# the actual `prl_vm_app --vm-name <VM>` process backing this VM (the one
+# reliable signal available, #917 fix-pass C-3 -- a *preference*, i.e. a
+# scoring bonus with a same-process-name fallback, still let an unrelated
+# Parallels-owned window such as Parallels Desktop's own UI be selected
+# whenever no PID match existed), while still logging the full window
+# inventory so a next investigation does not have to re-derive it from
+# scratch.
+#
+# This script does not write a synthetic or placeholder image to its output
+# path — checked by capture_display_writes_output_exactly_once_and_only_on_a_verified_frame
+# in tests/parallels_capture_structure.rs (7/7 passing). On success, OUTPUT
+# holds a real, non-degenerate capture. On failure (the retry schedule
+# exhausted with no valid frame, or a required command missing), OUTPUT is
+# not created (a prior screenshot is removed before retries), and the script
+# exits non-zero -- callers must not
+# treat a missing file as a black PASS.
 #
 # Usage:
 #   scripts/parallels/capture-display.sh <vm-name> [output.png]
+#
+# stdout: on success, two lines --
+#   [PARALLELS_CAPTURE:method=<prlctl|window>:reason=ok]
+#   <path to OUTPUT>
+# on failure, one line, with the literal method value shown below (both
+# shapes appear as real captured output in
+# docs/planning/green-program/gui/evidence/prlctl-capture-failure-modes.txt
+# and in PARALLELS-CAPTURE-2026-09-07.md's "Verification runs" section) --
+#   [PARALLELS_CAPTURE:method=none:reason=<why>]
+# claim-lint:ok: #917 -- the literal method=none value in that line above is
+# the documented failure-shape output, not a claim about how often it fires.
+# Diagnostics (attempt-by-attempt logging, the window inventory, prlctl's
+# own stderr) go to stderr.
 #
 # Environment:
 #   BREENIX_CAPTURE_RETRY_SCHEDULE  Space-separated delays, default "30 60 90".
@@ -25,9 +80,22 @@ log() {
     printf '%s\n' "$*" >&2
 }
 
+# Emits the required verdict line on stdout. Called exactly once, on the
+# single success return and on the single terminal-failure return. `reason`
+# may come from a subprocess's own stderr text, which can itself contain
+# colons (e.g. prlctl's "Failed to get VM config: ..."); those are replaced
+# with ';' first so the emitted line keeps exactly two top-level ':'
+# separators (method=, reason=) and stays trivially parseable.
+emit_verdict() {
+    local method="$1"
+    local reason="${2//:/;}"
+    printf '[PARALLELS_CAPTURE:method=%s:reason=%s]\n' "$method" "$reason"
+}
+
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
         log "ERROR: required command not found: $1"
+        emit_verdict "none" "missing-command-$1"
         exit 1
     fi
 }
@@ -137,7 +205,7 @@ write_baseline_and_stats() {
     local image="$1"
     local stats="$2"
 
-    mkdir -p "$BASELINE_DIR"
+    mkdir -p "$BASELINE_DIR" || return 1
     local solid_baseline="$BASELINE_DIR/solid-red.png"
 
     if [ ! -f "$solid_baseline" ]; then
@@ -176,83 +244,178 @@ PY
     log "Solid-red baseline comparison: $baseline_cmp"
 }
 
+# Runs `prlctl capture`, capturing its real exit code and stderr rather than
+# swallowing both into /dev/null. Logs the outcome either way so a caller can
+# see exactly why the backend capture did or did not work (#917: this used to
+# redirect both stdout and stderr to /dev/null and only ever logged "prlctl
+# capture failed, trying..." with no detail -- silent on the one diagnostic
+# that actually explains a failure, e.g. PRL_ERR_IO_STOPPED for a
+# suspended/stopped VM, or "not registered" for a wrong name).
 capture_prlctl() {
     local out="$1"
-    prlctl capture "$VM_NAME" --file "$out" >/dev/null 2>&1
+    local errfile="$2"
+    local rc=0
+    prlctl capture "$VM_NAME" --file "$out" >/dev/null 2>"$errfile" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        local errtext
+        errtext="$(tr '\n' ' ' <"$errfile" | sed 's/  */ /g; s/^ *//; s/ *$//')"
+        log "prlctl capture: exit=$rc stderr=\"${errtext:-<empty>}\""
+        return "$rc"
+    fi
+    log "prlctl capture: exit=0"
+    return 0
 }
 
-find_parallels_window_id() {
-    python3 - "$VM_NAME" <<'PY'
-import Quartz
-import re
-import sys
+# Finds the process (if any) that Parallels started to back this VM's own
+# display. `prlctl start` launches a per-VM `prl_vm_app --vm-name <VM>`
+# process; that PID is the correct identity to look for among CGWindowList
+# owners, unlike the VM's own name, which the file header's #917 RCA shows
+# does not appear in kCGWindowName. Prints nothing and returns non-zero if
+# no such process is running (VM not started, or already stopped).
+# claim-lint:ok: #917
+find_vm_backend_pid() {
+    ps -axo pid=,command= 2>/dev/null | awk -v needle="--vm-name $VM_NAME" '
+        index($0, "prl_vm_app") > 0 {
+            pos = index($0, needle)
+            if (pos > 0) {
+                after = substr($0, pos + length(needle), 1)
+                if (after == "" || after == " ") {
+                    print $1
+                    found = 1
+                    exit
+                }
+            }
+        }
+        END { if (!found) exit 1 }
+    '
+}
 
-vm = sys.argv[1].lower()
-breenix_hint = "breenix" in vm
+# Logs the CGWindowList inventory of each window owned by a process whose
+# name contains "Parallels", to stderr, so a diagnosis does not have to
+# re-derive "what windows actually exist" from scratch. Returns the window
+# id of the best candidate on stdout (nothing, and a non-zero exit, if none
+# qualifies).
+# claim-lint:ok: #917
+find_parallels_window_id() {
+    local vm_pid="$1"
+    python3 - "$VM_NAME" "$vm_pid" <<'PY'
+import sys
+import Quartz
+
+vm = sys.argv[1]
+vm_pid = int(sys.argv[2]) if sys.argv[2] not in ("", "0") else None
+
 windows = Quartz.CGWindowListCopyWindowInfo(
     Quartz.kCGWindowListOptionAll,
     Quartz.kCGNullWindowID,
 )
 
 candidates = []
+inventory = []
 for w in windows:
-    owner = str(w.get("kCGWindowOwnerName", ""))
+    owner = str(w.get("kCGWindowOwnerName", "") or "")
     if "Parallels" not in owner:
         continue
     bounds = w.get("kCGWindowBounds", {}) or {}
     width = int(bounds.get("Width", 0))
     height = int(bounds.get("Height", 0))
-    if width < 300 or height < 200:
-        continue
     title = str(w.get("kCGWindowName", "") or "")
-    layer = int(w.get("kCGWindowLayer", 0))
-    if layer != 0:
+    layer = int(w.get("kCGWindowLayer", 0) or 0)
+    pid = w.get("kCGWindowOwnerPID")
+    window_id = int(w.get("kCGWindowNumber", 0) or 0)
+    inventory.append(
+        f"owner={owner!r} title={title!r} pid={pid} layer={layer} size={width}x{height} id={window_id}"
+    )
+    if layer != 0 or width < 300 or height < 200:
+        continue
+    # The one principled signal: this window's owning process must be the
+    # actual backend process Parallels started for THIS vm. Without a known
+    # backend PID (vm_pid is None), or when this window's pid does not equal
+    # it, this window is not a candidate at all -- #917 fix-pass finding C-3
+    # found that a scoring *bonus* (rather than a hard requirement) still let
+    # every eligible window from any Parallels-owned process become a
+    # candidate, so with no PID match at all the function picked the largest
+    # such window (Parallels Desktop's own UI, in the recorded evidence) and
+    # reported it as this VM's capture. Title matching is not attempted --
+    # kCGWindowName is non-empty for 0 of the 12 Parallels-owned windows
+    # inventoried in
+    # docs/planning/green-program/gui/evidence/windowlist-no-vm.txt, so it
+    # cannot discriminate between VMs.
+    # claim-lint:ok: #917, 0/12 above
+    if vm_pid is None or pid != vm_pid:
         continue
     score = width * height
-    lower_title = title.lower()
-    if vm and vm in lower_title:
-        score += 10_000_000
-    elif breenix_hint and "breenix" in lower_title:
-        score += 5_000_000
-    candidates.append((score, int(w.get("kCGWindowNumber", 0)), width, height, title))
+    candidates.append((score, window_id, width, height, pid))
+
+for line in inventory:
+    print("WINDOW " + line, file=sys.stderr)
+if not inventory:
+    print(f"WINDOW <none owned by any process with 'Parallels' in its name>", file=sys.stderr)
 
 if not candidates:
+    print(f"NO_MATCH vm={vm!r} vm_pid={vm_pid!r}", file=sys.stderr)
     sys.exit(1)
 
 candidates.sort(reverse=True)
-print(candidates[0][1])
+best = candidates[0]
+print(f"MATCH id={best[1]} size={best[2]}x{best[3]} owner_pid={best[4]}", file=sys.stderr)
+print(best[1])
 PY
 }
 
 capture_window() {
     local out="$1"
+    local vm_pid
+    vm_pid="$(find_vm_backend_pid || true)"
     local window_id
-    window_id="$(find_parallels_window_id || true)"
+    window_id="$(find_parallels_window_id "${vm_pid:-0}" || true)"
     if [ -z "$window_id" ]; then
         return 1
     fi
-    screencapture -x -o -l"$window_id" "$out" >/dev/null 2>&1
+    # Clear stale content from capture_prlctl at this per-attempt path (C-4).
+    rm -f "$out"
+    screencapture -x -o -l"$window_id" "$out" 2>&1 | while IFS= read -r line; do log "screencapture: $line"; done
+    # The function is an if condition, so errexit does not check this pipeline.
+    # Inspect screencapture's own status before accepting its output (C-4).
+    local sc_rc="${PIPESTATUS[0]}"
+    if [ "$sc_rc" -ne 0 ]; then
+        log "screencapture exited $sc_rc"
+        return 1
+    fi
+    [ -s "$out" ]
 }
 
 require_cmd prlctl
 require_cmd python3
 
 mkdir -p "$(dirname "$OUTPUT")"
+# Clear a prior invocation's screenshot so failed retries cannot leave stale
+# evidence at OUTPUT (#917 fix-pass C-7).
+rm -f "$OUTPUT"
 
 attempt=0
 last_stats=""
+last_reason="not-attempted"
 for delay in $RETRY_SCHEDULE; do
     attempt=$((attempt + 1))
     log "Attempt $attempt: waiting ${delay}s before capture for VM '$VM_NAME'"
     sleep "$delay"
 
     candidate="$TMP_DIR/display-attempt-${attempt}.png"
+    prlctl_err="$TMP_DIR/prlctl-attempt-${attempt}.err"
     method="prlctl"
-    if ! capture_prlctl "$candidate"; then
+    if capture_prlctl "$candidate" "$prlctl_err"; then
+        reason="ok"
+    else
+        prlctl_rc=$?
+        prlctl_errtext="$(tr '\n' ' ' <"$prlctl_err" | sed 's/  */ /g; s/^ *//; s/ *$//')"
         log "Attempt $attempt: prlctl capture failed, trying Core Graphics window capture"
-        method="screencapture"
-        if ! capture_window "$candidate"; then
-            log "Attempt $attempt: screencapture fallback failed"
+        method="window"
+        if capture_window "$candidate"; then
+            reason="ok"
+        else
+            last_reason="prlctl-exit-${prlctl_rc}:${prlctl_errtext:-no-stderr}:no-window-match"
+            log "Attempt $attempt: window capture also failed ($last_reason)"
             continue
         fi
     fi
@@ -260,6 +423,7 @@ for delay in $RETRY_SCHEDULE; do
     stats="$(image_probe "$candidate")"
     last_stats="$stats"
     if [ "$(json_bool "$stats" ok)" != "true" ]; then
+        last_reason="image-probe-failed:$(json_value "$stats" error)"
         log "Attempt $attempt: image probe failed: $(json_value "$stats" error)"
         continue
     fi
@@ -271,12 +435,19 @@ for delay in $RETRY_SCHEDULE; do
     log "Attempt $attempt: method=$method size=${width}x${height} dominant=${dominant} distinct=${distinct}"
 
     if [ "$(json_bool "$stats" black_delay)" = "true" ]; then
+        last_reason="black-frame-warmup"
         log "Attempt $attempt: capture is black; treating as Parallels VirGL warmup delay"
         continue
     fi
 
     cp "$candidate" "$OUTPUT"
-    write_baseline_and_stats "$OUTPUT" "$stats"
+    # Diagnostics are best effort: a real verified capture is already at
+    # OUTPUT, so a baseline failure must not turn it into capture=none (C-6).
+    # claim-lint:ok: #917; tests/parallels_capture_structure.rs
+    if ! write_baseline_and_stats "$OUTPUT" "$stats"; then
+        log "WARNING: write_baseline_and_stats failed (non-fatal; $OUTPUT was already written)"
+    fi
+    emit_verdict "$method" "ok"
     printf '%s\n' "$OUTPUT"
     exit 0
 done
@@ -284,5 +455,6 @@ done
 if [ -n "$last_stats" ]; then
     log "Last image stats: $last_stats"
 fi
-log "ERROR: failed to capture a non-black Parallels display for VM '$VM_NAME'"
+log "ERROR: failed to capture a non-black Parallels display for VM '$VM_NAME' (reason=$last_reason)"
+emit_verdict "none" "$last_reason"
 exit 1

@@ -466,28 +466,48 @@ if [ "$PARALLELS" = true ]; then
     if [ "$PARALLELS_TEST" = true ]; then
         # Test mode: wait, screenshot, exit
         SCREENSHOT="/tmp/breenix-screenshot.png"
+        # #917 fix-pass C-5: propagate the capture outcome to our exit status.
+        CAPTURE_OK=true
         echo "Test mode: waiting ${PARALLELS_TEST_WAIT}s for boot..."
         sleep "$PARALLELS_TEST_WAIT"
 
         echo ""
         echo "=== Screenshot ==="
-        SCREENSHOT_SCRIPT="$BREENIX_ROOT/scripts/parallels/screenshot-vm.sh"
-        if [ -x "$SCREENSHOT_SCRIPT" ]; then
-            if "$SCREENSHOT_SCRIPT" "$PARALLELS_VM" "$SCREENSHOT" \
-                || prlctl capture "$PARALLELS_VM" --file "$SCREENSHOT" 2>/dev/null; then
-                echo "Screenshot: $SCREENSHOT"
-            else
-                echo "Screenshot failed (VM may not be displaying yet)"
-            fi
+        # capture-display.sh replaces the old screenshot-vm.sh + bare
+        # `prlctl capture` fallback here: it tries `prlctl capture` (works
+        # with no GUI window open, which is how this VM was started) then a
+        # Core Graphics window capture as a best-effort secondary, retries
+        # past a black VirGL-warmup frame, and writes OUTPUT from exactly one
+        # verified-frame code path (7/7 tests in
+        # tests/parallels_capture_structure.rs) -- on failure it writes
+        # nothing and exits non-zero. See scripts/parallels/capture-display.sh
+        # and docs/planning/green-program/gui/PARALLELS-CAPTURE-2026-09-07.md
+        # (#917: the old fallback matched window titles that Parallels does
+        # not set -- 0/12 non-empty in
+        # docs/planning/green-program/gui/evidence/windowlist-no-vm.txt --
+        # failed in 6/6 historical runs that reached this step, then
+        # reported "Screenshot: ..."
+        # success regardless of whether the fallback captured a black or
+        # blank frame).
+        CAPTURE_SCRIPT="$BREENIX_ROOT/scripts/parallels/capture-display.sh"
+        # The caller already waited PARALLELS_TEST_WAIT for boot, so use a
+        # short retry schedule here (only guarding late VirGL warmup) unless
+        # the caller set its own.
+        CAPTURE_STDOUT="$(mktemp "${TMPDIR:-/tmp}/breenix-capture-stdout.XXXXXX")"
+        if BREENIX_CAPTURE_RETRY_SCHEDULE="${BREENIX_CAPTURE_RETRY_SCHEDULE:-5 10 20}" \
+            "$CAPTURE_SCRIPT" "$PARALLELS_VM" "$SCREENSHOT" >"$CAPTURE_STDOUT"; then
+            cat "$CAPTURE_STDOUT"
+            CAPTURE_METHOD="$(grep -o 'method=[a-z]*' "$CAPTURE_STDOUT" | head -1 | cut -d= -f2)"
+            echo "Screenshot: $SCREENSHOT (capture=${CAPTURE_METHOD:-unknown})"
         else
-            prlctl capture "$PARALLELS_VM" --file "$SCREENSHOT" 2>/dev/null \
-                && echo "Screenshot: $SCREENSHOT" \
-                || echo "Screenshot failed (VM may not be displaying yet)"
+            CAPTURE_OK=false
+            cat "$CAPTURE_STDOUT"
+            echo "Screenshot: capture=none (no PNG written; see the [PARALLELS_CAPTURE:...] line above for why)"
         fi
+        rm -f "$CAPTURE_STDOUT"
 
         echo ""
         echo "Serial log: $SERIAL_LOG"
-        echo "Screenshot: $SCREENSHOT"
     else
         # Interactive mode: tail serial forever
         echo "Tailing serial output (Ctrl+C to detach)..."
@@ -521,6 +541,11 @@ if [ "$PARALLELS" = true ]; then
         exec tail -f "$SERIAL_LOG"
     fi
 
+    # #917 fix-pass C-5: capture=none must also fail for exit-status callers.
+    # claim-lint:ok: #917; tests/parallels_capture_structure.rs
+    if [ "$PARALLELS_TEST" = true ] && [ "$CAPTURE_OK" != true ]; then
+        exit 1
+    fi
     exit 0
 fi
 
