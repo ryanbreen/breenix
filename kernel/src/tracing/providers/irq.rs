@@ -110,7 +110,7 @@ pub const HEARTBEAT_MARKER: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_HEARTBEAT
 /// point, at `boot_tests`' `RING_SPAN` self-check below, this constant is
 /// what stands between an early fatal dump's `TIMER_TICK` history reaching
 /// back a checkpoint-and-arch-specific short span (unsampled) or several
-/// times that (sampled) -- both bounded by the same 1024-entry ring, so the
+/// times that (sampled) -- both bounded by the same TRACE_BUFFER_SIZE-entry ring, so the
 /// sampling factor does not appear as an equal span factor once the ring is
 /// shared. The exact measured spans, which differ by checkpoint and by
 /// architecture, are recorded in

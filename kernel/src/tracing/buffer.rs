@@ -5,7 +5,7 @@
 //!
 //! # Design
 //!
-//! - Fixed-size ring buffer (1024 entries = 16 KiB)
+//! - Fixed-size ring buffer (2048 entries = 32 KiB)
 //! - Power-of-2 size for efficient modulo via bitmask
 //! - Atomic write index for lock-free append
 //! - Overwrite mode: old events are silently overwritten when full
@@ -17,7 +17,7 @@
 //!
 //! ```text
 //! +------------------+
-//! | entries[0..1024] |  16384 bytes (1024 * 16)
+//! | entries[0..2048] |  32768 bytes (2048 * 16)
 //! +------------------+
 //! | write_idx        |  8 bytes (atomic)
 //! +------------------+
@@ -39,7 +39,10 @@ use super::core::TraceEvent;
 
 /// Number of entries in each per-CPU trace buffer.
 /// Must be a power of 2 for efficient masking.
-pub const TRACE_BUFFER_SIZE: usize = 1024;
+/// #855 Option 1: start with 2x capacity after diagnostic sampling plateaued
+/// near 900 ms; retain ordinary scheduler events without sampling them.
+/// Shared by both architectures: +262144 bytes across 16 CPU buffers.
+pub const TRACE_BUFFER_SIZE: usize = 2048;
 
 /// Mask for efficient modulo operation (size - 1).
 const TRACE_BUFFER_MASK: usize = TRACE_BUFFER_SIZE - 1;
@@ -67,7 +70,7 @@ const _: () = assert!(
 /// - **No locks**: All operations use atomic primitives
 #[repr(C, align(64))]
 pub struct TraceCpuBuffer {
-    /// Ring buffer entries (16 bytes each, 16 KiB total).
+    /// Ring buffer entries (16 bytes each, 32 KiB total).
     entries: [TraceEvent; TRACE_BUFFER_SIZE],
 
     /// Write index (wraps around using TRACE_BUFFER_MASK).
@@ -83,7 +86,7 @@ pub struct TraceCpuBuffer {
     dropped: AtomicU64,
 
     /// Padding to ensure 64-byte alignment of the structure.
-    _padding: [u8; 24], // 8+8+8+24 = 48 bytes metadata, + 16384 entries = total aligned
+    _padding: [u8; 24], // 8+8+8+24 = 48 bytes metadata, + 32768 entry bytes; total rounded to alignment
 }
 
 impl TraceCpuBuffer {
@@ -236,13 +239,13 @@ impl Default for TraceCpuBuffer {
 
 // Verify the buffer has the expected size
 const _: () = {
-    // entries: 1024 * 16 = 16384 bytes
+    // entries: TRACE_BUFFER_SIZE * 16 bytes
     // write_idx: 8 bytes (AtomicUsize on 64-bit)
     // read_idx: 8 bytes
     // dropped: 8 bytes
     // _padding: 24 bytes
-    // Total: 16432 bytes, rounded up to 64-byte alignment
-    let expected_min = 16384 + 8 + 8 + 8 + 24; // 16432
+    // Total: TRACE_BUFFER_SIZE * 16 + 48 bytes, rounded up to 64-byte alignment
+    let expected_min = TRACE_BUFFER_SIZE * 16 + 8 + 8 + 8 + 24;
     let actual = core::mem::size_of::<TraceCpuBuffer>();
     assert!(actual >= expected_min, "TraceCpuBuffer too small");
     // With 64-byte alignment, actual size should be a multiple of 64

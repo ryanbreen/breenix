@@ -265,10 +265,11 @@ const TRACE_SCHED_DIAG_WAKE_TIMER_ALREADY_QUEUED: u16 = 9;
 /// CPUs 1-3 occupied by this family; strict boots retained 0, 22, and 0 ms.
 /// Sampling at 8192 retained 921, 895, and 901 ms in three strict boots;
 /// at 16384: 896, 938, and 936 ms. GDB then found only 6-9 SCHED_DIAG
-/// events per peer ring: ordinary switch/queue/IPI events limit retention.
+/// events per 1024-slot peer ring: ordinary switch/queue/IPI events limit
+/// retention. Keep 8192: 16384 gave no material gain; enlarge the ring instead.
 /// Evidence: docs/planning/green-program/tracing/serials/855/ (sched16384).
 #[cfg(target_arch = "aarch64")]
-const TRACE_SCHED_DIAG_SAMPLE: u64 = 16384;
+const TRACE_SCHED_DIAG_SAMPLE: u64 = 8192;
 
 #[cfg(target_arch = "aarch64")]
 const _: () = assert!(

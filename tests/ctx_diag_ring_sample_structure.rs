@@ -255,3 +255,36 @@ fn deleting_sched_early_return_would_be_caught() {
     let mutated = format!("{}{}", &body[..start], &body[end..]);
     assert_sched_sampling(&mutated);
 }
+
+const BUFFER_SOURCE: &str = "kernel/src/tracing/buffer.rs";
+
+fn assert_buffer_size(source: &str) {
+    assert!(
+        source.lines().any(|line| line == "pub const TRACE_BUFFER_SIZE: usize = 2048;"),
+        "trace buffer must retain the measured 2048-entry capacity"
+    );
+}
+
+#[test]
+fn buffer_size_is_pinned_to_measured_capacity() {
+    assert_buffer_size(&read(BUFFER_SOURCE));
+}
+
+#[test]
+#[should_panic(expected = "trace buffer must retain the measured 2048-entry capacity")]
+fn reverting_buffer_size_would_be_caught() {
+    let source = read(BUFFER_SOURCE);
+    assert_buffer_size(&source);
+    let mutated = source.replace(
+        "pub const TRACE_BUFFER_SIZE: usize = 2048;",
+        "pub const TRACE_BUFFER_SIZE: usize = 1024;",
+    );
+    assert_ne!(source, mutated);
+    assert_buffer_size(&mutated);
+}
+
+#[test]
+fn diagnostic_sample_values_are_pinned() {
+    assert!(read(SOURCE).contains("const TRACE_DIAG_SAMPLE: u64 = 1024;"));
+    assert!(read(SCHED_SOURCE).contains("const TRACE_SCHED_DIAG_SAMPLE: u64 = 8192;"));
+}
