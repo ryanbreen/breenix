@@ -48,6 +48,11 @@
 # gates' runs; on the x86 host it adds several minutes on top of that
 # gate's own boot loop.
 #
+# BREENIX_STRUCTURE_JOBS: positive worker count; unset defaults to the host
+# CPU count (nproc, then sysctl hw.ncpu, then 1), capped at 8. Set to 1
+# to compile and run suites sequentially in sorted-stem order. Each worker
+# keeps its own log; the final verdict follows worker completion.
+#
 # BREENIX_GATE_SKIP_STRUCTURE=1: loud, operator-set opt-out. Skips both
 # steps below (no suite runs, no census-count read) and prints a
 # `[GATE_PREFLIGHT:skipped=1:reason=...]` line instead of the scored one --
@@ -115,6 +120,38 @@ gate_structure_preflight() {
     rm -rf "$log_dir" 2>/dev/null || true
     mkdir -p "$log_dir" 2>/dev/null || true
 
+    # BSD and GNU xargs both support -P; /bin/bash on macOS is still 3.2.
+    # Pass paths through the environment instead of interpolating shell code.
+    local jobs="${BREENIX_STRUCTURE_JOBS-}"
+    if [ -z "${BREENIX_STRUCTURE_JOBS+x}" ]; then
+        jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+        [ "$jobs" -le 8 ] || jobs=8
+    fi
+    case "$jobs" in
+        ''|*[!0-9]*|0*)
+            echo "GATE_PREFLIGHT: invalid BREENIX_STRUCTURE_JOBS (expected a positive integer): $jobs" >&2
+            return 1
+            ;;
+    esac
+
+    local stems_file="$log_dir/stems"
+    (cd "$tests_dir" 2>/dev/null && find . -maxdepth 1 -type f -name '*_structure.rs' -print 2>/dev/null | sed 's|^\./||; s/\.rs$//' | sort) >"$stems_file" || true
+    if [ -s "$stems_file" ]; then
+        (
+            export GSP_RUNNER="$runner" GSP_LOG_DIR="$log_dir"
+            tr '\n' '\0' <"$stems_file" | xargs -0 -n 1 -P "$jobs" /bin/bash -c '
+                stem="$1"
+                if bash "$GSP_RUNNER" "$stem" >"$GSP_LOG_DIR/$stem.log" 2>&1; then
+                    echo 0 >"$GSP_LOG_DIR/$stem.status"
+                else
+                    echo 1 >"$GSP_LOG_DIR/$stem.status"
+                fi
+            ' _
+        ) || true
+    fi
+
+    # After xargs finishes, aggregate in discovery order, including
+    # missing status files as red if a worker could not finish.
     local total=0
     local green=0
     local red_stems=""
@@ -122,12 +159,12 @@ gate_structure_preflight() {
     while IFS= read -r stem; do
         [ -n "$stem" ] || continue
         total=$((total + 1))
-        if bash "$runner" "$stem" >"$log_dir/$stem.log" 2>&1; then
+        if [ "$(cat "$log_dir/$stem.status" 2>/dev/null)" = 0 ]; then
             green=$((green + 1))
         else
             red_stems="$red_stems $stem"
         fi
-    done < <(cd "$tests_dir" 2>/dev/null && find . -maxdepth 1 -type f -name '*_structure.rs' -print 2>/dev/null | sed 's|^\./||; s/\.rs$//' | sort)
+    done <"$stems_file"
 
     local critical_path_lines=0
     local checker="$repo_root/scripts/check-critical-path-violations.sh"
