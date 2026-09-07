@@ -1,0 +1,50 @@
+=== #423 sed graphics.rs 1355,1401 ===
+fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
+    use core::sync::atomic::Ordering;
+
+    let last_registry_gen = cmd.p2 as u32 as u64;
+
+    // Compare against the last mouse state returned to BWM. This stays stable
+    // across the wait so movement while blocked becomes a readiness bit.
+    let prev_mouse = COMPOSITOR_LAST_MOUSE.load(Ordering::Relaxed);
+
+    loop {
+        let (ready, cur_reg_gen, mouse_packed) =
+            compositor_ready_bits(last_registry_gen, prev_mouse);
+        if ready != 0 {
+            COMPOSITOR_LAST_MOUSE.store(mouse_packed, Ordering::Relaxed);
+            return SyscallResult::Ok(ready | ((cur_reg_gen & 0x00FF_FFFF) << 8));
+        }
+
+        if COMPOSITOR_FRAME_WQ
+            .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
+            .is_none()
+        {
+            return SyscallResult::Ok(0);
+        }
+
+        // Race closure: a producer may wake after the first condition check but
+        // before prepare_to_wait completes. Re-check after the thread is queued
+        // and marked BlockedOnIO; if ready, finish_wait restores runnable state
+        // without entering the scheduler.
+        let (ready_after_prepare, cur_reg_after_prepare, mouse_after_prepare) =
+            compositor_ready_bits(last_registry_gen, prev_mouse);
+        if ready_after_prepare != 0 {
+            COMPOSITOR_FRAME_WQ.finish_wait();
+            COMPOSITOR_LAST_MOUSE.store(mouse_after_prepare, Ordering::Relaxed);
+            return SyscallResult::Ok(
+                ready_after_prepare | ((cur_reg_after_prepare & 0x00FF_FFFF) << 8),
+            );
+        }
+
+        crate::task::waitqueue::schedule_current_wait();
+        COMPOSITOR_FRAME_WQ.finish_wait();
+
+        #[cfg(target_arch = "aarch64")]
+        ensure_current_address_space();
+
+        // If the wake was unrelated or coalesced, loop and re-check.
+    }
+}
+=== #423 rg compositor_wait bwm.rs ===
+1629:                graphics::compositor_wait(0, registry_gen).unwrap_or((0, registry_gen));

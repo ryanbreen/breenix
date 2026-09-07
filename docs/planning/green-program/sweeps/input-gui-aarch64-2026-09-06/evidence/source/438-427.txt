@@ -1,0 +1,6 @@
+=== #438/#427 rg load_elf_from_ext2/root_fs_read/EIO ===
+kernel/src/fs/ext2/mod.rs:2223:pub fn root_fs_read() -> Ext2ReadGuard {
+kernel/src/fs/ext2/mod.rs:2257:/// Routed through `root_fs_read()` (M1 of the #728 fix round), not a plain
+kernel/src/fs/ext2/mod.rs:2269:    root_fs_read().is_some()
+kernel/src/main_aarch64.rs:45:    let fs_guard = kernel::fs::ext2::root_fs_read();
+kernel/src/main_aarch64.rs:1559:            let fs_guard = kernel::fs::ext2::root_fs_read();

@@ -1,0 +1,157 @@
+#423 F28 eliminate 5ms compositor wake fallback
+Factory F28 tracks instrumentation, reproduction, race fix, 120s validation, PR merge for eliminating compositor wake fallback hits.
+
+---
+type=`task` | priority=P1 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-39z`.
+#424 F32k ISR wake, op19 waitqueue, cursor restoration
+Factory F32k: restore GUI cursor rendering, migrate ReadWindowInput op 19 to waitqueue, replace ISR deferred wake ring with Linux-parity ttwu_queue_wakelist IPI path, validate and merge.
+
+---
+type=`feature` | priority=P0 | bd status=`blocked`
+
+Migrated from bd issue `breenix-3ca`.
+#425 F32u fix bcheck false fails and boot spawn
+Factory F32u: diagnose bcheck waitpid false FAIL reports, fix result detection without weakening tests, spawn /bin/bcheck on boot as a sibling to bounce, validate clean boot, and open/merge PR.
+
+---
+type=`task` | priority=P1 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-3tf`.
+#427 Investigate baseline aarch64 /bin/bwm spawn EIO
+On untouched main 70360350, the native SMP=4 production boot reaches 4 CPUs online, Breenix ARM64 Boot Complete, and CPU0 timer ticks past 10000, but init fails to spawn /bin/bwm with EIO and then stalls spawning /sbin/telnetd. This makes run-aarch64-boot-test-native.sh miss its userspace completion marker despite a healthy kernel boot.
+
+**Acceptance Criteria**
+
+Production aarch64 SMP=4 boot emits an accepted userspace completion marker without spawn EIO, and run-aarch64-boot-test-native.sh passes on main.
+
+---
+type=`bug` | priority=P2 | bd status=`open`
+
+Migrated from bd issue `breenix-5up`.
+#428 Follow up F32d FPS regression after CPU0 EL0 routing fix
+F32d cleared the bwm-spawn AHCI timeout after the waitqueue fix, but validation stopped because the first normal 120s Parallels run missed the requested FPS >=160 gate (frame #15000 at cpu0 ticks=105000, estimated active fps=142.8). Use docs/planning/f32d-bwm-ahci-waitqueue/exit.md and artifacts under .factory-runs/f32d-bwm-ahci-waitqueue-20260418-142124/validation/boots/.
+
+---
+type=`bug` | priority=P1 | bd status=`open`
+
+Migrated from bd issue `breenix-6f4`.
+#429 F23 restore ARM64 GUI client spawning and op16 VirGL compositor
+Follow-up from F22. bwm now takes over Parallels scanout and passes the rendered desktop bar capture using the ARM64 direct VirGL blit path, but full GUI client startup remains deferred. Restore script-driven ARM64 service launch for bterm/blog/bounce/bcheck, resolve the bsshd spawn/load stall observed after [spawn] path='/bin/bsshd', and fix the aarch64 op16 virgl_composite_windows_rect SUBMIT_3D timeout so bwm can return to the per-window VirGL compositor instead of direct blit.
+
+---
+type=`bug` | priority=P1 | bd status=`in_progress`
+bd dependencies:
+- discovered-from -> breenix-wm4
+
+Migrated from bd issue `breenix-6zk`.
+#431 F24 launch GUI apps on bwm desktop
+Track F24 work to document ARM64 early userspace constraints, add a stricter render verdict, and incrementally launch GUI clients on the bwm desktop without regressing Parallels boot/capture.
+
+---
+type=`feature` | priority=P1 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-83a`.
+#432 F32u bcheck lockup diagnosis and boot spawn
+Investigate bcheck-triggered lockup and false FAIL waitpid reporting, fix root causes honestly, and only add boot spawn after responsiveness is validated.
+
+---
+type=`task` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-8ka`.
+#438 Investigate AArch64 post-bsshd bwm spawn EIO
+The native SMP=4 QEMU script reaches bsshd listening but then load_elf_from_ext2(/bin/bwm) returns EIO and the script misses its stricter bwm/shell success marker. Reproduced on both the pre-hardening tip a7ce750f and hardened tip 12b1c001, so it is not an R16 teardown regression. Kernel heartbeats continue. Serial evidence: /tmp/breenix_r16_pre_hardening_serial.txt, /tmp/breenix_r16_smoke1.0ifut8/serial.txt, /tmp/breenix_r16_smoke2.7pMqh9/serial.txt.
+
+**Acceptance Criteria**
+
+Two native SMP=4 boots reach the script's normal bwm/shell completion marker without EIO, panic, abort, soft lockup, or stalled heartbeats.
+
+---
+type=`bug` | priority=P2 | bd status=`open`
+bd dependencies:
+- discovered-from -> breenix-esd
+
+Migrated from bd issue `breenix-aug`.
+#440 F32n event-driven input pipeline
+Diagnose the HID-to-BWM input pipeline, document Linux event-driven input parity, fix the regression that prevents mouse/hotkeys from working, migrate BWM input consumption away from polling, validate, and merge.
+
+---
+type=`task` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-be9`.
+#441 Investigate F32 waitqueue Parallels stall before bounce spawn
+F32 waitqueue branch passed clean builds but failed Phase 4 validation on the first rebuilt 120s Parallels run. Serial reached BWM and bsshd, then stopped at [spawn] path='/bin/bounce' with no SOFT LOCKUP/AHCI/DATA_ABORT/panic markers and only VirGL frames 0-1. See docs/planning/f32-waitqueue/exit.md and .factory-runs/f32-waitqueue-20260418-115626/rebuilt-run1.serial.log. Start with GDB around the bounce create_process_with_argv path and inspect waitqueue/scheduler lock interactions.
+
+**Acceptance Criteria**
+
+Root cause identified and fixed without restoring polling fallback; aarch64 builds clean; F32 5-run 120s Parallels sweep passes all required lifecycle, CPU0 tick, no-AHCI, FPS, and render verdict gates.
+
+---
+type=`bug` | priority=P1 | bd status=`in_progress`
+bd dependencies:
+- discovered-from -> breenix-50j
+
+Migrated from bd issue `breenix-bmv`.
+#447 F32b fix waitqueue compositor bounce spawn stall
+Fix the F32 waitqueue compositor migration stall where bounce appears to block during frame pacing before bwm pumps frames. Confirm stall location with breadcrumbs, implement a non-polling fix, validate 5/5 Parallels runs, and merge.
+
+---
+type=`bug` | priority=P1 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-d2p`.
+#453 F32n store xHCI MSI IRQ in XhciState
+Fix the F32n input regression by carrying the early xHCI MSI IRQ allocation into XhciState before XHCI_STATE is published, then validate clean builds, Parallels boot, wait_stress, and open a no-automerge PR for manual input smoke testing.
+
+---
+type=`bug` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-gae`.
+#454 Investigate SOFT_LOCKUP_VIRGL Parallels failure class
+Fresh AHCI CPU0 root-cause sweep on current main saw SOFT_LOCKUP_VIRGL in 10/30 Parallels boots. The AHCI Ralph explicitly scoped this class out, so it needs a separate investigation focused on compositor/VirGL liveness rather than AHCI IRQ routing.
+
+**Acceptance Criteria**
+
+Reproduce and characterize SOFT_LOCKUP_VIRGL with a dedicated stress run; identify whether it is compositor, VirGL device, scheduler, or VM artifact; produce either a fix with validation or a documented non-kernel finding.
+
+---
+type=`bug` | priority=P1 | bd status=`open`
+bd dependencies:
+- discovered-from -> breenix-2r1
+
+Migrated from bd issue `breenix-ha9`.
+#455 F20 Parallels display capture and GUI rendering fix
+Factory F20: establish reliable Parallels guest screenshot capture, archive red baseline, then iterate on GUI rendering until captured display is distinguishable from solid red or four cycles are exhausted.
+
+---
+type=`bug` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-i9z`.
+#457 Fix ARM64 BWM compositor CPU burn without FPS regression
+Track TURN 42 landing of the validated ARM64 BWM compositor core fix: remove rejected/debug-only instrumentation, keep the Linux-grounded present-fence SUBMIT_3D compositor path, validate default Parallels Bounce stays clean at ~186-FPS class with BWM off top CPU, then open PR. Known follow-up: multi-window virtio-gpu control-queue marshalling corruption remains for a separate branch.
+
+---
+type=`bug` | priority=P0 | bd status=`in_progress` | bd labels: ARM64, BWM, ralph, virtio-gpu
+
+Migrated from bd issue `breenix-ism`.
+#475 F32p fix xHCI MSI/SPI input interrupts
+Factory run to validate Linux xHCI MSI delivery on Parallels, audit Breenix against Linux, fix MSI/SPI delivery, remove timer-driven HID polling, migrate BWM input to wake-based delivery, and validate/merge.
+
+---
+type=`feature` | priority=P0 | bd status=`blocked`
+
+Migrated from bd issue `breenix-rr9`.
+#482 F32t fix xHCI MSI programming order and eliminate input polling
+Track F32t work to revalidate Linux xHCI MSI ground truth, apply Linux-order MSI programming, ensure MSI data matches the enabled GIC SPI, enable xHCI MSI delivery, remove timer-driven HID polling, and migrate BWM to wake-based input consumption.
+
+---
+type=`feature` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-uu0`.
+#487 [bug] NB-13 Parallels double-Control/input control-channel lockup remains unproven
+Turn 55 attempted NB-13 reproduction on ARM64/Parallels. Evidence was contaminated by Parallels prlctl capture/control-channel hangs and an unrelated pre-input soft-lockup dump in scheduler/VirtGPU territory. No kernel fix retained. Artifacts in turn55-artifacts/. Needs clean reproduction path and likely high-scrutiny/prohibited signoff before scheduler/graphics edits.
+
+---
+type=`bug` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-z1n`.

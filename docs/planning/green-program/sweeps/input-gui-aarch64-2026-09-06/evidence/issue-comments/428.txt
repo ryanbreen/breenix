@@ -1,0 +1,23 @@
+title:	Follow up F32d FPS regression after CPU0 EL0 routing fix
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	428
+--
+F32d cleared the bwm-spawn AHCI timeout after the waitqueue fix, but validation stopped because the first normal 120s Parallels run missed the requested FPS >=160 gate (frame #15000 at cpu0 ticks=105000, estimated active fps=142.8). Use docs/planning/f32d-bwm-ahci-waitqueue/exit.md and artifacts under .factory-runs/f32d-bwm-ahci-waitqueue-20260418-142124/validation/boots/.
+
+---
+type=`bug` | priority=P1 | bd status=`open`
+
+Migrated from bd issue `breenix-6f4`.
+=== COMMENTS ===

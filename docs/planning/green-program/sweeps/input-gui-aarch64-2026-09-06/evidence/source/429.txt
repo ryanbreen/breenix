@@ -1,0 +1,50 @@
+=== #429 rg bwm.rs virgl_composite_windows ===
+1449:            if graphics::virgl_composite(&test_pixel, 1, 1).is_ok() {
+1581:            let _ = graphics::virgl_composite_windows_rect(
+1593:                graphics::virgl_composite_windows(composite_buf, screen_w as u32, screen_h as u32, true);
+1600:            let _ = graphics::virgl_composite_windows_rect(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
+1602:            let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+2149:                    let _ = graphics::virgl_composite_windows_rect(
+2166:                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 2, dx, dy, dw, dh);
+2168:                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 0, 0, 0, 0, 0);
+2183:            let _ = graphics::virgl_composite_windows_rect(
+2197:            let _ = graphics::virgl_composite_windows_rect(
+2207:            let _ = graphics::virgl_composite_windows_rect(
+=== #429 sed init.rs 439,469 ===
+fn run_boot_script() {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 Parallels boots from AHCI. Mirror the boot script's service
+        // sequence directly from init so the standard desktop services are
+        // always started even before bsh runs init.js.
+        const SERVICES: &[&[u8]] = &[b"/bin/xhci_counters\0", b"/bin/bwm\0", b"/sbin/telnetd\0"];
+        for path in SERVICES {
+            if let Err(e) = spawn(path) {
+                print!("[init] Warning: failed to spawn service: {}\n", e);
+            }
+        }
+        print!("[init] Boot script completed\n");
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    let path = b"/bin/bsh\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let arg0 = b"bsh\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let arg1 = b"--init-shell\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
+    #[cfg(not(target_arch = "aarch64"))]
+    match spawnv(path, argv.as_ptr()) {
+        Ok(child_pid) => {
+            let child_raw = child_pid.raw() as i32;
+            let mut status: i32 = 0;
+            let _ = waitpid(child_raw, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+=== #429 rg graphics.rs op16 ===
+1098:        16 => {
+1469:    // VirGL: cursor is a GPU quad rendered inside virgl_composite_windows(), which
+1496:                // VirGL: fall through — virgl_composite_windows() handles cursor-only
+1593:            match crate::drivers::virtio::gpu_pci::virgl_composite_windows(
+2183:/// copy in virgl_composite_windows Phase A.

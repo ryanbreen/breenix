@@ -1,0 +1,6 @@
+RESULT: FAIL: USB_MOUSE_ENUM: mouse never enumerated a slot (mouse=slot0): [xhci] start_hid_polling: kbd=slot0/dci0 nkro=dci0 mouse=slot0/dci0 mouse2=dci0
+vm=breenix-1788738760
+type_filter=0
+inject_retries=0
+evidence_dir=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/logs/parallels-launcher-test/run-20260906-195221
+elapsed_s=53

@@ -1,0 +1,23 @@
+title:	F32n event-driven input pipeline
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	440
+--
+Diagnose the HID-to-BWM input pipeline, document Linux event-driven input parity, fix the regression that prevents mouse/hotkeys from working, migrate BWM input consumption away from polling, validate, and merge.
+
+---
+type=`task` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-be9`.
+=== COMMENTS ===

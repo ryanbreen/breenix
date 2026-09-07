@@ -1,0 +1,50 @@
+=== #457 git show --stat 5aa0d5ce (shared with 428) ===
+commit 5aa0d5cede18f47134ed65efe2b9624c90320936
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Sat May 30 12:29:22 2026 -0400
+
+    fix(aarch64): GPU present-fence compositor — eliminate BWM CPU burn + complete-lockup (#381)
+    
+    Linux-grounded present-fence model: op16 SUBMIT_3D compositor, at most one present in flight, and fence-gated client release. This fixes the complete lockup and CPU0/BWM burn; single-window validation shows roughly 180-220 FPS, BWM off top CPU, and present submitted == completed.
+    
+    KNOWN FOLLOW-UP: multi-window second-window virtio-gpu control-queue marshalling corruption remains for a separate branch, with VIRTGPU_FAIL / cmd=0xbf800000 evidence.
+    
+    Co-authored-by: Claude Code <noreply@anthropic.com>
+
+ kernel/src/drivers/virtio/gpu_pci.rs    |  68 ++++++-
+ kernel/src/syscall/graphics.rs          |  63 +++++--
+ kernel/src/tracing/providers/virtgpu.rs |  50 ++++++
+ userspace/programs/src/bwm.rs           | 310 +++++---------------------------
+ 4 files changed, 202 insertions(+), 289 deletions(-)
+=== #457 rg gpu_pci.rs ===
+104:static GPU_PCI_LOCK: GpuPciLock = GpuPciLock::new();
+1493:const GPU_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+2183:    let _guard = GPU_PCI_LOCK.lock();
+2428:        .wait_timeout_uninterruptible(expected_token, GPU_COMPLETION_TIMEOUT_NS)
+2790:fn send_owned_command_expect_ok<T>(
+3871:    let result = send_owned_command_expect_ok(state, &command).map(|_| ());
+4167:    send_owned_command_expect_ok(state, &command).map(|_| ())
+4738:        send_owned_command_expect_ok(state, &command).map(|_| ())
+5738:/// releases it before returning. Caller must NOT hold GPU_PCI_LOCK.
+=== #457 rg bwm.rs virgl_composite ===
+1268:fn compose_full_redraw(
+1310:        compose_full_redraw(vram, fb, shadow, bg, windows, focused, clock, ui_font);
+1449:            if graphics::virgl_composite(&test_pixel, 1, 1).is_ok() {
+1581:            let _ = graphics::virgl_composite_windows_rect(
+1593:                graphics::virgl_composite_windows(composite_buf, screen_w as u32, screen_h as u32, true);
+1600:            let _ = graphics::virgl_composite_windows_rect(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
+1602:            let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+1615:        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+1648:                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+1658:                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+1679:                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+1701:                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+1992:                            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+2073:                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+2086:                                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+2149:                    let _ = graphics::virgl_composite_windows_rect(
+2166:                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 2, dx, dy, dw, dh);
+2168:                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 0, 0, 0, 0, 0);
+2183:            let _ = graphics::virgl_composite_windows_rect(
+2197:            let _ = graphics::virgl_composite_windows_rect(
+2207:            let _ = graphics::virgl_composite_windows_rect(

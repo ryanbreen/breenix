@@ -1,0 +1,29 @@
+title:	Investigate F32 waitqueue Parallels stall before bounce spawn
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	441
+--
+F32 waitqueue branch passed clean builds but failed Phase 4 validation on the first rebuilt 120s Parallels run. Serial reached BWM and bsshd, then stopped at [spawn] path='/bin/bounce' with no SOFT LOCKUP/AHCI/DATA_ABORT/panic markers and only VirGL frames 0-1. See docs/planning/f32-waitqueue/exit.md and .factory-runs/f32-waitqueue-20260418-115626/rebuilt-run1.serial.log. Start with GDB around the bounce create_process_with_argv path and inspect waitqueue/scheduler lock interactions.
+
+**Acceptance Criteria**
+
+Root cause identified and fixed without restoring polling fallback; aarch64 builds clean; F32 5-run 120s Parallels sweep passes all required lifecycle, CPU0 tick, no-AHCI, FPS, and render verdict gates.
+
+---
+type=`bug` | priority=P1 | bd status=`in_progress`
+bd dependencies:
+- discovered-from -> breenix-50j
+
+Migrated from bd issue `breenix-bmv`.
+=== COMMENTS ===
