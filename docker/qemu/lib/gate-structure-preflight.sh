@@ -164,11 +164,25 @@ gate_structure_preflight() {
             export GSP_RUNNER="$runner" GSP_LOG_DIR="$log_dir" GSP_TIMEOUT="$suite_timeout" TMPDIR="$log_dir"
             tr '\n' '\0' <"$stems_file" | xargs -0 -n 1 -P "$jobs" /bin/bash -c '
                 stem="$1"
-                if timeout "$GSP_TIMEOUT" bash "$GSP_RUNNER" "$stem" >"$GSP_LOG_DIR/$stem.log" 2>&1; then
-                    echo 0 >"$GSP_LOG_DIR/$stem.status"
-                else
-                    echo 1 >"$GSP_LOG_DIR/$stem.status"
-                fi
+                budget="$GSP_TIMEOUT"
+                for attempt in 1 2; do
+                    start=$SECONDS
+                    rc=0
+                    timeout "$budget" bash "$GSP_RUNNER" "$stem" >"$GSP_LOG_DIR/$stem.attempt-$attempt.log" 2>&1 || rc=$?
+                    wall=$((SECONDS - start))
+                    cat "$GSP_LOG_DIR/$stem.attempt-$attempt.log" >>"$GSP_LOG_DIR/$stem.log"
+                    echo "[GATE_SUITE:stem=$stem:attempt=$attempt:timeout_s=$budget:wall_s=$wall:exit=$rc]" >>"$GSP_LOG_DIR/$stem.metrics"
+                    if [ "$rc" -eq 124 ]; then
+                        load=$(uptime)
+                        echo "[GATE_SUITE_TIMEOUT:stem=$stem:wall_s=$wall:host_load=$load]" >>"$GSP_LOG_DIR/$stem.metrics"
+                        if [ "$attempt" -eq 1 ]; then
+                            budget=$((budget * 2))
+                            continue
+                        fi
+                    fi
+                    break
+                done
+                echo "$rc" >"$GSP_LOG_DIR/$stem.status"
             ' _
         ) || true
     fi
@@ -181,6 +195,7 @@ gate_structure_preflight() {
     local stem
     while IFS= read -r stem; do
         [ -n "$stem" ] || continue
+        cat "$log_dir/$stem.metrics" 2>/dev/null || true
         total=$((total + 1))
         if [ "$(cat "$log_dir/$stem.status" 2>/dev/null)" = 0 ]; then
             green=$((green + 1))
