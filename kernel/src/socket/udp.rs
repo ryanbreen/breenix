@@ -3,6 +3,7 @@
 //! Provides datagram socket functionality for UDP protocol.
 
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -12,6 +13,41 @@ use crate::process::process::ProcessId;
 
 /// Maximum number of packets to queue per socket
 const MAX_RX_QUEUE_SIZE: usize = 32;
+
+/// Acquire `socket`'s outer `Arc<Mutex<UdpSocket>>` -- the lock the fd table
+/// holds, and the one `net/udp.rs::deliver_to_socket` (the NetRx IRQ route)
+/// locks from inside `with_process_manager`, which masks interrupts on both
+/// architectures -- with interrupts masked for the WHOLE hold, and run `f`
+/// under it.
+///
+/// #823: a thread-side hold of this Mutex taken without masking can be
+/// interrupted. aarch64 runs `do_softirq()` unconditionally on IRQ return
+/// regardless of preempt_count (see `net_rx_softirq_handler` and #812's own
+/// finding, which named this exact lock as an open item it did not touch), so
+/// an interrupted holder's own CPU reenters this same lock inside
+/// `deliver_to_socket` and spins forever -- the CPU is suspended in the
+/// exception it took and cannot execute the lock-release instruction until
+/// the exception returns; that return waits for the softirq's spin to end.
+/// claim-lint:ok: this round's red-boot mutation leg,
+/// [UDP_LOCK_ORACLE:...masked_in_hold=0:stalled=1:hold_done=0:joined=0...FAIL]
+///
+/// This is the one masked-hold primitive the 4 thread-side callers of this
+/// lock use (`ipc/poll.rs`'s `poll_fd`, and `syscall/socket.rs`'s `sys_bind`,
+/// `sys_sendto` and `sys_recvfrom`); `boot_tests`' `udp_socket_lock_oracle`
+/// calls it directly, so removing the mask here mutates the exact code these
+/// 4 production callers run, not a test-only stand-in for it.
+pub fn with_locked_masked<F, R>(socket: &Arc<Mutex<UdpSocket>>, f: F) -> R
+where
+    F: FnOnce(&mut UdpSocket) -> R,
+{
+    #[cfg(target_arch = "x86_64")]
+    type Cpu = crate::arch_impl::x86_64::X86Cpu;
+    #[cfg(target_arch = "aarch64")]
+    type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
+    use crate::arch_impl::traits::CpuOps;
+
+    Cpu::without_interrupts(|| f(&mut socket.lock()))
+}
 
 /// A received UDP packet
 #[derive(Debug)]

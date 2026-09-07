@@ -322,7 +322,7 @@ const PROD_GATE: &str = "docker/qemu/run-aarch64-prod-profile-boot-test.sh";
 const X86_BOOT_GATE: &str = "docker/qemu/run-x86-boot-tests.sh";
 const X86_PROD_GATE: &str = "docker/qemu/run-x86-prod-profile-boot-test.sh";
 const GREEN_SERIAL: &str =
-    "docs/planning/green-program/irq-locks/serials/822/02-a64-green-repaired-serial.txt";
+    "tests/fixtures/udp-socket-lock-aarch64-serial.txt";
 const ORACLE_MARKER: &str = "[TTY_IRQ_FG_ORACLE:";
 
 /// The field whose mutex this round takes off the interrupt path.

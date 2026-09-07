@@ -135,6 +135,17 @@ docs/planning/green-program/irq-locks/serials/822/*.txt -text
 # normalisation would edit it.
 docs/planning/green-program/timekeeping/serials/766/*.txt -text
 
+# #823 UDP-socket-lock serials: raw aarch64 QEMU serial captures from this
+# Mac -- the fixture at tests/fixtures/udp-socket-lock-aarch64-serial.txt
+# (a real strict-gate boot four other structure suites also re-pointed their
+# GREEN_SERIAL to, once the strict gate began requiring the
+# [UDP_LOCK_ORACLE:...] marker) and the round's own preserved boots under
+# docs/planning/green-program/irq-locks/serials/823/. Kept byte-exact for the
+# same reason as the captures above -- the CR bytes the guest console emits
+# are part of the evidence, and a CRLF normalisation would edit it.
+tests/fixtures/udp-socket-lock-aarch64-serial.txt -text
+docs/planning/green-program/irq-locks/serials/823/**/*.txt -text
+
 # Input & USB + GUI aarch64 layer sweep (2026-09-06): raw Parallels serial
 # captures and their launcher-smoke run-sh.log companions, kept byte-exact for
 # the same reason as the captures above -- the CR bytes the guest console and
