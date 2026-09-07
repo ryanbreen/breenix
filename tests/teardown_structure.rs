@@ -17260,7 +17260,7 @@ fn test_phase_budget_is_anchored_at_test_phase_entry() {
     // run_all_tests; the kernel entry path in main_aarch64.rs must not
     // publish or read it.
     // claim-lint:ok: #522 C5; the mutation transcript is
-    // docs/planning/green-program/tracing/serials/522-c5/mutation-kernel-entry-anchor-red.txt.
+    // docs/planning/green-program/tracing/serials/522-c5-fixpass/mutation-kernel-entry-anchor-red.txt.
     let executor = repo_text("kernel/src/test_framework/executor.rs");
     let run_all_tests = function_body(&executor, "run_all_tests");
     assert!(run_all_tests.contains("super::begin_test_phase_liveness_budget("));
