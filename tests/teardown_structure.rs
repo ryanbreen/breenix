@@ -9899,8 +9899,8 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert_eq!(
         gate.matches("record_exit_kick_gate_watchdog_heartbeat();")
             .count(),
-        3,
-        "the soft-lockup heartbeat must cover gate entry, wait entry, and each periodic re-kick"
+        5,
+        "the soft-lockup heartbeat must cover gate entry and both wait loops entry/re-kick"
     );
     assert!(!gate.contains("let storm_progress ="));
     assert_eq!(
@@ -9908,6 +9908,67 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         4,
         "workers_ready and all three storm joins must kick every worker CPU"
     );
+    assert!(gate.contains("if let Err((failure, target)) = spin_with_resched_workers(\n        \"workers_ready\""));
+    let worker_wait = function_body(gate, "spin_with_resched_workers");
+    // Mutation proof: replacing this indexed update with advanced_from plus a
+    // shared timestamp must fail here, even though the evidence still has 3 counters.
+    for required in [
+        "let mut last_advance = [wait_start; 3];",
+        "for target in 0..3",
+        "progress_current.workers[target] > last_progress.workers[target]",
+        "last_progress.workers[target] = progress_current.workers[target];",
+        "last_advance[target] = now;",
+        "elapsed_ticks(last_advance[target], wait_start)",
+        "!target_complete(target, progress_current.workers[target])",
+        "elapsed >= target_deadline",
+        "stalled_target = Some(target);",
+        "stalled_target.map(|i| workers[i].0)",
+    ] {
+        assert!(worker_wait.contains(required), "missing per-worker window: {required}");
+    }
+    assert!(!worker_wait.contains("advanced_from("));
+    assert!(!worker_wait.contains("last_advance.fill("));
+    for message in [
+        "exit_kick_gate: workers_ready never reached 3, worker 1 (publisher A, CPU 1) made no progress",
+        "exit_kick_gate: workers_ready never reached 3, worker 2 (publisher B, CPU 2) made no progress",
+        "exit_kick_gate: workers_ready never reached 3, worker 3 (observer, CPU 3) made no progress",
+    ] {
+        assert!(gate.contains(message));
+    }
+    assert!(!gate.contains("workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive"));
+    let fixture = function_body(&provider, "exit_kick_worker_window_isolation_test");
+    // Keep the real old control and new mechanism identical, not two simulations.
+    for helper in ["spin_with_resched", "spin_with_resched_workers", "join_with_resched", "print_wait_evidence"] {
+        let code_lines = |body: &str| body.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(code_lines(function_body(gate, helper)), code_lines(function_body(fixture, helper)), "fixture drift: {helper}");
+    }
+    for required in [
+        "before_union_worker_1", "after_worker_1", "after_worker_2", "after_worker_3",
+        "exit_kick_worker_isolation: worker 1 made no progress",
+        "exit_kick_worker_isolation: worker 2 made no progress",
+        "exit_kick_worker_isolation: worker 3 made no progress",
+        "healthy_baseline=PASS", "WaitFailureKind::AbsoluteCeiling, None",
+        "WaitFailureKind::NoProgress, Some(name)", "name == names[frozen]",
+        "elapsed_ms < FIRST_PROGRESS_WINDOW_MILLISECONDS",
+        "elapsed_ms > FIRST_PROGRESS_WINDOW_MILLISECONDS + NO_PROGRESS_WINDOW_MILLISECONDS",
+        "elapsed_ms < ABSOLUTE_WAIT_CEILING_MILLISECONDS",
+        "final_progress[frozen] != 1", "final_progress[i] <= 2",
+        "struct StormAbortGuard", "core::mem::drop(abort_guard);", "joined != 3",
+    ] {
+        assert!(fixture.contains(required), "missing isolation fixture proof: {required}");
+    }
+    let strict = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
+    assert!(strict.contains("BREENIX_STRICT_TIMEOUT_SECONDS:-90"));
+    assert!(strict.contains("BREENIX_STRICT_POLL_ITERATIONS:-60"));
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let registration = registry.find("name: \"exit_kick_worker_window_isolation\"").expect("isolation registry entry");
+    assert!(registry[..registration].trim_end().ends_with("#[cfg(target_arch = \"aarch64\")]\n    TestDef {"));
+    let registration = &registry[registration..registry[registration..].find("},").unwrap() + registration];
+    for required in ["exit_kick_worker_window_isolation_test", "Arch::Aarch64", "TestStage::PostScheduler", "timeout_ms: 90000"] {
+        assert!(registration.contains(required));
+    }
     let storm_union_start = gate.find("\"workers_ready\"").expect("workers_ready wait");
     let storm_union_end = gate[storm_union_start..]
         .find("accounting.start.store(true, Ordering::Release);")
@@ -9925,6 +9986,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         );
     }
     for (progress_source, counter) in [
+        ("storm_publisher_a_progress", "publisher_a_progress"),
         ("storm_publisher_b_progress", "publisher_b_progress"),
         ("storm_observer_progress", "observer_progress"),
     ] {
@@ -9956,18 +10018,6 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
             "{progress_source} must govern exactly one storm join"
         );
     }
-    let publisher_a_progress_declaration = gate
-        .find("let storm_publisher_a_progress =")
-        .expect("publisher A dependency-progress declaration");
-    let publisher_a_progress = gate[publisher_a_progress_declaration..]
-        .find(';')
-        .map(|end| &gate[publisher_a_progress_declaration..publisher_a_progress_declaration + end])
-        .expect("publisher A dependency-progress closure terminator");
-    assert!(publisher_a_progress.contains("publisher_a_progress"));
-    assert!(publisher_a_progress.contains("observer_progress"));
-    assert!(!publisher_a_progress.contains("publisher_b_progress"));
-    assert_eq!(gate.matches("&storm_publisher_a_progress").count(), 1);
-
     assert!(
         !gate.contains("while observer_accounting.publishers_done.load(Ordering::Acquire) != 2")
     );

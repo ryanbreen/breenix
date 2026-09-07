@@ -914,7 +914,9 @@ run_single_test() {
     local EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
     cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
-    # Run QEMU with 20s timeout.
+    # #522 C4: the 15s control plus three 8s worker windows need a 90s boot budget.
+    # Set BREENIX_STRICT_POLL_ITERATIONS as well when extending this timeout.
+
     # Breenix ARM64 expects a GICv3 CPU interface, matching Parallels.
     # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
     # Use writable disk copy (no readonly=on) to allow filesystem writes
@@ -927,7 +929,7 @@ run_single_test() {
     HOST_MS_START="$(gbf_host_ms_now)"
     QEMU_AT_START="$(qemu_host_lock_count)"
     LOAD_AT_START="$(gbf_load_1m)"
-    timeout 20 qemu-system-aarch64 \
+    timeout "${BREENIX_STRICT_TIMEOUT_SECONDS:-90}" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -qmp unix:"$QMP_SOCK",server=on,wait=off \
@@ -946,7 +948,7 @@ run_single_test() {
     # still kills QEMU instead of orphaning it with the lock free.
     qemu_host_lock_track_pid "$QEMU_PID"
 
-    # Wait for userspace liveness AND exec smoke completion (18s max, checking every 1.5s)
+    # Wait for userspace liveness AND exec smoke completion (90s max, polling at 1.5s intervals)
     # Accept any of these as the liveness condition:
     #   "breenix>" or "bsh " - shell prompt on serial (legacy/direct mode)
     #   "[bwm] Display:" - BWM window manager initialized (shell runs inside PTY)
@@ -973,12 +975,10 @@ run_single_test() {
     # cannot pass. It also made the forbidden-pattern scans below unreachable — a
     # late strand cannot appear in a serial that was truncated at 4.4 s.
     #
-    # Polling score_serial keeps the two in sync by construction: whatever the
-    # scoring criteria grow to require, the loop waits for it. This only ever
-    # extends the capture window. It accepts nothing score_serial would reject —
-    # the verdict below is still a fresh score of the serial QEMU left behind —
-    # and the crash-marker break and the wall-clock bound are unchanged.
-    for POLL in $(seq 1 "${BREENIX_STRICT_POLL_ITERATIONS:-12}"); do
+    # Poll the same score_serial predicate used for the final verdict. The
+    # capture window also accommodates the #522 C4 wall-clock control; a crash
+    # still ends the boot early and the post-kill scorer determines the result.
+    for POLL in $(seq 1 "${BREENIX_STRICT_POLL_ITERATIONS:-60}"); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
             if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
                 break
@@ -1141,7 +1141,7 @@ run_single_test() {
     #                      script's own kill ends it)
     #   hard_timeout    -- neither break fired, the post-kill rescore is
     #                      also not a PASS, and QEMU was already dead when
-    #                      this point was reached -- the `timeout 20`
+    #                      this point was reached -- the configured `timeout`
     #                      wrapping the launch line above fired first
     local ENDED_BY
     case "$ENDED_BY_LOOP" in
