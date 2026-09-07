@@ -1,3 +1,4 @@
+// Host policy coverage complements the strict boot; it does not measure host-starved QEMU recovery.
 use guest_budget::{extension_bound_ms, grant_extension, ExtensionPolicy, POLICY};
 
 // Mutation exists only in the host fixture; it cannot enable a kernel bypass.

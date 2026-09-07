@@ -11,6 +11,9 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Network issue #586 PR 3 adds capped guest-execution wake-budget extensions.
+Landing evidence and validation scope: [PR 3 landing](net/586-pr3/round-doc.md).
+
 Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).

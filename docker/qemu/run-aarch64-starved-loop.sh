@@ -3,6 +3,7 @@
 # QEMU ownership to the strict gate, including qemu-host-lock.sh acquisition,
 # PID cleanup, and gate-boot-facts.sh measurements. CPU hogs are not QEMU peers:
 # competing holders of the exclusive QEMU lock would serialize, not starve it.
+# The PR 3 landing runs the strict gate directly; this contention probe is separate evidence.
 # Usage: run-aarch64-starved-loop.sh [cycles] [hogs]
 # A green strict boot alone does not satisfy this gate: at least one idle wake
 # test must recover from a measured starved window using an extension.
