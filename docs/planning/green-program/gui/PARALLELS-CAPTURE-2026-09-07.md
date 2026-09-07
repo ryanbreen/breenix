@@ -528,3 +528,55 @@ suspended` -- the same state as before this round started.
 ```
 claim-lint: python3 scripts/claim-lint.py (worktree, after this addendum) -> exit 0
 ```
+
+## Landing (2026-09-07)
+
+A third review pass found three prose findings against this doc and the
+files it echoes (`run.sh`, `capture-display.sh`, `screenshot-vm.sh`,
+`tests/parallels_capture_structure.rs`): C-1/C-2 (major, both about the
+`docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/`
+count -- corrected from "5/7 solid-black" to 1/6, and from "7/7 window-lookup
+failures" to 6/6 of the runs that reached the screenshot step, since the
+seventh non-aborted run (`run1-launcher-smoke`) failed earlier on
+`FAIL: USB_MOUSE_ENUM` with no `screenshot.png` and 0 occurrences of the
+lookup-failure string) and C-12 (nit, `screenshot-vm.sh`'s usage text
+described its argument as a substring match when `capture-display.sh` now
+takes it as an exact `prlctl capture`/`--vm-name` name). All three fixed in
+commit `67d6c51e`; see that commit's own message for the independently
+re-derived counts. The prior commit `df2e0849` on this same branch (already
+pushed to `origin/tools/parallels-capture-fix` before this round started)
+still carries the old 5/7 and 7/7 figures in its own commit message -- per
+standing practice this is not corrected by rewriting pushed history; the
+corrected figures (1/6, 6/6) are recorded here and in the PR body instead.
+
+`git fetch origin && git merge origin/main` merged `origin/main` at
+`64326562` into this branch with no conflicts, merge commit `e13f7152`.
+
+`bash scripts/run-structure-tests.sh` (default `teardown_structure`) at
+`e13f7152`: **94 passed; 0 failed** ("test result: ok. 94 passed; 0 failed;
+0 ignored; 0 measured; 0 filtered out"). This branch's own structure
+ratchet, `bash scripts/run-structure-tests.sh parallels_capture_structure`,
+also re-run at the same SHA: **15 passed; 0 failed**.
+
+claim-lint (tree, changed hunks vs `origin/main` at merge time):
+```
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+```
+
+claim-lint (this round's commit message, `67d6c51e`):
+```
+claim-lint: python3 scripts/claim-lint.py --commit-msg <msg file> -> exit 0
+```
+
+## Not claimed (landing)
+
+- That the 10 `--whole-file` findings `claim-lint.py` reports elsewhere in
+  `run.sh` (lines 6, 293, 392, 434, 789, 935, 941, 1029, 1062, 1080, each an
+  unquantified-absolute hit per claim-lint's own `universal-claim` rule --
+  claim-lint:ok: 10/10, see the `--files run.sh` output earlier in this
+  round) are addressed by this round. They pre-date this branch, sit
+  outside every hunk this branch or its landing fix touched, and
+  `--changed-only` (this repo's default, and the mode this round's
+  `claim-lint` line above used) correctly does not surface them; they are
+  disclosed here, not fixed here, and are a candidate for a future,
+  separate round.
