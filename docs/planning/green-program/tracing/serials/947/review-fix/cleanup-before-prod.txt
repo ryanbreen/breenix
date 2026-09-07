@@ -1,0 +1,4 @@
+lane=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt
+lane-owned QEMU PIDs=[]
+PID-scoped SIGTERM sent=[]
+No name-based process termination used.
