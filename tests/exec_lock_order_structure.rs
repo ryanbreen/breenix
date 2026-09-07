@@ -97,8 +97,9 @@ fn code_mask(source: &str) -> Vec<bool> {
                 }
                 raw_string_hashes = None;
                 index += hashes + 1;
+            } else {
+                index += 1;
             }
-            index += 1;
             continue;
         }
         if string || character {
@@ -338,8 +339,9 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
             {
                 raw_string_hashes = None;
                 index += hashes + 1;
+            } else {
+                index += 1;
             }
-            index += 1;
             continue;
         }
         if string || character {
@@ -2424,4 +2426,50 @@ fn negative_creation_oracle_without_injected_assertion_is_rejected() {
         "injected assertion removal mutation applied"
     );
     assert!(validate_creation_lock_order_marker(&scheduler, &mutated).is_err());
+}
+
+#[test]
+fn code_mask_raw_string_close_preserves_next_byte() {
+    // Check scanner correctness with a consistent live-code token.
+    // Hash counts 0, 1, 2, and 3 are exercised directly here, not just 0 and 1.
+    for fixture in [
+        r##"r"x"serial_println!"##,
+        r##"r#"x"#serial_println!"##,
+        r####"r##"x"##serial_println!"####,
+        r#####"r###"x"###serial_println!"#####,
+    ] {
+        let mask = code_mask(fixture);
+        assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
+                   vec![fixture.find("serial_println!").unwrap()]);
+    }
+    // A skipped ordinary identifier byte stays true in the default mask.
+    // A skipped raw opener instead changes lexical state: the embedded quote
+    // closes an ordinary string, hiding the real token after the raw close.
+    // Exercised at a 0-then-1 hash boundary and again at a 1-then-2 hash
+    // boundary, so the compound-skip fix is checked past the smallest counts too.
+    for fixture in [
+        r###"r"x"r#"a"b"#serial_println!"###,
+        r######"r#"x"#r##"a"b"##serial_println!"######,
+    ] {
+        let mask = code_mask(fixture);
+        assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
+                   vec![fixture.find("serial_println!").unwrap()]);
+    }
+}
+
+#[test]
+fn function_body_raw_string_close_preserves_next_byte() {
+    for literal in [
+        r##"r"x""##,
+        r##"r#"x"#"##,
+        r####"r##"x"##"####,
+        r#####"r###"x"###"#####,
+    ] {
+        let fixture = format!("fn a() {{ let s = {literal}}} fn b() {{ CANARY }}");
+        let a = function_body(&fixture, "a");
+        assert_eq!(a, format!("fn a() {{ let s = {literal}}}"));
+        assert!(a.ends_with('}'));
+        assert!(!a.contains("CANARY"));
+        assert_eq!(function_body(&fixture, "b"), "fn b() { CANARY }");
+    }
 }
