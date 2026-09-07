@@ -117,6 +117,22 @@ pub static COW_FAULT_TOTAL: TraceCounter =
 pub static IDLE_TICK_TOTAL: TraceCounter =
     TraceCounter::new("IDLE_TICK_TOTAL", "Total idle timer ticks");
 
+/// CTX_DIAG_* ring-write sampling drops (#855), counted once per skipped
+/// trace_ctx_diag call, rather than once per skipped event.
+#[no_mangle]
+pub static CTX_DIAG_SAMPLE_DROPPED: TraceCounter = TraceCounter::new(
+    "CTX_DIAG_SAMPLE_DROPPED",
+    "trace_ctx_diag calls sampled out of the ring",
+);
+
+/// DEFER_REQUEUE_* ring-write sampling drops, counted per skipped call.
+/// The non-ring LAST_DEFER_REQUEUE_* snapshot remains unconditional.
+#[no_mangle]
+pub static DEFER_REQUEUE_SAMPLE_DROPPED: TraceCounter = TraceCounter::new(
+    "DEFER_REQUEUE_SAMPLE_DROPPED",
+    "trace_defer_requeue calls sampled out of the ring",
+);
+
 /// GPU compositor: total bytes uploaded to VRAM.
 #[no_mangle]
 pub static GPU_BYTES_UPLOADED: TraceCounter =
@@ -891,6 +907,8 @@ pub fn init() {
     register_counter(&EXEC_TOTAL);
     register_counter(&COW_FAULT_TOTAL);
     register_counter(&IDLE_TICK_TOTAL);
+    register_counter(&CTX_DIAG_SAMPLE_DROPPED);
+    register_counter(&DEFER_REQUEUE_SAMPLE_DROPPED);
     register_counter(&GPU_BYTES_UPLOADED);
     register_counter(&GPU_FULL_UPLOADS);
     register_counter(&GPU_PARTIAL_UPLOADS);

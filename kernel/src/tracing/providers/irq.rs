@@ -209,7 +209,13 @@ pub fn trace_timer_tick(tick_count: u64) {
     // `capture_selftest`, which no gate builds with, so a gated or shipped
     // kernel does not compile this line at all.
     #[cfg(feature = "capture_selftest")]
+    #[cfg(not(target_arch = "aarch64"))]
     crate::capture::selftest::observe(tick_count);
+
+    // On aarch64 the oracle takes its snapshot, runs the synchronous
+    // self-test capture, then releases the report to the registry writer.
+    #[cfg(all(feature = "capture_selftest", target_arch = "aarch64"))]
+    unfiltered_ring_span_self_check::observe(tick_count);
 
     // The BXCAP `edge=PANIC` oracle (failure-capture PR-4). Behind
     // `capture_panic_oracle`, which no gate builds with, so a gated or
@@ -483,5 +489,141 @@ pub(crate) mod ring_span_self_check {
         // `READY` with acquire. This is the whole ordering contract between
         // the tick and the printer.
         READY.store(true, Ordering::Release);
+    }
+}
+
+// =============================================================================
+// Boot-test self-check: unfiltered ring span oracle (#855)
+// =============================================================================
+
+/// Measures the UNFILTERED window of the busiest non-`0` CPU's ring,
+/// distinct from `ring_span_self_check` above (CPU 0, `TIMER_TICK`-filtered).
+/// Fires at the same 3000 ms checkpoint as
+/// `kernel/src/capture/selftest.rs`'s `CAPTURE_AT_MS`.
+///
+/// "Busiest non-`0` CPU" means the CPU (excluding CPU 0) with the highest
+/// `write_index()` among `TRACE_BUFFERS` at the checkpoint. CPU 0 is
+/// excluded so this oracle measures another CPU's ring. This provider is
+/// aarch64-only, like the sampled context-switch diagnostic families.
+///
+/// Follows the same tick-publishes/thread-prints split as
+/// `ring_span_self_check` above (#847, ruling R188): this fires inside
+/// `trace_timer_tick`, takes the snapshot without serial output, and lets
+/// the existing synchronous BXCAP self-test finish before releasing READY.
+/// `kernel/src/test_framework/registry.rs`'s `ring_span_unfiltered_report`
+/// boot test claims the published numbers from thread context and prints
+/// them through `serial_println!`.
+#[cfg(all(feature = "capture_selftest", target_arch = "aarch64"))]
+pub(crate) mod unfiltered_ring_span_self_check {
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+    use crate::tracing::core::{MAX_CPUS, TRACE_BUFFERS};
+    use crate::tracing::timestamp::timestamp_to_nanos;
+
+    /// Matches `kernel/src/capture/selftest.rs`'s `CAPTURE_AT_MS`.
+    /// The oracle also drives that self-test before releasing its report.
+    const CHECK_AT_MS: u64 = 3_000;
+
+    static CHECKED: AtomicBool = AtomicBool::new(false);
+    static CPU: AtomicU32 = AtomicU32::new(0);
+    static SPAN_MS: AtomicU64 = AtomicU64::new(0);
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    static DROPPED: AtomicU64 = AtomicU64::new(0);
+    static READY: AtomicBool = AtomicBool::new(false);
+    static CLAIMED: AtomicBool = AtomicBool::new(false);
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct UnfilteredRingSpanReport {
+        pub(crate) cpu: u32,
+        pub(crate) span_ms: u64,
+        pub(crate) writes: u64,
+        pub(crate) dropped: u64,
+    }
+
+    #[inline(always)]
+    pub(super) fn observe(tick_count: u64) {
+        if CHECKED.load(Ordering::Relaxed) {
+            return;
+        }
+        let elapsed_ms = tick_count.saturating_mul(crate::time::timer::MS_PER_TICK);
+        if elapsed_ms < CHECK_AT_MS {
+            return;
+        }
+        if CHECKED.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        publish();
+        // The CHECKED winner is the sole aarch64 self-test caller. Other
+        // CPUs cannot release READY while this lock-free UART writer runs.
+        crate::capture::selftest::observe(tick_count);
+        READY.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_ready() -> bool {
+        READY.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn claim() -> Option<UnfilteredRingSpanReport> {
+        if !READY.load(Ordering::Acquire) {
+            return None;
+        }
+        if CLAIMED.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        Some(UnfilteredRingSpanReport {
+            cpu: CPU.load(Ordering::Relaxed),
+            span_ms: SPAN_MS.load(Ordering::Relaxed),
+            writes: WRITES.load(Ordering::Relaxed),
+            dropped: DROPPED.load(Ordering::Relaxed),
+        })
+    }
+
+    /// Writes no serial output (#847 "the tick does not print" -- see this
+    /// file's `ring_span_self_check` module doc comment for the full
+    /// history). Read-only access to the per-CPU ring buffers with relaxed
+    /// ordering, the same idiom `ring_span_self_check::publish` and
+    /// `kernel/src/capture/sections.rs::ring()` both already use for
+    /// cross-CPU / diagnostic reads of `TRACE_BUFFERS`.
+    fn publish() {
+        // Taking the raw pointer does not access the mutable static.
+        let buffers_ptr = core::ptr::addr_of!(TRACE_BUFFERS);
+
+        let mut busiest_cpu: usize = 1;
+        let mut busiest_writes: u64 = 0;
+        for cpu in 1..MAX_CPUS {
+            // SAFETY: cpu < MAX_CPUS, TRACE_BUFFERS has MAX_CPUS entries.
+            let writes = unsafe { (*buffers_ptr)[cpu].write_index() as u64 };
+            if writes > busiest_writes {
+                busiest_writes = writes;
+                busiest_cpu = cpu;
+            }
+        }
+
+        // SAFETY: busiest_cpu < MAX_CPUS by construction above. Read-only
+        // diagnostic access: TRACE_BUFFERS' docs permit relaxed readers.
+        let buffer = unsafe { &(*buffers_ptr)[busiest_cpu] };
+        let dropped = buffer.dropped_count();
+
+        let mut oldest: Option<u64> = None;
+        let mut newest: Option<u64> = None;
+        // UNFILTERED: no event-type predicate -- the point of this
+        // module relative to ring_span_self_check's TIMER_TICK filter above.
+        for event in buffer.iter_events() {
+            if oldest.is_none() {
+                oldest = Some(event.timestamp);
+            }
+            newest = Some(event.timestamp);
+        }
+        let span_ms = match (oldest, newest) {
+            (Some(oldest), Some(newest)) => {
+                timestamp_to_nanos(newest.saturating_sub(oldest)) / 1_000_000
+            }
+            _ => 0,
+        };
+
+        CPU.store(busiest_cpu as u32, Ordering::Relaxed);
+        SPAN_MS.store(span_ms, Ordering::Relaxed);
+        WRITES.store(busiest_writes, Ordering::Relaxed);
+        DROPPED.store(dropped, Ordering::Relaxed);
     }
 }
