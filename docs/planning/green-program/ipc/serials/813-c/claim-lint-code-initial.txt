@@ -1,0 +1,7 @@
+kernel/src/fs/devfs/mod.rs:202: [universal-claim] This device API never sleeps; sys_read owns the blocking adapter.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+kernel/src/ipc/stdin.rs:296: [universal-claim] Check/copy and publish under one ring guard with local IRQs masked. The guard never escapes this function into the scheduler wait lifecycle.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 2 finding(s) across 14 file(s) [changed hunks vs 3a8a973b013d]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 97 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).

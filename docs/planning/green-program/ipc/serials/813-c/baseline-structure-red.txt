@@ -1,0 +1,19 @@
+revision=3a8a973b013dbbee09f17c660c0f310ecdf3640e stdin source, new ratchet
+== compiling console_read_structure ==
+== running console_read_structure same_guard_check_prepare_and_common_enqueue_wake ==
+
+running 1 test
+
+thread 'same_guard_check_prepare_and_common_enqueue_wake' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813pc/wt/tests/console_read_structure.rs:15:10:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test same_guard_check_prepare_and_common_enqueue_wake ... FAILED
+
+failures:
+
+failures:
+    same_guard_check_prepare_and_common_enqueue_wake
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+exit=101

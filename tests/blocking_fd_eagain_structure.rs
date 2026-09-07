@@ -1,4 +1,4 @@
-//! PR-A census: Pipe/FIFO repaired; Unix stream and Console/Tty inventoried only.
+//! PR-C census: Pipe/FIFO and Console/Tty adapted; Unix stream inventoried only.
 //! This deliberately bounded Rust recognizer fails closed on an unknown result
 //! route. It is a structural regression check, not a Rust type checker.
 use std::collections::{BTreeMap, BTreeSet};
