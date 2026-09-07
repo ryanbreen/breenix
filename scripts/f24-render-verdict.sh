@@ -7,11 +7,16 @@
 # Exit 0: rendered desktop content includes a spatially coherent UI region
 #         (VERDICT=PASS).
 # Exit 1: a real capture was scored but did not pass (VERDICT=FAIL).
-# Exit 2: no real capture exists to score -- <png_path> is missing, or it is
+# Exit 2: no real capture exists to score -- <png_path> is missing, it is
 #         the known-degenerate solid-black frame that
 #         scripts/parallels/capture-display.sh's own black-warmup retry is
-#         meant to filter before handing a caller a PNG (see the two
-#         CAPTURE_MISSING tests in tests/parallels_capture_structure.rs, #917:
+#         meant to filter before handing a caller a PNG, or the file exists
+#         but cannot be decoded as an image at all (a truncated/corrupt
+#         capture) -- #917 fix-pass finding C-9: this third case used to
+#         raise an uncaught PIL exception, exit 1, and print no VERDICT=
+#         line at all, indistinguishable from an ordinary FAIL to a
+#         $?-only caller (see the three CAPTURE_MISSING tests in
+#         tests/parallels_capture_structure.rs, #917:
 #         docs/planning/green-program/gui/PARALLELS-CAPTURE-2026-09-07.md).
 #         A caller must not treat exit 2 the same as VERDICT=FAIL -- FAIL
 #         means "captured the desktop and it looks wrong", CAPTURE_MISSING
@@ -34,7 +39,11 @@ from math import sqrt
 from PIL import Image
 
 path = sys.argv[1]
-img = Image.open(path).convert("RGB")
+try:
+    img = Image.open(path).convert("RGB")
+except Exception as exc:
+    print(f"VERDICT=CAPTURE_MISSING reason=unreadable-image error={exc} path={path}")
+    sys.exit(2)
 w, h = img.size
 
 # A capture-layer failure -- capture-display.sh's own black-warmup retry

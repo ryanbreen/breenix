@@ -25,18 +25,22 @@
 # Parallels does not set a per-VM window title -- so a title-substring match
 # cannot succeed by construction, matching the 7/7 identical failures in
 # docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/.
-# This version drops title matching and instead prefers a window owned by
-# the actual `prl_vm_app --vm-name <VM>` process backing this VM (a correct
-# signal on the occasion such a window exists), while still logging the
-# full window inventory so a next investigation does not have to re-derive
-# it from scratch.
+# This version drops title matching and instead requires a window owned by
+# the actual `prl_vm_app --vm-name <VM>` process backing this VM (the one
+# reliable signal available, #917 fix-pass C-3 -- a *preference*, i.e. a
+# scoring bonus with a same-process-name fallback, still let an unrelated
+# Parallels-owned window such as Parallels Desktop's own UI be selected
+# whenever no PID match existed), while still logging the full window
+# inventory so a next investigation does not have to re-derive it from
+# scratch.
 #
 # This script does not write a synthetic or placeholder image to its output
 # path — checked by capture_display_writes_output_exactly_once_and_only_on_a_verified_frame
 # in tests/parallels_capture_structure.rs (7/7 passing). On success, OUTPUT
 # holds a real, non-degenerate capture. On failure (the retry schedule
 # exhausted with no valid frame, or a required command missing), OUTPUT is
-# not created/touched and the script exits non-zero -- callers must not
+# not created (a prior screenshot is removed before retries), and the script
+# exits non-zero -- callers must not
 # treat a missing file as a black PASS.
 #
 # Usage:
@@ -200,7 +204,7 @@ write_baseline_and_stats() {
     local image="$1"
     local stats="$2"
 
-    mkdir -p "$BASELINE_DIR"
+    mkdir -p "$BASELINE_DIR" || return 1
     local solid_baseline="$BASELINE_DIR/solid-red.png"
 
     if [ ! -f "$solid_baseline" ]; then
@@ -270,7 +274,17 @@ capture_prlctl() {
 # claim-lint:ok: #917
 find_vm_backend_pid() {
     ps -axo pid=,command= 2>/dev/null | awk -v needle="--vm-name $VM_NAME" '
-        index($0, "prl_vm_app") > 0 && index($0, needle) > 0 { print $1; found=1; exit }
+        index($0, "prl_vm_app") > 0 {
+            pos = index($0, needle)
+            if (pos > 0) {
+                after = substr($0, pos + length(needle), 1)
+                if (after == "" || after == " ") {
+                    print $1
+                    found = 1
+                    exit
+                }
+            }
+        }
         END { if (!found) exit 1 }
     '
 }
@@ -313,16 +327,23 @@ for w in windows:
     )
     if layer != 0 or width < 300 or height < 200:
         continue
-    score = width * height
-    # The one principled signal: this window's owning process is the actual
-    # backend process Parallels started for THIS vm. Title matching is not
-    # attempted -- kCGWindowName is non-empty for 0 of the 12 Parallels-owned
-    # windows inventoried in
+    # The one principled signal: this window's owning process must be the
+    # actual backend process Parallels started for THIS vm. Without a known
+    # backend PID (vm_pid is None), or when this window's pid does not equal
+    # it, this window is not a candidate at all -- #917 fix-pass finding C-3
+    # found that a scoring *bonus* (rather than a hard requirement) still let
+    # every eligible window from any Parallels-owned process become a
+    # candidate, so with no PID match at all the function picked the largest
+    # such window (Parallels Desktop's own UI, in the recorded evidence) and
+    # reported it as this VM's capture. Title matching is not attempted --
+    # kCGWindowName is non-empty for 0 of the 12 Parallels-owned windows
+    # inventoried in
     # docs/planning/green-program/gui/evidence/windowlist-no-vm.txt, so it
     # cannot discriminate between VMs.
     # claim-lint:ok: #917, 0/12 above
-    if vm_pid is not None and pid == vm_pid:
-        score += 50_000_000
+    if vm_pid is None or pid != vm_pid:
+        continue
+    score = width * height
     candidates.append((score, window_id, width, height, pid))
 
 for line in inventory:
@@ -350,7 +371,16 @@ capture_window() {
     if [ -z "$window_id" ]; then
         return 1
     fi
+    # Clear stale content from capture_prlctl at this per-attempt path (C-4).
+    rm -f "$out"
     screencapture -x -o -l"$window_id" "$out" 2>&1 | while IFS= read -r line; do log "screencapture: $line"; done
+    # The function is an if condition, so errexit does not check this pipeline.
+    # Inspect screencapture's own status before accepting its output (C-4).
+    local sc_rc="${PIPESTATUS[0]}"
+    if [ "$sc_rc" -ne 0 ]; then
+        log "screencapture exited $sc_rc"
+        return 1
+    fi
     [ -s "$out" ]
 }
 
@@ -358,6 +388,9 @@ require_cmd prlctl
 require_cmd python3
 
 mkdir -p "$(dirname "$OUTPUT")"
+# Clear a prior invocation's screenshot so failed retries cannot leave stale
+# evidence at OUTPUT (#917 fix-pass C-7).
+rm -f "$OUTPUT"
 
 attempt=0
 last_stats=""
@@ -407,7 +440,12 @@ for delay in $RETRY_SCHEDULE; do
     fi
 
     cp "$candidate" "$OUTPUT"
-    write_baseline_and_stats "$OUTPUT" "$stats"
+    # Diagnostics are best effort: a real verified capture is already at
+    # OUTPUT, so a baseline failure must not turn it into capture=none (C-6).
+    # claim-lint:ok: #917; tests/parallels_capture_structure.rs
+    if ! write_baseline_and_stats "$OUTPUT" "$stats"; then
+        log "WARNING: write_baseline_and_stats failed (non-fatal; $OUTPUT was already written)"
+    fi
     emit_verdict "$method" "ok"
     printf '%s\n' "$OUTPUT"
     exit 0

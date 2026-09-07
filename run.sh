@@ -466,6 +466,8 @@ if [ "$PARALLELS" = true ]; then
     if [ "$PARALLELS_TEST" = true ]; then
         # Test mode: wait, screenshot, exit
         SCREENSHOT="/tmp/breenix-screenshot.png"
+        # #917 fix-pass C-5: propagate the capture outcome to our exit status.
+        CAPTURE_OK=true
         echo "Test mode: waiting ${PARALLELS_TEST_WAIT}s for boot..."
         sleep "$PARALLELS_TEST_WAIT"
 
@@ -497,6 +499,7 @@ if [ "$PARALLELS" = true ]; then
             CAPTURE_METHOD="$(grep -o 'method=[a-z]*' "$CAPTURE_STDOUT" | head -1 | cut -d= -f2)"
             echo "Screenshot: $SCREENSHOT (capture=${CAPTURE_METHOD:-unknown})"
         else
+            CAPTURE_OK=false
             cat "$CAPTURE_STDOUT"
             echo "Screenshot: capture=none (no PNG written; see the [PARALLELS_CAPTURE:...] line above for why)"
         fi
@@ -537,6 +540,11 @@ if [ "$PARALLELS" = true ]; then
         exec tail -f "$SERIAL_LOG"
     fi
 
+    # #917 fix-pass C-5: capture=none must also fail for exit-status callers.
+    # claim-lint:ok: #917; tests/parallels_capture_structure.rs
+    if [ "$PARALLELS_TEST" = true ] && [ "$CAPTURE_OK" != true ]; then
+        exit 1
+    fi
     exit 0
 fi
 

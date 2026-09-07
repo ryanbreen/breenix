@@ -366,3 +366,191 @@ fn f24_render_verdict_still_passes_a_real_capture() {
     assert!(stdout.contains("VERDICT=PASS"), "stdout was: {stdout}");
 }
 
+
+/// Round-2 (#917 fix-pass) regressions exercise the real capture script with
+/// fixture capture commands and window inventories, plus the caller's exit
+/// gate with a mutation companion. No fixture starts or stops a VM.
+mod round_two {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Fixture {
+        dir: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("breenix-pcap-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let fixture = Self { dir };
+            fixture.bin("prlctl", "exit 255");
+            fixture.bin("ps", "exit 0");
+            fixture.bin("screencapture", r#"for out in "$@"; do :; done
+cp "$FIXTURE_DIR/frame.png" "$out""#);
+            std::fs::write(fixture.dir.join("Quartz.py"), r#"
+kCGWindowListOptionAll = 0
+kCGNullWindowID = 0
+def CGWindowListCopyWindowInfo(*args):
+    return [
+        dict(kCGWindowOwnerName="Parallels Desktop", kCGWindowOwnerPID=222,
+             kCGWindowNumber=99, kCGWindowLayer=0,
+             kCGWindowBounds=dict(Width=900, Height=700)),
+        dict(kCGWindowOwnerName="Parallels Desktop", kCGWindowOwnerPID=111,
+             kCGWindowNumber=42, kCGWindowLayer=0,
+             kCGWindowBounds=dict(Width=818, Height=801)),
+        dict(kCGWindowOwnerName="Parallels Desktop", kCGWindowOwnerPID=333,
+             kCGWindowNumber=77, kCGWindowLayer=0,
+             kCGWindowBounds=dict(Width=1200, Height=900)),
+    ]
+"#).unwrap();
+            let make = Command::new("python3").arg("-c").arg(
+                "from PIL import Image, ImageDraw; import sys; im=Image.new('RGB',(818,801),(40,80,120)); ImageDraw.Draw(im).rectangle((40,40,400,400),fill=(180,140,60)); im.save(sys.argv[1])"
+            ).arg(fixture.dir.join("frame.png")).output().unwrap();
+            assert!(make.status.success(), "{}", String::from_utf8_lossy(&make.stderr));
+            fixture
+        }
+
+        fn bin(&self, name: &str, body: &str) {
+            let path = self.dir.join(name);
+            std::fs::write(&path, format!("#!/bin/bash\n{body}\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        fn run(&self) -> std::process::Output {
+            Command::new("bash").arg(repo_root().join(CAPTURE_DISPLAY))
+                .arg("breenix-1").arg(self.dir.join("output.png"))
+                .env("FIXTURE_DIR", &self.dir)
+                .env("PATH", format!("{}:{}", self.dir.display(), std::env::var("PATH").unwrap()))
+                .env("PYTHONPATH", format!("{}:{}", self.dir.display(), std::env::var("PYTHONPATH").unwrap_or_default()))
+                .env("BREENIX_CAPTURE_RETRY_SCHEDULE", "0")
+                .env("BREENIX_CAPTURE_BASELINE_DIR", self.dir.join("baseline"))
+                .output().unwrap()
+        }
+
+        fn matching_ps(&self) {
+            self.bin("ps", "echo '222 /Applications/Parallels/prl_vm_app --vm-name breenix-10 --arg'\necho '111 /Applications/Parallels/prl_vm_app --vm-name breenix-1 --arg'");
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.dir).expect("remove fixture directory");
+        }
+    }
+
+    #[test]
+    fn find_vm_backend_pid_matches_exact_vm_name_not_a_prefix() {
+        let f = Fixture::new("c8");
+        f.matching_ps();
+        let out = f.run();
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("method=window:reason=ok"), "{out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("MATCH id=42 size=818x801 owner_pid=111"), "{stderr}");
+        assert!(!stderr.contains("MATCH id=99"), "{stderr}");
+    }
+
+    #[test]
+    fn capture_window_requires_pid_match_not_any_parallels_window() {
+        let f = Fixture::new("c3");
+        let out = f.run();
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(!stdout.contains("method=window:reason=ok"), "{stdout}");
+        assert!(stdout.contains("method=none"), "{stdout}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("NO_MATCH"), "{out:?}");
+    }
+
+    /// A real decodable stale image makes the C-4 revert fail on capture_window accepting failed screencapture, not image_probe rejecting a placeholder.
+    #[test]
+    fn capture_window_does_not_report_success_when_screencapture_fails() {
+        let f = Fixture::new("c4");
+        f.matching_ps();
+        f.bin("prlctl", r#"while [ "$#" -gt 0 ]; do
+    if [ "$1" = --file ]; then
+        shift
+        cp "$FIXTURE_DIR/frame.png" "$1"
+        exit 1
+    fi
+    shift
+done
+exit 1"#);
+        f.bin("screencapture", "exit 3");
+        let out = f.run();
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("method=window:reason=ok"), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("screencapture exited 3"), "{out:?}");
+        assert!(!f.dir.join("output.png").exists());
+    }
+
+    #[test]
+    fn capture_display_reports_success_when_baseline_write_fails_after_a_real_copy() {
+        let f = Fixture::new("c6");
+        f.bin("prlctl", r#"while [ "$#" -gt 0 ]; do
+    if [ "$1" = --file ]; then
+        shift
+        cp "$FIXTURE_DIR/frame.png" "$1"
+        exit $?
+    fi
+    shift
+done
+exit 1"#);
+        std::fs::write(f.dir.join("baseline"), "blocker").unwrap();
+        let out = f.run();
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("method=prlctl:reason=ok"), "{stdout}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("WARNING: write_baseline_and_stats failed"), "{out:?}");
+        assert!(stdout.contains(f.dir.join("output.png").to_str().unwrap()), "{stdout}");
+        assert_eq!(std::fs::read(f.dir.join("output.png")).unwrap(), std::fs::read(f.dir.join("frame.png")).unwrap());
+    }
+
+    #[test]
+    fn capture_display_clears_stale_output_before_a_failing_run() {
+        let f = Fixture::new("c7");
+        std::fs::write(f.dir.join("output.png"), b"stale prior screenshot bytes").unwrap();
+        let out = f.run();
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert!(!f.dir.join("output.png").exists());
+    }
+
+    #[test]
+    fn f24_render_verdict_rejects_corrupt_png() {
+        let f = Fixture::new("c9");
+        let png = f.dir.join("corrupt.png");
+        std::fs::write(&png, b"not a png").unwrap();
+        let out = Command::new("bash").arg(repo_root().join(F24_VERDICT)).arg(png).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("VERDICT=CAPTURE_MISSING"), "{stdout}");
+        assert!(stdout.contains("unreadable-image"), "{stdout}");
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("Traceback"), "{out:?}");
+    }
+
+    const EXIT_GATE: &str = "    if [ \"$PARALLELS_TEST\" = true ] && [ \"$CAPTURE_OK\" != true ]; then\n        exit 1\n    fi\n";
+
+    fn run_sh_exits_nonzero_on_capture_failure(text: &str) -> bool {
+        let lines: Vec<_> = text.lines().collect();
+        let Some(init) = lines.iter().position(|line| line.trim() == "CAPTURE_OK=true") else { return false };
+        let Some(failure) = lines.iter().position(|line| line.trim() == "CAPTURE_OK=false") else { return false };
+        let Some(gate) = lines.iter().position(|line| *line == EXIT_GATE.lines().next().unwrap()) else { return false };
+        let next = lines.iter().skip(gate + 1).find(|line| !line.trim().is_empty());
+        init < failure && failure < gate && next == Some(&"        exit 1")
+            && lines.iter().skip(gate + 1).any(|line| *line == "    exit 0")
+    }
+
+    #[test]
+    fn run_sh_test_mode_exit_reflects_capture_outcome() {
+        assert!(run_sh_exits_nonzero_on_capture_failure(&repo_text(RUN_SH)));
+    }
+
+    #[test]
+    fn run_sh_capture_exit_check_is_not_vacuous() {
+        let text = repo_text(RUN_SH);
+        assert!(run_sh_exits_nonzero_on_capture_failure(&text));
+        assert!(text.contains(EXIT_GATE));
+        let mutated = text.replace(EXIT_GATE, "");
+        assert_ne!(text, mutated);
+        assert!(!run_sh_exits_nonzero_on_capture_failure(&mutated));
+    }
+}
