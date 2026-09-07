@@ -198,6 +198,18 @@ public struct Importer {
     }
 
     private func importGateIteration(_ directory: URL, info: GateInfo, into result: inout ImportPathResult) throws {
+        if let provenance = try GateProvenance.read(from: directory) {
+            let (serials, captures, missing) = declaredSources(for: provenance, in: directory)
+            guard missing.isEmpty else {
+                result.skipped.append(ImportSkip(path: directory.path,
+                    reason: "run-inspector.json declares evidence missing on disk: \(missing.joined(separator: ", "))"))
+                return
+            }
+            try importRun(sourceURL: directory, serials: serials, captures: captures,
+                startedAt: provenance.startedAt, arch: info.arch, profile: info.profile,
+                verdict: .unknown, into: &result)
+            return
+        }
         let serials = try serialSources(in: directory)
         guard !serials.isEmpty else {
             return
@@ -224,19 +236,27 @@ public struct Importer {
         consumedPreservedFailures: inout Set<Int>,
         into result: inout ImportPathResult
     ) throws {
+        if try GateProvenance.read(from: directory) != nil {
+            // A sidecar governs this directory's evidence regardless of
+            // whether its declared serial name matches the conventional
+            // serial*.txt/.log scan -- consult it directly instead of
+            // bailing out on an empty conventional scan.
+            if let first = try serialSources(in: directory).first {
+                let firstSerialData = try Data(contentsOf: first.url)
+                for index in preservedFailuresBySerialData[firstSerialData] ?? [] {
+                    consumedPreservedFailures.insert(index)
+                }
+            }
+            try importGateIteration(directory, info: info, into: &result)
+            return
+        }
+
         let serials = try serialSources(in: directory)
         guard !serials.isEmpty else {
             return
         }
 
         let firstSerialData = try Data(contentsOf: serials[0].url)
-        if try GateProvenance.read(from: directory) != nil {
-            for index in preservedFailuresBySerialData[firstSerialData] ?? [] {
-                consumedPreservedFailures.insert(index)
-            }
-            try importGateIteration(directory, info: info, into: &result)
-            return
-        }
         if let matchingIndexes = preservedFailuresBySerialData[firstSerialData],
            let matchingIndex = matchingIndexes.first(where: { !consumedPreservedFailures.contains($0) }) {
             consumedPreservedFailures.insert(matchingIndex)
@@ -521,9 +541,27 @@ public struct Importer {
         let id = provenance.map { "gate-" + $0.id } ??
             RunManifest.makeImportedID(serialData: firstSerialData, sourcePath: sourceURL.standardizedFileURL.path)
         if fileManager.fileExists(atPath: store.manifestURL(id: id).path),
-           (try? store.readManifest(id: id)) != nil {
-            result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path, alreadyExisted: true))
-            return
+           let existingManifest = try? store.readManifest(id: id) {
+            if let provenance = provenance {
+                let existingNames = Set(existingManifest.serials.map(\.name) + existingManifest.captures.map(\.name))
+                let declaredNames = Set(provenance.serials + provenance.captures)
+                guard existingNames.isSubset(of: declaredNames) else {
+                    // A re-import must never silently drop evidence the store
+                    // already tracks -- refuse instead of rebuilding the
+                    // inventory out from under it.
+                    result.skipped.append(ImportSkip(
+                        path: sourceURL.path,
+                        reason: "run-inspector.json re-import would drop previously recorded evidence: "
+                            + existingNames.subtracting(declaredNames).sorted().joined(separator: ", ")))
+                    return
+                }
+            }
+            let declaredGrew = provenance.map { declaredInventoryGrew($0, comparedTo: existingManifest) } ?? false
+            if !declaredGrew {
+                result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path, alreadyExisted: true))
+                return
+            }
+            // New declared evidence requires replacing the stored inventory.
         }
         let runDirectory = try store.createRunDirectory(id: id)
 
@@ -623,6 +661,38 @@ public struct Importer {
             return GateInfo(arch: .aarch64, profile: "testing")
         }
         return nil
+    }
+
+    /// Resolve only the sidecar inventory; report missing files instead of dropping evidence.
+    private func declaredSources(
+        for provenance: GateProvenance, in directory: URL
+    ) -> (serials: [SerialSource], captures: [CaptureSource], missing: [String]) {
+        var serials: [SerialSource] = []
+        var captures: [CaptureSource] = []
+        var missing: [String] = []
+        for name in provenance.serials {
+            let url = directory.appendingPathComponent(name)
+            if isRegularFile(url) {
+                serials.append(SerialSource(url: url, destinationName: name, stream: stream(for: name)))
+            } else {
+                missing.append(name)
+            }
+        }
+        for name in provenance.captures {
+            let url = directory.appendingPathComponent(name)
+            if isRegularFile(url) {
+                captures.append(CaptureSource(url: url, destinationName: name))
+            } else {
+                missing.append(name)
+            }
+        }
+        return (serials, captures, missing)
+    }
+
+    /// Re-import when later evidence is declared beyond the stored inventory.
+    private func declaredInventoryGrew(_ provenance: GateProvenance, comparedTo manifest: RunManifest) -> Bool {
+        let existingNames = Set(manifest.serials.map(\.name) + manifest.captures.map(\.name))
+        return !Set(provenance.serials + provenance.captures).isSubset(of: existingNames)
     }
 
     private func serialSources(in directory: URL) throws -> [SerialSource] {

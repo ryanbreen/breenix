@@ -161,6 +161,19 @@ public struct BeastLauncher {
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
         let env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs)
 
+        let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
+        let gateVerdictString: String
+        if gateStdoutText.contains("PASS-WITH-ATTRIBUTED-LOCKUP:") {
+            gateVerdictString = "PASS-WITH-ATTRIBUTED-LOCKUP"
+        } else if gateStdoutText.split(separator: "\n").contains(where: {
+            $0.trimmingCharacters(in: .whitespaces).hasPrefix("FAIL:")
+        }) || gateResult.exitCode != 0 {
+            gateVerdictString = "FAIL"
+        } else {
+            gateVerdictString = "PASS"
+        }
+        let verdict = Verdict.projectGateVerdict(gateVerdictString, exitCode: Int(gateResult.exitCode), command: command)
+
         let manifest = RunManifest(
             id: id,
             startedAt: startedAt,
@@ -172,7 +185,7 @@ public struct BeastLauncher {
             // The shared HostFactsSample fields record beast's Linux CPU model,
             // total RAM, and QEMU version here rather than this Mac's sysctl values.
             host: startFacts.flatMap { start in endFacts.map { HostFactsTrace(start: start, end: $0) } },
-            verdict: .gateScript(command: command, exitCode: Int(gateResult.exitCode)),
+            verdict: verdict,
             verdictSource: .gateScript(command: command, exitCode: Int(gateResult.exitCode)),
             serials: serialRefs,
             captures: [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes)],

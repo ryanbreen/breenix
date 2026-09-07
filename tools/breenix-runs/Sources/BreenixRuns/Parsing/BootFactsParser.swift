@@ -127,3 +127,12 @@ public enum BootFactsParser {
         return BootFactsHostMilliseconds(start: start, end: end)
     }
 }
+
+extension BootFactsRecord {
+    /// Content identity excludes carrier, line number and raw field ordering.
+    /// Serial-first merging preserves the serial record's source location.
+    var dedupeKey: String {
+        "boot=\(boot)\n" + fields.sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
+    }
+}

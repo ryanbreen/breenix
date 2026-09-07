@@ -126,6 +126,22 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertTrue(entries.isEmpty, "prepare failure must not leave an orphaned run directory: \(entries)")
     }
 
+    func testGateStdoutAttributedLockupMarkerProjectsAsAttributedNotPlainPass() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = BeastScriptedProcessRunner()
+        runner.gateResult = ProcessResult(
+            stdout: Data("PASS-WITH-ATTRIBUTED-LOCKUP: 1/1 boots reached the loader marker; 1 locked up afterwards\n".utf8),
+            exitCode: 0)
+        let result = try runSuccessfulX86(root: root, runner: runner, runID: "attributed-lockup")
+
+        guard case .attributed(let reason) = result.manifest.verdict else {
+            return XCTFail("expected .attributed verdict for PASS-WITH-ATTRIBUTED-LOCKUP, got \(result.manifest.verdict)")
+        }
+        XCTAssertEqual(reason, "PASS-WITH-ATTRIBUTED-LOCKUP")
+        XCTAssertEqual(result.manifest.verdictSource, .gateScript(command: result.manifest.command, exitCode: 0))
+    }
+
     func testGateTmpAndTarballRemovedAfterHarvest() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -22,6 +22,11 @@ struct GateProvenance: Codable {
               value.endedAt >= value.startedAt, !value.command.isEmpty,
               (value.serials + value.captures).allSatisfy({
                   !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/")
+                      // "manifest.json" is RunStore's own reserved filename
+                      // (RunStore.manifestURL) -- a declared evidence file with this
+                      // name would be silently destroyed by, and would corrupt the
+                      // byte count reported by, the run's real manifest.json write.
+                      && $0 != "manifest.json"
               }) else {
             throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Invalid gate provenance at \(url.path)"))
         }
@@ -29,11 +34,6 @@ struct GateProvenance: Codable {
     }
 
     var projectedVerdict: Verdict {
-        if verdict == "PASS-WITH-ATTRIBUTED-LOCKUP" { return .attributed(verdict) }
-        if verdict.hasPrefix("REFUSED") { return .refused(verdict) }
-        if exitCode != 0 { return .fail(verdict) }
-        if verdict == "PASS" { return .gateScript(command: command, exitCode: exitCode) }
-        // Keep qualified successes (e.g. feature-mutated builds) visibly qualified.
-        return .attributed(verdict)
+        Verdict.projectGateVerdict(verdict, exitCode: exitCode, command: command)
     }
 }

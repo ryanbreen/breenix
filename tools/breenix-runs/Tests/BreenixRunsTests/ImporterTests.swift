@@ -3,6 +3,121 @@ import Foundation
 import XCTest
 
 final class ImporterTests: XCTestCase {
+
+    private func declaredFixture(root: URL) throws -> (RunStore, URL, GateProvenance) {
+        let evidence = root.appendingPathComponent("evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        try Data("Breenix ARM64 Kernel Starting\n".utf8).write(to: evidence.appendingPathComponent("serial.txt"))
+        try Data("facts\n".utf8).write(to: evidence.appendingPathComponent("gate_boot_facts.txt"))
+        let start = Date(timeIntervalSince1970: 1_788_633_600)
+        let provenance = GateProvenance(schemaVersion: 1, id: UUID().uuidString,
+            arch: .aarch64, profile: "testing", verdict: "PASS", exitCode: 0,
+            startedAt: start, endedAt: start.addingTimeInterval(20),
+            command: ["gate.sh", "1"], serials: ["serial.txt"], captures: ["gate_boot_facts.txt"])
+        return (RunStore(root: root.appendingPathComponent("store")), evidence, provenance)
+    }
+
+    func testImportRefusesWhenSidecarDeclaresAFileMissingOnDisk() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        provenance.serials.append("serial_missing.txt")
+        try RunStore.encoder.encode(provenance).write(to: evidence.appendingPathComponent("run-inspector.json"))
+        let result = try Importer(store: store).importPath(evidence)
+        XCTAssertTrue(result.imported.isEmpty)
+        XCTAssertEqual(result.skipped.count, 1)
+        XCTAssertTrue(result.skipped.first?.reason.contains("serial_missing.txt") == true)
+        XCTAssertEqual(try store.readIndex().runs.count, 0)
+    }
+
+    func testImportRejectsSidecarThatDeclaresManifestJsonAsEvidence() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        provenance.captures.append("manifest.json")
+        try Data("ORIGINAL CAPTURE BYTES - REAL EVIDENCE\n".utf8)
+            .write(to: evidence.appendingPathComponent("manifest.json"))
+        try RunStore.encoder.encode(provenance).write(to: evidence.appendingPathComponent("run-inspector.json"))
+
+        XCTAssertThrowsError(try Importer(store: store).importPath(evidence))
+        XCTAssertEqual(try store.readIndex().runs.count, 0)
+
+        let stillOriginal = try Data(contentsOf: evidence.appendingPathComponent("manifest.json"))
+        XCTAssertEqual(String(decoding: stillOriginal, as: UTF8.self), "ORIGINAL CAPTURE BYTES - REAL EVIDENCE\n")
+    }
+
+    func testImportOfDirectoryScanNeverPicksUpAFileTheSidecarDidNotDeclare() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, provenance) = try declaredFixture(root: root)
+        try Data("extra\n".utf8).write(to: evidence.appendingPathComponent("serial_extra.txt"))
+        try Data("extra\n".utf8).write(to: evidence.appendingPathComponent("extra.facts.txt"))
+        try RunStore.encoder.encode(provenance).write(to: evidence.appendingPathComponent("run-inspector.json"))
+        let result = try Importer(store: store).importPath(evidence)
+        let manifest = try store.readManifest(id: XCTUnwrap(result.imported.first?.id))
+        XCTAssertEqual(manifest.serials.map(\.name), ["serial.txt"])
+        XCTAssertEqual(manifest.captures.map(\.name), ["gate_boot_facts.txt"])
+    }
+
+    func testReimportRefusesWhenDeclaredSetDropsPreviouslyRecordedEvidence() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        provenance.captures.append("old.txt")
+        try Data("old capture\n".utf8).write(to: evidence.appendingPathComponent("old.txt"))
+        let sidecar = evidence.appendingPathComponent("run-inspector.json")
+        try RunStore.encoder.encode(provenance).write(to: sidecar)
+        let importer = Importer(store: store)
+        let first = try importer.importPath(evidence)
+        let id = try XCTUnwrap(first.imported.first?.id)
+        XCTAssertEqual(Set(try store.readManifest(id: id).captures.map(\.name)),
+                       ["gate_boot_facts.txt", "old.txt"])
+
+        // Re-import: drop old.txt from the declared set, change serial.txt's
+        // bytes, and add a new capture -- the combined shape from the review's
+        // own reproduction.
+        provenance.captures = ["gate_boot_facts.txt", "new.txt"]
+        try Data("changed bytes\n".utf8).write(to: evidence.appendingPathComponent("serial.txt"))
+        try Data("new capture\n".utf8).write(to: evidence.appendingPathComponent("new.txt"))
+        try RunStore.encoder.encode(provenance).write(to: sidecar)
+        let second = try importer.importPath(evidence)
+
+        XCTAssertTrue(second.imported.isEmpty,
+            "a re-import that would drop tracked evidence must not report success")
+        XCTAssertEqual(second.skipped.count, 1)
+        XCTAssertTrue(second.skipped.first?.reason.contains("old.txt") == true)
+
+        let manifestAfter = try store.readManifest(id: id)
+        XCTAssertEqual(Set(manifestAfter.captures.map(\.name)), ["gate_boot_facts.txt", "old.txt"],
+            "manifest must still list the previously tracked evidence")
+        let serialBytes = try Data(contentsOf: store.runDirectory(id: id).appendingPathComponent("serial.txt"))
+        XCTAssertEqual(String(decoding: serialBytes, as: UTF8.self), "Breenix ARM64 Kernel Starting\n",
+            "a refused re-import must not overwrite bytes already in the store")
+    }
+
+    func testReimportPicksUpEvidenceTheSidecarNewlyDeclares() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        let sidecar = evidence.appendingPathComponent("run-inspector.json")
+        try RunStore.encoder.encode(provenance).write(to: sidecar)
+        let importer = Importer(store: store)
+        let first = try importer.importPath(evidence)
+        let id = try XCTUnwrap(first.imported.first?.id)
+        provenance.captures.append("extra-capture.txt")
+        try Data("new capture\n".utf8).write(to: evidence.appendingPathComponent("extra-capture.txt"))
+        try RunStore.encoder.encode(provenance).write(to: sidecar)
+        let second = try importer.importPath(evidence)
+        XCTAssertEqual(second.imported.first?.alreadyExisted, false)
+        XCTAssertEqual(Set(try store.readManifest(id: id).captures.map(\.name)),
+                       ["gate_boot_facts.txt", "extra-capture.txt"])
+        XCTAssertEqual(try importer.importPath(evidence).imported.first?.alreadyExisted, true)
+    }
+
     func testAuthoritativeSidecarPreservesVerdictTimesAndFactsAcrossRelocation() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -42,6 +157,32 @@ final class ImporterTests: XCTestCase {
             XCTAssertEqual(try Importer(store: store).importPath(moved).imported.first?.id, id)
         }
         XCTAssertEqual(try store.readIndex().runs.count, 4)
+    }
+
+    func testGateTmpTreeImportUsesSidecarEvenWithoutConventionallyNamedSerial() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gateTmp = root.appendingPathComponent("gate-tmp", isDirectory: true)
+        let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
+        let iteration = gateTmp.appendingPathComponent("breenix_aarch64_strict_1", isDirectory: true)
+        try FileManager.default.createDirectory(at: iteration, withIntermediateDirectories: true)
+        try Data("Breenix ARM64 Kernel Starting\n".utf8).write(to: iteration.appendingPathComponent("console.log"))
+        let start = Date(timeIntervalSince1970: 1_788_633_600)
+        let provenance = GateProvenance(schemaVersion: 1, id: UUID().uuidString,
+            arch: .aarch64, profile: "strict", verdict: "PASS", exitCode: 0,
+            startedAt: start, endedAt: start.addingTimeInterval(20),
+            command: ["gate.sh"], serials: ["console.log"], captures: [])
+        try RunStore.encoder.encode(provenance).write(to: iteration.appendingPathComponent("run-inspector.json"))
+
+        let treeResult = try Importer(store: store).importPath(gateTmp)
+        XCTAssertEqual(treeResult.imported.count, 1,
+            "sidecar-declared evidence under a non-conventional name must import from a tree scan")
+        XCTAssertEqual(treeResult.skipped, [])
+
+        let directStore = RunStore(root: root.appendingPathComponent("store2", isDirectory: true))
+        let directResult = try Importer(store: directStore).importPath(iteration)
+        XCTAssertEqual(directResult.imported.count, 1,
+            "a direct import of the same directory already succeeds -- the tree scan must match it")
     }
 
     func testGateTmpTreeImportsOneRunPerIterationDirectory() throws {
