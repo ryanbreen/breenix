@@ -1,0 +1,8 @@
+$ prlctl capture does-not-exist-vm-xyz --file /tmp/x.png
+Failed to get VM config: The virtual machine could not be found. The virtual machine is not registered in the virtual machine directory on your Mac.
+exit=255
+
+$ prlctl capture linux-probe --file /tmp/x.png   # linux-probe is 'suspended'
+Capture the VM screen...
+PrlDevDisplay_ConnectToVm: PrlJob_Wait: PRL_ERR_IO_STOPPED
+exit=255

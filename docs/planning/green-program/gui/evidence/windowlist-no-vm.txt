@@ -1,0 +1,74 @@
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 518;
+    Width = 640;
+    X = 125;
+    Y = 125;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 39;
+    Width = 2056;
+    X = 0;
+    Y = 0;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 39;
+    Width = 2056;
+    X = 0;
+    Y = 0;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 39;
+    Width = 2056;
+    X = 0;
+    Y = 0;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 39;
+    Width = 2056;
+    X = 0;
+    Y = 0;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 508;
+    Width = 640;
+    X = 708;
+    Y = 416;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 196;
+    Width = 184;
+    X = 948;
+    Y = 576;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 508;
+    Width = 640;
+    X = 708;
+    Y = 416;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 68;
+    Width = 668;
+    X = 694;
+    Y = 636;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 801;
+    Width = 818;
+    X = 658;
+    Y = 207;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 164;
+    Width = 540;
+    X = 811;
+    Y = 434;
+}}
+{'owner': 'Parallels Desktop', 'name': "''", 'pid': 13628, 'layer': 0, 'bounds': {
+    Height = 500;
+    Width = 500;
+    X = 0;
+    Y = 829;
+}}
+TOTAL Parallels-owned windows: 12
+Windows with non-empty kCGWindowName: 0

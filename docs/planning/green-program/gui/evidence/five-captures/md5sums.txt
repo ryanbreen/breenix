@@ -1,0 +1,6 @@
+md5 + size of the five consecutive captures committed in this same directory. 5/5 distinct md5s (cross-check: `md5 -q capture-*.png | sort -u | wc -l` = 5).
+capture-1.png: size=29716 md5=56fe688eecba654b52bb16fe5043d0aa
+capture-2.png: size=30224 md5=9e42654f6fd55aa300515fa4dc3a72b5
+capture-3.png: size=30322 md5=819bc4c01d4d05d8333502e0f262aaf9
+capture-4.png: size=28699 md5=b2db8bd96be9a7e6314abc7c683a3307
+capture-5.png: size=20503 md5=97cf6ed929c2acc457bd411aa002f0c9

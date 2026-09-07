@@ -4,11 +4,27 @@
 # Usage:
 #   scripts/f24-render-verdict.sh <png_path>
 #
-# Returns 0 if rendered desktop content includes a spatially coherent UI region.
+# Exit 0: rendered desktop content includes a spatially coherent UI region
+#         (VERDICT=PASS).
+# Exit 1: a real capture was scored but did not pass (VERDICT=FAIL).
+# Exit 2: no real capture exists to score -- <png_path> is missing, or it is
+#         the known-degenerate solid-black frame that
+#         scripts/parallels/capture-display.sh's own black-warmup retry is
+#         meant to filter before handing a caller a PNG (see the two
+#         CAPTURE_MISSING tests in tests/parallels_capture_structure.rs, #917:
+#         docs/planning/green-program/gui/PARALLELS-CAPTURE-2026-09-07.md).
+#         A caller must not treat exit 2 the same as VERDICT=FAIL -- FAIL
+#         means "captured the desktop and it looks wrong", CAPTURE_MISSING
+#         means "did not capture the desktop".
 
 set -euo pipefail
 
 PNG="${1:?png path required}"
+
+if [ ! -f "$PNG" ]; then
+    echo "VERDICT=CAPTURE_MISSING reason=png-absent path=$PNG"
+    exit 2
+fi
 
 python3 - "$PNG" <<'PY'
 import sys
@@ -17,8 +33,31 @@ from collections import Counter
 from math import sqrt
 from PIL import Image
 
-img = Image.open(sys.argv[1]).convert("RGB")
+path = sys.argv[1]
+img = Image.open(path).convert("RGB")
 w, h = img.size
+
+# A capture-layer failure -- capture-display.sh's own black-warmup retry
+# (scripts/parallels/capture-display.sh) is meant to filter this shape out
+# before it ever reaches a caller -- not a render-layer one: a solid single
+# color across the whole frame that is at-or-near black. Checked by
+# dominant-color count, not a byte-identical file hash (see
+# f24_render_verdict_rejects_solid_black_capture in
+# tests/parallels_capture_structure.rs, which synthesizes a fresh black PNG
+# each run rather than depending on one fixed file), so it still catches
+# the failure mode if the PNG encoder's byte output changes. Checked over the
+# full image, unlike the render verdict below (which crops the Parallels
+# toolbar first), because a rendered desktop's toolbar-region pixels differ
+# from its background even when the content below it is flat.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    full_pixels = list(img.getdata())
+full_colors = Counter(full_pixels)
+if len(full_colors) == 1:
+    (r, g, b) = next(iter(full_colors))
+    if r <= 8 and g <= 8 and b <= 8:
+        print(f"VERDICT=CAPTURE_MISSING reason=solid-black-capture color=({r},{g},{b}) path={path}")
+        sys.exit(2)
 
 # Crop top 40px to remove the Parallels toolbar from the verdict.
 content = img.crop((0, 40, w, h))
