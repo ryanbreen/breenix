@@ -98,11 +98,15 @@ where
 (`with_locked_masked(socket, |s| s.has_data())`), `socket.rs:298`
 (`with_locked_masked(&socket_ref, |socket| socket.bind(..))`),
 `socket.rs:455` (`with_locked_masked(s, |socket| socket.local_port()...)`),
-`socket.rs:623` (`with_locked_masked(&socket, |s| s.nonblocking)`). Each hold
-is short (a `bool` read, a `bind()` call against the in-memory port registry,
-an `Option<u16>` read, a `bool` field read) — 0 of the 4 needed the
-try-lock-and-defer alternative the brief allowed; masking the whole hold was
-the natural choice at each of the 4.
+`socket.rs:623` (`with_locked_masked(&socket, |s| s.nonblocking)`). The reads are short;
+`sys_bind`'s
+ephemeral-port path is bounded but not trivially short: under the registry
+lock it takes the nested `next_ephemeral` lock and searches the fixed
+ephemeral port range with `BTreeMap::contains_key`, then inserts into the
+map (which can allocate); `bind()` also calls `log::debug!` inside the mask.
+Masking prevents same-CPU self-reentrancy, so this bounded search does not
+introduce that deadlock risk and improves the prior unmasked x86_64 hold.
+0 of the 4 sites uses the try-lock-and-defer alternative.
 
 `net/udp.rs`'s IRQ-side counterpart (`deliver_to_socket`'s
 `socket_ref.lock()` inside `with_process_manager`) is unchanged.
@@ -303,13 +307,13 @@ on commit would edit them.
 | `run-aarch64-prod-profile-boot-test.sh` | PASS, `Observed UDP-socket-lock oracle marker count: 0` | `serials/823/05-a64-prod-profile-gate.txt` |
 | `run-x86-boot-tests.sh 1` on beast | `x86 frame-custody gate run 1: PASS`, `EXIT_CODE:0`; `x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0` | `serials/823/06-x86-boot-tests-gate.txt`, serial excerpt `06b` |
 | `run-x86-prod-profile-boot-test.sh` on beast | PASS on retry (see below); `test-only marker '[UDP_LOCK_ORACLE:': 0` | `serials/823/08-x86-prod-profile-gate.txt` |
-| `scripts/claim-lint.py` | exit 0 (clean, 15 files checked in changed hunks) | — |
+| `scripts/claim-lint.py` | exit 0 (clean, 27 files checked across the full branch, changed hunks vs merge base `6346f2c53817`, including this review-fix commit) | — |
 | `scripts/claim-lint.py --commit-msg` | exit 0 | — |
 
 **The x86 prod-profile gate's first attempt scored FAIL**, on
-`PROMPT_LIVENESS_ENDED_BY=prompt_absent` (`PROMPT_BEFORE=0` — the
-steady-state console prompt was never printed even once inside the
-liveness-check window). The gate script's own failure message names this
+`PROMPT_LIVENESS_ENDED_BY=prompt_absent` (`before=0 after=1` — the
+steady-state console prompt printed once inside the liveness-check window,
+not the required twice). The gate script's own failure message names this
 class explicitly, citing #826: "a starved guest that reaches steady state
 late in its own sampling window, or that is too starved to answer the
 liveness stimulus inside the window, produces exactly this shape with no
@@ -345,17 +349,24 @@ Both run from this branch's working tree before each commit in this round.
   `deliver_to_socket`'s `with_process_manager` scope begins. The normal
   process-termination path (`Process::terminate` → `close_all_fds`) is
   reached only through `with_process_manager`, which masks on both
-  architectures, so that path is not exposed. A SEPARATE deferred-reclaim
-  path, `kernel/src/task/process_task.rs`'s `close_extracted_fds` (called
-  from `reclaim_deferred_process_resources`, itself reached from both
-  aarch64 and x86_64 sites including `interrupts/context_switch.rs` and
-  `arch_impl/aarch64/context_switch.rs`), is explicitly documented in its own
-  comment as running "No PM lock is held when this runs" — and does not
-  appear to mask interrupts either. This is a plausible instance of the same
-  defect class, on a different lock, in a subsystem (the P4/tranche-2
-  deferred process-teardown machinery) this round did not otherwise touch and
-  did not build an oracle for. It is not fixed here. Filed as #908 rather
-  than left undisclosed.
+  architectures, so that path is not exposed. A SEPARATE ordinary thread-exit
+  path, `kernel/src/task/process_task.rs`'s `close_extracted_fds`, is called
+  by `handle_thread_exit`. Its production callers are
+  `kernel/src/arch_impl/aarch64/syscall_entry.rs`,
+  `kernel/src/syscall/handlers.rs`, `kernel/src/process/mod.rs`'s
+  `exit_process_and_retire`, and the self-triggered fault-exit call in
+  `process_task.rs`. This is not the P6a deferred-reclaim/tombstone path:
+  `reclaim_deferred_process_resources` and
+  `reclaim_deferred_process_resources_for_pass` call neither exit helper.
+  The former does independently have callers in both
+  `kernel/src/interrupts/context_switch.rs` and
+  `kernel/src/arch_impl/aarch64/context_switch.rs`.
+  `close_extracted_fds` is documented as running "No PM lock is held when
+  this runs", does not appear to mask interrupts, and has no
+  `FdKind::UdpSocket` match arm to protect the unmasked `UdpSocket::Drop`.
+  This is a plausible instance of the same defect class on a different lock
+  in ordinary thread-exit cleanup, for which this round did not build an
+  oracle. It is not fixed here. Filed as #908 rather than left undisclosed.
 * **No `try-lock-and-defer` site.** The brief allowed either masking or
   try-lock-and-defer per site; the 4 holds in this round were short enough
   that masking the whole hold was the natural choice at each one, and 0 of
@@ -369,3 +380,65 @@ Both run from this branch's working tree before each commit in this round.
 * **`hold_us` timing values are readings from this Mac's clock, not a
   cross-machine bound**, the same caveat #812's and #822's documents carry
   for their own `hold_us`/`entry_us` fields.
+
+
+## Fix pass — review findings closed (2026-09-06)
+
+The independent review combined a direct code census with a second Codex
+pass, recorded in the coordinator's records. It raised 5 findings and gave
+1 "confirmed clean" verdict covering the remainder of the reviewed change:
+
+1. Minor/code: this branch's own `udp_lock_received` checker held the
+   socket mutex unmasked. It now calls the production
+   `crate::socket::udp::with_locked_masked` primitive around the receive
+   queue inspection, with a comment identifying the review gap.
+2. Minor/code, doc-only correction: the repair prose understated the
+   ephemeral-bind masked hold. It now describes the nested lock, bounded
+   port-range search, map insertion/allocation, and debug call.
+3. Minor/prose, doc-only caller-chain correction: `close_extracted_fds`
+   belongs to `handle_thread_exit`'s ordinary exit cleanup, not the P6a
+   deferred-reclaim path. The production callers and the separate
+   context-switch reclaim callers were rechecked against the source.
+4. Minor/prose: the claim-lint table now reports the full-branch file count
+   and merge base, rather than the first implementation commit's count.
+5. Nit/prose: the x86 host-contention failure now says `before=0 after=1`:
+   the prompt printed once during the window, not the required twice.
+
+Rule 7 in `tests/udp_socket_lock_irq_structure.rs` pins the checker's
+primitive call in its function body after `code_mask` stripping. Its
+anti-vacuity test uses `replacen` on the real source to restore the old
+unmasked function in memory, asserts the replacement matched, and checks
+that the primitive call disappeared from the mutated body. Rules 1–6 were
+not restructured. The green control also calls rule 7.
+
+Verification in this pass: `scripts/run-structure-tests.sh
+udp_socket_lock_irq_structure` passed 14/14 tests, including rule 7's
+mutation. The full `tests/*_structure.rs` sweep passed 53/53 suites,
+788 tests. An on-disk rule-1 mutation replacing
+`Cpu::without_interrupts(|| f(&mut socket.lock()))` with
+`f(&mut socket.lock())` exited 101: both
+`with_locked_masked_masks_the_whole_hold` and
+`green_control_all_rules_hold_at_head` failed as required. After restoring
+`kernel/src/socket/udp.rs` byte-for-byte, the suite passed 14/14 again.
+
+The pre-existing #812 checker, `irq_hold_received` in
+`kernel/src/test_framework/registry.rs`, has the identical unmasked-lock
+shape (the same lock/queue/count body, with its own payload constant).
+`git show main:kernel/src/test_framework/registry.rs` confirms it already
+exists on main (definition at line 5249 in that snapshot). It predates this
+branch and is explicitly untouched here, out of scope for this fix pass
+and left for a separate issue/branch by the coordinator; this pass files
+no issue for it.
+
+
+The aarch64 `boot_tests` release build exited 0 with 0 kernel warnings or
+errors; the expected pre-existing upstream `core` future-incompatibility
+notice was the only warning. `bash docker/qemu/run-aarch64-boot-test-strict.sh
+1` exited 0 and reported `PASS: 1/1 boots succeeded`. Its serial contains:
+
+```
+[UDP_LOCK_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=2:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12018:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:PASS]
+```
+
+Serial: `serials/823/10-fixpass-a64-strict-boot-serial.txt`, copied without
+text normalization; the existing `.gitattributes` entry covers it.

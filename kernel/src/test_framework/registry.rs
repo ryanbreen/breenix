@@ -5132,14 +5132,16 @@ fn udp_lock_close_socket(open: &UdpLockSocket) {
     crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_LOCK_PORT);
 }
 
+// #823-review finding 1: the oracle checker also masks the lock under test.
 #[cfg(target_arch = "aarch64")]
 fn udp_lock_received(open: &UdpLockSocket) -> u64 {
-    let socket = open.socket.lock();
-    let queue = socket.rx_queue.lock();
-    queue
-        .iter()
-        .filter(|packet| packet.data.as_slice() == UDP_LOCK_PAYLOAD)
-        .count() as u64
+    crate::socket::udp::with_locked_masked(&open.socket, |socket| {
+        let queue = socket.rx_queue.lock();
+        queue
+            .iter()
+            .filter(|packet| packet.data.as_slice() == UDP_LOCK_PAYLOAD)
+            .count() as u64
+    })
 }
 
 /// The holder: calls the PRODUCTION `with_locked_masked` primitive directly,

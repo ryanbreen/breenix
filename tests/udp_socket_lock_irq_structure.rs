@@ -33,6 +33,7 @@ fn repo_text(relative: &str) -> String {
 const UDP_MODULE: &str = "kernel/src/socket/udp.rs";
 const POLL_MODULE: &str = "kernel/src/ipc/poll.rs";
 const SOCKET_SYSCALLS: &str = "kernel/src/syscall/socket.rs";
+const TEST_REGISTRY: &str = "kernel/src/test_framework/registry.rs";
 const NET_UDP: &str = "kernel/src/net/udp.rs";
 
 const PRIMITIVE_CALL: &str = "crate::socket::udp::with_locked_masked";
@@ -445,7 +446,51 @@ fn deliver_to_socket_still_locks_under_process_manager() {
     );
 }
 
-/// Green control: the file as it stands on this branch passes each of the 6 rules
+/// #823 rule 7: the oracle's own receive checker uses the masked primitive.
+#[test]
+fn udp_lock_received_uses_the_masked_primitive() {
+    let source = repo_text(TEST_REGISTRY);
+    let code = masked_text(&source);
+    let start = code
+        .find("fn udp_lock_received(")
+        .expect("#823 shape failure: udp_lock_received was renamed or removed");
+    let end = code[start..]
+        .find("\n}\n")
+        .map(|i| start + i)
+        .unwrap_or(code.len());
+    let body = &code[start..end];
+    assert!(
+        body.contains(PRIMITIVE_CALL),
+        "#823 shape failure: udp_lock_received no longer calls with_locked_masked"
+    );
+}
+
+#[test]
+fn udp_lock_received_rule_is_not_vacuous() {
+    let source = repo_text(TEST_REGISTRY);
+    let mutated = source.replacen(
+        "fn udp_lock_received(open: &UdpLockSocket) -> u64 {\n    crate::socket::udp::with_locked_masked(&open.socket, |socket| {\n        let queue = socket.rx_queue.lock();\n        queue\n            .iter()\n            .filter(|packet| packet.data.as_slice() == UDP_LOCK_PAYLOAD)\n            .count() as u64\n    })\n}",
+        "fn udp_lock_received(open: &UdpLockSocket) -> u64 {\n    let socket = open.socket.lock();\n    let queue = socket.rx_queue.lock();\n    queue\n        .iter()\n        .filter(|packet| packet.data.as_slice() == UDP_LOCK_PAYLOAD)\n        .count() as u64\n}",
+        1,
+    );
+    assert_ne!(
+        source, mutated,
+        "mutation text not found in kernel/src/test_framework/registry.rs -- update this test's literal before trusting rule 7"
+    );
+    let code = masked_text(&mutated);
+    let start = code.find("fn udp_lock_received(").unwrap();
+    let end = code[start..]
+        .find("\n}\n")
+        .map(|i| start + i)
+        .unwrap_or(code.len());
+    let body = &code[start..end];
+    assert!(
+        !body.contains(PRIMITIVE_CALL),
+        "mutation did not remove with_locked_masked from the body under test"
+    );
+}
+
+/// Green control: the file as it stands on this branch passes each of the 7 rules
 /// above. This test exists so a run of just this file with 0 failures is
 /// itself evidence, not merely the absence of a crash.
 #[test]
@@ -456,4 +501,5 @@ fn green_control_all_rules_hold_at_head() {
     sys_sendto_udp_arm_uses_the_masked_primitive();
     sys_recvfrom_nonblocking_read_uses_the_masked_primitive();
     deliver_to_socket_still_locks_under_process_manager();
+    udp_lock_received_uses_the_masked_primitive();
 }
