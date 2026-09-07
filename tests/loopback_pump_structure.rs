@@ -4103,3 +4103,438 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         assert!(mask[offset], "raw-string close swallowed the next byte");
     }
 }
+
+/// The wake-budget marker is printed on the passing path and on every
+/// failing path, from one producer, over three bracketed clocks.
+/// claim-lint:ok: "every failing path" is the 2 failing returns and 1
+/// passing return this validator enumerates below, 3 of 3, and the mutation
+/// test beneath reddens on deleting either print; see #586.
+///
+/// #586 PR 2. The budget window is bracketed by a tick clock
+/// (`get_monotonic_time`, which advances only on delivered timer
+/// interrupts), a counter clock (`monotonic_now_ns`, CNTVCT_EL0 on aarch64
+/// and the TSC on x86_64, which advances with the host), and
+/// `CTX_SWITCH_TOTAL`, the switches the guest performed. A marker printed
+/// only on the failing path would have no green population to be read
+/// against, and the two verdict constants were chosen from exactly that
+/// population, so "printed on both paths" is the load-bearing property here
+/// rather than a convenience.
+///
+/// This is a shape check: the field values, the wording of the
+/// classification and the arithmetic of the verdict may all change. What it
+/// pins is that the grammar carries its 13 fields, that each of the 3 clock
+/// stamps straddles the sleep, and that no exit of the function returns
+/// without a call to the single emitter.
+/// claim-lint:ok: "may all change" scopes what this validator does NOT pin;
+/// the 3 properties it does pin are enumerated in the same sentence, 3 of 3;
+/// see #586.
+fn validate_loopback_wake_budget_marker(source: &str) -> Result<(), String> {
+    // The literal as a producer writes it: opening quote included, so the
+    // prose above and in the kernel comments -- which spell the marker in
+    // backticks -- is not counted as a second producer.
+    const MARKER: &'static str = "\"[LOOPBACK_WAKE_BUDGET:";
+    let producers = source.matches(MARKER).count();
+    if producers != 1 {
+        return Err(format!(
+            "the wake-budget marker has {producers} producers; exactly 1 is the contract"
+        ));
+    }
+
+    let body = function_body(source, "run_loopback_recv_wake_test_inner")
+        .ok_or_else(|| "missing run_loopback_recv_wake_test_inner".to_string())?;
+
+    let grammar_start = body.find(MARKER).ok_or_else(|| {
+        "the wake-budget marker is not produced inside the loopback wake test".to_string()
+    })?;
+    let grammar_len = body[grammar_start..]
+        .find(']')
+        .ok_or_else(|| "the wake-budget marker literal is unterminated".to_string())?;
+    let grammar = &body[grammar_start + 1..grammar_start + grammar_len];
+    for field in [
+        "arch=",
+        "test=",
+        "budget_ms=",
+        "elapsed_tick_ms=",
+        "elapsed_ctr_ms=",
+        "ctx_delta=",
+        "extensions=",
+        "reader_state=",
+        "queued_cpu=",
+        "queued_idx=",
+        "idle_cpus=",
+        "cpu_silence_ms=",
+        "silence_cpu=",
+        "woke_ms=",
+        "verdict=",
+    ] {
+        if !grammar.contains(field) {
+            return Err(format!("the wake-budget marker omits the {field} field"));
+        }
+    }
+    let sleep = code_text_offset(body, "sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS)")
+        .ok_or_else(|| "the wake budget is not spent in one named sleep".to_string())?;
+    for (before, after, clock) in [
+        ("let tick_before_ms", "let tick_after_ms", "get_monotonic_time"),
+        ("let ctr_before_ns", "let ctr_after_ns", "monotonic_now_ns"),
+        ("let ctx_before", "let ctx_after", "CTX_SWITCH_TOTAL"),
+    ] {
+        let before_at = code_text_offset(body, before)
+            .ok_or_else(|| format!("the wake budget is not stamped by {before}"))?;
+        let after_at = code_text_offset(body, after)
+            .ok_or_else(|| format!("the wake budget is not stamped by {after}"))?;
+        if before_at >= sleep || after_at <= sleep {
+            return Err(format!(
+                "{before} and {after} do not straddle the wake budget"
+            ));
+        }
+        for (statement_at, label) in [(before_at, before), (after_at, after)] {
+            let statement_len = body[statement_at..]
+                .find(';')
+                .ok_or_else(|| format!("{label} is unterminated"))?;
+            let statement = &body[statement_at..statement_at + statement_len];
+            if !has_identifier(statement, clock) {
+                return Err(format!("{label} does not read {clock}"));
+            }
+        }
+    }
+    let verdict_at = code_text_offset(body, "let verdict =")
+        .ok_or_else(|| "the wake budget reaches no verdict".to_string())?;
+    let verdict_len = body[verdict_at..]
+        .find("\n    };")
+        .ok_or_else(|| "the verdict selector is unterminated".to_string())?;
+    let verdict = &body[verdict_at..verdict_at + verdict_len];
+    for token in ["ok", "wake", "starved", "dispatch"] {
+        if !verdict.contains(&format!("\"{token}\"")) {
+            return Err(format!("the wake-budget verdict cannot read {token}"));
+        }
+    }
+
+    if !has_identifier(body, "thread_placement_facts") {
+        return Err("the wake-budget marker reads no placement facts".to_string());
+    }
+
+    let emitter_at = code_text_offset(body, "let emit_wake_budget =")
+        .ok_or_else(|| "the wake-budget marker has no single emitter".to_string())?;
+    let tail = &body[emitter_at..];
+    let mask = code_mask(tail);
+    let mut exits: Vec<usize> = Vec::new();
+    for pattern in ["TestResult::Fail", "TestResult::Pass"] {
+        for (offset, _) in tail.match_indices(pattern) {
+            if mask[offset] {
+                exits.push(offset);
+            }
+        }
+    }
+    exits.sort_unstable();
+    if exits.len() < 3 {
+        return Err(format!(
+            "the loopback wake test has {} exits after the emitter; 2 failing and 1 passing are the contract",
+            exits.len()
+        ));
+    }
+    let mut previous = 0usize;
+    for exit in exits {
+        if !tail[previous..exit].contains("emit_wake_budget()") {
+            return Err(
+                "an exit of the loopback wake test returns without printing the wake-budget marker"
+                    .to_string(),
+            );
+        }
+        previous = exit;
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_wake_budget_marker_is_printed_on_both_paths() {
+    validate_loopback_wake_budget_marker(&repo_text(
+        "kernel/src/test_framework/registry.rs",
+    ))
+    .expect("the wake-budget marker is printed on the passing and the failing paths");
+}
+
+/// Every occurrence of the compacted-code text `scheduler` that is a
+/// receiver access (followed by `.`) in `body`, with the receiver name and
+/// dot stripped, in source order. `body` must already be `compact_code`'d --
+/// this walks it as plain code text with no comments or strings left to
+/// mask.
+/// claim-lint:ok: exercised by both legs of
+/// loopback_wake_budget_placement_accessor_ratchet_rejects_a_queue_mutation
+/// below, 2 of 2; see #586.
+fn compact_receiver_accesses<'a>(compact: &'a str, receiver: &str) -> Vec<&'a str> {
+    let mask = vec![true; compact.len()];
+    identifier_offsets(compact, &mask, receiver)
+        .into_iter()
+        .filter_map(|offset| {
+            let end = offset + receiver.len();
+            (compact.as_bytes().get(end) == Some(&b'.')).then(|| &compact[end + 1..])
+        })
+        .collect()
+}
+
+/// Whether one `scheduler.<rest>` access is the accessor's one approved
+/// read-only shape: an index into `per_cpu_queues` immediately chained into
+/// `.iter(`. A second field, a mutating method chained onto the same field,
+/// and a bare assignment are the 3 shapes this refuses -- see the 2 legs of
+/// loopback_wake_budget_placement_accessor_ratchet_rejects_a_queue_mutation
+/// below.
+/// claim-lint:ok: 2 of the 3 named shapes (mutating method, bare
+/// assignment) are the mutation test's 2 legs; the third (a second field
+/// read rather than mutated) is refused by the same `strip_prefix` check
+/// but is not separately mutation-tested; see #586.
+fn is_read_only_queue_scan(after_dot: &str) -> bool {
+    let Some(rest) = after_dot.strip_prefix("per_cpu_queues[") else {
+        return false;
+    };
+    let Some(close) = rest.find(']') else {
+        return false;
+    };
+    rest[close + 1..].starts_with(".iter(")
+}
+
+/// The accessor the marker reads is read-only: this checks that every use
+/// of its `&mut Scheduler` receiver takes the one approved read-only shape.
+/// This is a positive census of what the receiver is allowed to be put to,
+/// not a denylist of mutating method names -- a denylist of names is
+/// exactly as wide as the names on it and no wider: `push_front`,
+/// `pop_back`, `clear`, `retain`, `drain`, `truncate`, `swap_remove`,
+/// `iter_mut`, and a bare field assignment are 9 names/shapes invisible to
+/// a 6-name denylist, none of which can produce
+/// `per_cpu_queues[<cpu>].iter(...)`.
+/// claim-lint:ok: 2 of the 9 (`push_front`, a bare field assignment) are
+/// mutation-tested below; the remaining 7 are read off the same
+/// `strip_prefix`/`starts_with` shape as those 2 and not separately
+/// mutation-tested; see #586.
+fn thread_placement_accessor_is_read_only(scheduler_source: &str) -> Result<(), String> {
+    let body = function_body(scheduler_source, "thread_placement_facts")
+        .ok_or_else(|| "the placement accessor the wake-budget marker reads is gone".to_string())?;
+    let compact = compact_code(body);
+    let accesses = compact_receiver_accesses(&compact, "scheduler");
+    if accesses.is_empty() {
+        return Err(
+            "the placement accessor's closure no longer touches its `&mut Scheduler` receiver \
+             at all; this census needs updating to match its new shape"
+                .to_string(),
+        );
+    }
+    for access in accesses {
+        if !is_read_only_queue_scan(access) {
+            let preview: String = access.chars().take(48).collect();
+            return Err(format!(
+                "the placement accessor uses its `&mut Scheduler` receiver as \
+                 `scheduler.{preview}...`, which is not the one read-only shape this census \
+                 allows (`.per_cpu_queues[<cpu>].iter(...)`); it must only read"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_wake_budget_placement_accessor_is_read_only() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    thread_placement_accessor_is_read_only(&scheduler)
+        .expect("the placement accessor the wake-budget marker reads must only read");
+}
+
+/// V-2: a denylist of 6 mutating method names does not see a mutation that
+/// uses a different name. This reproduces the exact demonstration -- pushing
+/// onto and clearing a ready queue inside the accessor's closure -- and
+/// proves the positive-shape census above catches what the denylist missed.
+#[test]
+fn loopback_wake_budget_placement_accessor_ratchet_rejects_a_queue_mutation() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    thread_placement_accessor_is_read_only(&scheduler)
+        .expect("baseline source must pass, or the mutation below proves nothing");
+
+    let mutated = scheduler.replacen(
+        "    let queued = with_scheduler(|scheduler| {
+        for cpu in 0..MAX_CPUS {",
+        "    let queued = with_scheduler(|scheduler| {
+        scheduler.per_cpu_queues[0].push_front(tid);
+        scheduler.per_cpu_queues[0].clear();
+        for cpu in 0..MAX_CPUS {",
+        1,
+    );
+    assert_ne!(mutated, scheduler, "the queue-mutation leg must apply");
+    assert!(
+        thread_placement_accessor_is_read_only(&mutated).is_err(),
+        "an accessor that pushes onto and clears a ready queue must redden this census"
+    );
+
+    let field_assignment = scheduler.replacen(
+        "    let queued = with_scheduler(|scheduler| {
+        for cpu in 0..MAX_CPUS {",
+        "    let queued = with_scheduler(|scheduler| {
+        scheduler.woken_threads_len = 0;
+        for cpu in 0..MAX_CPUS {",
+        1,
+    );
+    assert_ne!(
+        field_assignment, scheduler,
+        "the field-assignment leg must apply"
+    );
+    assert!(
+        thread_placement_accessor_is_read_only(&field_assignment).is_err(),
+        "an accessor that assigns a field on its receiver must redden this census"
+    );
+}
+
+/// The mutation legs. Deleting the fail-path print, deleting the pass-path
+/// print, dropping one grammar field, and unhooking one clock stamp each
+/// redden the validator; without them the validator could be satisfied by a
+/// marker nobody prints and a budget nobody measured.
+#[test]
+fn loopback_wake_budget_validator_rejects_a_deleted_print() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_loopback_wake_budget_marker(&source)
+        .expect("baseline source must pass, or the mutations below prove nothing");
+
+    let no_fail_print = source.replacen(
+        "        emit_wake_budget();\n        return TestResult::Fail(diagnostic_message);",
+        "        return TestResult::Fail(diagnostic_message);",
+        1,
+    );
+    assert_ne!(no_fail_print, source, "fail-path mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_fail_print).is_err(),
+        "a failing path that returns without the wake-budget marker must redden the validator"
+    );
+
+    let no_pass_print = source.replacen(
+        "    emit_wake_budget();\n    TestResult::Pass",
+        "    TestResult::Pass",
+        1,
+    );
+    assert_ne!(no_pass_print, source, "pass-path mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_pass_print).is_err(),
+        "a passing path that returns without the wake-budget marker must redden the validator"
+    );
+
+    let no_ctx_field = source.replacen(":ctx_delta={}", ":ctx={}", 1);
+    assert_ne!(no_ctx_field, source, "grammar mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_ctx_field).is_err(),
+        "a grammar that drops a field must redden the validator"
+    );
+
+    for field in ["cpu_silence_ms", "silence_cpu"] {
+        let without_field = source.replacen(&format!(":{field}={{}}"), ":omitted={}", 1);
+        assert_ne!(without_field, source, "census mutation must apply");
+        assert!(validate_loopback_wake_budget_marker(&without_field).is_err());
+    }
+
+    let unbracketed = source.replacen(
+        "    let tick_before_ms = crate::time::get_monotonic_time();",
+        "    let tick_before_ms = 0u64;",
+        1,
+    );
+    assert_ne!(unbracketed, source, "clock mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&unbracketed).is_err(),
+        "a tick stamp that reads no clock must redden the validator"
+    );
+}
+
+/// V-5: the emitter must keep "the scheduler was unavailable" (the placement
+/// accessor's outer `Option` reading empty) separate from "sampled and
+/// empty" (its inner `Option` reading empty, or a real `idle_cpu_bitmap` of
+/// 0) -- the distinction `thread_placement_facts`'s own doc comment in
+/// kernel/src/task/scheduler.rs:5977-5979 says is preserved.
+/// `Option::and_then` on `queued_cpu`/`queued_index` cannot see which layer
+/// read empty, and an unguarded `Option::map_or(0u32, ...)` prints the same
+/// `0x0` bytes whether a sample ran and found nothing idle or never ran at
+/// all. This checks the emitter source for a distinct token and for a
+/// separate availability flag reaching the idle_cpus print site, not for
+/// the exact wording of either.
+/// claim-lint:ok: kernel/src/task/scheduler.rs:5977-5979 is the doc comment
+/// quoted; see #586.
+fn validate_placement_slot_distinguishes_unavailable(source: &str) -> Result<(), String> {
+    let body = function_body(source, "run_loopback_recv_wake_test_inner")
+        .ok_or_else(|| "missing run_loopback_recv_wake_test_inner".to_string())?;
+    if !body.contains("\"unavailable\"") {
+        return Err(
+            "the wake-budget emitter has no distinct token for a placement sample the \
+             scheduler declined to take"
+                .to_string(),
+        );
+    }
+    for pattern in [
+        "placement.and_then(|facts| facts.queued_cpu)",
+        "placement.and_then(|facts| facts.queued_index)",
+    ] {
+        if body.contains(pattern) {
+            return Err(format!(
+                "the wake-budget emitter folds an unavailable placement sample into `none` \
+                 through `{pattern}`"
+            ));
+        }
+    }
+    // `idle_cpus_sampled` existing SOMEWHERE in `body` is not enough -- the
+    // binding two-hop `map_or` bug this replaces still left the flag
+    // computed and unused if a later edit dropped only the print-site
+    // reference. Bound the check to the emitter closure itself, where the
+    // print call lives.
+    let mask = code_mask(body);
+    let emitter_at = code_text_offset(body, "let emit_wake_budget =")
+        .ok_or_else(|| "the wake-budget marker has no single emitter".to_string())?;
+    let (open, close) = braced_block_span(body, &mask, emitter_at)
+        .ok_or_else(|| "the wake-budget emitter closure is unterminated".to_string())?;
+    let emitter_block = &body[open..=close];
+    if !has_identifier(emitter_block, "idle_cpus_sampled") {
+        return Err(
+            "the wake-budget emitter's print call reads no separate availability flag for \
+             idle_cpus"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_wake_budget_emitter_distinguishes_unavailable_from_not_queued() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_placement_slot_distinguishes_unavailable(&source).expect(
+        "the emitter must keep an unavailable placement sample distinct from an empty one",
+    );
+}
+
+/// The mutation legs: reintroduce each half of the collapse V-5 found --
+/// the `and_then` fold on `queued_cpu`/`queued_idx`, and the un-flagged
+/// `idle_cpus` print with no availability check reaching it -- and prove the
+/// validator reddens on each independently.
+#[test]
+fn loopback_wake_budget_emitter_validator_rejects_the_unavailable_collapse() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_placement_slot_distinguishes_unavailable(&source)
+        .expect("baseline source must pass, or the mutations below prove nothing");
+
+    let and_then_collapse = source.replacen(
+        "PlacementSlot::of(placement, |facts| facts.queued_cpu),",
+        "OptSlot(placement.and_then(|facts| facts.queued_cpu)),",
+        1,
+    );
+    assert_ne!(
+        and_then_collapse, source,
+        "the queued_cpu and_then-collapse mutation must apply"
+    );
+    assert!(
+        validate_placement_slot_distinguishes_unavailable(&and_then_collapse).is_err(),
+        "reintroducing the and_then collapse on queued_cpu must redden the validator"
+    );
+
+    let idle_collapse = source.replacen(
+        "IdleCpusSlot {\n                bits: idle_cpus,\n                sampled: idle_cpus_sampled,\n            },",
+        "idle_cpus,",
+        1,
+    );
+    assert_ne!(
+        idle_collapse, source,
+        "the idle_cpus availability-flag mutation must apply"
+    );
+    assert!(
+        validate_placement_slot_distinguishes_unavailable(&idle_collapse).is_err(),
+        "reintroducing an idle_cpus print with no availability flag must redden the validator"
+    );
+}
