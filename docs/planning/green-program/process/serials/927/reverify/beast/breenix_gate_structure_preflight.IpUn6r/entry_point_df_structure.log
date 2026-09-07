@@ -1,0 +1,12 @@
+== compiling entry_point_df_structure ==
+== running entry_point_df_structure  ==
+
+running 5 tests
+test the_analyzer_reddens_on_a_synthetic_entry_that_omits_cld ... ok
+test the_asm_entry_census_covers_every_asm_file_in_the_kernel ... ok
+test the_asm_entry_census_is_not_vacuous ... ok
+test llvm_generated_x86_interrupt_handlers_are_censused_and_exempt ... ok
+test every_hand_written_entry_clears_df_before_its_first_call_or_string_op ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s
+

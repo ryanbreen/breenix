@@ -1,0 +1,24 @@
+add symbol table from file "/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845" with all sections offset by 0x10000000000
+0x00000100002a3441 in kernel::logger::LogFrameBuffer::write_pixel ()
+rip            0x100002a3441       0x100002a3441 <kernel::logger::LogFrameBuffer::write_pixel+593>
+rsp            0xffffc900000fafc8  0xffffc900000fafc8
+rax            0xffffc900000fb070  -60473138499472
+rdi            0xffffc900000fb058  -60473138499496
+rsi            0xffffc900000fb058  -60473138499496
+#0  0x00000100002a3441 in kernel::logger::LogFrameBuffer::write_pixel ()
+#1  0x000000000052a920 in ?? ()
+#2  0x0000000000000004 in ?? ()
+#3  0x0000000000000001 in ?? ()
+#4  0x0000000000000211 in ?? ()
+#5  0x0000010000414a70 in kernel::logger::LOG_FRAMEBUFFER ()
+#6  0xd000000000150400 in ?? ()
+#7  0x0000000000000048 in ?? ()
+#8  0x0000d0d0682cb654 in ?? ()
+#9  0x0000000000000001 in ?? ()
+Backtrace stopped: Cannot access memory at address 0x14a3a0
+PT_ROOTS_RETIRED=0x1000040ce80:	81
+TEARDOWN_ENTRY_EXIT=0x100003fd800:	130
+PT_RETIRE_BUDGET_REQUEUED=0x1000040df80:	1
+PT_RETIRE_FRAMES_LOST=0x1000040d700:	2
+RECLAIM_CONTEXT_VIOLATIONS=0x10000401c00:	0
+[Inferior 1 (process 1) detached]

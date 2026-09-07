@@ -1,0 +1,11 @@
+COMMIT=ba5a3377ccaeca6ef1ff38f15d8871454ac648e7
+Mac affected suites: structure-scorer-final.log; 10 + 15 tests passed
+BYTE_IDENTICAL_TO_TESTED_WORKTREE=kernel/src/process/manager.rs
+BYTE_IDENTICAL_TO_TESTED_WORKTREE=tests/x86_boot_tests_profile_structure.rs
+BYTE_IDENTICAL_TO_TESTED_WORKTREE=docker/qemu/run-x86-boot-tests-only.sh
+BYTE_IDENTICAL_TO_TESTED_WORKTREE=docker/qemu/run-blocking-io-oracle-gate.sh
+BYTE_IDENTICAL_TO_TESTED_WORKTREE=scripts/score-blocking-io-oracle.py
+IDENTICAL_BOOT_REVISION_c5b5d0dc_AND_FINAL=kernel:ecabc4bc6abcc0402f5ca6c973dd3bb470d5299f
+IDENTICAL_BOOT_REVISION_c5b5d0dc_AND_FINAL=docker/qemu/run-x86-boot-tests-only.sh:bc2a23b23ac41e54a53e685f8ad8994609627c59
+IDENTICAL_BOOT_REVISION_c5b5d0dc_AND_FINAL=docker/qemu/run-x86-boot-tests.sh:ba70b32d25791927cf28145e7d3b13398886fe0a
+IDENTICAL_BOOT_REVISION_c5b5d0dc_AND_FINAL=docker/qemu/run-x86-prod-profile-boot-test.sh:b802bdf1d910ba1a2045ea0a89a2cc4f8225bf05

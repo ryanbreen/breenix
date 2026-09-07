@@ -1,0 +1,15 @@
+REVISION=c5b5d0dc026044005e025e549fc121779e5b165f
+COMMAND=bash docker/qemu/run-x86-boot-tests-only.sh
+REVISION=c5b5d0dc026044005e025e549fc121779e5b165f
+Artifacts: /root/breenix-927a-tmp/breenix_x86_boot_tests_only.tBZNH3
+[GATE_PREFLIGHT:structure_suites=65/65:critical_path_lines=260:pinned=120]
+   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-927a)
+    Finished `release` profile [optimized] target(s) in 15.15s
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
+[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
+[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+[TEST:process:x86_retire_cohort:PASS]
+[TEST:process:x86_exec_cohort:PASS]
+x86 boot_tests-only gate: PASS

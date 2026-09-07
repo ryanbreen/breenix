@@ -1,0 +1,615 @@
+
+/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000002402c0 <kernel::process::manager::ProcessManager::fork_process_with_page_table>:
+  2402c0:	48 81 ec e8 0f 00 00 	sub    $0xfe8,%rsp
+  2402c7:	48 89 b4 24 88 00 00 	mov    %rsi,0x88(%rsp)
+  2402ce:	00 
+  2402cf:	48 89 f8             	mov    %rdi,%rax
+  2402d2:	48 8b bc 24 88 00 00 	mov    0x88(%rsp),%rdi
+  2402d9:	00 
+  2402da:	48 89 84 24 90 00 00 	mov    %rax,0x90(%rsp)
+  2402e1:	00 
+  2402e2:	48 89 84 24 98 00 00 	mov    %rax,0x98(%rsp)
+  2402e9:	00 
+  2402ea:	48 8b 84 24 f8 0f 00 	mov    0xff8(%rsp),%rax
+  2402f1:	00 
+  2402f2:	48 89 94 24 a0 00 00 	mov    %rdx,0xa0(%rsp)
+  2402f9:	00 
+  2402fa:	48 83 c7 38          	add    $0x38,%rdi
+  2402fe:	48 8b 05 f3 06 19 00 	mov    0x1906f3(%rip),%rax        # 3d09f8 <_DYNAMIC+0x52e0>
+  240305:	48 8d b4 24 a0 00 00 	lea    0xa0(%rsp),%rsi
+  24030c:	00 
+  24030d:	ff d0                	call   *%rax
+  24030f:	48 89 c6             	mov    %rax,%rsi
+  240312:	48 8d 15 54 0a e5 ff 	lea    -0x1af5ac(%rip),%rdx        # 90d6d <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x179d>
+  240319:	48 8b 05 80 84 19 00 	mov    0x198480(%rip),%rax        # 3d87a0 <_DYNAMIC+0xd088>
+  240320:	48 8d bc 24 10 06 00 	lea    0x610(%rsp),%rdi
+  240327:	00 
+  240328:	b9 18 00 00 00       	mov    $0x18,%ecx
+  24032d:	ff d0                	call   *%rax
+  24032f:	48 8b 05 7a 6a 19 00 	mov    0x196a7a(%rip),%rax        # 3d6db0 <_DYNAMIC+0xb698>
+  240336:	48 8d bc 24 00 06 00 	lea    0x600(%rsp),%rdi
+  24033d:	00 
+  24033e:	48 8d b4 24 10 06 00 	lea    0x610(%rsp),%rsi
+  240345:	00 
+  240346:	ff d0                	call   *%rax
+  240348:	48 8b 94 24 00 06 00 	mov    0x600(%rsp),%rdx
+  24034f:	00 
+  240350:	b8 01 00 00 00       	mov    $0x1,%eax
+  240355:	31 c9                	xor    %ecx,%ecx
+  240357:	48 83 fa 00          	cmp    $0x0,%rdx
+  24035b:	48 0f 44 c1          	cmove  %rcx,%rax
+  24035f:	48 a9 01 00 00 00    	test   $0x1,%rax
+  240365:	74 2d                	je     240394 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0xd4>
+  240367:	48 8b bc 24 90 00 00 	mov    0x90(%rsp),%rdi
+  24036e:	00 
+  24036f:	48 8b b4 24 00 06 00 	mov    0x600(%rsp),%rsi
+  240376:	00 
+  240377:	48 8b 94 24 08 06 00 	mov    0x608(%rsp),%rdx
+  24037e:	00 
+  24037f:	48 8d 0d 32 07 17 00 	lea    0x170732(%rip),%rcx        # 3b0ab8 <kernel::tracing::providers::teardown::COUNTERS+0x5d90>
+  240386:	48 8b 05 4b 5e 19 00 	mov    0x195e4b(%rip),%rax        # 3d61d8 <_DYNAMIC+0xaac0>
+  24038d:	ff d0                	call   *%rax
+  24038f:	e9 5e 09 00 00       	jmp    240cf2 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0xa32>
+  240394:	48 8b bc 24 08 06 00 	mov    0x608(%rsp),%rdi
+  24039b:	00 
+  24039c:	48 89 bc 24 80 00 00 	mov    %rdi,0x80(%rsp)
+  2403a3:	00 
+  2403a4:	48 81 c7 f0 00 00 00 	add    $0xf0,%rdi
+  2403ab:	48 8b 05 86 02 19 00 	mov    0x190286(%rip),%rax        # 3d0638 <_DYNAMIC+0x4f20>
+  2403b2:	ff d0                	call   *%rax
+  2403b4:	48 89 c6             	mov    %rax,%rsi
+  2403b7:	48 8d 15 05 0b e5 ff 	lea    -0x1af4fb(%rip),%rdx        # 90ec3 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x18f3>
+  2403be:	48 8b 05 23 84 19 00 	mov    0x198423(%rip),%rax        # 3d87e8 <_DYNAMIC+0xd0d0>
+  2403c5:	48 8d bc 24 30 06 00 	lea    0x630(%rsp),%rdi
+  2403cc:	00 
+  2403cd:	b9 21 00 00 00       	mov    $0x21,%ecx
+  2403d2:	ff d0                	call   *%rax
+  2403d4:	48 8b 05 15 6a 19 00 	mov    0x196a15(%rip),%rax        # 3d6df0 <_DYNAMIC+0xb6d8>
+  2403db:	48 8d bc 24 20 06 00 	lea    0x620(%rsp),%rdi
+  2403e2:	00 
+  2403e3:	48 8d b4 24 30 06 00 	lea    0x630(%rsp),%rsi
+  2403ea:	00 
+  2403eb:	ff d0                	call   *%rax
+  2403ed:	48 8b 94 24 20 06 00 	mov    0x620(%rsp),%rdx
+  2403f4:	00 
+  2403f5:	b8 01 00 00 00       	mov    $0x1,%eax
+  2403fa:	31 c9                	xor    %ecx,%ecx
+  2403fc:	48 83 fa 00          	cmp    $0x0,%rdx
+  240400:	48 0f 44 c1          	cmove  %rcx,%rax
+  240404:	48 a9 01 00 00 00    	test   $0x1,%rax
+  24040a:	74 2d                	je     240439 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x179>
+  24040c:	48 8b bc 24 90 00 00 	mov    0x90(%rsp),%rdi
+  240413:	00 
+  240414:	48 8b b4 24 20 06 00 	mov    0x620(%rsp),%rsi
+  24041b:	00 
+  24041c:	48 8b 94 24 28 06 00 	mov    0x628(%rsp),%rdx
+  240423:	00 
+  240424:	48 8d 0d 75 06 17 00 	lea    0x170675(%rip),%rcx        # 3b0aa0 <kernel::tracing::providers::teardown::COUNTERS+0x5d78>
+  24042b:	48 8b 05 a6 5d 19 00 	mov    0x195da6(%rip),%rax        # 3d61d8 <_DYNAMIC+0xaac0>
+  240432:	ff d0                	call   *%rax
+  240434:	e9 b9 08 00 00       	jmp    240cf2 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0xa32>
+  240439:	48 8b b4 24 80 00 00 	mov    0x80(%rsp),%rsi
+  240440:	00 
+  240441:	48 8b 84 24 28 06 00 	mov    0x628(%rsp),%rax
+  240448:	00 
+  240449:	48 89 44 24 10       	mov    %rax,0x10(%rsp)
+  24044e:	48 81 c6 68 03 00 00 	add    $0x368,%rsi
+  240455:	48 8d 15 3c 05 17 00 	lea    0x17053c(%rip),%rdx        # 3b0998 <kernel::tracing::providers::teardown::COUNTERS+0x5c70>
+  24045c:	48 8b 05 cd 01 19 00 	mov    0x1901cd(%rip),%rax        # 3d0630 <_DYNAMIC+0x4f18>
+  240463:	48 8d bc 24 40 06 00 	lea    0x640(%rsp),%rdi
+  24046a:	00 
+  24046b:	ff d0                	call   *%rax
+  24046d:	48 8b b4 24 80 00 00 	mov    0x80(%rsp),%rsi
+  240474:	00 
+  240475:	48 8b 86 18 04 00 00 	mov    0x418(%rsi),%rax
+  24047c:	48 89 44 24 18       	mov    %rax,0x18(%rsp)
+  240481:	48 8b 86 08 04 00 00 	mov    0x408(%rsi),%rax
+  240488:	48 89 44 24 20       	mov    %rax,0x20(%rsp)
+  24048d:	48 8b 86 10 04 00 00 	mov    0x410(%rsi),%rax
+  240494:	48 89 44 24 28       	mov    %rax,0x28(%rsp)
+  240499:	48 81 c6 50 03 00 00 	add    $0x350,%rsi
+  2404a0:	48 8d 15 09 05 17 00 	lea    0x170509(%rip),%rdx        # 3b09b0 <kernel::tracing::providers::teardown::COUNTERS+0x5c88>
+  2404a7:	48 8b 05 82 01 19 00 	mov    0x190182(%rip),%rax        # 3d0630 <_DYNAMIC+0x4f18>
+  2404ae:	48 8d bc 24 58 06 00 	lea    0x658(%rsp),%rdi
+  2404b5:	00 
+  2404b6:	ff d0                	call   *%rax
+  2404b8:	48 8b 74 24 10       	mov    0x10(%rsp),%rsi
+  2404bd:	48 8b 05 94 4e 19 00 	mov    0x194e94(%rip),%rax        # 3d5358 <_DYNAMIC+0x9c40>
+  2404c4:	48 8d bc 24 70 06 00 	lea    0x670(%rsp),%rdi
+  2404cb:	00 
+  2404cc:	ff d0                	call   *%rax
+  2404ce:	48 8b b4 24 80 00 00 	mov    0x80(%rsp),%rsi
+  2404d5:	00 
+  2404d6:	48 8b 86 48 04 00 00 	mov    0x448(%rsi),%rax
+  2404dd:	48 89 44 24 30       	mov    %rax,0x30(%rsp)
+  2404e2:	48 8b 86 50 04 00 00 	mov    0x450(%rsi),%rax
+  2404e9:	48 89 44 24 38       	mov    %rax,0x38(%rsp)
+  2404ee:	48 8b 86 58 04 00 00 	mov    0x458(%rsi),%rax
+  2404f5:	48 89 44 24 40       	mov    %rax,0x40(%rsp)
+  2404fa:	48 81 c6 b0 03 00 00 	add    $0x3b0,%rsi
+  240501:	48 8d 15 c0 04 17 00 	lea    0x1704c0(%rip),%rdx        # 3b09c8 <kernel::tracing::providers::teardown::COUNTERS+0x5ca0>
+  240508:	48 8b 05 d1 eb 18 00 	mov    0x18ebd1(%rip),%rax        # 3cf0e0 <_DYNAMIC+0x39c8>
+  24050f:	48 8d bc 24 b0 08 00 	lea    0x8b0(%rsp),%rdi
+  240516:	00 
+  240517:	ff d0                	call   *%rax
+  240519:	48 8b b4 24 80 00 00 	mov    0x80(%rsp),%rsi
+  240520:	00 
+  240521:	48 8b 54 24 18       	mov    0x18(%rsp),%rdx
+  240526:	48 8b 4c 24 20       	mov    0x20(%rsp),%rcx
+  24052b:	48 8b 44 24 28       	mov    0x28(%rsp),%rax
+  240530:	48 8b be 20 04 00 00 	mov    0x420(%rsi),%rdi
+  240537:	48 89 7c 24 48       	mov    %rdi,0x48(%rsp)
+  24053c:	48 8b be 28 04 00 00 	mov    0x428(%rsi),%rdi
+  240543:	48 89 7c 24 50       	mov    %rdi,0x50(%rsp)
+  240548:	48 8b b6 30 04 00 00 	mov    0x430(%rsi),%rsi
+  24054f:	48 89 74 24 58       	mov    %rsi,0x58(%rsp)
+  240554:	48 8b b4 24 40 06 00 	mov    0x640(%rsp),%rsi
+  24055b:	00 
+  24055c:	48 89 b4 24 70 05 00 	mov    %rsi,0x570(%rsp)
+  240563:	00 
+  240564:	48 8b b4 24 48 06 00 	mov    0x648(%rsp),%rsi
+  24056b:	00 
+  24056c:	48 89 b4 24 78 05 00 	mov    %rsi,0x578(%rsp)
+  240573:	00 
+  240574:	48 8b b4 24 50 06 00 	mov    0x650(%rsp),%rsi
+  24057b:	00 
+  24057c:	48 89 b4 24 80 05 00 	mov    %rsi,0x580(%rsp)
+  240583:	00 
+  240584:	48 89 94 24 b8 05 00 	mov    %rdx,0x5b8(%rsp)
+  24058b:	00 
+  24058c:	48 89 8c 24 c0 05 00 	mov    %rcx,0x5c0(%rsp)
+  240593:	00 
+  240594:	48 89 84 24 c8 05 00 	mov    %rax,0x5c8(%rsp)
+  24059b:	00 
+  24059c:	48 8b 84 24 58 06 00 	mov    0x658(%rsp),%rax
+  2405a3:	00 
+  2405a4:	48 89 84 24 88 05 00 	mov    %rax,0x588(%rsp)
+  2405ab:	00 
+  2405ac:	48 8b 84 24 60 06 00 	mov    0x660(%rsp),%rax
+  2405b3:	00 
+  2405b4:	48 89 84 24 90 05 00 	mov    %rax,0x590(%rsp)
+  2405bb:	00 
+  2405bc:	48 8b 84 24 68 06 00 	mov    0x668(%rsp),%rax
+  2405c3:	00 
+  2405c4:	48 89 84 24 98 05 00 	mov    %rax,0x598(%rsp)
+  2405cb:	00 
+  2405cc:	48 8d bc 24 30 03 00 	lea    0x330(%rsp),%rdi
+  2405d3:	00 
+  2405d4:	48 8d b4 24 70 06 00 	lea    0x670(%rsp),%rsi
+  2405db:	00 
+  2405dc:	ba 40 02 00 00       	mov    $0x240,%edx
+  2405e1:	48 8b 05 e8 ba 18 00 	mov    0x18bae8(%rip),%rax        # 3cc0d0 <_DYNAMIC+0x9b8>
+  2405e8:	ff d0                	call   *%rax
+  2405ea:	4c 8b 44 24 30       	mov    0x30(%rsp),%r8
+  2405ef:	48 8b 7c 24 38       	mov    0x38(%rsp),%rdi
+  2405f4:	48 8b 74 24 40       	mov    0x40(%rsp),%rsi
+  2405f9:	48 8b 54 24 48       	mov    0x48(%rsp),%rdx
+  2405fe:	48 8b 4c 24 50       	mov    0x50(%rsp),%rcx
+  240603:	48 8b 44 24 58       	mov    0x58(%rsp),%rax
+  240608:	4c 89 84 24 d0 05 00 	mov    %r8,0x5d0(%rsp)
+  24060f:	00 
+  240610:	48 89 bc 24 d8 05 00 	mov    %rdi,0x5d8(%rsp)
+  240617:	00 
+  240618:	48 89 b4 24 e0 05 00 	mov    %rsi,0x5e0(%rsp)
+  24061f:	00 
+  240620:	48 8b b4 24 b0 08 00 	mov    0x8b0(%rsp),%rsi
+  240627:	00 
+  240628:	48 89 b4 24 a0 05 00 	mov    %rsi,0x5a0(%rsp)
+  24062f:	00 
+  240630:	48 8b b4 24 b8 08 00 	mov    0x8b8(%rsp),%rsi
+  240637:	00 
+  240638:	48 89 b4 24 a8 05 00 	mov    %rsi,0x5a8(%rsp)
+  24063f:	00 
+  240640:	48 8b b4 24 c0 08 00 	mov    0x8c0(%rsp),%rsi
+  240647:	00 
+  240648:	48 89 b4 24 b0 05 00 	mov    %rsi,0x5b0(%rsp)
+  24064f:	00 
+  240650:	48 89 94 24 e8 05 00 	mov    %rdx,0x5e8(%rsp)
+  240657:	00 
+  240658:	48 89 8c 24 f0 05 00 	mov    %rcx,0x5f0(%rsp)
+  24065f:	00 
+  240660:	48 89 84 24 f8 05 00 	mov    %rax,0x5f8(%rsp)
+  240667:	00 
+  240668:	48 8b 84 24 70 05 00 	mov    0x570(%rsp),%rax
+  24066f:	00 
+  240670:	48 89 84 24 a8 00 00 	mov    %rax,0xa8(%rsp)
+  240677:	00 
+  240678:	48 8b 84 24 78 05 00 	mov    0x578(%rsp),%rax
+  24067f:	00 
+  240680:	48 89 84 24 b0 00 00 	mov    %rax,0xb0(%rsp)
+  240687:	00 
+  240688:	48 8b 84 24 80 05 00 	mov    0x580(%rsp),%rax
+  24068f:	00 
+  240690:	48 89 84 24 b8 00 00 	mov    %rax,0xb8(%rsp)
+  240697:	00 
+  240698:	48 8b 84 24 b8 05 00 	mov    0x5b8(%rsp),%rax
+  24069f:	00 
+  2406a0:	48 89 44 24 60       	mov    %rax,0x60(%rsp)
+  2406a5:	48 8b 84 24 c0 05 00 	mov    0x5c0(%rsp),%rax
+  2406ac:	00 
+  2406ad:	48 89 44 24 68       	mov    %rax,0x68(%rsp)
+  2406b2:	48 8b 84 24 c8 05 00 	mov    0x5c8(%rsp),%rax
+  2406b9:	00 
+  2406ba:	48 89 44 24 70       	mov    %rax,0x70(%rsp)
+  2406bf:	48 8b 84 24 88 05 00 	mov    0x588(%rsp),%rax
+  2406c6:	00 
+  2406c7:	48 89 84 24 c0 00 00 	mov    %rax,0xc0(%rsp)
+  2406ce:	00 
+  2406cf:	48 8b 84 24 90 05 00 	mov    0x590(%rsp),%rax
+  2406d6:	00 
+  2406d7:	48 89 84 24 c8 00 00 	mov    %rax,0xc8(%rsp)
+  2406de:	00 
+  2406df:	48 8b 84 24 98 05 00 	mov    0x598(%rsp),%rax
+  2406e6:	00 
+  2406e7:	48 89 84 24 d0 00 00 	mov    %rax,0xd0(%rsp)
+  2406ee:	00 
+  2406ef:	48 8d bc 24 d8 00 00 	lea    0xd8(%rsp),%rdi
+  2406f6:	00 
+  2406f7:	48 8d b4 24 30 03 00 	lea    0x330(%rsp),%rsi
+  2406fe:	00 
+  2406ff:	ba 40 02 00 00       	mov    $0x240,%edx
+  240704:	48 8b 05 c5 b9 18 00 	mov    0x18b9c5(%rip),%rax        # 3cc0d0 <_DYNAMIC+0x9b8>
+  24070b:	ff d0                	call   *%rax
+  24070d:	48 8b bc 24 88 00 00 	mov    0x88(%rsp),%rdi
+  240714:	00 
+  240715:	48 8b 84 24 a0 05 00 	mov    0x5a0(%rsp),%rax
+  24071c:	00 
+  24071d:	48 89 84 24 18 03 00 	mov    %rax,0x318(%rsp)
+  240724:	00 
+  240725:	48 8b 84 24 a8 05 00 	mov    0x5a8(%rsp),%rax
+  24072c:	00 
+  24072d:	48 89 84 24 20 03 00 	mov    %rax,0x320(%rsp)
+  240734:	00 
+  240735:	48 8b 84 24 b0 05 00 	mov    0x5b0(%rsp),%rax
+  24073c:	00 
+  24073d:	48 89 84 24 28 03 00 	mov    %rax,0x328(%rsp)
+  240744:	00 
+  240745:	e8 36 87 ff ff       	call   238e80 <kernel::process::manager::ProcessManager::allocate_ordinary_pid>
+  24074a:	48 89 44 24 78       	mov    %rax,0x78(%rsp)
+  24074f:	48 c7 84 24 c8 08 00 	movq   $0x3,0x8c8(%rsp)
+  240756:	00 03 00 00 00 
+  24075b:	48 8d 35 d6 55 e3 ff 	lea    -0x1caa2a(%rip),%rsi        # 75d38 <kernel::_::__BOOTLOADER_CONFIG+0x1a0>
+  240762:	48 8b 05 ff b6 18 00 	mov    0x18b6ff(%rip),%rax        # 3cbe68 <_DYNAMIC+0x750>
+  240769:	48 8d bc 24 c8 08 00 	lea    0x8c8(%rsp),%rdi
+  240770:	00 
+  240771:	ff d0                	call   *%rax
+  240773:	a8 01                	test   $0x1,%al
+  240775:	0f 85 3f 02 00 00    	jne    2409ba <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x6fa>
+  24077b:	48 8b 7c 24 78       	mov    0x78(%rsp),%rdi
+  240780:	48 8b 05 b9 ba 18 00 	mov    0x18bab9(%rip),%rax        # 3cc240 <_DYNAMIC+0xb28>
+  240787:	ff d0                	call   *%rax
+  240789:	48 89 84 24 28 0a 00 	mov    %rax,0xa28(%rsp)
+  240790:	00 
+  240791:	48 8d 84 24 a8 00 00 	lea    0xa8(%rsp),%rax
+  240798:	00 
+  240799:	48 89 84 24 18 0a 00 	mov    %rax,0xa18(%rsp)
+  2407a0:	00 
+  2407a1:	48 8d 84 24 28 0a 00 	lea    0xa28(%rsp),%rax
+  2407a8:	00 
+  2407a9:	48 89 84 24 20 0a 00 	mov    %rax,0xa20(%rsp)
+  2407b0:	00 
+  2407b1:	48 8b b4 24 18 0a 00 	mov    0xa18(%rsp),%rsi
+  2407b8:	00 
+  2407b9:	48 8b 05 f0 ba 18 00 	mov    0x18baf0(%rip),%rax        # 3cc2b0 <_DYNAMIC+0xb98>
+  2407c0:	48 8d bc 24 50 0a 00 	lea    0xa50(%rsp),%rdi
+  2407c7:	00 
+  2407c8:	ff d0                	call   *%rax
+  2407ca:	48 8b b4 24 20 0a 00 	mov    0xa20(%rsp),%rsi
+  2407d1:	00 
+  2407d2:	48 8b 05 7f b8 18 00 	mov    0x18b87f(%rip),%rax        # 3cc058 <_DYNAMIC+0x940>
+  2407d9:	48 8d bc 24 60 0a 00 	lea    0xa60(%rsp),%rdi
+  2407e0:	00 
+  2407e1:	ff d0                	call   *%rax
+  2407e3:	48 8b 84 24 50 0a 00 	mov    0xa50(%rsp),%rax
+  2407ea:	00 
+  2407eb:	48 89 84 24 30 0a 00 	mov    %rax,0xa30(%rsp)
+  2407f2:	00 
+  2407f3:	48 8b 84 24 58 0a 00 	mov    0xa58(%rsp),%rax
+  2407fa:	00 
+  2407fb:	48 89 84 24 38 0a 00 	mov    %rax,0xa38(%rsp)
+  240802:	00 
+  240803:	48 8b 84 24 60 0a 00 	mov    0xa60(%rsp),%rax
+  24080a:	00 
+  24080b:	48 89 84 24 40 0a 00 	mov    %rax,0xa40(%rsp)
+  240812:	00 
+  240813:	48 8b 84 24 68 0a 00 	mov    0xa68(%rsp),%rax
+  24081a:	00 
+  24081b:	48 89 84 24 48 0a 00 	mov    %rax,0xa48(%rsp)
+  240822:	00 
+  240823:	48 8d 35 fe 01 17 00 	lea    0x1701fe(%rip),%rsi        # 3b0a28 <kernel::tracing::providers::teardown::COUNTERS+0x5d00>
+  24082a:	48 8b 05 b7 fd 18 00 	mov    0x18fdb7(%rip),%rax        # 3d05e8 <_DYNAMIC+0x4ed0>
+  240831:	48 8d bc 24 e8 09 00 	lea    0x9e8(%rsp),%rdi
+  240838:	00 
+  240839:	48 8d 94 24 30 0a 00 	lea    0xa30(%rsp),%rdx
+  240840:	00 
+  240841:	ff d0                	call   *%rax
+  240843:	48 8d bc 24 d0 09 00 	lea    0x9d0(%rsp),%rdi
+  24084a:	00 
+  24084b:	48 8d b4 24 e8 09 00 	lea    0x9e8(%rsp),%rsi
+  240852:	00 
+  240853:	e8 58 4c fe ff       	call   2254b0 <alloc::fmt::format>
+  240858:	48 8b 84 24 d0 09 00 	mov    0x9d0(%rsp),%rax
+  24085f:	00 
+  240860:	48 89 84 24 b8 09 00 	mov    %rax,0x9b8(%rsp)
+  240867:	00 
+  240868:	48 8b 84 24 d8 09 00 	mov    0x9d8(%rsp),%rax
+  24086f:	00 
+  240870:	48 89 84 24 c0 09 00 	mov    %rax,0x9c0(%rsp)
+  240877:	00 
+  240878:	48 8b 84 24 e0 09 00 	mov    0x9e0(%rsp),%rax
+  24087f:	00 
+  240880:	48 89 84 24 c8 09 00 	mov    %rax,0x9c8(%rsp)
+  240887:	00 
+  240888:	48 8d 15 b9 01 17 00 	lea    0x1701b9(%rip),%rdx        # 3b0a48 <kernel::tracing::providers::teardown::COUNTERS+0x5d20>
+  24088f:	48 8b 05 9a fd 18 00 	mov    0x18fd9a(%rip),%rax        # 3d0630 <_DYNAMIC+0x4f18>
+  240896:	48 8d bc 24 38 0f 00 	lea    0xf38(%rsp),%rdi
+  24089d:	00 
+  24089e:	48 8d b4 24 b8 09 00 	lea    0x9b8(%rsp),%rsi
+  2408a5:	00 
+  2408a6:	ff d0                	call   *%rax
+  2408a8:	48 8b 74 24 78       	mov    0x78(%rsp),%rsi
+  2408ad:	48 8b 4c 24 60       	mov    0x60(%rsp),%rcx
+  2408b2:	48 8b 05 9f 12 19 00 	mov    0x19129f(%rip),%rax        # 3d1b58 <_DYNAMIC+0x6440>
+  2408b9:	48 8d bc 24 70 0a 00 	lea    0xa70(%rsp),%rdi
+  2408c0:	00 
+  2408c1:	48 8d 94 24 38 0f 00 	lea    0xf38(%rsp),%rdx
+  2408c8:	00 
+  2408c9:	ff d0                	call   *%rax
+  2408cb:	48 8b 4c 24 68       	mov    0x68(%rsp),%rcx
+  2408d0:	48 8b 44 24 70       	mov    0x70(%rsp),%rax
+  2408d5:	48 8b 94 24 a0 00 00 	mov    0xa0(%rsp),%rdx
+  2408dc:	00 
+  2408dd:	48 89 94 24 58 0f 00 	mov    %rdx,0xf58(%rsp)
+  2408e4:	00 
+  2408e5:	48 c7 84 24 50 0f 00 	movq   $0x1,0xf50(%rsp)
+  2408ec:	00 01 00 00 00 
+  2408f1:	48 8b b4 24 50 0f 00 	mov    0xf50(%rsp),%rsi
+  2408f8:	00 
+  2408f9:	48 8b 94 24 58 0f 00 	mov    0xf58(%rsp),%rdx
+  240900:	00 
+  240901:	48 89 b4 24 70 0a 00 	mov    %rsi,0xa70(%rsp)
+  240908:	00 
+  240909:	48 89 94 24 78 0a 00 	mov    %rdx,0xa78(%rsp)
+  240910:	00 
+  240911:	48 89 8c 24 78 0e 00 	mov    %rcx,0xe78(%rsp)
+  240918:	00 
+  240919:	48 89 84 24 80 0e 00 	mov    %rax,0xe80(%rsp)
+  240920:	00 
+  240921:	48 8d 15 38 01 17 00 	lea    0x170138(%rip),%rdx        # 3b0a60 <kernel::tracing::providers::teardown::COUNTERS+0x5d38>
+  240928:	48 8b 05 01 fd 18 00 	mov    0x18fd01(%rip),%rax        # 3d0630 <_DYNAMIC+0x4f18>
+  24092f:	48 8d bc 24 60 0f 00 	lea    0xf60(%rsp),%rdi
+  240936:	00 
+  240937:	48 8d b4 24 c0 00 00 	lea    0xc0(%rsp),%rsi
+  24093e:	00 
+  24093f:	ff d0                	call   *%rax
+  240941:	48 8d bc 24 70 0a 00 	lea    0xa70(%rsp),%rdi
+  240948:	00 
+  240949:	48 81 c7 50 03 00 00 	add    $0x350,%rdi
+  240950:	48 8b 05 51 ba 18 00 	mov    0x18ba51(%rip),%rax        # 3cc3a8 <_DYNAMIC+0xc90>
+  240957:	ff d0                	call   *%rax
+  240959:	48 8b 84 24 60 0f 00 	mov    0xf60(%rsp),%rax
+  240960:	00 
+  240961:	48 89 84 24 c0 0d 00 	mov    %rax,0xdc0(%rsp)
+  240968:	00 
+  240969:	48 8b 84 24 68 0f 00 	mov    0xf68(%rsp),%rax
+  240970:	00 
+  240971:	48 89 84 24 c8 0d 00 	mov    %rax,0xdc8(%rsp)
+  240978:	00 
+  240979:	48 8b 84 24 70 0f 00 	mov    0xf70(%rsp),%rax
+  240980:	00 
+  240981:	48 89 84 24 d0 0d 00 	mov    %rax,0xdd0(%rsp)
+  240988:	00 
+  240989:	48 c7 84 24 78 0f 00 	movq   $0x1,0xf78(%rsp)
+  240990:	00 01 00 00 00 
+  240995:	48 8d 35 9c 53 e3 ff 	lea    -0x1cac64(%rip),%rsi        # 75d38 <kernel::_::__BOOTLOADER_CONFIG+0x1a0>
+  24099c:	48 8b 05 c5 b4 18 00 	mov    0x18b4c5(%rip),%rax        # 3cbe68 <_DYNAMIC+0x750>
+  2409a3:	48 8d bc 24 78 0f 00 	lea    0xf78(%rsp),%rdi
+  2409aa:	00 
+  2409ab:	ff d0                	call   *%rax
+  2409ad:	a8 01                	test   $0x1,%al
+  2409af:	0f 85 70 02 00 00    	jne    240c25 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x965>
+  2409b5:	e9 e6 01 00 00       	jmp    240ba0 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x8e0>
+  2409ba:	c6 84 24 e7 0f 00 00 	movb   $0x0,0xfe7(%rsp)
+  2409c1:	00 
+  2409c2:	8a 84 24 e7 0f 00 00 	mov    0xfe7(%rsp),%al
+  2409c9:	0f b6 f0             	movzbl %al,%esi
+  2409cc:	48 8b 3d 9d b4 18 00 	mov    0x18b49d(%rip),%rdi        # 3cbe70 <_DYNAMIC+0x758>
+  2409d3:	e8 f8 2a 04 00       	call   2834d0 <core::sync::atomic::AtomicUsize::load>
+  2409d8:	48 89 84 24 d0 08 00 	mov    %rax,0x8d0(%rsp)
+  2409df:	00 
+  2409e0:	48 8b 05 81 b4 18 00 	mov    0x18b481(%rip),%rax        # 3cbe68 <_DYNAMIC+0x750>
+  2409e7:	48 8d bc 24 c8 08 00 	lea    0x8c8(%rsp),%rdi
+  2409ee:	00 
+  2409ef:	48 8d b4 24 d0 08 00 	lea    0x8d0(%rsp),%rsi
+  2409f6:	00 
+  2409f7:	ff d0                	call   *%rax
+  2409f9:	a8 01                	test   $0x1,%al
+  2409fb:	75 05                	jne    240a02 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x742>
+  2409fd:	e9 79 fd ff ff       	jmp    24077b <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x4bb>
+  240a02:	48 8b bc 24 a0 00 00 	mov    0xa0(%rsp),%rdi
+  240a09:	00 
+  240a0a:	48 8b 05 2f b8 18 00 	mov    0x18b82f(%rip),%rax        # 3cc240 <_DYNAMIC+0xb28>
+  240a11:	48 89 04 24          	mov    %rax,(%rsp)
+  240a15:	ff d0                	call   *%rax
+  240a17:	48 8b 7c 24 78       	mov    0x78(%rsp),%rdi
+  240a1c:	48 89 c1             	mov    %rax,%rcx
+  240a1f:	48 8b 04 24          	mov    (%rsp),%rax
+  240a23:	48 89 8c 24 20 09 00 	mov    %rcx,0x920(%rsp)
+  240a2a:	00 
+  240a2b:	ff d0                	call   *%rax
+  240a2d:	48 89 84 24 28 09 00 	mov    %rax,0x928(%rsp)
+  240a34:	00 
+  240a35:	48 8d 84 24 20 09 00 	lea    0x920(%rsp),%rax
+  240a3c:	00 
+  240a3d:	48 89 84 24 08 09 00 	mov    %rax,0x908(%rsp)
+  240a44:	00 
+  240a45:	48 8d 84 24 a8 00 00 	lea    0xa8(%rsp),%rax
+  240a4c:	00 
+  240a4d:	48 89 84 24 10 09 00 	mov    %rax,0x910(%rsp)
+  240a54:	00 
+  240a55:	48 8d 84 24 28 09 00 	lea    0x928(%rsp),%rax
+  240a5c:	00 
+  240a5d:	48 89 84 24 18 09 00 	mov    %rax,0x918(%rsp)
+  240a64:	00 
+  240a65:	48 8b b4 24 08 09 00 	mov    0x908(%rsp),%rsi
+  240a6c:	00 
+  240a6d:	48 8b 05 e4 b5 18 00 	mov    0x18b5e4(%rip),%rax        # 3cc058 <_DYNAMIC+0x940>
+  240a74:	48 89 44 24 08       	mov    %rax,0x8(%rsp)
+  240a79:	48 8d bc 24 60 09 00 	lea    0x960(%rsp),%rdi
+  240a80:	00 
+  240a81:	ff d0                	call   *%rax
+  240a83:	48 8b b4 24 10 09 00 	mov    0x910(%rsp),%rsi
+  240a8a:	00 
+  240a8b:	48 8b 05 1e b8 18 00 	mov    0x18b81e(%rip),%rax        # 3cc2b0 <_DYNAMIC+0xb98>
+  240a92:	48 8d bc 24 70 09 00 	lea    0x970(%rsp),%rdi
+  240a99:	00 
+  240a9a:	ff d0                	call   *%rax
+  240a9c:	48 8b 44 24 08       	mov    0x8(%rsp),%rax
+  240aa1:	48 8b b4 24 18 09 00 	mov    0x918(%rsp),%rsi
+  240aa8:	00 
+  240aa9:	48 8d bc 24 80 09 00 	lea    0x980(%rsp),%rdi
+  240ab0:	00 
+  240ab1:	ff d0                	call   *%rax
+  240ab3:	48 8b 84 24 60 09 00 	mov    0x960(%rsp),%rax
+  240aba:	00 
+  240abb:	48 8b 8c 24 68 09 00 	mov    0x968(%rsp),%rcx
+  240ac2:	00 
+  240ac3:	48 89 8c 24 38 09 00 	mov    %rcx,0x938(%rsp)
+  240aca:	00 
+  240acb:	48 89 84 24 30 09 00 	mov    %rax,0x930(%rsp)
+  240ad2:	00 
+  240ad3:	48 8b 84 24 70 09 00 	mov    0x970(%rsp),%rax
+  240ada:	00 
+  240adb:	48 8b 8c 24 78 09 00 	mov    0x978(%rsp),%rcx
+  240ae2:	00 
+  240ae3:	48 89 8c 24 48 09 00 	mov    %rcx,0x948(%rsp)
+  240aea:	00 
+  240aeb:	48 89 84 24 40 09 00 	mov    %rax,0x940(%rsp)
+  240af2:	00 
+  240af3:	48 8b 84 24 80 09 00 	mov    0x980(%rsp),%rax
+  240afa:	00 
+  240afb:	48 8b 8c 24 88 09 00 	mov    0x988(%rsp),%rcx
+  240b02:	00 
+  240b03:	48 89 8c 24 58 09 00 	mov    %rcx,0x958(%rsp)
+  240b0a:	00 
+  240b0b:	48 89 84 24 50 09 00 	mov    %rax,0x950(%rsp)
+  240b12:	00 
+  240b13:	48 8d 35 c6 fe 16 00 	lea    0x16fec6(%rip),%rsi        # 3b09e0 <kernel::tracing::providers::teardown::COUNTERS+0x5cb8>
+  240b1a:	48 8b 05 8f 1c 19 00 	mov    0x191c8f(%rip),%rax        # 3d27b0 <_DYNAMIC+0x7098>
+  240b21:	48 8d bc 24 d8 08 00 	lea    0x8d8(%rsp),%rdi
+  240b28:	00 
+  240b29:	48 8d 94 24 30 09 00 	lea    0x930(%rsp),%rdx
+  240b30:	00 
+  240b31:	ff d0                	call   *%rax
+  240b33:	48 8d 3d d6 fe 16 00 	lea    0x16fed6(%rip),%rdi        # 3b0a10 <kernel::tracing::providers::teardown::COUNTERS+0x5ce8>
+  240b3a:	48 8b 05 3f b3 18 00 	mov    0x18b33f(%rip),%rax        # 3cbe80 <_DYNAMIC+0x768>
+  240b41:	ff d0                	call   *%rax
+  240b43:	48 8d 0d 3f fb e4 ff 	lea    -0x1b04c1(%rip),%rcx        # 90689 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x10b9>
+  240b4a:	48 89 8c 24 90 09 00 	mov    %rcx,0x990(%rsp)
+  240b51:	00 
+  240b52:	48 c7 84 24 98 09 00 	movq   $0x18,0x998(%rsp)
+  240b59:	00 18 00 00 00 
+  240b5e:	48 89 8c 24 a0 09 00 	mov    %rcx,0x9a0(%rsp)
+  240b65:	00 
+  240b66:	48 c7 84 24 a8 09 00 	movq   $0x18,0x9a8(%rsp)
+  240b6d:	00 18 00 00 00 
+  240b72:	48 89 84 24 b0 09 00 	mov    %rax,0x9b0(%rsp)
+  240b79:	00 
+  240b7a:	48 8b b4 24 c8 08 00 	mov    0x8c8(%rsp),%rsi
+  240b81:	00 
+  240b82:	48 8b 05 ff b2 18 00 	mov    0x18b2ff(%rip),%rax        # 3cbe88 <_DYNAMIC+0x770>
+  240b89:	48 8d bc 24 d8 08 00 	lea    0x8d8(%rsp),%rdi
+  240b90:	00 
+  240b91:	48 8d 94 24 90 09 00 	lea    0x990(%rsp),%rdx
+  240b98:	00 
+  240b99:	ff d0                	call   *%rax
+  240b9b:	e9 db fb ff ff       	jmp    24077b <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x4bb>
+  240ba0:	48 8b 84 24 90 00 00 	mov    0x90(%rsp),%rax
+  240ba7:	00 
+  240ba8:	48 8d 0d 84 03 e5 ff 	lea    -0x1afc7c(%rip),%rcx        # 90f33 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x1963>
+  240baf:	48 89 08             	mov    %rcx,(%rax)
+  240bb2:	48 c7 40 08 2d 00 00 	movq   $0x2d,0x8(%rax)
+  240bb9:	00 
+  240bba:	48 8b 05 af 01 19 00 	mov    0x1901af(%rip),%rax        # 3d0d70 <_DYNAMIC+0x5658>
+  240bc1:	48 8d bc 24 70 0a 00 	lea    0xa70(%rsp),%rdi
+  240bc8:	00 
+  240bc9:	ff d0                	call   *%rax
+  240bcb:	48 8b 05 d6 b7 18 00 	mov    0x18b7d6(%rip),%rax        # 3cc3a8 <_DYNAMIC+0xc90>
+  240bd2:	48 8d bc 24 b8 09 00 	lea    0x9b8(%rsp),%rdi
+  240bd9:	00 
+  240bda:	ff d0                	call   *%rax
+  240bdc:	48 8b 05 a5 39 19 00 	mov    0x1939a5(%rip),%rax        # 3d4588 <_DYNAMIC+0x8e70>
+  240be3:	48 8d bc 24 18 03 00 	lea    0x318(%rsp),%rdi
+  240bea:	00 
+  240beb:	ff d0                	call   *%rax
+  240bed:	48 8b 05 34 2d 19 00 	mov    0x192d34(%rip),%rax        # 3d3928 <_DYNAMIC+0x8210>
+  240bf4:	48 8d bc 24 d8 00 00 	lea    0xd8(%rsp),%rdi
+  240bfb:	00 
+  240bfc:	ff d0                	call   *%rax
+  240bfe:	48 8b 05 a3 b7 18 00 	mov    0x18b7a3(%rip),%rax        # 3cc3a8 <_DYNAMIC+0xc90>
+  240c05:	48 8d bc 24 c0 00 00 	lea    0xc0(%rsp),%rdi
+  240c0c:	00 
+  240c0d:	ff d0                	call   *%rax
+  240c0f:	48 8b 05 92 b7 18 00 	mov    0x18b792(%rip),%rax        # 3cc3a8 <_DYNAMIC+0xc90>
+  240c16:	48 8d bc 24 a8 00 00 	lea    0xa8(%rsp),%rdi
+  240c1d:	00 
+  240c1e:	ff d0                	call   *%rax
+  240c20:	e9 cd 00 00 00       	jmp    240cf2 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0xa32>
+  240c25:	c6 84 24 e6 0f 00 00 	movb   $0x0,0xfe6(%rsp)
+  240c2c:	00 
+  240c2d:	8a 84 24 e6 0f 00 00 	mov    0xfe6(%rsp),%al
+  240c34:	0f b6 f0             	movzbl %al,%esi
+  240c37:	48 8b 3d 32 b2 18 00 	mov    0x18b232(%rip),%rdi        # 3cbe70 <_DYNAMIC+0x758>
+  240c3e:	e8 8d 28 04 00       	call   2834d0 <core::sync::atomic::AtomicUsize::load>
+  240c43:	48 89 84 24 80 0f 00 	mov    %rax,0xf80(%rsp)
+  240c4a:	00 
+  240c4b:	48 8b 05 16 b2 18 00 	mov    0x18b216(%rip),%rax        # 3cbe68 <_DYNAMIC+0x750>
+  240c52:	48 8d bc 24 78 0f 00 	lea    0xf78(%rsp),%rdi
+  240c59:	00 
+  240c5a:	48 8d b4 24 80 0f 00 	lea    0xf80(%rsp),%rsi
+  240c61:	00 
+  240c62:	ff d0                	call   *%rax
+  240c64:	a8 01                	test   $0x1,%al
+  240c66:	75 05                	jne    240c6d <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x9ad>
+  240c68:	e9 33 ff ff ff       	jmp    240ba0 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x8e0>
+  240c6d:	48 8d 35 04 fe 16 00 	lea    0x16fe04(%rip),%rsi        # 3b0a78 <kernel::tracing::providers::teardown::COUNTERS+0x5d50>
+  240c74:	48 8b 05 fd b1 18 00 	mov    0x18b1fd(%rip),%rax        # 3cbe78 <_DYNAMIC+0x760>
+  240c7b:	48 8d bc 24 88 0f 00 	lea    0xf88(%rsp),%rdi
+  240c82:	00 
+  240c83:	ff d0                	call   *%rax
+  240c85:	48 8d 3d fc fd 16 00 	lea    0x16fdfc(%rip),%rdi        # 3b0a88 <kernel::tracing::providers::teardown::COUNTERS+0x5d60>
+  240c8c:	48 8b 05 ed b1 18 00 	mov    0x18b1ed(%rip),%rax        # 3cbe80 <_DYNAMIC+0x768>
+  240c93:	ff d0                	call   *%rax
+  240c95:	48 8d 0d ed f9 e4 ff 	lea    -0x1b0613(%rip),%rcx        # 90689 <kernel::signal::trampoline::SIGNAL_TRAMPOLINE+0x10b9>
+  240c9c:	48 89 8c 24 b8 0f 00 	mov    %rcx,0xfb8(%rsp)
+  240ca3:	00 
+  240ca4:	48 c7 84 24 c0 0f 00 	movq   $0x18,0xfc0(%rsp)
+  240cab:	00 18 00 00 00 
+  240cb0:	48 89 8c 24 c8 0f 00 	mov    %rcx,0xfc8(%rsp)
+  240cb7:	00 
+  240cb8:	48 c7 84 24 d0 0f 00 	movq   $0x18,0xfd0(%rsp)
+  240cbf:	00 18 00 00 00 
+  240cc4:	48 89 84 24 d8 0f 00 	mov    %rax,0xfd8(%rsp)
+  240ccb:	00 
+  240ccc:	48 8b b4 24 78 0f 00 	mov    0xf78(%rsp),%rsi
+  240cd3:	00 
+  240cd4:	48 8b 05 ad b1 18 00 	mov    0x18b1ad(%rip),%rax        # 3cbe88 <_DYNAMIC+0x770>
+  240cdb:	48 8d bc 24 88 0f 00 	lea    0xf88(%rsp),%rdi
+  240ce2:	00 
+  240ce3:	48 8d 94 24 b8 0f 00 	lea    0xfb8(%rsp),%rdx
+  240cea:	00 
+  240ceb:	ff d0                	call   *%rax
+  240ced:	e9 ae fe ff ff       	jmp    240ba0 <kernel::process::manager::ProcessManager::fork_process_with_page_table+0x8e0>
+  240cf2:	48 8b 05 cf df 18 00 	mov    0x18dfcf(%rip),%rax        # 3cecc8 <_DYNAMIC+0x35b0>
+  240cf9:	48 8d bc 24 f8 0f 00 	lea    0xff8(%rsp),%rdi
+  240d00:	00 
+  240d01:	ff d0                	call   *%rax
+  240d03:	48 8b 84 24 98 00 00 	mov    0x98(%rsp),%rax
+  240d0a:	00 
+  240d0b:	48 81 c4 e8 0f 00 00 	add    $0xfe8,%rsp
+  240d12:	c3                   	ret

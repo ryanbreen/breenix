@@ -1,0 +1,26 @@
+REVISION=19427ef42612d14bb4cc4474a7dd460cdc850a03 + new ratchet
+== compiling x86_boot_tests_profile_structure ==
+== running x86_boot_tests_profile_structure  ==
+
+running 3 tests
+test supplied_page_table_fork_is_profile_independent ... FAILED
+test mutation_missing_completion_is_rejected ... ok
+test mutation_testing_only_cow_is_rejected ... ok
+
+failures:
+
+---- supplied_page_table_fork_is_profile_independent stdout ----
+
+thread 'supplied_page_table_fork_is_profile_independent' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/x927a/structure-927a/tests/x86_boot_tests_profile_structure.rs:29:5:
+assertion `left == right` failed
+  left: Err("supplied-page-table fork must not depend on a feature")
+ right: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    supplied_page_table_fork_is_profile_independent
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT=101

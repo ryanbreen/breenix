@@ -1,0 +1,5 @@
+REVISION=800b2ba159beb211655324b709c239c2dbbf7615
+userspace setup exit=0
+boot-only exit=0
+full exit=0
+oracle exit=1

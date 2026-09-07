@@ -2184,13 +2184,11 @@ impl ProcessManager {
     pub fn fork_process_with_page_table(
         &mut self,
         parent_pid: ProcessId,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] userspace_rsp: Option<u64>,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] return_rip: Option<u64>,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))]
+        userspace_rsp: Option<u64>,
+        return_rip: Option<u64>,
         mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let (
             parent_name,
             parent_entry_point,
@@ -2256,7 +2254,8 @@ impl ProcessManager {
         child_process.cwd = parent_cwd.clone();
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
-        #[cfg(feature = "testing")]
+        // This is independent of the loader profile. The boot_tests-only
+        // retirement cohorts supply their own parent and child page tables.
         {
             // Get mutable access to parent's page table for CoW setup
             let parent = self
@@ -2270,14 +2269,15 @@ impl ProcessManager {
 
             // Set up Copy-on-Write sharing between parent and child.
             // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
-            let pages_shared = super::fork::setup_cow_pages_with_vmas(
+            let cow_result = super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
                 &parent_vmas,
-            )?;
+            );
 
-            // Put parent's page table back
+            // Restore the live parent before propagating a CoW setup error.
             parent.page_table = Some(parent_page_table);
+            let pages_shared = cow_result?;
 
             log::info!(
                 "fork_process_with_page_table: Set up {} pages for CoW sharing",
@@ -2295,13 +2295,7 @@ impl ProcessManager {
             child_process.memory_usage.heap_size = parent_heap_size;
             child_process.memory_usage.stack_size = parent_stack_size;
         }
-        #[cfg(not(feature = "testing"))]
-        {
-            log::error!("fork_process: Cannot fork - testing feature not enabled");
-            return Err("Cannot implement fork without testing feature");
-        }
 
-        #[cfg(feature = "testing")]
         {
             child_process.page_table = Some(child_page_table);
 
@@ -2948,7 +2942,7 @@ impl ProcessManager {
     pub fn fork_process_with_context(
         &mut self,
         parent_pid: ProcessId,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] userspace_rsp: Option<u64>,
+        userspace_rsp: Option<u64>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process
         let parent = self
@@ -2956,9 +2950,8 @@ impl ProcessManager {
             .live_row(&parent_pid)
             .ok_or("Parent process not found")?;
 
-        // Get parent's main thread (used in testing builds for context cloning)
+        // Get parent's main thread for context cloning
         // Clone to avoid borrow issues when we need mutable access to parent later
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_thread = parent
             .main_thread
             .as_ref()
@@ -2992,19 +2985,12 @@ impl ProcessManager {
         child_process.cwd = parent_cwd;
 
         // Extract parent heap/mmap bounds and memory usage before we drop the parent borrow
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_heap_start = parent.heap_start;
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_heap_end = parent.heap_end;
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_mmap_hint = parent.mmap_hint;
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_vmas = parent.vmas.clone();
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_code_size = parent.memory_usage.code_size;
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_heap_size = parent.memory_usage.heap_size;
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_stack_size = parent.memory_usage.stack_size;
 
         // Verify parent has a page table
@@ -3016,13 +3002,11 @@ impl ProcessManager {
         log::debug!("fork_process: About to create child page table");
         let child_page_table_result = crate::memory::process_memory::ProcessPageTable::new();
         log::debug!("fork_process: ProcessPageTable::new() returned");
-        #[cfg_attr(not(feature = "testing"), allow(unused_mut, unused_variables))]
         let mut child_page_table =
             Box::new(child_page_table_result.map_err(|_| "Failed to create child page table")?);
         log::debug!("fork_process: Child page table created successfully");
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
-        #[cfg(feature = "testing")]
         {
             // Get mutable access to parent's page table for CoW setup
             let parent_mut = self
@@ -3046,14 +3030,15 @@ impl ProcessManager {
 
             // Set up Copy-on-Write sharing between parent and child.
             // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
-            let pages_shared = super::fork::setup_cow_pages_with_vmas(
+            let cow_result = super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
                 &parent_vmas,
-            )?;
+            );
 
-            // Put parent's page table back
+            // Restore the live parent before propagating a CoW setup error.
             parent_mut.page_table = Some(parent_page_table);
+            let pages_shared = cow_result?;
 
             log::info!(
                 "fork_process_with_context: Set up {} pages for CoW sharing",
@@ -3071,13 +3056,7 @@ impl ProcessManager {
             child_process.memory_usage.heap_size = parent_heap_size;
             child_process.memory_usage.stack_size = parent_stack_size;
         }
-        #[cfg(not(feature = "testing"))]
-        {
-            log::error!("fork_process: Cannot fork - testing feature not enabled");
-            return Err("Cannot implement fork without testing feature");
-        }
 
-        #[cfg(feature = "testing")]
         {
             child_process.page_table = Some(child_page_table);
 
@@ -3087,7 +3066,6 @@ impl ProcessManager {
             );
         }
 
-        #[cfg(feature = "testing")]
         {
             // CoW fork: The child's stack pages are already shared via setup_cow_pages().
             // We use the parent's stack virtual addresses directly.
@@ -3222,7 +3200,7 @@ impl ProcessManager {
 
             // Return the child PID to the parent
             Ok(child_pid)
-        } // End of #[cfg(feature = "testing")] block
+        }
     }
 
     /// Replace a process's address space with a new program (exec)

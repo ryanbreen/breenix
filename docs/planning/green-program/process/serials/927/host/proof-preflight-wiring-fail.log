@@ -1,0 +1,5 @@
+REVISION=d2a593cd403075f1e635b50d0537c91653d373f5
+COMMAND=bash docker/qemu/run-x86-boot-tests-only.sh
+REVISION=d2a593cd403075f1e635b50d0537c91653d373f5
+Artifacts: /root/breenix-927a-tmp/breenix_x86_boot_tests_only.vsC425
+x86 boot_tests-only gate: FAIL (exit 1); artifacts: /root/breenix-927a-tmp/breenix_x86_boot_tests_only.vsC425
