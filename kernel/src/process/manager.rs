@@ -778,11 +778,7 @@ impl ProcessManager {
         // create_main_thread's hardcoded stack_top-16 (precheck C3 — x86 had no
         // SP-carrying thread creator before this).
         let thread =
-            self.create_main_thread_with_sp(
-                &mut *process,
-                stack_top,
-                VirtAddr::new(initial_rsp),
-            )?;
+            self.create_main_thread_with_sp(&mut *process, stack_top, VirtAddr::new(initial_rsp))?;
         process.set_main_thread(thread);
 
         log::info!(

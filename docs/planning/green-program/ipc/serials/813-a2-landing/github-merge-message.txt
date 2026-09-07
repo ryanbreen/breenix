@@ -1,0 +1,6 @@
+Merge pull request 939 from ryanbreen/ipc/813-a2-pipe-followups
+
+Land IPC A2 aggregate writev and FIFO EOF followups.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>
