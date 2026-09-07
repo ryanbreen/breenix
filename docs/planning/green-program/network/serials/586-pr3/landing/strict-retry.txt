@@ -1,0 +1,7 @@
+8674c930792709f3b5e09e4a29f8fd24decedcbb
+BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS=900
+19:16  up 15 days,  8:20, 25 users, load averages: 3.22 6.11 14.91
+[GATE_PREFLIGHT:structure_suites=65/66:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 66 structure suite(s) red: gate_capture_drain_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3l/wt/.gate-tmp/breenix_gate_structure_preflight.WHSySr)
+GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
+EXIT=1
