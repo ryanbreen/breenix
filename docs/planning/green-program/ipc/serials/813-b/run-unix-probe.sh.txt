@@ -1,0 +1,38 @@
+#!/bin/bash
+set -Eeuo pipefail
+export TMPDIR="$PWD/.tmp" BREENIX_GATE_TMP="$PWD/.gate-tmp"
+source docker/qemu/lib/qemu-host-lock.sh
+OUT="${BREENIX_UNIX_PROBE_OUT:-$PWD/docs/planning/green-program/ipc/serials/813-b/probe}"
+mkdir -p "$OUT"
+git rev-parse HEAD > "$OUT/revision.txt"
+git diff > "$OUT/candidate.patch"
+cp target/ext2-aarch64.img "$OUT/ext2.img"
+cp userspace/programs/aarch64/unix_stream_blocking_oracle.elf "$OUT/worker.elf"
+cp userspace/programs/aarch64/unix_stream_blocking_supervisor.elf "$OUT/supervisor.elf"
+(cd "$OUT"
+cat > install.commands <<'CMD'
+rm /sbin/init
+write supervisor.elf /sbin/init
+set_inode_field /sbin/init mode 0100755
+rm /bin/unix_stream_blocking_oracle
+write worker.elf /bin/unix_stream_blocking_oracle
+set_inode_field /bin/unix_stream_blocking_oracle mode 0100755
+dump /sbin/init installed-supervisor.elf
+dump /bin/unix_stream_blocking_oracle installed-worker.elf
+CMD
+/opt/homebrew/opt/e2fsprogs/sbin/debugfs -w -f install.commands ext2.img > install.txt 2>&1
+cmp worker.elf installed-worker.elf
+cmp supervisor.elf installed-supervisor.elf)
+qemu_host_lock_acquire qemu-system-aarch64
+qemu-system-aarch64 -M virt,gic-version=3 -cpu max -m 512 -smp 4 -kernel target/aarch64-breenix-kernel/release/kernel-aarch64 -display none -no-reboot -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$OUT/ext2.img" -serial "file:$OUT/serial.txt" -serial "file:$OUT/kernel.txt" > "$OUT/qemu.txt" 2>&1 &
+pid=$!
+qemu_host_lock_track_pid "$pid"
+for ((i=0;i<120;i++)); do
+  if rg -q 'UNIX_WRITE_RESULT|KERNEL PANIC|DATA_ABORT' "$OUT/serial.txt" "$OUT/kernel.txt" 2>/dev/null; then break; fi
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 1
+done
+kill "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+qemu_host_lock_release
+rg 'UNIX_WRITE|UNIX_CHILD' "$OUT/serial.txt" || true

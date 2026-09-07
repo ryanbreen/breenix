@@ -1,0 +1,10 @@
+START immediate_eagain
+END immediate_eagain rejected
+START delete_drain
+END delete_drain rejected
+RESTORED
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.tmp/unix-mutations.py", line 36, in <module>
+    assert original[path].count(old)==1,(name,original[path].count(old))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ('delete_read_wake', 2)

@@ -1,0 +1,7 @@
+{
+  "name": "stream_atomicity",
+  "arm": "partial",
+  "path": "kernel/src/socket/unix.rs",
+  "before": "let count = data.len().min(UNIX_SOCKET_BUFFER_SIZE - self.buffer.len());",
+  "after": "if data.len() > UNIX_SOCKET_BUFFER_SIZE - self.buffer.len() { return 0; }\n        let count = data.len().min(UNIX_SOCKET_BUFFER_SIZE - self.buffer.len());"
+}

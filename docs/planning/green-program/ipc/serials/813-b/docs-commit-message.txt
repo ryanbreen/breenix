@@ -1,0 +1,8 @@
+docs: record PR B audit and revision-scoped gate results
+
+Retain the Unix arm serials, individual mutation evidence, source census,
+and ARM/x86 gate transcripts. Document the close-delivery repair, imported
+927 prerequisite, known 559 toolchain notice, and intermittent fixture 957.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

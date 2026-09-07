@@ -1,0 +1,24 @@
+.tmp/pr-b-code-commit.txt:
+Defer Unix close notifications outside process-manager cleanup
+
+Retain owned socket pairs until the existing thread-context reclamation
+boundary can deliver reader and writer notifications. Avoid the ISR wake
+buffer in Unix legacy cleanup, strengthen mode/drain/readiness ratchets,
+and identify each userspace oracle arm before it runs. Issue 936 still
+tracks the inherited pipe/FIFO and ISR-buffer concerns.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>
+
+.tmp/pr-b-927-commit.txt:
+Bring merged x86 oracle prerequisites into PR B
+
+Backport the two x86-only fork helper repairs from ba5a3377 and the
+capture-drain fixture synchronization from 62988b29, both landed in PR 944.
+Issue 927 closed during the PR B gate sequence. Keep the Unix arm counts
+in the shared saved-boot scorer while retaining its GDT-versus-fault checks
+and the existing x86 cohort startup bound. Include fork, scorer, and
+fixture ratchets with these changes.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

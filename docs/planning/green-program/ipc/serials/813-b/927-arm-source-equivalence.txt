@@ -1,0 +1,5 @@
+Base revision: 69c039a06ef31cdc60790b77211a0dff303c57d3
+Pending prerequisite delta: kernel/src/process/manager.rs only.
+Both changed functions retain cfg(target_arch = "x86_64").
+Outside those two function spans, manager source is byte-identical.
+No ARM binary-identity claim; ARM boot results retain their original revision.

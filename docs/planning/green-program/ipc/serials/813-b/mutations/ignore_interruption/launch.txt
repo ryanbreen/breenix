@@ -1,0 +1,5 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+[UNIX_WRITE_START:aarch64:signal]
+[UNIX_WRITE_ORACLE:aarch64:signal:verdict=FAIL:read offset=0:EAGAIN]
+[UNIX_WRITE_RESULT:aarch64:status=1]

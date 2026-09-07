@@ -1,0 +1,6 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+[UNIX_WRITE_START:aarch64:poll]
+F123456789SCUNIX_CHILD_FAIL:POLLOUT predicate
+[UNIX_WRITE_ORACLE:aarch64:poll:verdict=FAIL:unexpected EOF]
+[UNIX_WRITE_RESULT:aarch64:status=1]

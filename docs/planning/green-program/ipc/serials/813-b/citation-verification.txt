@@ -1,0 +1,3 @@
+HEAD=40e2925f32800702e3dfd42d31d0fe63760cf65c
+File-qualified extracted citations matched: 301/301
+Files read from Git HEAD: 25
