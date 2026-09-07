@@ -7,16 +7,24 @@ Branch `tools/parallels-capture-fix`, off `origin/main` at `68f73db5`. Issue
 
 `./run.sh --parallels --test N`'s screenshot step was scoring the capture
 mechanism, not the kernel: `scripts/parallels/screenshot-vm.sh`'s window
-lookup failed in 7 of the 7 lifecycle runs in
+lookup failed in 6 of the 6 lifecycle runs that got far enough to attempt a
+screenshot, in
 `docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/`
-(`ERROR: No Parallels window found matching <vm>` in each run's
+(`ERROR: No Parallels window found matching <vm>` in each of those runs'
 `stdout.log` — see e.g.
-`docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/run3-test120-1/stdout.log:508`),
+`docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/run3-test120-1/stdout.log:508`;
+the seventh non-aborted run, `run1-launcher-smoke`, failed earlier on
+`FAIL: USB_MOUSE_ENUM` and never reached the screenshot step, so it has no
+`screenshot.png` and 0 occurrences of that error string, correction:
+review C-1/C-2, 2026-09-07),
 and `run.sh`'s fallback (a bare `prlctl capture ... 2>/dev/null`) then
 reported `Screenshot: /tmp/breenix-screenshot.png` regardless of what it
-actually captured — five of those seven screenshots are 3674-byte
-solid-black PNGs (claim-lint:ok: 5/7, counted directly from the seven
-`screenshot.png` files under that evidence directory).
+actually captured — one of those six screenshots (`run3-test120-1`) is a
+3674-byte solid-black PNG; a second (`run3-test120-4`) is a solid but
+non-black cornflower-blue frame, and a third (`run3-test120-3`) is 98.3%
+black but not solid (145 distinct colors) (claim-lint:ok: 1/6, counted
+directly with PIL's pixel/color data over the six `screenshot.png` files
+under that evidence directory).
 
 ## Diagnosis
 

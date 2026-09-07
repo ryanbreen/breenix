@@ -485,7 +485,8 @@ if [ "$PARALLELS" = true ]; then
         # (#917: the old fallback matched window titles that Parallels does
         # not set -- 0/12 non-empty in
         # docs/planning/green-program/gui/evidence/windowlist-no-vm.txt --
-        # failed in 7/7 historical runs, then reported "Screenshot: ..."
+        # failed in 6/6 historical runs that reached this step, then
+        # reported "Screenshot: ..."
         # success regardless of whether the fallback captured a black or
         # blank frame).
         CAPTURE_SCRIPT="$BREENIX_ROOT/scripts/parallels/capture-display.sh"

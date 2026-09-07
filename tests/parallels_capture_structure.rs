@@ -14,8 +14,8 @@
 //!    Parallels-owned windows, 0/12 with a non-empty `kCGWindowName`), showed
 //!    Parallels sets no per-VM window title when the VM is started via
 //!    `prlctl start` with no GUI open (this harness's normal mode) -- the
-//!    match cannot succeed by construction, matching the 7/7 identical
-//!    failures in
+//!    match cannot succeed by construction, matching the 6/6 identical
+//!    failures (of the runs that reached this step) in
 //!    docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/.
 //! 2. `run.sh`'s test-mode screenshot step then fell back to a bare
 //!    `prlctl capture "$PARALLELS_VM" --file "$SCREENSHOT" 2>/dev/null`

@@ -23,7 +23,8 @@
 # (docs/planning/green-program/gui/evidence/windowlist-no-vm.txt: 12/12
 # Parallels-owned windows, 0/12 with a non-empty `kCGWindowName`), showed
 # Parallels does not set a per-VM window title -- so a title-substring match
-# cannot succeed by construction, matching the 7/7 identical failures in
+# cannot succeed by construction, matching the 6/6 identical failures (of
+# the runs that reached this step) in
 # docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/.
 # This version drops title matching and instead requires a window owned by
 # the actual `prl_vm_app --vm-name <VM>` process backing this VM (the one
