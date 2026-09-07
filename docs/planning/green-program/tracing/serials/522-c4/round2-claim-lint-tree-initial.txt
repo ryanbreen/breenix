@@ -1,0 +1,7 @@
+docs/planning/green-program/tracing/522-C4-2026-09-07.md:13: [universal-claim] - `workers_ready` previously fed the sum of three workers' counters to one shared last-advance clock. Each worker bumps its own progress counter exactly once, then spins until the union reaches 3; two siblings' one-time bumps — not susta...
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+docs/planning/green-program/tracing/522-C4-2026-09-07.md:462: [universal-claim] Fix: reworded the `workers_ready` bullet in "The reading and the decision" to say the shared last-advance clock advanced "on the sum of all three counters rather than on the specific incomplete target's own progress", and that two siblin...
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 2 finding(s) across 58 file(s) [changed hunks vs 6432656236ca]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 302 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).

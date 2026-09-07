@@ -1,0 +1,49 @@
+docs(522,c4,review-r2): close W-8, W-11, W-12 prose findings and W-15 stale comment
+
+Second fix pass over the same #522 C4 review round (REVIEW.md), closing
+four findings the first pass (8b4a619d) left open.
+
+W-8 (info): re-read the archived pre-fixture-sleep strict red
+(strict-before-sleep-boot1-serial.txt). Its command verdict names the
+failure as the unrelated scheduler strand injection oracle (leg B never
+fired), not the C4 mechanism. Inside that same red boot, all five
+isolation-fixture scenario lines are present and correctly attributed
+(before_union_worker_1 cause=absolute_ceiling target=none, then
+after_worker_1/2/3 cause=no_progress target=worker_1/2/3, then
+after_healthy cause=success), and the isolation test itself PASSes. No
+code change; adds the corroborating detail to the round doc's existing
+"Fixture coexistence repair" diagnosis.
+
+W-11 (info): independently re-diffed run-aarch64-boot-test-strict.sh
+against origin/main; the timeout 20 -> 90s and
+BREENIX_STRICT_POLL_ITERATIONS:-12 -> :-60 changes match the round doc's
+citations exactly. No contradiction found; no code change.
+
+W-12 (minor): the round doc's line 13 described the pre-fix
+workers_ready bug as siblings "keep[ing] that union advancing", which
+reads as continuous. The pre-fix closures each bump their own counter
+exactly once before entering a readiness spin with no further
+increments, so at most each sibling contributes one staggered bump, not
+sustained advancement. Reworded the doc's own line 13 to say the shared
+clock advanced on the sum of the three counters rather than the specific
+frozen target's own progress, and that it was one-time bumps, not
+sustained progress, that could renew it.
+
+W-15 (nit): run-aarch64-boot-test-strict.sh carried two comments (lines
+1001 and 1140) still reading "12 iterations" after 1648b840 raised the
+operative BREENIX_STRICT_POLL_ITERATIONS default to 60. The review cited
+only line 1001; grepping the file for the same stale string surfaced the
+second instance at line 1140, which the review itself missed. Fixed both
+to read 60 iterations. Comment-only change, no operative line touched.
+
+bash scripts/run-structure-tests.sh: 94/94 (teardown_structure). Full
+structure preflight: 61/61 suites, unchanged from the first fix pass,
+as expected since this pass touches no kernel source or test assertion.
+No separate strict boot for this pass alone; this landing's single
+post-merge strict boot is the boot evidence this branch ships with.
+
+Scope: W-8, W-11, W-12, and W-15 only. W-13 and W-16 from the same
+review round remain open, as recorded in the first fix pass's own "Not
+claimed" section. No merge to main.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
