@@ -535,3 +535,51 @@ Final claim-lint invocations after those corrections:
 Tree output: claim-lint: clean (6 file(s) checked, changed hunks vs 87702857c979).
 The tool separately reports 177 pre-existing findings outside changed hunks;
 this run does not certify the whole-file backlog.
+
+## Landing
+
+`git fetch origin` then `git merge origin/main` from branch tip `30bfaa08`
+(after the P-10a/P-11 prose-fix commit `f4a9ceb2`) produced merge commit
+`5db824c2` on top of `origin/main`'s `45daec35` (PR #907, x86 provider-gate
+tracing docs). Git reported no conflicts (`Merge made by the 'ort'
+strategy.`); `git status --short` was empty afterward.
+
+`bash scripts/run-structure-tests.sh` (no stem argument, so its documented
+default `teardown_structure`) at `5db824c2`: exit 0, 92 passed, 0 failed,
+`finished in 15.41s`, `real 16.44` (`/tmp/890-proof/landing-structure-tests.log`).
+
+`cargo build --release --features boot_tests --target aarch64-breenix-kernel.json
+-Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel
+--bin kernel-aarch64` at `5db824c2`: exit 0, no warnings from this repository's
+own crates; the only warning line is the pre-existing toolchain
+future-incompat notice for `core` already disclosed above
+(`/tmp/890-proof/landing-aarch64-build.log`).
+
+One `bash docker/qemu/run-aarch64-boot-test-strict.sh 1` at `5db824c2`, run
+under `bash -x` with `PS4='+PS4TS $(date "+%s.%N") '` solely to timestamp the
+production `gate_structure_preflight` call/return pair inside this real
+invocation (not a separate standalone re-derivation): exit 0, `PASS: 1/1
+boots succeeded`, `[OK] Boot 1: SUCCESS`
+(`/tmp/890-proof/landing-strict-boot-xtrace.log`). GATE_PREFLIGHT line, unset
+`BREENIX_STRUCTURE_JOBS` (default parallel path, this Mac's `nproc`-derived
+worker count capped at 8, per the "Behavioral fixture mutation proof"
+section above):
+
+```text
+[GATE_PREFLIGHT:structure_suites=54/54:critical_path_lines=260:pinned=120]
+```
+
+54/54 (up from the 53/53 measured earlier in this note) because the merged
+`origin/main` PR #907 added `tests/tracing_provider_gate_structure.rs`. The
+preflight's own wall-clock, from the xtrace timestamp on the
+`gate_structure_preflight` function's entry line (`1788748162.756631000`) to
+its `return 0` line (`1788748225.180168000`): **62.42s**
+(`/tmp/890-proof/landing-strict-boot-xtrace.log`).
+
+Claim-lint on the tree and on this Landing commit's own message, at HEAD
+after this section was written:
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/890-proof/commit-message-landing.txt -> exit 0
+```
