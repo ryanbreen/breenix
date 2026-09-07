@@ -14,6 +14,55 @@
 # Same clock primitive as gcd_now_ms, duplicated rather than sourced to
 # avoid a load-order dependency on the sibling drain library. This clock
 # is best-effort reporting only; no termination decision trusts its value.
+# Q-1/PR-6 fix pass: docs/planning/green-program/failure-capture/PR-6-2026-09-07.md
+# section 5 hit this exact wall producing its own evidence and worked around
+# it with a manual, unshipped /tmp symlink. The QMP unix-socket BIND path is
+# bounded by struct sockaddr_un's sun_path -- 104 bytes on macOS/BSD, 108 on
+# Linux, NUL-terminated -- a separate, much tighter ceiling than
+# an ordinary filesystem path. The gate's own output/profile directories are
+# correctly lane-scoped under the (long) worktree-scoped BREENIX_GATE_TMP
+# this repo's own convention mandates, but a socket path built by appending
+# "qmp.sock" under one of those directories routinely exceeds that ceiling
+# on that exact convention: qemu-system-aarch64 then refuses to start
+# ("Path must be less than 104 bytes", exit 1), not the graceful
+# qmp_socket_missing degradation gqb_dump_and_report reports for an
+# evidence-only miss -- empty serial output, no per-boot artifact naming the
+# real cause. The listener therefore lives in its own short-named directory
+# directly under the real /tmp, bypassing $TMPDIR/$BREENIX_GATE_TMP;
+# only the ephemeral bind socket needs this -- the durable dump/decode
+# artifacts gqb_dump_and_report writes still land wherever the caller's own
+# (long, lane-scoped) output directory already puts them.
+GQB_SOCK_LIMIT_BYTES=100
+
+gqb_alloc_socket() {
+    local dir path
+    dir="$(mktemp -d /tmp/bxqmp.XXXXXX)" || {
+        echo "gqb_alloc_socket: mktemp failed" >&2
+        return 1
+    }
+    chmod 700 "$dir"
+    path="$dir/q.sock"
+    # Defensive, not expected to trip: the mktemp template above is fixed
+    # width, so this only fires if that template is ever widened later.
+    if [ "${#path}" -gt "$GQB_SOCK_LIMIT_BYTES" ]; then
+        echo "gqb_alloc_socket: generated path exceeds ${GQB_SOCK_LIMIT_BYTES} bytes: $path" >&2
+        rm -rf -- "$dir"
+        return 1
+    fi
+    printf '%s' "$path"
+}
+
+gqb_free_socket() {
+    # $1: a path previously returned by gqb_alloc_socket. The case below
+    # restricts removal to directory strings matching /tmp/bxqmp.*.
+    local sock="$1" dir
+    [ -n "$sock" ] || return 0
+    dir="$(dirname -- "$sock")"
+    case "$dir" in
+        /tmp/bxqmp.*) rm -rf -- "$dir" ;;
+    esac
+}
+
 gqb_now_ms() {
     python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || echo 0
 }

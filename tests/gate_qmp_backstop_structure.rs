@@ -497,3 +497,177 @@ assert missing_kernel.returncode != 0 and '--kernel is required' in missing_kern
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// Q-1/PR-6 fix pass: docs/planning/green-program/failure-capture/PR-6-2026-09-07.md
+// section 5 hit AF_UNIX's sun_path ceiling under this repo's own mandated
+// worktree convention (BREENIX_GATE_TMP=<worktree>/.gate-tmp) and worked
+// around it with a manual, unshipped /tmp symlink. These checks cover the
+// structural fix: gqb_alloc_socket/gqb_free_socket exist and are used by
+// both converted gates instead of building QMP_SOCK under their own (long,
+// worktree-scoped) output directory, and the resulting socket path really
+// does bind where the old pattern really does fail.
+
+/// A directory path at least `min_len` bytes long, built from repeated
+/// fixed-width components so its exact length is deterministic and
+/// independent of this checkout's own location on disk (so the repro below
+/// cannot pass by accident just because the sandbox happens to have a short
+/// path).
+fn long_dir_path(base: &Path, min_len: usize) -> PathBuf {
+    let mut dir = base.to_path_buf();
+    while dir.as_os_str().len() < min_len {
+        dir.push("worktree-scoped-lane-directory-component");
+    }
+    dir
+}
+
+#[test]
+fn neither_converted_gate_builds_qmp_sock_under_its_own_output_dir() {
+    for (name, body) in converted_gates() {
+        assert!(
+            body.contains("gqb_alloc_socket"),
+            "{name} must obtain QMP_SOCK from gqb_alloc_socket"
+        );
+        for needle in ["QMP_SOCK=\"$OUTPUT_DIR", "QMP_SOCK=\"$profile_dir"] {
+            assert!(
+                !body.contains(needle),
+                "{name} still builds QMP_SOCK under its own (long, lane-scoped) output directory: {needle}"
+            );
+        }
+    }
+}
+
+#[test]
+fn gqb_alloc_socket_pairs_with_a_reachable_free_call_in_every_converted_gate() {
+    for (name, body) in converted_gates() {
+        assert!(
+            body.contains("gqb_free_socket"),
+            "{name} calls gqb_alloc_socket but never frees the socket directory"
+        );
+    }
+}
+
+#[test]
+fn gqb_alloc_socket_returns_a_path_a_real_af_unix_bind_accepts() {
+    let output = Command::new("timeout")
+        .args([
+            "--kill-after=1",
+            "10",
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            "source \"$1\"; gqb_alloc_socket",
+            "test",
+        ])
+        .arg(repo_path("docker/qemu/lib/gate-qmp-backstop.sh"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "gqb_alloc_socket failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let path = String::from_utf8(output.stdout).unwrap().trim().to_string();
+    assert!(!path.is_empty(), "gqb_alloc_socket printed nothing");
+    assert!(
+        path.len() <= 100,
+        "allocated socket path is {} bytes, over the AF_UNIX sun_path budget: {path}",
+        path.len()
+    );
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap_or_else(|e| {
+        panic!("real AF_UNIX bind failed at {path} ({} bytes): {e}", path.len())
+    });
+    drop(listener);
+    let dir = Path::new(&path).parent().unwrap();
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_socket_path_under_a_worktree_scoped_output_dir_is_the_reproduced_defect() {
+    // Portable, deterministic repro of the exact failure Q-1 reported: an
+    // ordinary $OUTPUT_DIR/qmp.sock-shaped path, once BREENIX_GATE_TMP is a
+    // worktree-scoped directory (this repo's own mandated lane convention),
+    // routinely exceeds AF_UNIX's sun_path limit and a real bind() at that
+    // path fails.
+    let base = std::env::temp_dir().join(format!(
+        "gqb-longpath-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let long_dir = long_dir_path(&base, 110);
+    fs::create_dir_all(&long_dir).unwrap();
+    let sock = long_dir.join("qmp.sock");
+    assert!(
+        sock.as_os_str().len() > 104,
+        "constructed repro path is not actually over the limit: {} bytes",
+        sock.as_os_str().len()
+    );
+    let result = std::os::unix::net::UnixListener::bind(&sock);
+    let _ = fs::remove_dir_all(&base);
+    assert!(
+        result.is_err(),
+        "expected the reproduced $OUTPUT_DIR/qmp.sock-shaped path to overflow \
+         AF_UNIX's sun_path limit and fail to bind, but it succeeded"
+    );
+}
+
+#[test]
+fn gqb_free_socket_removes_only_its_own_namespace_directory() {
+    let output = Command::new("timeout")
+        .args([
+            "--kill-after=1",
+            "10",
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            "source \"$1\"; sock=\"$(gqb_alloc_socket)\"; dir=\"$(dirname \"$sock\")\"; [ -d \"$dir\" ]; gqb_free_socket \"$sock\"; [ ! -e \"$dir\" ]; echo ok",
+            "test",
+        ])
+        .arg(repo_path("docker/qemu/lib/gate-qmp-backstop.sh"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "alloc/free round-trip failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "ok");
+}
+
+#[test]
+fn gqb_free_socket_refuses_to_remove_paths_outside_its_namespace() {
+    let victim = std::env::temp_dir().join(format!("gqb-victim-{}", std::process::id()));
+    fs::create_dir_all(&victim).unwrap();
+    let sentinel = victim.join("do-not-delete-me");
+    fs::write(&sentinel, b"x").unwrap();
+    let fake_sock = victim.join("qmp.sock");
+    let output = Command::new("timeout")
+        .args([
+            "--kill-after=1",
+            "10",
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            "source \"$1\"; gqb_free_socket \"$2\"",
+            "test",
+        ])
+        .arg(repo_path("docker/qemu/lib/gate-qmp-backstop.sh"))
+        .arg(&fake_sock)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "gqb_free_socket exited nonzero on an out-of-namespace path: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        sentinel.exists(),
+        "gqb_free_socket removed a directory it did not allocate"
+    );
+    let _ = fs::remove_dir_all(&victim);
+}

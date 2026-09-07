@@ -1113,8 +1113,6 @@ run_profile() {
     local census_sum
 
     mkdir -p "$profile_dir"
-    mkdir -p -m 700 "$profile_dir/qmp"
-    chmod 700 "$profile_dir/qmp"
     # One name per column the row printf below writes. The two lists are only
     # correct together: a row printf with more arguments than conversion
     # specifiers silently REUSES the format and appends a second, headerless row
@@ -1126,7 +1124,15 @@ run_profile() {
     echo "Profile $cpu_profile: running $BOOTS sequential boots"
 
     for boot in $(seq 1 "$BOOTS"); do
-        local QMP_SOCK="$profile_dir/qmp/boot-$boot.sock"
+        # Q-1/PR-6 fix pass: avoid $profile_dir/qmp/boot-N.sock -- OUTPUT_DIR
+        # (and so profile_dir) is worktree-scoped by this repo's own lane
+        # convention and routinely exceeds AF_UNIX's sun_path limit combined
+        # with this subpath. See gate-qmp-backstop.sh's own header.
+        local QMP_SOCK
+        QMP_SOCK="$(gqb_alloc_socket)" || {
+            echo "  [ERROR] Boot $boot: could not allocate a QMP socket" >&2
+            exit 1
+        }
         serial_file="$profile_dir/serial-$boot.txt"
         writable_disk="$profile_dir/ext2-writable-$boot.img"
         : > "$serial_file"
@@ -1219,6 +1225,7 @@ run_profile() {
         qemu_host_lock_release
         rm -f "$writable_disk"
         CURRENT_DISK=""
+        gqb_free_socket "$QMP_SOCK"
 
         if ! grep -qE "$FUTEX_HANDOFF_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
             ANY_GATE_FAILURE=1

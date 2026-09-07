@@ -837,7 +837,16 @@ run_single_test() {
     local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_strict_$iteration"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
-    local QMP_SOCK="$OUTPUT_DIR/qmp.sock"
+    # Q-1/PR-6 fix pass: avoid $OUTPUT_DIR/qmp.sock -- BREENIX_GATE_TMP is a
+    # worktree-scoped path by this repo's own lane convention, and that plus
+    # this directory name routinely exceeds AF_UNIX's sun_path limit. See
+    # gate-qmp-backstop.sh's own header on gqb_alloc_socket.
+    local QMP_SOCK
+    QMP_SOCK="$(gqb_alloc_socket)" || {
+        echo "  [ERROR] Boot $iteration: could not allocate a QMP socket"
+        return 1
+    }
+    trap 'gqb_free_socket "$QMP_SOCK"' RETURN
     chmod 700 "$OUTPUT_DIR"
 
     # Create writable copy of ext2 disk to allow filesystem write tests
