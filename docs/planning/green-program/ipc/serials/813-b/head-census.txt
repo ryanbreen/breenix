@@ -1,0 +1,44 @@
+Revision: f1d448b544cf3e8b63183e357e15668f8391c571
+Read-only close-delivery census; no boot or runtime mutation executed.
+kernel/src/syscall/blocking_io.rs:16: pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> Result<(), i32> {
+kernel/src/syscall/blocking_io.rs:64: pub(crate) fn write_pipe(
+kernel/src/socket/unix.rs:95: pub fn write(&self, data: &[u8]) -> Result<usize, i32> {
+kernel/src/socket/unix.rs:152: pub fn read(&self, buf: &mut [u8]) -> Result<usize, i32> {
+kernel/src/socket/unix.rs:230: pub fn close(&self) {
+kernel/src/syscall/handlers.rs:390: enum WriteOperation {
+kernel/src/syscall/handlers.rs:463: FdKind::UnixStream(socket) => WriteOperation::UnixStream {
+kernel/src/syscall/handlers.rs:515: WriteOperation::UnixStream { socket } => {
+kernel/src/syscall/handlers.rs:3846: /// - F_SETFL: Set file status flags
+kernel/src/syscall/handlers.rs:3985: F_SETFL => match process.fd_table.set_status_flags(fd, arg as u32) {
+kernel/src/syscall/handlers.rs:3987: log::debug!("sys_fcntl F_SETFL: fd={} flags={:#x}", fd, arg);
+kernel/src/ipc/poll.rs:267: FdKind::UnixStream(socket_ref) => {
+kernel/src/ipc/poll.rs:277: if !socket.peer_closed() {
+kernel/src/process/process.rs:464: pub fn terminate(&mut self, exit_code: i32) {
+kernel/src/process/process.rs:474: self.close_all_fds();
+kernel/src/process/process.rs:541: fn close_all_fds(&mut self) {
+kernel/src/process/process.rs:597: socket.lock().close();
+kernel/src/process/process.rs:623: fn close_all_fds(&mut self) {
+kernel/src/process/process.rs:679: socket.lock().close();
+kernel/src/task/waitqueue.rs:182: pub fn wake_up_deferred(&self) {
+kernel/src/task/waitqueue.rs:185: crate::task::scheduler::isr_unblock_for_io(waiter.tid());
+kernel/src/task/scheduler.rs:6398: match with_scheduler(|scheduler| scheduler.unblock(tid)) {
+kernel/src/task/scheduler.rs:6409: fn buffer_isr_wakeup(tid: u64) -> WakeOutcome {
+kernel/src/task/scheduler.rs:6426: IsrWakePush::Full => {
+kernel/src/task/scheduler.rs:6428: match with_scheduler(|scheduler| scheduler.unblock(tid)) {
+kernel/src/task/scheduler.rs:6452: pub fn isr_unblock_for_io(tid: u64) {
+kernel/src/ipc/fd.rs:576: pub fn close_cloexec(&mut self, closes: &mut DeferredFdCloses) {
+kernel/src/ipc/fd.rs:701: socket.lock().close();
+kernel/src/ipc/fd.rs:755: pub struct DeferredFdCloses {
+kernel/src/ipc/fd.rs:759: impl Drop for DeferredFdCloses {
+kernel/src/task/process_task.rs:733: socket.lock().close();
+kernel/src/interrupts/context_switch.rs:1400: process.terminate(-11); // SIGSEGV equivalent
+kernel/src/process/manager.rs:1947: process.terminate(exit_code);
+kernel/src/signal/delivery.rs:239: process.terminate(-(sig as i32));
+kernel/src/signal/delivery.rs:242: // The process.terminate() call above marks process.main_thread, but
+kernel/src/signal/delivery.rs:274: process.terminate(-((sig as i32) | 0x80));
+kernel/src/syscall/socket.rs:152: status_flags::O_NONBLOCK
+kernel/src/syscall/socket.rs:983: let nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+kernel/src/syscall/socket.rs:1428: let nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+kernel/src/syscall/socket.rs:1692: let (socket_client, socket_server) = UnixStreamSocket::new_pair(false);
+kernel/src/syscall/socket.rs:1904: let (socket_a, socket_b) = UnixStreamSocket::new_pair(nonblocking);
+kernel/src/syscall/socket.rs:1909: status_flags::O_NONBLOCK
