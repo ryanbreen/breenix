@@ -442,3 +442,86 @@ notice was the only warning. `bash docker/qemu/run-aarch64-boot-test-strict.sh
 
 Serial: `serials/823/10-fixpass-a64-strict-boot-serial.txt`, copied without
 text normalization; the existing `.gitattributes` entry covers it.
+
+## Landing (2026-09-06/07)
+
+`git fetch origin && git merge origin/main` merged `origin/main` at
+`45daec35` (the #907 tracing/x86-provider-gate merge) into this branch at
+`fbdf8aa5`, producing merge commit `e15a5112e060c36e4a988b82ebf3e101ccec860b`.
+One file conflicted: `.gitattributes`, at the tail of the file where this
+branch's own `#823` serial-preservation block and `origin/main`'s
+independently-added Input & USB + GUI aarch64 sweep block both appended new
+entries at the same location. Both blocks are additive `-text` glob lines
+with no overlapping path; resolved by keeping both, unmodified, with a
+blank line separating them. No file under `kernel/` conflicted, so the
+merge did not reach the STOP condition.
+
+**R182 fixture-re-record check.** `git diff 6346f2c5 45daec35 --
+docker/qemu/run-aarch64-boot-test-strict.sh
+docker/qemu/run-aarch64-prod-profile-boot-test.sh` reports 0 changes: the
+two aarch64 gate scripts whose fixtures this round's own suites replay
+(`tty_irq_pm_structure.rs`, `tty_irq_fg_structure.rs`,
+`loopback_pump_structure.rs`, `ttbr0_shadow_reconciliation_structure.rs`,
+all four still pointing `GREEN_SERIAL` at
+`tests/fixtures/udp-socket-lock-aarch64-serial.txt`) are byte-identical to
+this branch's own merge base, so `origin/main` brought no new marker
+requirement into either scorer. `origin/main` did change
+`docker/qemu/run-x86-boot-tests.sh` (+21 lines, a new
+`deferred_fault_ring_overflow_injection` marker check scored against a live
+`serial_user.txt` from that gate's own boot) and `tests/loopback_pump_structure.rs`
+(+365 lines, a static no-decrementing-writer census over
+`kernel/src/task/scheduler.rs` source text) and
+`tests/run_inspector_import_structure.rs` (a stricter per-script call-count
+check on the gate scripts' own text) — none of these three read or score
+`tests/fixtures/*.txt` GREEN_SERIAL captures, so none is a "scorer
+requirement into a gate whose fixtures are replayed" in R182's sense. No
+fixture was re-recorded; `tests/fixtures/udp-socket-lock-aarch64-serial.txt`
+is unchanged from the pre-merge commit.
+
+`bash scripts/run-structure-tests.sh` (default `teardown_structure`, whole
+file) exited 0: `test result: ok. 92 passed; 0 failed; 0 ignored; 0
+measured; 0 filtered out`.
+
+The aarch64 `boot_tests` release build at the merge commit
+(`cargo build --release --features boot_tests --target
+aarch64-breenix-kernel.json -Z build-std=core,alloc -Z
+build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`)
+exited 0 with the same single pre-existing upstream `core`
+future-incompatibility notice as every earlier build in this round, no
+other warnings or errors. `bash docker/qemu/run-aarch64-boot-test-strict.sh
+1` printed `[GATE_PREFLIGHT:structure_suites=54/54:critical_path_lines=260:pinned=120]`
+(the four-gate structure-suite preflight this round's own R182 check above
+reasoned about, now run for real as part of the gate) and `PASS: 1/1 boots
+succeeded`. Its serial contains:
+
+```
+[UDP_LOCK_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12014:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:PASS]
+```
+
+Serial: `serials/823/11-landing-a64-strict-boot-serial.txt`.
+
+On beast, the pre-existing clone at `/root/breenix-823` (from the
+implementation round, `rust-fork` symlinked to `/root/breenix/rust-fork-real`,
+`userspace/programs/*.elf` and `fonts/` already copied from `/root/breenix`)
+was fetched and reset to this branch's pushed merge commit
+(`e15a5112e060c36e4a988b82ebf3e101ccec860b`). `cargo build --release
+--features boot_tests,testing,external_test_bins --bin qemu-uefi` there
+exited 0 with 0 `^(warning|error)` lines. `bash
+docker/qemu/run-x86-boot-tests.sh 1` exited 0:
+
+```
+x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0
+x86 frame-custody gate run 1: PASS
+```
+
+with
+
+```
+[UDP_LOCK_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]
+```
+
+present once, the same SKIP shape as the implementation round's own x86 arm.
+Evidence: `serials/823/12-landing-x86-boot-tests-gate.txt` (this run's own
+stdout) and `serials/823/12b-landing-x86-boot-tests-serial-user.txt`
+(`serial_user.txt`, COM1, the same single-port convention `06b` uses for the
+implementation round's own x86 gate run).
