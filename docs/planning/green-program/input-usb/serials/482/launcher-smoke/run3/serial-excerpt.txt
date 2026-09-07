@@ -1,0 +1,142 @@
+[heartbeat] tid=12 uptime_ms=71359 kbd_nonzero=1
+[spawn] path='/bin/blauncher'
+manager.create_process_with_argv [ARM64]: ENTRY - name='blauncher', elf_size=460856, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 21
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001b3b4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 21
+[spawn] Created child PID 21 for parent PID 18
+[spawn] Success: child PID 21 scheduled
+[blauncher] starting
+[window] create_window_buffer: 532x540 (1149120 bytes, 281 pages)
+[window] Created buffer id=2 for pid=21: 532x540 at virt=0x7ffffdcb1000 phys=0x4444d000
+[blauncher] TTF display font loaded, size=14
+[bwm] Discovered window 'Launcher' (id=2, 532x540 chromeless) at (374,192)
+[bwm-fps] frames_since_last=433 elapsed_ms=1001 instantaneous_fps=432
+[heartbeat] tid=12 uptime_ms=72360 kbd_nonzero=3
+[bwm-fps] frames_since_last=429 elapsed_ms=1000 instantaneous_fps=429
+[heartbeat] tid=12 uptime_ms=73360 kbd_nonzero=3
+F123456789SC[syscall] exit(0) pid=21 name=blauncher
+[TTBR0_ASID_CENSUS:untagged=0:tagged=243775:kernel=119910:cleared=306605]
+[window] create_window_buffer: 750x550 (1650000 bytes, 403 pages)
+[window] Created buffer id=3 for pid=22: 750x550 at virt=0x7ffffdc39000 phys=0x44848000
+[bterm] config: mono_size=10 font_size=10
+[bterm] font_size=10 cell=6x13
+[pty] sys_posix_openpt(flags=0x102)
+[pty] Created master fd=3 (pty 0)
+[pty] Unlocked PTY 0 (fd 3)
+F123456789SC[bterm] spawned child pid=23
+[pty] sys_posix_openpt(flags=0x102)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+F123456789SC[bterm] spawned child pid=24
+[bwm] Discovered window 'Terminal' (id=3, 750x550) at (80,88)
+[bwm-fps] frames_since_last=361 elapsed_ms=1000 instantaneous_fps=361
+[heartbeat] tid=12 uptime_ms=74360 kbd_nonzero=4
+[bwm-fps] frames_since_last=147 elapsed_ms=1003 instantaneous_fps=146
+[heartbeat] tid=12 uptime_ms=75362 kbd_nonzero=4
+[bwm-fps] frames_since_last=145 elapsed_ms=1006 instantaneous_fps=144
+[heartbeat] tid=12 uptime_ms=76362 kbd_nonzero=4
+[bwm-fps] frames_since_last=139 elapsed_ms=1001 instantaneous_fps=138
+[heartbeat] tid=12 uptime_ms=77363 kbd_nonzero=4
+[bwm-fps] frames_since_last=143 elapsed_ms=1000 instantaneous_fps=143
+[heartbeat] tid=12 uptime_ms=78363 kbd_nonzero=4
+[bwm-fps] frames_since_last=167 elapsed_ms=1009 instantaneous_fps=165
+[heartbeat] tid=12 uptime_ms=79363 kbd_nonzero=4
+[bwm-fps] frames_since_last=142 elapsed_ms=1000 instantaneous_fps=142
+[heartbeat] tid=12 uptime_ms=80364 kbd_nonzero=4
+[PT_ROOT_CUSTODY:no_proof=13:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=265757:kernel=131144:cleared=334361]
+[net-rx-counters] sample=7 begin
+[net-rx-counters] sample=7 NET_RX_MSI_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=7 NET_RX_RING_DRAIN_TOTAL: 10 (cpu0=10)
+[net-rx-counters] sample=7 NET_RX_FRAME_TOTAL: 10 (cpu0=10)
+[net-rx-counters] sample=7 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=7 NET_RX_ETHERTYPE_OTHER_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=7 NET_RX_SOFTIRQ_ENTRY_TOTAL: 16 (cpu0=10, cpu1=2, cpu4=2, cpu5=1, cpu6=1)
+[net-rx-counters] sample=7 NET_RX_SOFTIRQ_EXIT_TOTAL: 16 (cpu0=10, cpu1=2, cpu4=2, cpu5=1, cpu6=1)
+[net-rx-counters] sample=7 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_GUARD_RELEASE_TOTAL: 17 (cpu0=11, cpu1=2, cpu4=2, cpu5=1, cpu6=1)
+[net-rx-counters] sample=7 NET_RX_REARM_CHECK_TOTAL: 17 (cpu0=11, cpu1=2, cpu4=2, cpu5=1, cpu6=1)
+[net-rx-counters] sample=7 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_REARM_ARMED_TOTAL: 17 (cpu0=11, cpu1=2, cpu4=2, cpu5=1, cpu6=1)
+[net-rx-counters] sample=7 NET_PCI_IRQ_RAISED_NETRX: 8 (cpu0=8)
+[net-rx-counters] sample=7 GIC_SPI55_ACK_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=7 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=7 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=7 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=7 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=7 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=7 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=7 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=7 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=7 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=7 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=7 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=7 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=7 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=7 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=7 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=7 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=7 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=7 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=7 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=7 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=7 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=7 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=7 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=7 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=7 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=7 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=7 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=7 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=7 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=7 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=7 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=7 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=7 NET_PCI_RX_QUEUE_PFN: 0x40874
+[net-rx-counters] sample=7 NET_PCI_TX_QUEUE_PFN: 0x40877
+[net-rx-counters] sample=7 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=7 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=7 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=7 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=7 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=7 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=7 NET_PCI_RX_AVAIL_IDX: 36
+[net-rx-counters] sample=7 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=7 NET_PCI_RX_USED_IDX: 10
+[net-rx-counters] sample=7 NET_PCI_RX_LAST_USED_IDX: 10
+[net-rx-counters] sample=7 NET_PCI_RX_POSTED_GAP: 26
+[net-rx-counters] sample=7 NET_PCI_RX_DESC0: addr=0x4089c000 len=1524 flags=0x2
+[net-rx-counters] sample=7 NET_PCI_RX_DESC1: addr=0x4089c600 len=1524 flags=0x2
+[net-rx-counters] sample=7 NET_PCI_RX_DESC2: addr=0x4089cc00 len=1524 flags=0x2
+[net-rx-counters] sample=7 NET_PCI_RX_DESC3: addr=0x4089d200 len=1524 flags=0x2
+[net-rx-counters] sample=7 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=7 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=7 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE_SEQ: 17
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE0: used_idx=10 last_used_idx=10 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE1: used_idx=7 last_used_idx=7 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE2: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE3: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=10 last_used_idx=9 avail_flags=0x1 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=10 last_used_idx=10 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 end
+[bwm-fps] frames_since_last=152 elapsed_ms=1000 instantaneous_fps=152
+[heartbeat] tid=12 uptime_ms=81382 kbd_nonzero=4
+[bwm-fps] frames_since_last=144 elapsed_ms=1002 instantaneous_fps=143

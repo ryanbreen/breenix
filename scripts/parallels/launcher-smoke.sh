@@ -551,6 +551,13 @@ HID_POLL_MARKER='[xhci] start_hid_polling:'
 HID_POLL_LINE="$(grep -aF -- "$HID_POLL_MARKER" "$SERIAL_LOG" 2>/dev/null | tail -1 || true)"
 echo "$HID_POLL_LINE" > "$EVIDENCE_DIR/hid-poll-line.txt"
 
+# #482 review fix pass (X-2): the summary records start_hid_polling's result.
+# Preserve the raw port-scan/EnableSlot/descriptor-fetch trail too, from
+# the same authoritative SERIAL_LOG. SERIAL_EXCERPT starts at the launcher
+# trigger and omits early boot. Write this alongside hid-poll-line.txt before
+# checking the HID summary, so that check's failure also retains the trail.
+grep -aE '^\[xhci\]' "$SERIAL_LOG" > "$EVIDENCE_DIR/xhci-enum-excerpt.txt" 2>/dev/null || true
+
 if [[ -z "$HID_POLL_LINE" ]]; then
     finish_fail "USB_MOUSE_ENUM: no '$HID_POLL_MARKER' line found in serial log (start_hid_polling never ran or was not reached)"
 fi
