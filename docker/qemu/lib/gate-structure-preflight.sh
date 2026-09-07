@@ -48,6 +48,11 @@
 # gates' runs; on the x86 host it adds several minutes on top of that
 # gate's own boot loop.
 #
+# #890 P-1: private mktemp log directories also become runner TMPDIR,
+# isolating binaries across invocations. Directories remain for inspection.
+# BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS: per-suite budget, default 300 seconds
+# (#890 P-2). Both jobs and timeout accept 1..999999 with the first digit in 1..9.
+#
 # BREENIX_STRUCTURE_JOBS: positive worker count; unset defaults to the host
 # CPU count (nproc, then sysctl hw.ncpu, then 1), capped at 8. Set to 1
 # to compile and run suites sequentially in sorted-stem order. Each worker
@@ -96,6 +101,15 @@
 # widened together by the PR-0 round that added this suite), so
 # critical_path_lines is counting against that same widened pattern set.
 
+# Lexical bound avoids arithmetic on oversized inputs (#890 P-12a).
+_gsp_valid_positive_int() {
+    local value="$1"
+    case "$value" in
+        ''|*[!0-9]*|0*) return 1 ;;
+    esac
+    [ "${#value}" -le 6 ]
+}
+
 gate_structure_preflight() {
     local repo_root="$1"
     local gate_tmp="${2:-/tmp}"
@@ -116,9 +130,13 @@ gate_structure_preflight() {
     fi
 
     local tests_dir="$repo_root/tests"
-    local log_dir="$gate_tmp/breenix_gate_structure_preflight"
-    rm -rf "$log_dir" 2>/dev/null || true
-    mkdir -p "$log_dir" 2>/dev/null || true
+    # #890 P-1: private logs and runner binaries for concurrent invocations.
+    mkdir -p "$gate_tmp" 2>/dev/null || true
+    local log_dir
+    log_dir="$(mktemp -d "$gate_tmp/breenix_gate_structure_preflight.XXXXXX" 2>/dev/null)" || {
+        echo "GATE_PREFLIGHT: FAIL (could not create a private preflight directory under $gate_tmp)" >&2
+        return 1
+    }
 
     # BSD and GNU xargs both support -P; /bin/bash on macOS is still 3.2.
     # Pass paths through the environment instead of interpolating shell code.
@@ -127,21 +145,26 @@ gate_structure_preflight() {
         jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
         [ "$jobs" -le 8 ] || jobs=8
     fi
-    case "$jobs" in
-        ''|*[!0-9]*|0*)
-            echo "GATE_PREFLIGHT: invalid BREENIX_STRUCTURE_JOBS (expected a positive integer): $jobs" >&2
-            return 1
-            ;;
-    esac
+    if ! _gsp_valid_positive_int "$jobs"; then
+        echo "GATE_PREFLIGHT: invalid BREENIX_STRUCTURE_JOBS (expected a positive integer no greater than 999999): $jobs" >&2
+        return 1
+    fi
+
+    # #890 P-2: bound compilation and execution of each suite.
+    local suite_timeout="${BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS:-300}"
+    if ! _gsp_valid_positive_int "$suite_timeout"; then
+        echo "GATE_PREFLIGHT: invalid BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS (expected a positive integer number of seconds, no greater than 999999): $suite_timeout" >&2
+        return 1
+    fi
 
     local stems_file="$log_dir/stems"
     (cd "$tests_dir" 2>/dev/null && find . -maxdepth 1 -type f -name '*_structure.rs' -print 2>/dev/null | sed 's|^\./||; s/\.rs$//' | sort) >"$stems_file" || true
     if [ -s "$stems_file" ]; then
         (
-            export GSP_RUNNER="$runner" GSP_LOG_DIR="$log_dir"
+            export GSP_RUNNER="$runner" GSP_LOG_DIR="$log_dir" GSP_TIMEOUT="$suite_timeout" TMPDIR="$log_dir"
             tr '\n' '\0' <"$stems_file" | xargs -0 -n 1 -P "$jobs" /bin/bash -c '
                 stem="$1"
-                if bash "$GSP_RUNNER" "$stem" >"$GSP_LOG_DIR/$stem.log" 2>&1; then
+                if timeout "$GSP_TIMEOUT" bash "$GSP_RUNNER" "$stem" >"$GSP_LOG_DIR/$stem.log" 2>&1; then
                     echo 0 >"$GSP_LOG_DIR/$stem.status"
                 else
                     echo 1 >"$GSP_LOG_DIR/$stem.status"

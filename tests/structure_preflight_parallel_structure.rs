@@ -1,12 +1,14 @@
 //! Behavioral pin for #890: real rustc fixtures, bounded dispatch, and a
 //! green -> red -> green mutation under both default and sequential jobs.
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, RefCell<PathBuf>);
 
 impl Fixture {
     fn new() -> Self {
@@ -27,7 +29,7 @@ impl Fixture {
             root.join("scripts/run-structure-tests.sh"),
         )
         .unwrap();
-        Self(root)
+        Self(root, RefCell::new(PathBuf::new()))
     }
 
     fn suite(&self, name: &str, fail: bool) {
@@ -63,22 +65,24 @@ fn {name}_fixture() {{
         .unwrap();
     }
 
-    fn run(&self, jobs: Option<&str>, overlap: bool) -> Output {
+    fn command(&self, jobs: Option<&str>, overlap: bool, gate_tmp: &Path) -> Command {
         fs::write(self.0.join("events"), "").unwrap();
         let mut command = Command::new("/bin/bash");
         command
             .arg("-c")
-            .arg("set -euo pipefail; source \"$1\"; gate_structure_preflight \"$2\" \"$2/gate\"")
+            .arg("set -euo pipefail; source \"$1\"; gate_structure_preflight \"$2\" \"$3\"")
             .arg("fixture")
             .arg(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("docker/qemu/lib/gate-structure-preflight.sh"),
             )
             .arg(&self.0)
+            .arg(gate_tmp)
             .env("TMPDIR", self.0.join("tmp"))
             .env("FIXTURE_ROOT", &self.0)
             .env_remove("BREENIX_GATE_SKIP_STRUCTURE")
             .env_remove("BREENIX_STRUCTURE_JOBS")
+            .env_remove("BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS")
             .env_remove("FIXTURE_OVERLAP");
         if let Some(jobs) = jobs {
             command.env("BREENIX_STRUCTURE_JOBS", jobs);
@@ -86,14 +90,22 @@ fn {name}_fixture() {{
         if overlap {
             command.env("FIXTURE_OVERLAP", "1");
         }
-        command.output().unwrap()
+        command
+    }
+
+    fn run(&self, jobs: Option<&str>, overlap: bool) -> Output {
+        let gate = self.0.join("gate");
+        fs::create_dir_all(&gate).unwrap();
+        let before = entries(&gate);
+        let output = self.command(jobs, overlap, &gate).output().unwrap();
+        let added: Vec<_> = entries(&gate).difference(&before).cloned().collect();
+        assert_eq!(added.len(), 1, "one private directory per invocation");
+        *self.1.borrow_mut() = added[0].clone();
+        output
     }
 
     fn log(&self, name: &str) -> String {
-        fs::read_to_string(self.0.join(format!(
-            "gate/breenix_gate_structure_preflight/{name}_structure.log"
-        )))
-        .unwrap()
+        fs::read_to_string(self.1.borrow().join(format!("{name}_structure.log"))).unwrap()
     }
 }
 
@@ -143,7 +155,7 @@ fn mutation_is_green_red_green_with_default_and_one_job() {
                 );
             }
             if fail {
-                assert_eq!(stderr, format!("GATE_PREFLIGHT: FAIL (1 of 3 structure suite(s) red: bravo_structure -- per-suite logs under {}/gate/breenix_gate_structure_preflight)\n", fixture.0.display()));
+                assert_eq!(stderr, format!("GATE_PREFLIGHT: FAIL (1 of 3 structure suite(s) red: bravo_structure -- per-suite logs under {})\n", fixture.1.borrow().display()));
             } else {
                 assert!(stderr.is_empty(), "{stderr}");
             }
@@ -186,4 +198,116 @@ fn two_jobs_overlap_and_never_exceed_the_bound() {
     }
     assert_eq!(active, 0);
     assert_eq!(peak, 2);
+}
+
+fn entries(path: &Path) -> BTreeSet<PathBuf> {
+    fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect()
+}
+
+#[test]
+fn concurrent_invocations_isolate_logs_and_same_stem_binaries() {
+    let first = Fixture::new();
+    let second = Fixture::new();
+    let shared = Fixture::new(); // independent fresh directory shared by both calls
+    for (fixture, peer) in [(&first, &second), (&second, &first)] {
+        fs::write(
+            fixture.0.join("tests/alpha_structure.rs"),
+            format!(
+                r#"
+#[test]
+fn alpha_fixture() {{
+    assert_eq!(env!("CARGO_MANIFEST_DIR"), std::env::var("FIXTURE_ROOT").unwrap());
+    let tmp = std::env::var("TMPDIR").unwrap();
+    std::fs::write({ready:?}, &tmp).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !std::path::Path::new({peer:?}).exists() {{
+        assert!(std::time::Instant::now() < deadline, "peer did not execute");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }}
+    let other = std::fs::read_to_string({peer:?}).unwrap();
+    assert_ne!(tmp, other, "runner binary namespace must be private");
+}}
+"#,
+                ready = fixture.0.join("ready"),
+                peer = peer.0.join("ready")
+            ),
+        )
+        .unwrap();
+    }
+    let mut a = first.command(Some("1"), false, &shared.0);
+    let mut b = second.command(Some("1"), false, &shared.0);
+    for command in [&mut a, &mut b] {
+        command
+            .env("TMPDIR", &shared.0)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+    }
+    let a = a.spawn().unwrap();
+    let b = b.spawn().unwrap();
+    for output in [a.wait_with_output().unwrap(), b.wait_with_output().unwrap()] {
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "[GATE_PREFLIGHT:structure_suites=1/1:critical_path_lines=0:pinned=0]\n"
+        );
+        assert!(output.stderr.is_empty(), "{output:?}");
+    }
+    let dirs: Vec<_> = entries(&shared.0)
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("breenix_gate_structure_preflight.")
+        })
+        .collect();
+    assert_eq!(dirs.len(), 2);
+    for dir in dirs {
+        assert!(dir.join("alpha_structure.log").is_file());
+        assert!(dir
+            .join("breenix-structure-tests/alpha_structure")
+            .is_file());
+    }
+}
+
+#[test]
+fn hung_suite_returns_red_within_budget() {
+    let fixture = Fixture::new();
+    fs::write(fixture.0.join("tests/hung_structure.rs"),
+        "#[test] fn hangs() { loop { std::thread::sleep(std::time::Duration::from_millis(100)); } }").unwrap();
+    let start = std::time::Instant::now();
+    let output = fixture
+        .command(Some("1"), false, &fixture.0.join("gate"))
+        .env("BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS", "2")
+        .output()
+        .unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(20));
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[GATE_PREFLIGHT:structure_suites=0/1:critical_path_lines=0:pinned=0]\n"
+    );
+}
+
+#[test]
+fn oversized_jobs_are_configuration_errors() {
+    let fixture = Fixture::new();
+    fixture.suite("alpha", false);
+    for jobs in ["2147483648", "999999999999999999999999999999999999"] {
+        let output = fixture
+            .command(Some(jobs), false, &fixture.0.join("gate"))
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("invalid BREENIX_STRUCTURE_JOBS"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("suite(s) red"), "{stderr}");
+        assert!(!stderr.contains("xargs:"), "{stderr}");
+    }
 }

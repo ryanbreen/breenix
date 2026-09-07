@@ -333,3 +333,204 @@ mutation context) were corrected before committing. Final invocations:
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/890-proof/commit-message.txt -> exit 0
 ```
+
+## 2026-09-06 Astra fix pass: P-1, P-2, P-12a mutation evidence
+
+The helper in docker/qemu/lib/gate-structure-preflight.sh now allocates a
+private mktemp directory per invocation and exports it as TMPDIR for runner
+binaries (P-1). It dispatches each suite through timeout with a default
+300-second budget (P-2). The shared lexical validator accepts 1..999999 for
+jobs and timeout, rejecting longer digit strings before xargs (P-12a).
+
+tests/structure_preflight_parallel_structure.rs adds three behavioral tests.
+The concurrent test spawns two preflights before waiting, with distinct
+fixture roots, a shared fresh gate_tmp and inherited TMPDIR, and matching
+alpha stems. Each compiled suite checks its compile-time root against its
+runtime root and rendezvous with its peer to compare binary namespaces.
+The harness also checks two private directories and their logs/binaries.
+Existing repeated-run log reads discover exactly one newly created directory
+per call and retain the exact failure-message path assertion.
+
+The following filtered runner executions temporarily reverted only the
+relevant production fix, then restored the helper and reran the same test.
+P-1 restored the old directory block and removed the TMPDIR export; its
+observed symptom was 0/1, not the earlier round's 0/0. P-2 removed only the
+timeout wrapper. P-12a restored the previous jobs case validation.
+The P-2 reproduction used Python Popen(start_new_session=True) and
+communicate(timeout=12); on expiry os.killpg targeted that reproduction's
+own process group with SIGKILL. This is an external watchdog failure,
+not a completed assertion from the hung test. The fixed run completed
+with the test's under-20-second, non-success-status, and 0/1 assertions.
+
+Raw command output is retained locally under /var/folders/yv/_v01qqx127j449b8bd85bblm0000gn/T/890-fix-proof.xsnxxkqo; output follows.
+
+```text
+COMMAND: bash scripts/run-structure-tests.sh structure_preflight_parallel_structure concurrent_invocations
+MUTATION: concurrent_invocations
+RESULT: exit 101; elapsed 10.25s
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure concurrent_invocations ==
+
+running 1 test
+
+thread 'concurrent_invocations_isolate_logs_and_same_stem_binaries' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/p890/wt/tests/structure_preflight_parallel_structure.rs:239:9:
+Output { status: ExitStatus(unix_wait_status(256)), stdout: "[GATE_PREFLIGHT:structure_suites=0/1:critical_path_lines=0:pinned=0]\n", stderr: "GATE_PREFLIGHT: FAIL (1 of 1 structure suite(s) red: alpha_structure -- per-suite logs under /var/folders/yv/_v01qqx127j449b8bd85bblm0000gn/T/gsp fixture ' 98241 1788747458425986000 2/breenix_gate_structure_preflight)\n" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test concurrent_invocations_isolate_logs_and_same_stem_binaries ... FAILED
+
+failures:
+
+failures:
+    concurrent_invocations_isolate_logs_and_same_stem_binaries
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 10.12s
+
+```
+
+```text
+COMMAND: bash scripts/run-structure-tests.sh structure_preflight_parallel_structure concurrent_invocations
+RESTORED: exit 0
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure concurrent_invocations ==
+
+running 1 test
+test concurrent_invocations_isolate_logs_and_same_stem_binaries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.11s
+
+```
+
+```text
+COMMAND: bash scripts/run-structure-tests.sh structure_preflight_parallel_structure hung_suite
+MUTATION: hung_suite
+RESULT: external watchdog expired at 12s; killed this reproduction process group; elapsed 12.00s
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure hung_suite ==
+
+running 1 test
+```
+
+```text
+COMMAND: bash scripts/run-structure-tests.sh structure_preflight_parallel_structure hung_suite
+RESTORED: exit 0
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure hung_suite ==
+
+running 1 test
+test hung_suite_returns_red_within_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.02s
+
+```
+
+```text
+COMMAND: bash scripts/run-structure-tests.sh structure_preflight_parallel_structure oversized_jobs
+MUTATION: oversized_jobs
+RESULT: exit 101; elapsed 0.14s
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure oversized_jobs ==
+
+running 1 test
+
+thread 'oversized_jobs_are_configuration_errors' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/p890/wt/tests/structure_preflight_parallel_structure.rs:306:9:
+xargs: -P 2147483648: too large
+GATE_PREFLIGHT: FAIL (1 of 1 structure suite(s) red: alpha_structure -- per-suite logs under /var/folders/yv/_v01qqx127j449b8bd85bblm0000gn/T/gsp fixture ' 3652 1788747483065240000 0/gate/breenix_gate_structure_preflight.dW2AeF)
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test oversized_jobs_are_configuration_errors ... FAILED
+
+failures:
+
+failures:
+    oversized_jobs_are_configuration_errors
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+```
+
+```text
+COMMAND: bash scripts/run-structure-tests.sh structure_preflight_parallel_structure oversized_jobs
+RESTORED: exit 0
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure oversized_jobs ==
+
+running 1 test
+test oversized_jobs_are_configuration_errors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+```
+
+Direct /bin/bash validation of both oversized inputs, with the helper sourced
+and its return status captured immediately, printed:
+
+    value=2147483648 length=10 status=1
+    value=999999999999999999999999999999999999 length=36 status=1
+
+Neither invocation emitted an arithmetic diagnostic. The fixed oversized-jobs
+test runs both inputs and checks configuration-error diagnostics without
+xargs errors or red-suite attribution.
+
+Final whole-suite runner output after restoring the fixes and rustfmt:
+
+```text
+bash scripts/run-structure-tests.sh structure_preflight_parallel_structure -> exit 0
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure  ==
+
+running 5 tests
+test oversized_jobs_are_configuration_errors ... ok
+test concurrent_invocations_isolate_logs_and_same_stem_binaries ... ok
+test two_jobs_overlap_and_never_exceed_the_bound ... ok
+test mutation_is_green_red_green_with_default_and_one_job ... ok
+test hung_suite_returns_red_within_budget ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s
+
+```
+
+```text
+bash scripts/run-structure-tests.sh gate_structure_preflight_wiring_structure -> exit 0
+== compiling gate_structure_preflight_wiring_structure ==
+== running gate_structure_preflight_wiring_structure  ==
+
+running 4 tests
+test missing_wiring_validator_rejects_a_gate_with_neither ... ok
+test shared_lib_defines_the_preflight_function_and_its_marker_line ... ok
+test every_target_gate_calls_the_structure_preflight ... ok
+test missing_wiring_validator_rejects_a_gate_with_the_call_site_removed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+```
+
+These compiler outputs contain no warning/error diagnostics. git diff --check
+and /bin/bash -n docker/qemu/lib/gate-structure-preflight.sh each exited 0.
+
+Not claimed:
+
+- Kernel builds, QEMU boots, beast execution, or a full preflight of the tree.
+- Independent verification of orphan cleanup after the production timeout.
+- Repeated race statistics or reproduction of the historical 0/0 symptom.
+- Isolation for standalone run-structure-tests.sh callers outside this helper.
+
+This section supersedes the earlier shared-preflight-namespace deferral for
+these tested helper invocations; parser/census CPU-cost work remains in #890.
+No issue closure or PR merge is part of this fix pass.
+
+The first tree claim-lint invocation exited 1 on the header's numeric phrase
+describing the prohibited initial digit. The comment now states “the first digit in 1..9” to describe
+the same validation without that lint ambiguity.
+
+The next tree lint invocation exited 1 on the quoted numeric wording in this
+note; that quotation was rephrased. The first commit-message lint exited 1
+on an issue-keyword adjacency; the title was changed to put #890 last.
+
+Final claim-lint invocations after those corrections:
+
+    python3 scripts/claim-lint.py -> exit 0
+    python3 scripts/claim-lint.py --commit-msg /var/folders/yv/_v01qqx127j449b8bd85bblm0000gn/T/890-fix-proof.xsnxxkqo/commit-message.txt -> exit 0
+
+Tree output: claim-lint: clean (6 file(s) checked, changed hunks vs 87702857c979).
+The tool separately reports 177 pre-existing findings outside changed hunks;
+this run does not certify the whole-file backlog.
