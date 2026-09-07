@@ -334,3 +334,125 @@ are used verbatim with `git commit -F` and carry both requested co-authors.
   latency. The artificial 12 ms hold and its CNTVCT readings characterize
   these runs, not a portable timing bound.
 * No merge to main or wider IRQ-lock audit is part of this round.
+
+## Fix pass — review findings closed (2026-09-07)
+
+This #908 review fix pass addresses two findings:
+
+1. N-1 (MINOR/code) — close by REMOVING the one new logging call.
+   Removed `log::debug!` only from `handle_udp`'s contended match
+   arm. Its comment identifies the NetRx softirq/IRQ-exit context, x86
+   SERIAL2 spinlock and UART work, and the existing lock-free
+   `socket::udp_ports_lookup_refused()` diagnostic.
+2. N-6 (MINOR/code) — close by DISCLOSING removal's allocator work in the docstring.
+   Added the `unbind_udp` / `BTreeMap::remove` allocator disclosure to
+   `with_udp_ports_masked`'s doc comment, including the heap allocator's
+   nested interrupt mask. The function body and prior doc lines are unchanged.
+
+`handle_udp_contended_arm_has_no_logging` pins N-1 after the existing
+`body()` helper masks comments and strings, checking the last contended match
+arm for the six specified logging macros.
+`with_udp_ports_masked_documents_removal_allocator_work` pins N-6 by
+extracting the contiguous `///` lines immediately above the primitive and
+requiring `remove`, `allocate`, and `heap.rs`. Each has a
+`_rule_is_not_vacuous` twin using a scoped literal replacement on real
+source; the green control invokes the four new test functions. When the
+N-6 disclosure is already absent during an on-disk mutation, its twin
+checks that the production rule is already false; on the fixed source it
+requires the deletion to match and redden that rule.
+
+`bash scripts/run-structure-tests.sh udp_ports_lock_irq_structure` exited
+0 with 18/18 tests. Capture:
+[09-fixpass-structure-suite.txt](serials/908/09-fixpass-structure-suite.txt).
+The full sweep command was:
+
+```bash
+bash -c 'source docker/qemu/lib/gate-structure-preflight.sh; gate_structure_preflight "$PWD" "$BREENIX_GATE_TMP"'
+```
+
+It exited 0 with 56/56 suites, 839 tests; no suite outside the UDP-ports
+suite failed. A first sweep before the N-6 mutation-premise check also
+exited 0 with 56/56 suites, 839 tests. The final sweep output is
+`.tmp/908-fixpass-full-sweep.txt`.
+
+The two on-disk mutations ran separately, each followed by
+`bash scripts/run-structure-tests.sh udp_ports_lock_irq_structure`:
+
+- N-1: reinserted the removed contended-arm `log::debug!` call. Exit 101,
+  16 passed / 2 failed: `handle_udp_contended_arm_has_no_logging` and
+  `green_control_all_rules_hold_at_head`. Output:
+  `.tmp/908-fixpass-n1-mutation.txt`.
+- N-6: deleted the new disclosure only from the primitive's doc comment.
+  Exit 101, 16 passed / 2 failed:
+  `with_udp_ports_masked_documents_removal_allocator_work` and
+  `green_control_all_rules_hold_at_head`. Output:
+  `.tmp/908-fixpass-n6-mutation.txt`.
+
+After each mutation, byte-for-byte restoration was verified and the suite
+exited 0 with 18/18 tests again (`.tmp/908-fixpass-n1-restored.txt` and
+`.tmp/908-fixpass-n6-restored.txt`). The restored kernel diffs contain only
+the intended contended-arm change and six added doc-comment lines.
+
+With `TMPDIR="$PWD/.tmp"`, `BREENIX_GATE_TMP="$PWD/.gate-tmp"`, and
+`BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library`,
+the rebuild command was:
+
+```bash
+cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+```
+
+It exited 0 with 0 compiler warnings/errors apart from the documented
+pre-existing upstream `core` future-incompatibility notice. Output:
+`.tmp/908-fixpass-a64-build.txt`. Then
+`bash docker/qemu/run-aarch64-boot-test-strict.sh 1` exited 0 with normal
+56/56 structure preflight and `PASS: 1/1 boots succeeded`. Output:
+`.tmp/908-fixpass-a64-strict-boot.txt`. The fresh serial contains:
+
+```text
+[UDP_PORTS_LOCK_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:driver_cpu=3:irqs_enabled_before=1:masked_in_hold=1:sends=22:hold_us=12020:refused=9:delivered=13:stalled=0:hold_done=1:joined=1:PASS]
+[UDP_LOCK_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=2:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12016:netrx_pending_at_release=1:received=12:stalled=0:hold_done=1:joined=1:PASS]
+```
+
+The registry marker is named `UDP_PORTS_LOCK_ORACLE`; it carries the
+`driver_cpu` and `refused` fields. `UDP_LOCK_ORACLE` is the separate outer
+socket marker. The registry observation has holder CPU 1 versus driver
+CPU 3, 9 refusals, and the required armed/masked/completion/join fields,
+with no stall. This run retains the masked-hold/refusal behavior after
+the log removal. Serial:
+[09b-fixpass-a64-strict-boot-serial.txt](serials/908/09b-fixpass-a64-strict-boot-serial.txt).
+Both new captures were copied byte-for-byte; the existing
+`docs/planning/green-program/irq-locks/serials/908/**/*.txt -text` entry
+covers them (`git check-attr` reports `text: unset`). Earlier captures
+and `.gitattributes` were not edited.
+
+Not claimed: this pass leaves the pre-existing listener-miss arm's
+`log::debug!` and `deliver_to_socket`'s `log::warn!` calls unchanged;
+they are outside this branch's original added code. No x86 gate was run:
+the only executable change is deleting the contended-arm log, and the
+fresh aarch64 strict-boot registry oracle still passes. That observation
+does not establish x86 runtime behavior. No merge to main is part of
+this pass.
+
+Claim discipline for this fix pass:
+
+| invocation | exit code |
+|---|---|
+| `python3 scripts/claim-lint.py`, first fix-pass check | 1 |
+| `python3 scripts/claim-lint.py`, after disclosure wording correction | 0 |
+
+The first lint rejected an unqualified universal quantifier in the suggested disclosure.
+The added sentence now says “during alloc/dealloc”; the lint criteria
+were not changed.
+
+| invocation (continued) | exit code |
+|---|---|
+| `python3 scripts/claim-lint.py`, completed evidence draft | 1 |
+| `python3 scripts/claim-lint.py --commit-msg .tmp/908-fixpass-commit-message.txt` | 0 |
+| `python3 scripts/claim-lint.py`, after evidence wording correction and temporary-artifact relocation | 0 |
+| `python3 scripts/claim-lint.py`, after recording that clean tree check | 0 |
+
+The evidence-draft check flagged Rust variant names and the quoted rejected
+quantifier in prose, plus generated preflight mutation fixtures under
+`.gate-tmp`. The prose now uses descriptive arm names. This pass's generated
+preflight directories were moved under `.tmp` for preservation, following
+the earlier round's artifact convention; lint criteria were not changed.

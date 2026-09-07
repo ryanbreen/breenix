@@ -109,6 +109,12 @@ impl SocketRegistry {
     /// including UdpSocket::Drop from close_extracted_fds outside the PM lock.
     /// The bounded ephemeral scan, nested next_ephemeral lock and allocating
     /// map insertion run inside this mask.
+    /// `unbind_udp`'s map removal can also allocate/deallocate --
+    /// `BTreeMap::remove` may rebalance or merge nodes back to the
+    /// allocator. Neither is a deadlock risk: the global heap allocator
+    /// (`kernel/src/memory/heap.rs`) masks interrupts around its own lock
+    /// during alloc/dealloc, the same nested-mask pattern this
+    /// primitive already relies on.
     ///
     /// The NetRx IRQ route uses try_lookup_udp instead: CLAUDE.md requires
     /// try-lock/defer in interrupt context rather than waiting on a peer's

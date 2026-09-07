@@ -130,12 +130,12 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
             );
         }
         None => {
-            // A peer holds udp_ports. Drop rather than block in IRQ context;
-            // socket::udp_ports_lookup_refused() counts this refusal.
-            log::debug!(
-                "UDP: udp_ports lock contended, dropping packet for port {}",
-                header.dst_port
-            );
+            // A peer holds udp_ports. Drop rather than block in IRQ context.
+            // #908 review: no log call here -- this arm runs off the NetRx
+            // softirq/IRQ-exit route without holding udp_ports, and on x86
+            // log::debug! reaches SERIAL2's real spinlock + UART I/O
+            // (logger.rs, serial.rs). socket::udp_ports_lookup_refused()
+            // is the lock-free diagnostic for this refusal instead.
         }
     }
 }

@@ -292,6 +292,81 @@ fn handle_udp_uses_try_lookup_udp_not_lookup_udp_rule_is_not_vacuous() {
     assert!(!check_handle_udp_uses_try_lookup_udp_not_lookup_udp(&mutated), "mutation must redden the same rule");
 }
 
+fn check_handle_udp_contended_arm_has_no_logging(source: &str) -> bool {
+    let body = body(source, "handle_udp");
+    body.rsplit_once("None => {").is_some_and(|(_, arm)| {
+        ["log::debug!", "log::warn!", "log::info!", "log::error!", "log::trace!", "serial_println!"]
+            .iter().all(|logging| !arm.contains(logging))
+    })
+}
+
+#[test]
+fn handle_udp_contended_arm_has_no_logging() {
+    assert!(check_handle_udp_contended_arm_has_no_logging(&repo_text(NET_UDP)), "#908: handle_udp_contended_arm_has_no_logging");
+}
+
+#[test]
+fn handle_udp_contended_arm_has_no_logging_rule_is_not_vacuous() {
+    let source = repo_text(NET_UDP);
+    let start = source.find("fn handle_udp").unwrap();
+    let end = source[start..].find("\n/// Deliver").map(|offset| start + offset).unwrap();
+    let function = &source[start..end];
+    let arm = function.rfind("None => {").unwrap();
+    let mutated = format!("{}{}{}{}", &source[..start], &function[..arm], function[arm..].replacen(
+        "None => {", "None => {\n            log::debug!(\n                \"UDP: udp_ports lock contended, dropping packet for port {}\",\n                header.dst_port\n            );", 1,
+    ), &source[end..]);
+    assert_ne!(source, mutated, "mutation text must match real source");
+    assert!(!check_handle_udp_contended_arm_has_no_logging(&mutated), "mutation must redden the same rule");
+}
+
+/// Return only the contiguous doc lines immediately above the primitive.
+fn udp_ports_masked_doc(source: &str) -> &str {
+    let function = source.find("fn with_udp_ports_masked").expect("function missing");
+    let end = source[..function].rfind('\n').map_or(0, |index| index + 1);
+    let mut start = end;
+    while start > 0 {
+        let previous = source[..start - 1].rfind('\n').map_or(0, |index| index + 1);
+        if !source[previous..start].trim_start().starts_with("///") {
+            break;
+        }
+        start = previous;
+    }
+    &source[start..end]
+}
+
+fn check_with_udp_ports_masked_documents_removal_allocator_work(source: &str) -> bool {
+    let doc = udp_ports_masked_doc(source);
+    doc.contains("remove") && doc.contains("allocate") && doc.contains("heap.rs")
+}
+
+#[test]
+fn with_udp_ports_masked_documents_removal_allocator_work() {
+    assert!(check_with_udp_ports_masked_documents_removal_allocator_work(&repo_text(REGISTRY)), "#908: with_udp_ports_masked_documents_removal_allocator_work");
+}
+
+#[test]
+fn with_udp_ports_masked_documents_removal_allocator_work_rule_is_not_vacuous() {
+    let source = repo_text(REGISTRY);
+    let doc = udp_ports_masked_doc(&source);
+    let disclosure = concat!(
+        "    /// `unbind_udp`'s map removal can also allocate/deallocate --\n",
+        "    /// `BTreeMap::remove` may rebalance or merge nodes back to the\n",
+        "    /// allocator. Neither is a deadlock risk: the global heap allocator\n",
+        "    /// (`kernel/src/memory/heap.rs`) masks interrupts around its own lock\n",
+        "    /// during alloc/dealloc, the same nested-mask pattern this\n",
+        "    /// primitive already relies on.\n",
+    );
+    // An on-disk deletion already violates the production rule.
+    if !doc.contains(disclosure) {
+        assert!(!check_with_udp_ports_masked_documents_removal_allocator_work(&source), "missing disclosure must already redden production rule");
+        return;
+    }
+    let start = source.find(doc).unwrap();
+    let mutated = format!("{}{}{}", &source[..start], doc.replacen(disclosure, "", 1), &source[start + doc.len()..]);
+    assert_ne!(source, mutated, "mutation text must match real source");
+    assert!(!check_with_udp_ports_masked_documents_removal_allocator_work(&mutated), "mutation must redden the same rule");
+}
+
 /// Limitation: this copied #823 regression guard uses a whole-file PM
 /// substring search, not a nesting-aware proof. It guards an unchanged path.
 /// #823 rule 6 (regression guard): the NetRx IRQ-side counterpart is still
@@ -337,5 +412,9 @@ fn green_control_all_rules_hold_at_head() {
     try_lookup_udp_uses_try_lock_not_blocking_lock();
     try_lookup_udp_counts_refusals();
     handle_udp_uses_try_lookup_udp_not_lookup_udp();
+    handle_udp_contended_arm_has_no_logging();
+    handle_udp_contended_arm_has_no_logging_rule_is_not_vacuous();
+    with_udp_ports_masked_documents_removal_allocator_work();
+    with_udp_ports_masked_documents_removal_allocator_work_rule_is_not_vacuous();
     deliver_to_socket_still_locks_under_process_manager();
 }
