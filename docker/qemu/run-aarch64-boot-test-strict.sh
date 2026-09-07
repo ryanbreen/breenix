@@ -181,6 +181,24 @@ if ! udp_lock_oracle_sample 12034 | grep -qE "$UDP_LOCK_ORACLE_PATTERN"; then
     echo "FAIL: UDP_LOCK_ORACLE_PATTERN rejects hold_us=12034, a window the repaired oracle really records, so this gate can never pass"
     exit 1
 fi
+UDP_PORTS_LOCK_ORACLE_PATTERN='\[UDP_PORTS_LOCK_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:driver_cpu=[0-9]+:irqs_enabled_before=1:masked_in_hold=1:sends=[1-9][0-9]*:hold_us=([89][0-9]{3}|[1-9][0-9]{4,}):refused=[1-9][0-9]*:delivered=[1-9][0-9]*:stalled=0:hold_done=1:joined=1:PASS\]'
+# #908: enforce the 8000 us floor as well as a nonzero refusal delta.
+# Synthetic samples validate the scorer only; boot evidence comes from QEMU.
+udp_ports_lock_oracle_sample() {
+    printf '[UDP_PORTS_LOCK_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:driver_cpu=0:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=%s:refused=1:delivered=1:stalled=0:hold_done=1:joined=1:PASS]\n' "$1"
+}
+if udp_ports_lock_oracle_sample 0 | grep -qE "$UDP_PORTS_LOCK_ORACLE_PATTERN"; then
+    echo "FAIL: UDP_PORTS_LOCK_ORACLE_PATTERN accepts hold_us=0, so this gate would score green on a hold no timer tick could land in"
+    exit 1
+fi
+if ! udp_ports_lock_oracle_sample 12034 | grep -qE "$UDP_PORTS_LOCK_ORACLE_PATTERN"; then
+    echo "FAIL: UDP_PORTS_LOCK_ORACLE_PATTERN rejects hold_us=12034, a window the repaired oracle really records, so this gate can never pass"
+    exit 1
+fi
+if udp_ports_lock_oracle_sample 12034 | sed 's/refused=1/refused=0/' | grep -qE "$UDP_PORTS_LOCK_ORACLE_PATTERN"; then
+    echo "FAIL: UDP_PORTS_LOCK_ORACLE_PATTERN accepts refused=0"
+    exit 1
+fi
 # #821. The console TTY has its foreground process group cleared, a peer CPU
 # takes PROCESS_MANAGER through the ordinary blocking accessor -- which masks
 # that CPU on this architecture -- and one byte is pushed through the input IRQ
@@ -332,6 +350,8 @@ fi
 # checks are guarded on this being empty; the scoring rules themselves are not
 # guarded at all, which is the point of running them from a test.
 SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
+# Scoring-only mode has no kernel whose feature profile can be inspected.
+KERNEL_HAS_CAPTURE_SELFTEST=0
 
 if [ -z "$SCORE_ONLY_SERIAL" ]; then
 
@@ -391,7 +411,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -410,6 +430,20 @@ require_boot_tests_kernel() {
 }
 
 require_boot_tests_kernel "$KERNEL"
+
+# #855: RING_SPAN measures CPU 0's TIMER_TICK-filtered ring window.
+# RING_SPAN_UNFILTERED measures the unfiltered ring on the nonzero CPU with
+# the highest write_index() at the 3000 ms checkpoint.
+#
+# The latter's publisher and print site are capture_selftest/aarch64-gated.
+# Ordinary boot_tests-only kernels therefore do not emit this marker and
+# must skip the corresponding assertion. Detect the print site's literal
+# in the kernel once, like require_boot_tests_kernel's profile check above,
+# rather than inferring the feature from a potentially missing serial line.
+KERNEL_HAS_CAPTURE_SELFTEST=0
+if grep -aqF '[RING_SPAN_UNFILTERED:cpu=' "$KERNEL" 2>/dev/null; then
+    KERNEL_HAS_CAPTURE_SELFTEST=1
+fi
 
 # Find ext2 disk (required for userspace)
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -628,6 +662,16 @@ score_serial() {
         echo "UDP-socket-lock oracle marker missing or failed"
         return 1
     fi
+    # #908, pinned as the same pair for the same reason.
+    if grep -qF "[UDP_PORTS_LOCK_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
+        && grep -q "UDP_PORTS_LOCK_ORACLE.*:FAIL\]" "$serial_file" 2>/dev/null; then
+        echo "UDP-ports-lock oracle reported failure ($(grep -aoE '\[UDP_PORTS_LOCK_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$UDP_PORTS_LOCK_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "UDP-ports-lock oracle marker missing or failed"
+        return 1
+    fi
     # #821, pinned as the same pair for the same reason.
     if grep -qF "[TTY_IRQ_PM_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
         && grep -qE "TTY_IRQ_PM_ORACLE.*:FAIL(:[a-z_]+)?\]" "$serial_file" 2>/dev/null; then
@@ -761,6 +805,23 @@ score_serial() {
     if [ "$ticks_total" -lt "$((tick_events * RING_SPAN_RATIO_FLOOR))" ]; then
         echo "Ring-span self-check sampling ratio ticks_total=$ticks_total / tick_events=$tick_events below floor $RING_SPAN_RATIO_FLOOR ($ring_span_line)"
         return 1
+    fi
+    if [ "$KERNEL_HAS_CAPTURE_SELFTEST" = "1" ]; then
+        RING_SPAN_UNFILTERED_FLOOR_MS=1000
+        ring_span_unfiltered_line=$(grep -aoE '\[RING_SPAN_UNFILTERED:cpu=[0-9]+:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+\]' "$serial_file" 2>/dev/null | tail -1 || true)
+        if [ -z "$ring_span_unfiltered_line" ]; then
+            echo "Unfiltered ring-span self-check marker missing (kernel built with capture_selftest)"
+            return 1
+        fi
+        ring_span_unfiltered_ms=$(echo "$ring_span_unfiltered_line" | sed -n 's/.*:span_ms=\([0-9][0-9]*\):.*/\1/p')
+        if [ -z "$ring_span_unfiltered_ms" ]; then
+            echo "Unfiltered ring-span self-check span_ms unparsed ($ring_span_unfiltered_line)"
+            return 1
+        fi
+        if [ "$ring_span_unfiltered_ms" -lt "$RING_SPAN_UNFILTERED_FLOOR_MS" ]; then
+            echo "Unfiltered ring-span self-check span_ms=$ring_span_unfiltered_ms below floor $RING_SPAN_UNFILTERED_FLOOR_MS ($ring_span_unfiltered_line)"
+            return 1
+        fi
     fi
     if ! grep -qaE "$PIN_GUARD_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Pin-guard oracle line missing"

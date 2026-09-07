@@ -1,0 +1,40 @@
+== compiling ctx_diag_ring_sample_structure ==
+== running ctx_diag_ring_sample_structure would_be_caught ==
+
+running 7 tests
+
+thread 'reverting_buffer_size_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ctx_diag_ring_sample_structure.rs:262:5:
+trace buffer must retain the measured 2048-entry capacity
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test reverting_buffer_size_would_be_caught - should panic ... ok
+
+thread 'deleting_sched_early_return_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ctx_diag_ring_sample_structure.rs:226:5:
+assertion `left == right` failed: SCHED sampling requires its early-return guard
+  left: 0
+ right: 1
+test deleting_sched_early_return_would_be_caught - should panic ... ok
+
+thread 'deleting_ctx_early_return_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ctx_diag_ring_sample_structure.rs:90:5:
+assertion `left == right` failed: CTX sampling requires its early-return guard
+  left: 0
+ right: 1
+test deleting_ctx_early_return_would_be_caught - should panic ... ok
+
+thread 'deleting_defer_sampling_guard_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ctx_diag_ring_sample_structure.rs:121:9:
+DEFER ring writes must remain inside sampled guards
+test deleting_defer_sampling_guard_would_be_caught - should panic ... ok
+
+thread 'sampling_snapshot_stores_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ctx_diag_ring_sample_structure.rs:142:13:
+snapshot stores must remain outside sampling guards
+test sampling_snapshot_stores_would_be_caught - should panic ... ok
+
+thread 'reverting_ctx_counter_to_one_shared_line_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ctx_diag_ring_sample_structure.rs:295:9:
+CTX_DIAG_CALL_COUNT must pad each element to its own cache line, not wrap the whole array
+test reverting_ctx_counter_to_one_shared_line_would_be_caught - should panic ... ok
+
+thread 'reverting_sched_counter_to_one_shared_line_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ctx_diag_ring_sample_structure.rs:327:5:
+SCHED_DIAG_CALL_COUNT must pad each element to its own cache line
+test reverting_sched_counter_to_one_shared_line_would_be_caught - should panic ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.01s
+

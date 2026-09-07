@@ -260,9 +260,76 @@ const TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE: u16 = 7;
 const TRACE_SCHED_DIAG_WAKE_TIMER_DEFERRED: u16 = 8;
 const TRACE_SCHED_DIAG_WAKE_TIMER_ALREADY_QUEUED: u16 = 9;
 
+/// SCHED_DIAG_* call sampling (#855), separate from context diagnostics.
+/// With TRACE_DIAG_SAMPLE=1024, GDB found 960-1022 of 1024 slots on
+/// CPUs 1-3 occupied by this family; strict boots retained 0, 22, and 0 ms.
+/// Sampling at 8192 retained 921, 895, and 901 ms in three strict boots;
+/// at 16384: 896, 938, and 936 ms. GDB then found only 6-9 SCHED_DIAG
+/// events per 1024-slot peer ring: ordinary switch/queue/IPI events limit
+/// retention. Keep 8192: 16384 gave no material gain; enlarge the ring instead.
+/// Evidence: docs/planning/green-program/tracing/serials/855/ (sched16384).
+#[cfg(target_arch = "aarch64")]
+const TRACE_SCHED_DIAG_SAMPLE: u64 = 8192;
+
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    TRACE_SCHED_DIAG_SAMPLE.is_power_of_two(),
+    "TRACE_SCHED_DIAG_SAMPLE must be a power of two so the sampling guard can test it \
+     with a single bitwise AND instead of a runtime division"
+);
+
+/// claim-lint:ok: tests/ctx_diag_ring_sample_structure.rs pins the 3/3
+/// padded counter declarations; size/alignment assertions below pin 64 bytes.
+/// Cache-line pads a single per-CPU counter so 8 CPUs writing 8 different
+/// indices do not invalidate each other's line (T-3, #855 fix pass). A bare
+/// `[AtomicU64; MAX_CPUS]` packs all 8 elements into one 64-byte line at
+/// MAX_CPUS=8; this type gives each element its own line instead. Same
+/// idea as `context_switch.rs`'s `CacheLineAligned`, kept local here rather
+/// than importing that module's private type across files.
+#[cfg(target_arch = "aarch64")]
+#[repr(align(64))]
+struct CacheLinePadded<T>(T);
+
+#[cfg(target_arch = "aarch64")]
+impl<T> core::ops::Deref for CacheLinePadded<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+static SCHED_DIAG_CALL_COUNT: [CacheLinePadded<AtomicU64>;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+    CacheLinePadded(AtomicU64::new(0))
+}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    core::mem::size_of::<CacheLinePadded<AtomicU64>>() == 64,
+    "each SCHED_DIAG per-CPU call counter must occupy its own 64-byte cache line"
+);
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    core::mem::align_of::<CacheLinePadded<AtomicU64>>() == 64,
+    "each SCHED_DIAG per-CPU call counter must be 64-byte aligned"
+);
+
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn trace_sched_diag(stage: u16, tid: u64, old_id: u64, new_id: u64, flags: u32) {
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let sampled = if cpu_id < SCHED_DIAG_CALL_COUNT.len() {
+        let count = SCHED_DIAG_CALL_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+        count & (TRACE_SCHED_DIAG_SAMPLE - 1) == 0
+    } else {
+        true
+    };
+    if !sampled {
+        crate::tracing::providers::counters::SCHED_DIAG_SAMPLE_DROPPED.increment();
+        return;
+    }
+
     crate::tracing::record_event(
         crate::tracing::TraceEventType::SCHED_DIAG_STAGE,
         0,

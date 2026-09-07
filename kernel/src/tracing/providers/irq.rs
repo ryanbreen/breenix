@@ -110,7 +110,7 @@ pub const HEARTBEAT_MARKER: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_HEARTBEAT
 /// point, at `boot_tests`' `RING_SPAN` self-check below, this constant is
 /// what stands between an early fatal dump's `TIMER_TICK` history reaching
 /// back a checkpoint-and-arch-specific short span (unsampled) or several
-/// times that (sampled) -- both bounded by the same 1024-entry ring, so the
+/// times that (sampled) -- both bounded by the same TRACE_BUFFER_SIZE-entry ring, so the
 /// sampling factor does not appear as an equal span factor once the ring is
 /// shared. The exact measured spans, which differ by checkpoint and by
 /// architecture, are recorded in
@@ -209,7 +209,13 @@ pub fn trace_timer_tick(tick_count: u64) {
     // `capture_selftest`, which no gate builds with, so a gated or shipped
     // kernel does not compile this line at all.
     #[cfg(feature = "capture_selftest")]
+    #[cfg(not(target_arch = "aarch64"))]
     crate::capture::selftest::observe(tick_count);
+
+    // On aarch64 the oracle takes its snapshot, runs the synchronous
+    // self-test capture, then releases the report to the registry writer.
+    #[cfg(all(feature = "capture_selftest", target_arch = "aarch64"))]
+    unfiltered_ring_span_self_check::observe(tick_count);
 
     // The BXCAP `edge=PANIC` oracle (failure-capture PR-4). Behind
     // `capture_panic_oracle`, which no gate builds with, so a gated or
@@ -483,5 +489,226 @@ pub(crate) mod ring_span_self_check {
         // `READY` with acquire. This is the whole ordering contract between
         // the tick and the printer.
         READY.store(true, Ordering::Release);
+    }
+}
+
+// =============================================================================
+// Boot-test self-check: unfiltered ring span oracle (#855)
+// =============================================================================
+
+/// Measures the UNFILTERED window of the busiest non-`0` CPU's ring,
+/// distinct from `ring_span_self_check` above (CPU 0, `TIMER_TICK`-filtered).
+/// Fires at the same 3000 ms checkpoint as
+/// `kernel/src/capture/selftest.rs`'s `CAPTURE_AT_MS`.
+///
+/// "Busiest non-`0` CPU" means the CPU (excluding CPU 0) with the highest
+/// self-published `writes` count (see below) among those that have
+/// self-published by the time `claim` is asked. CPU 0 is excluded so this
+/// oracle measures another CPU's ring. This provider is aarch64-only, like
+/// the sampled context-switch diagnostic families.
+///
+/// claim-lint:ok: tests/ring_span_unfiltered_report_site_structure.rs pins
+/// the self-only access and publication ordering for 855.
+/// # Every ring read is same-CPU-only (T-1, #855 fix pass)
+///
+/// An earlier revision of this oracle had ONE CPU (the first to reach
+/// `CHECK_AT_MS`) pick the busiest OTHER CPU by `write_index()` and then
+/// call that peer's `iter_events()` directly -- `TraceCpuBuffer::iter_events`
+/// itself warns "Disable tracing before calling this to avoid races", and
+/// that peer CPU was still live and still recording (`TraceCpuBuffer::record`
+/// takes `&mut self` on a single-writer assumption) while the read happened.
+/// That violated the exact same-CPU-only contract
+/// `capture::sections::own_buffer` documents ("a concurrent write to this
+/// CPU's buffer would require this CPU to be somewhere else, which it is
+/// not") and `ring_span_self_check::publish` above already relies on.
+///
+/// claim-lint:ok: tests/ring_span_unfiltered_report_site_structure.rs pins
+/// the self-only access and publication ordering for 855.
+/// This revision has every CPU read only ITS OWN ring (`publish_self`,
+/// below), the moment its own tick crosses `CHECK_AT_MS`, into per-CPU
+/// atomics. `claim` then picks the busiest among whichever have
+/// self-published so far -- purely from those already-published atomics,
+/// never from `TRACE_BUFFERS` directly. No caller ever reads a ring that
+/// isn't its own.
+///
+/// Follows the same tick-publishes/thread-prints split as
+/// `ring_span_self_check` above (#847, ruling R188): the tick(s) take their
+/// snapshot(s) without serial output, and the sole BXCAP self-test call
+/// (still made by exactly one CPU, `SELFTEST_CALLED`/`SELFTEST_DONE` below)
+/// finishes before `is_ready()` can return true.
+/// `kernel/src/test_framework/registry.rs`'s `ring_span_unfiltered_report`
+/// boot test claims the published numbers from thread context and prints
+/// them through `serial_println!`.
+#[cfg(all(feature = "capture_selftest", target_arch = "aarch64"))]
+pub(crate) mod unfiltered_ring_span_self_check {
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+    use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
+    use crate::tracing::core::{MAX_CPUS, TRACE_BUFFERS};
+    use crate::tracing::timestamp::timestamp_to_nanos;
+
+    /// Matches `kernel/src/capture/selftest.rs`'s `CAPTURE_AT_MS`.
+    /// The first CPU to cross it also drives that self-test.
+    const CHECK_AT_MS: u64 = 3_000;
+
+    /// claim-lint:ok: tests/ring_span_unfiltered_report_site_structure.rs pins
+    /// the self-only access and publication ordering for 855.
+    /// Per-CPU one-shot self-publish state (T-1 fix): guards each CPU's own
+    /// `publish_self` so it runs at most once per CPU, and carries what it
+    /// found. Every slot here is written by exactly one CPU (its own index),
+    /// so cross-CPU readers (`is_ready`, `claim`) only ever load atomics
+    /// another CPU already finished storing -- never `TRACE_BUFFERS`.
+    static PER_CPU_CHECKED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+    static PER_CPU_PUBLISHED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+    static PER_CPU_SPAN_MS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+    static PER_CPU_WRITES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+    static PER_CPU_DROPPED: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+    /// Guards the single call to `capture::selftest::observe`: exactly one
+    /// CPU, ever, makes it (#847 ruling R188), and `is_ready()` must not
+    /// surface until it -- and any emission it performed -- has returned.
+    static SELFTEST_CALLED: AtomicBool = AtomicBool::new(false);
+    static SELFTEST_DONE: AtomicBool = AtomicBool::new(false);
+
+    static CLAIMED: AtomicBool = AtomicBool::new(false);
+    static CPU: AtomicU32 = AtomicU32::new(0);
+    static SPAN_MS: AtomicU64 = AtomicU64::new(0);
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct UnfilteredRingSpanReport {
+        pub(crate) cpu: u32,
+        pub(crate) span_ms: u64,
+        pub(crate) writes: u64,
+        pub(crate) dropped: u64,
+    }
+
+    #[inline(always)]
+    pub(super) fn observe(tick_count: u64) {
+        let cpu = Aarch64PerCpu::cpu_id() as usize;
+        let self_done = cpu >= MAX_CPUS || PER_CPU_CHECKED[cpu].load(Ordering::Relaxed);
+        if self_done && SELFTEST_DONE.load(Ordering::Relaxed) {
+            return;
+        }
+        let elapsed_ms = tick_count.saturating_mul(crate::time::timer::MS_PER_TICK);
+        if elapsed_ms < CHECK_AT_MS {
+            return;
+        }
+        if !self_done {
+            publish_self(cpu);
+        }
+        if !SELFTEST_CALLED.swap(true, Ordering::AcqRel) {
+            // The swap winner is the sole aarch64 self-test caller, exactly
+            // as before this fix: `is_ready()` cannot see `SELFTEST_DONE`
+            // until this call (and any emission it performs) has returned.
+            crate::capture::selftest::observe(tick_count);
+            SELFTEST_DONE.store(true, Ordering::Release);
+        }
+    }
+
+    /// Self-read of the calling CPU's own ring, unfiltered, stored into
+    /// this CPU's slot only.
+    ///
+    /// # Safety
+    ///
+    /// Read-only access to `TRACE_BUFFERS[cpu]` from CPU `cpu` itself, with
+    /// no concurrent writer of this slot: this CPU is the buffer's sole
+    /// writer, and it cannot be "somewhere else" recording into it while
+    /// this function runs on it -- the same argument
+    /// `capture::sections::own_buffer` and `ring_span_self_check::publish`
+    /// above already rely on for a same-CPU read.
+    fn publish_self(cpu: usize) {
+        if PER_CPU_CHECKED[cpu].swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        let buffer = unsafe {
+            let buffers_ptr = core::ptr::addr_of!(TRACE_BUFFERS);
+            &(*buffers_ptr)[cpu]
+        };
+
+        let writes = buffer.write_index() as u64;
+        let dropped = buffer.dropped_count();
+
+        let mut oldest: Option<u64> = None;
+        let mut newest: Option<u64> = None;
+        // UNFILTERED: no event-type predicate -- the point of this
+        // module relative to ring_span_self_check's TIMER_TICK filter above.
+        for event in buffer.iter_events() {
+            if oldest.is_none() {
+                oldest = Some(event.timestamp);
+            }
+            newest = Some(event.timestamp);
+        }
+        let span_ms = match (oldest, newest) {
+            (Some(oldest), Some(newest)) => {
+                timestamp_to_nanos(newest.saturating_sub(oldest)) / 1_000_000
+            }
+            _ => 0,
+        };
+
+        PER_CPU_SPAN_MS[cpu].store(span_ms, Ordering::Relaxed);
+        PER_CPU_WRITES[cpu].store(writes, Ordering::Relaxed);
+        PER_CPU_DROPPED[cpu].store(dropped, Ordering::Relaxed);
+        // Release: publishes the three stores above to any thread that
+        // reads this slot's `PER_CPU_PUBLISHED` with acquire.
+        PER_CPU_PUBLISHED[cpu].store(true, Ordering::Release);
+    }
+
+    /// claim-lint:ok: tests/ring_span_unfiltered_report_site_structure.rs pins
+    /// the self-only access and publication ordering for 855.
+    /// Ready once the sole selftest call has completed (#847 R188 ordering)
+    /// and at least one non-`0` CPU has self-published, so `claim` below
+    /// always has a candidate.
+    pub(crate) fn is_ready() -> bool {
+        if !SELFTEST_DONE.load(Ordering::Acquire) {
+            return false;
+        }
+        (1..MAX_CPUS).any(|cpu| PER_CPU_PUBLISHED[cpu].load(Ordering::Acquire))
+    }
+
+    /// claim-lint:ok: tests/ring_span_unfiltered_report_site_structure.rs pins
+    /// the self-only access and publication ordering for 855.
+    /// Take the published measurement, once. Picks the busiest non-`0` CPU
+    /// among whichever have self-published by now, purely from the
+    /// already-published per-CPU atomics above -- this never touches
+    /// `TRACE_BUFFERS` (T-1 fix, #855 fix pass): every raw ring read
+    /// happened in `publish_self`, on that CPU, about that CPU's own slot.
+    pub(crate) fn claim() -> Option<UnfilteredRingSpanReport> {
+        if !is_ready() {
+            return None;
+        }
+        if CLAIMED.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+
+        let mut busiest_cpu = 1usize;
+        let mut busiest_writes = 0u64;
+        for cpu in 1..MAX_CPUS {
+            if !PER_CPU_PUBLISHED[cpu].load(Ordering::Acquire) {
+                continue;
+            }
+            let writes = PER_CPU_WRITES[cpu].load(Ordering::Relaxed);
+            if writes > busiest_writes {
+                busiest_writes = writes;
+                busiest_cpu = cpu;
+            }
+        }
+
+        let span_ms = PER_CPU_SPAN_MS[busiest_cpu].load(Ordering::Relaxed);
+        let dropped = PER_CPU_DROPPED[busiest_cpu].load(Ordering::Relaxed);
+
+        CPU.store(busiest_cpu as u32, Ordering::Relaxed);
+        SPAN_MS.store(span_ms, Ordering::Relaxed);
+        WRITES.store(busiest_writes, Ordering::Relaxed);
+        DROPPED.store(dropped, Ordering::Relaxed);
+
+        Some(UnfilteredRingSpanReport {
+            cpu: busiest_cpu as u32,
+            span_ms,
+            writes: busiest_writes,
+            dropped,
+        })
     }
 }

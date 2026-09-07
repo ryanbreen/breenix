@@ -160,3 +160,13 @@ docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/**/*.lo
 # a CRLF normalisation would both edit preserved evidence and invalidate the
 # digest that cites it.
 docs/planning/green-program/aarch64-testing/serials/606-recurrence-2026-09-06/*.txt -text
+
+# #908: preserve raw guest-console CR bytes in proof captures and re-recorded fixture.
+docs/planning/green-program/irq-locks/serials/908/**/*.txt -text
+
+# #483/#465 verification sweep (2026-09-07): raw Parallels serial captures
+# and their run.sh stdout companions, kept byte-exact for the same reason as
+# the captures above -- the CR bytes the guest console and run.sh emit are
+# part of the preserved evidence DISPOSITIONS.md quotes by line number, and a
+# CRLF normalisation would edit it.
+docs/planning/green-program/sweeps/network-483-465-2026-09-07/evidence/**/*.log -text

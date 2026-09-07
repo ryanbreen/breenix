@@ -1,0 +1,63 @@
+[GATE_PREFLIGHT:structure_suites=55/55:critical_path_lines=260:pinned=120]
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   661d455e42d1d12d0ee1360ae7c8fe04473a479a213e9b5422da4c3da473c7d5
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17hcb0399ab1efe7b48E
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/target/ext2-aarch64.img
+Iterations: 3
+Requirement: 100% success rate (all 3 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 33907 (<unknown process>)
+  [FAIL] Boot 1: Unfiltered ring-span self-check span_ms=896 below floor 1000 ([RING_SPAN_UNFILTERED:cpu=2:span_ms=896:writes=3881:dropped=2857]) (1025 lines); serial: /tmp/855-sched-16384/breenix_aarch64_strict_failures/20260907T022700Z-boot1.txt
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788748000332-1788748020086:qemu_at_start=0:load_at_start=5.43:qemu_at_end=1:load_at_end=4.52:qemu_cpu_s=24.48:guest_uptime_ms=19476:ended_by=poll_exhausted]
+  [CAPTURE_DRAIN:capture=complete:seq=0:edge=SELFTEST:cpu=1:records=75:drain_ms=300]
+  [CAPTURE_DRAIN_EVENTS:last_events=UNKNOWN(4),CTX_SWITCH_ENTRY(262149),UNKNOWN(5),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0)]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 35434 (<unknown process>)
+  [FAIL] Boot 2: Unfiltered ring-span self-check span_ms=938 below floor 1000 ([RING_SPAN_UNFILTERED:cpu=2:span_ms=938:writes=4205:dropped=3181]) (1039 lines); serial: /tmp/855-sched-16384/breenix_aarch64_strict_failures/20260907T022721Z-boot2.txt
+  [GATE_BOOT_FACTS:boot=2:host_ms=1788748021637-1788748041748:qemu_at_start=0:load_at_start=4.52:qemu_at_end=0:load_at_end=5.02:qemu_cpu_s=NA:guest_uptime_ms=19721:ended_by=hard_timeout]
+  [CAPTURE_DRAIN:capture=complete:seq=0:edge=SELFTEST:cpu=0:records=69:drain_ms=300]
+  [CAPTURE_DRAIN_EVENTS:last_events=SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0),SCHED_RESCHED_IPI_RECV(0)]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 41909 (<unknown process>)
+  [FAIL] Boot 3: Unfiltered ring-span self-check span_ms=936 below floor 1000 ([RING_SPAN_UNFILTERED:cpu=3:span_ms=936:writes=3506:dropped=2482]) (1019 lines); serial: /tmp/855-sched-16384/breenix_aarch64_strict_failures/20260907T022743Z-boot3.txt
+  [GATE_BOOT_FACTS:boot=3:host_ms=1788748043603-1788748063438:qemu_at_start=0:load_at_start=5.58:qemu_at_end=1:load_at_end=6.20:qemu_cpu_s=27.85:guest_uptime_ms=19757:ended_by=poll_exhausted]
+  [CAPTURE_DRAIN:capture=complete:seq=0:edge=SELFTEST:cpu=3:records=75:drain_ms=300]
+  [CAPTURE_DRAIN_EVENTS:last_events=UNKNOWN(5),CTX_SWITCH_ENTRY(327699),UNKNOWN(19),CTX_SWITCH_ENTRY(1245189),UNKNOWN(5),SCHED_RESCHED_IPI_RECV(0),CTX_SWITCH_ENTRY(327699),UNKNOWN(19)]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 3
+Successes: 0
+Failures: 3
+Success rate: 0%
+Duration: 65s
+
+Failed iterations: 1 2 3
+
+=========================================
+FAIL: Only 0/3 boots succeeded
+=========================================
+
+This indicates a regression or timing bug that needs investigation.
+Serial output from failed boots can be found in /tmp/855-sched-16384/breenix_aarch64_strict_N/

@@ -1,0 +1,5 @@
+# Provenance: gate=cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 --features boot_tests,capture_selftest; exit=0; host=Ryans-M5-Max.local; branch=tracing/855-ring-window; base_commit=134343d70c1ccfd053a8a03f03283b24ffd1f49a; implementation_commit=e63edadbc10e69c926c3245ef864a17ef0b6b4a9; features=boot_tests,capture_selftest; TRACE_BUFFER_SIZE=2048; TRACE_DIAG_SAMPLE=1024; TRACE_SCHED_DIAG_SAMPLE=8192
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 6.72s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

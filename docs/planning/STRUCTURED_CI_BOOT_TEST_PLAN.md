@@ -462,7 +462,7 @@ cargo run -p xtask -- boot-test-btrt --arch x86_64
 | x86 boot runner | `xtask/src/main.rs:3296-3653` | Serial polling loop (TO BE REPLACED) |
 | ARM64 boot runner | `xtask/src/main.rs:3673-4125` | Serial polling loop (TO BE REPLACED) |
 | Tracing core | `kernel/src/tracing/core.rs` | TraceEvent (16-byte), global TRACE_BUFFERS |
-| Tracing buffer | `kernel/src/tracing/buffer.rs` | Per-CPU ring buffer (1024 entries) |
+| Tracing buffer | `kernel/src/tracing/buffer.rs` | Per-CPU ring buffer (2048 entries; #855) |
 | Tracing providers | `kernel/src/tracing/providers/` | Existing providers (syscall, sched, irq, process) |
 | Tracing counters | `kernel/src/tracing/counter.rs` | Per-CPU atomic counters |
 | Tracing output | `kernel/src/tracing/output.rs` | Lock-free serial dump, `trace_dump()` |

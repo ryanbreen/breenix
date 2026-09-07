@@ -1,0 +1,36 @@
+# Provenance: probe=GDB hardware breakpoint at kernel::capture::emit, address 0xffff0000405afa70; host=Ryans-M5-Max.local; branch=tracing/855-ring-window; base_commit=45daec35bae5d9851bd6b62075ecb9bdc921c2f1; features=boot_tests,capture_selftest; TRACE_DIAG_SAMPLE=1024; dump=0xffff000040855a40..0xffff000040875c40; stride=16448; event_format=<QHBBI; entries=1024
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+The target architecture is set to "aarch64".
+0x0000000040080000 in _start ()
+Hardware assisted breakpoint 1 at 0xffff0000405afa70
+[Switching to Thread 1.3]
+
+Thread 3 hit Breakpoint 1, 0xffff0000405afa70 in kernel::capture::emit ()
+pc             0xffff0000405afa70  0xffff0000405afa70 <kernel::capture::emit>
+[Inferior 1 (process 1) detached]
+qemu-system-aarch64: terminating on signal 15 from pid 70978 (<unknown process>)
+
+CPU 0 writes=2559
+  SCHED_RESCHED_IPI_RECV: 963/1024
+  TIMER_TICK: 61/1024
+CPU 1 writes=464049
+  SCHED_DIAG_FLAGS: 320/1024
+  SCHED_DIAG_STAGE: 320/1024
+  SCHED_DIAG_TID_PAIR: 320/1024
+  CTX_SWITCH_ENTRY: 25/1024
+  SCHED_QUEUE_STATE: 25/1024
+  SCHED_RESCHED_IPI_RECV: 12/1024
+  TIMER_TICK: 2/1024
+CPU 2 writes=318630
+  SCHED_DIAG_TID_PAIR: 341/1024
+  SCHED_DIAG_FLAGS: 341/1024
+  SCHED_DIAG_STAGE: 340/1024
+  SCHED_RESCHED_IPI_RECV: 2/1024
+CPU 3 writes=303678
+  SCHED_DIAG_FLAGS: 332/1024
+  SCHED_DIAG_STAGE: 331/1024
+  SCHED_DIAG_TID_PAIR: 331/1024
+  CTX_SWITCH_ENTRY: 13/1024
+  SCHED_QUEUE_STATE: 13/1024
+  SCHED_RESCHED_IPI_RECV: 3/1024
+  TIMER_TICK: 1/1024

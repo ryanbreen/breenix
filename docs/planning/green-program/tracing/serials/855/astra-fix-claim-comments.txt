@@ -1,0 +1,3 @@
+claim-lint: clean (46 file(s) checked, changed hunks vs 45daec35bae5).
+claim-lint: 383 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 2 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/tracing/serials/855/aarch64-gdb-rings-sample1024.bin, docs/planning/green-program/tracing/serials/855/aarch64-gdb-rings-sched16384.bin

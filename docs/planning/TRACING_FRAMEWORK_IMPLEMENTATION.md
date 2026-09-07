@@ -71,7 +71,7 @@ pub struct TraceEvent {
 ```
 
 #### Per-CPU Ring Buffers
-- 1024 entries per CPU (16 KiB per buffer)
+- 2048 entries per CPU (32 KiB of entries per buffer; #855)
 - Lock-free writes using atomic fetch_add
 - Overwrite mode (old events silently replaced when full)
 - 64-byte cache-line aligned to prevent false sharing
@@ -406,8 +406,8 @@ Event types use 16-bit values: `(provider_id << 8) | probe_id`. This allows:
 | Buffer full wrap | 0 extra | Modulo via bitmask |
 
 Memory footprint:
-- Per-CPU buffer: 16 KiB (1024 events × 16 bytes)
-- 8 CPUs total: 128 KiB for buffers
+- Per-CPU entries: 32 KiB (2048 events × 16 bytes), plus 64 bytes aligned metadata
+- 16 CPUs total: 525312 bytes for aligned buffers (16 × 32832)
 - Counter storage: ~512 bytes per counter (8 CPUs × 64 bytes)
 
 ---

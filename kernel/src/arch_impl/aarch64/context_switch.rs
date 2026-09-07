@@ -73,6 +73,19 @@ const TRACE_CTX_DIAG_DEFER_STORE: u16 = 9;
 const TRACE_CTX_DIAG_DEFER_EVICT: u16 = 10;
 const TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT: u16 = 11;
 
+/// Ring-write sampling factor for the CTX_DIAG_* and DEFER_REQUEUE_*
+/// diagnostic families (#855, #607/#635). One call in TRACE_DIAG_SAMPLE
+/// records its events; skipped calls increment registered drop counters.
+/// Like TICK_SAMPLE in tracing/providers/irq.rs, this must be a power of
+/// two so the guard uses a bitwise AND rather than runtime division.
+const TRACE_DIAG_SAMPLE: u64 = 1024;
+
+const _: () = assert!(
+    TRACE_DIAG_SAMPLE.is_power_of_two(),
+    "TRACE_DIAG_SAMPLE must be a power of two so the sampling guard can test it \
+     with a single bitwise AND instead of a runtime division"
+);
+
 crate::define_trace_counter!(
     INLINE_ELR_DIVERGENCE,
     "inline-saved thread ERET-dispatched whose pre-save ELR differed from its inline-save resume PC (#596 mechanism)"
@@ -1040,6 +1053,18 @@ fn trace_ctx_diag(
     previous_thread: u64,
     saved_by_inline_schedule: bool,
 ) {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let sampled = if cpu_id < CTX_DIAG_CALL_COUNT.len() {
+        let count = CTX_DIAG_CALL_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+        count & (TRACE_DIAG_SAMPLE - 1) == 0
+    } else {
+        true
+    };
+    if !sampled {
+        crate::tracing::providers::counters::CTX_DIAG_SAMPLE_DROPPED.increment();
+        return;
+    }
+
     let tid16 = (tid as u32) & 0xFFFF;
     let old16 = (old_id as u32) & 0xFFFF;
     let new16 = (new_id as u32) & 0xFFFF;
@@ -1105,12 +1130,25 @@ fn trace_defer_requeue(
     aux_tid: u64,
     thread: Option<&Thread>,
 ) {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let sampled = if cpu_id < DEFER_REQUEUE_CALL_COUNT.len() {
+        let count = DEFER_REQUEUE_CALL_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+        count & (TRACE_DIAG_SAMPLE - 1) == 0
+    } else {
+        true
+    };
+    if !sampled {
+        crate::tracing::providers::counters::DEFER_REQUEUE_SAMPLE_DROPPED.increment();
+    }
+
     let tid = (thread_id as u32) & 0xFFFF;
-    crate::tracing::record_event(
-        crate::tracing::TraceEventType::DEFER_REQUEUE_STAGE,
-        0,
-        ((stage as u32) << 16) | tid,
-    );
+    if sampled {
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::DEFER_REQUEUE_STAGE,
+            0,
+            ((stage as u32) << 16) | tid,
+        );
+    }
 
     let mut flags: u16 = 0x8000;
     let mut sp = 0;
@@ -1128,7 +1166,6 @@ fn trace_defer_requeue(
         x30 = thread.context.x30 as u32;
     }
 
-    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     if cpu_id < LAST_DEFER_REQUEUE_INFO.len() {
         let info = ((stage as u64) << 48)
             | ((thread_id & 0xFFFF) << 32)
@@ -1140,14 +1177,16 @@ fn trace_defer_requeue(
         LAST_DEFER_REQUEUE_X30[cpu_id].store(x30 as u64, Ordering::Relaxed);
     }
 
-    crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_SP, 0, sp);
-    crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_ELR, 0, elr);
-    crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_X30, 0, x30);
-    crate::tracing::record_event(
-        crate::tracing::TraceEventType::DEFER_REQUEUE_FLAGS,
-        0,
-        (((aux_tid as u32) & 0xFFFF) << 16) | flags as u32,
-    );
+    if sampled {
+        crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_SP, 0, sp);
+        crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_ELR, 0, elr);
+        crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_X30, 0, x30);
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::DEFER_REQUEUE_FLAGS,
+            0,
+            (((aux_tid as u32) & 0xFFFF) << 16) | flags as u32,
+        );
+    }
 }
 
 #[inline(always)]
@@ -1826,6 +1865,36 @@ pub(crate) fn deferred_requeue_contains(thread_id: u64) -> bool {
         .iter()
         .any(|slot| slot.load(Ordering::Acquire) == thread_id)
 }
+
+/// Per-CPU call counters, advanced before the sampling decision. Relaxed
+/// ordering gates sampling, not synchronization. Registered drop counters
+/// count skipped calls independently of the ring's retained entries.
+///
+/// claim-lint:ok: tests/ctx_diag_ring_sample_structure.rs pins the 3/3
+/// padded counter declarations; size/alignment assertions below pin 64 bytes.
+/// One `CacheLineAligned` PER ELEMENT, not one around the whole array (T-3,
+/// #855 fix pass): `CacheLineAligned<[AtomicU64; MAX_CPUS]>` only aligns the
+/// array's *start* -- with MAX_CPUS=8 and AtomicU64=8 bytes the whole array
+/// was exactly one 64-byte line, so every CPU's own-index `fetch_add` on
+/// this hot dispatch/defer-requeue path invalidated every OTHER CPU's line
+/// too. Padding each element to its own line removes that.
+static CTX_DIAG_CALL_COUNT: [CacheLineAligned<AtomicU64>;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+    CacheLineAligned(AtomicU64::new(0))
+}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static DEFER_REQUEUE_CALL_COUNT: [CacheLineAligned<AtomicU64>;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+    CacheLineAligned(AtomicU64::new(0))
+}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+const _: () = assert!(
+    core::mem::size_of::<CacheLineAligned<AtomicU64>>() == 64,
+    "each CTX/DEFER per-CPU call counter must occupy its own 64-byte cache line"
+);
+const _: () = assert!(
+    core::mem::align_of::<CacheLineAligned<AtomicU64>>() == 64,
+    "each CTX/DEFER per-CPU call counter must be 64-byte aligned"
+);
 
 static LAST_DEFER_REQUEUE_INFO: CacheLineAligned<[AtomicU64; 8]> =
     CacheLineAligned([const { AtomicU64::new(0) }; 8]);

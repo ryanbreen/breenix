@@ -345,8 +345,8 @@ impl TraceCounter {
 ```
 Per-CPU Trace Buffer (embedded in PerCpuData):
 +------------------+
-| TraceCpuBuffer   |  ~16 KiB per CPU (1024 entries * 16 bytes)
-| - entries[1024]  |
+| TraceCpuBuffer   |  32 KiB of entries per CPU (2048 entries * 16 bytes; #855)
+| - entries[2048]  |
 | - write_idx      |
 | - read_idx       |
 | - dropped        |
