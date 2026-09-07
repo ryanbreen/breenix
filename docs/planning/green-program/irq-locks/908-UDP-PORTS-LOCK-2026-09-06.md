@@ -333,6 +333,14 @@ are used verbatim with `git commit -F` and carry both requested co-authors.
   claim, a throughput benchmark, or a worst-case bound on ephemeral-bind
   latency. The artificial 12 ms hold and its CNTVCT readings characterize
   these runs, not a portable timing bound.
+* The serials linked from the strict ×3 result (02/03/04) share
+  `BUILD_ID: 006a9e2bb629e7`, differing from the final red run's
+  `006a9e2b8d364c` and the earlier red's `006a9e2a6300ba`. `BUILD_ID` is
+  produced by `kernel/build.rs` from `SystemTime::now()` (wall-clock
+  seconds plus truncated subsecond nanos), not a hash of the committed
+  source tree, so the match is evidence the three green boots ran the
+  same build artifact from one build invocation, not a cryptographic
+  proof that this exact git commit produced that binary.
 * No merge to main or wider IRQ-lock audit is part of this round.
 
 ## Fix pass — review findings closed (2026-09-07)
@@ -456,3 +464,67 @@ quantifier in prose, plus generated preflight mutation fixtures under
 `.gate-tmp`. The prose now uses descriptive arm names. This pass's generated
 preflight directories were moved under `.tmp` for preservation, following
 the earlier round's artifact convention; lint criteria were not changed.
+
+## Prose fix pass — review findings closed (2026-09-07)
+
+This pass addresses four nit/prose findings (N-4, N-7, N-13, N-15) from
+the review round that followed the N-1/N-6 fix pass above. 0 of the 4
+required a behavioral change: N-4 and N-7 correct prose/comments, N-13 and
+N-15 are re-verified as already accurate.
+
+1. N-4 (nit/prose) — `tests/udp_ports_lock_irq_structure.rs`'s
+   `_rule_is_not_vacuous` tests for `with_udp_ports_masked_masks_the_whole_hold`,
+   `try_lookup_udp_uses_try_lock_not_blocking_lock`,
+   `try_lookup_udp_counts_refusals`, and `handle_udp_uses_try_lookup_udp_not_lookup_udp`
+   each carried the comment "Limit replacement to this function so bind and
+   unbind cannot mutate each other," copy-pasted from the `bind_udp`/`unbind_udp`
+   pair (lines 198 and 220, where it is accurate: both functions share the
+   identical target string `self.with_udp_ports_masked(|ports| {`). The other
+   four tests do not touch `bind_udp` or `unbind_udp`. Closed by rewriting
+   each of the four comments (now at lines 176, 242, 264, 286) to name the
+   function it actually anchors to, e.g. "Anchor the replacement to
+   try_lookup_udp's body so the mutation targets this function specifically."
+   No assertion, target string, or check function changed. After the comment
+   edit, `bash scripts/run-structure-tests.sh udp_ports_lock_irq_structure`
+   exits 0 with 18/18 tests passing, including the four `_rule_is_not_vacuous`
+   tests whose bodies execute each mutation and assert it reddens the rule —
+   confirming the mutations still redden the correct rule after the comment
+   fix touched no code.
+2. N-7 (nit/prose) — the round's red/green evidence compares `BUILD_ID`
+   values across boots (`006a9e2bb629e7` for the green ×3, `006a9e2b8d364c`
+   and `006a9e2a6300ba` for the two red runs) without stating what `BUILD_ID`
+   is. `kernel/build.rs:23-33` derives it from `SystemTime::now()`, not a
+   source hash. Closed by adding a bullet to "Not claimed" above stating the
+   match establishes single-build-session consistency, not that this exact
+   git commit produced that binary.
+3. N-13 (nit/prose) — re-verified rather than rewritten: `gh issue view 909`
+   returns a real, open issue titled "kernel/src/test_framework/registry.rs:
+   irq_hold_received (#812 checker) takes the UDP socket lock unmasked,"
+   filed 2026-09-07, matching the "Not claimed" section's description.
+   `git diff 19d13f0ee64a HEAD -- kernel/src/test_framework/registry.rs`
+   shows this branch's only change to that file is a new block appended
+   after line 5441; `irq_hold_received` (lines 5245-5260 in both the merge
+   base and `HEAD`) is byte-for-byte identical (`diff` exit 0). No doc
+   change was needed; the existing sentence already matches the evidence.
+4. N-15 (nit/prose) — re-verified: `python3 scripts/claim-lint.py` at the
+   tree state after closing N-4 and N-7 exits 0: "claim-lint: clean (35
+   file(s) checked, changed hunks vs 19d13f0ee64a)."
+
+Claim discipline for this pass:
+
+| invocation | exit code |
+|---|---|
+| `python3 scripts/claim-lint.py`, after the N-4 test-comment fix, before drafting this section | 0 |
+| `python3 scripts/claim-lint.py`, after drafting items 1-4 and the "Not claimed" bullet | 1 |
+| `python3 scripts/claim-lint.py`, after a first reword pass | 1 |
+| `python3 scripts/claim-lint.py`, after a second reword pass | 0 |
+| `python3 scripts/claim-lint.py`, after drafting this table's narrative | 1 |
+| `python3 scripts/claim-lint.py`, after a reword pass on this table's own narrative | 1 |
+| `python3 scripts/claim-lint.py`, after a further reword pass on this table's own narrative | 0 |
+
+Writing this section triggered its own rules more than once: prose
+describing which word tripped a claim-lint rule tends to quote that same
+word, tripping the rule again. Each flagged sentence lacked a nearby N-of-M
+count or resolving citation to discharge it and was reworded to drop the
+flagged word rather than annotated with a lint exemption. Lint criteria
+were not changed.

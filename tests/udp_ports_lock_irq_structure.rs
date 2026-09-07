@@ -173,7 +173,7 @@ fn with_udp_ports_masked_masks_the_whole_hold() {
 #[test]
 fn with_udp_ports_masked_masks_the_whole_hold_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
-    // Limit replacement to this function so bind and unbind cannot mutate each other.
+    // Anchor the replacement to with_udp_ports_masked's body so the mutation targets this function specifically.
     let start = source.find("fn with_udp_ports_masked").unwrap();
     let mutated = format!("{}{}", &source[..start], source[start..].replacen(
         "Cpu::without_interrupts(|| f(&mut self.udp_ports.lock()))", "f(&mut self.udp_ports.lock())", 1,
@@ -239,7 +239,7 @@ fn try_lookup_udp_uses_try_lock_not_blocking_lock() {
 #[test]
 fn try_lookup_udp_uses_try_lock_not_blocking_lock_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
-    // Limit replacement to this function so bind and unbind cannot mutate each other.
+    // Anchor the replacement to try_lookup_udp's body so the mutation targets this function specifically.
     let start = source.find("fn try_lookup_udp").unwrap();
     let mutated = format!("{}{}", &source[..start], source[start..].replacen(
         "self.udp_ports.try_lock()", "self.udp_ports.lock()", 1,
@@ -261,7 +261,7 @@ fn try_lookup_udp_counts_refusals() {
 #[test]
 fn try_lookup_udp_counts_refusals_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
-    // Limit replacement to this function so bind and unbind cannot mutate each other.
+    // Anchor the replacement to try_lookup_udp's body so the mutation targets this function specifically.
     let start = source.find("fn try_lookup_udp").unwrap();
     let mutated = format!("{}{}", &source[..start], source[start..].replacen(
         "UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, Ordering::Relaxed);", "", 1,
@@ -283,7 +283,7 @@ fn handle_udp_uses_try_lookup_udp_not_lookup_udp() {
 #[test]
 fn handle_udp_uses_try_lookup_udp_not_lookup_udp_rule_is_not_vacuous() {
     let source = repo_text(NET_UDP);
-    // Limit replacement to this function so bind and unbind cannot mutate each other.
+    // Anchor the replacement to handle_udp's body so the mutation targets this function specifically.
     let start = source.find("fn handle_udp").unwrap();
     let mutated = format!("{}{}", &source[..start], source[start..].replacen(
         "try_lookup_udp(header.dst_port)", "lookup_udp(header.dst_port)", 1,
