@@ -17150,7 +17150,7 @@ fn validate_unpublished_construction_ownership(manager: &str) -> Result<(), Vec<
     let mut failures = Vec::new();
     check(
         &mut failures,
-        "process-builder census resolved fewer than four image-loading row builders",
+        "process-builder census did not resolve exactly four image-loading row builders",
         builders.len() == 4,
     );
 
@@ -17219,6 +17219,18 @@ fn validate_unpublished_construction_ownership(manager: &str) -> Result<(), Vec<
             &format!("{name} carries no fallible step under the construction guard"),
             code_offsets(guard_span, &code_mask(guard_span), ")?").len() >= 1,
         );
+
+        // The window between the publish and the construction guard arming
+        // must itself carry no fallible step: this is the property the
+        // module doc and commit message both claim ("between them there is
+        // no fallible step") but that carrier_span/guard_span leave
+        // uninspected, since neither spans from publishes[0] to guards[0].
+        let unguarded_gap = &body[publishes[0]..guards[0]];
+        check(
+            &mut failures,
+            &format!("{name} has a fallible step between the publish and the construction guard"),
+            code_offsets(unguarded_gap, &code_mask(unguarded_gap), ")?").is_empty(),
+        );
     }
 
     failures.is_empty().then_some(()).ok_or(failures)
@@ -17268,4 +17280,78 @@ fn fallible_process_construction_holds_unpublished_ownership() {
     let uncommitted_failures = validate_unpublished_construction_ownership(&uncommitted)
         .expect_err("a builder that never commits its guard escaped the ownership ratchet");
     eprintln!("588 commit-removal mutation:\n{}", uncommitted_failures.join("\n"));
+
+    // Open a fallible step between the publish and the construction guard:
+    // the address space in that window has no owner until the guard arms,
+    // which the module doc and commit message both claim is unreachable
+    // (E-4).
+    let republished = manager.replacen(
+        "process.page_table = Some(page_table.publish());\n",
+        "process.page_table = Some(page_table.publish());\n        record_publish_watermark(pid)?;\n",
+        1,
+    );
+    assert_ne!(republished, manager, "publish-to-guard gap mutation anchor");
+    let republished_failures = validate_unpublished_construction_ownership(&republished)
+        .expect_err("a fallible step between publish and the construction guard escaped the ownership ratchet");
+    eprintln!("588 publish-to-guard-gap mutation:\n{}", republished_failures.join("\n"));
+}
+
+/// The census-failure message must describe both directions of a wrong count
+/// (issue 588, E-9): `builders.len() == 4` is an equality, so a fifth
+/// qualifying builder is just as much a failure as a third, and the message
+/// must not claim "fewer than four" when there are more.
+#[test]
+fn process_builder_census_message_does_not_claim_fewer_when_over_four() {
+    let fixture = r#"
+fn builder_one() { load_elf_into_page_table(); self.processes.insert(pid, one); }
+fn builder_two() { load_elf_into_page_table(); self.processes.insert(pid, two); }
+fn builder_three() { load_elf_into_page_table(); self.processes.insert(pid, three); }
+fn builder_four() { load_elf_into_page_table(); self.processes.insert(pid, four); }
+fn builder_five() { load_elf_into_page_table(); self.processes.insert(pid, five); }
+"#;
+    let failures = validate_unpublished_construction_ownership(fixture)
+        .expect_err("five qualifying builders must fail the four-builder census");
+    let census_message =
+        "process-builder census did not resolve exactly four image-loading row builders";
+    assert!(
+        failures.iter().any(|failure| failure == census_message),
+        "expected the corrected census-count failure message, got: {failures:?}"
+    );
+    assert!(
+        !failures.iter().any(|failure| failure.contains("fewer than four")),
+        "a five-builder census must not claim \"fewer than four\": {failures:?}"
+    );
+}
+
+/// `UnpublishedPageTable::from_box` was inserted between `as_mut` and
+/// `publish` (issue 588, E-10) with a stray doubled blank line above it and
+/// a missing blank line separating its closing brace from `publish` below.
+/// Both gaps in this impl block should be exactly one blank line, not a
+/// missing one and not a doubled one.
+#[test]
+fn unpublished_page_table_from_box_uses_single_blank_line_separators() {
+    let sources = rust_sources_below("kernel/src");
+    let module = source(&sources, "kernel/src/memory/process_memory.rs");
+
+    let above = "self.page_table.as_deref_mut().expect(\"unpublished table\")\n    }\n\n    /// Take custody of a table that is already boxed";
+    assert!(
+        module.contains(above),
+        "expected exactly one blank line between as_mut and from_box's doc comment"
+    );
+    let doubled_above = "self.page_table.as_deref_mut().expect(\"unpublished table\")\n    }\n\n\n    /// Take custody of a table that is already boxed";
+    assert!(
+        !module.contains(doubled_above),
+        "doubled blank line reintroduced above from_box's doc comment"
+    );
+
+    let below = "            pid,\n        }\n    }\n\n    pub(crate) fn publish(mut self)";
+    assert!(
+        module.contains(below),
+        "expected exactly one blank line between from_box and publish"
+    );
+    let glued_below = "            pid,\n        }\n    }\n    pub(crate) fn publish(mut self)";
+    assert!(
+        !module.contains(glued_below),
+        "missing blank line reintroduced between from_box and publish"
+    );
 }
