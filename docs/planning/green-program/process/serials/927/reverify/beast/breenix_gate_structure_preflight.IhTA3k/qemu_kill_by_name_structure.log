@@ -1,0 +1,9 @@
+== compiling qemu_kill_by_name_structure ==
+== running qemu_kill_by_name_structure  ==
+
+running 2 tests
+test kill_by_name_predicates_are_not_vacuous ... ok
+test no_shell_script_kills_qemu_by_name_or_pattern ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+

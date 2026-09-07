@@ -1,0 +1,10 @@
+docs(586 PR 2): record the merged-tree landing gates
+
+Record the restored census marker, the construction-census correction,
+the passing structure and strict-1 gates, and the claim-message audit.
+Preserve the initial structure failure and the final gate evidence.
+
+Refs #586
+
+Co-Authored-By: Ryan Breen <rbreen@getfastr.com>
+Co-Authored-By: Claude Code <noreply@anthropic.com>

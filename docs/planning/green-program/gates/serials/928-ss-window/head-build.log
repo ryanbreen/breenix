@@ -1,0 +1,4 @@
+Revision: 1b09a97d66319a3aff6dede99ea9af5f5641b115
+Command: cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+Library source: lane-local fork with build-std-softfloat.patch
+    Finished `release` profile [optimized] target(s) in 0.05s

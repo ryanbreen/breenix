@@ -1,0 +1,10 @@
+revision=612309cdbe70a5c706b1270fafdb23caece1f412
+merge-parent=c12ff1409b7e1e1f276ca4c6d5cd97f02973b69b
+working-tree=landing merge, both appended validator sections preserved
+kernel/src/task/scheduler.rs sha256=136d48be4b9b7f1f5e93d03edd3904af4d79c80ca47e7cae458420751dac1449
+tests/loopback_pump_structure.rs sha256=4930350e634beee88f3354c990600e0097568cc507b568a315574ee872e62735
+command=['cargo', 'build', '--release', '--features', 'boot_tests', '--target', 'aarch64-breenix-kernel.json', '-Z', 'build-std=core,alloc', '-Z', 'build-std-features=compiler-builtins-mem', '-p', 'kernel', '--bin', 'kernel-aarch64']
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 8.90s
+
+exit=0

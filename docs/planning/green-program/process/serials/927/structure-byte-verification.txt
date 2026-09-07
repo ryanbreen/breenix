@@ -1,0 +1,7 @@
+VERIFIED_COMMIT=c5b5d0dc026044005e025e549fc121779e5b165f
+Mac structure-final.log ran baseline 5c35eba2 plus the context fork repair.
+All four implementation files match the committed bytes:
+kernel/src/process/manager.rs
+tests/x86_boot_tests_profile_structure.rs
+docker/qemu/run-x86-boot-tests-only.sh
+docker/qemu/run-blocking-io-oracle-gate.sh

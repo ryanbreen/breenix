@@ -2605,6 +2605,40 @@ fn sleep_current_thread_ms(duration_ms: u64) {
 /// not a delay a passing run pays.
 const LOOPBACK_BACKSTOP_MS: u64 = 1_000 * crate::time::timer::MS_PER_TICK;
 
+/// The wake budget the loopback recv-wake tests give the reader, in ms.
+const LOOPBACK_WAKE_BUDGET_MS: u64 = 200;
+
+/// The fewest context switches a budget window must buy before the guest is
+/// credited with having executed.
+///
+/// #586 PR 2. Set from a measured green population, not a guess. The marker
+/// line was landed first and read off one 10-boot
+/// `docker/qemu/run-aarch64-boot-test-strict.sh` run -- 2 lines per boot,
+/// `when_idle` and `under_load`, so 20 green lines. One rule sets both this
+/// constant and the divergence ceiling below: each is placed a factor of two
+/// clear of the worst value the population showed, rounded outward to a whole
+/// number. The smallest `ctx_delta` observed was 60, so the floor is 30. The
+/// table, the run and the arithmetic are in
+/// docs/planning/green-program/network/586-PR2-2026-09-07.md.
+const LOOPBACK_WAKE_CTX_FLOOR: u64 = 30;
+
+/// The largest counter-clock/tick-clock ratio a budget window may show before
+/// the guest is called starved, as `NUM / DEN`.
+///
+/// `get_monotonic_time()` advances only on delivered timer interrupts;
+/// `monotonic_now_ns()` reads CNTVCT_EL0/TSC and advances with the host. A
+/// window that burned host time without delivering ticks is time this guest
+/// did not get. Same population and the same factor-of-two rule as the floor
+/// above: the largest `elapsed_ctr_ms / elapsed_tick_ms` any of the 20 green
+/// lines carried was 1.85 (209/113), so the ceiling is 4.
+///
+/// The ratio these two constants bound is a property of THIS host under the
+/// gate's own load, not of the kernel. A different host, or this host under a
+/// different concurrent load, would want the population re-measured before
+/// either constant is read as a threshold.
+const LOOPBACK_WAKE_DIVERGENCE_NUM: u64 = 4;
+const LOOPBACK_WAKE_DIVERGENCE_DEN: u64 = 1;
+
 fn setup_loopback_tcp_pair(
     listen_port: u16,
     client_port: u16,
@@ -2935,7 +2969,52 @@ fn run_loopback_recv_wake_test_inner(
         return TestResult::Fail("tcp_send failed in loopback wake test");
     }
 
-    sleep_current_thread_ms(200);
+    // #586 PR 2: bracket the budget with three clocks, so a boot that misses
+    // the wake can say where the time went instead of leaving the reader's
+    // state to carry the whole argument.
+    //
+    // `get_monotonic_time()` is the TICK clock -- `TICKS * MS_PER_TICK`, and
+    // `TICKS` only advances when this guest takes a timer interrupt.
+    // `monotonic_now_ns()` is the COUNTER clock -- CNTVCT_EL0 on aarch64, the
+    // TSC on x86_64 -- which advances with the host whether or not this guest
+    // is scheduled. `CTX_SWITCH_TOTAL.aggregate()` counts the context switches
+    // the guest actually performed across the window. A window in which the
+    // counter ran far ahead of the ticks, or in which the guest performed no
+    // switches, is the guest's own measurement of time it did not get.
+    //
+    // All three are reads of state that already exists. Nothing here writes to
+    // a dispatch, interrupt or syscall path, and no Tier-1 or Tier-2 file is
+    // touched.
+    // claim-lint:ok: "all three" is the 3 stamps taken below; the Tier
+    // statement is the 2-file diff of this branch -- this file and
+    // kernel/src/task/scheduler.rs, neither of which is in CLAUDE.md's Tier-1
+    // or Tier-2 tables. See #586 and
+    // docs/planning/green-program/network/586-PR2-2026-09-07.md.
+    let tick_before_ms = crate::time::get_monotonic_time();
+    let ctr_before_ns = monotonic_now_ns();
+    let ctx_before = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
+    // Two point samples of the per-CPU idle flags, unioned below. This is not
+    // a continuous observation of the window: it says a CPU was idle at one of
+    // the two instants, never that one was idle throughout.
+    // claim-lint:ok: 2 point samples is the count of `idle_cpu_bitmap` reads
+    // this function takes, 2 of 2; see #586.
+    //
+    // `thread_placement_facts` returning `None` here means "the scheduler
+    // was unavailable", not "no CPU was idle" -- its own doc comment above
+    // says the two are separate. `idle_before_sampled` keeps that fact alive
+    // past the `map_or` below so the emitter can still tell them apart.
+    // claim-lint:ok: the doc comment cited is
+    // `thread_placement_facts`'s own, kernel/src/task/scheduler.rs:5977-5979;
+    // see #586.
+    let idle_before_facts = scheduler::thread_placement_facts(reader_tid);
+    let idle_before_sampled = idle_before_facts.is_some();
+    let idle_before = idle_before_facts.map_or(0u32, |facts| facts.idle_cpu_bitmap);
+
+    sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS);
+
+    let tick_after_ms = crate::time::get_monotonic_time();
+    let ctr_after_ns = monotonic_now_ns();
+    let ctx_after = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
 
     let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
     let received = LOOPBACK_READER_BYTES.load(AtomicOrdering::SeqCst);
@@ -2943,6 +3022,20 @@ fn run_loopback_recv_wake_test_inner(
     let client_has_data = tcp::tcp_has_data(&client);
     let reader_state =
         scheduler::with_scheduler(|sched| sched.get_thread(reader_tid).map(|thread| thread.state));
+    let placement = scheduler::thread_placement_facts(reader_tid);
+    // State, placement, and the accessor's unlocked idle flags are separate
+    // observations. This census is another snapshot, after the clock stamps.
+    let mut census_candidates = [scheduler::StrandCandidate {
+        tid: 0,
+        shape: scheduler::StrandShape::Running,
+        privilege: crate::task::thread::ThreadPrivilege::Kernel,
+        state: crate::task::thread::ThreadState::Running,
+    }; scheduler::STRAND_CENSUS_CAPACITY];
+    let mut census_nonprogress = [0u64; scheduler::STRAND_CENSUS_CAPACITY];
+    let census = scheduler::collect_strand_census(
+        &mut census_candidates,
+        &mut census_nonprogress,
+    );
     let _ = kthread::kthread_stop(&reader);
     let _ = kthread::kthread_join(&reader);
     if let Some(handle) = &load {
@@ -3023,6 +3116,165 @@ fn run_loopback_recv_wake_test_inner(
         }
     };
 
+    // #586 PR 2: emit on the passing path AND on both failing paths AFTER
+    // the emitter is bound. The seven earlier setup/send failures do not
+    // print a budget marker. Green runs provide comparison measurements for
+    // the two late failure paths.
+    // The strand-census fields below use a separate post-window snapshot;
+    // no stack-risk measurement justifies omitting this existing kthread API.
+    let elapsed_tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
+    let elapsed_ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
+    let ctx_delta = ctx_after.wrapping_sub(ctx_before);
+    // Same collapse as `idle_before` above, on the deadline-side sample: a
+    // `None` here means "unavailable", not "idle_cpu_bitmap of 0". A set bit
+    // in the union can only be written by a sample that succeeded, so the
+    // ambiguity is confined to the case where the union is exactly zero;
+    // `idle_cpus_sampled` is what lets the emitter print `unavailable` in that
+    // one case instead of a `0x0` indistinguishable from "sampled and nothing
+    // was idle".
+    // claim-lint:ok: the confinement is `IdleCpusSlot::fmt`'s own `if` guard
+    // below (`bits == 0 && !sampled`), 1 of 1 producer; see #586.
+    let idle_cpus_sampled = idle_before_sampled || placement.is_some();
+    let idle_cpus = idle_before | placement.map_or(0u32, |facts| facts.idle_cpu_bitmap);
+
+    // The guest is credited with having executed across the window when it
+    // both performed context switches and kept its tick clock inside the
+    // divergence ceiling of its counter clock.
+    let guest_executed = ctx_delta >= LOOPBACK_WAKE_CTX_FLOOR
+        && elapsed_ctr_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_DEN)
+            <= elapsed_tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM);
+
+    // `verdict` names the BUDGET's outcome, not the test's. A boot that woke
+    // inside the budget and then received the wrong byte count fails below
+    // and still reads `verdict=ok`, because the budget was in fact met.
+    let verdict = if wake_ms != 0 {
+        "ok"
+    } else if matches!(reader_fact, ReaderFact::StillBlocked) {
+        "wake"
+    } else if !guest_executed {
+        "starved"
+    } else {
+        "dispatch"
+    };
+
+    let reader_state_token = match reader_state {
+        Some(Some(state)) if state.is_blocked() => "blocked",
+        Some(Some(crate::task::thread::ThreadState::Ready)) => "ready",
+        Some(Some(crate::task::thread::ThreadState::Running)) => "running",
+        Some(Some(crate::task::thread::ThreadState::Terminated)) => "terminated",
+        Some(Some(_)) => "other",
+        Some(None) | None => "absent",
+    };
+    let arch_token = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86"
+    };
+    let test_token = if with_load { "under_load" } else { "when_idle" };
+
+    // `queued_cpu` and `queued_idx` each have THREE states, not two:
+    // queued at a value, sampled-and-not-queued-anywhere, and
+    // sample-unavailable (`thread_placement_facts` returned `None` because
+    // `with_scheduler` declined -- its own doc comment above says this is
+    // separate from "not queued anywhere"). Folding both no-value cases into
+    // one `none` token -- which `placement.and_then(...)` does, because
+    // `and_then` cannot see whether the outer `Option` or the inner one was
+    // the source of the `None` -- prints the same bytes for two different
+    // fault classes. `PlacementSlot` keeps a third, explicit `unavailable`
+    // token for the case the doc comment says is separate.
+    // claim-lint:ok: the 3 printed forms are this type's own 3 `match` arms,
+    // 1 of 1 producer; see #586.
+    enum PlacementSlot {
+        Value(usize),
+        NotQueued,
+        Unavailable,
+    }
+    impl PlacementSlot {
+        fn of(
+            placement: Option<scheduler::ThreadPlacementFacts>,
+            field: impl FnOnce(scheduler::ThreadPlacementFacts) -> Option<usize>,
+        ) -> Self {
+            match placement.map(field) {
+                Some(Some(value)) => PlacementSlot::Value(value),
+                Some(None) => PlacementSlot::NotQueued,
+                None => PlacementSlot::Unavailable,
+            }
+        }
+    }
+    impl core::fmt::Display for PlacementSlot {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self {
+                PlacementSlot::Value(value) => write!(formatter, "{value}"),
+                PlacementSlot::NotQueued => formatter.write_str("none"),
+                PlacementSlot::Unavailable => formatter.write_str("unavailable"),
+            }
+        }
+    }
+
+    // `idle_cpus` is a union of two point samples (see `idle_before` and
+    // `idle_cpus_sampled` above); a set bit is proof one of them succeeded,
+    // so the only ambiguous byte is a union that reads exactly zero with
+    // neither sample available -- indistinguishable from "sampled, and no
+    // CPU was idle" unless this type says otherwise.
+    // claim-lint:ok: the zero-ambiguity claim is the same read of `idle_cpus`
+    // and `idle_cpus_sampled` that produced them above, 1 of 1 producer each;
+    // see #586.
+    struct IdleCpusSlot {
+        bits: u32,
+        sampled: bool,
+    }
+    impl core::fmt::Display for IdleCpusSlot {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            if self.bits == 0 && !self.sampled {
+                formatter.write_str("unavailable")
+            } else {
+                write!(formatter, "0x{:x}", self.bits)
+            }
+        }
+    }
+
+    // `extensions` is 0 on every line this PR can print: the budget is still
+    // one fixed window and nothing extends it. The field is here so PR 3's
+    // extension arithmetic lands in a grammar the green population already
+    // carries, and so a reader of these logs is never left guessing whether
+    // an absent field meant zero.
+    // claim-lint:ok: `extensions` is the literal 0 at the 1 of 1 call site of
+    // this format string, and 20 of 20 lines in the measured population read
+    // extensions=0 -- see
+    // docs/planning/green-program/network/586-PR2-2026-09-07.md and #586.
+    struct CensusSlot(Option<u64>);
+    impl core::fmt::Display for CensusSlot {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self.0 {
+                Some(value) => write!(formatter, "{value}"),
+                None => formatter.write_str("unavailable"),
+            }
+        }
+    }
+    let emit_wake_budget = || {
+        crate::serial_println!(
+            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
+            arch_token,
+            test_token,
+            LOOPBACK_WAKE_BUDGET_MS,
+            elapsed_tick_ms,
+            elapsed_ctr_ms,
+            ctx_delta,
+            0u64,
+            reader_state_token,
+            PlacementSlot::of(placement, |facts| facts.queued_cpu),
+            PlacementSlot::of(placement, |facts| facts.queued_index),
+            IdleCpusSlot {
+                bits: idle_cpus,
+                sampled: idle_cpus_sampled,
+            },
+            CensusSlot(census.map(|facts| facts.worst_cpu_scheduler_silence_ms)),
+            CensusSlot(census.map(|facts| facts.worst_silence_cpu)),
+            wake_ms,
+            verdict,
+        );
+    };
+
     if wake_ms == 0 {
         crate::net::dump_loopback_state();
         crate::task::scheduler::dump_thread_placement(reader_tid, "loopback-reader");
@@ -3036,6 +3288,7 @@ fn run_loopback_recv_wake_test_inner(
             reader_tid,
             reader_state,
         );
+        emit_wake_budget();
         return TestResult::Fail(diagnostic_message);
     }
     if received != 3 {
@@ -3051,9 +3304,11 @@ fn run_loopback_recv_wake_test_inner(
             reader_tid,
             reader_state,
         );
+        emit_wake_budget();
         return TestResult::Fail("reader woke without receiving the 3 loopback bytes");
     }
 
+    emit_wake_budget();
     TestResult::Pass
 }
 

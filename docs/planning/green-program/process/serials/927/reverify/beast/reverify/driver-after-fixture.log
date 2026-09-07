@@ -1,0 +1,6 @@
+REVISION=62988b29cf6e5800e7ef5c56c1aad630649569fd
+userspace setup exit=0
+oracle-fixed exit=0
+precommit exit=0
+prod exit=0
+DRIVER_COMPLETE

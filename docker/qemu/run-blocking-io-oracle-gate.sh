@@ -36,7 +36,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 case "$ARCH" in x86_64|aarch64) ;; *) echo "FAIL: --arch x86_64|aarch64 required"; false ;; esac
-# Adopt 927's x86 cohort startup bound; ARM keeps its existing bound.
+# x86 runs the early retirement and stack cohorts before ordinary init. Use
+# the existing full x86 boot gate's 900-second bound for that startup workload.
 HOST_DEADLINE=120
 if [ "$ARCH" = x86_64 ]; then HOST_DEADLINE=900; fi
 case "$PROGRAM" in pipe_fifo_blocking_oracle|unix_stream_blocking_oracle) ;; *) echo "FAIL: unsupported --program"; false ;; esac

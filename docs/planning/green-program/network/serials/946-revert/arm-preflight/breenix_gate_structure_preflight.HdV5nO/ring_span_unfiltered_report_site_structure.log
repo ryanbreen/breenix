@@ -1,0 +1,21 @@
+== compiling ring_span_unfiltered_report_site_structure ==
+== running ring_span_unfiltered_report_site_structure  ==
+
+running 14 tests
+test moving_the_marker_text_back_into_the_provider_would_be_caught - should panic ... ok
+test the_marker_text_is_not_in_the_tick_provider ... ok
+test claim_and_is_ready_never_touch_trace_buffers_directly ... ok
+test reintroducing_a_cross_cpu_read_in_claim_would_be_caught - should panic ... ok
+test only_publish_self_reads_trace_buffers_and_only_by_its_own_cpu_parameter ... ok
+test moving_the_print_back_into_the_tick_would_be_caught - should panic ... ok
+test unfiltered_report_is_released_after_the_synchronous_capture ... ok
+test the_tick_provider_reaches_no_unlocked_serial_writer ... ok
+test indexing_by_a_different_variable_would_be_caught - should panic ... ok
+test the_printing_test_is_registered_in_the_test_table ... ok
+test strict_gate_checks_the_parsed_unfiltered_span ... ok
+test capture_selftest_detection_reads_the_kernel_once_outside_scoring ... ok
+test weakening_the_unfiltered_floor_would_be_caught - should panic ... ok
+test the_registry_prints_the_marker_through_the_locked_writer ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

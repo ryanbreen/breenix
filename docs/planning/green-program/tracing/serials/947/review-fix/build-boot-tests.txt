@@ -1,0 +1,18 @@
+revision=54f33c141600fc464a1a52fdccf6575154d5083b
+status= M docker/qemu/run-aarch64-service-sequence-gate.sh
+ M kernel/src/tracing/providers/teardown.rs
+ M tests/gate_structure_preflight_wiring_structure.rs
+ M tests/teardown_structure.rs
+?? docs/planning/green-program/tracing/serials/947/review-fix/
+?? tests/teardown_rustfmt_structure.rs
+
+kernel/src/tracing/providers/teardown.rs sha256=e0dbea80c9850356c78766f2ec17066eacee9b02ebf11e3ca5800ee3af9956b5
+tests/teardown_structure.rs sha256=cf817e2f474118afd7bf615e4695745c2d39f950d9d13570e46b5bfabb050de4
+target/aarch64-breenix-kernel/release/kernel-aarch64 sha256=459a116f4bc7b3ab52a843e69fcdd6cfaaf10e234420ee3a932a063e2201efb1
+command=cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 16.24s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+
+exit=0

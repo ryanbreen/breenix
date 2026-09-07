@@ -1,0 +1,3 @@
+# Preserve raw serial CR bytes and host transcripts as captured.
+*.txt -text
+*.log -text

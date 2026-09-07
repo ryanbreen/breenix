@@ -1,0 +1,5 @@
+claim-lint: python3 scripts/claim-lint.py -> exit 1
+Initial lint included generated mutation-source copies from preflight scratch directories; removed those disposable copies, keeping suite transcripts and status receipts.
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/docs-message.txt -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/pr-body.txt -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0

@@ -1,0 +1,26 @@
+title:	#928 isolation fixtures add ~39 s to every boot_tests boot; scale the windows so the per-boot cost drops below 10 s
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	947
+--
+The isolation fixture added by PR #928 runs on every aarch64 boot_tests boot. In kernel/src/tracing/providers/teardown.rs:8260, exit_kick_worker_window_isolation_test uses a 15000 ms control ceiling and three 8000 ms first-progress windows (lines 8267–8269). Its five sequential scenarios consume approximately 39 seconds.
+
+The C5 V-8 budget note at kernel/src/tracing/providers/teardown.rs:8985–8992 explicitly identifies this approximately 39-second consumer of the shared test-phase liveness budget. That budget is 60 seconds (kernel/src/test_framework/mod.rs:105). The C5 round note also describes this cost in docs/planning/green-program/tracing/522-C5-2026-09-07.md:455–457. At 50 boots, 50 × 39 seconds = 1950 seconds = 32.5 minutes (about 32 minutes) per battery reading, before the other boot work.
+
+Scale these fixture windows so the total per-boot fixture cost drops below 10 seconds while retaining the union-masking control, each independently frozen worker, healthy baseline, and deadline-order assertions. Keep production budgets unchanged.
+
+C5 precedent: kernel/src/tracing/providers/teardown.rs:9167–9195, exit_kick_budget_anchor_isolation_test, already uses scaled fixture budgets and preserves their ordering. Apply that approach to C4, retaining discriminating negative controls and measured elapsed-time bounds on both max and cortex-a72.
+
+This is follow-up work: the capture-window correction only raises the service-sequence host capture from 45 to 90 seconds to match strict. It does not reduce fixture runtime.
+

@@ -9,7 +9,8 @@ else:
     arms = args
 assert program in ('pipe_fifo_blocking_oracle', 'unix_stream_blocking_oracle'), 'unsupported program'
 text = '\n'.join(p.read_text(errors='replace') for p in pathlib.Path(directory).glob('*.txt'))
-# Only remove the two complete GDT setup messages; a same-line fault remains.
+# Remove only the two known GDT initialization messages, not whole lines:
+# a fault banner on the same line must still fail the gate.
 crash_text = re.sub(
     r'(?:TSS IST\[0\] \(double fault stack\):|Updated IST\[0\] \(double fault stack\) to) 0x[0-9a-f]+\b',
     '', text)

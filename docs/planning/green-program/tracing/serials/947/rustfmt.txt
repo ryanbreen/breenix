@@ -1,0 +1,12 @@
+revision=9f79cb71969fe9b9832b1ff921e148a76170a850
+status= M kernel/src/tracing/providers/teardown.rs
+ M tests/teardown_structure.rs
+?? docs/planning/green-program/tracing/947-FIXTURE-COST-2026-09-07.md
+?? docs/planning/green-program/tracing/serials/947/
+
+kernel/src/tracing/providers/teardown.rs sha256=9b8f162803547cfeff41b09c217e459307d8c4e21acecd081bd5e5b7acec02af
+tests/teardown_structure.rs sha256=402569b94e4a443bf90f6f8c6b4e8eeae2250e3f46990f1a710db55e8c9b26aa
+target/aarch64-breenix-kernel/release/kernel-aarch64 sha256=249a4e27e84e2ad1dd98ca51387fd9f40c2176c1ee1104524bf80a0b9ba14f48
+command=rustfmt --check --edition 2021 --unstable-features --file-lines [{"file":"kernel/src/tracing/providers/teardown.rs","range":[8267,8275]},{"file":"kernel/src/tracing/providers/teardown.rs","range":[9164,9175]},{"file":"kernel/src/tracing/providers/teardown.rs","range":[9196,9205]},{"file":"kernel/src/tracing/providers/teardown.rs","range":[9416,9427]}] kernel/src/tracing/providers/teardown.rs
+
+exit=0

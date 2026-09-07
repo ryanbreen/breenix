@@ -46,10 +46,10 @@
 //! the SERIAL1 contention is less severe. The `#[cfg(target_arch = "x86_64")]`
 //! guards on `log_serial_println!` calls in this file reflect that difference.
 
-use super::thread::{CpuContext, VirtAddr};
-use super::thread::{Thread, ThreadState};
 #[cfg(feature = "boot_tests")]
 use super::thread::ThreadPrivilege;
+use super::thread::{CpuContext, VirtAddr};
+use super::thread::{Thread, ThreadState};
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
 use core::cmp::Reverse;
@@ -300,9 +300,8 @@ impl<T> core::ops::Deref for CacheLinePadded<T> {
 
 #[cfg(target_arch = "aarch64")]
 static SCHED_DIAG_CALL_COUNT: [CacheLinePadded<AtomicU64>;
-    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
-    CacheLinePadded(AtomicU64::new(0))
-}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { CacheLinePadded(AtomicU64::new(0)) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 #[cfg(target_arch = "aarch64")]
 const _: () = assert!(
@@ -732,28 +731,6 @@ pub fn emit_pin_guard_oracle() {
     }
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
-fn retain_cpu_affine_test_thread(
-    queue: &mut VecDeque<u64>,
-    thread_id: u64,
-    current_cpu: usize,
-) -> bool {
-    // Zero means "no pinned thread" in BOOT_TEST_CPU_AFFINITY, and 0 is also the
-    // no-thread sentinel: no live thread carries it, so a zero here can only be
-    // an empty affinity slot.
-    if thread_id == 0 {
-        return false;
-    }
-    let target_cpu = BOOT_TEST_CPU_AFFINITY
-        .iter()
-        .position(|slot| slot.load(Ordering::Acquire) == thread_id);
-    if target_cpu.is_none() || target_cpu == Some(current_cpu) {
-        return false;
-    }
-    queue.push_back(thread_id);
-    true
-}
-
 /// Threads work-stealing declined to take because their saved kernel SP stands
 /// in another CPU's per-CPU stack slot. Never reset; reported in the fatal
 /// postmortem next to the custody refusals.
@@ -1054,11 +1031,7 @@ pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static
             return Err("departure probe current thread already named a ready queue");
         }
 
-        let cardinality_before = scheduler
-            .per_cpu_queues
-            .iter()
-            .map(VecDeque::len)
-            .sum();
+        let cardinality_before = scheduler.per_cpu_queues.iter().map(VecDeque::len).sum();
         scheduler.per_cpu_queues[cpu].push_back(tid);
         scheduler.block_current();
 
@@ -1089,11 +1062,7 @@ pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static
             .iter()
             .zip(membership_before_unblock)
             .any(|(queue, was_member)| queue.contains(&tid) != was_member);
-        let cardinality_after = scheduler
-            .per_cpu_queues
-            .iter()
-            .map(VecDeque::len)
-            .sum();
+        let cardinality_after = scheduler.per_cpu_queues.iter().map(VecDeque::len).sum();
 
         Ok(DepartureProbe {
             queued_after_block,
@@ -1912,7 +1881,60 @@ pub struct Scheduler {
     retirement_grace: alloc::vec::Vec<RetirementGrace>,
 }
 
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+fn retain_cpu_affine_test_thread(
+    queue: &mut VecDeque<u64>,
+    thread_id: u64,
+    current_cpu: usize,
+) -> bool {
+    if thread_id == 0 {
+        return false;
+    }
+    let target_cpu = BOOT_TEST_CPU_AFFINITY
+        .iter()
+        .position(|slot| slot.load(Ordering::Acquire) == thread_id);
+    if target_cpu.is_none() || target_cpu == Some(current_cpu) {
+        return false;
+    }
+    queue.push_back(thread_id);
+    true
+}
+
 impl Scheduler {
+    /// Restore a rescue candidate already placed on its online worker home.
+    /// Offline homes and stack disagreements fall through to the migration
+    /// guard's counted dispositions. Restoring membership does not kick the CPU.
+    fn retain_pinned_worker_on_source_queue(&mut self, source_cpu: usize, thread_id: u64) -> bool {
+        if super::thread::CPU_PINS_STAMPED.load(Ordering::Relaxed) == 0 {
+            return false;
+        }
+        if source_cpu >= self.online_cpu_count() {
+            return false;
+        }
+        let Some(thread) = self.get_thread(thread_id) else {
+            return false;
+        };
+        if thread.state == ThreadState::Terminated {
+            return false;
+        }
+        let Some(pin) = thread.cpu_affinity else {
+            return false;
+        };
+        if !pin.per_cpu_worker || pin.cpu != source_cpu {
+            return false;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(slot) =
+            crate::arch_impl::aarch64::constants::percpu_stack_slot_of(thread.context.sp)
+        {
+            if slot != pin.cpu {
+                return false;
+            }
+        }
+        self.per_cpu_queues[source_cpu].push_back(thread_id);
+        true
+    }
+
     /// Create a new scheduler with an idle thread for CPU 0.
     pub fn new(idle_thread: Box<Thread>) -> Self {
         let idle_id = idle_thread.id();
@@ -2059,10 +2081,12 @@ impl Scheduler {
                 ) {
                     continue;
                 }
-                // Slice 3e: a per-CPU worker is not rescued onto the rescuing
-                // CPU. Its work lives in the stalled CPU's per-CPU state, so
-                // moving it here would read the wrong state; the guard puts it
-                // back on its home CPU, or holds its wake for that CPU.
+                // Preserve an online worker's existing home membership before
+                // asking the guard to dispose of a migration. Offline homes
+                // and stack conflicts still reach the guard's counted arms.
+                if self.retain_pinned_worker_on_source_queue(cpu, thread_id) {
+                    continue;
+                }
                 if self.retain_cpu_affine_thread(thread_id, current_cpu) {
                     continue;
                 }
@@ -2501,6 +2525,9 @@ impl Scheduler {
                     // re-route above because that route is a hardware fact
                     // about which CPU owns the stack under the thread's saved
                     // SP, and a software pin cannot overrule it.
+                    if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
+                        continue;
+                    }
                     if self.retain_cpu_affine_thread(n, current_cpu) {
                         continue;
                     }
@@ -2572,6 +2599,9 @@ impl Scheduler {
                             }
                             // Slice 3e: the same-thread branch of the same
                             // steal, with the same disposition.
+                            if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
+                                continue;
+                            }
                             if self.retain_cpu_affine_thread(n, current_cpu) {
                                 continue;
                             }
@@ -2729,25 +2759,17 @@ impl Scheduler {
 
         #[cfg(not(feature = "coreproof_mut_pending_next"))]
         {
-            if self
-                .cpu_state
-                .iter()
-                .any(|state| state.idle_thread == tid)
+            if self.cpu_state.iter().any(|state| state.idle_thread == tid)
                 || self
                     .cpu_state
                     .iter()
                     .any(|state| state.current_thread == Some(tid))
-                || self
-                    .per_cpu_queues
-                    .iter()
-                    .any(|queue| queue.contains(&tid))
+                || self.per_cpu_queues.iter().any(|queue| queue.contains(&tid))
                 || self
                     .cpu_state
                     .iter()
                     .any(|state| state.previous_thread == Some(tid))
-                || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(
-                    tid,
-                )
+                || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(tid)
             {
                 return;
             }
@@ -2810,14 +2832,17 @@ impl Scheduler {
             return false;
         }
 
-        let Some((queue_cpu, position)) = self.per_cpu_queues.iter().enumerate().find_map(
-            |(queue_cpu, queue)| {
-                queue
-                    .iter()
-                    .position(|queued_tid| *queued_tid == tid)
-                    .map(|position| (queue_cpu, position))
-            },
-        ) else {
+        let Some((queue_cpu, position)) =
+            self.per_cpu_queues
+                .iter()
+                .enumerate()
+                .find_map(|(queue_cpu, queue)| {
+                    queue
+                        .iter()
+                        .position(|queued_tid| *queued_tid == tid)
+                        .map(|position| (queue_cpu, position))
+                })
+        else {
             return false;
         };
         if self.per_cpu_queues[queue_cpu].remove(position) != Some(tid) {
@@ -3016,6 +3041,9 @@ impl Scheduler {
                     // re-route above because that route is a hardware fact
                     // about which CPU owns the stack under the thread's saved
                     // SP, and a software pin cannot overrule it.
+                    if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
+                        continue;
+                    }
                     if self.retain_cpu_affine_thread(n, current_cpu) {
                         continue;
                     }
@@ -3085,6 +3113,9 @@ impl Scheduler {
                             }
                             // Slice 3e: the same-thread branch of the same
                             // steal, with the same disposition.
+                            if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
+                                continue;
+                            }
                             if self.retain_cpu_affine_thread(n, current_cpu) {
                                 continue;
                             }
@@ -4816,10 +4847,10 @@ impl Scheduler {
     /// Keep a CPU-pinned thread on the CPU its pin names, instead of letting a
     /// migration site move it somewhere else.
     ///
-    /// This is the guard slice 3d's census owed. 11 of 11 functions in this
-    /// file that push a thread id onto a `per_cpu_queues` slot call it before
-    /// they push, and the answer decides whether the caller's own placement
-    /// stands:
+    /// Rescue pops first consult `retain_pinned_worker_on_source_queue` to
+    /// restore workers already on their online home. Candidates it declines
+    /// reach this guard, as do the migration census' other placement paths.
+    /// The answer decides whether the caller's proposed placement stands:
     ///
     /// * `false` -- the caller places the thread exactly as it would have. An
     ///   unpinned thread takes this answer on 1 of 1 reachable arm, so its path
@@ -4935,6 +4966,8 @@ impl Scheduler {
             // caller proposed: a placement needs no delivery, so a hold here
             // would only add a step.
             self.per_cpu_queues[pin.cpu].push_back(thread_id);
+            #[cfg(target_arch = "aarch64")]
+            self.send_resched_ipi_to_cpu(pin.cpu);
             return true;
         }
         // The home CPU is not accepting wakeups, which is slice 3d's hold: the
@@ -4954,8 +4987,12 @@ impl Scheduler {
         // tested by `pinned_wake_is_waiting_here`, which slice 3d recorded
         if self.pinned_wake_is_waiting_here(thread_id, pin.cpu) {
             self.hold_pinned_wake_for_home(thread_id);
+            #[cfg(target_arch = "aarch64")]
+            self.send_resched_ipi_to_cpu(pin.cpu);
         } else {
             self.per_cpu_queues[pin.cpu].push_back(thread_id);
+            #[cfg(target_arch = "aarch64")]
+            self.send_resched_ipi_to_cpu(pin.cpu);
         }
         true
     }
@@ -5930,6 +5967,81 @@ where
 /// Emit scheduler placement facts for one thread.
 pub fn dump_thread_placement(tid: u64, label: &str) {
     Scheduler::dump_thread_placement(tid, label);
+}
+
+/// Where one thread sits, and which CPUs were idle when it was asked.
+///
+/// #586: `Scheduler::dump_thread_placement` already computes the reader's
+/// queue slot (the `position` scan in its snapshot loop) but only prints it,
+/// so a test that wants the two numbers on its own one-line marker has to
+/// re-scan. This accessor is that scan and nothing else -- it takes one
+/// snapshot under `with_scheduler` and writes no scheduler state -- plus the
+/// per-CPU idle flags, so a boot that missed its wake budget can say whether a
+/// CPU was free while the reader sat queued.
+/// claim-lint:ok: "nothing else" names the body of this one function, 1 of 1
+/// -- loopback_wake_budget_placement_accessor_is_read_only in
+/// tests/loopback_pump_structure.rs censuses that body against 6 mutating
+/// call names; see #586.
+#[cfg(any(feature = "boot_tests", feature = "btrt"))]
+#[derive(Clone, Copy)]
+pub struct ThreadPlacementFacts {
+    /// The CPU whose ready queue holds this thread, or `None` if no ready
+    /// queue holds it (it is running, blocked, terminated, or has no row).
+    /// claim-lint:ok: the 4 non-queued dispositions listed are the states a
+    /// thread can be in while absent from all MAX_CPUS ready queues scanned
+    /// by `thread_placement_facts` below; see #586.
+    pub queued_cpu: Option<usize>,
+    /// The thread's index within `queued_cpu`'s ready queue, or `None`.
+    /// claim-lint:ok: `None` here is 1 of the 2 values this field takes and
+    /// it is set from the same scan as `queued_cpu`, 1 of 1 producer; see
+    /// #586.
+    pub queued_index: Option<usize>,
+    /// Bit `n` is set when `is_cpu_idle_raw(n)` answered true at sample time.
+    ///
+    /// AArch64 answers from the lock-free `CPU_IS_IDLE` flag. x86_64 keeps no
+    /// such flag and `is_cpu_idle_raw` returns `false` for every CPU there, so
+    /// this field is informative on AArch64 and constantly 0 on x86_64. That
+    /// is a stated limitation of the field, not a measured claim about x86.
+    /// claim-lint:ok: "every CPU" is read off the 1 of 1 x86_64 arm of
+    /// `is_cpu_idle_raw` in this file, which returns a constant `false`
+    /// without consulting the cpu_id it is passed; PLAN-586 Q5 records the
+    /// same limitation. See #586.
+    pub idle_cpu_bitmap: u32,
+}
+
+/// Read-only placement facts for one thread (#586 wake-budget marker).
+///
+/// Returns `None` when `with_scheduler` declined -- the caller cannot tell
+/// "not queued anywhere" from "the scheduler was unavailable" from a
+/// `queued_cpu` of `None` alone, so the two are separate.
+/// claim-lint:ok: the 2 distinguished outcomes are this function's own 2
+/// return shapes, 1 of 1 producer each; see #586.
+#[cfg(any(feature = "boot_tests", feature = "btrt"))]
+pub fn thread_placement_facts(tid: u64) -> Option<ThreadPlacementFacts> {
+    let queued = with_scheduler(|scheduler| {
+        for cpu in 0..MAX_CPUS {
+            if let Some(index) = scheduler.per_cpu_queues[cpu]
+                .iter()
+                .position(|&queued_tid| queued_tid == tid)
+            {
+                return Some((cpu, index));
+            }
+        }
+        None
+    })?;
+
+    let mut idle_cpu_bitmap = 0u32;
+    for cpu in 0..MAX_CPUS.min(32) {
+        if is_cpu_idle_raw(cpu) {
+            idle_cpu_bitmap |= 1u32 << cpu;
+        }
+    }
+
+    Some(ThreadPlacementFacts {
+        queued_cpu: queued.map(|(cpu, _)| cpu),
+        queued_index: queued.map(|(_, index)| index),
+        idle_cpu_bitmap,
+    })
 }
 
 /// Collect the idle thread ID for each online CPU into a fixed-size buffer.

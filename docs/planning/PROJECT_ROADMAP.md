@@ -15,6 +15,13 @@ Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).
 
+Issue 927: the x86 boot_tests-only fork helpers now run independently of the
+testing loader. PR 944's [round record](green-program/process/927-2026-09-07.md)
+records fresh integration gates: boot_tests-only, full x86 testing, production,
+and one pipe/FIFO oracle guest boot with 30 passing arms and a reaped status of 0.
+The initial oracle preflight failure and its capture-drain fixture repair are
+retained alongside the passing invocation. The aarch64 matrix remains separate.
+
 ## Recently Completed
 
 - ✅ **tracing: sample the diagnostic ring-write families, then double `TRACE_BUFFER_SIZE` (#855)** (branch `tracing/855-ring-window`) — PR-3's `[BXCAP:RING]` reading put the unfiltered window of a dispatching CPU's trace ring at 15-30 ms, three orders of magnitude short of the seconds the failure-capture plan assumed. Sampled the two diagnostic families the issue named (`CTX_DIAG_*`/`DEFER_REQUEUE_*`, `context_switch.rs`) plus a third the original reading missed (`SCHED_DIAG_*`, `scheduler.rs`, found live via GDB after the first boot came back worse, not better); each keeps a registered drop counter so the loss stays visible through `[BXCAP:CNT]`. Sampling alone plateaued at ~900 ms against legitimate, non-diagnostic scheduler traffic sampling must not touch, so the remaining gap was closed with a measured 2x `TRACE_BUFFER_SIZE` increase (1024→2048, +256 KiB `.bss`, arch-neutral). Landed with real margin: 1638-1801 ms across three strict `-smp 4` cortex-a72 boots against the 1000 ms floor, RED reproduced unmodified on `main` (33.6 ms) as the mutation-to-red proof. A same-day review round found and fixed a same-CPU-only ring-read race in the new oracle (T-1, each CPU now self-publishes only its own ring) and cache-line false sharing on three per-CPU sampling counters (T-3). Full accounting: [the round doc](green-program/tracing/855-RING-WINDOW-2026-09-06.md). Not closed by this PR: five other open issues (#522/#537/#588/#628/#816/#847) also live under `kernel/src/tracing/`, so the atlas Tracing row still cannot be marked HIGH on a clean post-merge sweep.

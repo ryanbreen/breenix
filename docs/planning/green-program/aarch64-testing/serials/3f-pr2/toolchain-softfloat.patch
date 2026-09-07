@@ -1,0 +1,71 @@
+--- upstream/stdarch/crates/core_arch/src/aarch64/mod.rs
++++ lane-local/stdarch/crates/core_arch/src/aarch64/mod.rs
+@@ -17,8 +17,10 @@
+ #[unstable(feature = "stdarch_aarch64_mte", issue = "129010")]
+ pub use self::mte::*;
+ 
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ mod neon;
+ #[stable(feature = "neon_intrinsics", since = "1.59.0")]
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ pub use self::neon::*;
+ 
+ mod tme;
+--- upstream/stdarch/crates/core_arch/src/arm_shared/mod.rs
++++ lane-local/stdarch/crates/core_arch/src/arm_shared/mod.rs
+@@ -72,6 +72,7 @@
+     target_feature = "v7",
+     doc
+ ))]
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ pub(crate) mod neon;
+ 
+ #[cfg(any(
+@@ -88,6 +89,7 @@
+     target_arch = "arm",
+     unstable(feature = "stdarch_arm_neon_intrinsics", issue = "111800")
+ )]
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ pub use self::neon::*;
+ 
+ #[cfg(test)]
+--- upstream/portable-simd/crates/core_simd/src/vendor.rs
++++ lane-local/portable-simd/crates/core_simd/src/vendor.rs
+@@ -24,7 +24,7 @@
+ #[cfg(target_arch = "wasm32")]
+ mod wasm32;
+ 
+-#[cfg(any(target_arch = "aarch64", target_arch = "arm64ec", target_arch = "arm",))]
++#[cfg(any(all(target_arch = "aarch64", not(target_abi = "softfloat")), target_arch = "arm64ec", target_arch = "arm",))]
+ mod arm;
+ 
+ #[cfg(any(target_arch = "powerpc", target_arch = "powerpc64"))]
+--- upstream/portable-simd/crates/core_simd/src/swizzle_dyn.rs
++++ lane-local/portable-simd/crates/core_simd/src/swizzle_dyn.rs
+@@ -17,7 +17,7 @@
+     pub fn swizzle_dyn(self, idxs: Simd<u8, N>) -> Self {
+         #![allow(unused_imports, unused_unsafe)]
+         #[cfg(all(
+-            any(target_arch = "aarch64", target_arch = "arm64ec"),
++            any(all(target_arch = "aarch64", not(target_abi = "softfloat")), target_arch = "arm64ec"),
+             target_endian = "little"
+         ))]
+         use core::arch::aarch64::{uint8x8_t, vqtbl1q_u8, vtbl1_u8};
+@@ -41,7 +41,7 @@
+             match N {
+                 #[cfg(all(
+                     any(
+-                        target_arch = "aarch64",
++                        all(target_arch = "aarch64", not(target_abi = "softfloat")),
+                         target_arch = "arm64ec",
+                         all(target_arch = "arm", target_feature = "v7")
+                     ),
+@@ -54,7 +54,7 @@
+                 #[cfg(target_feature = "simd128")]
+                 16 => transize(wasm::i8x16_swizzle, self, idxs),
+                 #[cfg(all(
+-                    any(target_arch = "aarch64", target_arch = "arm64ec"),
++                    any(all(target_arch = "aarch64", not(target_abi = "softfloat")), target_arch = "arm64ec"),
+                     target_feature = "neon",
+                     target_endian = "little"
+                 ))]

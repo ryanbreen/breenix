@@ -3221,6 +3221,9 @@ fn pin_guard_call_validator_rejects_a_discarded_answer() {
 /// this function to count it into the same gate-failing counter arm 7 uses,
 /// rather than leaving 4 arms where a violated pin moves a thread in silence.
 fn validate_percpu_stack_reroute_counts_a_pin_conflict(source: &str) -> Result<(), String> {
+    if compact_code(source).matches("PINNED_STACK_HOME_CONFLICT.fetch_add(").count() != 2 {
+        return Err("PINNED_STACK_HOME_CONFLICT requires its two documented writers".into());
+    }
     let body = function_body(source, "percpu_stack_home_cpu")
         .ok_or("kernel/src/task/scheduler.rs defines no percpu_stack_home_cpu reroute")?;
     let compact = compact_code(body);
@@ -4102,4 +4105,740 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         let offset = fixture.find("serial_println!").unwrap();
         assert!(mask[offset], "raw-string close swallowed the next byte");
     }
+}
+
+// PR 2: discover rescue candidates from peer-queue pops, anchored to the
+// migration census' function spans and comment/string mask. Names and counts
+// of retention call sites are deliberately not an input to this rule.
+#[derive(Debug)]
+struct RescueRetentionSite {
+    function: String,
+    ordinal: usize,
+    queue: String,
+    tid: String,
+    between: String,
+}
+
+fn rescue_retention_sites(source: &str) -> Vec<RescueRetentionSite> {
+    let mut sites = Vec::new();
+    for span in function_spans(source) {
+        let body = compact_code(&source[span.open..=span.close]);
+        for (ordinal, (offset, _)) in body.match_indices(".pop_front()").enumerate() {
+            let before = &body[..offset];
+            let Some(queue_start) = before.rfind("self.per_cpu_queues[") else { continue };
+            let queue = &before[queue_start + "self.per_cpu_queues[".len()..];
+            let Some(queue) = queue.strip_suffix(']') else { continue };
+            if queue == "current_cpu" { continue; }
+            let Some(binding) = before[..queue_start].rfind("letSome(") else { continue };
+            let binding = &before[binding + "letSome(".len()..queue_start];
+            let Some((tid, _)) = binding.split_once(")=") else { continue };
+            let after = &body[offset + ".pop_front()".len()..];
+            // Bound the candidate's window by the next pop: a later rescue
+            // cannot discharge an earlier candidate's obligation.
+            let window = after.split(".pop_front()").next().unwrap();
+            let guard = format!("self.retain_cpu_affine_thread({tid},current_cpu)");
+            if let Some(guard_at) = window.find(&guard) {
+                sites.push(RescueRetentionSite {
+                    function: span.name.clone(), ordinal, queue: queue.into(), tid: tid.into(),
+                    between: window[..guard_at].into(),
+                });
+            }
+        }
+    }
+    sites
+}
+
+fn retention_helper_name(source: &str) -> Result<String, String> {
+    let helpers: Vec<_> = function_spans(source).into_iter().filter(|span| {
+        let body = compact_code(&source[span.open..=span.close]);
+        body.contains("self.per_cpu_queues[source_cpu].push_back(thread_id)")
+            && body.contains("CPU_PINS_STAMPED.load")
+    }).collect();
+    if helpers.len() != 1 { return Err(format!("expected one source-queue retention helper, found {}", helpers.len())); }
+    Ok(helpers[0].name.clone())
+}
+
+// Keep aarch64 string tokens visible for cfg checks, while comments and other
+// strings remain masked. A comment containing the literal cannot supply it.
+fn compact_code_with_aarch64_literal(source: &str) -> String {
+    let mask = code_mask(source);
+    let mut normalized: Vec<u8> = source
+        .bytes()
+        .zip(&mask)
+        .map(|(byte, live)| if *live { byte } else { b' ' })
+        .collect();
+    let mut at = 0;
+    while at < mask.len() {
+        if mask[at] {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < mask.len() && !mask[at] {
+            at += 1;
+        }
+        if &source[start..at] == "\"aarch64\"" {
+            normalized[start..at].copy_from_slice(b"\"aarch64\"");
+        }
+    }
+    compact_whitespace(&String::from_utf8(normalized).expect("masked Rust source"))
+}
+
+#[test]
+fn aarch64_literal_mask_rejects_comment_and_string_decoys() {
+    for source in [
+        r#"#[cfg(target_arch = /* "aarch64" */ "x86_64")]"#,
+        r#"// #[cfg(target_arch = "aarch64")]
+#[cfg(target_arch = "x86_64")]"#,
+        r##"r#"#[cfg(target_arch = "aarch64")]"#"##,
+    ] {
+        assert!(!compact_code_with_aarch64_literal(source).contains("aarch64"));
+    }
+    assert_eq!(
+        compact_code_with_aarch64_literal(r#"#[cfg(target_arch = "aarch64")]"#),
+        r#"#[cfg(target_arch="aarch64")]"#
+    );
+}
+
+fn validate_retention_helper_placement(source: &str) -> Result<(), String> {
+    let name = retention_helper_name(source)?;
+    let spans = function_spans(source);
+    let test = spans
+        .iter()
+        .position(|span| span.name == "retain_cpu_affine_test_thread")
+        .ok_or("missing test retention helper")?;
+    if spans.get(test + 1).is_none_or(|span| span.name != name) {
+        return Err(
+            "source retention helper must immediately follow the test retention helper".into(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn rescue_retention_helpers_are_adjacent() {
+    validate_retention_helper_placement(&repo_text("kernel/src/task/scheduler.rs")).unwrap();
+}
+
+#[test]
+fn rescue_retention_placement_rejects_intervening_function() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let name = retention_helper_name(&source).unwrap();
+    let at = source.find(&format!("    fn {name}(")).unwrap();
+    let mutated = format!("{}fn unrelated() {{}}\n{}", &source[..at], &source[at..]);
+    assert!(validate_retention_helper_placement(&mutated).is_err());
+}
+
+#[test]
+fn rescue_retention_rejects_wrong_kick_architecture() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "retain_cpu_affine_thread").unwrap();
+    let kick =
+        "#[cfg(target_arch = \"aarch64\")]\n            self.send_resched_ipi_to_cpu(pin.cpu);";
+    let sites: Vec<_> = body.match_indices(kick).collect();
+    assert_eq!(sites.len(), 3, "exercise every kick disposition");
+    for (offset, _) in sites {
+        for arch in ["x86_64", "riscv64"] {
+            let mut changed = body.to_string();
+            changed.replace_range(offset..offset + kick.len(), &kick.replace("aarch64", arch));
+            let mutated = source.replacen(body, &changed, 1);
+            assert!(
+                validate_rescue_retention(&mutated).is_err(),
+                "kick at {offset} accepted {arch}"
+            );
+        }
+    }
+}
+
+fn validate_rescue_retention(source: &str) -> Result<(), String> {
+    let sites = rescue_retention_sites(source);
+    if sites.is_empty() { return Err("rescue pop/guard census is empty".into()); }
+    let name = retention_helper_name(source);
+    let mut errors = Vec::new();
+    for site in &sites {
+        let call = name.as_ref().map(|name| format!("ifself.{name}({},{}){{continue;}}", site.queue, site.tid));
+        if !call.as_ref().is_ok_and(|call| site.between.contains(call)) {
+            errors.push(format!("kernel/src/task/scheduler.rs:{} pop {} queue {} tid {}: missing source retention before guard", site.function, site.ordinal, site.queue, site.tid));
+        }
+    }
+    if !errors.is_empty() { return Err(errors.join("\n")); }
+    let name = name?;
+    let body = compact_code(function_body(source, &name).unwrap());
+    let arms = [
+        "ifsuper::thread::CPU_PINS_STAMPED.load(Ordering::Relaxed)==0{returnfalse;}",
+        "ifsource_cpu>=self.online_cpu_count(){returnfalse;}",
+        "letSome(thread)=self.get_thread(thread_id)else{returnfalse;};",
+        "ifthread.state==ThreadState::Terminated{returnfalse;}",
+        "letSome(pin)=thread.cpu_affinityelse{returnfalse;};",
+        "if!pin.per_cpu_worker||pin.cpu!=source_cpu{returnfalse;}",
+        "ifletSome(slot)=crate::arch_impl::aarch64::constants::percpu_stack_slot_of(thread.context.sp){ifslot!=pin.cpu{returnfalse;}}",
+        "self.per_cpu_queues[source_cpu].push_back(thread_id);true",
+    ];
+    let mut cursor = 0;
+    for arm in arms {
+        let Some(at) = body[cursor..].find(arm) else { return Err(format!("kernel/src/task/scheduler.rs:{name}: missing/changed retention arm {arm}")); };
+        cursor += at + arm.len();
+    }
+    if body.contains("fetch_add") || body.contains("send_resched") {
+        return Err("retention must neither count nor kick".into());
+    }
+    let guard = compact_code_with_aarch64_literal(function_body(source, "retain_cpu_affine_thread").ok_or("missing guard")?);
+    for disposition in [
+        "self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);returntrue;",
+        "self.hold_pinned_wake_for_home(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);",
+        "else{self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);}",
+    ] {
+        if !guard.contains(disposition) { return Err(format!("guard disposition missing aarch64 targeted kick: {disposition}")); }
+    }
+    validate_percpu_stack_reroute_counts_a_pin_conflict(source)
+}
+
+#[test]
+fn rescue_retention_census() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    validate_rescue_retention(&source).unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// Execute the source's reclaim/retention/guard bodies on isolated host state.
+/// This extends the pin-guard probe's queue staging with a fourth rescue leg;
+/// the offline case deliberately counts a discard, so it runs in a fresh
+/// process rather than contaminating a live boot's placement census. Hardware
+/// dispatch, SGI delivery and stack address decoding are outside this harness.
+fn forced_retention_probe(offline: bool) {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let helper = retention_helper_name(&source).expect("retention helper");
+    let mut harness = String::from(r#"
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::VecDeque;
+const MAX_CPUS: usize = 4;
+const CPU_STALL_TICKS: u64 = 20;
+const PIN_GUARD_ORACLE_HELD: usize = 255;
+static PINNED_HOME_CPU_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
+static PINNED_PUBLISH_DISCARDED: AtomicU64 = AtomicU64::new(0);
+static PINNED_HOLD_PEN_MIGRATED: AtomicU64 = AtomicU64::new(0);
+static PINNED_MIGRATION_REFUSED: AtomicU64 = AtomicU64::new(0);
+static PINNED_STACK_HOME_CONFLICT: AtomicU64 = AtomicU64::new(0);
+static PIN_GUARD_ORACLE_PROBE_TID: AtomicU64 = AtomicU64::new(7);
+static PIN_GUARD_ORACLE_REFUSED: AtomicU64 = AtomicU64::new(0);
+static ENQUEUE_OFFLINE_RECLAIMED: AtomicU64 = AtomicU64::new(0);
+static ENQUEUE_STALLED_RECLAIMED: AtomicU64 = AtomicU64::new(0);
+mod thread { pub static CPU_PINS_STAMPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); }
+mod time { pub fn get_ticks() -> u64 { 100 } }
+mod arch_impl { pub mod aarch64 { pub mod constants { pub fn percpu_stack_slot_of(sp: u64) -> Option<usize> { assert_eq!(sp, 0); None } } } }
+mod tracing { pub mod output { pub fn raw_serial_str(s: &str) { print!("{s}"); } pub fn raw_serial_dec(n: u64) { print!("{n}"); } } }
+fn arch_can_dispatch_here() -> bool { true }
+#[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
+#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
+struct Context { sp: u64 }
+struct Thread { state: ThreadState, cpu_affinity: Option<CpuPin>, context: Context }
+struct CpuState { last_schedule_ticks: u64, current_thread: Option<u64>, previous_thread: Option<u64>, pending_next: Option<u64> }
+mod scheduler {
+use super::*;
+struct Scheduler { per_cpu_queues: [VecDeque<u64>; MAX_CPUS], cpu_state: [CpuState; MAX_CPUS], thread: Thread }
+impl Scheduler {
+fn current_cpu_id() -> usize { 0 }
+fn online_cpu_count(&self) -> usize { 2 }
+fn get_thread(&self, tid: u64) -> Option<&Thread> { (tid == 7).then_some(&self.thread) }
+fn get_thread_mut(&mut self, tid: u64) -> Option<&mut Thread> { (tid == 7).then_some(&mut self.thread) }
+fn is_in_deferred_requeue(&self, tid: u64) -> bool { assert_eq!(tid, 7); false }
+fn send_resched_ipi_to_cpu(&self, cpu: usize) { assert!(cpu < MAX_CPUS); }
+"#);
+    for (name, signature) in [
+        (helper.as_str(), format!("fn {helper}(&mut self, source_cpu: usize, thread_id: u64) -> bool")),
+        ("reclaim_unschedulable_cpu_queues", "fn reclaim_unschedulable_cpu_queues(&mut self)".into()),
+        ("retain_cpu_affine_thread", "fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool".into()),
+        ("cpu_accepts_wakeups", "fn cpu_accepts_wakeups(&self, cpu: usize) -> bool".into()),
+        ("cpu_dispatch_stale", "fn cpu_dispatch_stale(&self, cpu: usize) -> bool".into()),
+        ("pinned_wake_is_waiting_here", "fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool".into()),
+        ("hold_pinned_wake_for_home", "fn hold_pinned_wake_for_home(&self, thread_id: u64)".into()),
+        ("pin_guard_oracle_where", "fn pin_guard_oracle_where(&self, tid: u64) -> usize".into()),
+    ] {
+        let body = function_body(&source, name).expect("production/probe method body")
+            .replace("#[cfg(all(target_arch = \"aarch64\", feature = \"boot_tests\"))]", "#[cfg(any())]")
+            .replace("#[cfg(target_arch = \"aarch64\")]", "#[cfg(all())]");
+        harness.push_str(&format!("{signature} {body}\n"));
+    }
+    harness.push_str("}\nfn count_pinned_migration_refusal(thread_id: u64)");
+    harness.push_str(function_body(&source, "count_pinned_migration_refusal").unwrap());
+    harness.push_str(r#"
+pub fn run(offline: bool) {
+    let home = if offline { 2 } else { 1 };
+    let mut s = Scheduler {
+        per_cpu_queues: std::array::from_fn(|_| VecDeque::new()),
+        cpu_state: std::array::from_fn(|_| CpuState { last_schedule_ticks: 0, current_thread: None, previous_thread: None, pending_next: None }),
+        thread: Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: home, per_cpu_worker: true }), context: Context { sp: 0 } },
+    };
+    assert!(offline || s.cpu_dispatch_stale(home));
+    s.per_cpu_queues[home].push_back(7);
+    s.reclaim_unschedulable_cpu_queues();
+    assert_eq!(s.pin_guard_oracle_where(7), if offline { 0 } else { home });
+    assert_eq!(s.per_cpu_queues.iter().map(VecDeque::len).sum::<usize>(), 1);
+    assert_eq!(PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed), u64::from(offline));
+    assert_eq!(s.thread.cpu_affinity.is_none(), offline);
+    assert_eq!(PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed), 0);
+    assert!(!PINNED_HOME_CPU_UNAVAILABLE_MARKED.load(Ordering::Relaxed));
+    assert_eq!(PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed), 0);
+    assert_eq!(PIN_GUARD_ORACLE_REFUSED.load(Ordering::Relaxed), 0);
+    assert_eq!(PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed), 0);
+    println!("forced-{}-home: queue={} discard={} pin_cleared={} held=0 refused=0 first_marker=false PASS", if offline { "offline" } else { "stalled" }, s.pin_guard_oracle_where(7), PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed), s.thread.cpu_affinity.is_none());
+}
+}
+"#);
+    harness.push_str(&format!("fn main() {{ scheduler::run({offline}); }}\n"));
+    let scratch = std::env::temp_dir().join(format!("retention-probe-{}-{offline}", std::process::id()));
+    fs::create_dir_all(&scratch).unwrap();
+    let input = scratch.join("probe.rs");
+    let binary = scratch.join("probe");
+    fs::write(&input, harness).unwrap();
+    let build = std::process::Command::new("rustc").args(["--edition=2021", "-Dwarnings"])
+        .arg(&input).arg("-o").arg(&binary).output().unwrap();
+    assert!(build.status.success(), "host probe compile: {}", String::from_utf8_lossy(&build.stderr));
+    let run = std::process::Command::new(&binary).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    println!("{stdout}");
+    assert!(run.status.success(), "probe failed: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(!stdout.contains("[PINNED_HOME_CPU_UNAVAILABLE:first:"));
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn forced_stalled_home_retention() { forced_retention_probe(false); }
+
+#[test]
+fn forced_offline_home_declines_retention() { forced_retention_probe(true); }
+
+/// The wake-budget marker is printed on the passing path and on every
+/// failing path, from one producer, over three bracketed clocks.
+/// claim-lint:ok: "every failing path" is the 2 failing returns and 1
+/// passing return this validator enumerates below, 3 of 3, and the mutation
+/// test beneath reddens on deleting either print; see #586.
+///
+/// #586 PR 2. The budget window is bracketed by a tick clock
+/// (`get_monotonic_time`, which advances only on delivered timer
+/// interrupts), a counter clock (`monotonic_now_ns`, CNTVCT_EL0 on aarch64
+/// and the TSC on x86_64, which advances with the host), and
+/// `CTX_SWITCH_TOTAL`, the switches the guest performed. A marker printed
+/// only on the failing path would have no green population to be read
+/// against, and the two verdict constants were chosen from exactly that
+/// population, so "printed on both paths" is the load-bearing property here
+/// rather than a convenience.
+///
+/// This is a shape check: the field values, the wording of the
+/// classification and the arithmetic of the verdict may all change. What it
+/// pins is that the grammar carries its 13 fields, that each of the 3 clock
+/// stamps straddles the sleep, and that no exit of the function returns
+/// without a call to the single emitter.
+/// claim-lint:ok: "may all change" scopes what this validator does NOT pin;
+/// the 3 properties it does pin are enumerated in the same sentence, 3 of 3;
+/// see #586.
+fn validate_loopback_wake_budget_marker(source: &str) -> Result<(), String> {
+    // The literal as a producer writes it: opening quote included, so the
+    // prose above and in the kernel comments -- which spell the marker in
+    // backticks -- is not counted as a second producer.
+    const MARKER: &'static str = "\"[LOOPBACK_WAKE_BUDGET:";
+    let producers = source.matches(MARKER).count();
+    if producers != 1 {
+        return Err(format!(
+            "the wake-budget marker has {producers} producers; exactly 1 is the contract"
+        ));
+    }
+
+    let body = function_body(source, "run_loopback_recv_wake_test_inner")
+        .ok_or_else(|| "missing run_loopback_recv_wake_test_inner".to_string())?;
+
+    let grammar_start = body.find(MARKER).ok_or_else(|| {
+        "the wake-budget marker is not produced inside the loopback wake test".to_string()
+    })?;
+    let grammar_len = body[grammar_start..]
+        .find(']')
+        .ok_or_else(|| "the wake-budget marker literal is unterminated".to_string())?;
+    let grammar = &body[grammar_start + 1..grammar_start + grammar_len];
+    for field in [
+        "arch=",
+        "test=",
+        "budget_ms=",
+        "elapsed_tick_ms=",
+        "elapsed_ctr_ms=",
+        "ctx_delta=",
+        "extensions=",
+        "reader_state=",
+        "queued_cpu=",
+        "queued_idx=",
+        "idle_cpus=",
+        "cpu_silence_ms=",
+        "silence_cpu=",
+        "woke_ms=",
+        "verdict=",
+    ] {
+        if !grammar.contains(field) {
+            return Err(format!("the wake-budget marker omits the {field} field"));
+        }
+    }
+    let sleep = code_text_offset(body, "sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS)")
+        .ok_or_else(|| "the wake budget is not spent in one named sleep".to_string())?;
+    for (before, after, clock) in [
+        ("let tick_before_ms", "let tick_after_ms", "get_monotonic_time"),
+        ("let ctr_before_ns", "let ctr_after_ns", "monotonic_now_ns"),
+        ("let ctx_before", "let ctx_after", "CTX_SWITCH_TOTAL"),
+    ] {
+        let before_at = code_text_offset(body, before)
+            .ok_or_else(|| format!("the wake budget is not stamped by {before}"))?;
+        let after_at = code_text_offset(body, after)
+            .ok_or_else(|| format!("the wake budget is not stamped by {after}"))?;
+        if before_at >= sleep || after_at <= sleep {
+            return Err(format!(
+                "{before} and {after} do not straddle the wake budget"
+            ));
+        }
+        for (statement_at, label) in [(before_at, before), (after_at, after)] {
+            let statement_len = body[statement_at..]
+                .find(';')
+                .ok_or_else(|| format!("{label} is unterminated"))?;
+            let statement = &body[statement_at..statement_at + statement_len];
+            if !has_identifier(statement, clock) {
+                return Err(format!("{label} does not read {clock}"));
+            }
+        }
+    }
+    let verdict_at = code_text_offset(body, "let verdict =")
+        .ok_or_else(|| "the wake budget reaches no verdict".to_string())?;
+    let verdict_len = body[verdict_at..]
+        .find("\n    };")
+        .ok_or_else(|| "the verdict selector is unterminated".to_string())?;
+    let verdict = &body[verdict_at..verdict_at + verdict_len];
+    for token in ["ok", "wake", "starved", "dispatch"] {
+        if !verdict.contains(&format!("\"{token}\"")) {
+            return Err(format!("the wake-budget verdict cannot read {token}"));
+        }
+    }
+
+    if !has_identifier(body, "thread_placement_facts") {
+        return Err("the wake-budget marker reads no placement facts".to_string());
+    }
+
+    let emitter_at = code_text_offset(body, "let emit_wake_budget =")
+        .ok_or_else(|| "the wake-budget marker has no single emitter".to_string())?;
+    let tail = &body[emitter_at..];
+    let mask = code_mask(tail);
+    let mut exits: Vec<usize> = Vec::new();
+    for pattern in ["TestResult::Fail", "TestResult::Pass"] {
+        for (offset, _) in tail.match_indices(pattern) {
+            if mask[offset] {
+                exits.push(offset);
+            }
+        }
+    }
+    exits.sort_unstable();
+    if exits.len() < 3 {
+        return Err(format!(
+            "the loopback wake test has {} exits after the emitter; 2 failing and 1 passing are the contract",
+            exits.len()
+        ));
+    }
+    let mut previous = 0usize;
+    for exit in exits {
+        if !tail[previous..exit].contains("emit_wake_budget()") {
+            return Err(
+                "an exit of the loopback wake test returns without printing the wake-budget marker"
+                    .to_string(),
+            );
+        }
+        previous = exit;
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_wake_budget_marker_is_printed_on_both_paths() {
+    validate_loopback_wake_budget_marker(&repo_text(
+        "kernel/src/test_framework/registry.rs",
+    ))
+    .expect("the wake-budget marker is printed on the passing and the failing paths");
+}
+
+/// Every occurrence of the compacted-code text `scheduler` that is a
+/// receiver access (followed by `.`) in `body`, with the receiver name and
+/// dot stripped, in source order. `body` must already be `compact_code`'d --
+/// this walks it as plain code text with no comments or strings left to
+/// mask.
+/// claim-lint:ok: exercised by both legs of
+/// loopback_wake_budget_placement_accessor_ratchet_rejects_a_queue_mutation
+/// below, 2 of 2; see #586.
+fn compact_receiver_accesses<'a>(compact: &'a str, receiver: &str) -> Vec<&'a str> {
+    let mask = vec![true; compact.len()];
+    identifier_offsets(compact, &mask, receiver)
+        .into_iter()
+        .filter_map(|offset| {
+            let end = offset + receiver.len();
+            (compact.as_bytes().get(end) == Some(&b'.')).then(|| &compact[end + 1..])
+        })
+        .collect()
+}
+
+/// Whether one `scheduler.<rest>` access is the accessor's one approved
+/// read-only shape: an index into `per_cpu_queues` immediately chained into
+/// `.iter(`. A second field, a mutating method chained onto the same field,
+/// and a bare assignment are the 3 shapes this refuses -- see the 2 legs of
+/// loopback_wake_budget_placement_accessor_ratchet_rejects_a_queue_mutation
+/// below.
+/// claim-lint:ok: 2 of the 3 named shapes (mutating method, bare
+/// assignment) are the mutation test's 2 legs; the third (a second field
+/// read rather than mutated) is refused by the same `strip_prefix` check
+/// but is not separately mutation-tested; see #586.
+fn is_read_only_queue_scan(after_dot: &str) -> bool {
+    let Some(rest) = after_dot.strip_prefix("per_cpu_queues[") else {
+        return false;
+    };
+    let Some(close) = rest.find(']') else {
+        return false;
+    };
+    rest[close + 1..].starts_with(".iter(")
+}
+
+/// The accessor the marker reads is read-only: this checks that every use
+/// of its `&mut Scheduler` receiver takes the one approved read-only shape.
+/// This is a positive census of what the receiver is allowed to be put to,
+/// not a denylist of mutating method names -- a denylist of names is
+/// exactly as wide as the names on it and no wider: `push_front`,
+/// `pop_back`, `clear`, `retain`, `drain`, `truncate`, `swap_remove`,
+/// `iter_mut`, and a bare field assignment are 9 names/shapes invisible to
+/// a 6-name denylist, none of which can produce
+/// `per_cpu_queues[<cpu>].iter(...)`.
+/// claim-lint:ok: 2 of the 9 (`push_front`, a bare field assignment) are
+/// mutation-tested below; the remaining 7 are read off the same
+/// `strip_prefix`/`starts_with` shape as those 2 and not separately
+/// mutation-tested; see #586.
+fn thread_placement_accessor_is_read_only(scheduler_source: &str) -> Result<(), String> {
+    let body = function_body(scheduler_source, "thread_placement_facts")
+        .ok_or_else(|| "the placement accessor the wake-budget marker reads is gone".to_string())?;
+    let compact = compact_code(body);
+    let accesses = compact_receiver_accesses(&compact, "scheduler");
+    if accesses.is_empty() {
+        return Err(
+            "the placement accessor's closure no longer touches its `&mut Scheduler` receiver \
+             at all; this census needs updating to match its new shape"
+                .to_string(),
+        );
+    }
+    for access in accesses {
+        if !is_read_only_queue_scan(access) {
+            let preview: String = access.chars().take(48).collect();
+            return Err(format!(
+                "the placement accessor uses its `&mut Scheduler` receiver as \
+                 `scheduler.{preview}...`, which is not the one read-only shape this census \
+                 allows (`.per_cpu_queues[<cpu>].iter(...)`); it must only read"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_wake_budget_placement_accessor_is_read_only() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    thread_placement_accessor_is_read_only(&scheduler)
+        .expect("the placement accessor the wake-budget marker reads must only read");
+}
+
+/// V-2: a denylist of 6 mutating method names does not see a mutation that
+/// uses a different name. This reproduces the exact demonstration -- pushing
+/// onto and clearing a ready queue inside the accessor's closure -- and
+/// proves the positive-shape census above catches what the denylist missed.
+#[test]
+fn loopback_wake_budget_placement_accessor_ratchet_rejects_a_queue_mutation() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    thread_placement_accessor_is_read_only(&scheduler)
+        .expect("baseline source must pass, or the mutation below proves nothing");
+
+    let mutated = scheduler.replacen(
+        "    let queued = with_scheduler(|scheduler| {
+        for cpu in 0..MAX_CPUS {",
+        "    let queued = with_scheduler(|scheduler| {
+        scheduler.per_cpu_queues[0].push_front(tid);
+        scheduler.per_cpu_queues[0].clear();
+        for cpu in 0..MAX_CPUS {",
+        1,
+    );
+    assert_ne!(mutated, scheduler, "the queue-mutation leg must apply");
+    assert!(
+        thread_placement_accessor_is_read_only(&mutated).is_err(),
+        "an accessor that pushes onto and clears a ready queue must redden this census"
+    );
+
+    let field_assignment = scheduler.replacen(
+        "    let queued = with_scheduler(|scheduler| {
+        for cpu in 0..MAX_CPUS {",
+        "    let queued = with_scheduler(|scheduler| {
+        scheduler.woken_threads_len = 0;
+        for cpu in 0..MAX_CPUS {",
+        1,
+    );
+    assert_ne!(
+        field_assignment, scheduler,
+        "the field-assignment leg must apply"
+    );
+    assert!(
+        thread_placement_accessor_is_read_only(&field_assignment).is_err(),
+        "an accessor that assigns a field on its receiver must redden this census"
+    );
+}
+
+/// The mutation legs. Deleting the fail-path print, deleting the pass-path
+/// print, dropping one grammar field, and unhooking one clock stamp each
+/// redden the validator; without them the validator could be satisfied by a
+/// marker nobody prints and a budget nobody measured.
+#[test]
+fn loopback_wake_budget_validator_rejects_a_deleted_print() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_loopback_wake_budget_marker(&source)
+        .expect("baseline source must pass, or the mutations below prove nothing");
+
+    let no_fail_print = source.replacen(
+        "        emit_wake_budget();\n        return TestResult::Fail(diagnostic_message);",
+        "        return TestResult::Fail(diagnostic_message);",
+        1,
+    );
+    assert_ne!(no_fail_print, source, "fail-path mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_fail_print).is_err(),
+        "a failing path that returns without the wake-budget marker must redden the validator"
+    );
+
+    let no_pass_print = source.replacen(
+        "    emit_wake_budget();\n    TestResult::Pass",
+        "    TestResult::Pass",
+        1,
+    );
+    assert_ne!(no_pass_print, source, "pass-path mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_pass_print).is_err(),
+        "a passing path that returns without the wake-budget marker must redden the validator"
+    );
+
+    let no_ctx_field = source.replacen(":ctx_delta={}", ":ctx={}", 1);
+    assert_ne!(no_ctx_field, source, "grammar mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_ctx_field).is_err(),
+        "a grammar that drops a field must redden the validator"
+    );
+
+    for field in ["cpu_silence_ms", "silence_cpu"] {
+        let without_field = source.replacen(&format!(":{field}={{}}"), ":omitted={}", 1);
+        assert_ne!(without_field, source, "census mutation must apply");
+        assert!(validate_loopback_wake_budget_marker(&without_field).is_err());
+    }
+
+    let unbracketed = source.replacen(
+        "    let tick_before_ms = crate::time::get_monotonic_time();",
+        "    let tick_before_ms = 0u64;",
+        1,
+    );
+    assert_ne!(unbracketed, source, "clock mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&unbracketed).is_err(),
+        "a tick stamp that reads no clock must redden the validator"
+    );
+}
+
+/// V-5: the emitter must keep "the scheduler was unavailable" (the placement
+/// accessor's outer `Option` reading empty) separate from "sampled and
+/// empty" (its inner `Option` reading empty, or a real `idle_cpu_bitmap` of
+/// 0) -- the distinction `thread_placement_facts`'s own doc comment in
+/// kernel/src/task/scheduler.rs:5977-5979 says is preserved.
+/// `Option::and_then` on `queued_cpu`/`queued_index` cannot see which layer
+/// read empty, and an unguarded `Option::map_or(0u32, ...)` prints the same
+/// `0x0` bytes whether a sample ran and found nothing idle or never ran at
+/// all. This checks the emitter source for a distinct token and for a
+/// separate availability flag reaching the idle_cpus print site, not for
+/// the exact wording of either.
+/// claim-lint:ok: kernel/src/task/scheduler.rs:5977-5979 is the doc comment
+/// quoted; see #586.
+fn validate_placement_slot_distinguishes_unavailable(source: &str) -> Result<(), String> {
+    let body = function_body(source, "run_loopback_recv_wake_test_inner")
+        .ok_or_else(|| "missing run_loopback_recv_wake_test_inner".to_string())?;
+    if !body.contains("\"unavailable\"") {
+        return Err(
+            "the wake-budget emitter has no distinct token for a placement sample the \
+             scheduler declined to take"
+                .to_string(),
+        );
+    }
+    for pattern in [
+        "placement.and_then(|facts| facts.queued_cpu)",
+        "placement.and_then(|facts| facts.queued_index)",
+    ] {
+        if body.contains(pattern) {
+            return Err(format!(
+                "the wake-budget emitter folds an unavailable placement sample into `none` \
+                 through `{pattern}`"
+            ));
+        }
+    }
+    // `idle_cpus_sampled` existing SOMEWHERE in `body` is not enough -- the
+    // binding two-hop `map_or` bug this replaces still left the flag
+    // computed and unused if a later edit dropped only the print-site
+    // reference. Bound the check to the emitter closure itself, where the
+    // print call lives.
+    let mask = code_mask(body);
+    let emitter_at = code_text_offset(body, "let emit_wake_budget =")
+        .ok_or_else(|| "the wake-budget marker has no single emitter".to_string())?;
+    let (open, close) = braced_block_span(body, &mask, emitter_at)
+        .ok_or_else(|| "the wake-budget emitter closure is unterminated".to_string())?;
+    let emitter_block = &body[open..=close];
+    if !has_identifier(emitter_block, "idle_cpus_sampled") {
+        return Err(
+            "the wake-budget emitter's print call reads no separate availability flag for \
+             idle_cpus"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_wake_budget_emitter_distinguishes_unavailable_from_not_queued() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_placement_slot_distinguishes_unavailable(&source).expect(
+        "the emitter must keep an unavailable placement sample distinct from an empty one",
+    );
+}
+
+/// The mutation legs: reintroduce each half of the collapse V-5 found --
+/// the `and_then` fold on `queued_cpu`/`queued_idx`, and the un-flagged
+/// `idle_cpus` print with no availability check reaching it -- and prove the
+/// validator reddens on each independently.
+#[test]
+fn loopback_wake_budget_emitter_validator_rejects_the_unavailable_collapse() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_placement_slot_distinguishes_unavailable(&source)
+        .expect("baseline source must pass, or the mutations below prove nothing");
+
+    let and_then_collapse = source.replacen(
+        "PlacementSlot::of(placement, |facts| facts.queued_cpu),",
+        "OptSlot(placement.and_then(|facts| facts.queued_cpu)),",
+        1,
+    );
+    assert_ne!(
+        and_then_collapse, source,
+        "the queued_cpu and_then-collapse mutation must apply"
+    );
+    assert!(
+        validate_placement_slot_distinguishes_unavailable(&and_then_collapse).is_err(),
+        "reintroducing the and_then collapse on queued_cpu must redden the validator"
+    );
+
+    let idle_collapse = source.replacen(
+        "IdleCpusSlot {\n                bits: idle_cpus,\n                sampled: idle_cpus_sampled,\n            },",
+        "idle_cpus,",
+        1,
+    );
+    assert_ne!(
+        idle_collapse, source,
+        "the idle_cpus availability-flag mutation must apply"
+    );
+    assert!(
+        validate_placement_slot_distinguishes_unavailable(&idle_collapse).is_err(),
+        "reintroducing an idle_cpus print with no availability flag must redden the validator"
+    );
 }

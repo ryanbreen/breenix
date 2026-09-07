@@ -5,8 +5,8 @@
 # (`--boots 100`). The DEFAULT is 25 boots per profile — operator directive,
 # 2026-08-18 — so an unqualified local run is already a meaningful sample
 # rather than the old 10-boot smoke.
-# Keep the observation window well above the ~11 s service-sequence completion
-# point so a wedged boot is unambiguously distinguishable from a slow one.
+# Include the timed boot_tests isolation fixtures before service startup;
+# keep this default at least as large as the strict gate capture window.
 #
 # This script is the truth about which buckets it classifies and which of them
 # fail the gate; read the classify_serial function and the gate condition below
@@ -17,7 +17,7 @@ set -e
 BOOTS=25
 PROFILE=both
 IOPS=2000
-BOOT_TIMEOUT=45
+BOOT_TIMEOUT=90
 REBUILD=false
 
 usage() {
@@ -124,6 +124,15 @@ CENSUS_WIDEN_ORACLE_PATTERN='\[CENSUS_WIDEN_ORACLE:aarch64:arm_target=[0-9]+:bas
 # desync classify_serial's device-count assertion from what actually boots
 # (the #549/#551/[[gate-target-fidelity-528]] census-not-literal lesson).
 EXPECTED_MMIO_DEVICES=$(grep -cE -- '^[[:space:]]*-device virtio-[a-z]*-device' "${BASH_SOURCE[0]}")
+
+# Run this gate's structure suites before building or booting.
+# shellcheck source=lib/gate-structure-preflight.sh
+source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
+BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
+if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+    echo "GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)"
+    exit 1
+fi
 
 if $REBUILD; then
     echo "Building ARM64 kernel with boot_tests feature..."

@@ -1,0 +1,21 @@
+revision=9f79cb71969fe9b9832b1ff921e148a76170a850 + 947 working diff; mutation=old-window; state=red
+source_sha256=77c0b3a8aab0f546dba647b807d96a880ffd6253b88f5dd8d3b4ef3dbb2d4740
+command=bash scripts/run-structure-tests.sh teardown_structure exit_kick_fixture_summed_budget_under_ten_seconds
+== compiling teardown_structure ==
+== running teardown_structure exit_kick_fixture_summed_budget_under_ten_seconds ==
+
+running 1 test
+
+thread 'exit_kick_fixture_summed_budget_under_ten_seconds' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t947/wt/tests/teardown_structure.rs:17799:5:
+per-boot fixture budget 21100ms must stay below 10000ms
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test exit_kick_fixture_summed_budget_under_ten_seconds ... FAILED
+
+failures:
+
+failures:
+    exit_kick_fixture_summed_budget_under_ten_seconds
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.01s
+
+exit=101

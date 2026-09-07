@@ -1,0 +1,11 @@
+5a96f7fbadc1a510cadcc6c959f4110a85753a1b
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure forced_stalled_home_retention ==
+
+running 1 test
+forced-stalled-home: queue=1 discard=0 pin_cleared=false held=0 refused=0 first_marker=false PASS
+
+test forced_stalled_home_retention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 0.16s
+

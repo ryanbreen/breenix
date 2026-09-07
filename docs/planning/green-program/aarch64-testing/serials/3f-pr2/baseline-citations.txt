@@ -1,0 +1,552 @@
+revision=5a96f7fbadc1a510cadcc6c959f4110a85753a1b
+
+FILE docker/qemu/lib/gate-structure-preflight.sh
+docker/qemu/lib/gate-structure-preflight.sh:27:# `rustc --test` (that script's own header), which reads no `Cargo.toml`,
+docker/qemu/lib/gate-structure-preflight.sh:41:# ~127s wall-clock on an Apple Silicon Mac (macOS, native rustc), and
+docker/qemu/lib/gate-structure-preflight.sh:67:# `rustc`-availability check below, which sets the same reason field on its
+docker/qemu/lib/gate-structure-preflight.sh:70:# gate_structure_preflight <repo_root> <gate_tmp> is the one function each
+docker/qemu/lib/gate-structure-preflight.sh:113:gate_structure_preflight() {
+docker/qemu/lib/gate-structure-preflight.sh:127:    if ! command -v rustc >/dev/null 2>&1; then
+docker/qemu/lib/gate-structure-preflight.sh:128:        echo "[GATE_PREFLIGHT:skipped=1:reason=rustc not found on PATH -- cannot compile tests/*_structure.rs]"
+docker/qemu/lib/gate-structure-preflight.sh:136:    log_dir="$(mktemp -d "$gate_tmp/breenix_gate_structure_preflight.XXXXXX" 2>/dev/null)" || {
+
+FILE docker/qemu/run-aarch64-boot-test-strict.sh
+docker/qemu/run-aarch64-boot-test-strict.sh:47:# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+docker/qemu/run-aarch64-boot-test-strict.sh:88:SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:aarch64:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[1-9][0-9]*:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
+docker/qemu/run-aarch64-boot-test-strict.sh:306:PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+:migration_refused=[0-9]+:stack_home_conflict=[0-9]+\]'
+docker/qemu/run-aarch64-boot-test-strict.sh:307:PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]'
+docker/qemu/run-aarch64-boot-test-strict.sh:308:PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
+docker/qemu/run-aarch64-boot-test-strict.sh:353:SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
+docker/qemu/run-aarch64-boot-test-strict.sh:363:# for both the rustc-vs-cargo reasoning and what each printed field means.
+docker/qemu/run-aarch64-boot-test-strict.sh:364:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-aarch64-boot-test-strict.sh:388:"$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
+docker/qemu/run-aarch64-boot-test-strict.sh:742:    if grep -aoE "$PINNED_CENSUS_PATTERN" "$serial_file" 2>/dev/null | grep -qvxF "$PINNED_CENSUS_ZERO_LITERAL"; then
+docker/qemu/run-aarch64-boot-test-strict.sh:743:        echo "Pinned-placement census reported a field above zero ($(grep -aoE "$PINNED_CENSUS_PATTERN" "$serial_file" | grep -vxF "$PINNED_CENSUS_ZERO_LITERAL" | tail -1))"
+docker/qemu/run-aarch64-boot-test-strict.sh:746:    if grep -qaF "$PINNED_FIRST_HOLD_LITERAL" "$serial_file" 2>/dev/null; then
+docker/qemu/run-aarch64-boot-test-strict.sh:747:        echo "A pinned worker's wake was held for want of a dispatching home CPU ($(grep -aF -m1 "$PINNED_FIRST_HOLD_LITERAL" "$serial_file"))"
+docker/qemu/run-aarch64-boot-test-strict.sh:750:    if ! grep -qaE "$PINNED_CENSUS_PATTERN" "$serial_file" 2>/dev/null; then
+docker/qemu/run-aarch64-boot-test-strict.sh:844:        echo "SCORE: FAIL - BREENIX_STRICT_SCORE_ONLY names no readable serial ($SCORE_ONLY_SERIAL)"
+
+FILE docker/qemu/run-aarch64-prod-profile-boot-test.sh
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:41:# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:174:PINNED_CENSUS_PATTERN='\[PINNED_HOME_CPU_UNAVAILABLE:count=[0-9]+:publish_discarded=[0-9]+:hold_pen_migrated=[0-9]+:delivered=[0-9]+:migration_refused=[0-9]+:stack_home_conflict=[0-9]+\]'
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:175:PINNED_CENSUS_ZERO_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]'
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:176:PINNED_FIRST_HOLD_LITERAL='[PINNED_HOME_CPU_UNAVAILABLE:first:'
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:189:# carried as BREENIX_STRICT_SCORE_ONLY. R157/ASID-01: without it the only thing
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:243:    grep -aoE "$PINNED_CENSUS_PATTERN" "$serial_file" 2>/dev/null | grep -cvxF "$PINNED_CENSUS_ZERO_LITERAL" || true
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:280:    echo "Observed pinned-placement census marker count: $(pattern_count "$serial_file" "$PINNED_CENSUS_PATTERN")"
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:466:# docker/qemu/lib/gate-structure-preflight.sh for both the rustc-vs-cargo
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:468:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:505:if ! "$BREENIX_ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"; then
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:694:PINNED_CENSUS_COUNT=$(pattern_count "$SERIAL_FILE" "$PINNED_CENSUS_PATTERN")
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:695:PINNED_CENSUS_NONZERO_COUNT=$(pinned_nonzero_count "$SERIAL_FILE")
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:696:PINNED_FIRST_HOLD_COUNT=$(marker_count "$SERIAL_FILE" "$PINNED_FIRST_HOLD_LITERAL")
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:811:[ "$PINNED_CENSUS_COUNT" -ge 1 ] || {
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:815:[ "$PINNED_CENSUS_NONZERO_COUNT" -eq 0 ] || {
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:816:    echo "FAIL: pinned-placement census reported a field above zero: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | grep -vxF "$PINNED_CENSUS_ZERO_LITERAL" | tail -1)"
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:819:[ "$PINNED_FIRST_HOLD_COUNT" -eq 0 ] || {
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:820:    echo "FAIL: a pinned worker's wake was held for want of a dispatching home CPU: $(grep -aF -m1 "$PINNED_FIRST_HOLD_LITERAL" "$SERIAL_FILE")"
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:857:echo "Observed pinned-placement census marker count: $PINNED_CENSUS_COUNT"
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:858:echo "Observed pinned-placement non-zero census line count: $PINNED_CENSUS_NONZERO_COUNT"
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:860:echo "Observed: $(grep -aoE "$PINNED_CENSUS_PATTERN" "$SERIAL_FILE" | tail -1)"
+
+FILE docker/qemu/run-x86-boot-tests.sh
+docker/qemu/run-x86-boot-tests.sh:119:# scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
+docker/qemu/run-x86-boot-tests.sh:151:# docker/qemu/lib/gate-structure-preflight.sh for both the rustc-vs-cargo
+docker/qemu/run-x86-boot-tests.sh:155:if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-x86-boot-tests.sh:401:SCHED_STRAND_ORACLE_PATTERN='\[SCHED_STRAND_ORACLE:x86:samples=[1-9][0-9]*:checked=[1-9][0-9]*:stranded=0:running_shape=[0-9]+:ready_shape=[0-9]+:resolved_production=[0-9]+:resolved_exercised=[0-9]+:worst_dwell_ms=[0-9]+:overflow=[0-9]+:worst_nonprogress_ms=[0-9]+:nonprogress=[0-9]+:queued_on_nondispatching_cpu=[0-9]+:worst_queued_nondispatch_ms=[0-9]+:worst_cpu_scheduler_silence_ms=[0-9]+:worst_silence_cpu=[0-9]+\]'
+
+FILE kernel/src/arch_impl/aarch64/context_switch.rs
+kernel/src/arch_impl/aarch64/context_switch.rs:36:const PREEMPT_GUARD_MASK: u32 = PREEMPT_MASK | SOFTIRQ_MASK | HARDIRQ_MASK | NMI_MASK;
+kernel/src/arch_impl/aarch64/context_switch.rs:881:    crate::task::scheduler::set_need_resched();
+kernel/src/arch_impl/aarch64/context_switch.rs:992:    (Aarch64PerCpu::preempt_count() & PREEMPT_GUARD_MASK) == 0
+kernel/src/arch_impl/aarch64/context_switch.rs:4895:            sched.set_need_resched_inner();
+kernel/src/arch_impl/aarch64/context_switch.rs:4953:                    sched.set_need_resched_inner();
+kernel/src/arch_impl/aarch64/context_switch.rs:5192:                sched.set_need_resched_inner();
+kernel/src/arch_impl/aarch64/context_switch.rs:5350:    if (preempt_count & PREEMPT_GUARD_MASK) != 0 {
+kernel/src/arch_impl/aarch64/context_switch.rs:7357:                        crate::task::scheduler::set_need_resched();
+kernel/src/arch_impl/aarch64/context_switch.rs:7366:                            crate::task::scheduler::set_need_resched();
+
+FILE kernel/src/arch_impl/aarch64/exception.rs
+kernel/src/arch_impl/aarch64/exception.rs:1039:                    crate::task::scheduler::set_need_resched();
+kernel/src/arch_impl/aarch64/exception.rs:1085:            crate::task::scheduler::set_need_resched();
+kernel/src/arch_impl/aarch64/exception.rs:1431:                    crate::task::scheduler::set_need_resched();
+kernel/src/arch_impl/aarch64/exception.rs:1478:            crate::task::scheduler::set_need_resched();
+kernel/src/arch_impl/aarch64/exception.rs:2093:            if irq_id == constants::SGI_RESCHEDULE {
+kernel/src/arch_impl/aarch64/exception.rs:2100:                crate::per_cpu_aarch64::set_need_resched(true);
+
+FILE kernel/src/arch_impl/aarch64/smp.rs
+kernel/src/arch_impl/aarch64/smp.rs:167:static CPUS_ONLINE: AtomicU64 = AtomicU64::new(1);
+kernel/src/arch_impl/aarch64/smp.rs:507:    CPUS_ONLINE.load(Ordering::Acquire)
+kernel/src/arch_impl/aarch64/smp.rs:591:    CPUS_ONLINE.fetch_add(1, Ordering::Release);
+
+FILE kernel/src/interrupts/context_switch.rs
+kernel/src/interrupts/context_switch.rs:355:            scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:462:                scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:828:            scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:913:                        crate::task::scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:940:                            crate::task::scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1077:                                scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1173:            scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1354:                scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1376:                    crate::task::scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1404:                            crate::task::scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1449:                                crate::task::scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1503:                                        crate::task::scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1515:                                            crate::task::scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1736:                        crate::task::scheduler::set_need_resched();
+kernel/src/interrupts/context_switch.rs:1745:                            crate::task::scheduler::set_need_resched();
+
+FILE kernel/src/interrupts/timer.rs
+kernel/src/interrupts/timer.rs:65:            scheduler::set_need_resched();
+
+FILE kernel/src/interrupts/timer_entry.asm
+
+FILE kernel/src/main.rs
+kernel/src/main.rs:762:    kernel::task::scheduler::emit_pin_guard_oracle();
+
+FILE kernel/src/main_aarch64.rs
+kernel/src/main_aarch64.rs:1429:    // `hold_pinned_wake_for_home` is what covers a refusal that happens after
+kernel/src/main_aarch64.rs:1445:    kernel::task::scheduler::emit_pin_guard_oracle();
+kernel/src/main_aarch64.rs:1446:    kernel::task::scheduler::emit_pinned_placement_census();
+
+FILE kernel/src/syscall/entry.asm
+
+FILE kernel/src/syscall/handler.rs
+kernel/src/syscall/handler.rs:688:                crate::task::scheduler::set_need_resched();
+
+FILE kernel/src/syscall/time.rs
+
+FILE kernel/src/task/kthread.rs
+kernel/src/task/kthread.rs:67:/// change. It is the production counterpart of `kthread_run_on_cpu_for_test`,
+kernel/src/task/kthread.rs:70:pub fn kthread_run_on_cpu<F>(
+kernel/src/task/kthread.rs:79:        scheduler::spawn_on_cpu(thread, cpu)
+kernel/src/task/kthread.rs:94:/// `scheduler::emit_pin_guard_oracle`
+kernel/src/task/kthread.rs:107:pub(crate) fn kthread_run_on_cpu_for_test<F>(
+kernel/src/task/kthread.rs:116:        scheduler::spawn_on_cpu_for_test(thread, cpu)
+kernel/src/task/kthread.rs:276:    scheduler::set_need_resched();
+kernel/src/task/kthread.rs:341:    scheduler::clear_cpu_affinity_for_test(handle.inner.tid);
+kernel/src/task/kthread.rs:358:        scheduler::set_need_resched();
+
+FILE kernel/src/task/mod.rs
+
+FILE kernel/src/task/scheduler.rs
+kernel/src/task/scheduler.rs:433:/// A hold does not consume the wake. `hold_pinned_wake_for_home` takes `&self`
+kernel/src/task/scheduler.rs:436:/// `deliver_pinned_wakes_for_this_cpu` re-drives the placement at the home
+kernel/src/task/scheduler.rs:445:/// claim-lint:ok: 1 of 1 call site of `spawn_on_cpu` is `kthread_run_on_cpu`,
+kernel/src/task/scheduler.rs:448:pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
+kernel/src/task/scheduler.rs:454:/// Also gate-failing. `spawn_on_cpu` asserts its target is online and neither
+kernel/src/task/scheduler.rs:457:/// writer of `Thread::cpu_affinity` appeared.
+kernel/src/task/scheduler.rs:458:/// claim-lint:ok: 1 of 1 mutating writers of the field is `spawn_on_cpu`, and
+kernel/src/task/scheduler.rs:461:pub static PINNED_PUBLISH_DISCARDED: core::sync::atomic::AtomicU64 =
+kernel/src/task/scheduler.rs:477:/// claim-lint:ok: 1 of 1 mutating writer of `Thread::cpu_affinity` is
+kernel/src/task/scheduler.rs:478:/// `spawn_on_cpu`, whose 1 call site has 0 callers -- counted by grep over
+kernel/src/task/scheduler.rs:480:pub static PINNED_HOLD_PEN_MIGRATED: core::sync::atomic::AtomicU64 =
+kernel/src/task/scheduler.rs:491:/// claim-lint:ok: 1 of 1 writer of `PINNED_HOME_CPU_UNAVAILABLE` is the
+kernel/src/task/scheduler.rs:492:/// `fetch_add` in `hold_pinned_wake_for_home`, counted by grep over kernel/src
+kernel/src/task/scheduler.rs:494:pub static PINNED_WAKES_DELIVERED: core::sync::atomic::AtomicU64 =
+kernel/src/task/scheduler.rs:504:/// its wake is held for that CPU by `hold_pinned_wake_for_home`, which counts
+kernel/src/task/scheduler.rs:505:/// separately into `PINNED_HOME_CPU_UNAVAILABLE`.
+kernel/src/task/scheduler.rs:509:/// carries a pin of either kind, because `spawn_on_cpu` is the 1 mutating
+kernel/src/task/scheduler.rs:510:/// writer of `Thread::cpu_affinity` and its 1 call site has 0 callers.
+kernel/src/task/scheduler.rs:511:/// claim-lint:ok: 1 of 1 mutating writer of the field is `spawn_on_cpu`,
+kernel/src/task/scheduler.rs:521:pub static PINNED_MIGRATION_REFUSED: core::sync::atomic::AtomicU64 =
+kernel/src/task/scheduler.rs:539:/// `tests/loopback_pump_structure.rs::pin_blind_migration_census_matches_the_slice_3e_table`
+kernel/src/task/scheduler.rs:542:/// 7 of `retain_cpu_affine_thread`, and `percpu_stack_home_cpu` -- the
+kernel/src/task/scheduler.rs:548:/// `tests/loopback_pump_structure.rs::percpu_stack_reroute_counts_a_pin_conflict`
+kernel/src/task/scheduler.rs:549:pub static PINNED_STACK_HOME_CONFLICT: core::sync::atomic::AtomicU64 =
+kernel/src/task/scheduler.rs:552:/// Whether the one-shot `[PINNED_HOME_CPU_UNAVAILABLE:first:...]` serial marker
+kernel/src/task/scheduler.rs:554:static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
+kernel/src/task/scheduler.rs:573:pub fn emit_pinned_placement_census() {
+kernel/src/task/scheduler.rs:575:        "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}:hold_pen_migrated={}:delivered={}:migration_refused={}:stack_home_conflict={}]",
+kernel/src/task/scheduler.rs:576:        PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:577:        PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:578:        PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:579:        PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:580:        PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:581:        PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:589:/// `emit_pin_guard_oracle` prints a SKIP and drives 0 sites, so a
+kernel/src/task/scheduler.rs:611:/// Read by `emit_pin_guard_oracle` for its `refused=` field, and never by the
+kernel/src/task/scheduler.rs:613:/// rather than a delta. That is correct only while `emit_pin_guard_oracle` has
+kernel/src/task/scheduler.rs:637:    PINNED_MIGRATION_REFUSED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:646:    PINNED_MIGRATION_REFUSED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:668:pub fn emit_pin_guard_oracle() {
+kernel/src/task/scheduler.rs:676:pub fn emit_pin_guard_oracle() {
+kernel/src/task/scheduler.rs:689:    // calls the whole of `reclaim_unschedulable_cpu_queues`, which sweeps the
+kernel/src/task/scheduler.rs:696:    // `emit_pin_guard_oracle` has 1 caller per architecture.
+kernel/src/task/scheduler.rs:736:fn retain_cpu_affine_test_thread(
+kernel/src/task/scheduler.rs:771:pub(crate) fn clear_cpu_affinity_for_test(thread_id: u64) {
+kernel/src/task/scheduler.rs:951:    pub queued_on_nondispatching_cpu: u64,
+kernel/src/task/scheduler.rs:1126:        let mut queued_on_nondispatching_cpu = 0u64;
+kernel/src/task/scheduler.rs:1137:        // still queued on it is the exact shape `queued_on_nondispatching_cpu`
+kernel/src/task/scheduler.rs:1201:                queued_on_nondispatching_cpu += 1;
+kernel/src/task/scheduler.rs:1237:            let reachability_dimensions = [current, queued, previous, pending_next, deferred];
+kernel/src/task/scheduler.rs:1238:            if reachability_dimensions
+kernel/src/task/scheduler.rs:1264:            queued_on_nondispatching_cpu,
+kernel/src/task/scheduler.rs:1287:/// off the CPU it asked for by `reclaim_unschedulable_cpu_queues` and then
+kernel/src/task/scheduler.rs:1538:const CPU_STALL_TICKS: u64 = 20;
+kernel/src/task/scheduler.rs:2030:        crate::time::get_ticks().wrapping_sub(last_schedule_ticks) > CPU_STALL_TICKS
+kernel/src/task/scheduler.rs:2034:    fn reclaim_unschedulable_cpu_queues(&mut self) {
+kernel/src/task/scheduler.rs:2055:                if retain_cpu_affine_test_thread(
+kernel/src/task/scheduler.rs:2066:                if self.retain_cpu_affine_thread(thread_id, current_cpu) {
+kernel/src/task/scheduler.rs:2123:        let cpu_affinity = thread.cpu_affinity;
+kernel/src/task/scheduler.rs:2127:        // current CPU if tied), which is the path taken today: `spawn_on_cpu`
+kernel/src/task/scheduler.rs:2129:        // `cpu_affinity` reads `None` here and the fall-through is the whole
+kernel/src/task/scheduler.rs:2131:        // claim-lint:ok: 1 of 1 call sites of `spawn_on_cpu` is
+kernel/src/task/scheduler.rs:2132:        // `kthread::kthread_run_on_cpu`, which has 0 callers of its own -- both
+kernel/src/task/scheduler.rs:2135:        let target = cpu_affinity
+kernel/src/task/scheduler.rs:2143:        // Nothing in this kernel can reach the arm -- `spawn_on_cpu` asserts an
+kernel/src/task/scheduler.rs:2146:        // claim-lint:ok: 1 of 1 mutating writer of the field is `spawn_on_cpu`
+kernel/src/task/scheduler.rs:2149:        if cpu_affinity.is_some_and(|pin| pin.cpu != target) {
+kernel/src/task/scheduler.rs:2150:            PINNED_PUBLISH_DISCARDED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:2152:                thread.cpu_affinity = None;
+kernel/src/task/scheduler.rs:2323:        self.reclaim_unschedulable_cpu_queues();
+kernel/src/task/scheduler.rs:2324:        self.deliver_pinned_wakes_for_this_cpu();
+kernel/src/task/scheduler.rs:2475:                    if retain_cpu_affine_test_thread(
+kernel/src/task/scheduler.rs:2491:                    if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+kernel/src/task/scheduler.rs:2504:                    if self.retain_cpu_affine_thread(n, current_cpu) {
+kernel/src/task/scheduler.rs:2551:                            if retain_cpu_affine_test_thread(
+kernel/src/task/scheduler.rs:2568:                            if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+kernel/src/task/scheduler.rs:2575:                            if self.retain_cpu_affine_thread(n, current_cpu) {
+kernel/src/task/scheduler.rs:2644:                crate::per_cpu::set_need_resched(true);
+kernel/src/task/scheduler.rs:2646:                crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:2771:            if !self.retain_cpu_affine_thread(tid, cpu) {
+kernel/src/task/scheduler.rs:2774:            crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:2775:            self.send_resched_ipi();
+kernel/src/task/scheduler.rs:2853:        self.reclaim_unschedulable_cpu_queues();
+kernel/src/task/scheduler.rs:2854:        self.deliver_pinned_wakes_for_this_cpu();
+kernel/src/task/scheduler.rs:2990:                    if retain_cpu_affine_test_thread(
+kernel/src/task/scheduler.rs:3006:                    if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+kernel/src/task/scheduler.rs:3019:                    if self.retain_cpu_affine_thread(n, current_cpu) {
+kernel/src/task/scheduler.rs:3065:                            if retain_cpu_affine_test_thread(
+kernel/src/task/scheduler.rs:3081:                            if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+kernel/src/task/scheduler.rs:3088:                            if self.retain_cpu_affine_thread(n, current_cpu) {
+kernel/src/task/scheduler.rs:3135:                crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:3243:    /// returns before `retain_cpu_affine_thread` is reached -- so a pinned
+kernel/src/task/scheduler.rs:3247:    /// same gate-failing `PINNED_STACK_HOME_CONFLICT` the guard's own arm 7
+kernel/src/task/scheduler.rs:3254:    fn percpu_stack_home_cpu(&self, thread_id: u64, current_cpu: usize) -> Option<usize> {
+kernel/src/task/scheduler.rs:3257:        let affinity = thread.cpu_affinity;
+kernel/src/task/scheduler.rs:3266:            PINNED_STACK_HOME_CONFLICT.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:3352:            if !self.retain_cpu_affine_thread(thread_id, target_cpu) {
+kernel/src/task/scheduler.rs:3357:            self.send_resched_ipi();
+kernel/src/task/scheduler.rs:3599:                        self.send_resched_ipi();
+kernel/src/task/scheduler.rs:3601:                        self.hold_pinned_wake_for_home(thread_id);
+kernel/src/task/scheduler.rs:3608:                        self.send_resched_ipi_to_cpu(target);
+kernel/src/task/scheduler.rs:3644:    fn send_resched_ipi(&self) {
+kernel/src/task/scheduler.rs:3658:                            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+kernel/src/task/scheduler.rs:3670:    fn send_resched_ipi_to_cpu(&self, target_cpu: usize) {
+kernel/src/task/scheduler.rs:3687:            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+kernel/src/task/scheduler.rs:3698:            use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp};
+kernel/src/task/scheduler.rs:3726:                    gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
+kernel/src/task/scheduler.rs:3872:                        self.send_resched_ipi();
+kernel/src/task/scheduler.rs:3874:                        self.hold_pinned_wake_for_home(thread_id);
+kernel/src/task/scheduler.rs:3891:                set_need_resched();
+kernel/src/task/scheduler.rs:3985:                        self.send_resched_ipi();
+kernel/src/task/scheduler.rs:3987:                        self.hold_pinned_wake_for_home(thread_id);
+kernel/src/task/scheduler.rs:3997:                set_need_resched();
+kernel/src/task/scheduler.rs:4172:            self.send_resched_ipi_to_cpu(target);
+kernel/src/task/scheduler.rs:4191:            self.send_resched_ipi_to_cpu(target);
+kernel/src/task/scheduler.rs:4276:                        self.hold_pinned_wake_for_home(tid);
+kernel/src/task/scheduler.rs:4283:                set_need_resched();
+kernel/src/task/scheduler.rs:4486:                        self.hold_pinned_wake_for_home(tid);
+kernel/src/task/scheduler.rs:4606:                    if !self.retain_cpu_affine_thread(thread_id, target) {
+kernel/src/task/scheduler.rs:4637:        if let Some(pin) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
+kernel/src/task/scheduler.rs:4648:            // scheduler in the last CPU_STALL_TICKS, which is the wrong
+kernel/src/task/scheduler.rs:4672:            PINNED_HOLD_PEN_MIGRATED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:4705:    /// `deliver_pinned_wakes_for_this_cpu` is what ends the hold: the home CPU,
+kernel/src/task/scheduler.rs:4712:    /// It writes no pin either. `Thread::cpu_affinity` exists in two copies --
+kernel/src/task/scheduler.rs:4716:    fn hold_pinned_wake_for_home(&self, thread_id: u64) {
+kernel/src/task/scheduler.rs:4717:        let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
+kernel/src/task/scheduler.rs:4718:        if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
+kernel/src/task/scheduler.rs:4726:                .and_then(|thread| thread.cpu_affinity)
+kernel/src/task/scheduler.rs:4729:            crate::tracing::output::raw_serial_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
+kernel/src/task/scheduler.rs:4742:    /// `hold_pinned_wake_for_home` leaves behind.
+kernel/src/task/scheduler.rs:4750:    /// claim-lint:ok: 5 of 5 dimensions of `reachability_dimensions` in this
+kernel/src/task/scheduler.rs:4759:        let Some(pin) = thread.cpu_affinity else {
+kernel/src/task/scheduler.rs:4784:    /// This is the re-arm. `hold_pinned_wake_for_home` refuses a placement
+kernel/src/task/scheduler.rs:4795:    /// claim-lint:ok: 1 of 1 writer of `PINNED_HOME_CPU_UNAVAILABLE` is the
+kernel/src/task/scheduler.rs:4796:    /// `fetch_add` in `hold_pinned_wake_for_home`; 3 of 3 strict boots and 3 of
+kernel/src/task/scheduler.rs:4798:    fn deliver_pinned_wakes_for_this_cpu(&mut self) {
+kernel/src/task/scheduler.rs:4799:        if PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed) == 0 {
+kernel/src/task/scheduler.rs:4811:            PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:4838:    /// `tests/loopback_pump_structure.rs::pin_blind_migration_census_matches_the_slice_3e_table`
+kernel/src/task/scheduler.rs:4845:    /// and 1 compare, not a thread lookup. `CPU_PINS_STAMPED` counts the
+kernel/src/task/scheduler.rs:4846:    /// `CpuPin` values both constructors have built, so a 0 reading says 0
+kernel/src/task/scheduler.rs:4848:    /// shape `deliver_pinned_wakes_for_this_cpu` uses to skip its own scan.
+kernel/src/task/scheduler.rs:4849:    /// claim-lint:ok: 2 of 2 `CpuPin` constructors increment that counter,
+kernel/src/task/scheduler.rs:4852:    fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool {
+kernel/src/task/scheduler.rs:4858:        if super::thread::CPU_PINS_STAMPED.load(Ordering::Relaxed) == 0 {
+kernel/src/task/scheduler.rs:4865:        let affinity = thread.cpu_affinity;
+kernel/src/task/scheduler.rs:4893:                PINNED_HOLD_PEN_MIGRATED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:4906:            // `spawn_on_cpu` asserts an online target, `add_thread_inner`
+kernel/src/task/scheduler.rs:4910:            // claim-lint:ok: 1 of 1 mutating writer of `Thread::cpu_affinity`
+kernel/src/task/scheduler.rs:4911:            // is `spawn_on_cpu` and 14 of 15 `Thread` build sites carry `None`,
+kernel/src/task/scheduler.rs:4913:            PINNED_PUBLISH_DISCARDED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:4915:                thread.cpu_affinity = None;
+kernel/src/task/scheduler.rs:4928:                PINNED_STACK_HOME_CONFLICT.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:4942:        // pending, and `deliver_pinned_wakes_for_this_cpu` completes the
+kernel/src/task/scheduler.rs:4953:        // claim-lint:ok: 5 of 5 dimensions of `reachability_dimensions` are
+kernel/src/task/scheduler.rs:4956:            self.hold_pinned_wake_for_home(thread_id);
+kernel/src/task/scheduler.rs:4989:    /// `reclaim_unschedulable_cpu_queues`, `requeue_thread_after_save_onto` and
+kernel/src/task/scheduler.rs:5020:        thread.cpu_affinity = Some(super::thread::CpuPin::per_cpu_worker(home));
+kernel/src/task/scheduler.rs:5028:            PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5029:            PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5030:            PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5031:            PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5032:            PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5033:            PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5040:        self.reclaim_unschedulable_cpu_queues();
+kernel/src/task/scheduler.rs:5058:            PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5059:            PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5060:            PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5061:            PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5062:            PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5063:            PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
+kernel/src/task/scheduler.rs:5079:        probe.cpu_affinity = None;
+kernel/src/task/scheduler.rs:5294:    pub fn set_need_resched_inner(&self) {
+kernel/src/task/scheduler.rs:5296:        crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:5381:            if !self.retain_cpu_affine_thread(previous, cpu) {
+kernel/src/task/scheduler.rs:5385:            set_need_resched();
+kernel/src/task/scheduler.rs:5487:            crate::per_cpu::set_need_resched(true);
+kernel/src/task/scheduler.rs:5490:                crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:5493:                scheduler.send_resched_ipi();
+kernel/src/task/scheduler.rs:5507:pub fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
+kernel/src/task/scheduler.rs:5519:        thread.cpu_affinity = Some(super::thread::CpuPin::per_cpu_worker(cpu));
+kernel/src/task/scheduler.rs:5523:        crate::per_cpu::set_need_resched(true);
+kernel/src/task/scheduler.rs:5526:            crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:5527:            scheduler.send_resched_ipi_to_cpu(cpu);
+kernel/src/task/scheduler.rs:5534:pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
+kernel/src/task/scheduler.rs:5544:        crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:5545:        scheduler.send_resched_ipi_to_cpu(cpu);
+kernel/src/task/scheduler.rs:5557:        clear_cpu_affinity_for_test(thread_id);
+kernel/src/task/scheduler.rs:5570:        set_need_resched();
+kernel/src/task/scheduler.rs:5605:        crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:5606:        scheduler.send_resched_ipi();
+kernel/src/task/scheduler.rs:5621:            crate::per_cpu::set_need_resched(true);
+kernel/src/task/scheduler.rs:5624:                crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:5629:                scheduler.send_resched_ipi();
+kernel/src/task/scheduler.rs:6265:    set_need_resched();
+kernel/src/task/scheduler.rs:6285:pub fn set_need_resched() {
+kernel/src/task/scheduler.rs:6288:    crate::per_cpu::set_need_resched(true);
+kernel/src/task/scheduler.rs:6290:    crate::per_cpu_aarch64::set_need_resched(true);
+kernel/src/task/scheduler.rs:6299:            crate::per_cpu::set_need_resched(false);
+kernel/src/task/scheduler.rs:6313:            crate::per_cpu_aarch64::set_need_resched(false);
+kernel/src/task/scheduler.rs:6394:            set_need_resched();
+kernel/src/task/scheduler.rs:6400:                set_need_resched();
+kernel/src/task/scheduler.rs:6454:    set_need_resched();
+kernel/src/task/scheduler.rs:6567:        if !sched.retain_cpu_affine_thread(thread_id, cpu) {
+kernel/src/task/scheduler.rs:6609:            if !sched.retain_cpu_affine_thread(aborted_thread_id, cpu_id) {
+kernel/src/task/scheduler.rs:6836:        crate::per_cpu::set_need_resched(false);
+kernel/src/task/scheduler.rs:6873:        crate::per_cpu::set_need_resched(false);
+kernel/src/task/scheduler.rs:6899:        use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp};
+kernel/src/task/scheduler.rs:6905:                gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
+kernel/src/task/scheduler.rs:6909:    set_need_resched();
+
+FILE kernel/src/task/softirqd.rs
+
+FILE kernel/src/task/strand_oracle.rs
+kernel/src/task/strand_oracle.rs:153:    queued_on_nondispatching_cpu: u64,
+kernel/src/task/strand_oracle.rs:174:            queued_on_nondispatching_cpu: 0,
+kernel/src/task/strand_oracle.rs:297:        state.queued_on_nondispatching_cpu = state
+kernel/src/task/strand_oracle.rs:298:            .queued_on_nondispatching_cpu
+kernel/src/task/strand_oracle.rs:299:            .max(census.queued_on_nondispatching_cpu);
+kernel/src/task/strand_oracle.rs:367:            state.queued_on_nondispatching_cpu,
+kernel/src/task/strand_oracle.rs:430:    queued_on_nondispatching_cpu: u64,
+kernel/src/task/strand_oracle.rs:437:        "[SCHED_STRAND_ORACLE:{}:samples={}:checked={}:stranded={}:running_shape={}:ready_shape={}:resolved_production={}:resolved_exercised={}:worst_dwell_ms={}:overflow={}:worst_nonprogress_ms={}:nonprogress={}:queued_on_nondispatching_cpu={}:worst_queued_nondispatch_ms={}:worst_cpu_scheduler_silence_ms={}:worst_silence_cpu={}]",
+kernel/src/task/strand_oracle.rs:454:        queued_on_nondispatching_cpu,
+kernel/src/task/strand_oracle.rs:478:    crate::task::scheduler::emit_pinned_placement_census();
+kernel/src/task/strand_oracle.rs:666:                state.queued_on_nondispatching_cpu,
+
+FILE kernel/src/task/thread.rs
+kernel/src/task/thread.rs:596:    /// treatment when the home CPU stops dispatching. See `CpuPin`.
+kernel/src/task/thread.rs:598:    /// Nothing in this tree stamps a pin yet: `spawn_on_cpu` is the only
+kernel/src/task/thread.rs:600:    /// `kthread_run_on_cpu` that wraps it. 14 of 15 sites that build a
+kernel/src/task/thread.rs:616:    // `cpu_affinity: None`, and `spawn_on_cpu` has 1 call site
+kernel/src/task/thread.rs:617:    // (`kthread::kthread_run_on_cpu`) which itself has 0 -- all counted by grep
+kernel/src/task/thread.rs:619:    pub cpu_affinity: Option<CpuPin>,
+kernel/src/task/thread.rs:642:pub struct CpuPin {
+kernel/src/task/thread.rs:649:/// `CpuPin` values minted since boot, by either constructor.
+kernel/src/task/thread.rs:653:/// therefore a statement that 0 `Thread::cpu_affinity` fields in the kernel
+kernel/src/task/thread.rs:654:/// hold `Some`, which is what `Scheduler::retain_cpu_affine_thread` reads it
+kernel/src/task/thread.rs:657:/// claim-lint:ok: 2 of 2 constructors of `CpuPin` increment this and 0
+kernel/src/task/thread.rs:658:/// `CpuPin { .. }` literals exist in kernel/src outside the type's own
+kernel/src/task/thread.rs:667:pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
+kernel/src/task/thread.rs:669:impl CpuPin {
+kernel/src/task/thread.rs:672:        CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/thread.rs:687:        CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/thread.rs:733:            cpu_affinity: self.cpu_affinity,
+kernel/src/task/thread.rs:845:            cpu_affinity: None,
+kernel/src/task/thread.rs:911:            cpu_affinity: None,
+kernel/src/task/thread.rs:964:            cpu_affinity: None,
+kernel/src/task/thread.rs:1016:            cpu_affinity: None,
+kernel/src/task/thread.rs:1081:            cpu_affinity: None,
+kernel/src/task/thread.rs:1141:            cpu_affinity: None,
+kernel/src/task/thread.rs:1220:            cpu_affinity: None,
+kernel/src/task/thread.rs:1268:            cpu_affinity: None,
+
+FILE scripts/check-kernel-no-neon.sh
+scripts/check-kernel-no-neon.sh:3:# check-kernel-no-neon.sh — durable guard against re-arming issue #528.
+scripts/check-kernel-no-neon.sh:26:#   ./scripts/check-kernel-no-neon.sh [path/to/kernel-elf]
+scripts/check-kernel-no-neon.sh:55:    sysroot="$(rustc --print sysroot 2>/dev/null)"
+
+FILE scripts/run-structure-tests.sh
+scripts/run-structure-tests.sh:14:# from disk -- so `rustc --test` compiles and runs them directly.
+scripts/run-structure-tests.sh:21:# gate_structure_preflight function calls it once per discovered
+scripts/run-structure-tests.sh:23:# tests/gate_structure_preflight_wiring_structure.rs) --
+scripts/run-structure-tests.sh:58:CARGO_MANIFEST_DIR="${REPO_ROOT}" rustc --edition=2021 --test "${SOURCE}" -o "${BINARY}"
+
+FILE tests/loopback_pump_structure.rs
+tests/loopback_pump_structure.rs:852:    if compact_code(io_wake) != "{let_=buffer_isr_wakeup(tid);set_need_resched();}" {
+tests/loopback_pump_structure.rs:1210:        // block that reads cpu_affinity must consult the online range and
+tests/loopback_pump_structure.rs:1214:        // about. Located by the cpu_affinity read, not by arm name.
+tests/loopback_pump_structure.rs:1215:        for offset in identifier_offsets(body, &mask, "cpu_affinity") {
+tests/loopback_pump_structure.rs:1217:                .ok_or_else(|| format!("{name} reads cpu_affinity outside any block"))?;
+tests/loopback_pump_structure.rs:1259:/// the one the earlier park carried: `Thread::cpu_affinity` exists in two
+tests/loopback_pump_structure.rs:1266:    if !source.contains("fn hold_pinned_wake_for_home(&self, thread_id: u64)") {
+tests/loopback_pump_structure.rs:1271:    let body = function_body(source, "hold_pinned_wake_for_home")
+tests/loopback_pump_structure.rs:1274:    if !compact.contains("PINNED_HOME_CPU_UNAVAILABLE.fetch_add(") {
+tests/loopback_pump_structure.rs:1285:    if compact.contains("cpu_affinity=") {
+tests/loopback_pump_structure.rs:1291:    let delivery = function_body(source, "deliver_pinned_wakes_for_this_cpu")
+tests/loopback_pump_structure.rs:1297:    if !delivery_compact.contains("PINNED_WAKES_DELIVERED.fetch_add(") {
+tests/loopback_pump_structure.rs:1302:        if !compact_code(entry).contains("self.deliver_pinned_wakes_for_this_cpu()") {
+tests/loopback_pump_structure.rs:1319:///   1. it reads `cpu_affinity` and separates the two pin kinds by
+tests/loopback_pump_structure.rs:1332:    let body = function_body(source, "retain_cpu_affine_thread")
+tests/loopback_pump_structure.rs:1333:        .ok_or("kernel/src/task/scheduler.rs defines no retain_cpu_affine_thread guard")?;
+tests/loopback_pump_structure.rs:1336:    if !compact.contains("CPU_PINS_STAMPED.load(Ordering::Relaxed)==0") {
+tests/loopback_pump_structure.rs:1343:    if !body.contains("cpu_affinity") {
+tests/loopback_pump_structure.rs:1344:        return Err("the migration guard does not read Thread::cpu_affinity".into());
+tests/loopback_pump_structure.rs:1383:    if !compact.contains("self.hold_pinned_wake_for_home(thread_id)") {
+tests/loopback_pump_structure.rs:1408:/// A site that called `retain_cpu_affine_thread` and discarded the answer would
+tests/loopback_pump_structure.rs:1418:    while let Some(relative) = normalised[searched..].find("retain_cpu_affine_thread(") {
+tests/loopback_pump_structure.rs:1420:        searched = offset + "retain_cpu_affine_thread(".len();
+tests/loopback_pump_structure.rs:1431:                "a retain_cpu_affine_thread call is not the condition of an if -- it reads \
+tests/loopback_pump_structure.rs:1443:fn validate_scheduling_paths_reclaim_unschedulable_cpu_queues(source: &str) -> Result<(), String> {
+tests/loopback_pump_structure.rs:1446:        if !compact_code(body).contains("self.reclaim_unschedulable_cpu_queues()") {
+tests/loopback_pump_structure.rs:1459:/// read the thread's own `cpu_affinity` pin BEFORE the least-loaded choice,
+tests/loopback_pump_structure.rs:1462:/// which is the path taken today, `spawn_on_cpu` having 0 callers.
+tests/loopback_pump_structure.rs:1499:        let Some(pin_read) = identifier_offsets(&body, &mask, "cpu_affinity")
+tests/loopback_pump_structure.rs:1504:                "{name} chooses a queue without reading the thread's cpu_affinity pin"
+tests/loopback_pump_structure.rs:1554:/// Censused over the constructors of `CpuPin` rather than named one by one: a
+tests/loopback_pump_structure.rs:1561:/// functions `impl CpuPin` holds today. A function that builds no pin -- an
+tests/loopback_pump_structure.rs:1567:    if !compact_code(source).contains("pubcpu_affinity:Option<CpuPin>") {
+tests/loopback_pump_structure.rs:1568:        return Err("Thread::cpu_affinity does not carry a CpuPin".to_string());
+tests/loopback_pump_structure.rs:1571:    let struct_offset = code_text_offset(source, "struct CpuPin")
+tests/loopback_pump_structure.rs:1572:        .ok_or_else(|| "CpuPin is not defined".to_string())?;
+tests/loopback_pump_structure.rs:1574:        .ok_or_else(|| "CpuPin has no field block".to_string())?;
+tests/loopback_pump_structure.rs:1577:            return Err(format!("CpuPin does not carry the {field} field"));
+tests/loopback_pump_structure.rs:1581:    let impl_offset = code_text_offset(source, "impl CpuPin")
+tests/loopback_pump_structure.rs:1582:        .ok_or_else(|| "CpuPin has no constructors".to_string())?;
+tests/loopback_pump_structure.rs:1584:        .ok_or_else(|| "impl CpuPin has no block".to_string())?;
+tests/loopback_pump_structure.rs:1588:        if !body.contains("Self{") && !body.contains("CpuPin{") {
+tests/loopback_pump_structure.rs:1597:                "CpuPin::{} builds a pin without naming the reason it exists",
+tests/loopback_pump_structure.rs:1603:        return Err("CpuPin has no constructor to census".to_string());
+tests/loopback_pump_structure.rs:1607:            "CpuPin cannot express both reasons: a per-CPU worker and a hold pen are the two a later reclaim disposition has to tell apart"
+tests/loopback_pump_structure.rs:1959:        "let _ = buffer_isr_wakeup(tid);\n    set_need_resched();",
+tests/loopback_pump_structure.rs:1960:        "let _ = wake_thread_any_context(tid);\n    set_need_resched();",
+tests/loopback_pump_structure.rs:2469:        "fn hold_pinned_wake_for_home(&self, thread_id: u64)",
+tests/loopback_pump_structure.rs:2470:        "fn hold_pinned_wake_for_home(&mut self, thread_id: u64)",
+tests/loopback_pump_structure.rs:2485:    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+tests/loopback_pump_structure.rs:2502:    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+tests/loopback_pump_structure.rs:2516:    let hold = function_body(&source, "hold_pinned_wake_for_home").expect("find the hold fixture");
+tests/loopback_pump_structure.rs:2519:        "if let Some(thread) = self.get_thread_mut(thread_id) { thread.cpu_affinity = None; }\n        let holds = ",
+tests/loopback_pump_structure.rs:2533:    let delivery = function_body(&source, "deliver_pinned_wakes_for_this_cpu")
+tests/loopback_pump_structure.rs:2549:        let mutated_entry = entry.replacen("self.deliver_pinned_wakes_for_this_cpu();", "", 1);
+tests/loopback_pump_structure.rs:2592:        if line.contains("[PINNED_HOME_CPU_UNAVAILABLE:") {
+tests/loopback_pump_structure.rs:2613:            "BREENIX_STRICT_SCORE_ONLY",
+tests/loopback_pump_structure.rs:2629:                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]"
+tests/loopback_pump_structure.rs:2655:                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]",
+tests/loopback_pump_structure.rs:2656:                "[PINNED_HOME_CPU_UNAVAILABLE:count=3:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]",
+tests/loopback_pump_structure.rs:2682:        late_hold.push_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=7:home=1:cpu=0:count=1]\n");
+tests/loopback_pump_structure.rs:2699:                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]",
+tests/loopback_pump_structure.rs:2700:                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=2:delivered=0:migration_refused=0:stack_home_conflict=0]",
+tests/loopback_pump_structure.rs:2718:                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]",
+tests/loopback_pump_structure.rs:2719:                "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=5:stack_home_conflict=0]",
+tests/loopback_pump_structure.rs:2771:    let (passed, output) = leg("green", &strict_serial, strict, "BREENIX_STRICT_SCORE_ONLY");
+tests/loopback_pump_structure.rs:2793:        "BREENIX_STRICT_SCORE_ONLY",
+tests/loopback_pump_structure.rs:2811:        "BREENIX_STRICT_SCORE_ONLY",
+tests/loopback_pump_structure.rs:2844:fn scheduling_paths_reclaim_unschedulable_cpu_queues() {
+tests/loopback_pump_structure.rs:2845:    validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&repo_text(
+tests/loopback_pump_structure.rs:2856:    let mutated_deferred = deferred.replacen("self.reclaim_unschedulable_cpu_queues();", "", 1);
+tests/loopback_pump_structure.rs:2859:    assert!(validate_scheduling_paths_reclaim_unschedulable_cpu_queues(&mutated).is_err());
+tests/loopback_pump_structure.rs:2864:/// anywhere in its own body -- neither the `cpu_affinity` field nor `CpuPin`
+tests/loopback_pump_structure.rs:2868:/// `retain_cpu_affine_thread`, slice 3e's migration guard).
+tests/loopback_pump_structure.rs:2879:/// `pin_blind_migration_census_matches_the_slice_3e_table` -- a table of
+tests/loopback_pump_structure.rs:2899:/// delivery, `deliver_pinned_wakes_for_this_cpu`) are excluded by the pin
+tests/loopback_pump_structure.rs:2900:/// check itself: each reads `cpu_affinity` in its own body or is the
+tests/loopback_pump_structure.rs:2909:fn pin_blind_migration_sites(source: &str) -> Vec<PinBlindSite> {
+tests/loopback_pump_structure.rs:2966:        let pin_aware = body.contains("cpu_affinity")
+tests/loopback_pump_structure.rs:2967:            || body.contains("CpuPin")
+tests/loopback_pump_structure.rs:2970:            || body.contains("retain_cpu_affine_thread(");
+tests/loopback_pump_structure.rs:3046:fn pin_blind_migration_census_matches_the_slice_3e_table() {
+tests/loopback_pump_structure.rs:3048:    let sites = pin_blind_migration_sites(&source);
+tests/loopback_pump_structure.rs:3056:         it pushes -- add the `retain_cpu_affine_thread` guard at the site, or \
+tests/loopback_pump_structure.rs:3074:fn pin_blind_migration_census_counts_a_bare_push() {
+tests/loopback_pump_structure.rs:3080:    let sites = pin_blind_migration_sites(synthetic);
+tests/loopback_pump_structure.rs:3095:fn pin_blind_migration_census_does_not_count_a_guarded_push() {
+tests/loopback_pump_structure.rs:3098:            if !self.retain_cpu_affine_thread(thread_id, cpu) {\n\
+tests/loopback_pump_structure.rs:3104:        pin_blind_migration_sites(synthetic).is_empty(),
+tests/loopback_pump_structure.rs:3122:    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+tests/loopback_pump_structure.rs:3142:    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+tests/loopback_pump_structure.rs:3155:    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+tests/loopback_pump_structure.rs:3157:        "self.hold_pinned_wake_for_home(thread_id);",
+tests/loopback_pump_structure.rs:3168:    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+tests/loopback_pump_structure.rs:3183:    let body = function_body(&source, "retain_cpu_affine_thread").expect("find the guard fixture");
+tests/loopback_pump_structure.rs:3185:        "super::thread::CPU_PINS_STAMPED.load(Ordering::Relaxed) == 0",
+tests/loopback_pump_structure.rs:3205:        "if !self.retain_cpu_affine_thread(previous, cpu) {\n                self.per_cpu_queues[cpu].push_back(previous);\n            }",
+tests/loopback_pump_structure.rs:3206:        "let _ = self.retain_cpu_affine_thread(previous, cpu);\n            self.per_cpu_queues[cpu].push_back(previous);",
+tests/loopback_pump_structure.rs:3215:/// `percpu_stack_home_cpu` decides 4 of this file's pushes -- the steal-loop
+tests/loopback_pump_structure.rs:3217:/// those pushes `continue`s before `retain_cpu_affine_thread` is reached, so
+tests/loopback_pump_structure.rs:3223:fn validate_percpu_stack_reroute_counts_a_pin_conflict(source: &str) -> Result<(), String> {
+tests/loopback_pump_structure.rs:3224:    let body = function_body(source, "percpu_stack_home_cpu")
+tests/loopback_pump_structure.rs:3225:        .ok_or("kernel/src/task/scheduler.rs defines no percpu_stack_home_cpu reroute")?;
+tests/loopback_pump_structure.rs:3227:    if !compact.contains("cpu_affinity") {
+tests/loopback_pump_structure.rs:3234:    if !compact.contains("PINNED_STACK_HOME_CONFLICT.fetch_add(1,Ordering::Relaxed)") {
+tests/loopback_pump_structure.rs:3252:fn percpu_stack_reroute_counts_a_pin_conflict() {
+tests/loopback_pump_structure.rs:3253:    validate_percpu_stack_reroute_counts_a_pin_conflict(&repo_text("kernel/src/task/scheduler.rs"))
+tests/loopback_pump_structure.rs:3262:    let body = function_body(&source, "percpu_stack_home_cpu").expect("find the reroute fixture");
+tests/loopback_pump_structure.rs:3264:        "PINNED_STACK_HOME_CONFLICT.fetch_add(1, Ordering::Relaxed);",
+tests/loopback_pump_structure.rs:3269:    assert!(validate_percpu_stack_reroute_counts_a_pin_conflict(&mutated).is_err());
+tests/loopback_pump_structure.rs:3275:    let body = function_body(&source, "percpu_stack_home_cpu").expect("find the reroute fixture");
+tests/loopback_pump_structure.rs:3277:        "let affinity = thread.cpu_affinity;",
+tests/loopback_pump_structure.rs:3278:        "let affinity: Option<super::thread::CpuPin> = None;",
+tests/loopback_pump_structure.rs:3282:    assert!(validate_percpu_stack_reroute_counts_a_pin_conflict(&mutated).is_err());
+tests/loopback_pump_structure.rs:3285:/// A `CpuPin` value in the kernel is built by a constructor that counts it.
+tests/loopback_pump_structure.rs:3287:/// `retain_cpu_affine_thread` answers "no constraint" from
+tests/loopback_pump_structure.rs:3288:/// `CPU_PINS_STAMPED == 0` without reading a thread row, so that counter is
+tests/loopback_pump_structure.rs:3293:/// count, and kernel/src holds 0 `CpuPin { .. }` literals outside the type's
+tests/loopback_pump_structure.rs:3305:            .ok_or_else(|| format!("kernel/src/task/thread.rs defines no CpuPin::{constructor}"))?;
+tests/loopback_pump_structure.rs:3306:        if !compact_code(body).contains("CPU_PINS_STAMPED.fetch_add(1,Ordering::Relaxed)") {
+tests/loopback_pump_structure.rs:3308:                "CpuPin::{constructor} builds a pin without counting it, so a thread can carry \
+tests/loopback_pump_structure.rs:3309:                 a pin while CPU_PINS_STAMPED reads 0 and the migration guard skips its arms"
+tests/loopback_pump_structure.rs:3323:        while let Some(relative) = masked[searched..].find("CpuPin") {
+tests/loopback_pump_structure.rs:3325:            searched = offset + "CpuPin".len();
+tests/loopback_pump_structure.rs:3329:            // Two `CpuPin {` openings are not literals: the type's own
+tests/loopback_pump_structure.rs:3341:            "kernel/src builds a CpuPin by struct literal at {literals:?}, bypassing the \
+tests/loopback_pump_structure.rs:3342:             constructors that count into CPU_PINS_STAMPED"
+tests/loopback_pump_structure.rs:3351:        .expect("every CpuPin is built by a constructor that counts it");
+tests/loopback_pump_structure.rs:3363:        .replacen("CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);", "", 1);
+tests/loopback_pump_structure.rs:3377:        "\nfn spare_pin_probe(cpu: usize) -> super::thread::CpuPin {\n    \
+tests/loopback_pump_structure.rs:3378:         super::thread::CpuPin { cpu, per_cpu_worker: true }\n}\n",
+tests/loopback_pump_structure.rs:3402:        .find("self.retain_cpu_affine_thread(previous,cpu)")
+tests/loopback_pump_structure.rs:3451:        .find("let target = cpu_affinity")
+tests/loopback_pump_structure.rs:3485:        .expect("every CpuPin constructor names the reason the pin exists");
+tests/loopback_pump_structure.rs:3500:        "pub cpu_affinity: Option<CpuPin>",
+tests/loopback_pump_structure.rs:3501:        "pub cpu_affinity: Option<usize>",
+tests/loopback_pump_structure.rs:3549:    let accessor = "impl CpuPin {\n    pub const fn is_per_cpu_worker(&self) -> bool {\n        self.per_cpu_worker\n    }\n";
+tests/loopback_pump_structure.rs:3550:    let mutated = source.replacen("impl CpuPin {\n", accessor, 1);
+tests/loopback_pump_structure.rs:3765:    let body = function_body(scheduler, "emit_pinned_placement_census")
+tests/loopback_pump_structure.rs:3766:        .ok_or("kernel/src/task/scheduler.rs defines no emit_pinned_placement_census")?;
+tests/loopback_pump_structure.rs:3787:            "the census discovery found {} counters in emit_pinned_placement_census, so the \
+tests/loopback_pump_structure.rs:3895:/// `emit_pin_guard_oracle` has exactly 1 call site per architecture.
+tests/loopback_pump_structure.rs:3907:        for offset in identifier_offsets(text, &mask, "emit_pin_guard_oracle") {
+tests/loopback_pump_structure.rs:3908:            // The 2 definitions are the 2 `fn emit_pin_guard_oracle` headers,
+tests/loopback_pump_structure.rs:3919:                "emit_pin_guard_oracle is called at {path}:{line}, outside the 2 architecture \
+tests/loopback_pump_structure.rs:3929:                "{entry} holds {count} call sites of emit_pin_guard_oracle, not 1; its refused= \
+tests/loopback_pump_structure.rs:4041:        .expect("emit_pin_guard_oracle has one call site per architecture");
+tests/loopback_pump_structure.rs:4054:    kernel::task::scheduler::emit_pin_guard_oracle();
+tests/loopback_pump_structure.rs:4071:    crate::task::scheduler::emit_pin_guard_oracle();
+
+FILE tests/ttbr0_shadow_reconciliation_structure.rs
+tests/ttbr0_shadow_reconciliation_structure.rs:2410:            "BREENIX_STRICT_SCORE_ONLY",
+
+Scheduler diff from plan baseline:

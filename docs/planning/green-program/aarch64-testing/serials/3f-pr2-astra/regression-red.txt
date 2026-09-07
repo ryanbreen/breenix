@@ -1,0 +1,71 @@
+revision=35d9bc4d1845bce7bdd0246e435fb65b0232a13a
+working-tree=new regression tests, before fixes
+== compiling loopback_pump_structure ==
+error: expected one of `.`, `;`, `?`, `else`, or an operator, found `")]"`
+    --> /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/tests/loopback_pump_structure.rs:4189:45
+     |
+4189 |     let kick = "#[cfg(target_arch = "aarch64")]";
+     |                                             ^^^^ expected one of `.`, `;`, `?`, `else`, or an operator
+
+error: aborting due to 1 previous error
+
+
+exit=1
+
+After correcting test string quoting:
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure rescue_retention_ ==
+
+running 4 tests
+test rescue_retention_rejects_wrong_kick_architecture ... FAILED
+test rescue_retention_placement_rejects_intervening_function ... ok
+test rescue_retention_helpers_are_adjacent ... FAILED
+test rescue_retention_census ... ok
+
+failures:
+
+failures:
+    rescue_retention_helpers_are_adjacent
+    rescue_retention_rejects_wrong_kick_architecture
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 119 filtered out; finished in 0.05s
+
+
+thread 'rescue_retention_rejects_wrong_kick_architecture' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/tests/loopback_pump_structure.rs:4191:5:
+assertion `left == right` failed: exercise every kick disposition
+  left: 5
+ right: 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'rescue_retention_helpers_are_adjacent' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/tests/loopback_pump_structure.rs:4174:85:
+called `Result::unwrap()` on an `Err` value: "source retention helper must immediately follow the test retention helper"
+
+exit=101
+
+After restricting mutation census to kick guards:
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure rescue_retention_ ==
+
+running 4 tests
+test rescue_retention_placement_rejects_intervening_function ... ok
+test rescue_retention_helpers_are_adjacent ... FAILED
+test rescue_retention_census ... ok
+test rescue_retention_rejects_wrong_kick_architecture ... FAILED
+
+failures:
+
+failures:
+    rescue_retention_helpers_are_adjacent
+    rescue_retention_rejects_wrong_kick_architecture
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 119 filtered out; finished in 0.06s
+
+
+thread 'rescue_retention_helpers_are_adjacent' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/tests/loopback_pump_structure.rs:4174:85:
+called `Result::unwrap()` on an `Err` value: "source retention helper must immediately follow the test retention helper"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'rescue_retention_rejects_wrong_kick_architecture' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/tests/loopback_pump_structure.rs:4197:13:
+kick at 4558 accepted x86_64
+
+exit=101

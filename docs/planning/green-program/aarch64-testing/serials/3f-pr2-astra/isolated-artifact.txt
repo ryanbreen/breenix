@@ -1,0 +1,12 @@
+revision=e42b4d040a164e04b57d6f21b488f938e83a9d6f
+working-tree=ASTRA V-4/V-5 fixes
+kernel/src/task/scheduler.rs sha256=136d48be4b9b7f1f5e93d03edd3904af4d79c80ca47e7cae458420751dac1449
+tests/loopback_pump_structure.rs sha256=4930350e634beee88f3354c990600e0097568cc507b568a315574ee872e62735
+command=['python3', '-c', 'import hashlib,subprocess; from pathlib import Path; root=Path("/private/tmp/breenix-astra-v45-verify"); print("verification_revision="+subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True).strip()); paths=["kernel/src/task/scheduler.rs","tests/loopback_pump_structure.rs","target/aarch64-breenix-kernel/release/kernel-aarch64","userspace/programs/aarch64/simple_exit.elf"]; [(print(p,hashlib.sha256((root/p).read_bytes()).hexdigest())) for p in paths]']
+verification_revision=612309cdbe70a5c706b1270fafdb23caece1f412
+kernel/src/task/scheduler.rs f1482a23a7fbe7670bdc889ff6f9ec7a60015947df74fe92d5355d0b72aef51f
+tests/loopback_pump_structure.rs 0e34cf0f5922dce23468014a2eb8cfcd5d75ba1d5a1903f0a993febd0cb161fc
+target/aarch64-breenix-kernel/release/kernel-aarch64 56db83404da7a6d7c0a20e6c68cddbb1e55cb0969c8a95a48e176a6c0f4ed161
+userspace/programs/aarch64/simple_exit.elf d28c27378967724c533bbe7a36c3539bfe01c60f0e61a38b0a2b4c211aa62c05
+
+exit=0

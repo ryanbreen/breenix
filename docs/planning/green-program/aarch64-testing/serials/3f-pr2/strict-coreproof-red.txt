@@ -1,0 +1,23 @@
+== compiling coreproof_sites_structure ==
+== running coreproof_sites_structure  ==
+
+running 4 tests
+test every_declared_site_is_listed_and_named ... ok
+test every_scheduler_seam_is_classified_correctly ... FAILED
+test every_placed_site_is_declared ... ok
+test every_declared_site_is_actually_placed ... ok
+
+failures:
+
+---- every_scheduler_seam_is_classified_correctly stdout ----
+
+thread 'every_scheduler_seam_is_classified_correctly' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/tests/coreproof_sites_structure.rs:372:17:
+site BlockEntry is placed in scheduler.rs BEFORE any lock-taking construct in its own free function (or outside `impl Scheduler { .. }` entirely) but is not classified Open — a genuinely pre-lock seam must say so, not merely avoid saying it holds the lock
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    every_scheduler_seam_is_classified_correctly
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

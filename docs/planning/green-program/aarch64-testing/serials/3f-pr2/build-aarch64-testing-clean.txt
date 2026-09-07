@@ -1,0 +1,34 @@
+5a96f7fbadc1a510cadcc6c959f4110a85753a1b
+   Compiling compiler_builtins v0.1.160 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/core)
+   Compiling az v1.2.1
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-utils v0.8.23
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/kernel)
+   Compiling alloc v0.0.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s3f2/wt/.tmp/toolchain/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling byteorder v1.5.0
+   Compiling micromath v2.1.0
+   Compiling slab v0.4.12
+   Compiling conquer-util v0.3.0
+   Compiling futures-core v0.3.34
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-task v0.3.34
+   Compiling tock-registers v0.8.1
+   Compiling log v0.4.34
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling rlibc v1.0.0
+   Compiling lock_api v0.4.14
+   Compiling aarch64-cpu v9.4.0
+   Compiling conquer-once v0.4.0
+   Compiling futures-util v0.3.34
+   Compiling crossbeam-queue v0.3.14
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.9
+   Compiling linked_list_allocator v0.10.6
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+    Finished `release` profile [optimized] target(s) in 13.29s
+exit=0

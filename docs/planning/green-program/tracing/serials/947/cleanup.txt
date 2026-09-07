@@ -1,0 +1,4 @@
+revision=6c627a6b60b0fd678b2908fddf8ae6ed2112af3a
+lane_owned_qemu_before=0
+lane_owned_qemu_after=0
+No name-based process termination; other lane processes untouched.

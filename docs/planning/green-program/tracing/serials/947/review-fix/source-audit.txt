@@ -1,0 +1,8 @@
+revision=cde68b649d4dc924108d724678271dfcaa44fd29
+kernel/src/tracing/providers/teardown.rs:8233: pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::registry::TestResult {
+kernel/src/tracing/providers/teardown.rs:9170: pub fn exit_kick_budget_anchor_isolation_test() -> crate::test_framework::registry::TestResult {
+docker/qemu/run-aarch64-service-sequence-gate.sh:132: if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+tests/teardown_structure.rs:17778: fn exit_kick_fixture_summed_budget_under_ten_seconds() {
+tests/teardown_structure.rs:17809: fn exit_kick_scaled_fixture_legs_remain_present() {
+tests/teardown_rustfmt_structure.rs:6: fn teardown_provider_is_rustfmt_clean() {
+tests/gate_structure_preflight_wiring_structure.rs:154: fn service_preflight_precedes_build_and_aborts_on_failure() {
