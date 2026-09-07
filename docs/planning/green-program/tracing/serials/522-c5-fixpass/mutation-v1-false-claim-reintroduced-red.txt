@@ -1,0 +1,17 @@
+== compiling teardown_structure ==
+== running teardown_structure fix_pass_v1_watchdog_not_tighter_than_local_ceiling ==
+
+running 1 test
+
+thread 'fix_pass_v1_watchdog_not_tighter_than_local_ceiling' panicked at /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/tests/teardown_structure.rs:17333:5:
+V-1: the false 'not a tighter bound' claim must not survive in mod.rs
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fix_pass_v1_watchdog_not_tighter_than_local_ceiling ... FAILED
+
+failures:
+
+failures:
+    fix_pass_v1_watchdog_not_tighter_than_local_ceiling
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 99 filtered out; finished in 0.00s
+
