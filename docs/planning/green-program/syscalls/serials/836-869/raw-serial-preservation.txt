@@ -1,0 +1,2 @@
+92/92 required full guest serials match their staged Git blob bytes, including guest CR bytes.
+Evidence-local .gitattributes disables text conversion for .txt and .log captures.

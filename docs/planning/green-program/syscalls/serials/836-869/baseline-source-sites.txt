@@ -1,0 +1,74 @@
+4521:const FCNTL_PM_HOLD_OVERLAP_US: u64 = 8_000;
+4528:const FCNTL_PM_ACQUIRE_US: u64 = 20_000;
+4558:const FCNTL_PM_HOLD_SAFETY_US: u64 = 250_000;
+4568:/// entry's `timeout_ms: 10000` together with the join and settle windows below.
+4570:const FCNTL_PM_ARM_WAIT_US: u64 = 2_000_000;
+4584:const FCNTL_PM_ARM_SPIN_US: u64 = 20_000;
+4587:const FCNTL_PM_JOIN_US: u64 = 500_000;
+4591:const FCNTL_PM_SETTLE_US: u64 = 20_000;
+4594:const FCNTL_PM_CALLS: u64 = 64;
+4597:const FCNTL_PM_MIN_WAIT_US: u64 = 1_000;
+4602:/// `FCNTL_PM_HOLD_ACQUIRED` and `FCNTL_PM_HOLD_CPU`, and loaded with `Acquire`
+4609:static FCNTL_PM_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
+4618:static FCNTL_PM_RELEASE_REQ: AtomicBool = AtomicBool::new(false);
+4621:static FCNTL_PM_HOLD_ACQUIRED: AtomicBool = AtomicBool::new(false);
+4625:static FCNTL_PM_HOLD_SAFETY_FIRED: AtomicBool = AtomicBool::new(false);
+4630:static FCNTL_PM_HOLD_DONE: AtomicBool = AtomicBool::new(false);
+4631:/// The CPU the holder ran on, written before `FCNTL_PM_HOLD_ACTIVE`'s release
+4634:static FCNTL_PM_HOLD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
+4768:fn fcntl_pm_holder_body() {
+4775:            if FCNTL_PM_RELEASE_REQ.load(AtomicOrdering::Acquire) {
+4780:            if fcntl_pm_elapsed_us(acquire_start) > FCNTL_PM_ACQUIRE_US {
+4789:        FCNTL_PM_HOLD_ACQUIRED.store(true, AtomicOrdering::Release);
+4790:        FCNTL_PM_HOLD_CPU.store(
+4795:        FCNTL_PM_HOLD_ACTIVE.store(true, AtomicOrdering::Release);
+4803:        while fcntl_pm_elapsed_us(held_from) < FCNTL_PM_HOLD_SAFETY_US {
+4804:            if FCNTL_PM_RELEASE_REQ.load(AtomicOrdering::Acquire) {
+4816:            while fcntl_pm_elapsed_us(overlap_from) < FCNTL_PM_HOLD_OVERLAP_US {
+4821:        FCNTL_PM_HOLD_SAFETY_FIRED.store(safety_fired, AtomicOrdering::Release);
+4822:        FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+4825:    FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);
+4846:pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+4886:            FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+4887:            FCNTL_PM_HOLD_DONE.store(false, AtomicOrdering::Release);
+4888:            FCNTL_PM_RELEASE_REQ.store(false, AtomicOrdering::Release);
+4889:            FCNTL_PM_HOLD_ACQUIRED.store(false, AtomicOrdering::Release);
+4890:            FCNTL_PM_HOLD_SAFETY_FIRED.store(false, AtomicOrdering::Release);
+4891:            FCNTL_PM_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
+4893:            match kthread_run_on_cpu_for_test(fcntl_pm_holder_body, "fcntl-pm-holder", peer) {
+4913:                    // past FCNTL_PM_ARM_SPIN_US the wait is pathological and
+4917:                    while !FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+4918:                        && !FCNTL_PM_HOLD_DONE.load(AtomicOrdering::Acquire)
+4919:                        && fcntl_pm_elapsed_us(arm_start) < FCNTL_PM_ARM_WAIT_US
+4921:                        if fcntl_pm_elapsed_us(arm_start) < FCNTL_PM_ARM_SPIN_US {
+4929:                    if FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
+4935:                        FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);
+4944:                        while calls < FCNTL_PM_CALLS {
+4956:                    FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);
+4967:                        && fcntl_pm_elapsed_us(join_start) < FCNTL_PM_JOIN_US
+4971:                    hold_done = u64::from(FCNTL_PM_HOLD_DONE.load(AtomicOrdering::Acquire));
+4972:                    acquired = u64::from(FCNTL_PM_HOLD_ACQUIRED.load(AtomicOrdering::Acquire));
+4974:                        u64::from(FCNTL_PM_HOLD_SAFETY_FIRED.load(AtomicOrdering::Acquire));
+4975:                    holder_cpu = FCNTL_PM_HOLD_CPU.load(AtomicOrdering::Relaxed);
+4981:                    while fcntl_pm_elapsed_us(settle_start) < FCNTL_PM_SETTLE_US {
+4990:                        && calls == FCNTL_PM_CALLS
+4991:                        && first_wait_us >= FCNTL_PM_MIN_WAIT_US;
+5016:            "[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us={}:armed={}:acquired={}:holder_cpu={}:pm_busy_probe={}:calls={}:eagain={}:first_errno={}:first_wait_us={}:hold_safety={}:hold_done={}:joined={}:{}]",
+5042:            "[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus={}:SKIP]",
+5051:    run_fcntl_pm_contention_oracle()
+6040:pub fn run_irq_hold_oracle() -> bool {
+6234:    if run_irq_hold_oracle() {
+9378:        timeout_ms: 10000,
+9385:        timeout_ms: 10000,
+9553:        timeout_ms: 10000,
+9660:        timeout_ms: 10000,
+9667:        timeout_ms: 10000,
+9771:        timeout_ms: 10000,
+9902:        timeout_ms: 10000,
+10043:        timeout_ms: 10000,
+10155:        timeout_ms: 10000,
+10205:        timeout_ms: 10000,
+10231:        timeout_ms: 10000,
+10347:        timeout_ms: 10000,
+10354:        timeout_ms: 10000,
+10392:        timeout_ms: 10000, // Increased: creates a user process (ELF load, page table, scheduler)

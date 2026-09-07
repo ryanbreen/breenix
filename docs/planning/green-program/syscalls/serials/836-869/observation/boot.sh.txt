@@ -1,0 +1,34 @@
+#!/bin/bash
+set -eu
+export TMPDIR="$PWD/.tmp"
+export BREENIX_GATE_TMP="$PWD/.gate-tmp/observation"
+mkdir -p "$BREENIX_GATE_TMP"
+out="$PWD/docs/planning/green-program/syscalls/serials/836-869/observation"
+mkdir -p "$out"
+source docker/qemu/lib/qemu-host-lock.sh
+cp target/ext2-aarch64.img "$BREENIX_GATE_TMP/ext2-writable.img"
+{
+  git rev-parse HEAD
+  shasum -a 256 target/aarch64-breenix-kernel/release/kernel-aarch64
+  qemu-system-aarch64 --version
+  sysctl -n vm.loadavg
+} > "$out/provenance.txt"
+qemu_host_lock_acquire
+timeout 20 qemu-system-aarch64 \
+ -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
+ -kernel "$PWD/target/aarch64-breenix-kernel/release/kernel-aarch64" \
+ -display none -no-reboot \
+ -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
+ -device virtio-blk-device,drive=ext2 \
+ -drive if=none,id=ext2,format=raw,file="$BREENIX_GATE_TMP/ext2-writable.img" \
+ -device virtio-net-device,netdev=net0 -netdev user,id=net0 \
+ -serial file:"$out/serial.txt" &
+qpid=$!
+qemu_host_lock_track_pid "$qpid"
+set +e
+wait "$qpid"
+rc=$?
+set -e
+printf '%s\n' "$rc" > "$out/qemu.exit"
+qemu_host_lock_release
+rg 'FCNTL_PM_(ARM_OBSERVATION|CONTENTION_ORACLE)|TEST:fcntl_pm' "$out/serial.txt"

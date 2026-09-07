@@ -1,0 +1,5 @@
+21 FCNTL_PM/IRQ_HOLD constants byte-identical to 891ae034.
+Fcntl marker format strings unchanged.
+Safety and timeout failure results unchanged.
+Investigative feature absent from registry and Cargo.toml.
+Tracked edits restricted to registry and existing structure test.

@@ -1,0 +1,21 @@
+fix(boot-tests): pin oracle drivers before peer selection and spawn
+
+Use one private non-Send/non-Sync guard with a short IRQ-masked entry.
+Keep the fcntl driver pinned through unconditional cancellation, releasing
+before affinity cleanup and join. Apply the guard to IRQ arming as structural
+parity hardening, preserving its single peer choice and retry bounds.
+
+Add five structural tests to the existing four-test suite. The ten planned
+mutations each exit 101 at the intended test, with restored exit 0. The
+selection-gap mutation leaves the publication test green. An induced same-CPU
+observation reproduces the two-second timeout followed by cancellation and
+late holder entry/acquisition. It does not attribute natural #869 failures.
+Baseline control and load each pass 10/10, so natural-red reduction is
+inconclusive for #836 and #869. Deadlines and scored marker fields are unchanged.
+
+Fixed control/load each pass 10/10. The service gate passes 50/50 and the
+production-profile regression passes. The no-NEON check passes. Builds carry
+only the authorized pre-existing #559 sysroot warning.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

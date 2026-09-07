@@ -1,0 +1,26 @@
+891ae034f8c0bb5de0b9ad400cf6524a7e92645c
+Darwin Ryans-M5-Max.local 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:19:08 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6050 arm64
+ProductName:		macOS
+ProductVersion:		26.6.2
+BuildVersion:		25G83
+18
+/opt/homebrew/bin/qemu-system-aarch64
+QEMU emulator version 11.0.3
+Copyright (c) 2003-2026 Fabrice Bellard and the QEMU Project developers
+cpu_burners=0
+2a8657374dea30a8150f2fa9057ad8c876ebff52b3315f3f2f780826f952e859  target/aarch64-breenix-kernel/release/kernel-aarch64
+    timeout 20 qemu-system-aarch64 \
+        -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
+        -kernel "$KERNEL" \
+        -display none -no-reboot \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
+        -device virtio-tablet-device \
+        -device virtio-blk-device,drive=ext2 \
+        -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
+        -device virtio-net-device,netdev=net0 \
+        -netdev user,id=net0 \
+        -serial file:"$OUTPUT_DIR/serial.txt" &
+    local QEMU_PID=$!
+{ 4.04 4.36 3.93 }
+{ 8.88 6.56 5.00 }

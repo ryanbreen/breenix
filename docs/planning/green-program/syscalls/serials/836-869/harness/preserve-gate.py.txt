@@ -1,0 +1,7 @@
+import pathlib, shutil, sys
+source, target = map(pathlib.Path, sys.argv[1:])
+for path in source.rglob("*"):
+    if path.is_file() and path.suffix in {".txt", ".log", ".status", ".tsv", ".json", ".exit"}:
+        dest = target / path.relative_to(source)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)

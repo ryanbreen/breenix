@@ -1,0 +1,21 @@
+#!/bin/bash
+set -u
+export BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library
+export TMPDIR="$PWD/.tmp"
+export BREENIX_GATE_TMP="$PWD/.gate-tmp"
+label="$1"
+features="$2"
+out="$PWD/docs/planning/green-program/syscalls/serials/836-869"
+cargo build --release --features "$features" --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 > "$out/$label-build.log" 2>&1
+rc=$?
+printf '%s\n' "$rc" > "$out/$label-build.exit"
+cat "$out/$label-build.log"
+[ "$rc" = 0 ] || exit "$rc"
+python3 - "$out/$label-build.log" <<'PY'
+import pathlib, sys
+lines=pathlib.Path(sys.argv[1]).read_text().splitlines()
+hits=[line for line in lines if line.startswith(('warning','error'))]
+known='warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)'
+assert hits in ([],[known]), hits
+print('warning audit: only permitted #559 signature' if hits else 'warning audit: no warnings/errors')
+PY

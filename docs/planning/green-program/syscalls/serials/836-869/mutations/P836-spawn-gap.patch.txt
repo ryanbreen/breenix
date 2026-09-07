@@ -1,0 +1,220 @@
+diff --git a/kernel/src/test_framework/registry.rs b/kernel/src/test_framework/registry.rs
+index 3397ace0..f4514756 100644
+--- a/kernel/src/test_framework/registry.rs
++++ b/kernel/src/test_framework/registry.rs
+@@ -4747,17 +4747,18 @@ impl FcntlPmArm {
+ /// boot rather than failing the test. That is what happened -- 1 of 6 boots hung
+ /// with [TEST:syscall:fcntl_pm_contention_oracle:START] and no verdict -- when
+ /// this held the lock with interrupts enabled. Masking gives the same shape
+-/// crate::process::manager() itself uses on this architecture: nothing can take
+-/// this CPU away between the acquire and the release, so the window always
+-/// closes.
++/// crate::process::manager() itself uses on this architecture: guest dispatch
++/// cannot take this CPU away between the acquire and the release. A host may
++/// still deschedule its vCPU.
+ ///
+ /// The mask covers the whole body for a second reason this round measured. A
+ /// version of this holder that waited for a driver handshake with interrupts
+ /// enabled lost its CPU during the wait and never reached the lock at all:
+ /// `ready=1:acquired=0` on 1 of 3 smoke boots and 1 of 20 strict boots, with the
+ /// strand census reporting a thread queued 1598 ms on a non-dispatching CPU.
+-/// Between the first instruction of this body and the release there is now no
+-/// point at which this thread can be descheduled.
++/// From entry into the masked closure through release, guest dispatch cannot
++/// deschedule this thread; generic kthread entry before the mask and host vCPU
++/// scheduling remain outside that protection.
+ ///
+ /// The release deadline is read from CNTVCT_EL0, which advances whether or not
+ /// any CPU is masked, so the window closes even while the driver waits for the
+@@ -4839,6 +4840,31 @@ fn fcntl_pm_setfd_once() -> u64 {
+     }
+ }
+ 
++/// Keep a test-oracle driver on its selected CPU through publication and arming.
++/// This prevents guest migration/preemption, not host vCPU descheduling.
++/// The raw-pointer marker prevents transferring the per-CPU decrement.
++#[cfg(target_arch = "aarch64")]
++struct TestOracleDriverPin(core::marker::PhantomData<*mut ()>);
++
++#[cfg(target_arch = "aarch64")]
++impl TestOracleDriverPin {
++    fn enter() -> Self {
++        // Protect the per-CPU pointer lookup as well as the increment. Restore
++        // IRQs immediately; peer selection and spawn run only preempt-pinned.
++        crate::arch_impl::aarch64::cpu::without_interrupts(|| {
++            crate::per_cpu::preempt_disable();
++        });
++        Self(core::marker::PhantomData)
++    }
++}
++
++#[cfg(target_arch = "aarch64")]
++impl Drop for TestOracleDriverPin {
++    fn drop(&mut self) {
++        crate::per_cpu::preempt_enable();
++    }
++}
++
+ /// Measure which arm fcntl() takes while a peer CPU holds the process-manager
+ /// lock, and score EAGAIN as a failure (#796). This reddens on origin/main --
+ /// eagain=64:first_errno=11 -- and is green once the preamble blocks for the
+@@ -4854,20 +4880,6 @@ pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+             release_cpu_affine_thread_for_test,
+         };
+ 
+-        // A peer that is still dispatching. Taking the first CPU that is merely
+-        // "not me" picked a stale CPU on this gate's own profile: the probe was
+-        // migrated off it by the scheduler's unschedulable-queue reclaim and
+-        // then bounced by the boot-test affinity retain check, so on 3 of 3
+-        // smoke boots it armed and then reported joined=0. CPU 0 is the second
+-        // choice rather than the first because it is the only writer of the
+-        // global tick counter and the holder masks interrupts while it holds
+-        // the lock.
+-        let peer = live_peer_cpu_for_test();
+-        let peer = match peer {
+-            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+-            other => other,
+-        };
+-
+         let mut arm_wait_us = 0u64;
+         let mut armed = 0u64;
+         let mut acquired = 0u64;
+@@ -4882,6 +4894,24 @@ pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+         let mut joined = 0u64;
+         let mut arm = FcntlPmArm::NoPeerCpu;
+ 
++        // Pin before choosing the peer and making its holder runnable. The
++        // driver must reach its release request without needing a guest
++        // dispatch, and must not migrate onto the chosen holder CPU.
++        let mut driver_pin: Option<TestOracleDriverPin> = None;
++        // A peer that is still dispatching. Taking the first CPU that is merely
++        // "not me" picked a stale CPU on this gate's own profile: the probe was
++        // migrated off it by the scheduler's unschedulable-queue reclaim and
++        // then bounced by the boot-test affinity retain check, so on 3 of 3
++        // smoke boots it armed and then reported joined=0. CPU 0 is the second
++        // choice rather than the first because it is the only writer of the
++        // global tick counter and the holder masks interrupts while it holds
++        // the lock.
++        let peer = live_peer_cpu_for_test();
++        let peer = match peer {
++            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
++            other => other,
++        };
++
+         if let Some(peer) = peer {
+             FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+             FCNTL_PM_HOLD_DONE.store(false, AtomicOrdering::Release);
+@@ -4893,20 +4923,7 @@ pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+             match kthread_run_on_cpu_for_test(fcntl_pm_holder_body, "fcntl-pm-holder", peer) {
+                 Err(_) => arm = FcntlPmArm::HolderSpawnFailed,
+                 Ok(handle) => {
+-                    // Pinned for the whole rendezvous, not just for the measured
+-                    // calls. The hold ends when this thread asks, so this thread
+-                    // must not need a dispatch while the hold is up: a peer
+-                    // thread spinning inside the blocking `manager()` masks
+-                    // interrupts on whatever CPU it is on, and when that was the
+-                    // driver's CPU the driver could not reach its own release
+-                    // request until the holder's safety deadline had fired --
+-                    // 2 of 20 boots of the first rendezvous this round tried.
+-                    // Pinning also keeps the driver off the peer, where it would
+-                    // be waiting, with interrupts masked inside the syscall, for
+-                    // a holder that cannot be dispatched on the CPU the driver is
+-                    // occupying.
+-                    crate::per_cpu::preempt_disable();
+-
++                    driver_pin = Some(TestOracleDriverPin::enter());
+                     // Spin first, halt later. The peer publishes from inside a
+                     // masked hold, so a driver that notices a tick late is a
+                     // driver that holds PROCESS_MANAGER busy for a tick longer;
+@@ -4948,13 +4965,14 @@ pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+                             }
+                         }
+                     }
+-                    crate::per_cpu::preempt_enable();
+ 
+                     // Idempotent, and set on the give-up paths too: the holder
+                     // has no reader now, so let it stop instead of spending its
+                     // acquire deadline or its safety hold.
+                     FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);
+ 
++                    drop(driver_pin.take());
++
+                     // Clear the forced placement before waiting, the same way
+                     // the census widening oracle releases its probe: the holder
+                     // has done its job by now, and leaving it pinned means its
+@@ -5007,6 +5025,8 @@ pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+             }
+         }
+ 
++        drop(driver_pin);
++
+         // `arm_wait_us` is the rendezvous reading: how long the driver waited for
+         // the peer to publish a hold. `acquired` and `hold_safety` are read from
+         // the holder's own publications; when `hold_done=0` they are what the
+@@ -6048,16 +6068,6 @@ pub fn run_irq_hold_oracle() -> bool {
+             release_cpu_affine_thread_for_test,
+         };
+ 
+-        // Same peer choice as the #796 contention oracle: a CPU that is still
+-        // dispatching, and not CPU 0 if there is another, because CPU 0 is the
+-        // only writer of the global tick counter and this holder masks
+-        // interrupts for the length of its window.
+-        let peer = live_peer_cpu_for_test();
+-        let peer = match peer {
+-            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+-            other => other,
+-        };
+-
+         let packet = crate::net::udp::build_udp_packet(
+             IRQ_HOLD_SRC_PORT,
+             IRQ_HOLD_PORT,
+@@ -6080,8 +6090,24 @@ pub fn run_irq_hold_oracle() -> bool {
+ 
+         let open = irq_hold_open_socket();
+ 
++        // Match the fcntl driver's placement protection. Keep peer selection
++        // outside the retry loop; every attempt owns a pin until cleanup.
++        let mut driver_pin = Some(TestOracleDriverPin::enter());
++        // Same peer choice as the #796 contention oracle: a CPU that is still
++        // dispatching, and not CPU 0 if there is another, because CPU 0 is the
++        // only writer of the global tick counter and this holder masks
++        // interrupts for the length of its window.
++        let peer = live_peer_cpu_for_test();
++        let peer = match peer {
++            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
++            other => other,
++        };
++
+         if let (Some(peer), Some(open)) = (peer, open.as_ref()) {
+             while attempts < IRQ_HOLD_ATTEMPTS && !passed {
++                if driver_pin.is_none() {
++                    driver_pin = Some(TestOracleDriverPin::enter());
++                }
+                 attempts += 1;
+                 armed = 0;
+                 holder_cpu = u64::MAX;
+@@ -6110,6 +6136,7 @@ pub fn run_irq_hold_oracle() -> bool {
+                     "irq-hold-812",
+                     peer,
+                 ) else {
++                    drop(driver_pin.take());
+                     continue;
+                 };
+ 
+@@ -6126,6 +6153,7 @@ pub fn run_irq_hold_oracle() -> bool {
+                     armed = 1;
+                 }
+ 
++                drop(driver_pin.take());
+                 release_cpu_affine_thread_for_test(handle.tid());
+ 
+                 let join_start = crate::tracing::trace_timestamp();
+@@ -6190,6 +6218,8 @@ pub fn run_irq_hold_oracle() -> bool {
+             }
+         }
+ 
++        drop(driver_pin);
++
+         crate::serial_println!(
+             "[IRQ_HOLD_ORACLE:aarch64:attempts={}:armed={}:holder_cpu={}:irqs_enabled_before={}:masked_in_hold={}:sends={}:hold_us={}:netrx_pending_at_release={}:received={}:stalled={}:hold_done={}:joined={}:{}]",
+             attempts,
