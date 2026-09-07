@@ -129,7 +129,10 @@ fn driver_and_gate_have_six_scored_legs() {
     assert!(body.contains("wait_witness(peer,writer,tid)"));
     assert!(body.contains("reap(pid)"));
     assert!(gate.contains("gate_structure_preflight"));
-    assert!(gate.contains("records.count(f'{arch}:{arm}:verdict=PASS:bytes={expected[arm]}') == 1"));
+    let scorer = read("scripts/score-blocking-io-oracle.py");
+    assert!(
+        scorer.contains("records.count(f'{arch}:{arm}:verdict=PASS:bytes={expected[arm]}') == 1")
+    );
 }
 
 #[test]
@@ -191,4 +194,66 @@ fn close_notifications_leave_pm_without_the_isr_buffer() {
             "{path}"
         );
     }
+}
+
+#[test]
+fn unix_scorer_rejects_incomplete_or_corrupt_arm_sets() {
+    use std::{fs, process::Command};
+    let arms = [
+        "backpressure",
+        "mode",
+        "poll",
+        "peer_close",
+        "signal",
+        "partial",
+    ];
+    let counts = [139264, 139264, 131074, 0, 270338, 262144];
+    let mut good = String::from("TSS IST[0] (double fault stack): 0x0\n");
+    for (arm, count) in arms.iter().zip(counts) {
+        good.push_str(&format!(
+            "[UNIX_WRITE_ORACLE:x86_64:{arm}:verdict=PASS:bytes={count}]\n"
+        ));
+    }
+    good.push_str(
+        "[UNIX_WRITE_SUMMARY:x86_64:passed=6:failed=0]\n[UNIX_WRITE_RESULT:x86_64:status=0]\n",
+    );
+    let directory =
+        std::env::temp_dir().join(format!("breenix-unix-scorer-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let run = |serial: &str| {
+        fs::write(directory.join("serial.txt"), serial).unwrap();
+        Command::new("python3")
+            .arg(format!(
+                "{}/scripts/score-blocking-io-oracle.py",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .arg("x86_64")
+            .arg(&directory)
+            .args(["--program", "unix_stream_blocking_oracle"])
+            .args(arms)
+            .output()
+            .unwrap()
+    };
+    let result = run(&good);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let first = "[UNIX_WRITE_ORACLE:x86_64:backpressure:verdict=PASS:bytes=139264]\n";
+    for bad in [
+        good.replace(first, ""),
+        good.replacen("bytes=139264", "bytes=139263", 1),
+        format!("{good}{first}"),
+        good.replace("status=0", "status=1"),
+        good.replace("passed=6", "passed=5"),
+        good.replacen("verdict=PASS", "verdict=FAIL", 1),
+        format!("{good}TSS IST[0] (double fault stack): 0x0 DOUBLE FAULT\n"),
+    ] {
+        assert!(
+            !run(&bad).status.success(),
+            "accepted altered Unix evidence"
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
 }

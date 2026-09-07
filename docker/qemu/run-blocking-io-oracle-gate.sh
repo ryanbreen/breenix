@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 ARCH=""
-PROGRAM=""
+PROGRAM="pipe_fifo_blocking_oracle"
 BOOTS=1
 QEMU_PID=""
 CURRENT_SERIAL=""
@@ -36,6 +36,9 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 case "$ARCH" in x86_64|aarch64) ;; *) echo "FAIL: --arch x86_64|aarch64 required"; false ;; esac
+# Adopt 927's x86 cohort startup bound; ARM keeps its existing bound.
+HOST_DEADLINE=120
+if [ "$ARCH" = x86_64 ]; then HOST_DEADLINE=900; fi
 case "$PROGRAM" in pipe_fifo_blocking_oracle|unix_stream_blocking_oracle) ;; *) echo "FAIL: unsupported --program"; false ;; esac
 case "$BOOTS" in ''|*[!0-9]*|0*) echo "FAIL: positive --boots required"; false ;; esac
 [ "${#BOOTS}" -le 2 ] && [ "$BOOTS" -le 25 ] || { echo "FAIL: boot budget exceeds 25"; false; }
@@ -194,7 +197,7 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     QEMU_PID=$!
     qemu_host_lock_track_pid "$QEMU_PID"
     elapsed=0
-    while [ "$elapsed" -lt 120 ]; do
+    while [ "$elapsed" -lt "$HOST_DEADLINE" ]; do
         if grep -aqE '\[(PIPE|UNIX)_WRITE_RESULT:' "$CURRENT_SERIAL"; then break; fi
         if grep -aqE 'KERNEL PANIC|DATA_ABORT|INSTRUCTION_ABORT|DOUBLE FAULT|TRIPLE FAULT|soft lockup detected' "$RUN_DIR"/*.txt; then break; fi
         kill -0 "$QEMU_PID" 2>/dev/null || break
@@ -205,40 +208,7 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     wait "$QEMU_PID" 2>/dev/null || true
     QEMU_PID=""
     qemu_host_lock_release
-    [ "$elapsed" -lt 120 ] || { echo "FAIL: host deadline"; false; }
-    python3 - "$ARCH" "$RUN_DIR" "$PROGRAM" "${EXPECTED_ARMS[@]}" <<'PY'
-import pathlib, re, sys
-arch, directory, program, *arms = sys.argv[1:]
-text = '\n'.join(p.read_text(errors='replace') for p in pathlib.Path(directory).glob('*.txt'))
-assert not re.search(r'KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|DOUBLE FAULT|TRIPLE FAULT|soft lockup detected', text, re.I), 'kernel crash'
-if program == 'unix_stream_blocking_oracle':
-    results = re.findall(r'\[UNIX_WRITE_RESULT:([^\]]+)\]', text)
-    assert results == [f'{arch}:status=0'], f'reaped result: {results}'
-    assert ':verdict=FAIL' not in text and 'UNIX_CHILD_FAIL:' not in text, 'oracle failed'
-    expected = {'backpressure': 139264, 'mode': 139264, 'poll': 131074,
-                'peer_close': 0, 'signal': 270338, 'partial': 262144}
-    records = re.findall(r'\[UNIX_WRITE_ORACLE:([^\]]+)\]', text)
-    assert len(records) == len(arms), 'missing/duplicate arms'
-    for arm in arms:
-        assert records.count(f'{arch}:{arm}:verdict=PASS:bytes={expected[arm]}') == 1, arm
-    assert f'[UNIX_WRITE_SUMMARY:{arch}:passed={len(arms)}:failed=0]' in text
-    print(f'PASS: {arch}, {len(arms)} Unix arms, byte totals and worker reap')
-    sys.exit(0)
-results = re.findall(r'\[PIPE_WRITE_RESULT:([^\]]+)\]', text)
-assert results == [f'{arch}:status=0'], f'missing/duplicate/nonzero reaped result: {results}'
-assert ':verdict=FAIL' not in text, 'oracle arm failed'
-records = re.findall(r'\[PIPE_WRITE_ORACLE:([^\]]+)\]', text)
-for kind in ('pipe', 'fifo'):
-    for arm in arms:
-        prefix = f'{arch}:{kind}:{arm}:verdict=PASS:bytes='
-        matches = [r for r in records if r.startswith(prefix)]
-        assert matches, f'missing {kind}/{arm}'
-        for record in matches:
-            counts = re.fullmatch(re.escape(prefix) + r'(\d+):expected=(\d+)', record)
-            assert counts and counts[1] == counts[2], f'byte tally: {record}'
-summary = f'[PIPE_WRITE_SUMMARY:{arch}:passed={2 * len(arms)}:failed=0]'
-assert summary in text, 'missing complete arm tally'
-print(f'PASS: {arch}, {2 * len(arms)} arms, exact byte tallies and worker reaped')
-PY
+    [ "$elapsed" -lt "$HOST_DEADLINE" ] || { echo "FAIL: host deadline"; false; }
+    python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" --program "$PROGRAM" "${EXPECTED_ARMS[@]}"
 done
 echo "PASS: blocking I/O oracle $ARCH boots=$BOOTS; serials=$OUTPUT_ROOT/boot_*/serial.txt"

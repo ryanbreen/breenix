@@ -378,58 +378,64 @@ fn classify_distinguishes_complete_partial_and_absent_with_no_boot() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// The oracle: the SAME race -- a capture whose `END` line lands 150ms after
-/// this check runs -- read two ways. With draining disabled it reads
-/// `partial` (the mutation this PR's plan describes as "move the kill above
-/// the drain"); with draining enabled, at bounds tightened for test speed
-/// but otherwise the real code path, it reads `complete`. No QEMU boot: the
-/// race is a background `sh` process appending real BXCAP-shaped lines to a
-/// file this test also reads.
+/// The producer holds END until the drain enters a real wait. A FIFO handshake
+/// makes the partial/complete distinction independent of host scheduling; the
+/// sleep wrapper calls the real sleep; the library classifies the serial file.
 #[test]
 fn drain_disabled_reads_partial_drain_enabled_reads_complete_same_race() {
     let dir = unique_temp_dir("oracle");
-
     let begin = "[BXCAP:BEGIN v=1 seq=3 edge=FAULT cpu=0 ts=1 tsfreq=1 uptime_ms=1 arch=aarch64]\n\
                  [BXCAP:EV cpu=0 i=0 ts=1 type=0x2 n=CTX_SWITCH p=7 f=0x0]\n";
     let rest = "[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]\n\
                 [BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]\n";
 
-    // Leg A: BREENIX_GATE_DRAIN_DISABLE=1. Reads the file the instant the
-    // capture-drain call runs, before the appender's 150ms-delayed write.
-    let leg_a = dir.join("leg_a.txt");
-    fs::write(&leg_a, begin).unwrap();
-    let script_a = format!(
-        "( sleep 0.15; printf '%s' '{rest}' >> '{path}' ) &\n\
-         BREENIX_GATE_DRAIN_DISABLE=1 gcd_drain_and_report '{path}'\n\
-         wait",
-        rest = rest.replace('\'', "'\\''"),
-        path = leg_a.display()
-    );
-    let (ok, out_a) = run_with_drain_lib(&script_a);
-    assert!(ok, "leg A (drain disabled) failed to run: {out_a}");
-    assert!(
-        out_a.contains("[CAPTURE_DRAIN:capture=partial:"),
-        "leg A (BREENIX_GATE_DRAIN_DISABLE=1) must read capture=partial -- it read:\n{out_a}"
-    );
-
-    // Leg B: same race, drain enabled, bounds tightened only for test
-    // speed (settle+quiet+max still comfortably outlast the 150ms delay).
-    let leg_b = dir.join("leg_b.txt");
-    fs::write(&leg_b, begin).unwrap();
-    let script_b = format!(
-        "( sleep 0.15; printf '%s' '{rest}' >> '{path}' ) &\n\
-         BREENIX_GATE_DRAIN_SETTLE_MS=50 BREENIX_GATE_DRAIN_QUIET_MS=100 \
-         BREENIX_GATE_DRAIN_MAX_MS=2000 gcd_drain_and_report '{path}'\n\
-         wait",
-        rest = rest.replace('\'', "'\\''"),
-        path = leg_b.display()
-    );
-    let (ok, out_b) = run_with_drain_lib(&script_b);
-    assert!(ok, "leg B (drain enabled) failed to run: {out_b}");
-    assert!(
-        out_b.contains("[CAPTURE_DRAIN:capture=complete:"),
-        "leg B (drain enabled, same race) must read capture=complete -- it read:\n{out_b}"
-    );
-
+    // The delayed cases also cover a caller descheduled beyond the old 150ms
+    // appender deadline. Both legs retain the same producer protocol.
+    for (case, disabled, startup_delay, expected) in [
+        ("disabled", "1", "0", "partial"),
+        ("enabled", "0", "0", "complete"),
+        ("disabled-delayed", "1", "0.3", "partial"),
+        ("enabled-delayed", "0", "0.3", "complete"),
+    ] {
+        let serial = dir.join(format!("{case}.txt"));
+        let ready = dir.join(format!("{case}.ready"));
+        let done = dir.join(format!("{case}.done"));
+        fs::write(&serial, begin).unwrap();
+        let script = format!(
+            r#"mkfifo '{ready}' '{done}'
+( read -r token < '{ready}'; printf '%s' '{rest}' >> '{serial}'; printf 'done\n' > '{done}' ) &
+writer=$!
+trap 'kill "$writer" 2>/dev/null || true' EXIT
+released=0
+release_writer() {{
+    if [ "$released" = 0 ]; then
+        released=1
+        printf 'go\n' > '{ready}'
+        read -r token < '{done}'
+    fi
+}}
+sleep() {{
+    release_writer
+    command sleep "$@"
+}}
+command sleep {startup_delay}
+BREENIX_GATE_DRAIN_DISABLE={disabled} BREENIX_GATE_DRAIN_SETTLE_MS=50 \
+BREENIX_GATE_DRAIN_QUIET_MS=100 BREENIX_GATE_DRAIN_MAX_MS=2000 \
+gcd_drain_and_report '{serial}'
+release_writer
+wait "$writer"
+trap - EXIT"#,
+            ready = ready.display(),
+            done = done.display(),
+            rest = rest.replace('\'', "'\\''"),
+            serial = serial.display(),
+        );
+        let (ok, out) = run_with_drain_lib(&script);
+        assert!(ok, "{case} failed to run: {out}");
+        assert!(
+            out.contains(&format!("[CAPTURE_DRAIN:capture={expected}:")),
+            "{case} must read capture={expected} -- it read:\n{out}"
+        );
+    }
     fs::remove_dir_all(&dir).ok();
 }
