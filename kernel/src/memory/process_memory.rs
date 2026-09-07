@@ -242,6 +242,16 @@ impl UnpublishedPageTable {
         self.page_table.as_deref_mut().expect("unpublished table")
     }
 
+
+    /// Take custody of a table that is already boxed, without unboxing and
+    /// reallocating it. The process builders reach this shape: the table is
+    /// boxed inside a partially-built Process when construction fails.
+    pub(crate) fn from_box(page_table: alloc::boxed::Box<ProcessPageTable>, pid: u64) -> Self {
+        Self {
+            page_table: Some(page_table),
+            pid,
+        }
+    }
     pub(crate) fn publish(mut self) -> alloc::boxed::Box<ProcessPageTable> {
         self.page_table.take().expect("unpublished table")
     }

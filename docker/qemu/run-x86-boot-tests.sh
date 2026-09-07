@@ -174,8 +174,9 @@ CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2
 # Every field is a delta the oracle drives itself in the same run except
 # reserved_collisions, which is the absolute boot-wide count of ordinary
 # allocations that landed on the reserved init PID and must be zero.
-# construct_residual is the counted frame residue of the two construction-failure arms read off a measured green run, and it is architecture-specific (4 on x86, 2 on aarch64) because the two page-table constructors record different table-frame counts.
-INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=2:construct_residual=4:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
+# construct_undecided=0 and construct_residual=0 hold because the unpublished-construction guard owns every error exit in the process builders (issue 588); construct_leaf_balance and construct_commit_balance are the leaf-return and commit-preservation deltas of the same boundary. None of these is architecture-specific any more.
+# claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+INIT_DESIGNATION_ORACLE_LITERAL='[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=0:construct_residual=0:construct_roots_retired=2:construct_leaf_balance=0:construct_commit_balance=0:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]'
 INIT_GROUP_REFUSAL_ORACLE_LITERAL='[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]'
 # driven=2 proves both handoff seams ran; stage1/2 return, wake, and park fields
 # expose D1/D2. stage3_elapsed_ok=1 proves the interval the oracle measured

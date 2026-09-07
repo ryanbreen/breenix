@@ -4639,6 +4639,20 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
     };
     let construct_used_before = frame_allocator_used_frames();
     let construct_undecided_before = PT_ROOT_DROPPED_UNDECIDED.aggregate();
+    let construct_leaf_recorded_before = LEAF_MAPPINGS_RECORDED.aggregate();
+    let construct_leaf_released_before = LEAF_MAPPINGS_RELEASED.aggregate();
+    let construct_leaf_returned_before = LEAF_FRAMES_RETURNED.aggregate();
+    let construct_tables_recorded_before = PT_TABLE_FRAMES_RECORDED.aggregate();
+    let construct_tables_returned_before = PT_TABLE_FRAMES_RETURNED.aggregate();
+    let construct_roots_retired_before = PT_ROOTS_RETIRED.aggregate();
+    let construct_mid_retire_before = PT_ROOT_DROPPED_MID_RETIRE.aggregate();
+    let construct_frames_lost_before = PT_RETIRE_FRAMES_LOST.aggregate();
+    let construct_live_refused_before = FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate();
+    let construct_double_before = FRAME_RETURN_REFUSED_DOUBLE.aggregate();
+    let construct_stale_before = FRAME_RETURN_REFUSED_STALE.aggregate();
+    let construct_untracked_before = FRAME_RETURN_REFUSED_UNTRACKED.aggregate();
+    let construct_custody_refused_before = LEAF_CUSTODY_REFUSED.aggregate();
+    let construct_root_slot_refused_before = PT_ROOT_SLOT_REFUSED.aggregate();
     let accepted_before = init_designation_accepted();
     let refused_before = init_designation_refused();
     let retired_before = init_designation_retired();
@@ -4745,6 +4759,44 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
     let construct_undecided = PT_ROOT_DROPPED_UNDECIDED
         .aggregate()
         .saturating_sub(construct_undecided_before);
+
+    // Workload-attributed custody accounting for the two failed constructions.
+    // The unpublished-construction guard owns every error exit in the builders
+    // (issue 588), so each failed build releases the leaves it mapped and
+    // retires its own table frames and root.
+    // claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+    let construct_leaf_recorded =
+        LEAF_MAPPINGS_RECORDED.aggregate() - construct_leaf_recorded_before;
+    let construct_leaf_released =
+        LEAF_MAPPINGS_RELEASED.aggregate() - construct_leaf_released_before;
+    let construct_leaf_returned =
+        LEAF_FRAMES_RETURNED.aggregate() - construct_leaf_returned_before;
+    let construct_tables_recorded =
+        PT_TABLE_FRAMES_RECORDED.aggregate() - construct_tables_recorded_before;
+    let construct_tables_returned =
+        PT_TABLE_FRAMES_RETURNED.aggregate() - construct_tables_returned_before;
+    let construct_roots_retired = PT_ROOTS_RETIRED.aggregate() - construct_roots_retired_before;
+    let construct_mid_retire =
+        PT_ROOT_DROPPED_MID_RETIRE.aggregate() - construct_mid_retire_before;
+    let construct_frames_lost = PT_RETIRE_FRAMES_LOST.aggregate() - construct_frames_lost_before;
+    let construct_refusals = (FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate()
+        - construct_live_refused_before)
+        + (FRAME_RETURN_REFUSED_DOUBLE.aggregate() - construct_double_before)
+        + (FRAME_RETURN_REFUSED_STALE.aggregate() - construct_stale_before)
+        + (FRAME_RETURN_REFUSED_UNTRACKED.aggregate() - construct_untracked_before)
+        + (LEAF_CUSTODY_REFUSED.aggregate() - construct_custody_refused_before)
+        + (PT_ROOT_SLOT_REFUSED.aggregate() - construct_root_slot_refused_before);
+
+    // The publication leg of the same boundary: commit hands a live address
+    // space back untouched, and that same table then releases exactly what its
+    // construction took.
+    let construct_commit_balance =
+        match crate::process::unpublished::commit_preserves_live_table_for_gate() {
+            Some([before, constructed, committed, released]) => {
+                (committed as i64 - constructed as i64) + (released as i64 - before as i64)
+            }
+            None => i64::MIN,
+        };
 
     // A3: a ticket for an ordinary PID cannot designate init.
     {
@@ -5120,11 +5172,38 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
     if reserved_collisions != 0 && first_failure.is_none() {
         first_failure = Some("ordinary PID allocation collided with the reserved init PID");
     }
-    if construct_undecided != 2 && first_failure.is_none() {
-        first_failure = Some("init designation construction undecided-drop delta was not exact");
+    if construct_failed != 2 && first_failure.is_none() {
+        first_failure = Some("init designation did not drive two failed constructions");
     }
-    if construct_residual < 0 && first_failure.is_none() {
-        first_failure = Some("init designation failed construction over-freed frames");
+    if construct_undecided != 0 && first_failure.is_none() {
+        first_failure = Some("failed construction dropped a page table Undecided");
+    }
+    if construct_residual != 0 && first_failure.is_none() {
+        first_failure = Some("failed construction left a frame residue");
+    }
+    if construct_roots_retired != 2 && first_failure.is_none() {
+        first_failure = Some("failed construction did not retire both roots");
+    }
+    if construct_leaf_released != construct_leaf_recorded && first_failure.is_none() {
+        first_failure = Some("failed construction did not release every leaf it recorded");
+    }
+    if construct_leaf_returned != construct_leaf_recorded && first_failure.is_none() {
+        first_failure = Some("failed construction did not return every leaf frame it took");
+    }
+    if construct_tables_returned != construct_tables_recorded + 2 && first_failure.is_none() {
+        first_failure = Some("failed construction did not return every table frame and root");
+    }
+    if construct_mid_retire != 0 && first_failure.is_none() {
+        first_failure = Some("failed construction left a root mid-retire");
+    }
+    if construct_frames_lost != 0 && first_failure.is_none() {
+        first_failure = Some("failed construction lost a frame return");
+    }
+    if construct_refusals != 0 && first_failure.is_none() {
+        first_failure = Some("failed construction hit a custody or frame-return refusal");
+    }
+    if construct_commit_balance != 0 && first_failure.is_none() {
+        first_failure = Some("unpublished-construction commit did not preserve the live table");
     }
     if designation_balance != 0 && first_failure.is_none() {
         first_failure = Some("init designation synthetic arms changed frame accounting");
@@ -5134,16 +5213,20 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
     let arch = "aarch64";
     #[cfg(target_arch = "x86_64")]
     let arch = "x86";
-    // `construct_residual` is the counted (never freed, never double-freed) frame residue of
-    // the two failed constructions. It is a pre-existing property of the process-creation
-    // failure path, not something P5a introduces; `construct_undecided` proves that residue is
-    // counted rather than lost.
+    // construct_residual is the frame balance across the two failed
+    // constructions, and construct_undecided the number of page tables dropped
+    // without a disposition. Both are zero because the unpublished-construction
+    // guard owns every error exit in the process builders (issue 588).
+    // claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
     crate::serial_println!(
-        "[INIT_DESIGNATION_ORACLE:{}:construct_failed={}:construct_undecided={}:construct_residual={}:refused={}:accepted={}:published={}:retired={}:held_error_removals={}:reparented={}:reparent_skipped={}:ordinary_allocated={}:reserved_collisions={}:designation_balance={}]",
+        "[INIT_DESIGNATION_ORACLE:{}:construct_failed={}:construct_undecided={}:construct_residual={}:construct_roots_retired={}:construct_leaf_balance={}:construct_commit_balance={}:refused={}:accepted={}:published={}:retired={}:held_error_removals={}:reparented={}:reparent_skipped={}:ordinary_allocated={}:reserved_collisions={}:designation_balance={}]",
         arch,
         construct_failed,
         construct_undecided,
         construct_residual,
+        construct_roots_retired,
+        construct_leaf_recorded as i64 - construct_leaf_returned as i64,
+        construct_commit_balance,
         refused,
         accepted,
         published,

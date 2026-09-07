@@ -10,6 +10,7 @@ pub mod creation;
 pub mod fork;
 pub mod manager;
 pub mod process;
+pub(crate) mod unpublished;
 
 pub use manager::ProcessManager;
 pub use manager::{InitDesignationTicket, InitPublication, FIRST_ORDINARY_PID, RESERVED_INIT_PID};
