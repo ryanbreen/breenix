@@ -1,0 +1,7 @@
+0776f442415dc4b6d4dc69e29657213ce34af308
+revision=0776f442415dc4b6d4dc69e29657213ce34af308 cycles=3 hogs=28
+[STARVED_LOOP_FACTS:revision=0776f442415dc4b6d4dc69e29657213ce34af308:cycle=1:hogs=28:gate_exit=0:recovered=0]
+[STARVED_LOOP_FACTS:revision=0776f442415dc4b6d4dc69e29657213ce34af308:cycle=2:hogs=28:gate_exit=0:recovered=0]
+[STARVED_LOOP_FACTS:revision=0776f442415dc4b6d4dc69e29657213ce34af308:cycle=3:hogs=28:gate_exit=0:recovered=0]
+[STARVED_LOOP_RESULT:cycles=3:failed=0:recovered=0]
+exit=1

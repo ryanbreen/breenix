@@ -1,0 +1,2 @@
+Original gate directory moved after completion to /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/.gate-tmp/r232-extension-deleted-full
+Serials, gate transcripts and sidecars copied byte-for-byte to loop/. Executables and disks retained only in lane scratch.

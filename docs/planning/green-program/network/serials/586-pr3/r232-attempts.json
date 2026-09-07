@@ -1,0 +1,32 @@
+[
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/r232-extension-deleted/loop/cycle-1/breenix_aarch64_strict_1/serial.txt",
+    "line": "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=151:elapsed_ctr_ms=209:ctx_delta=84:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=2250:silence_cpu=0:woke_ms=2101:verdict=ok]",
+    "pass": true
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/r232-extension-deleted/loop/cycle-2/breenix_aarch64_strict_1/serial.txt",
+    "line": "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=176:elapsed_ctr_ms=225:ctx_delta=63:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=terminated:queued_cpu=none:queued_idx=none:idle_cpus=0x2:cpu_silence_ms=1935:silence_cpu=0:woke_ms=1760:verdict=ok]",
+    "pass": true
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/r232-extension-deleted/loop/cycle-3/breenix_aarch64_strict_1/serial.txt",
+    "line": "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=161:elapsed_ctr_ms=204:ctx_delta=54:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=terminated:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=1867:silence_cpu=0:woke_ms=1718:verdict=ok]",
+    "pass": true
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/r232-recovery/loop/cycle-1/breenix_aarch64_strict_1/serial.txt",
+    "line": "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=163:elapsed_ctr_ms=208:ctx_delta=76:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=terminated:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=2180:silence_cpu=0:woke_ms=2018:verdict=ok]",
+    "pass": true
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/r232-recovery/loop/cycle-2/breenix_aarch64_strict_1/serial.txt",
+    "line": "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=161:elapsed_ctr_ms=221:ctx_delta=41:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=terminated:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=2293:silence_cpu=0:woke_ms=2181:verdict=ok]",
+    "pass": true
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/r232-recovery/loop/cycle-3/breenix_aarch64_strict_1/serial.txt",
+    "line": "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=158:elapsed_ctr_ms=204:ctx_delta=143:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=2658:silence_cpu=0:woke_ms=2506:verdict=ok]",
+    "pass": true
+  }
+]

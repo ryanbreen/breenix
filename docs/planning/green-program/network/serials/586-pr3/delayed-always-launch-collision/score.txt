@@ -1,0 +1,3 @@
+df9b819e973030a5587300f4ee5f9000b4abda65
+SCORE: FAIL - Loopback wake budget marker missing or failed: when_idle (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/docs/planning/green-program/network/serials/586-pr3/delayed-always/serial.txt)
+score_exit=1
