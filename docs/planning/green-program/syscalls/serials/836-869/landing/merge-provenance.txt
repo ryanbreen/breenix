@@ -1,0 +1,24 @@
+merge commit: 5f3094285322facb11d576af9be117d849238d84
+origin/main tip merged: 5c53ba590bbd34dc9f342a8a7bb07763608b6548
+5c53ba590bbd34dc9f342a8a7bb07763608b6548 Merge pull request #918 from ryanbreen/capture/ftc-pr6-qmp-backstop
+---
+5f3094285322facb11d576af9be117d849238d84 Merge remote-tracking branch 'origin/main' into syscall/836-869-oracle-arming
+
+ .gitattributes                                     |    7 +
+ docker/qemu/lib/gate-qmp-backstop.sh               |  106 +
+ docker/qemu/run-aarch64-boot-test-strict.sh        |   33 +-
+ docker/qemu/run-aarch64-service-sequence-gate.sh   |   46 +-
+ .../failure-capture/PR-6-2026-09-07.md             |  632 ++++++
+ .../network-483-465-2026-09-07/DISPOSITIONS.md     |   99 +
+ .../sweeps/network-483-465-2026-09-07/EVIDENCE.md  |  244 +++
+ .../evidence/run1-test120/screenshot.png           |  Bin 0 -> 3674 bytes
+ .../evidence/run1-test120/serial.log               | 2222 +++++++++++++++++++
+ .../evidence/run1-test120/stdout.log               |  610 ++++++
+ .../evidence/run2-test120/screenshot.png           |  Bin 0 -> 3674 bytes
+ .../evidence/run2-test120/serial.log               | 2265 ++++++++++++++++++++
+ .../evidence/run2-test120/stdout.log               |  514 +++++
+ scripts/forensic-capture.sh                        |    9 +-
+ scripts/trace_memory_dump.py                       |   99 +-
+ tests/gate_qmp_backstop_structure.rs               |  673 ++++++
+ tests/strand_handoff_structure.rs                  |    2 +-
+ 17 files changed, 7540 insertions(+), 21 deletions(-)

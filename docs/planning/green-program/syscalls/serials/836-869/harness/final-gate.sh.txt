@@ -1,0 +1,26 @@
+#!/bin/bash
+set -u
+export TMPDIR="$PWD/.tmp"
+export BREENIX_GATE_TMP="$PWD/.gate-tmp/$1"
+export BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library
+out="$PWD/docs/planning/green-program/syscalls/serials/836-869/$1"
+mkdir -p "$out" "$BREENIX_GATE_TMP"
+{
+ git rev-parse HEAD
+ shasum -a 256 target/aarch64-breenix-kernel/release/kernel-aarch64
+ uname -a
+ qemu-system-aarch64 --version
+ sysctl -n vm.loadavg
+} > "$out/provenance.txt"
+if [ "$1" = service-sequence ]; then
+ export OUTPUT_DIR="$BREENIX_GATE_TMP/output"
+ ./docker/qemu/run-aarch64-service-sequence-gate.sh > "$out/gate.log" 2>&1
+ rc=$?
+else
+ ./docker/qemu/run-aarch64-prod-profile-boot-test.sh > "$out/gate.log" 2>&1
+ rc=$?
+fi
+printf '%s\n' "$rc" > "$out/gate.exit"
+sysctl -n vm.loadavg >> "$out/provenance.txt"
+python3 .tmp/preserve-gate.py "$BREENIX_GATE_TMP" "$out/gate-tmp"
+exit "$rc"

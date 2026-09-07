@@ -1,0 +1,7 @@
+891ae034f8c0bb5de0b9ad400cf6524a7e92645c
+6a6a1dffc4b3cc08fa63cc0b0f7726046241b909a79b51cedd76954775f844f8  target/aarch64-breenix-kernel/release/kernel-aarch64
+Darwin Ryans-M5-Max.local 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:19:08 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6050 arm64
+QEMU emulator version 11.0.3
+Copyright (c) 2003-2026 Fabrice Bellard and the QEMU Project developers
+{ 3.02 4.07 9.47 }
+{ 6.71 5.42 9.50 }

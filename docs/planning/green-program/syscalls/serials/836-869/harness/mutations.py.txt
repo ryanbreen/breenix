@@ -1,0 +1,57 @@
+import os, pathlib, subprocess
+p=pathlib.Path('kernel/src/test_framework/registry.rs')
+original=p.read_text()
+out=pathlib.Path('docs/planning/green-program/syscalls/serials/836-869/mutations');out.mkdir(parents=True,exist_ok=True)
+env=dict(os.environ,TMPDIR=str(pathlib.Path('.tmp').resolve()),BREENIX_GATE_TMP=str(pathlib.Path('.gate-tmp').resolve()))
+a=original.index('pub fn run_fcntl_pm_contention_oracle()');b=original.index('\n#[cfg(target_arch = "aarch64")]\nfn test_fcntl',a)
+body=original[a:b]
+enter='let mut driver_pin = Some(TestOracleDriverPin::enter());'
+mutations=[]
+def bodymutation(label, new, test):
+    assert new != body
+    mutations.append((label, original[:a]+new+original[b:],test))
+bodymutation('P836-spawn-gap',body.replace(enter,'let mut driver_pin: Option<TestOracleDriverPin> = None;').replace('Ok(handle) => {','Ok(handle) => {\n                    driver_pin = Some(TestOracleDriverPin::enter());',1),'driver_pin_covers_holder_publication_and_measurement')
+r=body.replace('        '+enter+'\n','',1)
+needle='            other => other,\n        };'
+assert needle in r
+r=r.replace(needle,needle+'\n        '+enter,1)
+bodymutation('P869-selection-gap',r,'driver_pin_precedes_every_peer_selection')
+needle='''        crate::arch_impl::aarch64::cpu::without_interrupts(|| {
+            crate::per_cpu::preempt_disable();
+        });'''
+assert original.count(needle)==1
+mutations.append(('P-entry-mask', original.replace(needle,'        crate::per_cpu::preempt_disable();'), 'driver_pin_entry_and_cancellation_close_their_own_gaps'))
+request='                    FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);'
+at=body.rindex(request)
+r=body[:at]+body[at:].replace(request+'\n','',1)
+r=r.replace('                    drop(driver_pin.take());','                    drop(driver_pin.take());\n'+request,1)
+bodymutation('P-cancel-order',r,'driver_pin_entry_and_cancellation_close_their_own_gaps')
+bodymutation('P-missing-drop',body.replace('                    drop(driver_pin.take());\n','',1),'driver_pin_is_balanced_before_cleanup_and_reporting')
+for label,name,old,new in [('P-arm-bound','FCNTL_PM_ARM_WAIT_US','2_000_000','4_000_000'),('P-safety-bound','FCNTL_PM_HOLD_SAFETY_US','250_000','500_000')]:
+    needle=f'const {name}: u64 = {old};';assert needle in original
+    mutations.append((label,original.replace(needle,f'const {name}: u64 = {new};'),'arming_bounds_and_failure_contract_are_not_widened'))
+needle="fcntl contention oracle never observed the peer CPU holding the process-manager lock; the arming rendezvous did not complete"
+assert needle in original
+mutations.append(('M1-verdict',original.replace(needle,'fcntl reported a contended process-manager lock to userspace'),'verdict_arms_are_distinct_and_only_one_describes_a_syscall_result'))
+bodymutation('M2-attempts',body.replace('[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us=', '[FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=3:arm_wait_us='),'oracle_arming_is_a_rendezvous_not_an_attempt_count')
+bodymutation('M3-floor',body.replace('\n                        && first_wait_us >= FCNTL_PM_MIN_WAIT_US',''),'oracle_pass_predicate_carries_a_wait_floor_conjunct')
+def run(label,code,test=None):
+    result=subprocess.run(['scripts/run-structure-tests.sh','fcntl_pm_contention_gate_structure'],env=env,capture_output=True,text=True)
+    text=result.stdout+result.stderr
+    (out/(label+'.log')).write_text(text)
+    (out/(label+'.exit')).write_text(str(result.returncode)+'\n')
+    print(label,result.returncode,flush=True)
+    assert result.returncode==code,text
+    assert not any(line.startswith(('warning','error')) for line in text.splitlines()),text
+    if test: assert f'test {test} ... FAILED' in text,text
+    if label=='P869-selection-gap': assert 'test driver_pin_covers_holder_publication_and_measurement ... ok' in text,text
+try:
+    run('unmutated',0)
+    for label,text,test in mutations:
+        p.write_text(text)
+        (out/(label+'.patch.txt')).write_text(subprocess.check_output(['git','diff','--',str(p)],text=True))
+        run(label,101,test)
+        p.write_text(original)
+        run(label+'-restored',0)
+finally:
+    p.write_text(original)

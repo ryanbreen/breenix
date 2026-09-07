@@ -1,0 +1,14 @@
+import pathlib,subprocess,sys
+p=pathlib.Path('kernel/src/test_framework/registry.rs')
+lines=p.read_text().splitlines()
+sites={4847:'struct TestOracleDriverPin',4851:'fn enter()',4863:'fn drop(',4900:'let mut driver_pin',4909:'let peer = live_peer_cpu_for_test()',4911:'Some(0) =>',4923:'match kthread_run_on_cpu_for_test',4954:'first_errno = fcntl_pm_setfd_once()',4962:'if fcntl_pm_setfd_once()',4971:'FCNTL_PM_RELEASE_REQ.store(true',4973:'drop(driver_pin.take())',4980:'release_cpu_affine_thread_for_test',4982:'let join_start',5027:'drop(driver_pin)',6094:'let mut driver_pin',6108:'driver_pin = Some',6138:'drop(driver_pin.take())',6155:'drop(driver_pin.take())',6220:'drop(driver_pin)'}
+for number,text in sites.items(): assert text in lines[number-1],(number,text,lines[number-1])
+base=subprocess.check_output(['git','show','891ae034:kernel/src/test_framework/registry.rs'],text=True).splitlines()
+for number,text in {4893:'match kthread_run_on_cpu_for_test',4908:'preempt_disable()',4794:'let held_from',4795:'HOLD_ACTIVE.store(true',4916:'let arm_start',4865:'let peer',4867:'Some(0)',4772:'try_manager()',4775:'RELEASE_REQ.load',4963:'release_cpu_affine_thread_for_test'}.items(): assert text in base[number-1],(number,text,base[number-1])
+out=pathlib.Path('docs/planning/green-program/syscalls/serials/836-869/citation-audit.txt')
+receipt='HEAD='+subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()+'\n'
+receipt+='Baseline and final registry citations matched numbered executable source.\n'
+receipt+=''.join(f'{p}:{n} {lines[n-1].strip()}\n' for n in sites)
+if "--check-only" not in sys.argv:
+    out.write_text(receipt)
+print(receipt.splitlines()[0]);print(receipt.splitlines()[1])

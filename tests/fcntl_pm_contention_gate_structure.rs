@@ -69,7 +69,7 @@
 //! than the EAGAIN arm is decided by the boot, not by this file.
 //!
 //! Host-side only: a text read of the tree, no kernel build and no QEMU boot.
-//! Run: `cargo test --test fcntl_pm_contention_gate_structure`.
+//! Run: `scripts/run-structure-tests.sh fcntl_pm_contention_gate_structure`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -82,10 +82,9 @@ const ORACLE_AARCH64_PREFIX: &str = "FCNTL_PM_CONTENTION_ORACLE:aarch64";
 /// origin/main returned in 2-21 us.
 const MIN_DEFENSIBLE_FLOOR_US: u64 = 1_000;
 /// The smallest rendezvous deadline this ratchet accepts. The driver has to
-/// outwait the sum of what the holder can spend before it exits -- 500 ms of
-/// acquire retries, 250 ms of safety hold and the 8 ms overlap, about 758 ms --
-/// so that a driver-side timeout means the holder thread did not run, rather
-/// than one deadline racing the other.
+/// outwait the holder's 20 ms acquire bound, 250 ms safety hold and 8 ms
+/// overlap (278 ms total). A timeout reports a missed publication; these
+/// bounds alone cannot distinguish guest delay from host vCPU descheduling.
 const MIN_RENDEZVOUS_DEADLINE_US: u64 = 2_000_000;
 /// The token a gate script carries when it proves, at gate time and in its own
 /// matcher, that its pinned pattern rejects `first_wait_us=0` and accepts a
@@ -196,9 +195,10 @@ fn wait_floor_binding(body: &str) -> (String, String, usize) {
         name
     );
 
-    let end = at + body[at..]
-        .find(';')
-        .expect("unterminated binding around the first_wait_us floor")
+    let end = at
+        + body[at..]
+            .find(';')
+            .expect("unterminated binding around the first_wait_us floor")
         + 1;
     (name, rhs, end)
 }
@@ -224,9 +224,10 @@ fn block_after<'a>(source: &'a str, needle: &str) -> &'a str {
     let at = source
         .find(needle)
         .unwrap_or_else(|| panic!("{} is not present in {}", needle, REGISTRY));
-    let open = at + source[at..].find('{').unwrap_or_else(|| {
-        panic!("{} is not followed by a block in {}", needle, REGISTRY)
-    });
+    let open = at
+        + source[at..]
+            .find('{')
+            .unwrap_or_else(|| panic!("{} is not followed by a block in {}", needle, REGISTRY));
     let mut depth = 0usize;
     for (offset, ch) in source[open..].char_indices() {
         match ch {
@@ -549,5 +550,310 @@ fn verdict_arms_are_distinct_and_only_one_describes_a_syscall_result() {
                 variant, other_variant
             );
         }
+    }
+}
+
+// Ordering checks below operate on executable source, with comments and string
+// literals blanked before brace matching. A quoted example cannot own a pin.
+fn executable_source(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        if bytes[i..].starts_with(b"//") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            let mut depth = 1;
+            while i < bytes.len() && depth != 0 {
+                if bytes[i..].starts_with(b"/*") {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            assert_eq!(depth, 0, "unterminated block comment");
+        } else if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else if bytes[i] == b'r' && matches!(bytes.get(i + 1), Some(b'#' | b'"')) {
+            let mut quote = i + 1;
+            while bytes.get(quote) == Some(&b'#') {
+                quote += 1;
+            }
+            if bytes.get(quote) != Some(&b'"') {
+                i += 1;
+                continue;
+            }
+            let end = format!("\"{}", "#".repeat(quote - i - 1));
+            i = quote
+                + 1
+                + source[quote + 1..]
+                    .find(&end)
+                    .expect("unterminated raw string")
+                + end.len();
+        } else if bytes[i] == b'\'' && bytes.get(i + 2) == Some(&b'\'') {
+            i += 3;
+        } else if bytes[i..].starts_with(b"'\\") {
+            i += 3;
+            while i < bytes.len() && bytes[i] != b'\'' {
+                i += 1;
+            }
+            i += 1;
+        } else {
+            i += 1;
+            continue;
+        }
+        for byte in &mut out[start..i] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    }
+    String::from_utf8(out).expect("blanking preserves UTF-8")
+}
+
+fn compact(source: &str) -> String {
+    source.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+fn executable_driver(source: &str, name: &str) -> String {
+    compact(block_after(source, name))
+}
+
+const PIN_ENTER: &str = "letmutdriver_pin=Some(TestOracleDriverPin::enter());";
+const PIN_TAKE: &str = "drop(driver_pin.take());";
+const RELEASE_REQUEST: &str = "FCNTL_PM_RELEASE_REQ.store(true,AtomicOrdering::Release);";
+
+fn position(source: &str, needle: &str) -> usize {
+    source
+        .find(needle)
+        .unwrap_or_else(|| panic!("missing executable {needle}"))
+}
+
+fn protected_driver_span(body: &str) -> (usize, usize) {
+    let enter = position(body, PIN_ENTER);
+    let drop = position(body, PIN_TAKE);
+    assert!(enter < drop, "driver pin must precede its release");
+    let span = &body[enter + PIN_ENTER.len()..drop];
+    assert!(
+        !span.contains("driver_pin"),
+        "driver pin must remain continuously owned"
+    );
+    assert!(
+        !span.contains("preempt_enable("),
+        "no raw unpin inside protected interval"
+    );
+    assert!(
+        !span.contains("preempt_disable("),
+        "no replacement raw pin inside interval"
+    );
+    (enter, drop)
+}
+
+#[test]
+fn driver_pin_covers_holder_publication_and_measurement() {
+    let source = executable_source(&registry_source());
+    let body = executable_driver(&source, ORACLE_DRIVER_FN);
+    let (enter, drop) = protected_driver_span(&body);
+    let spawn = position(&body, "matchkthread_run_on_cpu_for_test(");
+    assert!(
+        enter < spawn && spawn < drop,
+        "#836 pin must cover holder publication"
+    );
+    let calls: Vec<_> = body.match_indices("fcntl_pm_setfd_once()").collect();
+    assert_eq!(
+        calls.len(),
+        2,
+        "first and remaining measured calls must exist"
+    );
+    for (call, _) in calls {
+        assert!(
+            spawn < call && call < drop,
+            "measured call outside driver pin"
+        );
+    }
+    let holder = executable_driver(&source, "fn fcntl_pm_holder_body()");
+    assert!(
+        holder.starts_with("{crate::arch_impl::aarch64::cpu::without_interrupts(||{"),
+        "holder must retain its outer IRQ mask"
+    );
+    let masked = compact(block_after(
+        &source[position(&source, "fn fcntl_pm_holder_body()")..],
+        "without_interrupts",
+    ));
+    for op in [
+        "crate::process::try_manager()",
+        "FCNTL_PM_HOLD_ACTIVE.store(true,",
+        "drop(guard)",
+    ] {
+        assert!(
+            masked.contains(op),
+            "holder operation outside outer mask: {op}"
+        );
+    }
+}
+
+#[test]
+fn driver_pin_precedes_every_peer_selection() {
+    let source = executable_source(&registry_source());
+    let body = executable_driver(&source, ORACLE_DRIVER_FN);
+    let (enter, drop) = protected_driver_span(&body);
+    for selection in [
+        "live_peer_cpu_for_test()",
+        "live_peer_cpu_for_test_excluding_cpu0()",
+    ] {
+        let hits: Vec<_> = body.match_indices(selection).collect();
+        assert_eq!(hits.len(), 1, "single peer selection and fallback retained");
+        assert!(
+            enter < hits[0].0 && hits[0].0 < drop,
+            "#869 peer selection must be under the publication pin"
+        );
+    }
+}
+
+#[test]
+fn driver_pin_entry_and_cancellation_close_their_own_gaps() {
+    let source = executable_source(&registry_source());
+    let implementation = block_after(&source, "impl TestOracleDriverPin");
+    let enter = compact(block_after(implementation, "fn enter()"));
+    assert_eq!(enter, "{crate::arch_impl::aarch64::cpu::without_interrupts(||{crate::per_cpu::preempt_disable();});Self(core::marker::PhantomData)}",
+        "pin pointer lookup/increment must be the only work under the short IRQ mask");
+    let body = executable_driver(&source, ORACLE_DRIVER_FN);
+    let ok = compact(block_after(&body, "Ok(handle)=>"));
+    let drop = position(&ok, PIN_TAKE);
+    let cancel = ok
+        .rfind(RELEASE_REQUEST)
+        .expect("unconditional cancellation");
+    assert!(
+        cancel < drop,
+        "publish unconditional cancellation before unpin"
+    );
+    assert_eq!(
+        &ok[cancel + RELEASE_REQUEST.len()..drop],
+        "",
+        "cancel immediately before unpin"
+    );
+    let measured = block_after(&ok, "ifFCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)");
+    assert!(
+        position(&ok, measured) + measured.len() <= cancel,
+        "cancellation must be outside armed branch"
+    );
+}
+
+#[test]
+fn driver_pin_is_balanced_before_cleanup_and_reporting() {
+    let source = executable_source(&registry_source());
+    let flat = compact(&source);
+    assert!(
+        flat.contains(
+            "#[cfg(target_arch=)]structTestOracleDriverPin(core::marker::PhantomData<*mut()>);"
+        ),
+        "private aarch64 non-Send/non-Sync guard required"
+    );
+    let destructor = compact(block_after(
+        block_after(&source, "impl Drop for TestOracleDriverPin"),
+        "fn drop(",
+    ));
+    assert_eq!(
+        destructor, "{crate::per_cpu::preempt_enable();}",
+        "one balanced decrement"
+    );
+    let body = executable_driver(&source, ORACLE_DRIVER_FN);
+    let (_, drop) = protected_driver_span(&body);
+    assert_eq!(body.matches(PIN_ENTER).count(), 1);
+    assert_eq!(body.matches(PIN_TAKE).count(), 1);
+    assert_eq!(body.matches("drop(driver_pin);").count(), 1);
+    let cleanup = position(&body, "release_cpu_affine_thread_for_test(handle.tid());");
+    let join = position(&body, "letjoin_start=");
+    assert!(
+        drop < cleanup && cleanup < join,
+        "release pin before affinity cleanup and join"
+    );
+    let peer_arm = block_after(&body, "ifletSome(peer)=peer");
+    let tail = &body[position(&body, peer_arm) + peer_arm.len()..];
+    assert!(
+        tail.starts_with("drop(driver_pin);crate::serial_println!("),
+        "no-peer/spawn-error common tail releases before reporting"
+    );
+    assert_eq!(
+        body.matches("driver_pin").count(),
+        3,
+        "no hidden pin transfer or reassignment"
+    );
+
+    // Structural parity for IRQ without adding a tenth test. Peer selection
+    // remains outside the retry loop; each attempt releases before cleanup.
+    let irq = executable_driver(&source, "fn run_irq_hold_oracle()");
+    assert!(position(&irq, PIN_ENTER) < position(&irq, "live_peer_cpu_for_test()"));
+    assert!(
+        position(&irq, "live_peer_cpu_for_test_excluding_cpu0()")
+            < position(&irq, "whileattempts<IRQ_HOLD_ATTEMPTS")
+    );
+    let attempt = block_after(&irq, "whileattempts<IRQ_HOLD_ATTEMPTS");
+    assert!(
+        attempt
+            .starts_with("{ifdriver_pin.is_none(){driver_pin=Some(TestOracleDriverPin::enter());}"),
+        "repin at next attempt entry"
+    );
+    assert!(
+        attempt.rfind(PIN_TAKE).unwrap()
+            < position(attempt, "release_cpu_affine_thread_for_test(handle.tid());")
+    );
+    assert!(position(attempt, "ifIRQ_HOLD_ACTIVE.load(") < attempt.rfind(PIN_TAKE).unwrap());
+    assert!(irq.contains("drop(driver_pin);crate::serial_println!("));
+}
+
+#[test]
+fn arming_bounds_and_failure_contract_are_not_widened() {
+    let registry = registry_source();
+    let source = executable_source(&registry);
+    for (name, value) in [
+        ("FCNTL_PM_ACQUIRE_US", 20_000),
+        ("FCNTL_PM_HOLD_SAFETY_US", 250_000),
+        ("FCNTL_PM_ARM_WAIT_US", 2_000_000),
+        ("FCNTL_PM_ARM_SPIN_US", 20_000),
+        ("FCNTL_PM_HOLD_OVERLAP_US", 8_000),
+        ("FCNTL_PM_JOIN_US", 500_000),
+        ("FCNTL_PM_SETTLE_US", 20_000),
+        ("FCNTL_PM_CALLS", 64),
+        ("FCNTL_PM_MIN_WAIT_US", 1_000),
+    ] {
+        assert_eq!(const_u64(&source, name), value, "{name} must not change");
+    }
+    let body = executable_driver(&source, ORACLE_DRIVER_FN);
+    assert_eq!(
+        body.matches("arm_start=").count(),
+        1,
+        "one original arm clock, no restart"
+    );
+    let poll = block_after(&body, "while!FCNTL_PM_HOLD_ACTIVE.load(");
+    assert!(!poll.contains("arm_start="));
+    assert!(body.contains("}elseifhold_safety==1{FcntlPmArm::HoldSafetyRelease}elseifarmed==0{FcntlPmArm::ArmingTimeout}"), "safety/unarmed verdict priority retained");
+    let result = compact(block_after(
+        block_after(&source, "impl FcntlPmArm"),
+        ARM_RESULT_FN,
+    ));
+    for arm in ["HoldSafetyRelease", "ArmingTimeout"] {
+        assert!(
+            result.contains(&format!("FcntlPmArm::{arm}=>TestResult::Fail(")),
+            "arming failure remains Fail: {arm}"
+        );
     }
 }

@@ -1,0 +1,21 @@
+HEAD=c08a565144a271df423980f57ffe216a7f8dc753
+Baseline and final registry citations matched numbered executable source.
+kernel/src/test_framework/registry.rs:4847 struct TestOracleDriverPin(core::marker::PhantomData<*mut ()>);
+kernel/src/test_framework/registry.rs:4851 fn enter() -> Self {
+kernel/src/test_framework/registry.rs:4863 fn drop(&mut self) {
+kernel/src/test_framework/registry.rs:4900 let mut driver_pin = Some(TestOracleDriverPin::enter());
+kernel/src/test_framework/registry.rs:4909 let peer = live_peer_cpu_for_test();
+kernel/src/test_framework/registry.rs:4911 Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+kernel/src/test_framework/registry.rs:4923 match kthread_run_on_cpu_for_test(fcntl_pm_holder_body, "fcntl-pm-holder", peer) {
+kernel/src/test_framework/registry.rs:4954 first_errno = fcntl_pm_setfd_once();
+kernel/src/test_framework/registry.rs:4962 if fcntl_pm_setfd_once() == 11 {
+kernel/src/test_framework/registry.rs:4971 FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);
+kernel/src/test_framework/registry.rs:4973 drop(driver_pin.take());
+kernel/src/test_framework/registry.rs:4980 release_cpu_affine_thread_for_test(handle.tid());
+kernel/src/test_framework/registry.rs:4982 let join_start = crate::tracing::trace_timestamp();
+kernel/src/test_framework/registry.rs:5027 drop(driver_pin);
+kernel/src/test_framework/registry.rs:6094 let mut driver_pin = Some(TestOracleDriverPin::enter());
+kernel/src/test_framework/registry.rs:6108 driver_pin = Some(TestOracleDriverPin::enter());
+kernel/src/test_framework/registry.rs:6138 drop(driver_pin.take());
+kernel/src/test_framework/registry.rs:6155 drop(driver_pin.take());
+kernel/src/test_framework/registry.rs:6220 drop(driver_pin);

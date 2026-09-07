@@ -1,0 +1,29 @@
+891ae034f8c0bb5de0b9ad400cf6524a7e92645c
+ kernel/src/test_framework/registry.rs       | 117 ++++++----
+ tests/fcntl_pm_contention_gate_structure.rs | 328 +++++++++++++++++++++++++++-
+ 2 files changed, 390 insertions(+), 55 deletions(-)
+Darwin Ryans-M5-Max.local 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:19:08 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6050 arm64
+ProductName:		macOS
+ProductVersion:		26.6.2
+BuildVersion:		25G83
+18
+/opt/homebrew/bin/qemu-system-aarch64
+QEMU emulator version 11.0.3
+Copyright (c) 2003-2026 Fabrice Bellard and the QEMU Project developers
+cpu_burners=0
+6a6a1dffc4b3cc08fa63cc0b0f7726046241b909a79b51cedd76954775f844f8  target/aarch64-breenix-kernel/release/kernel-aarch64
+    timeout 20 qemu-system-aarch64 \
+        -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
+        -kernel "$KERNEL" \
+        -display none -no-reboot \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
+        -device virtio-tablet-device \
+        -device virtio-blk-device,drive=ext2 \
+        -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
+        -device virtio-net-device,netdev=net0 \
+        -netdev user,id=net0 \
+        -serial file:"$OUTPUT_DIR/serial.txt" &
+    local QEMU_PID=$!
+{ 7.80 23.88 18.27 }
+{ 3.63 15.93 15.96 }

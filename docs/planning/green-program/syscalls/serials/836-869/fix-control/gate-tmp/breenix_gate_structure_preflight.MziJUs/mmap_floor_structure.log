@@ -1,0 +1,16 @@
+== compiling mmap_floor_structure ==
+== running mmap_floor_structure  ==
+
+running 9 tests
+test a_reintroduced_literal_seed_reddens_the_census ... ok
+test a_deleted_floor_check_reddens_the_census ... ok
+test a_reintroduced_literal_floor_reddens_the_census ... ok
+test comments_and_strings_do_not_feed_the_census ... ok
+test reflowing_or_renaming_a_site_does_not_redden_the_census ... ok
+test no_producer_file_hardcodes_the_stale_mmap_floor_literal ... ok
+test mmap_floor_producers_match_the_pinned_census ... ok
+test mmap_hint_seed_sites_match_the_pinned_census ... ok
+test neither_census_is_empty ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

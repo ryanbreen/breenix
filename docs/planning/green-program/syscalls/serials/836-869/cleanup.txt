@@ -1,0 +1,3 @@
+Post-gate process census: no QEMU command belonging to this worktree remained.
+Both loaded-leg sets of 36 recorded burners were killed/waited by the harness immediately after their gate returned; checked absent then.
+Other worktree processes and pre-existing shared stashes were left untouched. No stash was created in this task.

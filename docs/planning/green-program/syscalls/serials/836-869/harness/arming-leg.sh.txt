@@ -1,0 +1,46 @@
+#!/bin/bash
+set -u
+set -o pipefail
+export TMPDIR="$PWD/.tmp"
+export BREENIX_GATE_TMP="$PWD/.gate-tmp"
+export BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library
+label="$1"
+burners="$2"
+out="$PWD/docs/planning/green-program/syscalls/serials/836-869/$label"
+mkdir -p "$out"
+pids=()
+cleanup_burners() {
+    for n in ${pids[@]+"${pids[@]}"}; do kill "$n" 2>/dev/null || true; done
+    for n in ${pids[@]+"${pids[@]}"}; do wait "$n" 2>/dev/null || true; done
+}
+trap cleanup_burners EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+{
+    git rev-parse HEAD
+    git diff --stat
+    uname -a
+    sw_vers
+    sysctl -n hw.ncpu
+    command -v qemu-system-aarch64
+    qemu-system-aarch64 --version
+    printf 'cpu_burners=%s\n' "$burners"
+    shasum -a 256 target/aarch64-breenix-kernel/release/kernel-aarch64
+    sed -n '915,927p' docker/qemu/run-aarch64-boot-test-strict.sh
+} > "$out/provenance.txt"
+for ((n=0; n<burners; n++)); do
+    yes > /dev/null &
+    pids+=("$!")
+done
+printf '%s\n' ${pids[@]+"${pids[@]}"} > "$out/burner-pids.txt"
+sleep 10
+sysctl -n vm.loadavg >> "$out/provenance.txt"
+export BREENIX_GATE_TMP="$PWD/.gate-tmp/$label"
+mkdir -p "$BREENIX_GATE_TMP"
+./docker/qemu/run-aarch64-boot-test-strict.sh 10 2>&1 | tee "$out/strict.log"
+rc=${PIPESTATUS[0]}
+cleanup_burners
+printf '%s\n' "$rc" > "$out/strict.exit"
+sysctl -n vm.loadavg >> "$out/provenance.txt"
+python3 .tmp/preserve-gate.py "$BREENIX_GATE_TMP" "$out/gate-tmp"
+exit "$rc"

@@ -1,0 +1,15 @@
+docs(boot-tests): preserve oracle pinning evidence and limitations
+
+Record the per-arm source analysis, ten mutation witnesses, induced same-CPU
+observation and the four fixed ten-boot comparisons for #836 and #869.
+Baseline control/load each pass 10/10, leaving the requested natural-red
+comparison inconclusive. Natural #869 attribution remains unresolved.
+Document IRQ parity hardening and its retry-placement limitation.
+
+Preserve acceptance serials, gate classifications, accelerator/build
+provenance and the authorized pre-existing #559 toolchain warning receipt.
+The fcntl marker fields and PASS/FAIL scorer contract are unchanged; no
+fixtures require re-recording.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>
