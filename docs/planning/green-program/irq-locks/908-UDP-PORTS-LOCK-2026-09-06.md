@@ -528,3 +528,100 @@ word, tripping the rule again. Each flagged sentence lacked a nearby N-of-M
 count or resolving citation to discharge it and was reworded to drop the
 flagged word rather than annotated with a lint exemption. Lint criteria
 were not changed.
+
+## Landing (2026-09-07)
+
+`git fetch origin && git merge origin/main --no-edit` merged `origin/main`
+at `383d3ea5` (PR #914, `usb/482-xhci-arm-before-kick`) into this branch as
+merge commit `15f11ab06`. `git status --short` reported no unmerged paths
+after the merge, and no file under `kernel/` shows a 3-way conflict marker
+in the merged tree. `git diff --stat 19d13f0ee64a 383d3ea5 -- docker/
+scripts/ tests/fixtures/ tests/*.rs kernel/` restricted to the real base-vs-
+incoming comparison (not the earlier, misleading branch-vs-branch one) shows
+4 files: `kernel/src/drivers/usb/xhci.rs`, `scripts/parallels/launcher-
+smoke.sh`, and 2 new structure test files
+(`tests/launcher_smoke_xhci_evidence_structure.rs`,
+`tests/xhci_wait_irq_order_structure.rs`). `docker/qemu/`'s gate scripts,
+`tests/fixtures/`, and the `score_serial`/`require_boot_tests_kernel`
+scorer logic are outside that 4-file list — they did not change on
+`origin/main` since this branch's base — so R182 does not fire; no fixture
+was re-recorded.
+
+`bash scripts/run-structure-tests.sh` (default, `teardown_structure`) exited
+0 with 92/92 tests, both before the aarch64 rebuild and again independently
+via the strict gate's own preflight below.
+
+The aarch64 rebuild used `TMPDIR="$PWD/.tmp"`,
+`BREENIX_GATE_TMP="$PWD/.gate-tmp"`, and
+`BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library`:
+
+```bash
+cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+```
+
+It exited 0 with 0 compiler warnings/errors apart from the same documented
+upstream `core` future-incompatibility notice as the earlier build. Output:
+[10-landing-a64-build.txt](serials/908/10-landing-a64-build.txt).
+
+`bash docker/qemu/run-aarch64-boot-test-strict.sh 1` exited 0 with
+`[GATE_PREFLIGHT:structure_suites=58/58:critical_path_lines=260:pinned=120]`
+(58, not the earlier round's 56, because the merge added the 2 `usb/482`
+structure suites) and `PASS: 1/1 boots succeeded`. The fresh serial's
+registry marker:
+
+```text
+[UDP_PORTS_LOCK_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:driver_cpu=3:irqs_enabled_before=1:masked_in_hold=1:sends=21:hold_us=12009:refused=7:delivered=14:stalled=0:hold_done=1:joined=1:PASS]
+```
+
+`masked_in_hold=1`, a nonzero refusal count, and no stall, matching the
+earlier green evidence's shape. Gate output:
+[10b-landing-a64-strict-gate.txt](serials/908/10b-landing-a64-strict-gate.txt).
+Serial:
+[10c-landing-a64-strict-serial.txt](serials/908/10c-landing-a64-strict-serial.txt).
+Structure-suite default-runner output:
+[10d-landing-structure-default.txt](serials/908/10d-landing-structure-default.txt).
+
+On beast, `ssh beast` then `sudo -n incus exec breenix-x86 -- ...` reached
+the existing `/root/breenix-908` clone (made in an earlier round of this
+same lane). `git fetch origin net/908-udp-ports-lock && git checkout
+net/908-udp-ports-lock && git reset --hard origin/net/908-udp-ports-lock`
+brought it to `15f11ab06`, matching this worktree exactly. The `rust-fork`
+symlink (`/root/breenix/rust-fork-real`) and the copied userspace ELFs and
+`fonts/` directory, made in that earlier round, were already in place.
+With `BREENIX_GATE_TMP=/root/breenix-908-tmp` and
+`TMPDIR=/root/breenix-908-tmp`, `bash docker/qemu/run-x86-boot-tests.sh 1`
+was launched under `setsid nohup ... & disown` and polled via its log file
+rather than waited on inline, sharing the VM with an unrelated lane's own
+concurrent x86 gate run (`/root/breenix-855`, left untouched). It ran to
+completion: `x86 frame-custody gate run 1: PASS`, ending in the same
+`[CAPTURE_DRAIN...]`/`[CAPTURE_DRAIN_EVENTS...]` pair the earlier round's
+own x86 evidence file ends in. Fetching the log through `ssh beast 'sudo -n
+incus exec ... -- cat ...'` appended 77 bytes of trailing terminal
+mode-reset escape codes (`incus exec`'s own pty teardown sequence, not
+kernel output); those bytes were stripped from the preserved copy before
+committing it, and `diff <(tail -3 06-x86-boot-tests-gate.txt) <(tail -3
+10e-landing-x86-boot-tests-gate.txt)` then exits 0 — the two runs' final 3
+structural lines (a static `PASS` line and 2 static `CAPTURE_DRAIN*` lines
+with no per-run numbers in them) are byte-for-byte identical; the rest of
+each file differs, as two independent boots' numeric fields should.
+`grep -c FAIL` on the cleaned log matches exactly 1 line,
+`EXEC_FAILED_RELEASE_PROD`'s own literal marker name, not a failure report.
+The registry marker:
+
+```text
+[UDP_PORTS_LOCK_ORACLE:x86:arm=none:reason=uniprocessor_no_udp_ports_contention_peer:online_cpus=1:SKIP]
+```
+
+matching the earlier round's x86 SKIP reasoning (`-smp 1`, no second CPU for
+this contention experiment). Output, fetched from the VM and preserved with
+only the pty-teardown bytes above removed:
+[10e-landing-x86-boot-tests-gate.txt](serials/908/10e-landing-x86-boot-tests-gate.txt).
+
+Claim discipline for landing: `python3 scripts/claim-lint.py` was run after
+each of these steps; the tree is clean at HEAD (35 file(s) checked before
+the merge, changed hunks vs `19d13f0ee64a`; 38 file(s) after, changed hunks
+vs `383d3ea52008` once the merge moved the comparison base). One
+intermediate run over this section's own merge paragraph flagged an
+unquantified absolute and was reworded to a positive statement about which
+4 files did change, discharging via that count rather than a lint
+exemption.
