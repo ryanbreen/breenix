@@ -1,0 +1,11 @@
+== compiling dispatch_path_lock_free_structure ==
+== running dispatch_path_lock_free_structure  ==
+
+running 4 tests
+test switch_to_kernel_page_table_takes_no_lock ... ok
+test setup_kernel_thread_return_allocates_nothing ... ok
+test the_kernel_page_table_readers_go_through_the_accessor ... ok
+test master_kernel_pml4_is_read_without_a_lock ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

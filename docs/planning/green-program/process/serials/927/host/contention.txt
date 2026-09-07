@@ -1,0 +1,18 @@
+REVISION=e8e16061d2aa3f483643fc036ce15d2033b8740e
+Mon Sep  7 15:42:02 UTC 2026
+ 15:42:02 up 25 days, 21:57,  0 user,  load average: 5.04, 11.26, 7.34
+ 385094       00:16 00:00:00  0.0 bash            bash -lc cd /root/breenix-588 && export TMPDIR=/root/breenix-588-tmp BREENIX_GATE_TMP=/root/breenix-588-tmp && setsid nohup cargo test --release --test context_restore_structure > /root/breenix-588-tmp/context-
+ 385095       00:16 00:00:00  3.0 cargo           /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/bin/cargo test --release --test context_restore_structure
+ 385678       00:00 00:00:00 57.7 rustc           /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/bin/rustc --crate-name kernel --edition=2021 kernel/src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat
+ 385701       00:00 00:00:00  0.0 grep            grep -E context_restore|rustc|qemu-system
+test userspace_resume_pc_predicate_stays_outside_the_kernel_text_window ... ok
+test user_rsp_scratch_kernel_stack_installs_follow_the_pending_exception_level ... ok
+test work_stealing_declines_a_thread_pinned_to_another_cpus_stack ... ok
+test userspace_resume_pc_producers_refuse_before_publishing_frame_elr ... ok
+test clone_publication_lifecycle_is_closed ... ok
+test fatal_exception_reports_never_take_blocking_scheduler_accessors has been running for over 60 seconds
+test fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site has been running for over 60 seconds
+test fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee has been running for over 60 seconds
+test fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee has been running for over 60 seconds
+test fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation has been running for over 60 seconds
+1

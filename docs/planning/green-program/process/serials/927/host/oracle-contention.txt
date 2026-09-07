@@ -1,0 +1,16 @@
+REVISION=c5b5d0dc026044005e025e549fc121779e5b165f
+Mon Sep  7 17:06:14 UTC 2026
+ 17:06:14 up 25 days, 23:21,  0 user,  load average: 9.69, 14.69, 10.02
+ 564355       01:11 00:00:00 bash            /bin/bash -c                  stem="$1"                 if timeout "$GSP_TIMEOUT" bash "$GSP_RUNNER" "$stem" >"$GSP_LOG_DIR/$stem.log" 2>&1; then                     echo 0 >"$GSP_LOG_DIR/$stem.status"    
+ 564356       01:11 00:00:00 timeout         timeout 300 bash /root/breenix-3f2/scripts/run-structure-tests.sh context_restore_structure
+ 564357       01:11 00:00:00 bash            bash /root/breenix-3f2/scripts/run-structure-tests.sh context_restore_structure
+ 564552       01:08 00:05:24 context_restore /root/breenix-3f2-tmp/breenix_gate_structure_preflight.3GNVmS/breenix-structure-tests/context_restore_structure
+ 570486       00:00 00:00:00 grep            grep -E context_restore|rustc|qemu-system
+test work_stealing_declines_a_thread_pinned_to_another_cpus_stack ... ok
+test clone_publication_lifecycle_is_closed ... ok
+test userspace_resume_pc_producers_refuse_before_publishing_frame_elr ... ok
+test fatal_exception_reports_never_take_blocking_scheduler_accessors has been running for over 60 seconds
+test fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site has been running for over 60 seconds
+test fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee has been running for over 60 seconds
+test fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee has been running for over 60 seconds
+test fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation has been running for over 60 seconds

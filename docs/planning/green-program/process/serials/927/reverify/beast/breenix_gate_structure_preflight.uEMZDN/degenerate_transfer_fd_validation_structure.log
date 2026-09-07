@@ -1,0 +1,12 @@
+== compiling degenerate_transfer_fd_validation_structure ==
+== running degenerate_transfer_fd_validation_structure  ==
+
+running 5 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test the_guard_validator_rejects_the_pre_fix_shape ... ok
+test the_validator_reports_ebadf_from_the_descriptor_table ... ok
+test the_degenerate_transfer_census_is_not_vacuous ... ok
+test every_degenerate_transfer_guard_validates_the_descriptor_first ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

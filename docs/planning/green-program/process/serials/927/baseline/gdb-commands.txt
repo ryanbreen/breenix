@@ -1,0 +1,35 @@
+set pagination off
+set confirm off
+set language c
+file /root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845
+add-symbol-file /root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845 -o 0x10000000000
+target remote 127.0.0.1:1927
+hbreak *0x100001c85d0
+continue
+printf "PAIRING ENTRY\n"
+x/gd 0x100003f2440
+x/gd 0x100003e2dc0
+x/gd 0x100004a8e70
+delete 1
+set $fork_hits = 0
+hbreak *0x100002402c0
+continue
+set $fork_hits = $fork_hits + 1
+printf "PAIRING FORK HIT=%d; zero-based iteration=%d\n", $fork_hits, $fork_hits-1
+set $result = $rdi
+set $return = *(unsigned long long*)$rsp
+info registers rdi rsi rdx rsp rip
+bt 5
+x/gd 0x100003f2440
+x/gd 0x100003e2dc0
+x/gd 0x100004a8e70
+tbreak *$return
+continue
+printf "FORK RETURN RESULT (Rust Result discriminant, string pointer, string length)\n"
+x/3gx $result
+x/s *(unsigned long long*)($result+8)
+x/gd 0x100003f2440
+x/gd 0x100003e2dc0
+x/gd 0x100004a8e70
+detach
+quit

@@ -1,0 +1,5 @@
+REVISION=800b2ba159beb211655324b709c239c2dbbf7615
+   Compiling kernel v0.1.0 (/root/breenix-x927b/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-x927b)
+    Finished `release` profile [optimized] target(s) in 16.56s
+COMMAND_EXIT=0
