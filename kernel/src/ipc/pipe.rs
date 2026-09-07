@@ -18,16 +18,34 @@ pub enum WriteAttempt {
     BrokenPipe,
 }
 
-/// Owned close notifications. Deliver only after all PM/object guards drop.
-#[must_use = "close notifications must be delivered outside PM/object guards"]
+/// Owned close notifications. Deliver via `deliver()` after all PM/object
+/// guards drop, or via `deliver_deferred()` when the caller cannot drop its
+/// PM guard first (P-2/#919; see `Process::close_all_fds()`).
+#[must_use = "close notifications must be delivered via deliver() or deliver_deferred()"]
 pub struct CloseNotifications {
     writers: Option<Arc<WaitQueueHead>>,
 }
 
 impl CloseNotifications {
+    /// Deliver an immediate wake. The caller must have already released the
+    /// buffer's own lock (true by construction: `close_read()`/`close_write()`
+    /// return an owned value, not a borrow) and must not be holding
+    /// PROCESS_MANAGER, since this can acquire the scheduler lock directly
+    /// (Level 1 under Level 2 is a lock-order violation; see `scheduler.rs`).
     pub fn deliver(self) {
         if let Some(queue) = self.writers {
             queue.wake_up();
+        }
+    }
+
+    /// Deliver a wake from a context that still holds PROCESS_MANAGER (or any
+    /// other lock that must not nest under SCHEDULER). Routes through the
+    /// lock-free ISR wake buffer instead of acquiring the scheduler lock
+    /// inline in the common case (the buffer's own full-buffer fallback can
+    /// still take it); see `WaitQueueHead::wake_up_deferred()`.
+    pub fn deliver_deferred(self) {
+        if let Some(queue) = self.writers {
+            queue.wake_up_deferred();
         }
     }
 }

@@ -402,23 +402,80 @@ fn close_call_census_requires_delivery_or_the_documented_fault_carveout() {
             }
         }
     }
-    fn scan(nodes: &[Node], carveout: bool, ordinary: &mut usize, discarded: &mut usize) {
+    // P-2/#919: close_all_fds() runs under caller-owned PM (Process::terminate()'s
+    // 4 identified callers hold it -- see Process::close_all_fds()'s own
+    // comment), so it cannot use the ordinary deliver() path -- that risks
+    // acquiring SCHEDULER (Level 1) while PM (Level 2) is held. The carveout
+    // now splits by which half of a pipe/FIFO end closed:
+    //   - close_write(): its single return expression is the field literal
+    //     `CloseNotifications { writers: None }`, not a computed decision --
+    //     see close_write()'s own source, checked directly by
+    //     new_writer_close_notifications_are_owned_and_deferred's close_write
+    //     inline-wake-free assertion above -- so discarding it is a
+    //     documented no-op, not a lost wake. Stays a fault discard.
+    //     claim-lint:ok: kernel/src/ipc/pipe.rs's close_write() function body,
+    //     read directly -- one return statement, the field literal shown.
+    //   - close_read(): the 1-to-0 transition IS a real new-writer-close
+    //     notification (P-2's defect). It must now deliver, via the PM-safe
+    //     deliver_deferred() path (lock-free ISR wake buffer, not the
+    //     scheduler lock inline), not the ordinary deliver().
+    fn scan(
+        nodes: &[Node],
+        carveout: bool,
+        ordinary: &mut usize,
+        discarded: &mut usize,
+        deferred: &mut usize,
+    ) {
         let statements: Vec<_> = nodes.split(|n| n.token() == ";").collect();
         for (index, stmt) in statements.iter().enumerate() {
-            let direct_close = stmt.windows(3).any(|w| {
-                w[0].token() == "."
+            let direct_close = stmt.windows(3).find_map(|w| {
+                if w[0].token() == "."
                     && ["close_read", "close_write"].contains(&w[1].token())
                     && w[2].group('(').is_some()
+                {
+                    Some(w[1].token())
+                } else {
+                    None
+                }
             });
-            if !direct_close {
+            let Some(kind) = direct_close else {
                 continue;
-            }
-            if carveout {
+            };
+            if carveout && kind == "close_write" {
                 assert!(
                     contains(stmt, "let_should_notify=buffer.lock().close_"),
                     "fault discard must be explicit"
                 );
                 *discarded += 1;
+            } else if carveout && kind == "close_read" {
+                assert_eq!(
+                    stmt.first().map(Node::token),
+                    Some("let"),
+                    "PM-held read close result needs an owned local"
+                );
+                let binding = stmt[1].token();
+                assert!(
+                    !binding.starts_with('_'),
+                    "close_read under PM cannot discard its notification (P-2/#919)"
+                );
+                assert!(
+                    statements.get(index + 1).is_some_and(|s| contains(
+                        s,
+                        &format!("{binding}.deliver_deferred()")
+                    )),
+                    "notification must deliver_deferred() after close statement drops temporary guard"
+                );
+                assert!(
+                    !contains(stmt, ".deliver_deferred()"),
+                    "chained deliver_deferred would retain temporary buffer guard"
+                );
+                assert!(
+                    !statements
+                        .get(index + 1)
+                        .is_some_and(|s| contains(s, &format!("{binding}.deliver()"))),
+                    "PM-held close must use deliver_deferred(), not deliver() (lock order)"
+                );
+                *deferred += 1;
             } else {
                 *ordinary += 1;
                 if contains(stmt, ".lock()") {
@@ -449,7 +506,7 @@ fn close_call_census_requires_delivery_or_the_documented_fault_carveout() {
         }
         for node in nodes {
             if let Node::Group(_, body) = node {
-                scan(body, carveout, ordinary, discarded);
+                scan(body, carveout, ordinary, discarded, deferred);
             }
         }
     }
@@ -458,6 +515,7 @@ fn close_call_census_requires_delivery_or_the_documented_fault_carveout() {
     files(&root.join("kernel/src"), &mut paths);
     let mut ordinary = 0;
     let mut discarded = 0;
+    let mut deferred = 0;
     for path in paths {
         let source = std::fs::read_to_string(&path).unwrap();
         let is_process = path.ends_with("process/process.rs");
@@ -465,21 +523,88 @@ fn close_call_census_requires_delivery_or_the_documented_fault_carveout() {
         all_function_bodies(&lex(&source), &mut funcs);
         for (name, body) in funcs {
             let exception = is_process && name == "close_all_fds";
-            scan(&body, exception, &mut ordinary, &mut discarded);
+            scan(&body, exception, &mut ordinary, &mut discarded, &mut deferred);
         }
         if is_process {
-            assert_eq!(
-                source
-                    .matches("cannot safely deliver under fault-caller PM; see #919")
-                    .count(),
-                8
-            );
+            assert_eq!(source.matches("#919/P-2").count(), 8);
         }
     }
     assert!(ordinary >= 12, "ordinary close census went blind");
     assert_eq!(
-        discarded, 8,
-        "carveout restricted to four inline arms on each architecture"
+        discarded, 4,
+        "close_write carveout restricted to two inline arms on each architecture"
+    );
+    assert_eq!(
+        deferred, 4,
+        "close_read PM-safe delivery restricted to two inline arms on each architecture"
+    );
+}
+
+/// P-2/#919's fix depends on one safety property: the deferred delivery path
+/// close_all_fds() now uses is not supposed to acquire the scheduler lock
+/// inline, because close_all_fds() runs under caller-owned PROCESS_MANAGER
+/// and scheduler.rs's "Lock Ordering Discipline" note forbids acquiring
+/// SCHEDULER (Level 1) while holding PROCESS_MANAGER (Level 2). This checks
+/// the mechanism itself, independent of the census above, and the three
+/// mutations below (`deferred_delivery_never_touches_the_scheduler_lock`)
+/// redden it: wake_up_deferred()'s wake call is the lock-free
+/// isr_unblock_for_io() buffer, and deliver_deferred() routes to it rather
+/// than the ordinary, scheduler-lock-acquiring wake_up().
+fn deferred_delivery_uses_lock_free_wake(waitqueue: &str, pipe: &str) -> Result<(), &'static str> {
+    let body = compact(&function(waitqueue, "wake_up_deferred"));
+    if !body.contains("isr_unblock_for_io(waiter.tid())") {
+        return Err("missing lock-free wake");
+    }
+    if body.contains("wake_waitqueue_thread") || body.contains("with_scheduler") || body.contains("wake_waiter(")
+    {
+        return Err("touches the scheduler lock");
+    }
+    if !contains(&function(pipe, "deliver_deferred"), "queue.wake_up_deferred()") {
+        return Err("deliver_deferred does not route to the deferred wake");
+    }
+    if contains(&function(pipe, "deliver_deferred"), "queue.wake_up()") {
+        return Err("deliver_deferred falls back to the scheduler-lock wake");
+    }
+    Ok(())
+}
+
+#[test]
+fn deferred_delivery_never_touches_the_scheduler_lock() {
+    let waitqueue = read("kernel/src/task/waitqueue.rs");
+    let pipe = read("kernel/src/ipc/pipe.rs");
+    deferred_delivery_uses_lock_free_wake(&waitqueue, &pipe).unwrap();
+
+    let mutated_pipe = pipe.replace("queue.wake_up_deferred();", "queue.wake_up();");
+    assert_ne!(mutated_pipe, pipe, "mutation must change a real call site");
+    assert_eq!(
+        deferred_delivery_uses_lock_free_wake(&waitqueue, &mutated_pipe),
+        Err("deliver_deferred does not route to the deferred wake")
+    );
+
+    // A partial regression that keeps the lock-free wake but ALSO reaches the
+    // scheduler lock (e.g. a stray direct wake alongside the buffered one)
+    // must be caught too, not just an outright replacement.
+    let mutated_wq = waitqueue.replace(
+        "crate::task::scheduler::isr_unblock_for_io(waiter.tid());",
+        "crate::task::scheduler::isr_unblock_for_io(waiter.tid());\
+                crate::task::scheduler::wake_waitqueue_thread(waiter.tid());",
+    );
+    assert_ne!(mutated_wq, waitqueue, "mutation must change a real call site");
+    assert_eq!(
+        deferred_delivery_uses_lock_free_wake(&mutated_wq, &pipe),
+        Err("touches the scheduler lock")
+    );
+
+    // Deleting the lock-free wake outright (leaving the loop body empty of any
+    // wake call) must also be caught.
+    let dropped_wq = waitqueue.replace(
+        "crate::task::scheduler::isr_unblock_for_io(waiter.tid());",
+        "",
+    );
+    assert_ne!(dropped_wq, waitqueue, "mutation must change a real call site");
+    assert_eq!(
+        deferred_delivery_uses_lock_free_wake(&dropped_wq, &pipe),
+        Err("missing lock-free wake")
     );
 }
 
