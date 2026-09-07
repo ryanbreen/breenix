@@ -240,3 +240,70 @@ anything this branch changes; both are green on the Mac at these bytes in the
 * This round does not change the `GuardedStack::drop` leak (issue 583) or the
   x86 user-stack VA bump-allocator exhaustion noted in the manager comments.
 * The aarch64 evidence is QEMU only. No Parallels boot was run in this round.
+
+## Fix pass 2026-09-07: E-4, E-9, E-10
+
+A review pass filed three findings against 66ef1730..79755f9d. Each of the
+three is closed on this branch, with its own test, on commit d6cef3cd.
+claim-lint:ok: #588; tests/teardown_structure.rs
+
+* **E-4** (minor, `tests/teardown_structure.rs:17210`): `validate_unpublished_construction_ownership`
+  checked the carrier span (construction to publish) and the guard span
+  (guard to insert) for a fallible step, but left the gap from `publishes[0]`
+  to `guards[0]` uninspected -- the exact window the module doc
+  (`kernel/src/process/unpublished.rs:11`) and the commit message both claim
+  is free of one. A `?` inserted between `page_table.publish()` and
+  `UnpublishedProcess::new(` would have reopened issue 588 with the ratchet
+  green. Fixed by adding a check requiring the span carry no `)?`
+  occurrences. claim-lint:ok: #588; tests/teardown_structure.rs
+  Test: `fallible_process_construction_holds_unpublished_ownership`
+  gained a fourth mutation leg -- `record_publish_watermark(pid)?;` inserted
+  right after the first builder's `page_table.publish()` call -- which now
+  fails with `build_process_at has a fallible step between the publish and
+  the construction guard`.
+
+* **E-9** (nit, `tests/teardown_structure.rs:17153`): the census-failure
+  message read "process-builder census resolved fewer than four
+  image-loading row builders", but the predicate is `builders.len() == 4`, so
+  a fifth builder would also fail while the message named the wrong
+  direction. Reworded to "process-builder census did not resolve exactly
+  four image-loading row builders". Test:
+  `process_builder_census_message_does_not_claim_fewer_when_over_four` builds
+  a 5-builder fixture module and asserts the corrected message is present
+  and the phrase "fewer than four" is absent from the failure list.
+
+* **E-10** (nit, `kernel/src/memory/process_memory.rs:245`): `from_box`
+  (added in 66ef1730) left a doubled blank line above its doc comment and no
+  blank line between its closing brace and `publish`. Fixed to match the
+  surrounding item spacing. Test:
+  `unpublished_page_table_from_box_uses_single_blank_line_separators` pins
+  both gaps at exactly one blank line and rejects both the doubled and the
+  missing-blank-line shapes.
+
+### Gates (fix pass)
+
+| gate | bytes | result |
+| --- | --- | --- |
+| scripts/run-structure-tests.sh, each of the 62 tests/*_structure.rs files | d6cef3cd, Mac | 62/62 suites pass; teardown_structure.rs 97/97 tests (was 95/95 before this pass) |
+| docker/qemu/run-aarch64-boot-test-strict.sh 1 | d6cef3cd, Mac | PASS 1/1 |
+| docker/qemu/run-x86-boot-tests.sh 1 | d6cef3cd, beast /root/breenix-588 | structure preflight 62/62, `x86 frame-custody gate run 1: PASS`, `INIT_DESIGNATION_ORACLE` counters match the prior round's run unchanged (construct_failed=2, construct_roots_retired=2, construct_residual=0) |
+
+New serials under `docs/planning/green-program/process/serials/588/`:
+`green-aarch64-strict-fixpass-boot1.txt`, `green-x86-fixpass-gate-run1.txt`,
+`green-x86-fixpass-serial-user1.txt`.
+
+### Claim-lint (fix pass)
+
+    claim-lint: python3 scripts/claim-lint.py                          -> exit 0
+    claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/msg-code.txt -> exit 0
+    claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/msg-docs.txt -> exit 0
+
+### Not claimed (fix pass)
+
+* The x86 gate ran once (N=1) at this pass's bytes, on a container shared
+  with other lanes; the round's earlier x86 evidence (4 attempts, 1 pass, 2
+  preflight reds attributed to host load, 1 pre-existing #891 hit) is not
+  repeated here and still stands as the multi-attempt record for these
+  bytes' behavior under load.
+* No Parallels boot was run for this pass; the round's aarch64 evidence
+  beyond the 1 strict boot above is unchanged from the prior section.
