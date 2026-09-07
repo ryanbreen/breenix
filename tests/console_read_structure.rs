@@ -54,6 +54,23 @@ fn device_modes_poll_and_non_sleeping_device_api() {
             .count(),
         2
     );
+    let opens = f
+        .split("fnhandle_devfs_open(")
+        .nth(1)
+        .unwrap()
+        .split("fnhandle_devpts_open(")
+        .next()
+        .unwrap();
+    assert_eq!(
+        opens
+            .matches("flags&crate::ipc::fd::status_flags::O_NONBLOCK")
+            .count(),
+        3
+    );
+    assert_eq!(
+        opens.matches("fd_table.alloc_with_entry(fd_kind)").count(),
+        2
+    );
     let p = compact(&read("kernel/src/ipc/poll.rs"));
     assert!(p.contains("(events&events::POLLIN)!=0&&crate::ipc::stdin::has_data()"));
     let d = compact(&read("kernel/src/fs/devfs/mod.rs"));

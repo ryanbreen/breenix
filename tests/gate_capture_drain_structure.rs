@@ -391,6 +391,9 @@ fn drain_disabled_reads_partial_drain_enabled_reads_complete_same_race() {
 
     // The delayed cases also cover a caller descheduled beyond the old 150ms
     // appender deadline. Both legs retain the same producer protocol.
+    // File rendezvous avoids a macOS FIFO-open hang after the peer exits;
+    // readiness still controls insertion, and completion is acknowledged.
+    // The bounded waits fail setup instead of hanging a preflight worker.
     for (case, disabled, startup_delay, expected) in [
         ("disabled", "1", "0", "partial"),
         ("enabled", "0", "0", "complete"),
@@ -402,16 +405,23 @@ fn drain_disabled_reads_partial_drain_enabled_reads_complete_same_race() {
         let done = dir.join(format!("{case}.done"));
         fs::write(&serial, begin).unwrap();
         let script = format!(
-            r#"mkfifo '{ready}' '{done}'
-( read -r token < '{ready}'; printf '%s' '{rest}' >> '{serial}'; printf 'done\n' > '{done}' ) &
+            r#"wait_for_file() {{
+    local attempts=0
+    while [ ! -f "$1" ]; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -le 1000 ] || return 1
+        command sleep 0.01
+    done
+}}
+( wait_for_file '{ready}'; printf '%s' '{rest}' >> '{serial}'; touch '{done}' ) &
 writer=$!
 trap 'kill "$writer" 2>/dev/null || true' EXIT
 released=0
 release_writer() {{
     if [ "$released" = 0 ]; then
         released=1
-        printf 'go\n' > '{ready}'
-        read -r token < '{done}'
+        touch '{ready}'
+        wait_for_file '{done}'
     fi
 }}
 sleep() {{
