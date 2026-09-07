@@ -1848,6 +1848,58 @@ fn test_ring_span_report() -> TestResult {
     TestResult::Pass
 }
 
+/// Same shape as `RING_SPAN_READY_TIMEOUT_MS` above (#855's oracle fires at
+/// the 3000 ms checkpoint, later than `RING_SPAN`'s 1000 ms one, so this
+/// timeout is 4000 ms rather than 3x-ing 3000 ms into an over-long wait).
+#[cfg(all(feature = "capture_selftest", target_arch = "aarch64"))]
+const RING_SPAN_UNFILTERED_READY_TIMEOUT_MS: u64 = 4_000;
+
+#[cfg(all(feature = "capture_selftest", target_arch = "aarch64"))]
+fn wait_for_ring_span_unfiltered_ready(timeout_ms: u64) -> bool {
+    use crate::tracing::providers::irq::unfiltered_ring_span_self_check;
+
+    if unfiltered_ring_span_self_check::is_ready() {
+        return true;
+    }
+    if !crate::arch_interrupts_enabled() {
+        return false;
+    }
+    let deadline = crate::time::get_monotonic_time().saturating_add(timeout_ms);
+    while crate::time::get_monotonic_time() < deadline {
+        if unfiltered_ring_span_self_check::is_ready() {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    unfiltered_ring_span_self_check::is_ready()
+}
+
+/// Print site for #855's `[RING_SPAN_UNFILTERED:...]` marker, from thread
+/// context, through the locked serial writer -- same reasoning as
+/// `test_ring_span_report` above (#847 ruling R188): the measurement is
+/// taken in the tick, the PRINT happens here so it serializes against other
+/// CPUs' serial lines instead of racing them on the shared UART.
+#[cfg(all(feature = "capture_selftest", target_arch = "aarch64"))]
+fn test_ring_span_unfiltered_report() -> TestResult {
+    use crate::tracing::providers::irq::unfiltered_ring_span_self_check;
+
+    if !wait_for_ring_span_unfiltered_ready(RING_SPAN_UNFILTERED_READY_TIMEOUT_MS) {
+        return TestResult::Fail("unfiltered ring-span self-check did not publish before its deadline");
+    }
+
+    if let Some(report) = unfiltered_ring_span_self_check::claim() {
+        crate::serial_println!(
+            "[RING_SPAN_UNFILTERED:cpu={}:span_ms={}:writes={}:dropped={}]",
+            report.cpu,
+            report.span_ms,
+            report.writes,
+            report.dropped
+        );
+    }
+
+    TestResult::Pass
+}
+
 /// The `ring_span_report` test's x86 call site.
 ///
 /// x86 does not dispatch the staged registry executor (that is behind
@@ -9530,6 +9582,14 @@ static TIMER_TESTS: &[TestDef] = &[
         func: test_ring_span_report,
         arch: Arch::Any,
         timeout_ms: 5000,
+        stage: TestStage::EarlyBoot,
+    },
+    #[cfg(all(feature = "capture_selftest", target_arch = "aarch64"))]
+    TestDef {
+        name: "ring_span_unfiltered_report",
+        func: test_ring_span_unfiltered_report,
+        arch: Arch::Aarch64,
+        timeout_ms: 6000,
         stage: TestStage::EarlyBoot,
     },
 ];

@@ -1,0 +1,16 @@
+== compiling ctx_diag_ring_sample_structure ==
+== running ctx_diag_ring_sample_structure  ==
+
+running 9 tests
+test sched_ring_writes_are_sampled ... ok
+test deleting_sched_early_return_would_be_caught - should panic ... ok
+test ctx_ring_writes_are_sampled ... ok
+test deleting_ctx_early_return_would_be_caught - should panic ... ok
+test defer_ring_writes_are_sampled_and_snapshots_unconditional ... ok
+test deleting_defer_sampling_guard_would_be_caught - should panic ... ok
+test sampling_snapshot_stores_would_be_caught - should panic ... ok
+test sample_constant_is_named_and_asserted_power_of_two ... ok
+test sched_sample_constant_is_named_and_asserted_power_of_two ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

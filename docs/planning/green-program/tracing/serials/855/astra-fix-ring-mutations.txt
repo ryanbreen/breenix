@@ -1,0 +1,30 @@
+== compiling ring_span_unfiltered_report_site_structure ==
+== running ring_span_unfiltered_report_site_structure would_be_caught ==
+
+running 5 tests
+
+thread 'moving_the_marker_text_back_into_the_provider_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ring_span_unfiltered_report_site_structure.rs:80:5:
+the irq trace provider must not carry the `[RING_SPAN_UNFILTERED:cpu=...` marker text: the print site belongs in the registry test, which emits it through the locked serial writer (#847)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'reintroducing_a_cross_cpu_read_in_claim_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ring_span_unfiltered_report_site_structure.rs:301:5:
+claim() must not read TRACE_BUFFERS directly: raw ring reads belong in publish_self (T-1, 855)
+test moving_the_marker_text_back_into_the_provider_would_be_caught - should panic ... ok
+test reintroducing_a_cross_cpu_read_in_claim_would_be_caught - should panic ... ok
+
+thread 'moving_the_print_back_into_the_tick_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ring_span_unfiltered_report_site_structure.rs:70:5:
+the unfiltered_ring_span_self_check module must not write to serial: the timer tick reaches it on every tick, and an unlocked multi-byte write there interleaves with other CPUs' serial lines (#847). Publish to an atomic and let the registry test print. Offending line(s): ["            raw_serial_str(\"[RING_SPAN_UNFILTERED:cpu=\");"]
+test moving_the_print_back_into_the_tick_would_be_caught - should panic ... ok
+
+thread 'indexing_by_a_different_variable_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ring_span_unfiltered_report_site_structure.rs:338:5:
+the one TRACE_BUFFERS read must be indexed by `cpu`, not a peer variable
+test indexing_by_a_different_variable_would_be_caught - should panic ... ok
+
+thread 'weakening_the_unfiltered_floor_would_be_caught' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t855/wt/tests/ring_span_unfiltered_report_site_structure.rs:242:5:
+assertion `left == right` failed: unfiltered gate must wire the parsed span_ms to a 1000 ms floor
+  left: "if[\"$KERNEL_HAS_CAPTURE_SELFTEST\"=\"1\"];thenRING_SPAN_UNFILTERED_FLOOR_MS=1ring_span_unfiltered_line=$(grep-aoE'\\[RING_SPAN_UNFILTERED:cpu=[0-9]+:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+\\]'\"$serial_file\"2>/dev/null|tail-1||true)if[-z\"$ring_span_unfiltered_line\"];thenreturn1firing_span_unfiltered_ms=$(echo\"$ring_span_unfiltered_line\"|sed-n's/.*:span_ms=\\([0-9][0-9]*\\):.*/\\1/p')if[-z\"$ring_span_unfiltered_ms\"];thenreturn1fiif[\"$ring_span_unfiltered_ms\"-lt\"$RING_SPAN_UNFILTERED_FLOOR_MS\"];thenreturn1fifi"
+ right: "if[\"$KERNEL_HAS_CAPTURE_SELFTEST\"=\"1\"];thenRING_SPAN_UNFILTERED_FLOOR_MS=1000ring_span_unfiltered_line=$(grep-aoE'\\[RING_SPAN_UNFILTERED:cpu=[0-9]+:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+\\]'\"$serial_file\"2>/dev/null|tail-1||true)if[-z\"$ring_span_unfiltered_line\"];thenreturn1firing_span_unfiltered_ms=$(echo\"$ring_span_unfiltered_line\"|sed-n's/.*:span_ms=\\([0-9][0-9]*\\):.*/\\1/p')if[-z\"$ring_span_unfiltered_ms\"];thenreturn1fiif[\"$ring_span_unfiltered_ms\"-lt\"$RING_SPAN_UNFILTERED_FLOOR_MS\"];thenreturn1fifi"
+test weakening_the_unfiltered_floor_would_be_caught - should panic ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+

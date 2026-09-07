@@ -349,6 +349,8 @@ fi
 # checks are guarded on this being empty; the scoring rules themselves are not
 # guarded at all, which is the point of running them from a test.
 SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
+# Scoring-only mode has no kernel whose feature profile can be inspected.
+KERNEL_HAS_CAPTURE_SELFTEST=0
 
 if [ -z "$SCORE_ONLY_SERIAL" ]; then
 
@@ -427,6 +429,20 @@ require_boot_tests_kernel() {
 }
 
 require_boot_tests_kernel "$KERNEL"
+
+# #855: RING_SPAN measures CPU 0's TIMER_TICK-filtered ring window.
+# RING_SPAN_UNFILTERED measures the unfiltered ring on the nonzero CPU with
+# the highest write_index() at the 3000 ms checkpoint.
+#
+# The latter's publisher and print site are capture_selftest/aarch64-gated.
+# Ordinary boot_tests-only kernels therefore do not emit this marker and
+# must skip the corresponding assertion. Detect the print site's literal
+# in the kernel once, like require_boot_tests_kernel's profile check above,
+# rather than inferring the feature from a potentially missing serial line.
+KERNEL_HAS_CAPTURE_SELFTEST=0
+if grep -aqF '[RING_SPAN_UNFILTERED:cpu=' "$KERNEL" 2>/dev/null; then
+    KERNEL_HAS_CAPTURE_SELFTEST=1
+fi
 
 # Find ext2 disk (required for userspace)
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -788,6 +804,23 @@ score_serial() {
     if [ "$ticks_total" -lt "$((tick_events * RING_SPAN_RATIO_FLOOR))" ]; then
         echo "Ring-span self-check sampling ratio ticks_total=$ticks_total / tick_events=$tick_events below floor $RING_SPAN_RATIO_FLOOR ($ring_span_line)"
         return 1
+    fi
+    if [ "$KERNEL_HAS_CAPTURE_SELFTEST" = "1" ]; then
+        RING_SPAN_UNFILTERED_FLOOR_MS=1000
+        ring_span_unfiltered_line=$(grep -aoE '\[RING_SPAN_UNFILTERED:cpu=[0-9]+:span_ms=[0-9]+:writes=[0-9]+:dropped=[0-9]+\]' "$serial_file" 2>/dev/null | tail -1 || true)
+        if [ -z "$ring_span_unfiltered_line" ]; then
+            echo "Unfiltered ring-span self-check marker missing (kernel built with capture_selftest)"
+            return 1
+        fi
+        ring_span_unfiltered_ms=$(echo "$ring_span_unfiltered_line" | sed -n 's/.*:span_ms=\([0-9][0-9]*\):.*/\1/p')
+        if [ -z "$ring_span_unfiltered_ms" ]; then
+            echo "Unfiltered ring-span self-check span_ms unparsed ($ring_span_unfiltered_line)"
+            return 1
+        fi
+        if [ "$ring_span_unfiltered_ms" -lt "$RING_SPAN_UNFILTERED_FLOOR_MS" ]; then
+            echo "Unfiltered ring-span self-check span_ms=$ring_span_unfiltered_ms below floor $RING_SPAN_UNFILTERED_FLOOR_MS ($ring_span_unfiltered_line)"
+            return 1
+        fi
     fi
     if ! grep -qaE "$PIN_GUARD_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Pin-guard oracle line missing"
