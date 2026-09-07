@@ -420,11 +420,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
-    // Start the one Phase-1 liveness budget after any required high-half
-    // transition but before kernel initialization, SMP release, or boot tests.
+    // Start the initialization watchdog after any required high-half transition
+    // but before kernel initialization or SMP release. This watchdog bounds
+    // pre-test initialization (secondary-CPU bring-up) ONLY; the boot-test phase
+    // has its own separately anchored budget, so a slow initialization can no
+    // longer consume a later gate's promised window.
     // CNTVCT is architectural and readable before timer calibration.
     #[cfg(feature = "boot_tests")]
-    kernel::test_framework::begin_phase_one_liveness_budget(timer::rdtsc_serialized());
+    kernel::test_framework::begin_initialization_watchdog(timer::rdtsc_serialized());
 
     // Zero the .dma section (Non-Cacheable DMA buffer region).
     // This memory is NOLOAD in the ELF, so neither the loader nor boot.S zeroes it.
@@ -1037,10 +1040,16 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;
             #[cfg(not(feature = "boot_tests"))]
             const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 2;
-            // The boot_tests 40s local ceiling and P20's 45s local gate ceiling
-            // are both capped by one 65s clock started near kernel entry:
-            // P17 + P20 <= 65s, and the harness retains 90s - 65s = 25s for
-            // initialization, the other subsystem tests, and script overhead.
+            // The boot_tests 40s local ceiling here is additionally capped by
+            // the initialization watchdog, a 40s clock started near kernel entry
+            // that bounds pre-test initialization only. P20's 45s local gate
+            // ceiling now lives under the separate 60s test-phase budget
+            // anchored at test-phase entry, so this bring-up wait can no longer
+            // consume P20's promised window. The two watchdogs are sequential
+            // rather than shared, and neither is larger than the single 65s
+            // clock they replace.
+            // claim-lint:ok: #522 C5; read back over 3 of 3 strict boots in
+            // docs/planning/green-program/tracing/522-C5-2026-09-07.md.
             // The realistic starved proof remains far inside this backstop:
             // <=10s total, with the longest observed individual wait about 8s.
             #[cfg(feature = "boot_tests")]
@@ -1067,12 +1076,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             let absolute_ceiling_ticks =
                 counter_frequency_hz.saturating_mul(SMP_ONLINE_ABSOLUTE_CEILING_SECONDS);
             #[cfg(feature = "boot_tests")]
-            let phase_one_liveness_started_at =
-                kernel::test_framework::phase_one_liveness_started_at();
+            let initialization_watchdog_started_at =
+                kernel::test_framework::initialization_watchdog_started_at();
             #[cfg(feature = "boot_tests")]
-            let phase_one_liveness_ceiling_ticks = timer::milliseconds_to_ticks(
+            let initialization_watchdog_ceiling_ticks = timer::milliseconds_to_ticks(
                 counter_frequency_hz,
-                kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+                kernel::test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS,
             );
             let breadcrumb_ticks =
                 counter_frequency_hz.saturating_mul(SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS);
@@ -1113,8 +1122,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             // while preserving at least 16 seconds of the strict harness for the
             // rest of boot and final diagnostics. The no-progress window is
             // re-armed only when cpus_online or the sum of secondary bring-up
-            // stages advances. In boot_tests, the shared Phase-1 ceiling can only
-            // shorten the local 40-second ceiling; it cannot re-arm it. With a
+            // stages advances. In boot_tests, the initialization watchdog ceiling
+            // can only shorten the local 40-second ceiling; it cannot re-arm it.
+            // claim-lint:ok: #522 C5; the two budgets are pinned in
+            // tests/teardown_structure.rs and read in
+            // docs/planning/green-program/tracing/522-C5-2026-09-07.md. With a
             // running CNTVCT those ceilings bound the loop; if CNTVCT freezes,
             // the unconditional delta sample bounds it by iterations instead. No
             // IRQ can signal "CPU online" before each CPU wires its GIC, so this
@@ -1139,17 +1151,17 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 }
 
                 #[cfg(feature = "boot_tests")]
-                if let Some(phase_one_started_at) = phase_one_liveness_started_at {
-                    if timer::elapsed_ticks(now, phase_one_started_at)
-                        >= phase_one_liveness_ceiling_ticks
+                if let Some(initialization_started_at) = initialization_watchdog_started_at {
+                    if timer::elapsed_ticks(now, initialization_started_at)
+                        >= initialization_watchdog_ceiling_ticks
                     {
                         let online_at_verdict = kernel::arch_impl::aarch64::smp::cpus_online();
                         if online_at_verdict >= expected {
                             break;
                         }
                         serial_println!(
-                            "[smp] Timeout waiting for CPUs: shared Phase-1 liveness ceiling of {} ms reached ({} online, {} expected)",
-                            kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,
+                            "[smp] Timeout waiting for CPUs: initialization watchdog ceiling of {} ms reached ({} online, {} expected)",
+                            kernel::test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS,
                             online_at_verdict,
                             expected
                         );
@@ -1162,7 +1174,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                         break;
                     }
                     serial_println!(
-                        "[smp] Phase-1 liveness budget anchor unavailable ({} online, {} expected)",
+                        "[smp] initialization watchdog anchor unavailable ({} online, {} expected)",
                         online_at_verdict,
                         expected
                     );

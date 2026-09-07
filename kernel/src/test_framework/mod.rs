@@ -21,37 +21,88 @@
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Shared wall-clock budget for Phase-1 liveness watchdog waits.
+/// Wall-clock budget for the initialization watchdog.
 ///
-/// The external full-test harness allows 90 seconds for Phase 1. Capping the
-/// P17/P20 pre-`[BOOT_TESTS:PASS]` liveness waits at 65 seconds from one early
-/// kernel anchor reserves 90s - 65s = 25s for loader/process overhead,
-/// initialization, and the rest of the boot-test suite.
+/// This watchdog bounds pre-test initialization only -- concretely, the
+/// aarch64 secondary-CPU bring-up wait in `main_aarch64.rs`. It is anchored at
+/// kernel entry. It is deliberately equal to that wait's own `boot_tests`
+/// absolute ceiling (`SMP_ONLINE_ABSOLUTE_CEILING_SECONDS = 40`), so the shared
+/// watchdog is not a tighter bound on bring-up than the local ceiling already
+/// in force, so a live-but-slow CPU is given up on no sooner than before.
+/// claim-lint:ok: #522 C5; the two constants are pinned in
+/// tests/teardown_structure.rs and read in docs/planning/green-program/tracing/522-C5-2026-09-07.md.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub const PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS: u64 = 65_000;
+pub const INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS: u64 = 40_000;
+
+/// Wall-clock budget for the boot-test phase's own liveness watchdog waits.
+///
+/// This budget is anchored at test-phase entry (`run_all_tests`), NOT at kernel
+/// entry, so however long initialization took, the test phase's watchdogs still
+/// get their promised local allowance.
+///
+/// It exceeds the P20 exit-kick gate's own 45-second gate ceiling by fifteen
+/// seconds. That headroom is what makes the gate's local allowance real: the
+/// gate is entered part-way into the test phase, and the measured distance from
+/// test-phase entry to gate entry is about 2.4-2.7 seconds, so the remaining
+/// budget still covers the full 45-second ceiling and a genuine whole-gate
+/// overrun is classified as the gate ceiling rather than pre-empted here.
+///
+/// Neither of the two budgets this pair replaces the previous single 65-second
+/// clock with is larger than that clock. They are sequential rather than
+/// shared: initialization is bounded by its own 40-second watchdog, and the
+/// test phase by this one. In the pathological case where both run to
+/// exhaustion the strict script's own 90-second `timeout` is the outer backstop,
+/// as it already is for any boot whose deliberate test waits run long.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub const TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS: u64 = 60_000;
 
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-static PHASE_ONE_LIVENESS_STARTED_AT: AtomicU64 = AtomicU64::new(0);
+static INITIALIZATION_WATCHDOG_STARTED_AT: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-static PHASE_ONE_LIVENESS_HAS_STARTED: AtomicBool = AtomicBool::new(false);
+static INITIALIZATION_WATCHDOG_HAS_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+static TEST_PHASE_LIVENESS_STARTED_AT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+static TEST_PHASE_LIVENESS_HAS_STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Publish the shared Phase-1 liveness anchor once, on the boot CPU.
+/// Publish the initialization watchdog anchor once, on the boot CPU.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub fn begin_phase_one_liveness_budget(started_at: u64) {
+pub fn begin_initialization_watchdog(started_at: u64) {
     // `kernel_main` calls this once before SMP release, so there is one writer.
     // Keep the separate release flag because CNTVCT may legitimately read zero.
-    if PHASE_ONE_LIVENESS_HAS_STARTED.load(Ordering::Acquire) {
+    if INITIALIZATION_WATCHDOG_HAS_STARTED.load(Ordering::Acquire) {
         return;
     }
-    PHASE_ONE_LIVENESS_STARTED_AT.store(started_at, Ordering::Relaxed);
-    PHASE_ONE_LIVENESS_HAS_STARTED.store(true, Ordering::Release);
+    INITIALIZATION_WATCHDOG_STARTED_AT.store(started_at, Ordering::Relaxed);
+    INITIALIZATION_WATCHDOG_HAS_STARTED.store(true, Ordering::Release);
 }
 
-/// Return the immutable Phase-1 liveness anchor after it has been published.
+/// Return the immutable initialization watchdog anchor after it is published.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub fn phase_one_liveness_started_at() -> Option<u64> {
-    if PHASE_ONE_LIVENESS_HAS_STARTED.load(Ordering::Acquire) {
-        Some(PHASE_ONE_LIVENESS_STARTED_AT.load(Ordering::Relaxed))
+pub fn initialization_watchdog_started_at() -> Option<u64> {
+    if INITIALIZATION_WATCHDOG_HAS_STARTED.load(Ordering::Acquire) {
+        Some(INITIALIZATION_WATCHDOG_STARTED_AT.load(Ordering::Relaxed))
+    } else {
+        None
+    }
+}
+
+/// Publish the test-phase liveness anchor once, at test-phase entry.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub fn begin_test_phase_liveness_budget(started_at: u64) {
+    // `run_all_tests` calls this once, before any test kthread is spawned.
+    if TEST_PHASE_LIVENESS_HAS_STARTED.load(Ordering::Acquire) {
+        return;
+    }
+    TEST_PHASE_LIVENESS_STARTED_AT.store(started_at, Ordering::Relaxed);
+    TEST_PHASE_LIVENESS_HAS_STARTED.store(true, Ordering::Release);
+}
+
+/// Return the immutable test-phase liveness anchor after it is published.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub fn test_phase_liveness_started_at() -> Option<u64> {
+    if TEST_PHASE_LIVENESS_HAS_STARTED.load(Ordering::Acquire) {
+        Some(TEST_PHASE_LIVENESS_STARTED_AT.load(Ordering::Relaxed))
     } else {
         None
     }

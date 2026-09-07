@@ -10108,7 +10108,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "Self::GateCeiling =>",
         "exit_kick_gate: gate liveness ceiling exhausted before this wait's condition was observed (not a per-CPU stall)",
         "Self::PhaseOneCeiling =>",
-        "exit_kick_gate: shared Phase-1 liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)",
+        "exit_kick_gate: Phase-1 test-phase liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)",
         "Self::CounterStall =>",
         "exit_kick_gate: CNTVCT stalled while enforcing wait deadline",
         "Self::CounterUnavailable =>",
@@ -10291,7 +10291,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(main.contains("let counter_delta = timer::elapsed_ticks(now, last_counter_sample);"));
     assert!(main.contains("if counter_delta == 0"));
     for deadline in [
-        "timer::elapsed_ticks(now, phase_one_started_at)",
+        "timer::elapsed_ticks(now, initialization_started_at)",
         "timer::elapsed_ticks(now, start)",
         "timer::elapsed_ticks(now, last_advance)",
         "timer::elapsed_ticks(now, last_breadcrumb)",
@@ -10372,7 +10372,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(elapsed_ticks.contains("now.checked_sub(start).unwrap_or(0)"));
     assert!(provider.contains("crate::arch_impl::aarch64::timer::milliseconds_to_ticks("));
     assert!(compact_main.contains(
-        "timer::milliseconds_to_ticks(counter_frequency_hz,kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,)"
+        "timer::milliseconds_to_ticks(counter_frequency_hz,kernel::test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS,)"
     ));
 
     let timer_interrupt = repo_text("kernel/src/arch_impl/aarch64/timer_interrupt.rs");
@@ -17200,4 +17200,89 @@ fn function_body_raw_string_close_preserves_next_byte() {
         assert!(!a.contains("CANARY"));
         assert_eq!(function_body(&fixture, "b"), "fn b() { CANARY }");
     }
+}
+
+/// #522 C5: the boot-test phase liveness budget must be anchored at test-phase
+/// entry, and the pre-test CPU bring-up watchdog must be a separately named
+/// budget anchored at kernel entry. Re-anchoring the test-phase budget at
+/// kernel entry reddens this test.
+#[test]
+fn test_phase_budget_is_anchored_at_test_phase_entry() {
+    let framework = repo_text("kernel/src/test_framework/mod.rs");
+    // Two separately named budgets, not one shared clock.
+    assert!(framework
+        .contains("pub const INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS: u64 = 40_000;"));
+    assert!(framework
+        .contains("pub const TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS: u64 = 60_000;"));
+    assert!(!framework.contains("PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS"));
+    for required in [
+        "pub fn begin_initialization_watchdog(started_at: u64)",
+        "pub fn initialization_watchdog_started_at() -> Option<u64>",
+        "pub fn begin_test_phase_liveness_budget(started_at: u64)",
+        "pub fn test_phase_liveness_started_at() -> Option<u64>",
+    ] {
+        assert!(framework.contains(required), "missing budget API: {required}");
+    }
+    // The test-phase anchor is published at test-phase entry, inside
+    // run_all_tests; the kernel entry path in main_aarch64.rs must not
+    // publish or read it.
+    // claim-lint:ok: #522 C5; the mutation transcript is
+    // docs/planning/green-program/tracing/serials/522-c5/mutation-kernel-entry-anchor-red.txt.
+    let executor = repo_text("kernel/src/test_framework/executor.rs");
+    let run_all_tests = function_body(&executor, "run_all_tests");
+    assert!(run_all_tests.contains("super::begin_test_phase_liveness_budget("));
+    let main = repo_text("kernel/src/main_aarch64.rs");
+    assert!(main.contains("kernel::test_framework::begin_initialization_watchdog("));
+    assert!(!main.contains("begin_test_phase_liveness_budget"));
+    assert!(!main.contains("test_phase_liveness_started_at"));
+    // The bring-up watchdog reads only the initialization anchor.
+    assert!(main.contains("kernel::test_framework::initialization_watchdog_started_at()"));
+    assert!(!main.contains("PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS"));
+
+    // The exit-kick gate spends the test-phase budget rather than the
+    // kernel-entry one, and its own local ceiling stays strictly below that
+    // budget so a real whole-gate overrun is still classified as the gate
+    // ceiling.
+    // claim-lint:ok: #522 C5; read back in 3 of 3 boots in
+    // docs/planning/green-program/tracing/522-C5-2026-09-07.md.
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    assert!(provider.contains("crate::test_framework::test_phase_liveness_started_at()"));
+    assert!(provider.contains("crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS"));
+    assert!(!provider.contains("phase_one_liveness_started_at"));
+    assert!(!provider.contains("PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS"));
+    assert!(!provider.contains("initialization_watchdog_started_at"));
+    assert!(provider.contains("const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;"));
+    let gate_ceiling_milliseconds = 45_000u64;
+    let test_phase_budget_milliseconds = 60_000u64;
+    // Headroom, not merely ordering: the gate is entered part-way into the test
+    // phase, so the budget must still cover the whole gate ceiling from there.
+    // Measured distance from test-phase entry to gate entry is about 2.4-2.7s.
+    assert!(gate_ceiling_milliseconds + 10_000 <= test_phase_budget_milliseconds);
+
+    // The oracle fixture exists, keeps the real ceiling order, and carries the
+    // control, treatment, and real-exhaustion legs.
+    let oracle = function_body(&provider, "exit_kick_budget_anchor_isolation_test");
+    for required in [
+        "\"inherited_kernel_entry_anchor\"",
+        "\"test_phase_entry_anchor\"",
+        "\"gate_window_exhaustion\"",
+        "burn_milliseconds(counter_frequency_hz, FIXTURE_PRE_TEST_DELAY_MILLISECONDS);",
+    ] {
+        assert!(oracle.contains(required), "missing C5 oracle leg: {required}");
+    }
+    let test_phase_position = oracle
+        .find("FixtureCause::TestPhaseCeiling, None")
+        .expect("oracle test-phase ceiling arm");
+    let gate_position = oracle
+        .find("FixtureCause::GateCeiling, None")
+        .expect("oracle gate ceiling arm");
+    let absolute_position = oracle
+        .find("FixtureCause::AbsoluteCeiling, None")
+        .expect("oracle absolute ceiling arm");
+    let no_progress_position = oracle
+        .find("FixtureCause::NoProgress, Some(FIXTURE_TARGET_NAME)")
+        .expect("oracle no-progress arm");
+    assert!(test_phase_position < gate_position);
+    assert!(gate_position < absolute_position);
+    assert!(absolute_position < no_progress_position);
 }
