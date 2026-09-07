@@ -162,8 +162,8 @@ Final pair, from `/tmp/890-proof/sequential-final.log`,
 | --- | --- | ---: | ---: | --- |
 | Mac arm64, system Bash 3.2.57 | 1 | 99.00 | 0 | 53/53 |
 | Mac arm64, system Bash 3.2.57 | unset (8 workers) | 58.33 | 0 | 53/53 |
-| beast | 1 | not measured | — | — |
-| beast | unset | not measured | — | — |
+| beast (Incus container `breenix-x86`, GNU Bash 5.2.21) | 1 | 337.488 | 0 | 53/53 |
+| beast (Incus container `breenix-x86`, GNU Bash 5.2.21) | unset (8 workers) | 197.000 | 0 | 53/53 |
 
 The final Mac pair saved 40.67s (41.1% of the sequential wall time), computed
 from the two `real` lines above. These are single runs, not an expected speedup
@@ -184,10 +184,50 @@ to `/tmp/890-proof/sequential-final-logs` and
 `/tmp/890-proof/parallel-final-logs`. The unchanged wiring and census suites
 passed as part of each full run.
 
-Beast was deliberately not contacted: this agent is scoped to the Mac worktree
-and has no SSH access. The driving agent must run the same command pair on
-beast and fold the actual outputs and host load into this note. No estimate
-or extrapolation substitutes for that measurement.
+## Beast measurement (driving agent, after the Codex round above)
+
+Codex was scoped to the Mac worktree and had no SSH access, so the beast pair
+above was run separately by the driving agent, from a fresh clone at
+`/root/breenix-890p` inside beast's `breenix-x86` Incus container
+(`ssh beast` then `sudo -n incus exec breenix-x86 -- bash -lc '<cmd>'`), on the
+same commit this branch pushed, `cb1fd3a02ee7d2441fe91b6e7e15553c56771d42`
+(`git log -1 --format=%H` inside the clone). `rust-fork` was symlinked to
+`/root/breenix/rust-fork-real` per this round's own dispatching instructions;
+the structure suites do not need it (`scripts/run-structure-tests.sh` is
+`rustc --test`, no crate deps), so it plays no role in the numbers below.
+`/bin/bash --version` on this container reports GNU Bash 5.2.21(1)-release
+(x86_64-pc-linux-gnu) -- unlike the Mac's system Bash 3.2.57, so this pair does
+not exercise the bash-3.2 compatibility concern; it exists to compare wall time
+on the host that actually gates x86 merges. `nproc` reports 8, so the unset
+knob selects 8 workers here too (the same cap as the Mac, coincidentally equal
+to this host's full core count).
+
+`/usr/bin/time` is not installed in this container, so timing used the bash
+`time` keyword with `TIMEFORMAT=%R` (wall-clock seconds only; no user/sys
+split is available for the beast rows, unlike the Mac's `/usr/bin/time -p`
+three-line output):
+
+```sh
+BREENIX_STRUCTURE_JOBS=1 bash -c 'export TIMEFORMAT=%R; source docker/qemu/lib/gate-structure-preflight.sh; time gate_structure_preflight "$PWD" /tmp/gsp-check-beast'
+env -u BREENIX_STRUCTURE_JOBS bash -c 'export TIMEFORMAT=%R; source docker/qemu/lib/gate-structure-preflight.sh; time gate_structure_preflight "$PWD" /tmp/gsp-check-beast-par'
+```
+
+The two runs used distinct gate-tmp directories (`/tmp/gsp-check-beast` and
+`/tmp/gsp-check-beast-par`) and ran one after the other, not concurrently, so
+neither could interfere with the other's log directory the way the Mac's
+strict-gate attempt collided with a concurrent lane earlier in this note.
+`uptime` immediately before each command: `load average: 0.07, 0.33, 1.80`
+(sequential) and `load average: 0.11, 1.23, 1.89` (parallel) -- both runs on an
+otherwise-idle container, no other build or gate observed running against it.
+Full command output: `/tmp/890-beast-sequential.log` and
+`/tmp/890-beast-parallel.log` inside the container. Both logs contain exactly
+`[GATE_PREFLIGHT:structure_suites=53/53:critical_path_lines=260:pinned=120]`.
+
+The beast pair saved 140.488s, 41.6% of the sequential wall time (337.488s to
+197.000s) -- close to the Mac's 41.1%, on a host with 8 real cores rather than
+8 of 18. These are single runs on both hosts, not a statistical sample; no
+claim is made about the speedup holding under different load or a different
+worker count.
 
 ## Strict ARM64 gate and build prerequisites
 
@@ -258,7 +298,8 @@ QEMU processes.
 
 ## Not claimed and remaining work
 
-- Beast timings or Linux execution: not attempted, explicitly assigned to the driving agent.
+- Beast CPU-time breakdown: not available (`/usr/bin/time` is not installed in the `breenix-x86` container), so only wall-clock (`time`'s `%R`) is reported for the beast rows, unlike the Mac's user/sys split.
+- Repeated or statistically sampled beast measurements: one sequential run and one parallel run, back to back, not concurrent, not repeated.
 - A measured wall-time improvement from source caching: 0 of 3 post-cache runs were faster than their baselines.
 - Parser/masking/census CPU optimization: unchanged; follow-up stays in #890.
 - Literal byte equality of raw concurrent test stdout: only normalized names/results/counts match, as documented above.
@@ -267,8 +308,7 @@ QEMU processes.
 - Fresh userspace/rootfs builds or absence of the pinned toolchain warning tracked in #559.
 - Safe concurrent preflights sharing a gate temp directory or runner TMPDIR; use the existing per-lane environment settings. The cross-worktree runner namespace remains a follow-up item for #890, not a new compile-cache attempt.
 
-#890 remains open for the beast measurements and further CPU-cost work. No PR
-was opened or merged, and no main-branch change was made.
+#890 remains open for the parser/census CPU-cost work and the cross-worktree runner-namespace follow-up; the beast measurement this note originally deferred is now included above. No PR was opened or merged, and no main-branch change was made.
 
 ## Pre-commit quality and claim lint
 
