@@ -671,3 +671,36 @@ claim-lint: python3 scripts/claim-lint.py                                     ->
 claim-lint: python3 scripts/claim-lint.py --files 482-XHCI-ARM-BEFORE-KICK-2026-09-06.md -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/x482-fixpass2-commit-msg.txt -> exit 0
 ```
+
+## 12. Landing
+
+Merged `origin/main` (`19d13f0ee64a7df5a719b53a57ff625ca22d83f4`, PR #912) into
+this branch with a merge commit
+(`a70bc4823c9175424ecf2d8cdc3d452009e9c7fc`); `git fetch origin && git merge
+origin/main` produced 0 conflicts (`kernel/` included — main's changes since this
+branch forked touch 5 `kernel/` files: `kernel/src/ipc/poll.rs`,
+`kernel/src/socket/udp.rs`, `kernel/src/syscall/socket.rs`, and two
+`kernel/src/test_framework/` files, 0 of which overlap
+`kernel/src/drivers/usb/xhci.rs`), so no STOP was needed.
+
+`bash scripts/run-structure-tests.sh` (default: `teardown_structure`, whole
+file): 92/92 tests pass, exit 0. Also re-ran this round's own
+`xhci_wait_irq_order_structure` explicitly post-merge as an extra check (not
+required by the landing checklist): 10/10, unchanged from §3/§10.
+
+One `bash docker/qemu/run-aarch64-boot-test-strict.sh 1` boot on a fresh
+`cargo build --release --features boot_tests --target
+aarch64-breenix-kernel.json -Z build-std=core,alloc -Z
+build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` (0
+warnings besides the pre-existing toolchain future-incompat notice): **1/1
+boots succeeded**, `structure_suites=57/57` (main's merge added `#823`'s
+UDP-socket-lock structure tests since §10's 55/55). Preserved:
+`serials/482/landing/strict-gate-1boot.txt`.
+
+**Claim-lint (this pass):**
+
+```
+claim-lint: python3 scripts/claim-lint.py                                     -> exit 0
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/input-usb/482-XHCI-ARM-BEFORE-KICK-2026-09-06.md -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/x482-landing-commit-msg.txt -> exit 0
+```
