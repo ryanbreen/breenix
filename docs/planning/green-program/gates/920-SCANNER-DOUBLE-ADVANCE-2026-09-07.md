@@ -69,6 +69,42 @@ has no raw-string handling. The command
 and exited 1 (0 matches). That file and `tests/teardown_structure.rs`
 were left untouched.
 
+## Independent reproduction
+
+A landing-lane rebuild independently reproduced the round note's 24
+quantitative claims (22 before/after row pairs, the exec_lock_order RED
+pair, and the terminal_edge_capture grep) at HEAD
+`b88af643e0fb1001e0bc1a011c49e7faf32674af`, 24 of 24. `git diff
+6432656236ca origin/main -- tests/<stem>.rs` printed no output for all 22
+files, confirming `origin/main` still holds the pre-fix source for each. For
+20 of the 22 files, `git show origin/main:tests/<stem>.rs` was compiled and
+run directly with `rustc --edition=2021 --test`
+(`CARGO_MANIFEST_DIR` set to this worktree's root); the other two
+(`context_restore_structure.rs`, `strand_handoff_structure.rs`) `mod` the
+shared `tests/shared_coreproof/mutation_leg_mask.rs`, so their pre-fix builds
+ran instead from a `git worktree add` checkout of `origin/main` where that
+relative module path resolves. Every pre-fix run exited 0 and passed, in
+table order, 12, 97, 11, 4, 4, 44, 6, 36, 10, 113, 4, 9, 19, 8, 9, 2, 38, 10,
+9, 18, 14, 10 tests -- matching the "Before" half of every row above.
+Re-running `bash scripts/run-structure-tests.sh <stem>` at committed HEAD
+reproduced the "after" half of every row, also exit 0 throughout: 13, 98,
+12, 5, 5, 46, 7, 37, 11, 114, 5, 10, 20, 9, 10, 3, 39, 11, 10, 19, 15, 11.
+
+For the `exec_lock_order_structure.rs` RED pair, a scratch copy of that file
+reverted only the two `index += hashes + 1;` / `index += 1;` if/else splits
+back to the pre-fix unconditional `index += 1;`, keeping both new tests as
+committed. Compiling that scratch copy and running it filtered to
+`code_mask_raw_string_close_preserves_next_byte` exited 101 (assertion
+`left == right` failed: left `[]`, right `[12]`), and filtered to
+`function_body_raw_string_close_preserves_next_byte` also exited 101
+(panicked: "unterminated function a") -- reproducing the "101, 101" RED-exit
+pair above.
+
+`grep -c 'hashes + 1' tests/terminal_edge_capture_structure.rs` printed `0`
+and exited 1 here too, matching the Exclusion section's claim; `git diff
+6432656236ca HEAD -- tests/teardown_structure.rs` printed no output,
+confirming that file is still untouched by this branch.
+
 ## Claim discipline
 
 claim-lint: python3 scripts/claim-lint.py -> exit 0
@@ -77,3 +113,9 @@ claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/920-commit-message.t
 The first lint run on the test changes exited 0. After adding this note,
 two intermediate lint runs reported unquantified prose claims (exit 1 each); the note now states
 the measured run counts and omits the redundant absolute in the exclusion.
+
+Closing review finding Z-5 (the independent-reproduction section above) took
+one more round trip: the first draft's opening sentence used an unquantified
+"every quantitative claim" and `python3 scripts/claim-lint.py` flagged it
+(exit 1); rewording to "24 quantitative claims ... 24 of 24" cleared it
+(`python3 scripts/claim-lint.py` -> exit 0).
