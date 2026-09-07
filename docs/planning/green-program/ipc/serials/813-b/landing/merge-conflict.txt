@@ -1,0 +1,7 @@
+Auto-merging docker/qemu/run-blocking-io-oracle-gate.sh
+CONFLICT (content): Merge conflict in docker/qemu/run-blocking-io-oracle-gate.sh
+Auto-merging scripts/score-blocking-io-oracle.py
+CONFLICT (add/add): Merge conflict in scripts/score-blocking-io-oracle.py
+Auto-merging tests/x86_boot_tests_profile_structure.rs
+CONFLICT (add/add): Merge conflict in tests/x86_boot_tests_profile_structure.rs
+Automatic merge failed; fix conflicts and then commit the result.
