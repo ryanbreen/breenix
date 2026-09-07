@@ -1,0 +1,25 @@
+title:	F23 restore ARM64 GUI client spawning and op16 VirGL compositor
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	429
+--
+Follow-up from F22. bwm now takes over Parallels scanout and passes the rendered desktop bar capture using the ARM64 direct VirGL blit path, but full GUI client startup remains deferred. Restore script-driven ARM64 service launch for bterm/blog/bounce/bcheck, resolve the bsshd spawn/load stall observed after [spawn] path='/bin/bsshd', and fix the aarch64 op16 virgl_composite_windows_rect SUBMIT_3D timeout so bwm can return to the per-window VirGL compositor instead of direct blit.
+
+---
+type=`bug` | priority=P1 | bd status=`in_progress`
+bd dependencies:
+- discovered-from -> breenix-wm4
+
+Migrated from bd issue `breenix-6zk`.
+=== COMMENTS ===

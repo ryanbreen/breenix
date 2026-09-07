@@ -134,3 +134,10 @@ docs/planning/green-program/irq-locks/serials/822/*.txt -text
 # CR bytes the guest console emits are part of the evidence, and a CRLF
 # normalisation would edit it.
 docs/planning/green-program/timekeeping/serials/766/*.txt -text
+
+# Input & USB + GUI aarch64 layer sweep (2026-09-06): raw Parallels serial
+# captures and their launcher-smoke run-sh.log companions, kept byte-exact for
+# the same reason as the captures above -- the CR bytes the guest console and
+# run.sh emit are part of the preserved evidence the sweep's dispositions
+# quote by line number, and a CRLF normalisation would edit it.
+docs/planning/green-program/sweeps/input-gui-aarch64-2026-09-06/evidence/**/*.log -text

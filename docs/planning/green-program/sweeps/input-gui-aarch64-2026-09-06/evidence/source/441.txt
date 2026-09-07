@@ -1,0 +1,23 @@
+=== #441 docs/planning/f32-waitqueue/exit.md (same as 447) ===
+(see 447.txt for full content)
+=== #441 rg create_process_with_argv / load_elf_from_ext2 ===
+kernel/src/process/manager.rs:617:    pub fn create_process_with_argv(
+kernel/src/process/manager.rs:641:                    "create_process_with_argv: Failed to create process page table for PID {}: {}",
+kernel/src/process/manager.rs:680:                        "create_process_with_argv: Failed to restore kernel mapping at {:#x}: {}",
+kernel/src/process/manager.rs:689:                log::error!("create_process_with_argv: Kernel still not mapped after restoration!");
+kernel/src/process/manager.rs:726:                    "create_process_with_argv: Failed to map user stack to process page table: {}",
+kernel/src/process/manager.rs:766:            "create_process_with_argv: Created process {} (PID {}) with argc={}",
+kernel/src/process/manager.rs:781:    /// the callee, `create_process_with_argv`, needed a genuinely new x86 body.
+kernel/src/process/manager.rs:804:        let child_pid = self.create_process_with_argv(name, elf_data, argv)?;
+kernel/src/process/manager.rs:1050:    pub fn create_process_with_argv(
+kernel/src/process/manager.rs:1074:            "manager.create_process_with_argv [ARM64]: ENTRY - name='{}', elf_size={}, argc={}",
+kernel/src/process/manager.rs:1082:            "manager.create_process_with_argv [ARM64]: Generated PID {}",
+kernel/src/process/manager.rs:1088:            "manager.create_process_with_argv [ARM64]: Creating ProcessPageTable"
+kernel/src/process/manager.rs:1103:            "manager.create_process_with_argv [ARM64]: Loading ELF into page table"
+kernel/src/process/manager.rs:1110:            "manager.create_process_with_argv [ARM64]: ELF loaded, entry={:#x}",
+kernel/src/process/manager.rs:1132:        crate::serial_println!("manager.create_process_with_argv [ARM64]: Allocating user stack");
+kernel/src/process/manager.rs:1143:            "manager.create_process_with_argv [ARM64]: User stack will be at {:#x}-{:#x}",
+kernel/src/process/manager.rs:1199:            "manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP={:#x}",
+kernel/src/process/manager.rs:1219:            "manager.create_process_with_argv [ARM64]: SUCCESS - returning PID {}",
+kernel/src/process/manager.rs:1279:        let child_pid = self.create_process_with_argv(name, elf_data, argv)?;
+kernel/src/process/manager.rs:2728:    ///   `create_user_process`/`create_process_with_argv` on both arches, so

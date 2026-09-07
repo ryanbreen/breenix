@@ -1,0 +1,23 @@
+title:	F32b fix waitqueue compositor bounce spawn stall
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	447
+--
+Fix the F32 waitqueue compositor migration stall where bounce appears to block during frame pacing before bwm pumps frames. Confirm stall location with breadcrumbs, implement a non-polling fix, validate 5/5 Parallels runs, and merge.
+
+---
+type=`bug` | priority=P1 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-d2p`.
+=== COMMENTS ===

@@ -1,0 +1,23 @@
+title:	Fix ARM64 BWM compositor CPU burn without FPS regression
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	457
+--
+Track TURN 42 landing of the validated ARM64 BWM compositor core fix: remove rejected/debug-only instrumentation, keep the Linux-grounded present-fence SUBMIT_3D compositor path, validate default Parallels Bounce stays clean at ~186-FPS class with BWM off top CPU, then open PR. Known follow-up: multi-window virtio-gpu control-queue marshalling corruption remains for a separate branch.
+
+---
+type=`bug` | priority=P0 | bd status=`in_progress` | bd labels: ARM64, BWM, ralph, virtio-gpu
+
+Migrated from bd issue `breenix-ism`.
+=== COMMENTS ===

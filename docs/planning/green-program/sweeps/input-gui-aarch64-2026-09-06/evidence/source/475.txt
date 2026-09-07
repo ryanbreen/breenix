@@ -1,0 +1,34 @@
+=== #475/#482 xhci.rs 4889,4921 ===
+    let early_irq = setup_xhci_msi(pci_dev);
+
+    // 14. Create state with IRQ already set.
+    // F32t: Now that configure_msi() uses Linux ordering (disable → mask →
+    // write → flush → INTx off → enable → unmask) no MSI storm is expected,
+    // so the deferred SPI activation path can enable this irq (was irq: 0
+    // as a workaround since commit 488d2fc2).
+    let mut xhci_state = XhciState {
+        base,
+        cap_length,
+        op_base,
+        rt_base,
+        db_base,
+        max_slots: slots_en,
+        max_ports,
+        context_size,
+        irq: early_irq,
+        kbd_slot: 0,
+        kbd_endpoint: 0,
+        kbd_nkro_endpoint: 0,
+        mouse_slot: 0,
+        mouse_endpoint: 0,
+        mouse_nkro_endpoint: 0,
+    };
+
+    // Publish minimal state before the first command wait. Enumeration command
+    // and EP0 transfer waits now complete from handle_interrupt(), so the IRQ
+    // handler needs state as soon as the MSI SPI is transiently enabled.
+    XHCI_IRQ.store(early_irq, Ordering::Release);
+    unsafe {
+        *(&raw mut XHCI_STATE) = Some(xhci_state);
+    }
+    XHCI_INITIALIZED.store(true, Ordering::Release);

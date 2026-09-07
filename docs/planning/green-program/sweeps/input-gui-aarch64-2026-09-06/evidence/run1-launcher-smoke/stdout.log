@@ -1,0 +1,14 @@
+[smoke 19:52:21] lock check: macOS screen is unlocked
+[smoke 19:52:22] started caffeinate -d (pid 41641) to keep the display awake
+[smoke 19:52:22] stale serial log present (inode 182907347); will wait for run.sh to recreate it
+[smoke 19:52:22] launching: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/run.sh --parallels (background)
+[smoke 19:52:22] run.sh pid=41647, log=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/logs/parallels-launcher-test/run-20260906-195221/run-sh.log
+[smoke 19:52:22] waiting for readiness marker: bwm-fps|hotkeys: using built-in defaults
+[smoke 19:52:50] lowered Breenix VM pid=44276 to nice 20 — yields CPU to your foreground apps under contention (stays on perf cores so injection stays responsive)
+[smoke 19:53:14] readiness marker seen
+[smoke 19:53:14] resolved VM from run.sh output: breenix-1788738760
+[smoke 19:53:14] result: FAIL: USB_MOUSE_ENUM: mouse never enumerated a slot (mouse=slot0): [xhci] start_hid_polling: kbd=slot0/dci0 nkro=dci0 mouse=slot0/dci0 mouse2=dci0 (inject_retries=0)
+RESULT: FAIL: USB_MOUSE_ENUM: mouse never enumerated a slot (mouse=slot0): [xhci] start_hid_polling: kbd=slot0/dci0 nkro=dci0 mouse=slot0/dci0 mouse2=dci0
+[smoke 19:53:14] cleanup: killing run.sh pid 41647
+[smoke 19:53:14] cleanup: killing caffeinate pid 41641
+[smoke 19:53:14] cleanup: stopping VM breenix-1788738760

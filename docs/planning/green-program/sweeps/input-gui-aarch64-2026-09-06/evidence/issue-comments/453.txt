@@ -1,0 +1,23 @@
+title:	F32n store xHCI MSI IRQ in XhciState
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	453
+--
+Fix the F32n input regression by carrying the early xHCI MSI IRQ allocation into XhciState before XHCI_STATE is published, then validate clean builds, Parallels boot, wait_stress, and open a no-automerge PR for manual input smoke testing.
+
+---
+type=`bug` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-gae`.
+=== COMMENTS ===

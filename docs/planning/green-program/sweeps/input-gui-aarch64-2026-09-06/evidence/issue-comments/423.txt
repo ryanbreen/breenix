@@ -1,0 +1,23 @@
+title:	F28 eliminate 5ms compositor wake fallback
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	423
+--
+Factory F28 tracks instrumentation, reproduction, race fix, 120s validation, PR merge for eliminating compositor wake fallback hits.
+
+---
+type=`task` | priority=P1 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-39z`.
+=== COMMENTS ===

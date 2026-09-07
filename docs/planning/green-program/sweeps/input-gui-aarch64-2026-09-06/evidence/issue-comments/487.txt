@@ -1,0 +1,23 @@
+title:	[bug] NB-13 Parallels double-Control/input control-channel lockup remains unproven
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	487
+--
+Turn 55 attempted NB-13 reproduction on ARM64/Parallels. Evidence was contaminated by Parallels prlctl capture/control-channel hangs and an unrelated pre-input soft-lockup dump in scheduler/VirtGPU territory. No kernel fix retained. Artifacts in turn55-artifacts/. Needs clean reproduction path and likely high-scrutiny/prohibited signoff before scheduler/graphics edits.
+
+---
+type=`bug` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-z1n`.
+=== COMMENTS ===

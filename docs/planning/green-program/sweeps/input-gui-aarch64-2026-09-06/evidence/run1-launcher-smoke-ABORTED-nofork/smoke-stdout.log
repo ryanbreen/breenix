@@ -1,0 +1,8 @@
+[smoke 19:41:47] lock check: macOS screen is unlocked
+[smoke 19:41:47] started caffeinate -d (pid 72054) to keep the display awake
+[smoke 19:41:47] launching: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/run.sh --parallels (background)
+[smoke 19:41:47] run.sh pid=72060, log=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/logs/parallels-launcher-test/run-20260906-194147/run-sh.log
+[smoke 19:41:47] waiting for readiness marker: bwm-fps|hotkeys: using built-in defaults
+[smoke 19:42:51] lowered Breenix VM pid=76975 to nice 20 — yields CPU to your foreground apps under contention (stays on perf cores so injection stays responsive)
+[smoke 19:51:16] cleanup: killing run.sh pid 72060
+[smoke 19:51:17] cleanup: killing caffeinate pid 72054

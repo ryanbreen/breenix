@@ -1,0 +1,89 @@
+
+=========================================
+Breenix on Parallels Desktop
+=========================================
+
+Skipping compilation (--no-build)
+Existing Parallels disk (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/target/parallels/breenix-efi.hdd/breenix-efi.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds) already up to date with loader/kernel; skipping repackage
+
+--- Configuring Parallels VM ---
+VM name: breenix-1788739339
+  Cleaning up old VM: breenix-1788739125
+Stopping the VM...
+Removing the VM...
+The VM has been successfully removed.
+Creating fresh VM 'breenix-1788739339'...
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
+Remove the serial0 device.
+
+The VM has been successfully configured.
+Creating hdd0 (+) sata:0 image='/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
+Creating hdd1 (+) sata:1 image='/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sweep-pgui/wt/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
+  hdd0: EFI boot disk (FAT32) at sata:0
+  hdd1: ext2 data disk at sata:1
+
+The VM has been successfully configured.
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
+
+--- Starting VM ---
+Starting the VM...
+The VM has been successfully started.
+
+=========================================
+Breenix running on Parallels
+=========================================
+VM:     breenix-1788739339
+Serial: /tmp/breenix-parallels-serial.log
+Stop:   prlctl stop breenix-1788739339 --kill
+
+Test mode: waiting 120s for boot...
+
+=== Screenshot ===
+ERROR: No Parallels window found matching 'breenix-1788739339'
+Capture the VM screen...
+The VM screen is stored in /tmp/breenix-screenshot.png.
+Screenshot: /tmp/breenix-screenshot.png
+
+Serial log: /tmp/breenix-parallels-serial.log
+Screenshot: /tmp/breenix-screenshot.png
