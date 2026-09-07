@@ -7,6 +7,7 @@ const MUTATION_LEG_SOURCES: &[&str] = &["kernel/src/task/scheduler.rs", "kernel/
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -17,7 +18,7 @@ fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
 }
 
-fn rust_sources_below(relative: &str) -> Vec<(String, String)> {
+fn rust_sources_below(relative: &str) -> &'static Vec<(String, String)> {
     fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
         for entry in fs::read_dir(dir).expect("read source directory") {
             let path = entry.expect("read directory entry").path();
@@ -37,11 +38,21 @@ fn rust_sources_below(relative: &str) -> Vec<(String, String)> {
         }
     }
 
-    let root = repo_root();
-    let mut sources = Vec::new();
-    visit(&root, &root.join(relative), &mut sources);
-    sources.sort_by(|left, right| left.0.cmp(&right.0));
-    sources
+    // Test mutations use private copies; the repository snapshot is read once.
+    static KERNEL_SOURCES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    static SYSCALL_SOURCES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    let sources = match relative {
+        "kernel/src" => &KERNEL_SOURCES,
+        "kernel/src/syscall" => &SYSCALL_SOURCES,
+        _ => panic!("uncached source root {relative}"),
+    };
+    sources.get_or_init(|| {
+        let root = repo_root();
+        let mut sources = Vec::new();
+        visit(&root, &root.join(relative), &mut sources);
+        sources.sort_by(|left, right| left.0.cmp(&right.0));
+        sources
+    })
 }
 
 fn with_synthetic_source(
@@ -8270,7 +8281,7 @@ fn current_teardown_bypass_surface_is_exact() {
 
     // This ratchet catches any newly discovered sleeping syscall that schedules while the
     // syscall-entry preempt count remains elevated, which can starve timer-driven wakeups.
-    let mut sleeping_sources = rust_sources_below("kernel/src/syscall");
+    let mut sleeping_sources = rust_sources_below("kernel/src/syscall").clone();
     sleeping_sources.push((
         "kernel/src/task/waitqueue.rs".to_owned(),
         source(&sources, "kernel/src/task/waitqueue.rs").to_owned(),
@@ -10434,7 +10445,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "kernel/src/syscall/futex.rs",
         broken_preempt,
     );
-    let mut broken_sleeping_sources = rust_sources_below("kernel/src/syscall");
+    let mut broken_sleeping_sources = rust_sources_below("kernel/src/syscall").clone();
     broken_sleeping_sources.push((
         "kernel/src/task/waitqueue.rs".to_owned(),
         source(&sources, "kernel/src/task/waitqueue.rs").to_owned(),
@@ -14484,7 +14495,7 @@ fn every_external_schedule_from_kernel_call_reclaims_immediately_beforehand() {
     let sources = rust_sources_below("kernel/src");
     let mut schedule_sites = 0usize;
     let mut paired_sites = 0usize;
-    for (path, source) in &sources {
+    for (path, source) in sources {
         if path == "kernel/src/arch_impl/aarch64/context_switch.rs" {
             continue;
         }

@@ -4,6 +4,7 @@ mod mutation_leg_mask;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -14,7 +15,7 @@ fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
 }
 
-fn rust_sources_below(relative: &str) -> Vec<(PathBuf, String)> {
+fn rust_sources_below(relative: &str) -> &'static Vec<(PathBuf, String)> {
     fn visit(path: &std::path::Path, sources: &mut Vec<(PathBuf, String)>) {
         if path.is_dir() {
             for entry in fs::read_dir(path).expect("read source directory") {
@@ -28,12 +29,22 @@ fn rust_sources_below(relative: &str) -> Vec<(PathBuf, String)> {
         }
     }
 
-    let mut sources = Vec::new();
-    visit(&repo_root().join(relative), &mut sources);
-    sources
+    // Test mutations use private copies; the repository snapshot is read once.
+    static KERNEL_SOURCES: OnceLock<Vec<(PathBuf, String)>> = OnceLock::new();
+    static AARCH64_SOURCES: OnceLock<Vec<(PathBuf, String)>> = OnceLock::new();
+    let sources = match relative {
+        "kernel/src" => &KERNEL_SOURCES,
+        "kernel/src/arch_impl/aarch64" => &AARCH64_SOURCES,
+        _ => panic!("uncached source root {relative}"),
+    };
+    sources.get_or_init(|| {
+        let mut sources = Vec::new();
+        visit(&repo_root().join(relative), &mut sources);
+        sources
+    })
 }
 
-fn text_sources_below(relative: &str) -> Vec<(String, String)> {
+fn text_sources_below(relative: &str) -> &'static Vec<(String, String)> {
     fn visit(root: &std::path::Path, path: &std::path::Path, sources: &mut Vec<(String, String)>) {
         if path.is_dir() {
             for entry in fs::read_dir(path).expect("read source directory") {
@@ -49,11 +60,15 @@ fn text_sources_below(relative: &str) -> Vec<(String, String)> {
         }
     }
 
-    let root = repo_root();
-    let mut sources = Vec::new();
-    visit(&root, &root.join(relative), &mut sources);
-    sources.sort_by(|left, right| left.0.cmp(&right.0));
-    sources
+    static SOURCES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    assert_eq!(relative, RESUME_PC_ASSEMBLY_ROOT);
+    SOURCES.get_or_init(|| {
+        let root = repo_root();
+        let mut sources = Vec::new();
+        visit(&root, &root.join(relative), &mut sources);
+        sources.sort_by(|left, right| left.0.cmp(&right.0));
+        sources
+    })
 }
 
 /// `raw_code_mask`, with every compiled-out core-proof mutation leg additionally
@@ -2280,7 +2295,7 @@ fn synthetic_no_cr3_restore_source(else_arm: &str) -> String {
 fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     let sources = rust_sources_below("kernel/src");
     let mut ready_writes = Vec::new();
-    for (path, source) in &sources {
+    for (path, source) in sources {
         let mask = code_mask(source);
         for (offset, _) in source.match_indices("ProcessState::Ready") {
             if !mask.get(offset).copied().unwrap_or(false) {
@@ -4535,7 +4550,7 @@ fn every_el0_resume_pc_consumer_has_a_shared_admission_arm() {
         Ok(())
     );
 
-    for (path, source) in &sources {
+    for (path, source) in sources {
         for invocation in assembly_macro_invocations(source, "RESUME_PC_EL0_OK") {
             let mut mutant = sources.clone();
             let (_, mutant_source) = mutant
@@ -5864,7 +5879,8 @@ fn validate_fatal_scheduler_accessor_census(
 fn aarch64_sources_with_exception(exception_source: &str) -> Vec<(String, String)> {
     let root = repo_root();
     let mut sources: Vec<_> = rust_sources_below("kernel/src/arch_impl/aarch64")
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|(path, source)| {
             let relative = path
                 .strip_prefix(&root)
@@ -6289,7 +6305,7 @@ fn swapper_files_do_not_assign_thread_id_zero() {
             .expect("source below repository root")
             .to_string_lossy()
             .into_owned();
-        named_files.push((relative, source));
+        named_files.push((relative, source.clone()));
     }
     assert!(
         !named_files.is_empty(),
@@ -6792,7 +6808,7 @@ fn set_saved_lr_classifies_and_reports_without_substituting() {
 
     // Nothing in the tree may install a branch target in a saved-LR slot.
     let sources = rust_sources_below("kernel/src/arch_impl/aarch64");
-    for (path, source) in &sources {
+    for (path, source) in sources {
         assert!(
             !source.contains("aarch64_lr_poisoned_trampoline"),
             "{} still carries the poison trampoline; it was removed as unreachable",
@@ -7242,7 +7258,7 @@ fn the_cpu_identity_token_is_only_minted_from_a_hardware_read() {
 
     let percpu_path = repo_root().join(PERCPU_PATH);
     for (path, other) in rust_sources_below("kernel/src") {
-        if path == percpu_path {
+        if path == &percpu_path {
             continue;
         }
         let other_mask = code_mask(&other);

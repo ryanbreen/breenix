@@ -108,7 +108,15 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             }
         }
         FdKind::UdpSocket(socket) => {
-            if (events & events::POLLIN) != 0 && socket.lock().has_data() {
+            // #823: this lock is also taken, masked, by the NetRx IRQ route
+            // (`net/udp.rs::deliver_to_socket`, inside `with_process_manager`).
+            // `sys_poll`, `sys_select` and `sys_epoll_wait` reach this arm
+            // through this one function, with no PM guard active here, so this
+            // was the one call site actually reachable unmasked on both
+            // architectures.
+            let has_data =
+                crate::socket::udp::with_locked_masked(socket, |s| s.has_data());
+            if (events & events::POLLIN) != 0 && has_data {
                 revents |= events::POLLIN;
             }
             if (events & events::POLLOUT) != 0 {
