@@ -236,6 +236,7 @@ pub fn test_exec_directly() {
 
 /// Test exec with real userspace programs (fork_test.elf -> hello_time.elf)
 pub fn test_exec_real_userspace() {
+    #[cfg(feature = "testing")]
     let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     log::info!("=== Testing exec() with Real Userspace Programs ===");
 
