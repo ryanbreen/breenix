@@ -1,0 +1,1 @@
+count=149 min=183 max=250 below_160=0

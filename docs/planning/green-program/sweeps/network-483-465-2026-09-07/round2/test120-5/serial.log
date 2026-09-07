@@ -1,0 +1,2451 @@
+[ram] 6 regions:
+[ram]   0x40000000 - 0xffff0000 (3071 MB)
+[ram]   0x100000000 - 0x140000000 (1024 MB)
+[ram]   0x140026000 - 0x23be0f000 (4029 MB)
+[ram]   0x23c000000 - 0x23c020000 (0 MB)
+[ram]   0x23c080000 - 0x23f550000 (52 MB)
+[ram]   0x23f930000 - 0x240000000 (6 MB)
+[kern] entry_phys=0x40401a48 load=0x40080000-0x50104000
+[gop-serial] UART: base=0x2110000 type=0 (PL011)
+[gop-serial] Enumerating GOP display modes:
+[gop-serial]   Mode 0: 1024x768 format=BGR
+[gop-serial] 1 modes total, best=786432 pixels
+[gop-serial] Already at best mode: 1024x768
+[gop-serial] Selected: 1024x768 stride=1024 base=0x10000000 size=0x300000
+ZZ0000000040401a48BDMTIVL!J>12KPHEOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a9e71592494
+========================================
+
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x2300000
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 24000000 Hz (24 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 23869701
+[boot] Initializing GIC...
+[gic] GICR probe 0x02500000: WAKER=0x00000000 <<< VALID
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] PCI ECAM at 0x2300000, enumerating PCI bus...
+[drivers] Found 7 PCI devices
+[pci] 00:01.0 [8086:293e] class=04/03
+[pci]   BAR0: 0x18008000 (16384)
+[pci] 00:02.0 [8086:265c] class=0c/03
+[pci]   BAR0: 0x18012000 (4096)
+[pci]   BAR1: 0x0 (4096)
+[pci]   BAR2: 0x0 (4096)
+[pci]   BAR3: 0x0 (4096)
+[pci]   BAR4: 0x0 (4096)
+[pci]   BAR5: 0x0 (4096)
+[pci] 00:03.0 [1033:0194] class=0c/03
+[pci]   BAR0: 0x18011000 (4096)
+[pci]   BAR1: 0x0 (4096)
+[pci]   BAR2: 0x0 (4096)
+[pci]   BAR3: 0x0 (4096)
+[pci]   BAR4: 0x0 (4096)
+[pci]   BAR5: 0x0 (4096)
+[pci] 00:05.0 [1af4:1000] class=02/00
+[pci]   BAR0: 0x18010000 (4096)
+[pci]   BAR1: 0x1800f000 (4096)
+[pci] 00:09.0 [1ab8:4000] class=ff/00
+[pci]   BAR0: 0x1800e000 (4096)
+[pci] 00:0a.0 [1af4:1050] class=03/00
+[pci]   BAR0: 0x10000000 (134217728)
+[pci]   BAR1: 0x1800d000 (4096)
+[pci]   BAR4: 0x18004000 (16384)
+[pci] 00:0e.0 [1af4:1053] class=07/80
+[pci]   BAR1: 0x1800c000 (4096)
+[pci]   BAR4: 0x18000000 (16384)
+[drivers] Found 2 VirtIO PCI devices
+[virtio-gpu-pci] Device features: 0x0000000100000001
+[virtio-gpu-pci] VIRGL offered: true
+[virtio-gpu-pci] Negotiated: 0x0000000100000001 (VIRGL=true)
+[virtio-gpu-pci] VIRGL_ENABLED stored=true, readback=true, addr=0xffff00004127a204
+[pci] 00:0a.0: capabilities:
+  cap 0x11 (MSI-X) @ 0xb0: dw0=0x0001bc11 dw1=0x00000001
+  cap 0x09 (?) @ 0xbc: dw0=0x0410cc09 dw1=0x00000004
+  cap 0x09 (?) @ 0xcc: dw0=0x0310dc09 dw1=0x00000004
+  cap 0x09 (?) @ 0xdc: dw0=0x0214f009 dw1=0x00000004
+  cap 0x09 (?) @ 0xf0: dw0=0x01100009 dw1=0x00000004
+[gicv2m] MSI_TYPER raw=0x80350040 -> base_spi=53, num_spi=64
+[virtio-gpu-pci] MSI-X cap at 0xb0: 2 vectors
+[virtio-gpu-pci] MSI-X diag: cap=0xb0 table_bar=1 table_off=0x0 doorbell=0x2250040 vectors=2
+[virtio-gpu-pci] MSI-X entry0: addr_hi=0x0 addr_lo=0x2250040 data=0x35 vector_ctrl=0x0
+[virtio-gpu-pci] MSI-X entry1: addr_hi=0x0 addr_lo=0x2250040 data=0x36 vector_ctrl=0x0
+[virtio-gpu-pci] MSI-X enabled: config_spi=53 queue_spi=54 doorbell=0x2250040 vectors=2
+[virtio-gpu-pci] config_msix_vector: wrote=0x0 readback=0x0
+[virtio-gpu-pci] Device has 2 queues
+[virtio-gpu-pci] Queue 0 msix_vector: wrote=0x1 readback=0x1
+[virtio-gpu-pci] Queue 1 msix_vector: wrote=0x1 readback=0x1
+[virtio-gpu-pci] Cursor queue (q1) set up: size=16
+[virtio-gpu-pci] Config: num_scanouts=16, num_capsets=1
+[virtio-gpu-pci] MSI-X active: config_spi=53 queue_spi=54 queue_vector=1
+[virtio-gpu-pci] Capset 0: id=2, max_ver=2, max_size=768
+[virtio-gpu-pci] GET_CAPSET(id=2, ver=2): resp=0x1103
+[virtio-gpu-pci] Display reports: 1024x768
+[virtio-gpu-pci] Resolution: 1280x960 (display=1024x768, GOP=1024x768, min=1280x960)
+[virtio-gpu-pci] 2D framebuffer backing: heap ptr=0xffff0000502e2000, phys=0x502e2000, size=4915200
+[virgl] attach_backing: phys=0x502e2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x50792000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virtio-gpu-pci] 2D resource created and scanout set
+[virtio-gpu-pci] Initialized: 1280x960
+[drivers] VirtIO GPU (PCI) initialized
+[virgl] Initializing VirGL 3D pipeline...
+[virgl] 3D framebuffer backing: heap ptr=0xffff000050792000, phys=0x50792000, size=4915200
+[virgl] Step 1: context created
+[virgl] Step 2: 3D resource created (1280x960, bind=0x0014000a)
+[virgl] attach_backing: phys=0x50792000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x50c42000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl] Step 3: backing attached
+[virgl] Step 4: resource attached to context
+[virgl] Step 5: resource primed
+[virgl] SUBMIT_3D OK: id=1 used_len=0 resp_flags=0x1 resp_fence=1
+[virgl] Step 6: VirGL CLEAR (cornflower blue)
+[virgl] Step 7: SET_SCANOUT + RESOURCE_FLUSH done
+[virgl] Step 7: VB resource created (no backing, INLINE_WRITE only)
+[virgl-composite] Texture backing: heap ptr=0xffff000050c42000, phys=0x50c42000, 1280x960 (4915200B, 1200 pages)
+[virgl] attach_backing: phys=0x50c42000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x510f2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-composite] Texture resource initialized (id=5)
+[virgl] attach_backing: phys=0x510f2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x515a2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=0 res_id=10 1280x960
+[virgl] attach_backing: phys=0x515a2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x51a52000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=1 res_id=11 1280x960
+[virgl] attach_backing: phys=0x51a52000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x51f02000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=2 res_id=12 1280x960
+[virgl] attach_backing: phys=0x51f02000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x523b2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=3 res_id=13 1280x960
+[virgl] attach_backing: phys=0x523b2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x52862000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=4 res_id=14 1280x960
+[virgl] attach_backing: phys=0x52862000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x52d12000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=5 res_id=15 1280x960
+[virgl] attach_backing: phys=0x52d12000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x531c2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=6 res_id=16 1280x960
+[virgl] attach_backing: phys=0x531c2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x53672000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=7 res_id=17 1280x960
+[virgl] attach_backing: phys=0x53672000, len=8192, nr_pages=2
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x502e0080(32B)
+[virgl] attach_backing: OK (2 pages attached)
+[virgl-cursor] Cursor texture initialized (id=6, 16x80, 5 shapes)
+[virgl] attach_backing: phys=0x53674000, len=4096, nr_pages=1
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41271000(32B), entries=0x502e0080(16B)
+[virgl] attach_backing: OK (1 pages attached)
+[virgl-dimmer] Dimmer texture initialized (id=7, 4x4)
+[virgl] Step 8: Compositor texture initialized
+[virgl] Step 9: full pipeline+draw batch (191 DWORDs)
+[virgl] SUBMIT_3D OK: id=2 used_len=0 resp_flags=0x1 resp_fence=2
+[virgl] Step 10: SET_SCANOUT + RESOURCE_FLUSH
+[virgl] VirGL 3D pipeline initialized successfully
+[drivers] VirGL 3D acceleration active
+[drivers] Compositor backend: VirGL
+[virtio-gpu-pci] GPU command waits use scheduler waitqueue
+[virtio-net-pci] Searching for VirtIO network device on PCI bus...
+[virtio-net-pci] Found at 00:05.0 [1af4:1000]
+[virtio-net-pci] BAR0: phys=0x18010000 virt=0xffff000018010000 size=4096
+[virtio-net-pci] Device features: 0x6187bfa3
+[virtio-net-pci] MAC: 00:1c:42:7c:f3:76
+[virtio-net-pci] Queue 0 max size: 256
+[virtio-net-pci] RX init window stage=after_rx_ring_zero pfn=0x0 vector=0x7c42 status=0xb avail_flags=0x0 avail_idx=0 used_flags=0x0 used_idx=0
+[virtio-net-pci] Queue 0 PFN=0x4123b (phys=0x4123b000)
+[virtio-net-pci] RX init window stage=after_rx_pfn_window pfn=0x4123b vector=0x7c42 status=0xb avail_flags=0x0 avail_idx=0 used_flags=0x0 used_idx=0
+[virtio-net-pci] RX queue activation stage=after_rx_pfn transport=legacy pfn=0x4123b size=256 vector=0x7c42 status=0xb isr=0x0 avail_flags=0x0 avail_idx=0 used_idx=0
+[virtio-net-pci] Queue 1 max size: 256
+[virtio-net-pci] Queue 1 PFN=0x4123e (phys=0x4123e000)
+[pci] 00:05.0: capabilities:
+  cap 0x10 (PCIe) @ 0x48: dw0=0x00024010 dw1=0x00000fc0
+  cap 0x01 (PM) @ 0x40: dw0=0x0022f401 dw1=0x00000000
+  cap 0x11 (MSI-X) @ 0xf4: dw0=0x00020011 dw1=0x00000001
+[virtio-net-pci] MSI-X cap at 0xf4: 3 vectors
+[virtio-net-pci] MSI-X vector assignments: cfg=0xffff rx=0x0
+[virtio-net-pci] RX queue activation stage=after_msix_vector transport=legacy pfn=0x4123b size=256 vector=0x0 status=0xb isr=0x0 avail_flags=0x0 avail_idx=0 used_idx=0
+[virtio-net-pci] MSI-X diag: cap=0xf4 table_bar=1 table_off=0x0 doorbell=0x2250040 spi=55 vectors=3 msg_ctrl=0x8002 command=0x407 cfg_vec=0xffff rx_vec=0x0
+[virtio-net-pci] MSI-X entry0: addr_hi=0x0 addr_lo=0x2250040 data=0x37 vector_ctrl=0x0
+[virtio-net-pci] MSI-X entry1: addr_hi=0x0 addr_lo=0x2250040 data=0x37 vector_ctrl=0x0
+[virtio-net-pci] MSI-X entry2: addr_hi=0x0 addr_lo=0x2250040 data=0x37 vector_ctrl=0x0
+[virtio-net-pci] MSI-X enabled: SPI 55 doorbell=0x2250040 vectors=3
+[virtio-net-pci] RX init window stage=before_driver_ok pfn=0x4123b vector=0x0 status=0xb avail_flags=0x0 avail_idx=0 used_flags=0x0 used_idx=0
+[virtio-net-pci] RX init window stage=after_driver_ok pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=0 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX queue activation stage=after_driver_ok transport=legacy pfn=0x4123b size=256 vector=0x0 status=0xf isr=0x0 avail_flags=0x0 avail_idx=0 used_idx=0
+[virtio-net-pci] RX init window stage=after_rx_desc0 pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=0 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX init window stage=after_rx_desc1 pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=0 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX init window stage=after_rx_desc2 pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=0 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX init window stage=after_rx_desc3 pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=0 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX init window stage=before_rx_avail_idx pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=0 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX init window stage=after_rx_avail_idx pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=4 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX init window stage=before_rx_notify pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=4 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX init window stage=after_rx_notify_window pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=4 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX init window stage=first_used_not_observed pfn=0x4123b vector=0x0 status=0xf avail_flags=0x0 avail_idx=4 used_flags=0x1 used_idx=0
+[virtio-net-pci] RX queue activation stage=after_rx_notify transport=legacy pfn=0x4123b size=256 vector=0x0 status=0xf isr=0x0 avail_flags=0x0 avail_idx=4 used_idx=0
+[virtio-net-pci] Network device initialized successfully
+[drivers] VirtIO network (PCI) initialized
+[drivers] SVGA3 init skipped: SVGA3 device not found
+[drivers] Found XHCI at 00:03.0 [1033:0194]
+[xhci] DMA addrs: DCBAA=0x40855000 CMD_RING=0x40856000 EVT_RING=0x40866000 ERST=0x41199200
+[xhci] Regs: USBCMD=0x5 USBSTS=0x0 CRCR=0x0 DCBAAP=0x40855000
+[xhci] IR0: IMAN=0x2 ERDP=0x40866000 ERSTBA=0x41199200
+[xhci] Port scan: 14 ports
+[xhci]   port 1: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 2: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 3: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 4: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 5: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 6: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 7: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 8: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 9: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 10: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 11: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 12: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 13: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 14: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci] port 1 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 1 EnableSlot -> slot 1
+[xhci] port 1 AddressDevice OK (slot 1)
+[xhci] slot1: vid=0x203a pid=0xfffc class=0x00/0x00/0x00
+[xhci] slot1 iface0: class=0x03 sub=0x00 proto=0x02 numEP=1
+[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=1)
+[xhci] slot1 iface1: class=0x03 sub=0x00 proto=0x02 numEP=1
+[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=3)
+[xhci] port 2 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 2 EnableSlot -> slot 2
+[xhci] port 2 AddressDevice OK (slot 2)
+[xhci] slot2: vid=0x203a pid=0xfffb class=0x00/0x00/0x00
+[xhci] slot2 iface0: class=0x03 sub=0x01 proto=0x01 numEP=1
+[xhci] HID iface: proto=1 subclass=1 -> keyboard (hid_idx=0)
+[xhci] slot2 iface1: class=0x03 sub=0x00 proto=0x00 numEP=1
+[xhci] HID iface: proto=0 subclass=0 -> NKRO (hid_idx=2)
+[xhci] port 3 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 3 EnableSlot -> slot 3
+[xhci] port 3 AddressDevice OK (slot 3)
+[xhci] slot3: vid=0x203a pid=0xfff9 class=0xef/0x02/0x01
+[xhci] slot3 iface0: class=0x0e sub=0x01 proto=0x00 numEP=0
+[xhci] slot3 iface1: class=0x0e sub=0x02 proto=0x00 numEP=1
+[xhci] start_hid_polling: kbd=slot2/dci3 nkro=dci5 mouse=slot1/dci3 mouse2=dci5
+[xhci] Initialized: 32 slots, MSI irq=56
+[drivers] XHCI USB controller initialized
+[ahci] Platform AHCI at phys 0x2140000, virt 0xffff000002140000
+[ahci] HBA version 1.256, 6 ports, 32 cmd slots, PI=0x0000003f
+[ahci] Port 0: Sata, 131072 sectors (64 MB)
+[ahci] Port 1: Sata, 524288 sectors (256 MB)
+[ahci] IRQ probe: using port 0 dma_index 0
+[ahci] IRQ probe: ISPENDR before=[0x00000000, 0x00000000, 0x00000000] after=[0x00000004, 0x00000000, 0x00000000]
+[ahci] IRQ probe: PORT_IS=0x00000001 (should have D2H bit set)
+[ahci] Platform IRQ probe: discovered SPI 34
+[ahci] Platform IRQ enabled: SPI 34 (wired, level-triggered, CPU0)
+[drivers] AHCI initialized (platform MMIO): 2 SATA device(s)
+[drivers] Driver subsystem initialized (PCI)
+[boot] Found 7 devices
+[drivers] Running post-init self-tests...
+[drivers] VirtIO block self-test skipped: no VirtIO MMIO block device on Parallels; using AHCI
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] Using VirtIO net PCI driver (Parallels)
+[net] MAC address: 00:1c:42:7c:f3:76
+NET: IP address: 10.211.55.100
+NET: Gateway: 10.211.55.1
+Network stack initialized
+NET: Sending ARP request for gateway 10.211.55.1
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.211.55.1
+NET: ARP cache miss for 10.211.55.1, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net-pci] manual-gicv2m-test irq=55 doorbell=0x2250040 before_pend=0x0 after_write_pend=0x800000 after_wait_pend=0x0 ack_before=0 ack_after=1 msi_before=0 msi_after=1
+[virtio-net-pci] MSI-X SPI 55 enabled (post-init)
+[virtio-net-pci] MSI-X GIC enable diag: spi=55 last_irq=0 cpu=0 gicv=0 affinity=0x0 router_rb=0x0 isenabler_rb=0x0 retries=0 outcome=0
+[virtio-net-pci] MSI-X GIC state: spi=55 isenabler_bit=0x800000 ispendr_bit=0x0 isactiver_bit=0x0 icfgr_reg=0x2a800 irouter=0x0
+NET: synchronously cleared virtio callback suppression
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+[boot] Initializing filesystem...
+[ext2] No VirtIO block device, trying AHCI...
+[ext2] AHCI device 0: 131072 sectors (64 MB)
+[ext2] AHCI device 0: not ext2 (magic=0x0064)
+[ext2] AHCI device 1: 524288 sectors (256 MB)
+[ext2] Found ext2 superblock on AHCI device 1
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: ARM Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)
+[boot] FB_INFO_CACHE populated for VirGL display (1280x960)
+[boot] USB HID input active via XHCI IRQ
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread skipped — VirGL owns the display
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[net] ICMP echo reply received from 10.211.55.1 seq=1
+[boot] Init binary pre-loaded: 298616 bytes
+[xhci] activate_msi_if_ready: source=system-ready spi=56 DIAG_SPI_ENABLE_COUNT=1
+[xhci] post-activation: MSI_EVENT_COUNT=55 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=true
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (24000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] GICR covers 8 redistributors, probing CPUs 1..8
+[smp] Probing secondary CPUs via PSCI...
+[s1@1mAp]BC DCEPeFGU 11: PSCI CPU_ON success (raw_status=0)
+[gi2c@1]A BCDEEOeFGI2mode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 2: PSCI CPU_ON success (raw_status=0)
+[T1gic] E3@O1IAmBCoDdEeeF=G13 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 3: PSCI CPU_ON success (raw_status=0)
+[s4@m1ApB]CDE eFCGP4U 4: PSCI CPU_ON success (raw_status=0)
+[gi5c@]1A BECODEIeFmGod5e=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 5: PSCI CPU_ON success (raw_status=0)
+T2[s6m@1pA]B CDCEePFUG 66: PSCI CPU_ON success (raw_status=0)
+[g7i@c1]A BCDEEeOFGIm7ode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 7: PSCI CPU_ON success (raw_status=0)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] 8 CPUs online
+T3[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=0:kernel=2:cleared=2]
+[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+T4
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=298616, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f5d0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]
+[ahci-poll-attrib] total=76 post_reg=74 pre_sched=74 post_sched=0
+[boot] Reset 8 idle thread contexts (CPUs online: 8)
+T5T6EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[init] Breenix init starting (PID 1)
+[spawn] path='/bin/heartbeat'
+manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=303560, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 2
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f85c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 2
+[spawn] Created child PID 2 for parent PID 1
+T7[spawn] Success: child PID 2 scheduled
+T8[init] heartbeat started (PID 2)
+[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]
+[spawn] path='/bin/block_eintr_oracle'
+[heartbeat] tid=12 uptime_ms=1169 kbd_nonzero=0
+T9manager.create_process_with_argv [ARM64]: ENTRY - name='block_eintr_oracle', elf_size=304704, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 3
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f938
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 3
+[spawn] Created child PID 3 for parent PID 1
+T0[F123456spawn] Succes7s8:9 SchilCd PID 3 scheduled
+[syscall] exit(0) pid=4 name=block_eintr_oracle_child_4
+[TTBR0_ASID_CENSUS:untagged=0:tagged=1098:kernel=1027:cleared=2065]
+F123456789SC[syscall] exit(0) pid=5 name=block_eintr_oracle_child_5
+[TTBR0_ASID_CENSUS:untagged=0:tagged=1894:kernel=1772:cleared=3564]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[syscall] exit(0) pid=3 name=block_eintr_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2055:kernel=1928:cleared=3878]
+[init] block_eintr_oracle exited pid=3 code=0
+[spawn] path='/bin/futex_handoff_oracle'
+manager.create_process_with_argv [ARM64]: ENTRY - name='futex_handoff_oracle', elf_size=296032, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 6
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000ef08
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 6
+[spawn] Created child PID 6 for parent PID 1
+[spawn] Success: child PID 6 scheduled
+[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+[syscall] exit(0) pid=6 name=futex_handoff_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2136:kernel=1997:cleared=4022]
+[init] futex_handoff_oracle exited pid=6 code=0
+[spawn] path='/bin/poll_tcp_oracle'
+manager.create_process_with_argv [ARM64]: ENTRY - name='poll_tcp_oracle', elf_size=320872, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 7
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40011694
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 7
+[spawn] Created child PID 7 for parent PID 1
+[spawn] Success: child PID 7 scheduled
+[POLL_TCP_TIMEOUT] fd=4 timeout_ms=120 publish=none_in_window rx_len=0 revents=0x0000
+F123456789SC[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 anchor=1637 token_ms=1644 write_ms=1721 delay_ms=80]
+[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 anchor=1637 token_ms=1644 write_ms=1721 delay_ms=80]
+[syscall] exit(0) pid=8 name=poll_tcp_oracle_child_8
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2466:kernel=2246:cleared=4575]
+F123456789SC[POLL_TCP_TIMEOUT] fd=4 timeout_ms=150 publish=none_in_window rx_len=0 revents=0x0000
+[POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms=1880 rescan_ready=0 rescan_revents=0x0000 nbread_err=EAGAIN]
+[POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms=1880 rescan_ready=0 rescan_revents=0x0000 nbread_err=EAGAIN]
+[heartbeat] tid=12 uptime_ms=2172 kbd_nonzero=0
+[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 anchor=1726 token_ms=1727 write_ms=2227 delay_ms=500]
+[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 anchor=1726 token_ms=1727 write_ms=2227 delay_ms=500]
+[syscall] exit(0) pid=9 name=poll_tcp_oracle_child_9
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2606:kernel=2323:cleared=4785]
+[POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=1726 entry=1727 deadline=1877 returned=1880 write_ms=2227 late_by_ms=350 delay_ms=500 timeout=150]
+[POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=1726 entry=1727 deadline=1877 returned=1880 write_ms=2227 late_by_ms=350 delay_ms=500 timeout=150]
+[POLL_TCP_ORACLE:PASS:stages=4:idle_ms=127:late_ms=82:park_ms=82:forced_ms=153:forced_late_by_ms=350]
+[POLL_TCP_ORACLE:PASS:stages=4:idle_ms=127:late_ms=82:park_ms=82:forced_ms=153:forced_late_by_ms=350]
+[syscall] exit(0) pid=7 name=poll_tcp_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2613:kernel=2325:cleared=4795]
+[init] poll_tcp_oracle exited pid=7 code=0
+[spawn] path='/bin/tty_oracle'
+manager.create_process_with_argv [ARM64]: ENTRY - name='tty_oracle', elf_size=338224, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 10
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40012b34
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 10
+[spawn] Created child PID 10 for parent PID 1
+[spawn] Success: child PID 10 scheduled
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=3 (pty 0)
+[pty] Unlocked PTY 0 (fd 3)
+[TTY_ORACLE:openpt:verdict=PASS:slave=/dev/pts/0:locked_open_refused=1]
+[TTY_ORACLE:openpt:verdict=PASS:slave=/dev/pts/0:locked_open_refused=1]
+[TTY_ORACLE:nonblock_open:verdict=PASS:master_fl=0x800:slave_fl=0x800:both_eagain=1]
+[TTY_ORACLE:nonblock_open:verdict=PASS:master_fl=0x800:slave_fl=0x800:both_eagain=1]
+[TTY_ORACLE:isatty:verdict=PASS:master=1:slave=1:regular_file=0]
+[TTY_ORACLE:isatty:verdict=PASS:master=1:slave=1:regular_file=0]
+[TTY_ORACLE:termios_roundtrip:verdict=PASS:default_lflag=0x803b:modified_lflag=0x8023:restored=1]
+[TTY_ORACLE:termios_roundtrip:verdict=PASS:default_lflag=0x803b:modified_lflag=0x8023:restored=1]
+[TTY_ORACLE:canonical_line:verdict=PASS:withheld_unterminated=1:delivered_on_newline=6]
+[TTY_ORACLE:canonical_line:verdict=PASS:withheld_unterminated=1:delivered_on_newline=6]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=10:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=10:crossed_ends=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+F123456789SC[EXEC_LOCK_ORDER:FIRST_COMMIT]
+[syscall] exit(0) pid=11 name=/bin/tty_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2959:kernel=2645:cleared=5440]
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[syscall] exit(0) pid=10 name=tty_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2965:kernel=2647:cleared=5448]
+[init] tty_oracle exited pid=10 code=0
+[spawn] path='/bin/exec_smoke'
+manager.create_process_with_argv [ARM64]: ENTRY - name='exec_smoke', elf_size=290880, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 12
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eb40
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 12
+[spawn] Created child PID 12 for parent PID 1
+[spawn] Success: child PID 12 scheduled
+[EXEC_SMOKE:LAUNCH]
+[EXEC_SMOKE:TARGET_ENTER argc=2]
+[EXEC_SMOKE:TARGET_OK]
+[syscall] exit(0) pid=12 name=/bin/exec_smoke_target
+[TTBR0_ASID_CENSUS:untagged=0:tagged=3122:kernel=2779:cleared=5718]
+[EXEC_SMOKE:LAUNCHER_EXIT code=0]
+[spawn] path='/usr/local/test/bin/clonevm_exec_test'
+manager.create_process_with_argv [ARM64]: ENTRY - name='clonevm_exec_test', elf_size=289632, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 13
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f63c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 13
+[spawn] Created child PID 13 for parent PID 1
+[spawn] Success: child PID 13 scheduled
+CLONEVM_EXEC_TEST: start
+CLONEVM_EXEC_TEST: child live
+CLONEVM_EXEC_TEST: live sibling refused exec
+[syscall] exit(0) pid=14 name=thread-14
+[TTBR0_ASID_CENSUS:untagged=0:tagged=3321:kernel=2952:cleared=6069]
+CLONEVM_EXEC_TEST: child exited
+CLONEVM_EXEC_TEST: second stage
+[syscall] exit(0) pid=15 name=thread-15
+CLONEVM_EXEC_TEST: post-exec rendezvous complete
+[TTBR0_ASID_CENSUS:untagged=0:tagged=3485:kernel=3081:cleared=6334]
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+[syscall] exit(0) pid=13 name=/usr/local/test/bin/clonevm_exec_test
+[TTBR0_ASID_CENSUS:untagged=0:tagged=3486:kernel=3082:cleared=6338]
+[init] clonevm_exec_test exited pid=13 code=0
+[spawn] path='/bin/bsshd'
+manager.create_process_with_argv [ARM64]: ENTRY - name='bsshd', elf_size=455152, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 16
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001d6c0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 16
+[spawn] Created child PID 16 for parent PID 1
+[spawn] Success: child PID 16 scheduled
+bsshd: starting on port 2222
+bsshd: listening on 0.0.0.0:2222
+[init] bsshd started (PID 16)
+[spawn] path='/bin/xhci_counters'
+manager.create_process_with_argv [ARM64]: ENTRY - name='xhci_counters', elf_size=292216, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 17
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f140
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 17
+[spawn] Created child PID 17 for parent PID 1
+[spawn] Success: child PID 17 scheduled
+[spawn] path='/bin/bwm'
+[xhci-counters] XHCI_MSI_EVENT_TOTAL=56
+[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=56
+[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=0
+[xhci-counters] KBD_NONZERO_TOTAL=0
+[syscall] exit(0) pid=17 name=xhci_counters
+[TTBR0_ASID_CENSUS:untagged=0:tagged=4032:kernel=3596:cleared=7374]
+manager.create_process_with_argv [ARM64]: ENTRY - name='bwm', elf_size=432088, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 18
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40018be4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 18
+[spawn] Created child PID 18 for parent PID 1
+[spawn] Success: child PID 18 scheduled
+[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+[virgl-composite] Frame #0: 1x1 → 1280x960 display (first1k: 1 nonzero, first=0xff000000)
+[spawn] path='/sbin/telnetd'
+[bwm] GPU compositing mode (VirGL), display: 1280x960
+[compositor] Mapped compositor buffer into process: virt=0x7ffffdb4e000, 1280x960, 1200 pages (backend=VirGL)
+[bwm] Direct compositor mapping: 1280x960 at 0x7ffffdb4e000
+[bwm] using bitmap font fallback for early boot
+manager.create_process_with_argv [ARM64]: ENTRY - name='telnetd', elf_size=298184, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 19
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f930
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 19
+[spawn] Created child PID 19 for parent PID 1
+[spawn] Success: child PID 19 scheduled
+TELNETD_STARTING
+TELNETD_LISTENING
+[bwm] hotkeys: using built-in defaults for early boot
+[composite-win] frame=0 bg_dirty=true windows=0 bg=1280x960
+[init] Boot script completed
+[spawn] path='/bin/bounce'
+[BUILD-CANARY] gpu_pci.rs version=10 dimmer-fix
+[composite-submit] frame=0 windows=0 dwords=342 vb_offset=256 draw_idx=8
+[virgl] SUBMIT_3D OK: id=3 used_len=0 resp_flags=0x1 resp_fence=3
+[composite-win] frame=0 complete
+[composite-win] frame=1 bg_dirty=true windows=0 bg=1280x960
+[composite-submit] frame=1 windows=0 dwords=342 vb_offset=256 draw_idx=8
+[virgl] SUBMIT_3D OK: id=4 used_len=0 resp_flags=0x1 resp_fence=4
+[composite-win] frame=1 complete
+manager.create_process_with_argv [ARM64]: ENTRY - name='bounce', elf_size=388040, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 20
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x400188e0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 20
+[spawn] Created child PID 20 for parent PID 1
+[spawn] Success: child PID 20 scheduled
+Bounce spheres demo starting (for Gus!) [boot_id=000000009ff6feea]
+[window] create_window_buffer: 400x300 (480000 bytes, 118 pages)
+[window] Created buffer id=1 for pid=20: 400x300 at virt=0x7ffffdf86000 phys=0x44275000
+[bounce] Window mode: id=1 400x300 [boot_id=000000009ff6feea]
+[init] bounce started (PID 20)
+[bwm] Discovered window 'Bounce' (id=1, 400x300) at (30,38)
+[INIT_GROUP_REFUSAL:aarch64:phase=quiesce:probe1=-22:probe2=-22:expected=-22]
+[init] Process 4 exited (code 0)
+[init] Process 5 exited (code 0)
+[init] Process 14 exited (code 0)
+[init] Process 15 exited (code 0)
+[init] Process 17 exited (code 0)
+[composite-win] frame=2 bg_dirty=true windows=1 bg=1280x960
+[GPU-WIN] frame=2 win[0] res=10 content=(32,72)-(400x300) frame=(30,38)-(434,374)
+[composite-submit] frame=2 windows=1 dwords=662 vb_offset=896 draw_idx=28
+[virgl] SUBMIT_3D OK: id=5 used_len=0 resp_flags=0x1 resp_fence=5
+[composite-win] frame=2 complete
+[composite-win] frame=3 bg_dirty=false windows=1 bg=1280x960
+[composite-win] frame=4 bg_dirty=false windows=1 bg=1280x960
+[composite-win] frame=4 complete
+[heartbeat] tid=12 uptime_ms=3174 kbd_nonzero=0
+[bwm-fps] frames_since_last=189 elapsed_ms=1003 instantaneous_fps=188
+[heartbeat] tid=12 uptime_ms=4175 kbd_nonzero=0
+[bwm-fps] frames_since_last=191 elapsed_ms=1000 instantaneous_fps=191
+[heartbeat] tid=12 uptime_ms=5175 kbd_nonzero=0
+[bwm-fps] frames_since_last=191 elapsed_ms=1004 instantaneous_fps=190
+[heartbeat] tid=12 uptime_ms=6176 kbd_nonzero=0
+[bwm-fps] frames_since_last=186 elapsed_ms=1000 instantaneous_fps=186
+[heartbeat] tid=12 uptime_ms=7176 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1002 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=8177 kbd_nonzero=0
+[bwm-fps] frames_since_last=181 elapsed_ms=1003 instantaneous_fps=180
+[heartbeat] tid=12 uptime_ms=9178 kbd_nonzero=0
+[bwm-fps] frames_since_last=180 elapsed_ms=1002 instantaneous_fps=179
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=130:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=993:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=11449:kstack=0:uva=989:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=11449:kstack=0:uva=0:smallint=0:other=0]
+[heartbeat] tid=12 uptime_ms=10178 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1002 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=11179 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1000 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=12180 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1003 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=13181 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1000 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=14181 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1002 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=15182 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1001 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=16183 kbd_nonzero=0
+[bwm-fps] frames_since_last=222 elapsed_ms=1000 instantaneous_fps=222
+[heartbeat] tid=12 uptime_ms=17184 kbd_nonzero=0
+[bwm-fps] frames_since_last=200 elapsed_ms=1006 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=18184 kbd_nonzero=0
+[bwm-fps] frames_since_last=194 elapsed_ms=1002 instantaneous_fps=193
+[heartbeat] tid=12 uptime_ms=19186 kbd_nonzero=0
+[bwm-fps] frames_since_last=197 elapsed_ms=1004 instantaneous_fps=196
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=175:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=2655:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=23431:kstack=0:uva=2651:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=23433:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=189:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=175:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=7798:smallint=6:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=2651:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=89:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=3704:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=8:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=1005:kstack=0:uva=3697:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=1005:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=61:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=89:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=390:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=3698:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=54:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=1091:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=320:kstack=0:uva=1089:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=320:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=48:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=54:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=157:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=1089:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=31:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=985:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=483:kstack=0:uva=984:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=483:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=30:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=31:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=239:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=984:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el1-restore-frame-elr:text=37:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el0-restore-frame-elr:text=0:kstack=0:uva=337:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=ctx-x30:text=420:kstack=0:uva=333:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=ctx-elr-el1:text=420:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-save-el1:text=46:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-restore-el1:text=37:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-save-el0:text=0:kstack=0:uva=215:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-restore-el0:text=0:kstack=0:uva=333:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=el1-restore-frame-elr:text=45:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=el0-restore-frame-elr:text=0:kstack=0:uva=223:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=ctx-x30:text=426:kstack=0:uva=220:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=ctx-elr-el1:text=426:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-save-el1:text=53:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-restore-el1:text=45:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-save-el0:text=0:kstack=0:uva=178:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-restore-el0:text=0:kstack=0:uva=220:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=el1-restore-frame-elr:text=26:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=el0-restore-frame-elr:text=0:kstack=0:uva=330:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=ctx-x30:text=430:kstack=0:uva=327:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=ctx-elr-el1:text=430:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-save-el1:text=31:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-restore-el1:text=26:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-save-el0:text=0:kstack=0:uva=306:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-restore-el0:text=0:kstack=0:uva=327:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=el1-restore-frame-elr:text=4:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=el0-restore-frame-elr:text=0:kstack=0:uva=31:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=ctx-x30:text=354:kstack=0:uva=31:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=ctx-elr-el1:text=354:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-save-el1:text=7:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-restore-el1:text=5:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-save-el0:text=0:kstack=0:uva=43:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-restore-el0:text=0:kstack=0:uva=31:smallint=0:other=0]
+[heartbeat] tid=12 uptime_ms=20187 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=57125:kernel=28776:cleared=72421]
+[net-rx-counters] sample=1 begin
+[net-rx-counters] sample=1 NET_RX_MSI_TOTAL: 7 (cpu0=7)
+[net-rx-counters] sample=1 NET_RX_RING_DRAIN_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=1 NET_RX_FRAME_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=1 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=1 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_SOFTIRQ_ENTRY_TOTAL: 14 (cpu0=8, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=1 NET_RX_SOFTIRQ_EXIT_TOTAL: 14 (cpu0=8, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=1 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_GUARD_RELEASE_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=1 NET_RX_REARM_CHECK_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=1 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_REARM_ARMED_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=1 NET_PCI_IRQ_RAISED_NETRX: 7 (cpu0=7)
+[net-rx-counters] sample=1 GIC_SPI55_ACK_TOTAL: 7 (cpu0=7)
+[net-rx-counters] sample=1 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=1 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=1 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=1 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=1 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=1 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=1 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=1 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=1 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=1 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=1 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=1 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=1 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=1 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=1 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=1 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=1 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=1 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=1 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=1 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=1 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=1 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=1 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=1 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=1 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=1 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=1 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=1 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=1 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=1 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=1 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=1 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=1 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=1 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=1 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=1 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=1 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=1 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=1 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=1 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=1 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=1 NET_PCI_RX_AVAIL_IDX: 32
+[net-rx-counters] sample=1 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=1 NET_PCI_RX_USED_IDX: 8
+[net-rx-counters] sample=1 NET_PCI_RX_LAST_USED_IDX: 8
+[net-rx-counters] sample=1 NET_PCI_RX_POSTED_GAP: 24
+[net-rx-counters] sample=1 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=1 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=1 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=1 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=1 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=1 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=1 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=1 NET_PCI_RX_REARM_SAMPLE_SEQ: 15
+[net-rx-counters] sample=1 NET_PCI_RX_REARM_SAMPLE0: used_idx=6 last_used_idx=6 avail_flags=0x0 raced=0
+[net-rx-counters] sample=1 NET_PCI_RX_REARM_SAMPLE1: used_idx=7 last_used_idx=7 avail_flags=0x0 raced=0
+[net-rx-counters] sample=1 NET_PCI_RX_REARM_SAMPLE2: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=1 NET_PCI_RX_REARM_SAMPLE3: used_idx=5 last_used_idx=5 avail_flags=0x0 raced=0
+[net-rx-counters] sample=1 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=8 last_used_idx=7 avail_flags=0x1 raced=0
+[net-rx-counters] sample=1 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=1 end
+[bwm-fps] frames_since_last=206 elapsed_ms=1003 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=21209 kbd_nonzero=0
+[bwm-fps] frames_since_last=199 elapsed_ms=1003 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=22210 kbd_nonzero=0
+[bwm-fps] frames_since_last=195 elapsed_ms=1004 instantaneous_fps=194
+[heartbeat] tid=12 uptime_ms=23211 kbd_nonzero=0
+[bwm-fps] frames_since_last=198 elapsed_ms=1001 instantaneous_fps=197
+[heartbeat] tid=12 uptime_ms=24212 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1002 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=25213 kbd_nonzero=0
+[bwm-fps] frames_since_last=199 elapsed_ms=1002 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=26214 kbd_nonzero=0
+[bwm-fps] frames_since_last=197 elapsed_ms=1001 instantaneous_fps=196
+[heartbeat] tid=12 uptime_ms=27215 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1005 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=28216 kbd_nonzero=0
+[bwm-fps] frames_since_last=197 elapsed_ms=1004 instantaneous_fps=196
+[heartbeat] tid=12 uptime_ms=29217 kbd_nonzero=0
+[bwm-fps] frames_since_last=192 elapsed_ms=1003 instantaneous_fps=191
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=207:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=4434:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=34978:kstack=0:uva=4430:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=34978:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=230:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=207:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=12314:smallint=6:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=4430:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=111:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=6130:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=8:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=1667:kstack=0:uva=6124:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=1667:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=70:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=111:kstack=0:uva=0:smallint=0:other=0]
+[heartbeat] tid=12 uptime_ms=30217 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=87826:kernel=43422:cleared=110089]
+[net-rx-counters] sample=2 begin
+[net-rx-counters] sample=2 NET_RX_MSI_TOTAL: 7 (cpu0=7)
+[net-rx-counters] sample=2 NET_RX_RING_DRAIN_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=2 NET_RX_FRAME_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=2 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=2 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_SOFTIRQ_ENTRY_TOTAL: 14 (cpu0=8, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=2 NET_RX_SOFTIRQ_EXIT_TOTAL: 14 (cpu0=8, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=2 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_GUARD_RELEASE_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=2 NET_RX_REARM_CHECK_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=2 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_REARM_ARMED_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=2 NET_PCI_IRQ_RAISED_NETRX: 7 (cpu0=7)
+[net-rx-counters] sample=2 GIC_SPI55_ACK_TOTAL: 7 (cpu0=7)
+[net-rx-counters] sample=2 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=2 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=2 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=2 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=2 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=2 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=2 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=2 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=2 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=2 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=2 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=2 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=2 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=2 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=2 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=2 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=2 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=2 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=2 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=2 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=2 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=2 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=2 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=2 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=2 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=2 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=2 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=2 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=2 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=2 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=2 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=2 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=2 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=2 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=2 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=2 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=2 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=2 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=2 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=2 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=2 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=2 NET_PCI_RX_AVAIL_IDX: 32
+[net-rx-counters] sample=2 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=2 NET_PCI_RX_USED_IDX: 8
+[net-rx-counters] sample=2 NET_PCI_RX_LAST_USED_IDX: 8
+[net-rx-counters] sample=2 NET_PCI_RX_POSTED_GAP: 24
+[net-rx-counters] sample=2 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=2 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=2 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=2 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=2 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=2 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=2 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=2 NET_PCI_RX_REARM_SAMPLE_SEQ: 15
+[net-rx-counters] sample=2 NET_PCI_RX_REARM_SAMPLE0: used_idx=6 last_used_idx=6 avail_flags=0x0 raced=0
+[net-rx-counters] sample=2 NET_PCI_RX_REARM_SAMPLE1: used_idx=7 last_used_idx=7 avail_flags=0x0 raced=0
+[net-rx-counters] sample=2 NET_PCI_RX_REARM_SAMPLE2: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=2 NET_PCI_RX_REARM_SAMPLE3: used_idx=5 last_used_idx=5 avail_flags=0x0 raced=0
+[net-rx-counters] sample=2 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=8 last_used_idx=7 avail_flags=0x1 raced=0
+[net-rx-counters] sample=2 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=2 end
+[bwm-fps] frames_since_last=205 elapsed_ms=1004 instantaneous_fps=204
+[heartbeat] tid=12 uptime_ms=31240 kbd_nonzero=0
+[bwm-fps] frames_since_last=198 elapsed_ms=1003 instantaneous_fps=197
+[heartbeat] tid=12 uptime_ms=32241 kbd_nonzero=0
+[bwm-fps] frames_since_last=199 elapsed_ms=1003 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=33242 kbd_nonzero=0
+[bwm-fps] frames_since_last=194 elapsed_ms=1001 instantaneous_fps=193
+[heartbeat] tid=12 uptime_ms=34243 kbd_nonzero=0
+[bwm-fps] frames_since_last=200 elapsed_ms=1000 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=35244 kbd_nonzero=0
+[bwm-fps] frames_since_last=187 elapsed_ms=1000 instantaneous_fps=187
+[heartbeat] tid=12 uptime_ms=36245 kbd_nonzero=0
+[bwm-fps] frames_since_last=191 elapsed_ms=1001 instantaneous_fps=190
+[heartbeat] tid=12 uptime_ms=37245 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1000 instantaneous_fps=201
+[heartbeat] tid=12 uptime_ms=38246 kbd_nonzero=0
+[bwm-fps] frames_since_last=197 elapsed_ms=1002 instantaneous_fps=196
+[heartbeat] tid=12 uptime_ms=39247 kbd_nonzero=0
+[bwm-fps] frames_since_last=198 elapsed_ms=1006 instantaneous_fps=196
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=242:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=6175:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=46429:kstack=0:uva=6171:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=46429:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=272:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=242:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=16809:smallint=6:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=6171:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=130:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=8618:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=8:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=2308:kstack=0:uva=8611:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=2308:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=79:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=130:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=1146:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=8611:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=54:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=1091:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=320:kstack=0:uva=1089:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=320:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=48:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=54:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=157:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=1089:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=53:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=2255:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=1226:kstack=0:uva=2254:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=1226:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=52:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=53:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=497:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=2254:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el1-restore-frame-elr:text=50:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el0-restore-frame-elr:text=0:kstack=0:uva=671:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=ctx-x30:text=1032:kstack=0:uva=667:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=ctx-elr-el1:text=1032:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-save-el1:text=60:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-restore-el1:text=50:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-save-el0:text=0:kstack=0:uva=409:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-restore-el0:text=0:kstack=0:uva=667:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=el1-restore-frame-elr:text=49:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=el0-restore-frame-elr:text=0:kstack=0:uva=405:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=ctx-x30:text=1116:kstack=0:uva=402:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=ctx-elr-el1:text=1116:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-save-el1:text=53:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-restore-el1:text=49:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-save-el0:text=0:kstack=0:uva=178:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-restore-el0:text=0:kstack=0:uva=402:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=el1-restore-frame-elr:text=35:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=el0-restore-frame-elr:text=0:kstack=0:uva=610:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=ctx-x30:text=956:kstack=0:uva=607:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=ctx-elr-el1:text=956:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-save-el1:text=51:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-restore-el1:text=35:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-save-el0:text=0:kstack=0:uva=554:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-restore-el0:text=0:kstack=0:uva=607:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=el1-restore-frame-elr:text=6:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=el0-restore-frame-elr:text=0:kstack=0:uva=62:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=ctx-x30:text=920:kstack=0:uva=62:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=ctx-elr-el1:text=920:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-save-el1:text=8:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-restore-el1:text=6:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-save-el0:text=0:kstack=0:uva=108:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-restore-el0:text=0:kstack=0:uva=62:smallint=0:other=0]
+[heartbeat] tid=12 uptime_ms=40247 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=118318:kernel=57966:cleared=147461]
+[net-rx-counters] sample=3 begin
+[net-rx-counters] sample=3 NET_RX_MSI_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=3 NET_RX_RING_DRAIN_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=3 NET_RX_FRAME_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=3 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=3 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_SOFTIRQ_ENTRY_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=3 NET_RX_SOFTIRQ_EXIT_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=3 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_GUARD_RELEASE_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=3 NET_RX_REARM_CHECK_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=3 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_REARM_ARMED_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=3 NET_PCI_IRQ_RAISED_NETRX: 8 (cpu0=8)
+[net-rx-counters] sample=3 GIC_SPI55_ACK_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=3 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=3 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=3 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=3 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=3 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=3 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=3 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=3 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=3 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=3 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=3 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=3 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=3 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=3 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=3 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=3 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=3 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=3 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=3 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=3 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=3 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=3 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=3 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=3 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=3 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=3 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=3 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=3 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=3 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=3 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=3 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=3 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=3 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=3 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=3 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=3 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=3 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=3 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=3 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=3 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=3 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=3 NET_PCI_RX_AVAIL_IDX: 36
+[net-rx-counters] sample=3 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=3 NET_PCI_RX_USED_IDX: 9
+[net-rx-counters] sample=3 NET_PCI_RX_LAST_USED_IDX: 9
+[net-rx-counters] sample=3 NET_PCI_RX_POSTED_GAP: 27
+[net-rx-counters] sample=3 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=3 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=3 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=3 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=3 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=3 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=3 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=3 NET_PCI_RX_REARM_SAMPLE_SEQ: 16
+[net-rx-counters] sample=3 NET_PCI_RX_REARM_SAMPLE0: used_idx=6 last_used_idx=6 avail_flags=0x0 raced=0
+[net-rx-counters] sample=3 NET_PCI_RX_REARM_SAMPLE1: used_idx=7 last_used_idx=7 avail_flags=0x0 raced=0
+[net-rx-counters] sample=3 NET_PCI_RX_REARM_SAMPLE2: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=3 NET_PCI_RX_REARM_SAMPLE3: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=3 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=9 last_used_idx=8 avail_flags=0x1 raced=0
+[net-rx-counters] sample=3 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=3 end
+[bwm-fps] frames_since_last=196 elapsed_ms=1000 instantaneous_fps=196
+[heartbeat] tid=12 uptime_ms=41270 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1002 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=42271 kbd_nonzero=0
+[bwm-fps] frames_since_last=192 elapsed_ms=1003 instantaneous_fps=191
+[heartbeat] tid=12 uptime_ms=43272 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1002 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=44273 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1001 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=45274 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1000 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=46276 kbd_nonzero=0
+[bwm-fps] frames_since_last=191 elapsed_ms=1000 instantaneous_fps=191
+[heartbeat] tid=12 uptime_ms=47276 kbd_nonzero=0
+[bwm-fps] frames_since_last=199 elapsed_ms=1004 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=48278 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1000 instantaneous_fps=201
+[heartbeat] tid=12 uptime_ms=49279 kbd_nonzero=0
+[bwm-fps] frames_since_last=187 elapsed_ms=1001 instantaneous_fps=186
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=285:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=7800:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=58078:kstack=0:uva=7796:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=58078:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=318:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=285:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=21321:smallint=6:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=7796:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=161:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=11153:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=8:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=2964:kstack=0:uva=11146:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=2964:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=98:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=161:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=1530:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=11146:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=54:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=1091:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=320:kstack=0:uva=1089:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=320:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=48:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=54:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=157:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=1089:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=58:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=2954:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=1550:kstack=0:uva=2953:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=1550:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=63:kstack=0:uva=0:smallint=0:other=0]
+[heartbeat] tid=12 uptime_ms=50280 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=149085:kernel=72720:cleared=185365]
+[net-rx-counters] sample=4 begin
+[net-rx-counters] sample=4 NET_RX_MSI_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=4 NET_RX_RING_DRAIN_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=4 NET_RX_FRAME_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=4 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=4 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_SOFTIRQ_ENTRY_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=4 NET_RX_SOFTIRQ_EXIT_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=4 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_GUARD_RELEASE_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=4 NET_RX_REARM_CHECK_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=4 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_REARM_ARMED_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=4 NET_PCI_IRQ_RAISED_NETRX: 8 (cpu0=8)
+[net-rx-counters] sample=4 GIC_SPI55_ACK_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=4 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=4 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=4 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=4 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=4 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=4 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=4 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=4 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=4 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=4 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=4 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=4 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=4 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=4 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=4 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=4 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=4 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=4 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=4 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=4 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=4 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=4 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=4 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=4 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=4 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=4 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=4 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=4 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=4 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=4 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=4 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=4 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=4 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=4 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=4 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=4 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=4 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=4 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=4 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=4 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=4 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=4 NET_PCI_RX_AVAIL_IDX: 36
+[net-rx-counters] sample=4 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=4 NET_PCI_RX_USED_IDX: 9
+[net-rx-counters] sample=4 NET_PCI_RX_LAST_USED_IDX: 9
+[net-rx-counters] sample=4 NET_PCI_RX_POSTED_GAP: 27
+[net-rx-counters] sample=4 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=4 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=4 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=4 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=4 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=4 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=4 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=4 NET_PCI_RX_REARM_SAMPLE_SEQ: 16
+[net-rx-counters] sample=4 NET_PCI_RX_REARM_SAMPLE0: used_idx=6 last_used_idx=6 avail_flags=0x0 raced=0
+[net-rx-counters] sample=4 NET_PCI_RX_REARM_SAMPLE1: used_idx=7 last_used_idx=7 avail_flags=0x0 raced=0
+[net-rx-counters] sample=4 NET_PCI_RX_REARM_SAMPLE2: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=4 NET_PCI_RX_REARM_SAMPLE3: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=4 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=9 last_used_idx=8 avail_flags=0x1 raced=0
+[net-rx-counters] sample=4 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=4 end
+[bwm-fps] frames_since_last=200 elapsed_ms=1002 instantaneous_fps=199
+[heartbeat] tid=12 uptime_ms=51302 kbd_nonzero=0
+[bwm-fps] frames_since_last=198 elapsed_ms=1005 instantaneous_fps=197
+[heartbeat] tid=12 uptime_ms=52304 kbd_nonzero=0
+[bwm-fps] frames_since_last=191 elapsed_ms=1004 instantaneous_fps=190
+[heartbeat] tid=12 uptime_ms=53304 kbd_nonzero=0
+[bwm-fps] frames_since_last=191 elapsed_ms=1000 instantaneous_fps=191
+[heartbeat] tid=12 uptime_ms=54305 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1001 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=55306 kbd_nonzero=0
+[bwm-fps] frames_since_last=224 elapsed_ms=1002 instantaneous_fps=223
+[heartbeat] tid=12 uptime_ms=56307 kbd_nonzero=0
+[bwm-fps] frames_since_last=198 elapsed_ms=1001 instantaneous_fps=197
+[heartbeat] tid=12 uptime_ms=57308 kbd_nonzero=0
+[bwm-fps] frames_since_last=195 elapsed_ms=1003 instantaneous_fps=194
+[heartbeat] tid=12 uptime_ms=58310 kbd_nonzero=0
+[bwm-fps] frames_since_last=187 elapsed_ms=1000 instantaneous_fps=187
+[heartbeat] tid=12 uptime_ms=59310 kbd_nonzero=0
+[bwm-fps] frames_since_last=194 elapsed_ms=1001 instantaneous_fps=193
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=324:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=9555:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=69589:kstack=0:uva=9551:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=69589:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=362:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=324:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=25860:smallint=6:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=9551:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=180:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=13699:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=8:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=3596:kstack=0:uva=13692:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=3596:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=109:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=180:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=1908:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=13692:smallint=7:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=54:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=1091:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=320:kstack=0:uva=1089:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=320:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=48:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=54:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=157:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=1089:smallint=2:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=68:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=3599:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=1914:kstack=0:uva=3598:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=1914:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=75:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=68:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=798:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=3598:smallint=1:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el1-restore-frame-elr:text=65:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el0-restore-frame-elr:text=0:kstack=0:uva=1007:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=ctx-x30:text=1642:kstack=0:uva=1003:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=ctx-elr-el1:text=1642:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-save-el1:text=81:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-restore-el1:text=65:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-save-el0:text=0:kstack=0:uva=577:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=4:source=lr-restore-el0:text=0:kstack=0:uva=1003:smallint=4:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=el1-restore-frame-elr:text=59:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=el0-restore-frame-elr:text=0:kstack=0:uva=535:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=ctx-x30:text=1729:kstack=0:uva=532:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=ctx-elr-el1:text=1729:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-save-el1:text=53:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-restore-el1:text=59:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-save-el0:text=0:kstack=0:uva=178:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=5:source=lr-restore-el0:text=0:kstack=0:uva=532:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=el1-restore-frame-elr:text=55:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=el0-restore-frame-elr:text=0:kstack=0:uva=919:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=ctx-x30:text=1517:kstack=0:uva=916:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=ctx-elr-el1:text=1517:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-save-el1:text=76:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-restore-el1:text=55:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-save-el0:text=0:kstack=0:uva=833:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=6:source=lr-restore-el0:text=0:kstack=0:uva=916:smallint=3:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=el1-restore-frame-elr:text=8:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=el0-restore-frame-elr:text=0:kstack=0:uva=86:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=ctx-x30:text=1439:kstack=0:uva=86:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=ctx-elr-el1:text=1439:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-save-el1:text=12:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-restore-el1:text=8:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-save-el0:text=0:kstack=0:uva=151:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=7:source=lr-restore-el0:text=0:kstack=0:uva=86:smallint=0:other=0]
+[heartbeat] tid=12 uptime_ms=60311 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=179630:kernel=87299:cleared=222862]
+[net-rx-counters] sample=5 begin
+[net-rx-counters] sample=5 NET_RX_MSI_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=5 NET_RX_RING_DRAIN_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=5 NET_RX_FRAME_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=5 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=5 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_SOFTIRQ_ENTRY_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=5 NET_RX_SOFTIRQ_EXIT_TOTAL: 15 (cpu0=9, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=5 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_GUARD_RELEASE_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=5 NET_RX_REARM_CHECK_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=5 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_REARM_ARMED_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=5 NET_PCI_IRQ_RAISED_NETRX: 8 (cpu0=8)
+[net-rx-counters] sample=5 GIC_SPI55_ACK_TOTAL: 8 (cpu0=8)
+[net-rx-counters] sample=5 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=5 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=5 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=5 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=5 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=5 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=5 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=5 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=5 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=5 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=5 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=5 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=5 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=5 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=5 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=5 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=5 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=5 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=5 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=5 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=5 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=5 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=5 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=5 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=5 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=5 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=5 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=5 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=5 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=5 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=5 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=5 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=5 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=5 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=5 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=5 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=5 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=5 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=5 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=5 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=5 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=5 NET_PCI_RX_AVAIL_IDX: 36
+[net-rx-counters] sample=5 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=5 NET_PCI_RX_USED_IDX: 9
+[net-rx-counters] sample=5 NET_PCI_RX_LAST_USED_IDX: 9
+[net-rx-counters] sample=5 NET_PCI_RX_POSTED_GAP: 27
+[net-rx-counters] sample=5 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=5 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=5 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=5 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=5 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=5 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=5 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=5 NET_PCI_RX_REARM_SAMPLE_SEQ: 16
+[net-rx-counters] sample=5 NET_PCI_RX_REARM_SAMPLE0: used_idx=6 last_used_idx=6 avail_flags=0x0 raced=0
+[net-rx-counters] sample=5 NET_PCI_RX_REARM_SAMPLE1: used_idx=7 last_used_idx=7 avail_flags=0x0 raced=0
+[net-rx-counters] sample=5 NET_PCI_RX_REARM_SAMPLE2: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=5 NET_PCI_RX_REARM_SAMPLE3: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=5 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=9 last_used_idx=8 avail_flags=0x1 raced=0
+[net-rx-counters] sample=5 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=5 end
+[bwm-fps] frames_since_last=200 elapsed_ms=1000 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=61335 kbd_nonzero=0
+[bwm-fps] frames_since_last=199 elapsed_ms=1001 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=62337 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1000 instantaneous_fps=204
+[heartbeat] tid=12 uptime_ms=63338 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1004 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=64339 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1002 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=65340 kbd_nonzero=0
+[bwm-fps] frames_since_last=200 elapsed_ms=1003 instantaneous_fps=199
+[heartbeat] tid=12 uptime_ms=66342 kbd_nonzero=0
+[bwm-fps] frames_since_last=199 elapsed_ms=1001 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=67342 kbd_nonzero=0
+[bwm-fps] frames_since_last=209 elapsed_ms=1003 instantaneous_fps=208
+[heartbeat] tid=12 uptime_ms=68343 kbd_nonzero=0
+[bwm-fps] frames_since_last=196 elapsed_ms=1004 instantaneous_fps=195
+[heartbeat] tid=12 uptime_ms=69343 kbd_nonzero=0
+[bwm-fps] frames_since_last=196 elapsed_ms=1005 instantaneous_fps=195
+[heartbeat] tid=12 uptime_ms=70345 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=210625:kernel=102046:cleared=260862]
+[net-rx-counters] sample=6 begin
+[net-rx-counters] sample=6 NET_RX_MSI_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=6 NET_RX_RING_DRAIN_TOTAL: 10 (cpu0=10)
+[net-rx-counters] sample=6 NET_RX_FRAME_TOTAL: 10 (cpu0=10)
+[net-rx-counters] sample=6 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=6 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_SOFTIRQ_ENTRY_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=6 NET_RX_SOFTIRQ_EXIT_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=6 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_GUARD_RELEASE_TOTAL: 17 (cpu0=11, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=6 NET_RX_REARM_CHECK_TOTAL: 17 (cpu0=11, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=6 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=6 NET_RX_REARM_ARMED_TOTAL: 17 (cpu0=11, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=6 NET_PCI_IRQ_RAISED_NETRX: 9 (cpu0=9)
+[net-rx-counters] sample=6 GIC_SPI55_ACK_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=6 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=6 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=6 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=6 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=6 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=6 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=6 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=6 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=6 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=6 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=6 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=6 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=6 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=6 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=6 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=6 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=6 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=6 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=6 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=6 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=6 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=6 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=6 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=6 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=6 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=6 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=6 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=6 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=6 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=6 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=6 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=6 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=6 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=6 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=6 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=6 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=6 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=6 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=6 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=6 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=6 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=6 NET_PCI_RX_AVAIL_IDX: 40
+[net-rx-counters] sample=6 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=6 NET_PCI_RX_USED_IDX: 10
+[net-rx-counters] sample=6 NET_PCI_RX_LAST_USED_IDX: 10
+[net-rx-counters] sample=6 NET_PCI_RX_POSTED_GAP: 30
+[net-rx-counters] sample=6 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=6 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=6 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=6 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=6 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=6 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=6 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=6 NET_PCI_RX_REARM_SAMPLE_SEQ: 17
+[net-rx-counters] sample=6 NET_PCI_RX_REARM_SAMPLE0: used_idx=10 last_used_idx=10 avail_flags=0x0 raced=0
+[net-rx-counters] sample=6 NET_PCI_RX_REARM_SAMPLE1: used_idx=7 last_used_idx=7 avail_flags=0x0 raced=0
+[net-rx-counters] sample=6 NET_PCI_RX_REARM_SAMPLE2: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=6 NET_PCI_RX_REARM_SAMPLE3: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=6 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=10 last_used_idx=9 avail_flags=0x1 raced=0
+[net-rx-counters] sample=6 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=10 last_used_idx=10 avail_flags=0x0 raced=0
+[net-rx-counters] sample=6 end
+[bwm-fps] frames_since_last=203 elapsed_ms=1000 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=71367 kbd_nonzero=0
+[bwm-fps] frames_since_last=196 elapsed_ms=1000 instantaneous_fps=196
+[heartbeat] tid=12 uptime_ms=72368 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1001 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=73369 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1003 instantaneous_fps=216
+[heartbeat] tid=12 uptime_ms=74369 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1003 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=75370 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1000 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=76371 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1004 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=77373 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1009 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=78373 kbd_nonzero=0
+[bwm-fps] frames_since_last=196 elapsed_ms=1001 instantaneous_fps=195
+[heartbeat] tid=12 uptime_ms=79375 kbd_nonzero=0
+[bwm-fps] frames_since_last=202 elapsed_ms=1001 instantaneous_fps=201
+[heartbeat] tid=12 uptime_ms=80375 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=242861:kernel=117584:cleared=300614]
+[net-rx-counters] sample=7 begin
+[net-rx-counters] sample=7 NET_RX_MSI_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=7 NET_RX_RING_DRAIN_TOTAL: 10 (cpu0=10)
+[net-rx-counters] sample=7 NET_RX_FRAME_TOTAL: 10 (cpu0=10)
+[net-rx-counters] sample=7 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=7 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_SOFTIRQ_ENTRY_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=7 NET_RX_SOFTIRQ_EXIT_TOTAL: 16 (cpu0=10, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=7 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_GUARD_RELEASE_TOTAL: 17 (cpu0=11, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=7 NET_RX_REARM_CHECK_TOTAL: 17 (cpu0=11, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=7 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=7 NET_RX_REARM_ARMED_TOTAL: 17 (cpu0=11, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=7 NET_PCI_IRQ_RAISED_NETRX: 9 (cpu0=9)
+[net-rx-counters] sample=7 GIC_SPI55_ACK_TOTAL: 9 (cpu0=9)
+[net-rx-counters] sample=7 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=7 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=7 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=7 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=7 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=7 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=7 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=7 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=7 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=7 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=7 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=7 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=7 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=7 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=7 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=7 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=7 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=7 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=7 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=7 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=7 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=7 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=7 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=7 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=7 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=7 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=7 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=7 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=7 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=7 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=7 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=7 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=7 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=7 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=7 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=7 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=7 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=7 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=7 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=7 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=7 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=7 NET_PCI_RX_AVAIL_IDX: 40
+[net-rx-counters] sample=7 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=7 NET_PCI_RX_USED_IDX: 10
+[net-rx-counters] sample=7 NET_PCI_RX_LAST_USED_IDX: 10
+[net-rx-counters] sample=7 NET_PCI_RX_POSTED_GAP: 30
+[net-rx-counters] sample=7 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=7 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=7 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=7 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=7 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=7 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=7 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE_SEQ: 17
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE0: used_idx=10 last_used_idx=10 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE1: used_idx=7 last_used_idx=7 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE2: used_idx=8 last_used_idx=8 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_REARM_SAMPLE3: used_idx=9 last_used_idx=9 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=10 last_used_idx=9 avail_flags=0x1 raced=0
+[net-rx-counters] sample=7 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=10 last_used_idx=10 avail_flags=0x0 raced=0
+[net-rx-counters] sample=7 end
+[bwm-fps] frames_since_last=235 elapsed_ms=1003 instantaneous_fps=234
+[heartbeat] tid=12 uptime_ms=81397 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1008 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=82398 kbd_nonzero=0
+[bwm-fps] frames_since_last=218 elapsed_ms=1003 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=83398 kbd_nonzero=0
+[bwm-fps] frames_since_last=214 elapsed_ms=1004 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=84400 kbd_nonzero=0
+[bwm-fps] frames_since_last=214 elapsed_ms=1002 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=85400 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1002 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=86401 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1004 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=87401 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1002 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=88402 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1000 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=89403 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1003 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=90404 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=275745:kernel=133636:cleared=341454]
+[net-rx-counters] sample=8 begin
+[net-rx-counters] sample=8 NET_RX_MSI_TOTAL: 12 (cpu0=12)
+[net-rx-counters] sample=8 NET_RX_RING_DRAIN_TOTAL: 13 (cpu0=13)
+[net-rx-counters] sample=8 NET_RX_FRAME_TOTAL: 13 (cpu0=13)
+[net-rx-counters] sample=8 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=8 NET_RX_ETHERTYPE_OTHER_TOTAL: 1 (cpu0=1)
+[net-rx-counters] sample=8 NET_RX_SOFTIRQ_ENTRY_TOTAL: 19 (cpu0=13, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=8 NET_RX_SOFTIRQ_EXIT_TOTAL: 19 (cpu0=13, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=8 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_GUARD_RELEASE_TOTAL: 20 (cpu0=14, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=8 NET_RX_REARM_CHECK_TOTAL: 20 (cpu0=14, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=8 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=8 NET_RX_REARM_ARMED_TOTAL: 20 (cpu0=14, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=8 NET_PCI_IRQ_RAISED_NETRX: 12 (cpu0=12)
+[net-rx-counters] sample=8 GIC_SPI55_ACK_TOTAL: 12 (cpu0=12)
+[net-rx-counters] sample=8 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=8 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=8 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=8 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=8 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=8 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=8 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=8 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=8 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=8 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=8 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=8 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=8 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=8 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=8 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=8 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=8 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=8 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=8 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=8 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=8 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=8 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=8 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=8 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=8 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=8 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=8 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=8 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=8 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=8 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=8 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=8 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=8 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=8 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=8 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=8 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=8 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=8 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=8 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=8 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=8 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=8 NET_PCI_RX_AVAIL_IDX: 52
+[net-rx-counters] sample=8 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=8 NET_PCI_RX_USED_IDX: 13
+[net-rx-counters] sample=8 NET_PCI_RX_LAST_USED_IDX: 13
+[net-rx-counters] sample=8 NET_PCI_RX_POSTED_GAP: 39
+[net-rx-counters] sample=8 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=8 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=8 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=8 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=8 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=8 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=8 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=8 NET_PCI_RX_REARM_SAMPLE_SEQ: 20
+[net-rx-counters] sample=8 NET_PCI_RX_REARM_SAMPLE0: used_idx=10 last_used_idx=10 avail_flags=0x0 raced=0
+[net-rx-counters] sample=8 NET_PCI_RX_REARM_SAMPLE1: used_idx=11 last_used_idx=11 avail_flags=0x0 raced=0
+[net-rx-counters] sample=8 NET_PCI_RX_REARM_SAMPLE2: used_idx=12 last_used_idx=12 avail_flags=0x0 raced=0
+[net-rx-counters] sample=8 NET_PCI_RX_REARM_SAMPLE3: used_idx=13 last_used_idx=13 avail_flags=0x0 raced=0
+[net-rx-counters] sample=8 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=13 last_used_idx=12 avail_flags=0x1 raced=0
+[net-rx-counters] sample=8 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=13 last_used_idx=13 avail_flags=0x0 raced=0
+[net-rx-counters] sample=8 end
+[bwm-fps] frames_since_last=215 elapsed_ms=1001 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=91427 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1002 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=92428 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1004 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=93428 kbd_nonzero=0
+[bwm-fps] frames_since_last=235 elapsed_ms=1000 instantaneous_fps=235
+[heartbeat] tid=12 uptime_ms=94429 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1000 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=95430 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1002 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=96432 kbd_nonzero=0
+[bwm-fps] frames_since_last=234 elapsed_ms=1001 instantaneous_fps=233
+[heartbeat] tid=12 uptime_ms=97432 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1005 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=98433 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1002 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=99434 kbd_nonzero=0
+[bwm-fps] frames_since_last=209 elapsed_ms=1001 instantaneous_fps=208
+[heartbeat] tid=12 uptime_ms=100435 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=309255:kernel=149903:cleared=382953]
+[net-rx-counters] sample=9 begin
+[net-rx-counters] sample=9 NET_RX_MSI_TOTAL: 13 (cpu0=13)
+[net-rx-counters] sample=9 NET_RX_RING_DRAIN_TOTAL: 14 (cpu0=14)
+[net-rx-counters] sample=9 NET_RX_FRAME_TOTAL: 14 (cpu0=14)
+[net-rx-counters] sample=9 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=9 NET_RX_ETHERTYPE_OTHER_TOTAL: 1 (cpu0=1)
+[net-rx-counters] sample=9 NET_RX_SOFTIRQ_ENTRY_TOTAL: 20 (cpu0=14, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=9 NET_RX_SOFTIRQ_EXIT_TOTAL: 20 (cpu0=14, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=9 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_GUARD_RELEASE_TOTAL: 21 (cpu0=15, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=9 NET_RX_REARM_CHECK_TOTAL: 21 (cpu0=15, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=9 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=9 NET_RX_REARM_ARMED_TOTAL: 21 (cpu0=15, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=9 NET_PCI_IRQ_RAISED_NETRX: 13 (cpu0=13)
+[net-rx-counters] sample=9 GIC_SPI55_ACK_TOTAL: 13 (cpu0=13)
+[net-rx-counters] sample=9 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=9 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=9 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=9 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=9 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=9 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=9 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=9 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=9 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=9 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=9 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=9 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=9 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=9 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=9 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=9 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=9 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=9 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=9 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=9 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=9 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=9 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=9 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=9 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=9 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=9 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=9 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=9 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=9 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=9 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=9 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=9 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=9 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=9 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=9 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=9 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=9 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=9 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=9 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=9 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=9 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=9 NET_PCI_RX_AVAIL_IDX: 56
+[net-rx-counters] sample=9 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=9 NET_PCI_RX_USED_IDX: 14
+[net-rx-counters] sample=9 NET_PCI_RX_LAST_USED_IDX: 14
+[net-rx-counters] sample=9 NET_PCI_RX_POSTED_GAP: 42
+[net-rx-counters] sample=9 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=9 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=9 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=9 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=9 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=9 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=9 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=9 NET_PCI_RX_REARM_SAMPLE_SEQ: 21
+[net-rx-counters] sample=9 NET_PCI_RX_REARM_SAMPLE0: used_idx=14 last_used_idx=14 avail_flags=0x0 raced=0
+[net-rx-counters] sample=9 NET_PCI_RX_REARM_SAMPLE1: used_idx=11 last_used_idx=11 avail_flags=0x0 raced=0
+[net-rx-counters] sample=9 NET_PCI_RX_REARM_SAMPLE2: used_idx=12 last_used_idx=12 avail_flags=0x0 raced=0
+[net-rx-counters] sample=9 NET_PCI_RX_REARM_SAMPLE3: used_idx=13 last_used_idx=13 avail_flags=0x0 raced=0
+[net-rx-counters] sample=9 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=14 last_used_idx=13 avail_flags=0x1 raced=0
+[net-rx-counters] sample=9 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=14 last_used_idx=14 avail_flags=0x0 raced=0
+[net-rx-counters] sample=9 end
+[bwm-fps] frames_since_last=204 elapsed_ms=1001 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=101458 kbd_nonzero=0
+[bwm-fps] frames_since_last=218 elapsed_ms=1000 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=102458 kbd_nonzero=0
+[bwm-fps] frames_since_last=205 elapsed_ms=1001 instantaneous_fps=204
+[heartbeat] tid=12 uptime_ms=103459 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1001 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=104460 kbd_nonzero=0
+[bwm-fps] frames_since_last=205 elapsed_ms=1005 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=105461 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1002 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=106462 kbd_nonzero=0
+[bwm-fps] frames_since_last=222 elapsed_ms=1003 instantaneous_fps=221
+[heartbeat] tid=12 uptime_ms=107462 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1000 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=108463 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1001 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=109464 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1002 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=110465 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=341931:kernel=165800:cleared=423434]
+[net-rx-counters] sample=10 begin
+[net-rx-counters] sample=10 NET_RX_MSI_TOTAL: 13 (cpu0=13)
+[net-rx-counters] sample=10 NET_RX_RING_DRAIN_TOTAL: 14 (cpu0=14)
+[net-rx-counters] sample=10 NET_RX_FRAME_TOTAL: 14 (cpu0=14)
+[net-rx-counters] sample=10 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=10 NET_RX_ETHERTYPE_OTHER_TOTAL: 1 (cpu0=1)
+[net-rx-counters] sample=10 NET_RX_SOFTIRQ_ENTRY_TOTAL: 20 (cpu0=14, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=10 NET_RX_SOFTIRQ_EXIT_TOTAL: 20 (cpu0=14, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=10 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_GUARD_RELEASE_TOTAL: 21 (cpu0=15, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=10 NET_RX_REARM_CHECK_TOTAL: 21 (cpu0=15, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=10 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=10 NET_RX_REARM_ARMED_TOTAL: 21 (cpu0=15, cpu1=1, cpu2=1, cpu3=1, cpu4=1, cpu5=2)
+[net-rx-counters] sample=10 NET_PCI_IRQ_RAISED_NETRX: 13 (cpu0=13)
+[net-rx-counters] sample=10 GIC_SPI55_ACK_TOTAL: 13 (cpu0=13)
+[net-rx-counters] sample=10 GICV2M_BASE_PHYS: 0x2250000
+[net-rx-counters] sample=10 GICV2M_DOORBELL_PHYS: 0x2250040
+[net-rx-counters] sample=10 GICV2M_MSI_TYPER: 0x80350040
+[net-rx-counters] sample=10 GICV2M_SPI_BASE: 53
+[net-rx-counters] sample=10 GICV2M_SPI_COUNT: 64
+[net-rx-counters] sample=10 GICV2M_NEXT_INDEX: 4
+[net-rx-counters] sample=10 GIC_SPI54_IRQ: 54
+[net-rx-counters] sample=10 GIC_SPI54_VERSION: 3
+[net-rx-counters] sample=10 GIC_SPI54_ISENABLER_BIT: 0x400000
+[net-rx-counters] sample=10 GIC_SPI54_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=10 GIC_SPI54_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=10 GIC_SPI54_IGROUPR_BIT: 0x400000
+[net-rx-counters] sample=10 GIC_SPI54_PRIORITY: 0xa0
+[net-rx-counters] sample=10 GIC_SPI54_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=10 GIC_SPI54_IROUTER: 0x0
+[net-rx-counters] sample=10 GIC_SPI54_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=10 GIC_SPI54_GICD_CTLR: 0x53
+[net-rx-counters] sample=10 GIC_SPI55_IRQ: 55
+[net-rx-counters] sample=10 GIC_SPI55_VERSION: 3
+[net-rx-counters] sample=10 GIC_SPI55_ISENABLER_BIT: 0x800000
+[net-rx-counters] sample=10 GIC_SPI55_ISPENDR_BIT: 0x0
+[net-rx-counters] sample=10 GIC_SPI55_ISACTIVER_BIT: 0x0
+[net-rx-counters] sample=10 GIC_SPI55_IGROUPR_BIT: 0x800000
+[net-rx-counters] sample=10 GIC_SPI55_PRIORITY: 0xa0
+[net-rx-counters] sample=10 GIC_SPI55_ICFGR_REG: 0x2a800
+[net-rx-counters] sample=10 GIC_SPI55_IROUTER: 0x0
+[net-rx-counters] sample=10 GIC_SPI55_ITARGETSR_BYTE: 0x0
+[net-rx-counters] sample=10 GIC_SPI55_GICD_CTLR: 0x53
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_DONE: 1
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_IRQ: 55
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_DOORBELL: 0x2250040
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_BEFORE_PEND: 0x0
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_AFTER_WRITE_PEND: 0x800000
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_AFTER_WAIT_PEND: 0x0
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_ACK_BEFORE: 0
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_ACK_AFTER: 1
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_MSI_BEFORE: 0
+[net-rx-counters] sample=10 MANUAL_GICV2M_TEST_MSI_AFTER: 1
+[net-rx-counters] sample=10 NET_PCI_DEVICE_STATUS: 0xf
+[net-rx-counters] sample=10 NET_PCI_ISR_STATUS: 0x0
+[net-rx-counters] sample=10 NET_PCI_DEVICE_FEATURES: 0x6187bfa3
+[net-rx-counters] sample=10 NET_PCI_GUEST_FEATURES: 0x10020
+[net-rx-counters] sample=10 NET_PCI_RX_QUEUE_PFN: 0x4123b
+[net-rx-counters] sample=10 NET_PCI_TX_QUEUE_PFN: 0x4123e
+[net-rx-counters] sample=10 NET_PCI_RX_QUEUE_SIZE: 256
+[net-rx-counters] sample=10 NET_PCI_TX_QUEUE_SIZE: 256
+[net-rx-counters] sample=10 NET_PCI_RX_QUEUE_ALIGN: 4096
+[net-rx-counters] sample=10 NET_PCI_RX_QUEUE_VECTOR: 0x0
+[net-rx-counters] sample=10 NET_PCI_TX_QUEUE_VECTOR: 0xffff
+[net-rx-counters] sample=10 NET_PCI_RX_AVAIL_FLAGS: 0x0
+[net-rx-counters] sample=10 NET_PCI_RX_AVAIL_IDX: 56
+[net-rx-counters] sample=10 NET_PCI_RX_USED_FLAGS: 0x1
+[net-rx-counters] sample=10 NET_PCI_RX_USED_IDX: 14
+[net-rx-counters] sample=10 NET_PCI_RX_LAST_USED_IDX: 14
+[net-rx-counters] sample=10 NET_PCI_RX_POSTED_GAP: 42
+[net-rx-counters] sample=10 NET_PCI_RX_DESC0: addr=0x4126aa00 len=1524 flags=0x2
+[net-rx-counters] sample=10 NET_PCI_RX_DESC1: addr=0x4126b000 len=1524 flags=0x2
+[net-rx-counters] sample=10 NET_PCI_RX_DESC2: addr=0x4126b600 len=1524 flags=0x2
+[net-rx-counters] sample=10 NET_PCI_RX_DESC3: addr=0x4126bc00 len=1524 flags=0x2
+[net-rx-counters] sample=10 NET_PCI_RX_RING_HEADS: 0,1,2,3
+[net-rx-counters] sample=10 NET_RX_PROCESSING_HELD: 0
+[net-rx-counters] sample=10 NET_RX_PENDING_WHILE_PROCESSING: 0
+[net-rx-counters] sample=10 NET_PCI_RX_REARM_SAMPLE_SEQ: 21
+[net-rx-counters] sample=10 NET_PCI_RX_REARM_SAMPLE0: used_idx=14 last_used_idx=14 avail_flags=0x0 raced=0
+[net-rx-counters] sample=10 NET_PCI_RX_REARM_SAMPLE1: used_idx=11 last_used_idx=11 avail_flags=0x0 raced=0
+[net-rx-counters] sample=10 NET_PCI_RX_REARM_SAMPLE2: used_idx=12 last_used_idx=12 avail_flags=0x0 raced=0
+[net-rx-counters] sample=10 NET_PCI_RX_REARM_SAMPLE3: used_idx=13 last_used_idx=13 avail_flags=0x0 raced=0
+[net-rx-counters] sample=10 NET_PCI_RX_SOFTIRQ_ENTRY_SAMPLE: used_idx=14 last_used_idx=13 avail_flags=0x1 raced=0
+[net-rx-counters] sample=10 NET_PCI_RX_SOFTIRQ_EXIT_SAMPLE: used_idx=14 last_used_idx=14 avail_flags=0x0 raced=0
+[net-rx-counters] sample=10 end
+[bwm-fps] frames_since_last=220 elapsed_ms=1000 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=111488 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1001 instantaneous_fps=216
+[heartbeat] tid=12 uptime_ms=112490 kbd_nonzero=0
+[bwm-fps] frames_since_last=202 elapsed_ms=1002 instantaneous_fps=201
+[heartbeat] tid=12 uptime_ms=113491 kbd_nonzero=0
+[bwm-fps] frames_since_last=226 elapsed_ms=1005 instantaneous_fps=224
+[heartbeat] tid=12 uptime_ms=114492 kbd_nonzero=0
+[bwm-fps] frames_since_last=221 elapsed_ms=1002 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=115494 kbd_nonzero=0
+[bwm-fps] frames_since_last=216 elapsed_ms=1000 instantaneous_fps=216
+[heartbeat] tid=12 uptime_ms=116494 kbd_nonzero=0
+[bwm-fps] frames_since_last=227 elapsed_ms=1005 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=117495 kbd_nonzero=0
+[bwm-fps] frames_since_last=226 elapsed_ms=1002 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=118497 kbd_nonzero=0
+[bwm-fps] frames_since_last=216 elapsed_ms=1003 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=119497 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1005 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=120498 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1001 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=121499 kbd_nonzero=0
+[bwm-fps] frames_since_last=226 elapsed_ms=1003 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=122500 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1004 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=123500 kbd_nonzero=0
+[bwm-fps] frames_since_last=194 elapsed_ms=1000 instantaneous_fps=194
+[heartbeat] tid=12 uptime_ms=124501 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1005 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=125502 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1001 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=126504 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1003 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=127504 kbd_nonzero=0
+[bwm-fps] frames_since_last=224 elapsed_ms=1002 instantaneous_fps=223
+[heartbeat] tid=12 uptime_ms=128505 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1001 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=129506 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1003 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=130507 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1000 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=131508 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1002 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=132509 kbd_nonzero=0
+[bwm-fps] frames_since_last=245 elapsed_ms=1001 instantaneous_fps=244
+[heartbeat] tid=12 uptime_ms=133510 kbd_nonzero=0
+[bwm-fps] frames_since_last=216 elapsed_ms=1002 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=134511 kbd_nonzero=0
+[bwm-fps] frames_since_last=218 elapsed_ms=1004 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=135512 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1000 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=136512 kbd_nonzero=0
+[bwm-fps] frames_since_last=224 elapsed_ms=1000 instantaneous_fps=224
+[heartbeat] tid=12 uptime_ms=137513 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1001 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=138514 kbd_nonzero=0
+[bwm-fps] frames_since_last=222 elapsed_ms=1001 instantaneous_fps=221
+[heartbeat] tid=12 uptime_ms=139515 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1002 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=140516 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1001 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=141517 kbd_nonzero=0
+[bwm-fps] frames_since_last=206 elapsed_ms=1001 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=142518 kbd_nonzero=0
+[bwm-fps] frames_since_last=197 elapsed_ms=1000 instantaneous_fps=197
+[heartbeat] tid=12 uptime_ms=143519 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1003 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=144520 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1000 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=145521 kbd_nonzero=0
+[bwm-fps] frames_since_last=225 elapsed_ms=1003 instantaneous_fps=224
+[heartbeat] tid=12 uptime_ms=146522 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1006 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=147522 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1000 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=148523 kbd_nonzero=0
+[bwm-fps] frames_since_last=216 elapsed_ms=1003 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=149525 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1006 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=150525 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1002 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=151525 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1007 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=152526 kbd_nonzero=0
+[bwm-fps] frames_since_last=226 elapsed_ms=1005 instantaneous_fps=224
+[heartbeat] tid=12 uptime_ms=153527 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1005 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=154527 kbd_nonzero=0
+[bwm-fps] frames_since_last=223 elapsed_ms=1002 instantaneous_fps=222
+[heartbeat] tid=12 uptime_ms=155529 kbd_nonzero=0
+[bwm-fps] frames_since_last=214 elapsed_ms=1004 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=156530 kbd_nonzero=0
+[bwm-fps] frames_since_last=194 elapsed_ms=1000 instantaneous_fps=194
+[heartbeat] tid=12 uptime_ms=157530 kbd_nonzero=0
+[bwm-fps] frames_since_last=198 elapsed_ms=1002 instantaneous_fps=197
+[heartbeat] tid=12 uptime_ms=158531 kbd_nonzero=0
+[bwm-fps] frames_since_last=205 elapsed_ms=1005 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=159531 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1003 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=160533 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1000 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=161533 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1003 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=162535 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1002 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=163536 kbd_nonzero=0
+[bwm-fps] frames_since_last=218 elapsed_ms=1002 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=164537 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1002 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=165538 kbd_nonzero=0
+[bwm-fps] frames_since_last=256 elapsed_ms=1000 instantaneous_fps=256
+[heartbeat] tid=12 uptime_ms=166539 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1001 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=167539 kbd_nonzero=0
+[bwm-fps] frames_since_last=206 elapsed_ms=1000 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=168539 kbd_nonzero=0
+[bwm-fps] frames_since_last=206 elapsed_ms=1003 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=169540 kbd_nonzero=0
+[bwm-fps] frames_since_last=198 elapsed_ms=1001 instantaneous_fps=197
+[heartbeat] tid=12 uptime_ms=170541 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1005 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=171543 kbd_nonzero=0
+[bwm-fps] frames_since_last=243 elapsed_ms=1001 instantaneous_fps=242
+[heartbeat] tid=12 uptime_ms=172544 kbd_nonzero=0
+[bwm-fps] frames_since_last=231 elapsed_ms=1000 instantaneous_fps=231
+[heartbeat] tid=12 uptime_ms=173544 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1000 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=174545 kbd_nonzero=0
+[bwm-fps] frames_since_last=226 elapsed_ms=1002 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=175546 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1002 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=176547 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1001 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=177547 kbd_nonzero=0
+[bwm-fps] frames_since_last=214 elapsed_ms=1001 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=178548 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1001 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=179550 kbd_nonzero=0
+[bwm-fps] frames_since_last=206 elapsed_ms=1001 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=180550 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1002 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=181552 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1006 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=182552 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1004 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=183552 kbd_nonzero=0
+[bwm-fps] frames_since_last=214 elapsed_ms=1003 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=184553 kbd_nonzero=0
+[bwm-fps] frames_since_last=206 elapsed_ms=1003 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=185554 kbd_nonzero=0
+[bwm-fps] frames_since_last=205 elapsed_ms=1001 instantaneous_fps=204
+[heartbeat] tid=12 uptime_ms=186554 kbd_nonzero=0
+[bwm-fps] frames_since_last=221 elapsed_ms=1002 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=187556 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1002 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=188556 kbd_nonzero=0
+[bwm-fps] frames_since_last=227 elapsed_ms=1000 instantaneous_fps=227
+[heartbeat] tid=12 uptime_ms=189557 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1000 instantaneous_fps=201
+[heartbeat] tid=12 uptime_ms=190558 kbd_nonzero=0
+[bwm-fps] frames_since_last=206 elapsed_ms=1000 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=191559 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1003 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=192560 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1004 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=193562 kbd_nonzero=0
+[bwm-fps] frames_since_last=222 elapsed_ms=1002 instantaneous_fps=221
+[heartbeat] tid=12 uptime_ms=194562 kbd_nonzero=0
+[bwm-fps] frames_since_last=206 elapsed_ms=1003 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=195563 kbd_nonzero=0
+[bwm-fps] frames_since_last=228 elapsed_ms=1002 instantaneous_fps=227
+[heartbeat] tid=12 uptime_ms=196564 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1000 instantaneous_fps=208
+[heartbeat] tid=12 uptime_ms=197564 kbd_nonzero=0
+[bwm-fps] frames_since_last=201 elapsed_ms=1002 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=198566 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1000 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=199566 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1005 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=200567 kbd_nonzero=0
+[bwm-fps] frames_since_last=221 elapsed_ms=1003 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=201568 kbd_nonzero=0
+[bwm-fps] frames_since_last=214 elapsed_ms=1000 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=202570 kbd_nonzero=0
+[bwm-fps] frames_since_last=250 elapsed_ms=1000 instantaneous_fps=250
+[heartbeat] tid=12 uptime_ms=203571 kbd_nonzero=0
+[bwm-fps] frames_since_last=216 elapsed_ms=1000 instantaneous_fps=216
+[heartbeat] tid=12 uptime_ms=204572 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1007 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=205572 kbd_nonzero=0
+[bwm-fps] frames_since_last=222 elapsed_ms=1005 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=206573 kbd_nonzero=0
+[bwm-fps] frames_since_last=216 elapsed_ms=1001 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=207573 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1004 instantaneous_fps=216
+[heartbeat] tid=12 uptime_ms=208574 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1003 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=209575 kbd_nonzero=0
+[bwm-fps] frames_since_last=230 elapsed_ms=1002 instantaneous_fps=229
+[heartbeat] tid=12 uptime_ms=210576 kbd_nonzero=0
+[bwm-fps] frames_since_last=234 elapsed_ms=1001 instantaneous_fps=233
+[heartbeat] tid=12 uptime_ms=211576 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1002 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=212578 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1002 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=213579 kbd_nonzero=0
+[bwm-fps] frames_since_last=223 elapsed_ms=1002 instantaneous_fps=222
+[heartbeat] tid=12 uptime_ms=214580 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1012 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=215581 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1001 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=216583 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1004 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=217584 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1001 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=218584 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1001 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=219585 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1000 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=220586 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1003 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=221587 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1002 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=222588 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1000 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=223588 kbd_nonzero=0
+[bwm-fps] frames_since_last=205 elapsed_ms=1004 instantaneous_fps=204
+[heartbeat] tid=12 uptime_ms=224589 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1003 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=225591 kbd_nonzero=0
+[bwm-fps] frames_since_last=205 elapsed_ms=1003 instantaneous_fps=204
+[heartbeat] tid=12 uptime_ms=226591 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1005 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=227592 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1001 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=228593 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1001 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=229595 kbd_nonzero=0
+[bwm-fps] frames_since_last=225 elapsed_ms=1000 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=230595 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1004 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=231596 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1005 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=232598 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1000 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=233599 kbd_nonzero=0
+[bwm-fps] frames_since_last=223 elapsed_ms=1001 instantaneous_fps=222
+[heartbeat] tid=12 uptime_ms=234599 kbd_nonzero=0
+[bwm-fps] frames_since_last=230 elapsed_ms=1001 instantaneous_fps=229
+[heartbeat] tid=12 uptime_ms=235600 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1002 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=236601 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1003 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=237603 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1002 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=238603 kbd_nonzero=0
+[bwm-fps] frames_since_last=226 elapsed_ms=1001 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=239604 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1001 instantaneous_fps=210
+[heartbeat] tid=12 uptime_ms=240604 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1001 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=241605 kbd_nonzero=0
+[bwm-fps] frames_since_last=218 elapsed_ms=1000 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=242606 kbd_nonzero=0
+[bwm-fps] frames_since_last=202 elapsed_ms=1001 instantaneous_fps=201
+[heartbeat] tid=12 uptime_ms=243607 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1000 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=244609 kbd_nonzero=0
+[bwm-fps] frames_since_last=214 elapsed_ms=1000 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=245609 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1002 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=246610 kbd_nonzero=0
+[bwm-fps] frames_since_last=226 elapsed_ms=1002 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=247611 kbd_nonzero=0
+[bwm-fps] frames_since_last=218 elapsed_ms=1002 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=248611 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1006 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=249612 kbd_nonzero=0
+[bwm-fps] frames_since_last=252 elapsed_ms=1001 instantaneous_fps=251
+[heartbeat] tid=12 uptime_ms=250612 kbd_nonzero=0
+[bwm-fps] frames_since_last=235 elapsed_ms=1000 instantaneous_fps=235
+[heartbeat] tid=12 uptime_ms=251612 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1003 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=252614 kbd_nonzero=0
+[bwm-fps] frames_since_last=224 elapsed_ms=1000 instantaneous_fps=224
+[heartbeat] tid=12 uptime_ms=253615 kbd_nonzero=0
+[bwm-fps] frames_since_last=200 elapsed_ms=1000 instantaneous_fps=200
+[heartbeat] tid=12 uptime_ms=254617 kbd_nonzero=0
+[bwm-fps] frames_since_last=227 elapsed_ms=1001 instantaneous_fps=226
+[heartbeat] tid=12 uptime_ms=255618 kbd_nonzero=0
+[bwm-fps] frames_since_last=233 elapsed_ms=1000 instantaneous_fps=233
+[heartbeat] tid=12 uptime_ms=256618 kbd_nonzero=0
+[bwm-fps] frames_since_last=230 elapsed_ms=1000 instantaneous_fps=230
+[heartbeat] tid=12 uptime_ms=257620 kbd_nonzero=0
+[bwm-fps] frames_since_last=222 elapsed_ms=1002 instantaneous_fps=221
+[heartbeat] tid=12 uptime_ms=258621 kbd_nonzero=0
+[bwm-fps] frames_since_last=216 elapsed_ms=1003 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=259623 kbd_nonzero=0
+[bwm-fps] frames_since_last=223 elapsed_ms=1003 instantaneous_fps=222
+[heartbeat] tid=12 uptime_ms=260624 kbd_nonzero=0
+[bwm-fps] frames_since_last=205 elapsed_ms=1002 instantaneous_fps=204
+[heartbeat] tid=12 uptime_ms=261625 kbd_nonzero=0
+[bwm-fps] frames_since_last=220 elapsed_ms=1004 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=262627 kbd_nonzero=0
+[bwm-fps] frames_since_last=209 elapsed_ms=1001 instantaneous_fps=208
+[heartbeat] tid=12 uptime_ms=263628 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1000 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=264629 kbd_nonzero=0
+[bwm-fps] frames_since_last=218 elapsed_ms=1003 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=265630 kbd_nonzero=0
+[bwm-fps] frames_since_last=223 elapsed_ms=1000 instantaneous_fps=223
+[heartbeat] tid=12 uptime_ms=266632 kbd_nonzero=0
+[bwm-fps] frames_since_last=210 elapsed_ms=1001 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=267633 kbd_nonzero=0
+[bwm-fps] frames_since_last=224 elapsed_ms=1003 instantaneous_fps=223
+[heartbeat] tid=12 uptime_ms=268634 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1004 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=269635 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1002 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=270635 kbd_nonzero=0
+[bwm-fps] frames_since_last=203 elapsed_ms=1000 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=271636 kbd_nonzero=0
+[bwm-fps] frames_since_last=224 elapsed_ms=1001 instantaneous_fps=223
+[heartbeat] tid=12 uptime_ms=272637 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1001 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=273639 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1002 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=274639 kbd_nonzero=0
+[bwm-fps] frames_since_last=218 elapsed_ms=1001 instantaneous_fps=217
+[heartbeat] tid=12 uptime_ms=275640 kbd_nonzero=0
+[bwm-fps] frames_since_last=225 elapsed_ms=1002 instantaneous_fps=224
+[heartbeat] tid=12 uptime_ms=276641 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1001 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=277641 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1000 instantaneous_fps=219
+[heartbeat] tid=12 uptime_ms=278643 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1001 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=279643 kbd_nonzero=0
+[bwm-fps] frames_since_last=215 elapsed_ms=1001 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=280644 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1003 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=281645 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1005 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=282645 kbd_nonzero=0
+[bwm-fps] frames_since_last=225 elapsed_ms=1000 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=283646 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1003 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=284648 kbd_nonzero=0
+[bwm-fps] frames_since_last=239 elapsed_ms=1003 instantaneous_fps=238
+[heartbeat] tid=12 uptime_ms=285648 kbd_nonzero=0
+[bwm-fps] frames_since_last=233 elapsed_ms=1000 instantaneous_fps=233
+[heartbeat] tid=12 uptime_ms=286650 kbd_nonzero=0
+[bwm-fps] frames_since_last=224 elapsed_ms=1000 instantaneous_fps=224
+[heartbeat] tid=12 uptime_ms=287650 kbd_nonzero=0
+[bwm-fps] frames_since_last=202 elapsed_ms=1016 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=288651 kbd_nonzero=0
+[bwm-fps] frames_since_last=247 elapsed_ms=1002 instantaneous_fps=246
+[heartbeat] tid=12 uptime_ms=289653 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1001 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=290654 kbd_nonzero=0
+[bwm-fps] frames_since_last=214 elapsed_ms=1000 instantaneous_fps=214
+[heartbeat] tid=12 uptime_ms=291656 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1003 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=292657 kbd_nonzero=0
+[bwm-fps] frames_since_last=204 elapsed_ms=1001 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=293658 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1003 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=294659 kbd_nonzero=0
+[bwm-fps] frames_since_last=235 elapsed_ms=1001 instantaneous_fps=234
+[heartbeat] tid=12 uptime_ms=295660 kbd_nonzero=0
+[bwm-fps] frames_since_last=211 elapsed_ms=1000 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=296660 kbd_nonzero=0
+[bwm-fps] frames_since_last=202 elapsed_ms=1001 instantaneous_fps=201
+[heartbeat] tid=12 uptime_ms=297661 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1003 instantaneous_fps=216
+[heartbeat] tid=12 uptime_ms=298662 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1001 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=299662 kbd_nonzero=0
+[bwm-fps] frames_since_last=202 elapsed_ms=1004 instantaneous_fps=201
+[heartbeat] tid=12 uptime_ms=300662 kbd_nonzero=0
+[bwm-fps] frames_since_last=240 elapsed_ms=1000 instantaneous_fps=240
+[heartbeat] tid=12 uptime_ms=301663 kbd_nonzero=0
+[bwm-fps] frames_since_last=219 elapsed_ms=1002 instantaneous_fps=218
+[heartbeat] tid=12 uptime_ms=302664 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1003 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=303665 kbd_nonzero=0
+[bwm-fps] frames_since_last=223 elapsed_ms=1001 instantaneous_fps=222
+[heartbeat] tid=12 uptime_ms=304666 kbd_nonzero=0
+[bwm-fps] frames_since_last=225 elapsed_ms=1003 instantaneous_fps=224
+[heartbeat] tid=12 uptime_ms=305667 kbd_nonzero=0
+[bwm-fps] frames_since_last=221 elapsed_ms=1001 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=306667 kbd_nonzero=0
+[bwm-fps] frames_since_last=223 elapsed_ms=1002 instantaneous_fps=222
+[heartbeat] tid=12 uptime_ms=307667 kbd_nonzero=0
+[bwm-fps] frames_since_last=205 elapsed_ms=1006 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=308668 kbd_nonzero=0
+[bwm-fps] frames_since_last=217 elapsed_ms=1002 instantaneous_fps=216
+[heartbeat] tid=12 uptime_ms=309670 kbd_nonzero=0
+[bwm-fps] frames_since_last=236 elapsed_ms=1001 instantaneous_fps=235
+[heartbeat] tid=12 uptime_ms=310671 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1006 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=311671 kbd_nonzero=0
+[bwm-fps] frames_since_last=213 elapsed_ms=1000 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=312673 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1000 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=313673 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1005 instantaneous_fps=205
+[heartbeat] tid=12 uptime_ms=314674 kbd_nonzero=0
+[bwm-fps] frames_since_last=207 elapsed_ms=1004 instantaneous_fps=206
+[heartbeat] tid=12 uptime_ms=315676 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1000 instantaneous_fps=212
+[heartbeat] tid=12 uptime_ms=316677 kbd_nonzero=0
+[bwm-fps] frames_since_last=200 elapsed_ms=1003 instantaneous_fps=199
+[heartbeat] tid=12 uptime_ms=317678 kbd_nonzero=0
+[bwm-fps] frames_since_last=212 elapsed_ms=1001 instantaneous_fps=211
+[heartbeat] tid=12 uptime_ms=318678 kbd_nonzero=0
+[bwm-fps] frames_since_last=197 elapsed_ms=1002 instantaneous_fps=196
+[heartbeat] tid=12 uptime_ms=319680 kbd_nonzero=0
+[bwm-fps] frames_since_last=199 elapsed_ms=1000 instantaneous_fps=199
+[heartbeat] tid=12 uptime_ms=320681 kbd_nonzero=0
+[bwm-fps] frames_since_last=208 elapsed_ms=1002 instantaneous_fps=207
