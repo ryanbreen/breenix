@@ -159,6 +159,32 @@ final class ImporterTests: XCTestCase {
         XCTAssertEqual(try store.readIndex().runs.count, 4)
     }
 
+    func testGateTmpTreeImportUsesSidecarEvenWithoutConventionallyNamedSerial() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gateTmp = root.appendingPathComponent("gate-tmp", isDirectory: true)
+        let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
+        let iteration = gateTmp.appendingPathComponent("breenix_aarch64_strict_1", isDirectory: true)
+        try FileManager.default.createDirectory(at: iteration, withIntermediateDirectories: true)
+        try Data("Breenix ARM64 Kernel Starting\n".utf8).write(to: iteration.appendingPathComponent("console.log"))
+        let start = Date(timeIntervalSince1970: 1_788_633_600)
+        let provenance = GateProvenance(schemaVersion: 1, id: UUID().uuidString,
+            arch: .aarch64, profile: "strict", verdict: "PASS", exitCode: 0,
+            startedAt: start, endedAt: start.addingTimeInterval(20),
+            command: ["gate.sh"], serials: ["console.log"], captures: [])
+        try RunStore.encoder.encode(provenance).write(to: iteration.appendingPathComponent("run-inspector.json"))
+
+        let treeResult = try Importer(store: store).importPath(gateTmp)
+        XCTAssertEqual(treeResult.imported.count, 1,
+            "sidecar-declared evidence under a non-conventional name must import from a tree scan")
+        XCTAssertEqual(treeResult.skipped, [])
+
+        let directStore = RunStore(root: root.appendingPathComponent("store2", isDirectory: true))
+        let directResult = try Importer(store: directStore).importPath(iteration)
+        XCTAssertEqual(directResult.imported.count, 1,
+            "a direct import of the same directory already succeeds -- the tree scan must match it")
+    }
+
     func testGateTmpTreeImportsOneRunPerIterationDirectory() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

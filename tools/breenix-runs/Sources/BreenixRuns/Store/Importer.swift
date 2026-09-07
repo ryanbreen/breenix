@@ -236,19 +236,27 @@ public struct Importer {
         consumedPreservedFailures: inout Set<Int>,
         into result: inout ImportPathResult
     ) throws {
+        if try GateProvenance.read(from: directory) != nil {
+            // A sidecar governs this directory's evidence regardless of
+            // whether its declared serial name matches the conventional
+            // serial*.txt/.log scan -- consult it directly instead of
+            // bailing out on an empty conventional scan.
+            if let first = try serialSources(in: directory).first {
+                let firstSerialData = try Data(contentsOf: first.url)
+                for index in preservedFailuresBySerialData[firstSerialData] ?? [] {
+                    consumedPreservedFailures.insert(index)
+                }
+            }
+            try importGateIteration(directory, info: info, into: &result)
+            return
+        }
+
         let serials = try serialSources(in: directory)
         guard !serials.isEmpty else {
             return
         }
 
         let firstSerialData = try Data(contentsOf: serials[0].url)
-        if try GateProvenance.read(from: directory) != nil {
-            for index in preservedFailuresBySerialData[firstSerialData] ?? [] {
-                consumedPreservedFailures.insert(index)
-            }
-            try importGateIteration(directory, info: info, into: &result)
-            return
-        }
         if let matchingIndexes = preservedFailuresBySerialData[firstSerialData],
            let matchingIndex = matchingIndexes.first(where: { !consumedPreservedFailures.contains($0) }) {
             consumedPreservedFailures.insert(matchingIndex)
