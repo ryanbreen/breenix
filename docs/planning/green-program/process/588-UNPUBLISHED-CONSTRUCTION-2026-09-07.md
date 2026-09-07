@@ -356,3 +356,107 @@ New serials under `docs/planning/green-program/process/serials/588/`:
   bytes' behavior under load.
 * No Parallels boot was run for this pass; the round's aarch64 evidence
   beyond the 1 strict boot above is unchanged from the prior section.
+
+## Landing (2026-09-07)
+
+Before opening the landing PR, the review-r3 prose fixes (E-1/E-2/E-3/E-5/E-7/
+E-11/E-13, commit `1fbf1709`) were merged with `origin/main` via `git merge`
+(`be7f6098`). The merge applied with one textual conflict, in
+`tests/teardown_structure.rs`: both sides had appended new `#[test]` functions
+near the end of the same 17,000+-line file with no overlapping logic: this
+round's `validate_unpublished_construction_ownership` family stayed intact,
+main's own additions (its own new suites, plus the `blocking_fd_eagain_structure`
+and `pipe_fifo_blocking_structure` files main added since this branch's fork
+point) landed alongside it, and both are proven correct below by the structure
+run rather than by the diff alone. 23 `kernel/src/` files carried non-conflicting
+changes from main (no `kernel/` conflict, so R16's stop condition did not fire);
+none of the E-5/E-2/E-13 closure's citations survived unchanged -- 6 of 6 had
+drifted from the 1656 lines the merge added to `teardown.rs` and smaller shifts
+in `manager.rs` -- and are re-derived in `2a4a9ce7`, which also documents the
+one citation whose underlying code shape changed (`remove_process` no longer
+contains the `drop(...)` call itself; the caller in `hold_init_publication`
+does).
+
+**R182 fixture-replay check.** The merge did not add a check to any gate's
+`score_serial`; this round's own `INIT_DESIGNATION_ORACLE_LITERAL` change
+(`construct_residual` 2->0, plus two new fields, `construct_leaf_balance` and
+`construct_commit_balance`) predates the merge and already carries its own
+fixture update. Four structure suites replay a committed serial through the
+strict gate's real `score_serial` via `BREENIX_STRICT_SCORE_ONLY`
+(`tests/tty_irq_fg_structure.rs`, `tests/tty_irq_pm_structure.rs`,
+`tests/ttbr0_shadow_reconciliation_structure.rs`,
+`tests/loopback_pump_structure.rs`); every one of them sources its strict-gate
+"green" fixture from the same file, `tests/fixtures/udp-socket-lock-aarch64-serial.txt`,
+which this branch's own first commit (`66ef1730`) already carries the current
+marker shape for (checked directly: line 509 of that fixture reads
+`construct_residual=0:...:construct_leaf_balance=0:construct_commit_balance=0`,
+byte-for-byte the literal `score_serial` requires). The production-profile
+fixtures the same four suites also replay (`docs/planning/green-program/
+aarch64-testing/serials/slice3e/02-prod-boot1-serial.txt` and
+`03-red-on-main-oracle-serial.txt`) are untouched because
+`run-aarch64-prod-profile-boot-test.sh` never checks `INIT_DESIGNATION_ORACLE`
+at all (checked: zero matches). No fixture needed re-recording; the structure
+run below is this claim's own proof, since a stale fixture would show up there
+as a failed assertion, not merely a missing marker.
+
+**Structure suites.** `bash scripts/run-structure-tests.sh`: 64 of 64
+`tests/*_structure.rs` files at the merged HEAD (62 from this branch's own
+history, plus the 2 the merge brought in), 0 failed -- including
+`teardown_structure` (103 tests) and all 4 of the R182 fixture-replay suites
+above. Full transcript:
+`docs/planning/green-program/process/serials/588/structure-tests-64of64-landing.txt`.
+
+**One aarch64 strict boot.** `docker/qemu/run-aarch64-boot-test-strict.sh 1`
+on the merged HEAD: preflight `structure_suites=64/64`, `PASS: 1/1 boots
+succeeded`. Gate transcript and serial:
+`docs/planning/green-program/process/serials/588/green-aarch64-strict-landing-gate.txt`,
+`.../green-aarch64-strict-landing-boot1.txt`.
+
+**One x86 boot, beast (`/root/breenix-588`).** Three attempts at the merged
+HEAD (`be7f6098`, then `2a4a9ce7` for the third once the citation-fix commit
+landed -- a docs-only change with no effect on the kernel build):
+
+1. Preflight red, 1 of 64 suites: `context_restore_structure` timed out under
+   the parallel preflight (five `fatal_*` tests each logged "has been running
+   for over 60 seconds") while another lane's x86 gate was booting
+   concurrently on the same shared container. Re-run standalone
+   (`cargo test --release --test context_restore_structure`, no concurrent
+   load): 98 passed, 0 failed, finished in 74.32s -- the same tests that
+   looked stalled under contention completed once given the host's full
+   attention, the same host-load-sensitive shape this round's own "Not
+   claimed (fix pass)" section already documents for this exact suite.
+2. Preflight green 64/64, boot reached
+   `[TEST:process:init_designation_oracle:PASS]` with the pinned x86 marker,
+   then panicked in `kernel/src/task/softirq_tests.rs:228`
+   (`ksoftirqd should have processed deferred softirqs`) -- the exact,
+   already-filed signature of issue #891, an intermittent ksoftirqd-deferral
+   flake on this beast container unrelated to page-table construction.
+3. Preflight green 64/64, `x86 frame-custody gate run 1: PASS`,
+   `[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=0:
+   construct_residual=0:construct_roots_retired=2:construct_leaf_balance=0:
+   construct_commit_balance=0:...]` matching the pinned literal exactly,
+   `[TOMBSTONE_JOIN_ORACLE:x86:...:PASS]`, no panic. Gate transcript and
+   serial:
+   `docs/planning/green-program/process/serials/588/green-x86-boot-tests-landing-gate.txt`,
+   `.../green-x86-boot-tests-landing-serial.txt`.
+
+Both x86 preflight and boot reds above are attributed to a cause already on
+record before this landing pass ran (host-load contention, reproduced passing
+standalone; issue #891, already filed) and neither reads anything this round
+changes; no x86 red in this landing pass is unattributed.
+
+### Claim-lint (landing)
+
+    claim-lint: python3 scripts/claim-lint.py -> exit 0
+    claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/msg-citation-fix.txt -> exit 0
+    claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/msg-landing.txt -> exit 0
+
+### Not claimed (landing)
+
+* The context_restore_structure preflight timeout and the #891 panic were
+  each observed once this landing pass; neither was independently
+  re-reproduced a second time beyond the standalone re-run described above.
+  Both match signatures already on record (this round's own fix-pass section
+  for the former, issue #891 for the latter), which is why they are
+  attributed rather than re-investigated here, not because a second
+  reproduction was run and is being omitted.
