@@ -1,0 +1,122 @@
+[GATE_PREFLIGHT:structure_suites=64/64:critical_path_lines=260:pinned=120]
+Guard: kernel FP/SIMD instruction check
+  ELF:       /Users/wrb/fun/code/breenix/.claude/worktrees/wf_25708663-110-10/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_25708663-110-10/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /Users/wrb/fun/code/breenix/.claude/worktrees/wf_25708663-110-10/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   793d3f68b7ec67e988f7b2a3260f5fa4ef069b1b952bb04ddfbb9d68bca7b17a
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h61ecf85f7d566472E
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_25708663-110-10/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/.claude/worktrees/wf_25708663-110-10/target/ext2-aarch64.img
+Iterations: 10
+Requirement: 100% success rate (all 10 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 92963 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788794855019-1788794914295:qemu_at_start=0:load_at_start=10.24:qemu_at_end=1:load_at_end=7.00:qemu_cpu_s=91.69:guest_uptime_ms=58769:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 95806 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+  [GATE_BOOT_FACTS:boot=2:host_ms=1788794915604-1788794975010:qemu_at_start=0:load_at_start=7.00:qemu_at_end=1:load_at_end=6.58:qemu_cpu_s=89.72:guest_uptime_ms=58492:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 2962 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+  [GATE_BOOT_FACTS:boot=3:host_ms=1788794976318-1788795034393:qemu_at_start=0:load_at_start=6.58:qemu_at_end=1:load_at_end=18.60:qemu_cpu_s=73.91:guest_uptime_ms=57447:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 9692 (<unknown process>)
+  [OK] Boot 4: SUCCESS
+  [GATE_BOOT_FACTS:boot=4:host_ms=1788795035636-1788795093335:qemu_at_start=0:load_at_start=18.60:qemu_at_end=1:load_at_end=10.66:qemu_cpu_s=87.69:guest_uptime_ms=56891:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 12930 (<unknown process>)
+  [OK] Boot 5: SUCCESS
+  [GATE_BOOT_FACTS:boot=5:host_ms=1788795094613-1788795158023:qemu_at_start=0:load_at_start=10.66:qemu_at_end=1:load_at_end=17.45:qemu_cpu_s=90.72:guest_uptime_ms=62766:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 29073 (<unknown process>)
+  [OK] Boot 6: SUCCESS
+  [GATE_BOOT_FACTS:boot=6:host_ms=1788795159816-1788795217922:qemu_at_start=0:load_at_start=17.25:qemu_at_end=1:load_at_end=12.09:qemu_cpu_s=85.28:guest_uptime_ms=57427:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (60s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (90s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 39817 (<unknown process>)
+  [OK] Boot 7: SUCCESS
+  [GATE_BOOT_FACTS:boot=7:host_ms=1788795331918-1788795391138:qemu_at_start=0:load_at_start=3.90:qemu_at_end=1:load_at_end=3.38:qemu_cpu_s=89.61:guest_uptime_ms=59133:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (60s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (90s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 52769 (<unknown process>)
+  [OK] Boot 8: SUCCESS
+  [GATE_BOOT_FACTS:boot=8:host_ms=1788795507029-1788795566847:qemu_at_start=0:load_at_start=12.59:qemu_at_end=1:load_at_end=12.95:qemu_cpu_s=87.40:guest_uptime_ms=59519:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (60s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (90s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (120s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (150s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 74726 (<unknown process>)
+  [OK] Boot 9: SUCCESS
+  [GATE_BOOT_FACTS:boot=9:host_ms=1788795739146-1788795798540:qemu_at_start=0:load_at_start=23.94:qemu_at_end=1:load_at_end=11.63:qemu_cpu_s=90.16:guest_uptime_ms=58619:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 81037 (<unknown process>)
+  [OK] Boot 10: SUCCESS
+  [GATE_BOOT_FACTS:boot=10:host_ms=1788795856501-1788795914453:qemu_at_start=0:load_at_start=6.22:qemu_at_end=1:load_at_end=5.68:qemu_cpu_s=86.89:guest_uptime_ms=57274:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 10
+Successes: 10
+Failures: 0
+Success rate: 100%
+Duration: 1060s
+
+=========================================
+PASS: 10/10 boots succeeded
+=========================================

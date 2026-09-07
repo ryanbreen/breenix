@@ -26,6 +26,10 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         PrepareOutcome::Queued => {}
     }
 
+    // Queued publication required a current thread with preemption disabled;
+    // retain that identity through the wait and both cleanup operations.
+    let tid =
+        crate::task::scheduler::current_thread_id().expect("queued wait requires a current thread");
     crate::per_cpu::preempt_enable();
     let interrupted = loop {
         if crate::syscall::check_signals_for_eintr().is_some() {
@@ -46,10 +50,8 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
     };
     crate::per_cpu::preempt_disable();
 
-    if let Some(tid) = crate::task::scheduler::current_thread_id() {
-        queue.take_waiter(tid);
-    }
-    queue.finish_wait();
+    queue.take_waiter(tid);
+    queue.finish_wait_for(tid);
     if interrupted {
         Err(errno::EINTR)
     } else {

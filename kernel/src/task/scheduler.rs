@@ -5969,6 +5969,81 @@ pub fn dump_thread_placement(tid: u64, label: &str) {
     Scheduler::dump_thread_placement(tid, label);
 }
 
+/// Where one thread sits, and which CPUs were idle when it was asked.
+///
+/// #586: `Scheduler::dump_thread_placement` already computes the reader's
+/// queue slot (the `position` scan in its snapshot loop) but only prints it,
+/// so a test that wants the two numbers on its own one-line marker has to
+/// re-scan. This accessor is that scan and nothing else -- it takes one
+/// snapshot under `with_scheduler` and writes no scheduler state -- plus the
+/// per-CPU idle flags, so a boot that missed its wake budget can say whether a
+/// CPU was free while the reader sat queued.
+/// claim-lint:ok: "nothing else" names the body of this one function, 1 of 1
+/// -- loopback_wake_budget_placement_accessor_is_read_only in
+/// tests/loopback_pump_structure.rs censuses that body against 6 mutating
+/// call names; see #586.
+#[cfg(any(feature = "boot_tests", feature = "btrt"))]
+#[derive(Clone, Copy)]
+pub struct ThreadPlacementFacts {
+    /// The CPU whose ready queue holds this thread, or `None` if no ready
+    /// queue holds it (it is running, blocked, terminated, or has no row).
+    /// claim-lint:ok: the 4 non-queued dispositions listed are the states a
+    /// thread can be in while absent from all MAX_CPUS ready queues scanned
+    /// by `thread_placement_facts` below; see #586.
+    pub queued_cpu: Option<usize>,
+    /// The thread's index within `queued_cpu`'s ready queue, or `None`.
+    /// claim-lint:ok: `None` here is 1 of the 2 values this field takes and
+    /// it is set from the same scan as `queued_cpu`, 1 of 1 producer; see
+    /// #586.
+    pub queued_index: Option<usize>,
+    /// Bit `n` is set when `is_cpu_idle_raw(n)` answered true at sample time.
+    ///
+    /// AArch64 answers from the lock-free `CPU_IS_IDLE` flag. x86_64 keeps no
+    /// such flag and `is_cpu_idle_raw` returns `false` for every CPU there, so
+    /// this field is informative on AArch64 and constantly 0 on x86_64. That
+    /// is a stated limitation of the field, not a measured claim about x86.
+    /// claim-lint:ok: "every CPU" is read off the 1 of 1 x86_64 arm of
+    /// `is_cpu_idle_raw` in this file, which returns a constant `false`
+    /// without consulting the cpu_id it is passed; PLAN-586 Q5 records the
+    /// same limitation. See #586.
+    pub idle_cpu_bitmap: u32,
+}
+
+/// Read-only placement facts for one thread (#586 wake-budget marker).
+///
+/// Returns `None` when `with_scheduler` declined -- the caller cannot tell
+/// "not queued anywhere" from "the scheduler was unavailable" from a
+/// `queued_cpu` of `None` alone, so the two are separate.
+/// claim-lint:ok: the 2 distinguished outcomes are this function's own 2
+/// return shapes, 1 of 1 producer each; see #586.
+#[cfg(any(feature = "boot_tests", feature = "btrt"))]
+pub fn thread_placement_facts(tid: u64) -> Option<ThreadPlacementFacts> {
+    let queued = with_scheduler(|scheduler| {
+        for cpu in 0..MAX_CPUS {
+            if let Some(index) = scheduler.per_cpu_queues[cpu]
+                .iter()
+                .position(|&queued_tid| queued_tid == tid)
+            {
+                return Some((cpu, index));
+            }
+        }
+        None
+    })?;
+
+    let mut idle_cpu_bitmap = 0u32;
+    for cpu in 0..MAX_CPUS.min(32) {
+        if is_cpu_idle_raw(cpu) {
+            idle_cpu_bitmap |= 1u32 << cpu;
+        }
+    }
+
+    Some(ThreadPlacementFacts {
+        queued_cpu: queued.map(|(cpu, _)| cpu),
+        queued_index: queued.map(|(_, index)| index),
+        idle_cpu_bitmap,
+    })
+}
+
 /// Collect the idle thread ID for each online CPU into a fixed-size buffer.
 ///
 /// Returns the number of idle thread IDs written into `out` (one per online CPU).

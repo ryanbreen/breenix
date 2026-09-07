@@ -1,0 +1,19 @@
+python3 scripts/claim-lint.py --commit-msg ../.tmp/msg-1410e93b.txt
+claim-lint: clean commit message (../.tmp/msg-1410e93b.txt).
+python3 scripts/claim-lint.py --commit-msg ../.tmp/msg-fe3c3090.txt
+claim-lint: clean commit message (../.tmp/msg-fe3c3090.txt).
+python3 scripts/claim-lint.py --commit-msg ../.tmp/msg-3a5062c9.txt
+claim-lint: clean commit message (../.tmp/msg-3a5062c9.txt).
+python3 scripts/claim-lint.py --commit-msg ../.tmp/msg-e7f9cfd1.txt
+claim-lint: clean commit message (../.tmp/msg-e7f9cfd1.txt).
+python3 scripts/claim-lint.py --commit-msg ../.tmp/msg-fa24f0f4.txt
+claim-lint: clean commit message (../.tmp/msg-fa24f0f4.txt).
+python3 scripts/claim-lint.py --commit-msg ../.tmp/msg-4f06b843.txt
+claim-lint: clean commit message (../.tmp/msg-4f06b843.txt).
+python3 scripts/claim-lint.py --commit-msg ../.tmp/msg-715e35dd.txt
+claim-lint: clean commit message (../.tmp/msg-715e35dd.txt).
+python3 scripts/claim-lint.py --commit-msg ../.tmp/msg-72c4a0f7.txt
+claim-lint: clean commit message (../.tmp/msg-72c4a0f7.txt).
+python3 scripts/claim-lint.py
+claim-lint: clean (21 file(s) checked, changed hunks vs f1d448b544cf).
+claim-lint: 306 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).

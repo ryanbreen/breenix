@@ -1,0 +1,8 @@
+docs(ipc): record A2 oracle evidence and remaining gate prerequisites
+
+Document aggregate writev, FIFO EOF policy, retained wait identity, and the
+four-caller close delivery census. Preserve ARM and beast transcripts,
+structural mutation results, and the remaining formatting and gate issues.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

@@ -1,0 +1,7 @@
+revision=612309cdbe70a5c706b1270fafdb23caece1f412
+working-tree=ASTRA V-4/V-5 fixes
+kernel/src/task/scheduler.rs sha256=f1482a23a7fbe7670bdc889ff6f9ec7a60015947df74fe92d5355d0b72aef51f
+tests/loopback_pump_structure.rs sha256=0e34cf0f5922dce23468014a2eb8cfcd5d75ba1d5a1903f0a993febd0cb161fc
+command=['rustfmt', '--edition', '2021', '--check', 'kernel/src/task/scheduler.rs']
+
+exit=0

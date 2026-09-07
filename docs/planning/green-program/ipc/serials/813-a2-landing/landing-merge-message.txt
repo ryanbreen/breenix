@@ -1,0 +1,6 @@
+Merge origin/main into ipc/813-a2-pipe-followups
+
+Integrate process construction changes and correct A2 transcript provenance.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

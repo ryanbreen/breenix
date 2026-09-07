@@ -108,3 +108,10 @@ test drop_body_static_locks_are_irqsafe_by_derived_census ... ok
 test scheduler_lock_acquisitions_are_irq_safe_by_shape ... ok
 test init_designation_authority_is_closed ... ok
 test v3_structural_closures_are_exact ... ok
+test scheduler_lock_irq_shape_ratchet_is_not_vacuous ... ok
+test deliberately_broken_variants_fail_the_ratchet ... ok
+
+test result: ok. 103 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.59s
+
+
+exit=0

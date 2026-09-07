@@ -1,0 +1,9 @@
+fix(ipc): preserve aggregate writev atomicity and waiter identity
+
+Gather pipe and FIFO vectors up to PIPE_BUF into one transfer. Retain the
+prepared writer identity through waiter removal and state normalization.
+Exercise two competing vectored writers and no-writer EOF in the blocking
+I/O oracle. Pin aggregate transfer and wait cleanup with source mutations.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>
