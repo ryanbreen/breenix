@@ -139,16 +139,18 @@ impl WaitQueueHead {
             return;
         };
 
-        self.remove_waiter(tid);
+        self.finish_wait_for(tid);
+    }
 
-        crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                if thread.state == ThreadState::BlockedOnIO {
-                    thread.set_ready();
-                    thread.wake_time_ns = None;
-                }
-                thread.blocked_in_syscall = false;
+    /// Finish a prepared wait using the identity captured before sleeping.
+    pub(crate) fn finish_wait_for(&self, tid: u64) {
+        self.remove_waiter(tid);
+        crate::task::scheduler::with_thread_mut(tid, |thread| {
+            if thread.state == ThreadState::BlockedOnIO {
+                thread.set_ready();
+                thread.wake_time_ns = None;
             }
+            thread.blocked_in_syscall = false;
         });
     }
 
