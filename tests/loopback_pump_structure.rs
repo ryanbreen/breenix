@@ -4162,6 +4162,8 @@ fn validate_loopback_wake_budget_marker(source: &str) -> Result<(), String> {
         "queued_cpu=",
         "queued_idx=",
         "idle_cpus=",
+        "cpu_silence_ms=",
+        "silence_cpu=",
         "woke_ms=",
         "verdict=",
     ] {
@@ -4416,6 +4418,12 @@ fn loopback_wake_budget_validator_rejects_a_deleted_print() {
         validate_loopback_wake_budget_marker(&no_ctx_field).is_err(),
         "a grammar that drops a field must redden the validator"
     );
+
+    for field in ["cpu_silence_ms", "silence_cpu"] {
+        let without_field = source.replacen(&format!(":{field}={{}}"), ":omitted={}", 1);
+        assert_ne!(without_field, source, "census mutation must apply");
+        assert!(validate_loopback_wake_budget_marker(&without_field).is_err());
+    }
 
     let unbracketed = source.replacen(
         "    let tick_before_ms = crate::time::get_monotonic_time();",

@@ -3023,6 +3023,19 @@ fn run_loopback_recv_wake_test_inner(
     let reader_state =
         scheduler::with_scheduler(|sched| sched.get_thread(reader_tid).map(|thread| thread.state));
     let placement = scheduler::thread_placement_facts(reader_tid);
+    // State, placement, and the accessor's unlocked idle flags are separate
+    // observations. This census is another snapshot, after the clock stamps.
+    let mut census_candidates = [scheduler::StrandCandidate {
+        tid: 0,
+        shape: scheduler::StrandShape::Running,
+        privilege: crate::task::thread::ThreadPrivilege::Kernel,
+        state: crate::task::thread::ThreadState::Running,
+    }; scheduler::STRAND_CENSUS_CAPACITY];
+    let mut census_nonprogress = [0u64; scheduler::STRAND_CENSUS_CAPACITY];
+    let census = scheduler::collect_strand_census(
+        &mut census_candidates,
+        &mut census_nonprogress,
+    );
     let _ = kthread::kthread_stop(&reader);
     let _ = kthread::kthread_join(&reader);
     if let Some(handle) = &load {
@@ -3103,22 +3116,12 @@ fn run_loopback_recv_wake_test_inner(
         }
     };
 
-    // #586 PR 2: one `[LOOPBACK_WAKE_BUDGET:...]` line per invocation, emitted
-    // on the passing path AND on both failing paths, so every red boot's
-    // numbers have a same-boot-shape comparator in the green boots' logs. A
-    // line printed only on failure would have no population to be read
-    // against, which is how the two constants above came to be measurable.
-    // claim-lint:ok: "every red boot" is the 3 of 3 returns this function has
-    // after the emitter is bound, each pinned by
-    // loopback_wake_budget_marker_is_printed_on_both_paths in
-    // tests/loopback_pump_structure.rs; see #586.
-    //
-    // The grammar is PLAN-586 Q3's, minus its two strand-census fields
-    // `cpu_silence_ms` and `silence_cpu`: `collect_strand_census` wants two
-    // `STRAND_CENSUS_CAPACITY` arrays on the caller's stack and this is a
-    // kthread, so those two fields are deferred rather than sampled here.
-    // The omission is stated in
-    // docs/planning/green-program/network/586-PR2-2026-09-07.md.
+    // #586 PR 2: emit on the passing path AND on both failing paths AFTER
+    // the emitter is bound. The seven earlier setup/send failures do not
+    // print a budget marker. Green runs provide comparison measurements for
+    // the two late failure paths.
+    // The strand-census fields below use a separate post-window snapshot;
+    // no stack-risk measurement justifies omitting this existing kthread API.
     let elapsed_tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
     let elapsed_ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
     let ctx_delta = ctx_after.wrapping_sub(ctx_before);
@@ -3239,9 +3242,18 @@ fn run_loopback_recv_wake_test_inner(
     // this format string, and 20 of 20 lines in the measured population read
     // extensions=0 -- see
     // docs/planning/green-program/network/586-PR2-2026-09-07.md and #586.
+    struct CensusSlot(Option<u64>);
+    impl core::fmt::Display for CensusSlot {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self.0 {
+                Some(value) => write!(formatter, "{value}"),
+                None => formatter.write_str("unavailable"),
+            }
+        }
+    }
     let emit_wake_budget = || {
         crate::serial_println!(
-            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:woke_ms={}:verdict={}]",
+            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
             arch_token,
             test_token,
             LOOPBACK_WAKE_BUDGET_MS,
@@ -3256,6 +3268,8 @@ fn run_loopback_recv_wake_test_inner(
                 bits: idle_cpus,
                 sampled: idle_cpus_sampled,
             },
+            CensusSlot(census.map(|facts| facts.worst_cpu_scheduler_silence_ms)),
+            CensusSlot(census.map(|facts| facts.worst_silence_cpu)),
             wake_ms,
             verdict,
         );
