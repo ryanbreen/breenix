@@ -1998,6 +1998,134 @@ fn loopback_arch_validator_rejects_arch_specific_test() {
     assert!(validate_loopback_regression_tests_are_arch_neutral(&mutated).is_err());
 }
 
+/// The loopback wake diagnostic must classify from the reader's own state.
+///
+/// #586: the selector read only `queue_depth` and `tcp_has_data` and printed
+/// "the recv waiter was never woken" for a reader the same diagnostic line
+/// reported as `Ready`. The two facts are independent -- what the delivery did,
+/// and where the reader sat -- so the selector must read both. This is a shape
+/// check, not a list of the strings: the arms may be re-worded freely, and a
+/// new delivery or reader case may be added, so long as every arm's text is
+/// distinct and the reader fact is derived from `reader_state` and consulted.
+/// claim-lint:ok: 1 of 1 preserved specimen, the service-sequence max boot 24
+/// at 5c53ba59, printed reader_state=Ready beside the "never woken" text;
+/// serial in-repo at docs/planning/green-program/network/serials/586-pr1/.
+/// See #586.
+fn validate_loopback_wake_classification_reads_reader_state(source: &str) -> Result<(), String> {
+    let body = function_body(source, "run_loopback_recv_wake_test_inner")
+        .ok_or_else(|| "missing run_loopback_recv_wake_test_inner".to_string())?;
+
+    let derivation_start = code_text_offset(body, "let reader_fact =").ok_or_else(|| {
+        "the loopback wake diagnostic derives no reader fact from reader_state".to_string()
+    })?;
+    let selector_start = code_text_offset(body, "let diagnostic_message =")
+        .ok_or_else(|| "missing the loopback wake classification selector".to_string())?;
+    if derivation_start >= selector_start {
+        return Err("the reader fact is not derived before the classification".to_string());
+    }
+    let derivation = &body[derivation_start..selector_start];
+    if !has_identifier(derivation, "reader_state") {
+        return Err("the reader fact is not derived from reader_state".to_string());
+    }
+    if !has_identifier(derivation, "is_blocked") {
+        return Err("the reader fact does not distinguish a blocked reader".to_string());
+    }
+
+    let selector_tail = &body[selector_start..];
+    let selector_end = code_text_offset(selector_tail, "\n    };")
+        .ok_or_else(|| "the classification selector is unterminated".to_string())?;
+    let selector = &selector_tail[..selector_end];
+
+    for fact in ["queue_depth", "client_has_data", "reader_fact"] {
+        if !has_identifier(selector, fact) {
+            return Err(format!(
+                "the loopback wake classification does not select on {fact}"
+            ));
+        }
+    }
+
+    // Every non-code run inside the selector is one classification string; the
+    // selector carries no comments, so this is a census of the arms rather than
+    // a list of their words.
+    // claim-lint:ok: code_mask marks exactly comment and literal bytes, and
+    // the selector slice ends before the next statement, so the runs are the
+    // 12 of 12 arm strings; see #586 and the mutation legs below.
+    let mask = code_mask(selector);
+    let mut arms: Vec<&str> = Vec::new();
+    let mut open: Option<usize> = None;
+    for (index, code) in mask.iter().enumerate() {
+        if *code {
+            if let Some(start) = open.take() {
+                if let Some(text) = selector.get(start..index) {
+                    arms.push(text);
+                }
+            }
+        } else if open.is_none() {
+            open = Some(index);
+        }
+    }
+    if let Some(start) = open {
+        if let Some(text) = selector.get(start..) {
+            arms.push(text);
+        }
+    }
+    if arms.len() < 4 {
+        return Err(format!(
+            "the loopback wake classification has {} arms; two facts cannot be told apart",
+            arms.len()
+        ));
+    }
+    for (position, arm) in arms.iter().enumerate() {
+        if arms[..position].contains(arm) {
+            return Err(format!(
+                "two loopback wake classifications share the text {arm}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_wake_classification_reads_reader_state() {
+    validate_loopback_wake_classification_reads_reader_state(&repo_text(
+        "kernel/src/test_framework/registry.rs",
+    ))
+    .expect("the loopback wake diagnostic classifies from delivery AND reader state");
+}
+
+#[test]
+fn loopback_wake_classification_validator_rejects_a_deleted_reader_state_arm() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_loopback_wake_classification_reads_reader_state(&source)
+        .expect("baseline source must pass, or the mutations below prove nothing");
+
+    // Delete-mutation: drop the reader fact from the selector's scrutinee. That
+    // is the #586 defect exactly -- classify from the delivery alone.
+    let dropped_arm = source.replacen(
+        "match (queue_depth > 0, client_has_data, reader_fact)",
+        "match (queue_depth > 0, client_has_data, ())",
+        1,
+    );
+    assert_ne!(dropped_arm, source, "selector mutation must apply");
+    assert!(
+        validate_loopback_wake_classification_reads_reader_state(&dropped_arm).is_err(),
+        "a selector that stops reading the reader fact must redden the validator"
+    );
+
+    // Delete-mutation: keep the scrutinee but stop deriving the fact from the
+    // reader's own state.
+    let dropped_derivation = source.replacen(
+        "let reader_fact = match reader_state {",
+        "let reader_fact = match () {",
+        1,
+    );
+    assert_ne!(dropped_derivation, source, "derivation mutation must apply");
+    assert!(
+        validate_loopback_wake_classification_reads_reader_state(&dropped_derivation).is_err(),
+        "a reader fact not derived from reader_state must redden the validator"
+    );
+}
+
 #[test]
 fn x86_loopback_gates_are_direct_reachable_and_have_one_marker_producer() {
     validate_x86_direct_loopback_gates(

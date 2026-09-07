@@ -2954,12 +2954,71 @@ fn run_loopback_recv_wake_test_inner(
     let _ = tcp::tcp_close(&server);
     tcp::tcp_listener_ref_dec(listen_port);
 
-    let diagnostic_message = if queue_depth > 0 {
-        "pump never drained: packet still queued when the reader timed out"
-    } else if client_has_data {
-        "delivery landed but the recv waiter was never woken"
-    } else {
-        "segment vanished: delivered but never reached the connection rx buffer"
+    // #586: the classification is selected from TWO independent facts. The
+    // delivery fact (`queue_depth`, `client_has_data`) says what happened to
+    // the segment; the reader fact says where the reader sat when the deadline
+    // was scored. Selecting on the delivery fact alone printed "the recv
+    // waiter was never woken" for a reader the same line reported as `Ready`
+    // -- a reader that had left Blocked and simply had not been dispatched.
+    // `wake_ms == 0` means "the reader had not run", never "the reader was not
+    // woken", so the reader fact is the only source that can answer it.
+    // claim-lint:ok: the misreport is 1 of 1 preserved specimen -- the
+    // service-sequence max boot 24 at 5c53ba59 printed reader_state=Ready on
+    // the same line as the "never woken" text; serial in-repo at
+    // docs/planning/green-program/network/serials/586-pr1/. See #586.
+    //
+    // `ReaderFact::NoRow` is "no scheduler row": either `with_scheduler`
+    // declined or `get_thread` found no thread with this id.
+    #[derive(Clone, Copy)]
+    enum ReaderFact {
+        StillBlocked,
+        LeftBlocked,
+        Terminated,
+        NoRow,
+    }
+    let reader_fact = match reader_state {
+        Some(Some(state)) if state.is_blocked() => ReaderFact::StillBlocked,
+        Some(Some(crate::task::thread::ThreadState::Terminated)) => ReaderFact::Terminated,
+        Some(Some(_)) => ReaderFact::LeftBlocked,
+        Some(None) | None => ReaderFact::NoRow,
+    };
+    let diagnostic_message = match (queue_depth > 0, client_has_data, reader_fact) {
+        (true, _, ReaderFact::StillBlocked) => {
+            "pump never drained: packet still queued and the recv waiter was still blocked"
+        }
+        (true, _, ReaderFact::LeftBlocked) => {
+            "pump never drained: packet still queued after the recv waiter left Blocked"
+        }
+        (true, _, ReaderFact::Terminated) => {
+            "pump never drained: packet still queued and the recv waiter had already terminated"
+        }
+        (true, _, ReaderFact::NoRow) => {
+            "pump never drained: packet still queued and the recv waiter had no scheduler row"
+        }
+        (false, true, ReaderFact::StillBlocked) => {
+            "delivery landed and the recv waiter was still blocked"
+        }
+        (false, true, ReaderFact::LeftBlocked) => {
+            "delivery landed and the recv waiter left Blocked but had not run by the deadline"
+        }
+        (false, true, ReaderFact::Terminated) => {
+            "delivery landed and the recv waiter terminated without stamping its wake"
+        }
+        (false, true, ReaderFact::NoRow) => {
+            "delivery landed and the recv waiter had no scheduler row"
+        }
+        (false, false, ReaderFact::StillBlocked) => {
+            "segment vanished: never reached the connection rx buffer, recv waiter still blocked"
+        }
+        (false, false, ReaderFact::LeftBlocked) => {
+            "segment vanished: never reached the connection rx buffer, recv waiter left Blocked"
+        }
+        (false, false, ReaderFact::Terminated) => {
+            "segment vanished: never reached the connection rx buffer, recv waiter terminated"
+        }
+        (false, false, ReaderFact::NoRow) => {
+            "segment vanished: never reached the connection rx buffer, reader had no scheduler row"
+        }
     };
 
     if wake_ms == 0 {
