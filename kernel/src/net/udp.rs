@@ -117,17 +117,26 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
         payload.len()
     );
 
-    // Look up socket by destination port
-    if let Some((pid, _handle)) = crate::socket::SOCKET_REGISTRY.lookup_udp(header.dst_port) {
-        // Deliver packet to the socket
-        deliver_to_socket(pid, header.dst_port, ip.src_ip, header.src_port, payload);
-    } else {
-        // No socket listening on this port
-        // Could send ICMP port unreachable, but we'll just drop for now
-        log::debug!(
-            "UDP: No socket listening on port {}, dropping packet",
-            header.dst_port
-        );
+    // #908: try-lock before entering deliver_to_socket's process-manager mask.
+    match crate::socket::SOCKET_REGISTRY.try_lookup_udp(header.dst_port) {
+        Some(Some((pid, _handle))) => {
+            deliver_to_socket(pid, header.dst_port, ip.src_ip, header.src_port, payload);
+        }
+        Some(None) => {
+            // No listener; drop (ICMP port unreachable is not implemented).
+            log::debug!(
+                "UDP: No socket listening on port {}, dropping packet",
+                header.dst_port
+            );
+        }
+        None => {
+            // A peer holds udp_ports. Drop rather than block in IRQ context;
+            // socket::udp_ports_lookup_refused() counts this refusal.
+            log::debug!(
+                "UDP: udp_ports lock contended, dropping packet for port {}",
+                header.dst_port
+            );
+        }
     }
 }
 

@@ -69,6 +69,11 @@ static X86_IRQ_HOLD_ORACLE_RAN: core::sync::atomic::AtomicBool =
 static X823_UDP_LOCK_ORACLE_RAN: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// Same once-only latch for the #908 UDP-ports-lock oracle's x86 SKIP line.
+#[cfg(not(target_arch = "aarch64"))]
+static X908_UDP_PORTS_LOCK_ORACLE_RAN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Track which tests have already run (by subsystem + test index)
 /// This is a simple bitmap: each subsystem gets 64 bits (max 64 tests per subsystem)
 static TESTS_RUN: [AtomicU64; SubsystemId::COUNT] = {
@@ -183,6 +188,17 @@ fn run_udp_lock_oracle_x86_once() {
     }
 }
 
+/// #908: x86 gates have no second CPU for a contention peer.
+#[cfg(not(target_arch = "aarch64"))]
+fn run_udp_ports_lock_oracle_x86_once() {
+    if X908_UDP_PORTS_LOCK_ORACLE_RAN
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        super::registry::run_udp_ports_lock_oracle();
+    }
+}
+
 /// Advance to a new stage and run any tests waiting for that stage
 ///
 /// Call this at appropriate points in the boot sequence:
@@ -245,6 +261,7 @@ pub fn advance_stage_marker_only(stage: TestStage) {
         run_fcntl_pm_contention_oracle_x86_once();
         run_irq_hold_oracle_x86_once();
         run_udp_lock_oracle_x86_once();
+        run_udp_ports_lock_oracle_x86_once();
         crate::task::strand_oracle::report_x86_once();
     }
 

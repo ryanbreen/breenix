@@ -180,6 +180,24 @@ if ! udp_lock_oracle_sample 12034 | grep -qE "$UDP_LOCK_ORACLE_PATTERN"; then
     echo "FAIL: UDP_LOCK_ORACLE_PATTERN rejects hold_us=12034, a window the repaired oracle really records, so this gate can never pass"
     exit 1
 fi
+UDP_PORTS_LOCK_ORACLE_PATTERN='\[UDP_PORTS_LOCK_ORACLE:aarch64:attempts=[1-3]:armed=1:holder_cpu=[0-9]+:driver_cpu=[0-9]+:irqs_enabled_before=1:masked_in_hold=1:sends=[1-9][0-9]*:hold_us=([89][0-9]{3}|[1-9][0-9]{4,}):refused=[1-9][0-9]*:delivered=[1-9][0-9]*:stalled=0:hold_done=1:joined=1:PASS\]'
+# #908: enforce the 8000 us floor as well as a nonzero refusal delta.
+# Synthetic samples validate the scorer only; boot evidence comes from QEMU.
+udp_ports_lock_oracle_sample() {
+    printf '[UDP_PORTS_LOCK_ORACLE:aarch64:attempts=1:armed=1:holder_cpu=1:driver_cpu=0:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=%s:refused=1:delivered=1:stalled=0:hold_done=1:joined=1:PASS]\n' "$1"
+}
+if udp_ports_lock_oracle_sample 0 | grep -qE "$UDP_PORTS_LOCK_ORACLE_PATTERN"; then
+    echo "FAIL: UDP_PORTS_LOCK_ORACLE_PATTERN accepts hold_us=0, so this gate would score green on a hold no timer tick could land in"
+    exit 1
+fi
+if ! udp_ports_lock_oracle_sample 12034 | grep -qE "$UDP_PORTS_LOCK_ORACLE_PATTERN"; then
+    echo "FAIL: UDP_PORTS_LOCK_ORACLE_PATTERN rejects hold_us=12034, a window the repaired oracle really records, so this gate can never pass"
+    exit 1
+fi
+if udp_ports_lock_oracle_sample 12034 | sed 's/refused=1/refused=0/' | grep -qE "$UDP_PORTS_LOCK_ORACLE_PATTERN"; then
+    echo "FAIL: UDP_PORTS_LOCK_ORACLE_PATTERN accepts refused=0"
+    exit 1
+fi
 # #821. The console TTY has its foreground process group cleared, a peer CPU
 # takes PROCESS_MANAGER through the ordinary blocking accessor -- which masks
 # that CPU on this architecture -- and one byte is pushed through the input IRQ
@@ -390,7 +408,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -625,6 +643,16 @@ score_serial() {
     fi
     if ! grep -qE "$UDP_LOCK_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "UDP-socket-lock oracle marker missing or failed"
+        return 1
+    fi
+    # #908, pinned as the same pair for the same reason.
+    if grep -qF "[UDP_PORTS_LOCK_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
+        && grep -q "UDP_PORTS_LOCK_ORACLE.*:FAIL\]" "$serial_file" 2>/dev/null; then
+        echo "UDP-ports-lock oracle reported failure ($(grep -aoE '\[UDP_PORTS_LOCK_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$UDP_PORTS_LOCK_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "UDP-ports-lock oracle marker missing or failed"
         return 1
     fi
     # #821, pinned as the same pair for the same reason.

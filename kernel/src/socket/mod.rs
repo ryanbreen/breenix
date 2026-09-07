@@ -9,6 +9,7 @@ pub mod unix;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::process::process::ProcessId;
@@ -45,6 +46,15 @@ pub fn alloc_socket_handle() -> SocketHandle {
 const EPHEMERAL_PORT_START: u16 = 49152;
 /// Ephemeral port range end
 const EPHEMERAL_PORT_END: u16 = 65535;
+
+/// #908: NetRx-route try-lock refusals on the separate UDP port registry.
+/// A relaxed diagnostic counter, not a synchronization point.
+static UDP_PORTS_LOOKUP_REFUSED: AtomicU64 = AtomicU64::new(0);
+
+/// Read the refusal count for the boot oracle and future diagnostics.
+pub fn udp_ports_lookup_refused() -> u64 {
+    UDP_PORTS_LOOKUP_REFUSED.load(Ordering::Relaxed)
+}
 
 /// Global socket registry - maps ports to sockets for incoming packet dispatch
 pub struct SocketRegistry {
@@ -91,35 +101,74 @@ impl SocketRegistry {
         }
     }
 
-    /// Bind a UDP port to a socket
-    /// If port is 0, allocates an ephemeral port and returns it
+    /// Acquire `udp_ports` with interrupts masked for the whole hold.
+    ///
+    /// #908: mirrors socket/udp.rs::with_locked_masked for this separate
+    /// inner registry lock. Its private map is only acquired here and by
+    /// try_lookup_udp. Masking at this boundary covers bind_udp and unbind_udp,
+    /// including UdpSocket::Drop from close_extracted_fds outside the PM lock.
+    /// The bounded ephemeral scan, nested next_ephemeral lock and allocating
+    /// map insertion run inside this mask.
+    ///
+    /// The NetRx IRQ route uses try_lookup_udp instead: CLAUDE.md requires
+    /// try-lock/defer in interrupt context rather than waiting on a peer's
+    /// masked hold. The boot oracle calls this production primitive directly.
+    pub(crate) fn with_udp_ports_masked<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut alloc::collections::BTreeMap<u16, (ProcessId, SocketHandle)>) -> R,
+    {
+        #[cfg(target_arch = "x86_64")]
+        type Cpu = crate::arch_impl::x86_64::X86Cpu;
+        #[cfg(target_arch = "aarch64")]
+        type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
+        use crate::arch_impl::traits::CpuOps;
+
+        Cpu::without_interrupts(|| f(&mut self.udp_ports.lock()))
+    }
+
+    /// Bind a UDP port; port 0 allocates an ephemeral port.
+    /// #908: the whole registry hold runs under with_udp_ports_masked.
     pub fn bind_udp(&self, port: u16, pid: ProcessId, handle: SocketHandle) -> Result<u16, i32> {
-        let mut ports = self.udp_ports.lock();
+        self.with_udp_ports_masked(|ports| {
+            let actual_port = if port == 0 {
+                // Allocate ephemeral port
+                self.alloc_ephemeral_port(ports)
+                    .ok_or(crate::syscall::errno::EADDRINUSE)?
+            } else {
+                if ports.contains_key(&port) {
+                    return Err(crate::syscall::errno::EADDRINUSE);
+                }
+                port
+            };
 
-        let actual_port = if port == 0 {
-            // Allocate ephemeral port
-            self.alloc_ephemeral_port(&ports)
-                .ok_or(crate::syscall::errno::EADDRINUSE)?
-        } else {
-            // Use specified port
-            if ports.contains_key(&port) {
-                return Err(crate::syscall::errno::EADDRINUSE);
-            }
-            port
-        };
-
-        ports.insert(actual_port, (pid, handle));
-        Ok(actual_port)
+            ports.insert(actual_port, (pid, handle));
+            Ok(actual_port)
+        })
     }
 
-    /// Unbind a UDP port
+    /// Unbind a UDP port.
+    /// #908: UdpSocket::Drop reaches this through both masked Process::terminate
+    /// and unmasked close_extracted_fds; masking here protects both callers.
     pub fn unbind_udp(&self, port: u16) {
-        self.udp_ports.lock().remove(&port);
+        self.with_udp_ports_masked(|ports| {
+            ports.remove(&port);
+        });
     }
 
-    /// Look up which socket owns a UDP port
-    pub fn lookup_udp(&self, port: u16) -> Option<(ProcessId, SocketHandle)> {
-        self.udp_ports.lock().get(&port).copied()
+    /// IRQ-safe lookup: refuse a contended thread-side registry hold.
+    /// #908: handle_udp calls this before deliver_to_socket enters the PM mask.
+    /// Contention drops the best-effort UDP datagram and increments a relaxed
+    /// diagnostic counter. None means contention; Some(None) means no binding;
+    /// Some(Some(..)) identifies the bound socket.
+    /// claim-lint:ok: #908 specifies these 3 Option return cases.
+    pub fn try_lookup_udp(&self, port: u16) -> Option<Option<(ProcessId, SocketHandle)>> {
+        match self.udp_ports.try_lock() {
+            Some(guard) => Some(guard.get(&port).copied()),
+            None => {
+                UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
     }
 }
 

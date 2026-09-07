@@ -5442,6 +5442,362 @@ fn test_udp_socket_lock_oracle() -> TestResult {
 }
 
 #[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_PAYLOAD: &[u8] = b"breenix-908";
+
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_PORT: u16 = 54_560;
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_SRC_PORT: u16 = 54_561;
+
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_HOLD_US: u64 = 12_000;
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_MIN_US: u64 = 8_000;
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_SEND_INTERVAL_US: u64 = 1_000;
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_ARM_WAIT_US: u64 = 500_000;
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_JOIN_US: u64 = 500_000;
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_RECV_US: u64 = 500_000;
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_SETTLE_US: u64 = 20_000;
+#[cfg(target_arch = "aarch64")]
+const UDP_PORTS_LOCK_ATTEMPTS: u64 = 3;
+
+#[cfg(target_arch = "aarch64")]
+static UDP_PORTS_LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static UDP_PORTS_LOCK_DONE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static UDP_PORTS_LOCK_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(target_arch = "aarch64")]
+static UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static UDP_PORTS_LOCK_MASKED_IN_HOLD: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static UDP_PORTS_LOCK_MEASURED_US: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+struct UdpPortsLockSocket {
+    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    pid: crate::process::process::ProcessId,
+    fd: i32,
+}
+
+#[cfg(target_arch = "aarch64")]
+fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
+    use crate::ipc::fd::{FdKind, FileDescriptor};
+
+    let pid = crate::process::with_process_manager(|manager| {
+        manager.all_pids().first().copied()
+    })
+    .flatten()?;
+
+    let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
+    socket
+        .lock()
+        .bind(pid, [127, 0, 0, 1], UDP_PORTS_LOCK_PORT)
+        .ok()?;
+
+    let entry = FileDescriptor::with_flags(FdKind::UdpSocket(socket.clone()), 0, 0);
+    let fd = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process_mut(pid)
+            .and_then(|process| process.fd_table.alloc_with_entry(entry).ok())
+    })
+    .flatten();
+
+    let Some(fd) = fd else {
+        crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_PORTS_LOCK_PORT);
+        return None;
+    };
+
+    Some(UdpPortsLockSocket { socket, pid, fd })
+}
+
+#[cfg(target_arch = "aarch64")]
+fn udp_ports_lock_close_socket(open: &UdpPortsLockSocket) {
+    let pid = open.pid;
+    let fd = open.fd;
+    let _ = crate::process::with_process_manager(|manager| {
+        if let Some(process) = manager.get_process_mut(pid) {
+            let _ = process.fd_table.close(fd);
+        }
+    });
+    crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_PORTS_LOCK_PORT);
+}
+
+// The checker must also mask its separate outer per-socket mutex.
+#[cfg(target_arch = "aarch64")]
+fn udp_ports_lock_received(open: &UdpPortsLockSocket) -> u64 {
+    crate::socket::udp::with_locked_masked(&open.socket, |socket| {
+        let queue = socket.rx_queue.lock();
+        queue
+            .iter()
+            .filter(|packet| packet.data.as_slice() == UDP_PORTS_LOCK_PAYLOAD)
+            .count() as u64
+    })
+}
+
+/// #908: peer holder of the exact production registry primitive. The driver
+/// sends on another CPU with IRQs enabled. Mask state, not a presumed stall,
+/// detects an unmasked mutation; try-lock refusals prove real contention.
+#[cfg(target_arch = "aarch64")]
+fn udp_ports_lock_holder_body() {
+    UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.store(
+        u64::from(crate::arch_interrupts_enabled()), AtomicOrdering::Release,
+    );
+    crate::per_cpu::preempt_disable();
+    crate::socket::SOCKET_REGISTRY.with_udp_ports_masked(|_ports| {
+        UDP_PORTS_LOCK_CPU.store(
+            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
+            AtomicOrdering::Relaxed,
+        );
+        UDP_PORTS_LOCK_MASKED_IN_HOLD.store(
+            u64::from(!crate::arch_interrupts_enabled()), AtomicOrdering::Relaxed,
+        );
+        let held_from = crate::tracing::trace_timestamp();
+        UDP_PORTS_LOCK_ACTIVE.store(true, AtomicOrdering::Release);
+        while irq_hold_elapsed_us(held_from) < UDP_PORTS_LOCK_HOLD_US {
+            core::hint::spin_loop();
+        }
+        UDP_PORTS_LOCK_MEASURED_US.store(irq_hold_elapsed_us(held_from), AtomicOrdering::Relaxed);
+        UDP_PORTS_LOCK_ACTIVE.store(false, AtomicOrdering::Release);
+    });
+    crate::per_cpu::preempt_enable();
+    UDP_PORTS_LOCK_DONE.store(true, AtomicOrdering::Release);
+}
+
+/// Exercise the registry's masked holder against real peer NetRx lookups.
+pub fn run_udp_ports_lock_oracle() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::task::kthread::{
+            kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
+        };
+        use crate::task::scheduler::{
+            live_peer_cpu_for_test, live_peer_cpu_for_test_excluding_cpu0,
+            release_cpu_affine_thread_for_test,
+        };
+
+        let peer = live_peer_cpu_for_test();
+        let peer = match peer {
+            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+            other => other,
+        };
+
+        let packet = crate::net::udp::build_udp_packet(
+            UDP_PORTS_LOCK_SRC_PORT,
+            UDP_PORTS_LOCK_PORT,
+            UDP_PORTS_LOCK_PAYLOAD,
+        );
+
+        let mut attempts = 0u64;
+        let mut armed = 0u64;
+        let mut holder_cpu = u64::MAX;
+        let mut irqs_enabled_before = 0u64;
+        let mut masked_in_hold = 0u64;
+        let mut sends = 0u64;
+        let mut hold_us = 0u64;
+        let mut refused = 0u64;
+        let mut driver_cpu = u64::MAX;
+        let mut received = 0u64;
+        let mut stalled = 0u64;
+        let mut hold_done = 0u64;
+        let mut joined = 0u64;
+        let mut passed = false;
+
+        let open = udp_ports_lock_open_socket();
+
+        if let (Some(peer), Some(open)) = (peer, open.as_ref()) {
+            while attempts < UDP_PORTS_LOCK_ATTEMPTS && !passed {
+                attempts += 1;
+                armed = 0;
+                holder_cpu = u64::MAX;
+                irqs_enabled_before = 0;
+                masked_in_hold = 0;
+                sends = 0;
+                hold_us = 0;
+                refused = 0;
+                driver_cpu = u64::MAX;
+                received = 0;
+                stalled = 0;
+                hold_done = 0;
+                joined = 0;
+
+                UDP_PORTS_LOCK_ACTIVE.store(false, AtomicOrdering::Release);
+                UDP_PORTS_LOCK_DONE.store(false, AtomicOrdering::Release);
+                UDP_PORTS_LOCK_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
+                UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.store(0, AtomicOrdering::Relaxed);
+                UDP_PORTS_LOCK_MASKED_IN_HOLD.store(0, AtomicOrdering::Relaxed);
+                UDP_PORTS_LOCK_MEASURED_US.store(0, AtomicOrdering::Relaxed);
+
+                // Fresh delivery evidence for each attempt, under the outer mask.
+                crate::socket::udp::with_locked_masked(&open.socket, |socket| {
+                    socket.rx_queue.lock().clear();
+                });
+                let refused_before = crate::socket::udp_ports_lookup_refused();
+                let Ok(handle) = kthread_run_on_cpu_for_test(
+                    udp_ports_lock_holder_body,
+                    "udp-ports-908",
+                    peer,
+                ) else {
+                    continue;
+                };
+
+                let arm_start = crate::tracing::trace_timestamp();
+                while !UDP_PORTS_LOCK_ACTIVE.load(AtomicOrdering::Acquire)
+                    && !UDP_PORTS_LOCK_DONE.load(AtomicOrdering::Acquire)
+                    && irq_hold_elapsed_us(arm_start) < UDP_PORTS_LOCK_ARM_WAIT_US
+                {
+                    core::hint::spin_loop();
+                }
+                if UDP_PORTS_LOCK_ACTIVE.load(AtomicOrdering::Acquire) {
+                    armed = 1;
+                }
+
+                // Keep interrupts enabled: sends raise this CPU's NetRx softirq.
+                // Also send after release so uncontended delivery is measured.
+                let drive_start = crate::tracing::trace_timestamp();
+                let mut released_at = None;
+                let mut next_send_us = 0;
+                while irq_hold_elapsed_us(drive_start) < UDP_PORTS_LOCK_JOIN_US {
+                    let elapsed = irq_hold_elapsed_us(drive_start);
+                    if !UDP_PORTS_LOCK_ACTIVE.load(AtomicOrdering::Acquire)
+                        && UDP_PORTS_LOCK_DONE.load(AtomicOrdering::Acquire)
+                    {
+                        let released = *released_at.get_or_insert(elapsed);
+                        if elapsed.saturating_sub(released) >= UDP_PORTS_LOCK_SETTLE_US {
+                            break;
+                        }
+                    }
+                    if elapsed >= next_send_us {
+                        // Sample during the active hold, not after the settle
+                        // margin, when this thread may migrate onto the former
+                        // holder CPU. Keep IRQs enabled; only prevent migration
+                        // across the flag/CPU snapshot itself.
+                        crate::per_cpu::preempt_disable();
+                        if driver_cpu == u64::MAX
+                            && UDP_PORTS_LOCK_ACTIVE.load(AtomicOrdering::Acquire)
+                        {
+                            driver_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+                        }
+                        crate::per_cpu::preempt_enable();
+                        next_send_us = elapsed.saturating_add(UDP_PORTS_LOCK_SEND_INTERVAL_US);
+                        if crate::net::send_ipv4(
+                            [127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet,
+                        ).is_ok() {
+                            sends += 1;
+                        }
+                    }
+                    core::hint::spin_loop();
+                }
+
+                release_cpu_affine_thread_for_test(handle.tid());
+
+                let join_start = crate::tracing::trace_timestamp();
+                while !kthread_has_exited_for_test(&handle)
+                    && irq_hold_elapsed_us(join_start) < UDP_PORTS_LOCK_JOIN_US
+                {
+                    crate::arch_halt();
+                }
+                hold_done = u64::from(UDP_PORTS_LOCK_DONE.load(AtomicOrdering::Acquire));
+                if kthread_has_exited_for_test(&handle) {
+                    joined = u64::from(kthread_join(&handle).is_ok());
+                } else {
+                    stalled = 1;
+                }
+
+                holder_cpu = UDP_PORTS_LOCK_CPU.load(AtomicOrdering::Relaxed);
+                irqs_enabled_before = UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.load(AtomicOrdering::Acquire);
+                masked_in_hold = UDP_PORTS_LOCK_MASKED_IN_HOLD.load(AtomicOrdering::Relaxed);
+                hold_us = UDP_PORTS_LOCK_MEASURED_US.load(AtomicOrdering::Relaxed);
+                refused = crate::socket::udp_ports_lookup_refused().wrapping_sub(refused_before);
+
+                if stalled == 1 {
+                    break;
+                }
+
+                let recv_start = crate::tracing::trace_timestamp();
+                loop {
+                    received = udp_ports_lock_received(open);
+                    if received > 0 || irq_hold_elapsed_us(recv_start) >= UDP_PORTS_LOCK_RECV_US {
+                        break;
+                    }
+                    crate::arch_halt();
+                }
+
+                let settle_start = crate::tracing::trace_timestamp();
+                while irq_hold_elapsed_us(settle_start) < UDP_PORTS_LOCK_SETTLE_US {
+                    crate::arch_halt();
+                }
+
+                passed = armed == 1
+                    && irqs_enabled_before == 1
+                    && masked_in_hold == 1
+                    && sends >= 1
+                    && hold_us >= UDP_PORTS_LOCK_MIN_US
+                    && refused >= 1
+                    && driver_cpu != u64::MAX
+                    && driver_cpu != holder_cpu
+                    && received >= 1
+                    && stalled == 0
+                    && hold_done == 1
+                    && joined == 1;
+                // Timing retries only: a measured missing mask is a defect.
+                if refused >= 1 || masked_in_hold == 0 {
+                    break;
+                }
+            }
+        }
+
+        crate::serial_println!(
+            "[UDP_PORTS_LOCK_ORACLE:aarch64:attempts={}:armed={}:holder_cpu={}:driver_cpu={}:irqs_enabled_before={}:masked_in_hold={}:sends={}:hold_us={}:refused={}:delivered={}:stalled={}:hold_done={}:joined={}:{}]",
+            attempts,
+            armed,
+            holder_cpu,
+            driver_cpu,
+            irqs_enabled_before,
+            masked_in_hold,
+            sends,
+            hold_us,
+            refused,
+            received,
+            stalled,
+            hold_done,
+            joined,
+            if passed { "PASS" } else { "FAIL" },
+        );
+
+        if let Some(open) = open.as_ref() {
+            udp_ports_lock_close_socket(open);
+        }
+        return passed;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        // The x86 gates boot one CPU: there is no registry-contention peer.
+        crate::serial_println!(
+            "[UDP_PORTS_LOCK_ORACLE:x86:arm=none:reason=uniprocessor_no_udp_ports_contention_peer:online_cpus={}:SKIP]",
+            crate::task::scheduler::online_cpu_count_snapshot(),
+        );
+        false
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn test_udp_ports_lock_oracle() -> TestResult {
+    if run_udp_ports_lock_oracle() {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("UDP registry mask, contention or delivery evidence missing")
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 static IRQ_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
 static IRQ_HOLD_DONE: AtomicBool = AtomicBool::new(false);
@@ -9871,6 +10227,17 @@ static SYSCALL_TESTS: &[TestDef] = &[
         timeout_ms: 20000,
         stage: TestStage::ProcessContext,
     },
+    // #908: needs a live process row; sequential subsystem tests prevent
+    // overlap with the adjacent oracles' PM/console holds.
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "udp_ports_lock_oracle",
+        func: test_udp_ports_lock_oracle,
+        arch: Arch::Aarch64,
+        timeout_ms: 20000,
+        stage: TestStage::ProcessContext,
+    },
+
 ];
 
 /// Scheduler subsystem tests (Phase 4i)
