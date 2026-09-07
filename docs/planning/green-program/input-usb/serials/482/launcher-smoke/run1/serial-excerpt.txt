@@ -1,0 +1,239 @@
+[heartbeat] tid=12 uptime_ms=190643 kbd_nonzero=2
+[spawn] path='/bin/blauncher'
+manager.create_process_with_argv [ARM64]: ENTRY - name='blauncher', elf_size=460856, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 21
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001b3b4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 21
+[spawn] Created child PID 21 for parent PID 18
+[spawn] Success: child PID 21 scheduled
+[blauncher] starting
+[window] create_window_buffer: 532x540 (1149120 bytes, 281 pages)
+[window] Created buffer id=2 for pid=21: 532x540 at virt=0x7ffffdcb1000 phys=0x4444d000
+[blauncher] TTF display font loaded, size=14
+[bwm] Discovered window 'Launcher' (id=2, 532x540 chromeless) at (374,192)
+[bwm-fps] frames_since_last=214 elapsed_ms=1003 instantaneous_fps=213
+[heartbeat] tid=12 uptime_ms=191644 kbd_nonzero=3
+[bwm-fps] frames_since_last=237 elapsed_ms=1001 instantaneous_fps=236
+F123456789SC[syscall] exit(0) pid=21 name=blauncher
+[TTBR0_ASID_CENSUS:untagged=0:tagged=602681:kernel=296661:cleared=754271]
+[heartbeat] tid=12 uptime_ms=192644 kbd_nonzero=4
+[window] create_window_buffer: 750x550 (1650000 bytes, 403 pages)
+[window] Created buffer id=3 for pid=22: 750x550 at virt=0x7ffffdc39000 phys=0x4485f000
+[bterm] config: mono_size=10 font_size=10
+[bterm] font_size=10 cell=6x13
+[pty] sys_posix_openpt(flags=0x102)
+[pty] Created master fd=3 (pty 0)
+[pty] Unlocked PTY 0 (fd 3)
+F123456789SC[bterm] spawned child pid=23
+[pty] sys_posix_openpt(flags=0x102)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+F123456789SC[bterm] spawned child pid=24
+[bwm] Discovered window 'Terminal' (id=3, 750x550) at (80,88)
+[bwm-fps] frames_since_last=225 elapsed_ms=1000 instantaneous_fps=225
+[heartbeat] tid=12 uptime_ms=193645 kbd_nonzero=4
+[bwm-fps] frames_since_last=198 elapsed_ms=1001 instantaneous_fps=197
+[heartbeat] tid=12 uptime_ms=194646 kbd_nonzero=4
+[bwm-fps] frames_since_last=208 elapsed_ms=1002 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=195647 kbd_nonzero=4
+[bwm-fps] frames_since_last=204 elapsed_ms=1005 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=196650 kbd_nonzero=4
+[bwm-fps] frames_since_last=203 elapsed_ms=1000 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=197650 kbd_nonzero=4
+[bwm-fps] frames_since_last=203 elapsed_ms=1003 instantaneous_fps=202
+[heartbeat] tid=12 uptime_ms=198651 kbd_nonzero=4
+[bwm-fps] frames_since_last=211 elapsed_ms=1007 instantaneous_fps=209
+[heartbeat] tid=12 uptime_ms=199652 kbd_nonzero=4
+[bwm-fps] frames_since_last=194 elapsed_ms=1003 instantaneous_fps=193
+[heartbeat] tid=12 uptime_ms=200652 kbd_nonzero=4
+[bwm-fps] frames_since_last=207 elapsed_ms=1000 instantaneous_fps=207
+[heartbeat] tid=12 uptime_ms=201652 kbd_nonzero=4
+[bwm-fps] frames_since_last=191 elapsed_ms=1013 instantaneous_fps=188
+[heartbeat] tid=12 uptime_ms=202656 kbd_nonzero=4
+[bwm-fps] frames_since_last=199 elapsed_ms=1003 instantaneous_fps=198
+[heartbeat] tid=12 uptime_ms=203659 kbd_nonzero=4
+[bwm-fps] frames_since_last=192 elapsed_ms=1000 instantaneous_fps=192
+[heartbeat] tid=12 uptime_ms=204660 kbd_nonzero=4
+[bwm-fps] frames_since_last=208 elapsed_ms=1000 instantaneous_fps=208
+[heartbeat] tid=12 uptime_ms=205664 kbd_nonzero=4
+[bwm-fps] frames_since_last=216 elapsed_ms=1004 instantaneous_fps=215
+[heartbeat] tid=12 uptime_ms=206665 kbd_nonzero=4
+[bwm-fps] frames_since_last=303 elapsed_ms=1002 instantaneous_fps=302
+[heartbeat] tid=12 uptime_ms=207665 kbd_nonzero=4
+[bwm-fps] frames_since_last=176 elapsed_ms=1000 instantaneous_fps=176
+[heartbeat] tid=12 uptime_ms=208666 kbd_nonzero=4
+[bwm-fps] frames_since_last=153 elapsed_ms=1004 instantaneous_fps=152
+[heartbeat] tid=12 uptime_ms=209666 kbd_nonzero=4
+[bwm-fps] frames_since_last=176 elapsed_ms=1000 instantaneous_fps=176
+[heartbeat] tid=12 uptime_ms=210667 kbd_nonzero=4
+[bwm-fps] frames_since_last=151 elapsed_ms=1001 instantaneous_fps=150
+[heartbeat] tid=12 uptime_ms=211669 kbd_nonzero=4
+[bwm-fps] frames_since_last=146 elapsed_ms=1005 instantaneous_fps=145
+[heartbeat] tid=12 uptime_ms=212670 kbd_nonzero=4
+[bwm-fps] frames_since_last=139 elapsed_ms=1007 instantaneous_fps=138
+[heartbeat] tid=12 uptime_ms=213671 kbd_nonzero=4
+[bwm-fps] frames_since_last=130 elapsed_ms=1007 instantaneous_fps=129
+[heartbeat] tid=12 uptime_ms=214671 kbd_nonzero=4
+[bwm-fps] frames_since_last=129 elapsed_ms=1006 instantaneous_fps=128
+[heartbeat] tid=12 uptime_ms=215673 kbd_nonzero=4
+[bwm-fps] frames_since_last=131 elapsed_ms=1004 instantaneous_fps=130
+[heartbeat] tid=12 uptime_ms=216674 kbd_nonzero=4
+[bwm-fps] frames_since_last=133 elapsed_ms=1003 instantaneous_fps=132
+[heartbeat] tid=12 uptime_ms=217676 kbd_nonzero=4
+[bwm-fps] frames_since_last=138 elapsed_ms=1002 instantaneous_fps=137
+[heartbeat] tid=12 uptime_ms=218677 kbd_nonzero=4
+[bwm-fps] frames_since_last=146 elapsed_ms=1000 instantaneous_fps=146
+[heartbeat] tid=12 uptime_ms=219677 kbd_nonzero=4
+[bwm-fps] frames_since_last=132 elapsed_ms=1011 instantaneous_fps=130
+[heartbeat] tid=12 uptime_ms=220678 kbd_nonzero=4
+[bwm-fps] frames_since_last=159 elapsed_ms=1003 instantaneous_fps=158
+[heartbeat] tid=12 uptime_ms=221678 kbd_nonzero=4
+[bwm-fps] frames_since_last=145 elapsed_ms=1004 instantaneous_fps=144
+[heartbeat] tid=12 uptime_ms=222679 kbd_nonzero=4
+[bwm-fps] frames_since_last=143 elapsed_ms=1003 instantaneous_fps=142
+[heartbeat] tid=12 uptime_ms=223680 kbd_nonzero=4
+[bwm-fps] frames_since_last=138 elapsed_ms=1002 instantaneous_fps=137
+[heartbeat] tid=12 uptime_ms=224680 kbd_nonzero=4
+[bwm-fps] frames_since_last=141 elapsed_ms=1004 instantaneous_fps=140
+[heartbeat] tid=12 uptime_ms=225681 kbd_nonzero=4
+[bwm-fps] frames_since_last=143 elapsed_ms=1008 instantaneous_fps=141
+[heartbeat] tid=12 uptime_ms=226682 kbd_nonzero=4
+[bwm-fps] frames_since_last=143 elapsed_ms=1004 instantaneous_fps=142
+[heartbeat] tid=12 uptime_ms=227683 kbd_nonzero=4
+[bwm-fps] frames_since_last=141 elapsed_ms=1010 instantaneous_fps=139
+[heartbeat] tid=12 uptime_ms=228685 kbd_nonzero=4
+[bwm-fps] frames_since_last=140 elapsed_ms=1001 instantaneous_fps=139
+[heartbeat] tid=12 uptime_ms=229685 kbd_nonzero=4
+[bwm-fps] frames_since_last=145 elapsed_ms=1006 instantaneous_fps=144
+[heartbeat] tid=12 uptime_ms=230685 kbd_nonzero=4
+[bwm-fps] frames_since_last=141 elapsed_ms=1001 instantaneous_fps=140
+[heartbeat] tid=12 uptime_ms=231687 kbd_nonzero=4
+[bwm-fps] frames_since_last=145 elapsed_ms=1002 instantaneous_fps=144
+[heartbeat] tid=12 uptime_ms=232687 kbd_nonzero=4
+[bwm-fps] frames_since_last=147 elapsed_ms=1005 instantaneous_fps=146
+[heartbeat] tid=12 uptime_ms=233688 kbd_nonzero=4
+[bwm-fps] frames_since_last=144 elapsed_ms=1005 instantaneous_fps=143
+[heartbeat] tid=12 uptime_ms=234689 kbd_nonzero=4
+[bwm-fps] frames_since_last=138 elapsed_ms=1016 instantaneous_fps=135
+[heartbeat] tid=12 uptime_ms=235691 kbd_nonzero=4
+[bwm-fps] frames_since_last=147 elapsed_ms=1004 instantaneous_fps=146
+[heartbeat] tid=12 uptime_ms=236691 kbd_nonzero=4
+[bwm-fps] frames_since_last=155 elapsed_ms=1002 instantaneous_fps=154
+[heartbeat] tid=12 uptime_ms=237691 kbd_nonzero=4
+[bwm-fps] frames_since_last=164 elapsed_ms=1004 instantaneous_fps=163
+[heartbeat] tid=12 uptime_ms=238693 kbd_nonzero=4
+[bwm-fps] frames_since_last=163 elapsed_ms=1000 instantaneous_fps=163
+[heartbeat] tid=12 uptime_ms=239694 kbd_nonzero=4
+[bwm-fps] frames_since_last=146 elapsed_ms=1001 instantaneous_fps=145
+[heartbeat] tid=12 uptime_ms=240695 kbd_nonzero=4
+[bwm-fps] frames_since_last=144 elapsed_ms=1002 instantaneous_fps=143
+[heartbeat] tid=12 uptime_ms=241696 kbd_nonzero=4
+[bwm-fps] frames_since_last=138 elapsed_ms=1003 instantaneous_fps=137
+[heartbeat] tid=12 uptime_ms=242697 kbd_nonzero=4
+[bwm-fps] frames_since_last=122 elapsed_ms=1002 instantaneous_fps=121
+
+[INLINE_SAVE_OVERWRITE] tid=33 sp=0xffff0000542650a0 old_sp=0xffff0000542650a0 saved_sp=0xffff0000542650a0 delta=0x0 saved_lr=0xffff000040471358 saved_slot20=0xffff000040471358 slot20=0xffff000040471358 elr=0xffff000040462c04 x30=0xffff000040462c04
+[heartbeat] tid=12 uptime_ms=243699 kbd_nonzero=4
+[bwm-fps] frames_since_last=127 elapsed_ms=1001 instantaneous_fps=126
+[heartbeat] tid=12 uptime_ms=244699 kbd_nonzero=4
+[bwm-fps] frames_since_last=123 elapsed_ms=1004 instantaneous_fps=122
+[heartbeat] tid=12 uptime_ms=245699 kbd_nonzero=4
+[bwm-fps] frames_since_last=128 elapsed_ms=1005 instantaneous_fps=127
+[heartbeat] tid=12 uptime_ms=246701 kbd_nonzero=4
+[bwm-fps] frames_since_last=130 elapsed_ms=1009 instantaneous_fps=128
+[heartbeat] tid=12 uptime_ms=247701 kbd_nonzero=4
+[bwm-fps] frames_since_last=131 elapsed_ms=1003 instantaneous_fps=130
+[heartbeat] tid=12 uptime_ms=248701 kbd_nonzero=4
+[bwm-fps] frames_since_last=121 elapsed_ms=1002 instantaneous_fps=120
+[heartbeat] tid=12 uptime_ms=249702 kbd_nonzero=4
+[bwm-fps] frames_since_last=122 elapsed_ms=1001 instantaneous_fps=121
+[heartbeat] tid=12 uptime_ms=250703 kbd_nonzero=4
+[bwm-fps] frames_since_last=124 elapsed_ms=1007 instantaneous_fps=123
+[heartbeat] tid=12 uptime_ms=251704 kbd_nonzero=4
+[bwm-fps] frames_since_last=121 elapsed_ms=1004 instantaneous_fps=120
+[heartbeat] tid=12 uptime_ms=252706 kbd_nonzero=4
+[bwm-fps] frames_since_last=120 elapsed_ms=1002 instantaneous_fps=119
+[heartbeat] tid=12 uptime_ms=253707 kbd_nonzero=4
+[bwm-fps] frames_since_last=128 elapsed_ms=1006 instantaneous_fps=127
+[heartbeat] tid=12 uptime_ms=254709 kbd_nonzero=4
+[bwm-fps] frames_since_last=130 elapsed_ms=1007 instantaneous_fps=129
+[heartbeat] tid=12 uptime_ms=255709 kbd_nonzero=4
+[bwm-fps] frames_since_last=131 elapsed_ms=1005 instantaneous_fps=130
+[heartbeat] tid=12 uptime_ms=256710 kbd_nonzero=4
+[bwm-fps] frames_since_last=124 elapsed_ms=1003 instantaneous_fps=123
+[heartbeat] tid=12 uptime_ms=257711 kbd_nonzero=4
+[bwm-fps] frames_since_last=128 elapsed_ms=1002 instantaneous_fps=127
+[heartbeat] tid=12 uptime_ms=258712 kbd_nonzero=4
+[bwm-fps] frames_since_last=138 elapsed_ms=1002 instantaneous_fps=137
+[heartbeat] tid=12 uptime_ms=259713 kbd_nonzero=4
+[bwm-fps] frames_since_last=129 elapsed_ms=1004 instantaneous_fps=128
+[heartbeat] tid=12 uptime_ms=260713 kbd_nonzero=4
+[bwm-fps] frames_since_last=137 elapsed_ms=1002 instantaneous_fps=136
+[heartbeat] tid=12 uptime_ms=261714 kbd_nonzero=4
+[bwm-fps] frames_since_last=128 elapsed_ms=1000 instantaneous_fps=128
+[heartbeat] tid=12 uptime_ms=262715 kbd_nonzero=4
+[bwm-fps] frames_since_last=125 elapsed_ms=1006 instantaneous_fps=124
+[heartbeat] tid=12 uptime_ms=263716 kbd_nonzero=4
+[bwm-fps] frames_since_last=137 elapsed_ms=1005 instantaneous_fps=136
+[heartbeat] tid=12 uptime_ms=264716 kbd_nonzero=4
+[bwm-fps] frames_since_last=129 elapsed_ms=1004 instantaneous_fps=128
+[heartbeat] tid=12 uptime_ms=265717 kbd_nonzero=4
+[bwm-fps] frames_since_last=122 elapsed_ms=1005 instantaneous_fps=121
+[heartbeat] tid=12 uptime_ms=266718 kbd_nonzero=4
+[bwm-fps] frames_since_last=133 elapsed_ms=1000 instantaneous_fps=133
+[heartbeat] tid=12 uptime_ms=267719 kbd_nonzero=4
+[bwm-fps] frames_since_last=129 elapsed_ms=1002 instantaneous_fps=128
+[heartbeat] tid=12 uptime_ms=268721 kbd_nonzero=4
+[bwm-fps] frames_since_last=134 elapsed_ms=1010 instantaneous_fps=132
+[heartbeat] tid=12 uptime_ms=269721 kbd_nonzero=4
+[bwm-fps] frames_since_last=119 elapsed_ms=1007 instantaneous_fps=118
+[heartbeat] tid=12 uptime_ms=270722 kbd_nonzero=4
+[bwm-fps] frames_since_last=136 elapsed_ms=1004 instantaneous_fps=135
+[heartbeat] tid=12 uptime_ms=271723 kbd_nonzero=4
+[bwm-fps] frames_since_last=141 elapsed_ms=1004 instantaneous_fps=140
+[heartbeat] tid=12 uptime_ms=272724 kbd_nonzero=4
+[bwm-fps] frames_since_last=130 elapsed_ms=1002 instantaneous_fps=129
+[heartbeat] tid=12 uptime_ms=273725 kbd_nonzero=4
+[bwm-fps] frames_since_last=137 elapsed_ms=1002 instantaneous_fps=136
+[heartbeat] tid=12 uptime_ms=274727 kbd_nonzero=4
+[bwm-fps] frames_since_last=135 elapsed_ms=1004 instantaneous_fps=134
+[heartbeat] tid=12 uptime_ms=275727 kbd_nonzero=4
+[bwm-fps] frames_since_last=132 elapsed_ms=1001 instantaneous_fps=131
+[heartbeat] tid=12 uptime_ms=276728 kbd_nonzero=4
+[bwm-fps] frames_since_last=133 elapsed_ms=1009 instantaneous_fps=131
+[heartbeat] tid=12 uptime_ms=277729 kbd_nonzero=4
+[bwm-fps] frames_since_last=135 elapsed_ms=1002 instantaneous_fps=134
+[heartbeat] tid=12 uptime_ms=278730 kbd_nonzero=4
+[bwm-fps] frames_since_last=147 elapsed_ms=1002 instantaneous_fps=146
+[heartbeat] tid=12 uptime_ms=279731 kbd_nonzero=4
+[bwm-fps] frames_since_last=139 elapsed_ms=1003 instantaneous_fps=138
+[heartbeat] tid=12 uptime_ms=280732 kbd_nonzero=4
+[bwm-fps] frames_since_last=130 elapsed_ms=1000 instantaneous_fps=130
+[heartbeat] tid=12 uptime_ms=281733 kbd_nonzero=4
+[bwm-fps] frames_since_last=140 elapsed_ms=1001 instantaneous_fps=139
+[heartbeat] tid=12 uptime_ms=282734 kbd_nonzero=4
+[bwm-fps] frames_since_last=128 elapsed_ms=1002 instantaneous_fps=127
+[heartbeat] tid=12 uptime_ms=283735 kbd_nonzero=4
+[bwm-fps] frames_since_last=147 elapsed_ms=1006 instantaneous_fps=146
+[heartbeat] tid=12 uptime_ms=284737 kbd_nonzero=4
+[bwm-fps] frames_since_last=128 elapsed_ms=1000 instantaneous_fps=128
+[heartbeat] tid=12 uptime_ms=285738 kbd_nonzero=4
+[bwm-fps] frames_since_last=126 elapsed_ms=1004 instantaneous_fps=125
+[heartbeat] tid=12 uptime_ms=286739 kbd_nonzero=4
+[bwm-fps] frames_since_last=132 elapsed_ms=1001 instantaneous_fps=131
+[heartbeat] tid=12 uptime_ms=287740 kbd_nonzero=4
+[bwm-fps] frames_since_last=128 elapsed_ms=1011 instantaneous_fps=126
+[heartbeat] tid=12 uptime_ms=288741 kbd_nonzero=4
+[bwm-fps] frames_since_last=129 elapsed_ms=1003 instantaneous_fps=128
+[heartbeat] tid=12 uptime_ms=289743 kbd_nonzero=4
+[bwm-fps] frames_since_last=133 elapsed_ms=1005 instantaneous_fps=132
+[heartbeat] tid=12 uptime_ms=290743 kbd_nonzero=4
+[bwm-fps] frames_since_last=131 elapsed_ms=1001 instantaneous_fps=130
+[heartbeat] tid=12 uptime_ms=291744 kbd_nonzero=4
+[bwm-fps] frames_since_last=132 elapsed_ms=1006 instantaneous_fps=131
+[heartbeat] tid=12 uptime_ms=292744 kbd_nonzero=4
