@@ -210,6 +210,10 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     QEMU_PID=""
     qemu_host_lock_release
     [ "$elapsed" -lt "$HOST_DEADLINE" ] || { echo "FAIL: host deadline"; false; }
-    python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" --program "$PROGRAM" "${EXPECTED_ARMS[@]}"
+    if [ "$PROGRAM" = unix_stream_blocking_oracle ]; then
+        python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" --program "$PROGRAM" "${EXPECTED_ARMS[@]}"
+    else
+        python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" "${EXPECTED_ARMS[@]}"
+    fi
 done
 echo "PASS: blocking I/O oracle $ARCH boots=$BOOTS; serials=$OUTPUT_ROOT/boot_*/serial.txt"
