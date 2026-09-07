@@ -1,0 +1,5 @@
+revision=753b463665b62d5b6801cea38fcb1e492cd7fa4b
+58 saved citation lines match this revision.
+origin/main=3a8a973b013dbbee09f17c660c0f310ecdf3640e
+Merge attempt: Already up to date; no merge commit created.
+R182: strict and standard x86 scorers unchanged from origin/main; console scorer fixture correction already present in 8ff71840. No new scorer requirement in this landing attempt.
