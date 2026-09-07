@@ -36,7 +36,10 @@ for ((cycle=1; cycle<=CYCLES; cycle++)); do
     cycle_dir="$OUT/cycle-$cycle"
     mkdir -p "$cycle_dir"
     rc=0
-    BREENIX_GATE_TMP="$cycle_dir" bash "$ROOT/docker/qemu/run-aarch64-boot-test-strict.sh" 1 > "$cycle_dir/gate.txt" 2>&1 || rc=$?
+    {
+        printf 'revision=%s cycle=%s hogs=%s\n' "$revision" "$cycle" "$HOGS"
+        BREENIX_GATE_TMP="$cycle_dir" bash "$ROOT/docker/qemu/run-aarch64-boot-test-strict.sh" 1
+    } > "$cycle_dir/gate.txt" 2>&1 || rc=$?
     serial="$cycle_dir/breenix_aarch64_strict_1/serial.txt"
     receipt=0
     if [[ -f "$serial" ]] && grep -qE '\[LOOPBACK_WAKE_BUDGET:.*:test=when_idle:.*:extensions=[1-9][0-9]*:.*:verdict=starved\]' "$serial" && grep -qF '[TEST:network:loopback_recv_wake_when_idle:PASS]' "$serial"; then
