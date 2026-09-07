@@ -662,8 +662,7 @@ impl ProcessManager {
 
             for addr in (kernel_start..kernel_end).step_by(0x1000) {
                 let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
-                let frame =
-                    PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
+                let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
 
                 if let Some(existing_frame) = page_table.translate_page(VirtAddr::new(addr)) {
                     if existing_frame.as_u64() == addr {
@@ -974,7 +973,11 @@ impl ProcessManager {
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                process.stack.as_deref().ok_or("user stack frames unavailable")?.frames(),
+                process
+                    .stack
+                    .as_deref()
+                    .ok_or("user stack frames unavailable")?
+                    .frames(),
             )
             .map_err(|e| {
                 crate::serial_println!(
@@ -1158,7 +1161,11 @@ impl ProcessManager {
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                process.stack.as_deref().ok_or("user stack frames unavailable")?.frames(),
+                process
+                    .stack
+                    .as_deref()
+                    .ok_or("user stack frames unavailable")?
+                    .frames(),
             )
             .map_err(|e| {
                 log::error!(
@@ -3250,7 +3257,10 @@ impl ProcessManager {
         }
 
         {
-            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
+            let process = self
+                .processes
+                .live_row_mut(&pid)
+                .ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
             // By this point, CR3 has definitely switched away from any old tables.
             process.drain_old_page_tables();
@@ -3630,7 +3640,10 @@ impl ProcessManager {
         }
 
         {
-            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
+            let process = self
+                .processes
+                .live_row_mut(&pid)
+                .ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
             process.drain_old_page_tables();
         }
@@ -3857,9 +3870,8 @@ impl ProcessManager {
         let sb = thread.stack_bottom;
         let kst = thread.kernel_stack_top;
         let tls = thread.tls_block;
-        let sched_commit = crate::task::scheduler::ExecSchedCommit::new(
-            thread_id, ctx, st, sb, kst, tls, new_cr3,
-        );
+        let sched_commit =
+            crate::task::scheduler::ExecSchedCommit::new(thread_id, ctx, st, sb, kst, tls, new_cr3);
 
         // Handle page table switching
         if is_current_process {
@@ -3949,7 +3961,10 @@ impl ProcessManager {
         }
 
         {
-            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
+            let process = self
+                .processes
+                .live_row_mut(&pid)
+                .ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
             process.drain_old_page_tables();
         }
@@ -4267,7 +4282,10 @@ impl ProcessManager {
         }
 
         {
-            let process = self.processes.live_row_mut(&pid).ok_or("Process not found")?;
+            let process = self
+                .processes
+                .live_row_mut(&pid)
+                .ok_or("Process not found")?;
             process.drain_old_page_tables();
         }
 
