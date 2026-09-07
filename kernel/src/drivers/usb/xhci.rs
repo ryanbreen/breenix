@@ -1543,10 +1543,18 @@ fn submit_command_and_wait(state: &XhciState, trb: Trb) -> Result<Trb, &'static 
     XHCI_COMMAND_CONTROL.store(0, Ordering::Release);
     XHCI_COMMAND_WAITING.store(true, Ordering::Release);
 
+    // Arm the transient completion IRQ before this command is published to
+    // the device. `enqueue_command`'s cache-clean and the doorbell write are
+    // the earliest points a running command ring can observe and act on the
+    // TRB, so the SPI must already be enabled and its pending bit cleared
+    // before either happens: this SPI is edge-triggered, so a completion
+    // that lands between publication and arming has its GIC-pending edge
+    // cleared by `enable_irq_for_wait` before it can be redelivered (#482).
+    let transient_irq = enable_irq_for_wait(state);
+
     enqueue_command(trb);
     ring_doorbell(state, 0, 0);
 
-    let transient_irq = enable_irq_for_wait(state);
     // The command is already published to the device, so abandoning this
     // wait would leave a device slot and its DMA buffers live.
     let wait = XHCI_COMMAND_COMPLETION.wait_timeout_uninterruptible(
@@ -1559,7 +1567,25 @@ fn submit_command_and_wait(state: &XhciState, trb: Trb) -> Result<Trb, &'static 
     Ok(stored_command_event())
 }
 
-fn prepare_transfer_wait(slot_id: u8, endpoint: u8) {
+/// Prepare the software EP0 transfer wait and arm its transient completion
+/// IRQ. The caller must call this BEFORE it enqueues any TRB or rings the
+/// doorbell for this transfer -- see #482: enqueuing and the doorbell write
+/// are the earliest points a running transfer ring can observe and act on
+/// the TRBs, so the SPI must already be enabled and its pending bit cleared
+/// before either happens, or a completion landing in that window has its
+/// GIC-pending edge cleared before it can be redelivered.
+///
+/// Returns the transient-enable ownership flag the caller must pass
+/// unchanged to `wait_for_prepared_transfer`.
+fn prepare_transfer_wait(
+    state: &XhciState,
+    slot_id: u8,
+    endpoint: u8,
+) -> Result<bool, &'static str> {
+    if state.irq == 0 {
+        return Err("XHCI transfer IRQ unavailable");
+    }
+
     XHCI_TRANSFER_COMPLETION.reset();
     XHCI_TRANSFER_PARAM.store(0, Ordering::Release);
     XHCI_TRANSFER_STATUS.store(0, Ordering::Release);
@@ -1569,15 +1595,17 @@ fn prepare_transfer_wait(slot_id: u8, endpoint: u8) {
         Ordering::Release,
     );
     XHCI_TRANSFER_WAITING.store(true, Ordering::Release);
+
+    Ok(enable_irq_for_wait(state))
 }
 
-fn wait_for_prepared_transfer(state: &XhciState) -> Result<Trb, &'static str> {
-    if state.irq == 0 {
-        XHCI_TRANSFER_WAITING.store(false, Ordering::Release);
-        return Err("XHCI transfer IRQ unavailable");
-    }
-
-    let transient_irq = enable_irq_for_wait(state);
+/// Wait for the transfer prepared by `prepare_transfer_wait`. `transient_irq`
+/// must be the flag that call returned; this function performs no GIC
+/// enabling of its own -- arming already happened before publication.
+fn wait_for_prepared_transfer(
+    state: &XhciState,
+    transient_irq: bool,
+) -> Result<Trb, &'static str> {
     // The transfer is already published to the device, so abandoning this
     // wait would leave a device slot and its DMA buffers live.
     let wait = XHCI_TRANSFER_COMPLETION.wait_timeout_uninterruptible(
@@ -1901,6 +1929,10 @@ fn control_transfer(
 ) -> Result<(), &'static str> {
     let slot_idx = (slot_id - 1) as usize;
 
+    // Arm the IRQ-side EP0 completion before this transfer is enqueued or
+    // published to the device via any doorbell write below (#482).
+    let transient_irq = prepare_transfer_wait(state, slot_id, 1)?;
+
     // Setup Stage TRB
     // The setup packet (8 bytes) is inlined in the TRB param field
     let setup_data: u64 =
@@ -1953,14 +1985,10 @@ fn control_transfer(
     };
     enqueue_transfer(slot_idx, status_trb);
 
-    // Arm the IRQ-side EP0 completion before ringing the doorbell so a fast
-    // Transfer Event cannot race ahead of the waiter.
-    prepare_transfer_wait(slot_id, 1);
-
     // Ring doorbell for EP0 (DCI = 1 for the default control endpoint)
     ring_doorbell(state, slot_id, 1);
 
-    let event = wait_for_prepared_transfer(state)?;
+    let event = wait_for_prepared_transfer(state, transient_irq)?;
     let cc = event.completion_code();
     if cc != completion_code::SUCCESS && cc != completion_code::SHORT_PACKET {
         // Any error on EP0 halts the endpoint (xHCI spec 4.10.2.2).
@@ -4107,16 +4135,25 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
 
         // --- M6: SLOT_ENABLE ---
         //
-        // Bounded retry: a slow virtual device (e.g. Parallels' emulated mouse
-        // on port 1) can transiently time out its EnableSlot command completion.
+        // Bounded retry: an EnableSlot command completion can time out even
+        // when the controller executed the command. #482's RCA found that the
+        // completion IRQ used to be armed AFTER the command was already
+        // published (enqueued and doorbell-rung); a completion that landed in
+        // that window had its GIC-pending edge cleared by the arm step, so
+        // the wait timed out despite the command having run. Arming before
+        // publication (see submit_command_and_wait) closes that specific
+        // race, but a timeout here still does not establish the device
+        // itself was slow -- a genuinely late completion remains possible,
+        // and this retry stays as bounded recovery for it.
         // A single timeout used to abandon the port for the entire session —
         // mouse_slot stayed 0, start_hid_polling's guards skipped the mouse
         // interrupt transfer, and the pointer was dead for the whole run.
         //
         // Retry the full EnableSlot -> AddressDevice sequence (not just
-        // EnableSlot alone) up to SLOT_ENABLE_MAX_ATTEMPTS times, since a slow
-        // device may need a full warm-up round rather than just a second
-        // EnableSlot. Only abandon the port after retries are exhausted.
+        // EnableSlot alone) up to SLOT_ENABLE_MAX_ATTEMPTS times: an abandoned
+        // attempt's EnableSlot can still allocate a real hardware slot, so a
+        // fresh warm-up round is needed rather than just a second EnableSlot.
+        // Only abandon the port after retries are exhausted.
         const SLOT_ENABLE_MAX_ATTEMPTS: u8 = 3;
         const SLOT_ENABLE_RETRY_DELAY_MS: u32 = 20;
         ms_begin!(M_SLOT_EN);
@@ -4188,7 +4225,13 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         // This exact ordering is confirmed by Parallels Linux VM ftrace capture.
 
         // Step 1: Short device descriptor (8 bytes)
-        if let Err(_) = get_device_descriptor_short(state, slot_id) {
+        if let Err(e) = get_device_descriptor_short(state, slot_id) {
+            crate::serial_println!(
+                "[xhci] enum_failed port={} slot={} stage=device-short error={}",
+                port_id,
+                slot_id,
+                e
+            );
             continue;
         }
 
@@ -4198,7 +4241,13 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
 
         // Step 3: Full device descriptor (18 bytes)
         let mut desc_buf = [0u8; 18];
-        if let Err(_) = get_device_descriptor(state, slot_id, &mut desc_buf) {
+        if let Err(e) = get_device_descriptor(state, slot_id, &mut desc_buf) {
+            crate::serial_println!(
+                "[xhci] enum_failed port={} slot={} stage=device-full error={}",
+                port_id,
+                slot_id,
+                e
+            );
             continue;
         }
         let (device_vid, device_pid, device_class) = {
@@ -4231,7 +4280,13 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         let mut config_buf = [0u8; 256];
         let config_len = match get_config_descriptor(state, slot_id, &mut config_buf) {
             Ok(len) => len,
-            Err(_) => {
+            Err(e) => {
+                crate::serial_println!(
+                    "[xhci] enum_failed port={} slot={} stage=configuration error={}",
+                    port_id,
+                    slot_id,
+                    e
+                );
                 continue;
             }
         };
@@ -4251,7 +4306,14 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         }
 
         // Configure HID devices
-        if let Err(_) = configure_hid(state, slot_id, &config_buf, config_len) {}
+        if let Err(e) = configure_hid(state, slot_id, &config_buf, config_len) {
+            crate::serial_println!(
+                "[xhci] enum_failed port={} slot={} stage=hid-configure error={}",
+                port_id,
+                slot_id,
+                e
+            );
+        }
     }
 
     Ok(())
