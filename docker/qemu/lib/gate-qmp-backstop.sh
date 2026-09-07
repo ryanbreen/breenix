@@ -10,6 +10,9 @@
 # internal polling or wall-clock readings. A kill-after also bounds a child
 # that ignores TERM. Decoding has its own timeout; dump_ms measures capture.
 # PASS just prints its contract and does not access the socket.
+# A missing socat prevents the forensic child from starting QMP at all;
+# report that dependency failure separately from an exchange that times out.
+# Budget and socket validation precede the tool check to retain their reasons.
 #
 # Same clock primitive as gcd_now_ms, duplicated rather than sourced to
 # avoid a load-order dependency on the sibling drain library. This clock
@@ -85,6 +88,11 @@ gqb_dump_and_report() {
     if [ ! -S "$sock" ]; then
         end_ms="$(gqb_now_ms)"
         printf '[QMP_DUMP:capture=partial:reason=qmp_socket_missing:core=-:decoded_events=-:dump_ms=%s]\n' "$((end_ms - start_ms))"
+        return
+    fi
+    if ! command -v socat >/dev/null 2>&1; then
+        end_ms="$(gqb_now_ms)"
+        printf '[QMP_DUMP:capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms=%s]\n' "$((end_ms - start_ms))"
         return
     fi
     # A repeated call must not classify a previous dump as this attempt's.
