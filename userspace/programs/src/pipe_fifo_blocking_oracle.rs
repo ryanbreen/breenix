@@ -1,5 +1,7 @@
 //! #813 pipe/FIFO write oracle. Helper reads are sequenced by real queue witnesses,
 //! before the helper releases a writer parked in write().
+#[path = "console_read_oracle.rs"]
+mod console_read_oracle;
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::syscall::{nr, raw::syscall3};
@@ -617,7 +619,8 @@ fn main() {
         "[PIPE_WRITE_SUMMARY:{}:passed={}:failed={}]",
         arch, passed, failed
     ));
-    process::exit(if failed == 0 && passed == 2 * ARMS.len() {
+    let console_ok = console_read_oracle::run(arch);
+    process::exit(if failed == 0 && passed == 2 * ARMS.len() && console_ok {
         0
     } else {
         1

@@ -109,3 +109,17 @@ fn progress_or_error(offset: usize, error: i32) -> SyscallResult {
         SyscallResult::Err(error as u64)
     }
 }
+
+/// Generic Console/Tty reads use the live input ring and descriptor status flags.
+pub(crate) fn read_console(buf: &mut [u8], is_nonblocking: bool) -> Result<usize, i32> {
+    loop {
+        let outcome = match crate::ipc::stdin::read_or_prepare(buf, is_nonblocking) {
+            Ok(n) => return Ok(n),
+            Err(outcome) => outcome,
+        };
+        if is_nonblocking {
+            return Err(errno::EAGAIN);
+        }
+        wait_prepared(&crate::ipc::stdin::INPUT_READERS, outcome)?;
+    }
+}

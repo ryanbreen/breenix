@@ -392,6 +392,7 @@ fn inspect(
                     "preempt_disable",
                     "from",
                     "min",
+                    "read_or_prepare",
                 ];
                 if !LEAVES.contains(&token)
                     && !["let", "=", ",", "&", "|", "||", "return"].contains(&token)
@@ -476,7 +477,9 @@ fn repaired_families_have_no_blocking_eagain_exit() {
     let defs = functions(&lex(&helper));
     let roots: Vec<_> = defs
         .keys()
-        .filter(|name| compacted.contains(&format!("blocking_io::{name}(")))
+        .filter(|name| {
+            name.as_str() != "read_console" && compacted.contains(&format!("blocking_io::{name}("))
+        })
         .collect();
     assert_eq!(
         roots.len(),
@@ -578,18 +581,9 @@ fn repaired_families_have_no_blocking_eagain_exit() {
             "EAGAIN"
         ) || contains(&function(&read("kernel/src/socket/unix.rs"), "write"), "11")
     );
-    assert!(
-        contains(
-            &function(&read("kernel/src/fs/devfs/mod.rs"), "device_read"),
-            "EAGAIN"
-        ) || contains(
-            &function(&read("kernel/src/fs/devfs/mod.rs"), "device_read"),
-            "11"
-        )
-    );
-    println!(
-        "Pipe/FIFO: 0 prohibited blocking EAGAIN exits; Unix/Console: inventoried, unrepaired"
-    );
+    audit_helper(&helper, "read_console").expect("Console/Tty blocking route");
+    assert!(compacted.contains("blocking_io::read_console(&mutuser_buf,is_nonblocking)"));
+    println!("Pipe/FIFO/Console/Tty: bounded blocking EAGAIN census; Unix remains unrepaired at this revision");
 }
 
 #[test]

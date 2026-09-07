@@ -508,10 +508,14 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 SyscallResult::Err(5) // EIO
             }
         }
-        WriteOperation::Pipe { pipe_buffer, is_nonblocking }
-        | WriteOperation::Fifo { pipe_buffer, is_nonblocking } => {
-            super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking)
+        WriteOperation::Pipe {
+            pipe_buffer,
+            is_nonblocking,
         }
+        | WriteOperation::Fifo {
+            pipe_buffer,
+            is_nonblocking,
+        } => super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking),
         WriteOperation::UnixStream { socket } => {
             let sock = socket.lock();
             match sock.write(&buffer) {
@@ -1248,9 +1252,17 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::Device(device_type) => {
             // Read from devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
             let device_type = *device_type;
+            let is_nonblocking =
+                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
             let mut user_buf = alloc::vec![0u8; count as usize];
-            match crate::fs::devfs::device_read(device_type, &mut user_buf) {
+            let result = match device_type {
+                crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
+                    super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
+                }
+                _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
+            };
+            match result {
                 Ok(n) => {
                     if n > 0 {
                         // Copy to userspace
@@ -1971,7 +1983,11 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
                     process.main_thread.as_mut().map(|thread| {
                         let thread_id = thread.id;
                         let tls_block = thread.tls_block;
-                        (thread_id, tls_block, Box::new(thread.publish_to_scheduler()))
+                        (
+                            thread_id,
+                            tls_block,
+                            Box::new(thread.publish_to_scheduler()),
+                        )
                     })
                 }),
                 None => None,
@@ -2559,7 +2575,8 @@ pub fn sys_execv_with_frame(
                 elf_data,
                 Some(program_name),
                 &argv_slices,
-             &mut closes) {
+                &mut closes,
+            ) {
                 Ok(value) => value,
                 Err("exec blocked while CLONE_VM sibling shares old address space") => {
                     return SyscallResult::Err(11); // EAGAIN
@@ -2581,7 +2598,8 @@ pub fn sys_execv_with_frame(
 
             log::info!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
-                new_entry_point, new_rsp
+                new_entry_point,
+                new_rsp
             );
 
             // Modify the syscall frame to jump to the new program
@@ -2724,7 +2742,8 @@ pub fn sys_execv_with_frame(
                 elf_data,
                 Some(program_name),
                 &argv_slices,
-             &mut closes) {
+                &mut closes,
+            ) {
                 Ok(value) => value,
                 Err("exec blocked while CLONE_VM sibling shares old address space") => {
                     return SyscallResult::Err(11); // EAGAIN
@@ -2748,7 +2767,8 @@ pub fn sys_execv_with_frame(
 
             log::info!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
-                new_entry_point, new_rsp
+                new_entry_point,
+                new_rsp
             );
 
             // Modify the syscall frame to jump to the new program
@@ -3165,7 +3185,8 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             // Replace the process's address space
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process(current_pid, _elf_data, _exec_program_name, &mut closes) {
+                match manager.exec_process(current_pid, _elf_data, _exec_program_name, &mut closes)
+                {
                     Ok(new_entry_point) => {
                         log::info!(
                         "sys_exec: Successfully replaced process address space, entry point: {:#x}",
@@ -3776,7 +3797,10 @@ pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
     match duplicated {
         Ok((fd, overwritten)) => {
             if let Some(entry) = overwritten {
-                crate::task::process_task::close_extracted_fds(alloc::vec![(new_fd as usize, entry)]);
+                crate::task::process_task::close_extracted_fds(alloc::vec![(
+                    new_fd as usize,
+                    entry
+                )]);
             }
             log::debug!("sys_dup2: Successfully duplicated fd {} to {}", old_fd, fd);
             SyscallResult::Ok(fd as u64)

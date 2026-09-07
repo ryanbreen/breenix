@@ -46,6 +46,9 @@ case "$BOOTS" in ''|*[!0-9]*|0*) echo "FAIL: positive --boots required"; false ;
 mkdir -p "$BREENIX_GATE_TMP"
 OUTPUT_ROOT="$(mktemp -d "$BREENIX_GATE_TMP/breenix_813_${ARCH}.XXXXXX")"
 echo "Artifacts: $OUTPUT_ROOT"
+git -C "$BREENIX_ROOT" rev-parse HEAD | tee "$OUTPUT_ROOT/revision.txt"
+
+CONSOLE_ARMS=(blocking nonblock_open nonblock_fcntl readiness_partial eintr immediate)
 
 # Kept equal to the driver's derived arm set by pipe_fifo_blocking_structure.
 EXPECTED_ARMS=(
@@ -200,6 +203,6 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     QEMU_PID=""
     qemu_host_lock_release
     [ "$elapsed" -lt "$HOST_DEADLINE" ] || { echo "FAIL: host deadline"; false; }
-    python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" "${EXPECTED_ARMS[@]}"
+    python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" "${EXPECTED_ARMS[@]}" --console "${CONSOLE_ARMS[@]}"
 done
 echo "PASS: blocking I/O oracle $ARCH boots=$BOOTS; serials=$OUTPUT_ROOT/boot_*/serial.txt"
