@@ -1,0 +1,29 @@
+title:	Investigate SOFT_LOCKUP_VIRGL Parallels failure class
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	454
+--
+Fresh AHCI CPU0 root-cause sweep on current main saw SOFT_LOCKUP_VIRGL in 10/30 Parallels boots. The AHCI Ralph explicitly scoped this class out, so it needs a separate investigation focused on compositor/VirGL liveness rather than AHCI IRQ routing.
+
+**Acceptance Criteria**
+
+Reproduce and characterize SOFT_LOCKUP_VIRGL with a dedicated stress run; identify whether it is compositor, VirGL device, scheduler, or VM artifact; produce either a fix with validation or a documented non-kernel finding.
+
+---
+type=`bug` | priority=P1 | bd status=`open`
+bd dependencies:
+- discovered-from -> breenix-2r1
+
+Migrated from bd issue `breenix-ha9`.
+=== COMMENTS ===

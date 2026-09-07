@@ -1,0 +1,23 @@
+title:	F24 launch GUI apps on bwm desktop
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	enhancement
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	431
+--
+Track F24 work to document ARM64 early userspace constraints, add a stricter render verdict, and incrementally launch GUI clients on the bwm desktop without regressing Parallels boot/capture.
+
+---
+type=`feature` | priority=P1 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-83a`.
+=== COMMENTS ===

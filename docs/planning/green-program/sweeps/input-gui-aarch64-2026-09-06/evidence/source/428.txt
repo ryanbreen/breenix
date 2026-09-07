@@ -1,0 +1,18 @@
+=== #428 git show --stat 5aa0d5ce ===
+commit 5aa0d5cede18f47134ed65efe2b9624c90320936
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Sat May 30 12:29:22 2026 -0400
+
+    fix(aarch64): GPU present-fence compositor — eliminate BWM CPU burn + complete-lockup (#381)
+    
+    Linux-grounded present-fence model: op16 SUBMIT_3D compositor, at most one present in flight, and fence-gated client release. This fixes the complete lockup and CPU0/BWM burn; single-window validation shows roughly 180-220 FPS, BWM off top CPU, and present submitted == completed.
+    
+    KNOWN FOLLOW-UP: multi-window second-window virtio-gpu control-queue marshalling corruption remains for a separate branch, with VIRTGPU_FAIL / cmd=0xbf800000 evidence.
+    
+    Co-authored-by: Claude Code <noreply@anthropic.com>
+
+ kernel/src/drivers/virtio/gpu_pci.rs    |  68 ++++++-
+ kernel/src/syscall/graphics.rs          |  63 +++++--
+ kernel/src/tracing/providers/virtgpu.rs |  50 ++++++
+ userspace/programs/src/bwm.rs           | 310 +++++---------------------------
+ 4 files changed, 202 insertions(+), 289 deletions(-)

@@ -1,0 +1,3 @@
+[xhci] start_hid_polling: kbd=slot0/dci0 nkro=dci0 mouse=slot0/dci0 mouse2=dci0
+[xhci] port 1 EnableSlot failed: XHCI command completion timeout
+[xhci] port 1 EnableSlot retry 2/3

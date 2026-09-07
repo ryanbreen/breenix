@@ -1,0 +1,239 @@
+=== #482 git show --stat 5780377f ===
+commit 5780377faee0e90daf21f8bdd2a58fe3a7d899df
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Tue Apr 21 08:58:02 2026 -0400
+
+    F32t Phase 1-4: Linux-order PCI MSI programming + xHCI state.irq plumbing (#333)
+    
+    * docs(kernel): F32t Phase 1 Linux xHCI MSI ground truth
+    
+    Captured from linux-probe (10.211.55.3) on same Parallels ARM64 hypervisor:
+    - Linux xhci_hcd uses MSI → GICv2m SPI → xhci_msi_irq successfully
+    - MSI address 0x02250040, SPI 56, edge-triggered, Group 1
+    - Mesa per-frame runs through IRQ, not polling; no timer-driven fallback
+    
+    Used as Phase 2 reference for Breenix's PCI MSI programming order fix.
+    
+    Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+    
+    * fix(pci): F32t Phase 2 Linux-order MSI programming
+    
+    Refactor Device::configure_msi() to match Linux's PCI MSI programming
+    sequence (drivers/pci/msi/msi.c:359-389, :184-204):
+    
+    1. Read Message Control flags (64-bit, mask capability)
+    2. Clear MSI Enable bit (disable during setup)
+    3. Mask vector 0 if per-vector masking supported
+    4. Clear Qsize (single-vector mode)
+    5. Write Message Address Lo (and Hi=0 for 64-bit)
+    6. Write Message Data
+    7. Read back flags (posted-write flush)
+    8. Disable INTx (PCI_COMMAND.INTX_DISABLE)
+    9. Enable MSI
+    10. Unmask vector 0
+    
+    Previously Breenix wrote address/data/mask then Enable then INTx off, which
+    could leave stale pending MSI signals at the enable moment — the suspected
+    source of the historical MSI storm that led commit 488d2fc2 to set
+    XhciState.irq=0 defensively.
+    
+    Named constants extracted (PCI_COMMAND_*, PCI_MSI_FLAGS_*, etc.) and
+    configure_msi() now calls disable_intx() internally. Updated call sites
+    (AHCI, xHCI, virtio-gpu, virtio-net) to remove the now-redundant external
+    disable_intx() invocation.
+    
+    Linux parity:
+    - /tmp/linux-v6.8/drivers/pci/msi/msi.c:359-389 __pci_write_msi_msg
+    - /tmp/linux-v6.8/drivers/pci/msi/msi.c:184-204 pci_msi_update_mask
+    
+    Validation: aarch64 kernel builds clean. No runtime behavior change expected
+    beyond the MSI programming order; subsequent phases (state.irq enablement,
+    polling removal, BWM wake migration) follow.
+    
+    Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+    
+    * fix(usb): F32t Phase 4 enable xHCI MSI delivery
+    
+    With F32t Phase 2's Linux-order MSI programming now in place (disable → mask →
+    write → flush → INTx off → enable → unmask), the historical "MSI storm"
+    condition that led commit 488d2fc2 to defensively set XhciState.irq=0 should
+    no longer occur. Storms came from enabling MSI while pending vectors were
+    still latched; Linux ordering clears and masks before enabling.
+    
+    Set state.irq = early_irq so the deferred SPI activation path at
+    kernel/src/drivers/usb/xhci.rs:6183-6186 calls gic::enable_spi(state.irq) and
+    the xHCI interrupt is delivered via MSI → GIC SPI → handle_interrupt().
+    
+    After this commit, the timer-driven poll_hid_events() path is no longer the
+    primary HID event driver — MSI delivery is. The polling code remains for now
+    and will be deleted in F32t Phase 5 once MSI delivery is validated.
+    
+    Linux parity: /tmp/linux-v6.8/drivers/usb/host/xhci.c::xhci_try_enable_msi
+    enables MSI during init; /tmp/linux-v6.8/drivers/pci/msi/msi.c::__pci_msi_desc_mask_irq
+    is the unmask step in the enable sequence.
+    
+    Validation: clean aarch64 kernel build. Full Parallels boot test pending.
+    
+    Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+    
+    * fix(usb): F32t Phase 5a move xHCI SPI enable to end of init
+    
+    Previously the GIC SPI for xHCI was enabled lazily inside poll_hid_events()
+    when its poll counter reached 50 (~250ms after init). That coupled MSI
+    activation to the timer-driven polling path.
+    
+    Move SPI enable to the end of xhci::init(), after:
+    - PCI MSI capability programmed with Linux-order sequence (Phase 2)
+    - state.irq = early_irq stored (Phase 4)
+    - IMAN.IE = 1, USBCMD.RS=1 set
+    - Enumeration complete, TRBs queued for HID endpoints
+    
+    This is where Linux enables interrupts at the end of controller bring-up
+    (drivers/usb/host/xhci.c::xhci_run_finished_at). poll_hid_events() no longer
+    holds the only path to activation; Phase 5b will delete that function.
+    
+    Validation: clean aarch64 kernel build. Runtime test pending.
+    
+    Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+    
+    * Revert "fix(usb): F32t Phase 5a move xHCI SPI enable to end of init"
+    
+    This reverts commit 703db7def129c0c5c1d7b799283948e8e796191c.
+    
+    ---------
+    
+    Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+ docs/planning/f32t-xhci-msi/linux-ground-truth.md | 100 +++++++++++++++++
+ kernel/src/drivers/ahci/mod.rs                    |   1 -
+ kernel/src/drivers/pci.rs                         | 127 ++++++++++++++++------
+ kernel/src/drivers/usb/xhci.rs                    |   9 +-
+ kernel/src/drivers/virtio/gpu_pci.rs              |   1 -
+ kernel/src/drivers/virtio/net_pci.rs              |   1 -
+ 6 files changed, 198 insertions(+), 41 deletions(-)
+=== #482 git show --stat b32e773b ===
+commit b32e773b55208c2e5550399686f73b7b1bdd5bf3
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Wed May 20 00:54:08 2026 -0400
+
+    feat(aarch64/xhci): system-ready MSI activation, end CPU0-timer dependency
+    
+    Removes the CPU0-timer dependency for xHCI GIC SPI activation on aarch64. The MSI vector is now armed from main_aarch64.rs at the system-ready boot point after drivers::init(), ext2 init preload, and before timer init, restoring the spirit of the reverted 703db7de attempt without re-triggering the c077c6ba AHCI/FS stall regression.
+    
+    The poll_hid_events() poll >= 50 branch now calls the same idempotent activate_msi_if_ready() helper as a transitional fallback. Observed Parallels boots show the system-ready path wins the race and the timer fallback does not fire.
+    
+    Runtime verification (Parallels aarch64, Turn 5): DIAG_SPI_ENABLE_COUNT=1 from system-ready path; SPI_ACTIVATED=true before timer init; CPU0 timer alive to 45000 ticks; boot reaches userspace PID 1. MSI_EVENT_COUNT remains 0 in this setup because Parallels has no xHCI HID input source; Linux probe evidence from Turn 2 proves MSI delivery on identical hardware.
+    
+    Refs: turn1-msi-intx-map.md, turn2-msi-linux-and-archaeology.md, turn2-artifacts/linux-probe/proc-interrupts-idle.txt
+    
+    Co-authored-by: Ryan Breen <ryan@breen.dev>
+    
+    Co-authored-by: Claude Code <noreply@anthropic.com>
+
+ kernel/src/drivers/usb/xhci.rs                 |   76 +-
+ kernel/src/main_aarch64.rs                     |   15 +
+ turn5-artifacts/activation-source.txt          |    1 +
+ turn5-artifacts/build-aarch64.log              |    2 +
+ turn5-artifacts/build-efi.log                  |   22 +
+ turn5-artifacts/build-x86.log                  |    3 +
+ turn5-artifacts/cpu0-tick-trajectory.txt       |    9 +
+ turn5-artifacts/grep-markers.txt               |   11 +
+ turn5-artifacts/parallels-boot-extended.log    |  650 ++++
+ turn5-artifacts/periodic-diagnostic-output.txt |    7 +
+ turn5-artifacts/prlctl-after-stop.txt          |    1 +
+ turn5-artifacts/prlctl-stop.log                |    2 +
+ turn5-artifacts/run-parallels-xtrace.log       | 4075 ++++++++++++++++++++++++
+ turn5-artifacts/vm-name.txt                    |    1 +
+ 14 files changed, 4865 insertions(+), 10 deletions(-)
+=== #482 git show --stat cb73f6e3 ===
+commit cb73f6e3b790b13f9a0041a386b17030d3961e98
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Wed May 20 10:27:18 2026 -0400
+
+    fix(arm64): close scheduler dequeue race and xHCI IRQ completion
+    
+    Validate ready-queue entries before dispatch so stale entries cannot run while a thread is still owned by another CPU or deferred requeue.
+    
+    Restore the Turn 5 xHCI IRQ-completion path and expose scheduler stale-entry counters through /proc/xhci/counters for stress-gate capture.
+    
+    Co-authored-by: Ryan Breen <ryan@breen.dev>
+    
+    Co-authored-by: Claude Code <noreply@anthropic.com>
+
+ kernel/src/drivers/usb/xhci.rs           | 1467 ++++++------------------------
+ kernel/src/fs/procfs/xhci.rs             |   10 +-
+ kernel/src/main_aarch64.rs               |   10 +-
+ kernel/src/task/scheduler.rs             |  212 +++--
+ kernel/src/tracing/providers/counters.rs |   24 +
+ 5 files changed, 426 insertions(+), 1297 deletions(-)
+=== #482 xhci.rs 4889,4921;5378,5391;5513,5535 ===
+    let early_irq = setup_xhci_msi(pci_dev);
+
+    // 14. Create state with IRQ already set.
+    // F32t: Now that configure_msi() uses Linux ordering (disable → mask →
+    // write → flush → INTx off → enable → unmask) no MSI storm is expected,
+    // so the deferred SPI activation path can enable this irq (was irq: 0
+    // as a workaround since commit 488d2fc2).
+    let mut xhci_state = XhciState {
+        base,
+        cap_length,
+        op_base,
+        rt_base,
+        db_base,
+        max_slots: slots_en,
+        max_ports,
+        context_size,
+        irq: early_irq,
+        kbd_slot: 0,
+        kbd_endpoint: 0,
+        kbd_nkro_endpoint: 0,
+        mouse_slot: 0,
+        mouse_endpoint: 0,
+        mouse_nkro_endpoint: 0,
+    };
+
+    // Publish minimal state before the first command wait. Enumeration command
+    // and EP0 transfer waits now complete from handle_interrupt(), so the IRQ
+    // handler needs state as soon as the MSI SPI is transiently enabled.
+    XHCI_IRQ.store(early_irq, Ordering::Release);
+    unsafe {
+        *(&raw mut XHCI_STATE) = Some(xhci_state);
+    }
+    XHCI_INITIALIZED.store(true, Ordering::Release);
+        return false;
+    }
+
+    if SPI_ACTIVATED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+
+    crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
+    crate::arch_impl::aarch64::gic::enable_spi(state.irq);
+    let count = DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    queue_msi_probe_noop(state);
+/// Activate the xHCI MSI SPI after boot-critical storage/filesystem work.
+pub fn activate_msi_if_ready() -> bool {
+    if !XHCI_INITIALIZED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    if SPI_ACTIVATED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    let _guard = match XHCI_LOCK.try_lock() {
+        Some(g) => g,
+        None => return false,
+    };
+
+    let state = unsafe {
+        match (*(&raw const XHCI_STATE)).as_ref() {
+            Some(s) => s,
+            None => return false,
+        }
+    };
+
+    activate_msi_if_ready_locked(state, "system-ready", true)

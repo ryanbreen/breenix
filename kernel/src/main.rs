@@ -734,6 +734,19 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     kernel::test_framework::registry::run_x86_ring_span_gate();
 
+    // Tracing framework, x86 leg (#533/#680/#681): the deferred-fault-ring
+    // overflow provider test already exists and already runs on aarch64
+    // through the staged registry executor, but that executor is off by
+    // default on x86 (see
+    // docs/planning/green-program/tracing/X86-533-2026-08-28.md). This is
+    // the same direct-call shape as `run_x86_ring_span_gate` immediately
+    // above: call the existing provider test function directly and print its
+    // own `[TEST:...]` markers, rather than turning the staged executor on.
+    // Its private queue/drain fixture does not schedule and does not move
+    // the frame/page-table/kernel-stack counts the gate block above pins.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    kernel::test_framework::registry::run_x86_tracing_provider_gate();
+
     // #728 ext2 lock-discipline repro oracle (test profile only, feature
     // `ext2_lock_race`). Needs a running scheduler/timer/preemption, so it
     // runs here rather than at the fault-injection leg's early insertion

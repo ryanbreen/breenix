@@ -57,6 +57,30 @@ final class LocalGateLauncherTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.serialURL.path), "the merged serial.txt must still exist")
     }
 
+    func testAttributedLockupOnTestingProfileProjectsAsAttributedNotPlainPass() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root)
+
+        let runner = ScriptedProcessRunner(hostFactsOutputs: Self.hostFactsFixture())
+        runner.gateScriptSuffix = "run-aarch64-testing-profile-boot-test.sh"
+        runner.gateExitCode = 0
+        runner.gateStdout = "PASS-WITH-ATTRIBUTED-LOCKUP: 1/1 boots reached the loader marker; 1 locked up afterwards with the #728 signature\n"
+        runner.populateGateTmp = { gateTmp in
+            let dir = gateTmp.appendingPathComponent("breenix_aarch64_testing_profile/1")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? Data("Breenix ARM64 Kernel Starting\nboot 1\n".utf8).write(to: dir.appendingPathComponent("serial.txt"))
+        }
+
+        let launcher = LocalGateLauncher(store: store, repoRoot: URL(fileURLWithPath: "/repo", isDirectory: true), runner: runner, hostLock: AlwaysAvailableHostLock())
+        let result = try launcher.runArm(options: LocalGateLaunchOptions(profile: .testing, boots: 1, persist: true))
+
+        guard case .attributed(let reason) = result.manifest.verdict else {
+            return XCTFail("expected .attributed verdict for PASS-WITH-ATTRIBUTED-LOCKUP, got \(result.manifest.verdict)")
+        }
+        XCTAssertEqual(reason, "PASS-WITH-ATTRIBUTED-LOCKUP")
+    }
+
     func testPreflightRefusalSurfacesAsRefusedVerdict() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

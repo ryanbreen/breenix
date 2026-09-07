@@ -1,0 +1,66 @@
+=== #432 bcheck.rs 377,412;448,476 ===
+fn run_test(test: &mut TestDef) {
+    let start = clock_ms();
+
+    match fork() {
+        Ok(ForkResult::Child) => {
+            match exec(test.path) {
+                Ok(_) => unreachable!(),
+                Err(_) => {
+                    // exec failed — can't print (might not have stdout)
+                    std::process::exit(126);
+                }
+            }
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let child_raw = child_pid.raw() as i32;
+            let mut status: i32 = 0;
+            match waitpid(child_raw, &mut status as *mut i32, 0) {
+                Ok(_) => {
+                    let exit_code = (status >> 8) & 0xFF;
+                    let elapsed = (clock_ms() - start) as u32;
+                    test.elapsed_ms = elapsed;
+                    test.status = if exit_code == 0 {
+                        TestStatus::Pass
+                    } else {
+                        TestStatus::Fail
+                    };
+                }
+                Err(_) => {
+                    test.elapsed_ms = (clock_ms() - start) as u32;
+                    test.status = TestStatus::Fail;
+                }
+            }
+        }
+        Err(_) => {
+            test.status = TestStatus::Skip;
+        }
+
+    // Run each test sequentially
+    for i in 0..total {
+        tests[i].status = TestStatus::Running;
+        render(win.framebuf(), &tests, 0, &mut ttf_font, font_size);
+        let _ = win.present();
+
+        run_test(&mut tests[i]);
+
+        let status_str = match tests[i].status {
+            TestStatus::Pass => "PASS",
+            TestStatus::Fail => "FAIL",
+            TestStatus::Skip => "SKIP",
+            _ => "????",
+        };
+        println!("[bcheck] {:2}/{} {} {} {}ms",
+                 i + 1, total, tests[i].name, status_str, tests[i].elapsed_ms);
+
+        render(win.framebuf(), &tests, 0, &mut ttf_font, font_size);
+        let _ = win.present();
+    }
+
+    // Summary
+    let passed = tests.iter().filter(|t| t.status == TestStatus::Pass).count();
+    let failed = tests.iter().filter(|t| t.status == TestStatus::Fail).count();
+    println!("[bcheck] Complete: {}/{} passed, {} failed", passed, total, failed);
+
+    // Keep displaying results — support scrolling with arrow keys and scroll wheel
+    let visible_h = WIN_H as i32 - LIST_START_Y - FOOTER_H;

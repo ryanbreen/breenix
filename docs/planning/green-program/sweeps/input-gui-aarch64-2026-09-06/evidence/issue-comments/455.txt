@@ -1,0 +1,23 @@
+title:	F20 Parallels display capture and GUI rendering fix
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	455
+--
+Factory F20: establish reliable Parallels guest screenshot capture, archive red baseline, then iterate on GUI rendering until captured display is distinguishable from solid red or four cycles are exhausted.
+
+---
+type=`bug` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-i9z`.
+=== COMMENTS ===

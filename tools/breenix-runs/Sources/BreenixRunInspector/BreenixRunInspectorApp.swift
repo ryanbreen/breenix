@@ -24,64 +24,76 @@ struct BreenixRunInspectorApp: App {
         WindowGroup {
             InspectorRootView()
         }
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Refresh") {
+                    NotificationCenter.default.post(name: .breenixRunsRefreshRequested, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+            }
+        }
     }
 }
 
-private struct LoadedRun: Identifiable, Equatable {
-    var id: String { row.id }
-    var row: SidebarRowViewModel
-    var manifest: RunManifest
+private extension Notification.Name {
+    static let breenixRunsRefreshRequested = Notification.Name("breenixRunsRefreshRequested")
 }
 
 struct InspectorRootView: View {
-    private let store = RunStore.defaultStore()
-
-    @State private var loadWarnings: [String] = []
-    @State private var runs: [LoadedRun] = []
-    @State private var selectedRunID: String?
-    @State private var selectedComparisonRunID: String?
-    @State private var detail: RunDetailViewModel?
-    @State private var diff: RunDiffResult?
-    @State private var loadError: String?
-    @State private var diffError: String?
+    @StateObject private var viewModel = InspectorRootViewModel(store: RunStore.defaultStore())
 
     var body: some View {
         NavigationSplitView {
             VStack(alignment: .leading) {
-                if !loadWarnings.isEmpty {
-                    Text(loadWarnings.joined(separator: "\n"))
+                if !viewModel.loadWarnings.isEmpty {
+                    Text(viewModel.loadWarnings.joined(separator: "\n"))
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .accessibilityIdentifier("run-load-warnings")
                 }
-                SidebarView(rows: runs.map(\.row), selection: $selectedRunID)
+                SidebarView(rows: viewModel.runs.map(\.row), selection: $viewModel.selectedRunID)
             }
             .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 460)
         } detail: {
             detailView
         }
         .task {
-            await loadRuns()
+            viewModel.startWatchingStore()
+            await viewModel.refresh()
         }
-        .onChange(of: selectedRunID) { _, newValue in
-            Task {
-                await loadDetail(id: newValue)
+        .onDisappear { viewModel.stopWatchingStore() }
+        .onReceive(NotificationCenter.default.publisher(for: .breenixRunsRefreshRequested)) { _ in
+            Task { await viewModel.refresh() }
+        }
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    Task { await viewModel.refresh() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .keyboardShortcut("r", modifiers: [.command])
             }
         }
-        .onChange(of: selectedComparisonRunID) { _, newValue in
+        .onChange(of: viewModel.selectedRunID) { _, newValue in
             Task {
-                await loadDiff(id: newValue)
+                await viewModel.loadDetail(id: newValue)
+            }
+        }
+        .onChange(of: viewModel.selectedComparisonRunID) { _, newValue in
+            Task {
+                await viewModel.loadDiff(id: newValue)
             }
         }
     }
 
     @ViewBuilder
     private var detailView: some View {
-        if let detail {
+        if let detail = viewModel.detail {
             VStack(alignment: .leading, spacing: 12) {
-                Picker("Compare with", selection: $selectedComparisonRunID) {
+                Picker("Compare with", selection: $viewModel.selectedComparisonRunID) {
                     Text("No comparison").tag(String?.none)
-                    ForEach(runs.filter { $0.id != detail.manifest.id && $0.manifest.arch == detail.manifest.arch }) { run in
+                    ForEach(viewModel.runs.filter { $0.id != detail.manifest.id && $0.manifest.arch == detail.manifest.arch }, id: \.id) { run in
                         Text("\(run.row.arch) \(run.row.profile) \(run.row.timeText) \(run.row.verdictText)")
                             .tag(String?.some(run.id))
                     }
@@ -104,7 +116,7 @@ struct InspectorRootView: View {
                         .tabItem {
                             Label("Traces", systemImage: "waveform.path.ecg")
                         }
-                    if selectedComparisonRunID != nil {
+                    if viewModel.selectedComparisonRunID != nil {
                         compareTab
                             .tabItem {
                                 Label("Compare", systemImage: "arrow.left.arrow.right")
@@ -113,7 +125,7 @@ struct InspectorRootView: View {
                 }
             }
             .padding()
-        } else if let loadError {
+        } else if let loadError = viewModel.loadError {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Unable to load run")
                     .font(.headline)
@@ -128,7 +140,7 @@ struct InspectorRootView: View {
                 Image(systemName: "tray")
                     .font(.system(size: 30))
                     .foregroundStyle(.secondary)
-                Text(runs.isEmpty ? "No runs in the store" : "Select a run")
+                Text(viewModel.runs.isEmpty ? "No runs in the store" : "Select a run")
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -137,9 +149,9 @@ struct InspectorRootView: View {
 
     @ViewBuilder
     private var compareTab: some View {
-        if let diff {
+        if let diff = viewModel.diff {
             ComparePane(result: diff)
-        } else if let diffError {
+        } else if let diffError = viewModel.diffError {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Unable to compare runs")
                     .font(.headline)
@@ -154,96 +166,4 @@ struct InspectorRootView: View {
         }
     }
 
-    private func loadRuns() async {
-        do {
-            let loadedList = try await RunInspectorLoader.loadRunList(store: store)
-            loadWarnings = loadedList.warnings
-            runs = loadedList.runs.map { LoadedRun(row: $0.row, manifest: $0.manifest) }
-            loadError = nil
-
-            if self.selectedRunID == nil {
-                self.selectedRunID = runs.first?.id
-            } else if let currentSelection = self.selectedRunID, !runs.contains(where: { $0.id == currentSelection }) {
-                self.selectedRunID = runs.first?.id
-            }
-            if let comparison = self.selectedComparisonRunID, !runs.contains(where: { $0.id == comparison }) {
-                self.selectedComparisonRunID = nil
-            }
-            await loadDetail(id: self.selectedRunID)
-        } catch {
-            runs = []
-            detail = nil
-            diff = nil
-            loadError = String(describing: error)
-            diffError = nil
-        }
-    }
-
-    private func loadDetail(id: String?) async {
-        guard let id else {
-            guard selectedRunID == nil else {
-                return
-            }
-            detail = nil
-            return
-        }
-        guard selectedRunID == id else {
-            return
-        }
-        guard let run = runs.first(where: { $0.id == id }) else {
-            detail = nil
-            diff = nil
-            return
-        }
-
-        do {
-            let loadedDetail = try await RunInspectorLoader.loadDetail(manifest: run.manifest, store: store)
-            guard selectedRunID == id else {
-                return
-            }
-            detail = loadedDetail
-            loadError = nil
-            if selectedComparisonRunID == id {
-                selectedComparisonRunID = nil
-            }
-            await loadDiff(id: selectedComparisonRunID)
-        } catch {
-            guard selectedRunID == id else {
-                return
-            }
-            detail = nil
-            diff = nil
-            loadError = String(describing: error)
-        }
-    }
-
-    private func loadDiff(id: String?) async {
-        guard let id, let detail else {
-            diff = nil
-            diffError = nil
-            return
-        }
-        guard let rhs = runs.first(where: { $0.id == id }) else {
-            diff = nil
-            diffError = nil
-            return
-        }
-
-        diff = nil
-        diffError = nil
-        do {
-            let loadedDiff = try await RunInspectorLoader.loadDiff(lhs: detail.manifest, rhs: rhs.manifest, store: store)
-            guard selectedRunID == detail.manifest.id, selectedComparisonRunID == id else {
-                return
-            }
-            diff = loadedDiff
-            diffError = nil
-        } catch {
-            guard selectedRunID == detail.manifest.id, selectedComparisonRunID == id else {
-                return
-            }
-            diff = nil
-            diffError = String(describing: error)
-        }
-    }
 }

@@ -64,18 +64,23 @@ public struct RunStore: Sendable {
 
     /// Shared facts projection for the CLI and app, with per-file line identity.
     public func readBootFacts(manifest: RunManifest) throws -> [BootFactsRecord] {
+        var seen = Set<String>()
         var records: [BootFactsRecord] = []
         for serial in manifest.serials {
             let url = serial.path.hasPrefix("/") ? URL(fileURLWithPath: serial.path)
                 : runDirectory(id: manifest.id).appendingPathComponent(serial.path)
             let text = String(decoding: try Data(contentsOf: url), as: UTF8.self)
-            records += BootFactsParser.parse(text: text).map { record in
-                var record = record
+            for var record in BootFactsParser.parse(text: text) {
                 record.sourceFile = serial.name
-                return record
+                if seen.insert(record.dedupeKey).inserted {
+                    records.append(record)
+                }
             }
         }
-        return records + (try readGateFacts(manifest: manifest))
+        for record in try readGateFacts(manifest: manifest) where seen.insert(record.dedupeKey).inserted {
+            records.append(record)
+        }
+        return records
     }
 
     public func readGateFacts(manifest: RunManifest) throws -> [BootFactsRecord] {
@@ -85,8 +90,7 @@ public struct RunStore: Sendable {
             || capture.name == "gate_boot_facts.txt" || capture.name.hasSuffix(".facts.txt") {
             let text = String(decoding: try Data(contentsOf: captureURL(capture, manifest: manifest)), as: UTF8.self)
             for var record in BootFactsParser.parse(text: text) {
-                let key = "boot=\(record.boot)\n" + record.fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
-                if seen.insert(key).inserted {
+                if seen.insert(record.dedupeKey).inserted {
                     record.sourceFile = capture.name
                     records.append(record)
                 }

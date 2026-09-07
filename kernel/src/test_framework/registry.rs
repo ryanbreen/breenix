@@ -1873,6 +1873,36 @@ pub fn run_x86_ring_span_gate() {
     }
 }
 
+/// The `deferred_fault_ring_overflow_injection` test's x86 call site.
+///
+/// Same reason and same shape as `run_x86_ring_span_gate` immediately above:
+/// x86 does not dispatch the staged registry executor by default
+/// (`x86_staged_registry`, off because of #533/#680/#681 -- see
+/// docs/planning/green-program/tracing/X86-533-2026-08-28.md), so the
+/// registry entry on its own does not run there. Call the existing provider
+/// test function directly and emit its own `[TEST:...]` markers instead.
+///
+/// The provider allocates a private queue/drain fixture with synthetic TIDs
+/// in thread context -- no scheduling, no page-table walk, no lock
+/// contention -- so it is not subject to the #567 constraint that keeps the
+/// four scheduling registry tests deferred on x86, and it cannot move any of
+/// the frame/page-table/kernel-stack counts the gate block above this call
+/// site pins.
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+pub fn run_x86_tracing_provider_gate() {
+    crate::serial_println!("[TEST:process:deferred_fault_ring_overflow_injection:START]");
+    let result = crate::tracing::providers::teardown::deferred_fault_ring_overflow_test();
+    match result {
+        TestResult::Pass => crate::serial_println!(
+            "[TEST:process:deferred_fault_ring_overflow_injection:PASS]"
+        ),
+        _ => crate::serial_println!(
+            "[TEST:process:deferred_fault_ring_overflow_injection:FAIL:{}]",
+            result.failure_message().unwrap_or("test failed")
+        ),
+    }
+}
+
 // =============================================================================
 // Critical-path logging drain PR-1: the dispatch-fact publication oracle
 // =============================================================================
@@ -9572,7 +9602,7 @@ static PROCESS_TESTS: &[TestDef] = &[
     TestDef {
         name: "deferred_fault_ring_overflow_injection",
         func: crate::tracing::providers::teardown::deferred_fault_ring_overflow_test,
-        arch: Arch::Any,
+        arch: Arch::Aarch64,
         timeout_ms: 5000,
         stage: TestStage::EarlyBoot,
     },

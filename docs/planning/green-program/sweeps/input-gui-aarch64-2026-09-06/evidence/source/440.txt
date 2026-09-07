@@ -1,0 +1,92 @@
+=== #440 hid.rs 229,243;351,365;400,429;450,466 ===
+    // Ctrl (bits 0/4) and GUI (bits 3/7) as Super for hotkey purposes.
+    let super_now = (modifiers & 0x01) != 0
+        || (modifiers & 0x10) != 0
+        || (modifiers & 0x08) != 0
+        || (modifiers & 0x80) != 0;
+    // Latch every rising edge of SUPER so a tap that completes (press+release)
+    // entirely between two compositor polls is still counted exactly once.
+    let was_super = SUPER_PRESSED.swap(super_now, Ordering::Relaxed);
+    if super_now && !was_super {
+        SUPER_TAP_COUNT.fetch_add(1, Ordering::Relaxed);
+        // Wake the compositor (same proven lock-free path the mouse latch uses)
+        // so a Super tap triggers the hotkey check with low latency even when no
+        // window is dirty and the mouse is idle.
+        crate::syscall::graphics::wake_compositor_if_waiting();
+    }
+pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
+    if report.len() < 3 {
+        return;
+    }
+
+    let (sw, sh) = screen_dimensions();
+
+    // Determine actual report length: the XHCI driver fills the 64-byte buffer
+    // with 0xDE sentinel before DMA. Actual report bytes overwrite the sentinel.
+    // Scan from the end to find where real data starts.
+    let actual_len = if report.len() > 8 {
+        let mut len = report.len();
+        while len > 3 && report[len - 1] == 0xDE {
+            len -= 1;
+        }
+        let prev = MOUSE_BUTTONS.swap(merged, Ordering::Relaxed);
+        if merged != prev {
+            let pressed = merged & !prev;
+            if pressed != 0 {
+                MOUSE_BUTTONS_PRESSED.fetch_or(pressed, Ordering::Relaxed);
+            }
+        }
+
+        let abs_x = u16::from_le_bytes([report[2], report[3]]) as u32;
+        let abs_y = u16::from_le_bytes([report[4], report[5]]) as u32;
+
+        let new_x = (abs_x * sw / 32768).min(sw - 1);
+        let new_y = (abs_y * sh / 32768).min(sh - 1);
+        MOUSE_X.store(new_x, Ordering::Relaxed);
+        MOUSE_Y.store(new_y, Ordering::Relaxed);
+
+        // Wheel byte follows the 6-byte tablet report.
+        // Parallels: byte[6] is wheel (i8), with report_id prefix → 7+ bytes total.
+        // VMware: byte[6] is wheel (i8), no report_id → 7+ bytes total.
+        let wheel_offset = 6;
+        if actual_len > wheel_offset {
+            let wheel = report[wheel_offset] as i8 as i32;
+            if wheel != 0 {
+                MOUSE_WHEEL.fetch_add(wheel, Ordering::Relaxed);
+            }
+        }
+
+        crate::syscall::graphics::wake_compositor_if_waiting();
+        return;
+    }
+        0
+    };
+
+    let old_x = MOUSE_X.load(Ordering::Relaxed) as i32;
+    let new_x = (old_x + dx).clamp(0, sw as i32 - 1) as u32;
+    MOUSE_X.store(new_x, Ordering::Relaxed);
+
+    let old_y = MOUSE_Y.load(Ordering::Relaxed) as i32;
+    let new_y = (old_y + dy).clamp(0, sh as i32 - 1) as u32;
+    MOUSE_Y.store(new_y, Ordering::Relaxed);
+
+    if wheel != 0 {
+        MOUSE_WHEEL.fetch_add(wheel, Ordering::Relaxed);
+    }
+    crate::syscall::graphics::wake_compositor_if_waiting();
+}
+
+=== #440 bwm.rs 1619,1631 ===
+    loop {
+        // ── 0. Block until something needs compositing ──
+        // compositor_wait blocks in the kernel until: window dirty, mouse moved,
+        // or registry changed. If bwm already has local work prepared (for
+        // example the initial window discovery redraw), drain and present it
+        // before entering the kernel wait.
+        let ready = if full_redraw || content_dirty || windows_dirty {
+            0
+        } else {
+            let (ready, new_reg_gen) =
+                graphics::compositor_wait(0, registry_gen).unwrap_or((0, registry_gen));
+            registry_gen = new_reg_gen;
+            ready

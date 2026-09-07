@@ -211,11 +211,21 @@ public struct LocalGateLauncher {
         // A preflight refusal (kernel not built with --features boot_tests) is a
         // run that never booted at all, distinct from a run whose boots ran and
         // failed -- see the `bootTestsPreflightRefusalMarker` doc comment above.
+        let gateVerdictString: String
+        if gateStdoutText.contains("PASS-WITH-ATTRIBUTED-LOCKUP:") {
+            gateVerdictString = "PASS-WITH-ATTRIBUTED-LOCKUP"
+        } else if gateStdoutText.split(separator: "\n").contains(where: {
+            $0.trimmingCharacters(in: .whitespaces).hasPrefix("FAIL:")
+        }) || result.exitCode != 0 {
+            gateVerdictString = "FAIL"
+        } else {
+            gateVerdictString = "PASS"
+        }
         let verdict: Verdict
         if result.exitCode != 0 && gateStdoutText.contains(LocalGateLauncher.bootTestsPreflightRefusalMarker) {
             verdict = .refused("kernel not built with --features boot_tests (docker/qemu/run-aarch64-boot-test-strict.sh:194-217)")
         } else {
-            verdict = .gateScript(command: command, exitCode: Int(result.exitCode))
+            verdict = Verdict.projectGateVerdict(gateVerdictString, exitCode: Int(result.exitCode), command: command)
         }
         let manifest = RunManifest(
             id: id,

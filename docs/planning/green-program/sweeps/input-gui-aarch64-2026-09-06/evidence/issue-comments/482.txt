@@ -1,0 +1,23 @@
+title:	F32t fix xHCI MSI programming order and eliminate input polling
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	enhancement
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	482
+--
+Track F32t work to revalidate Linux xHCI MSI ground truth, apply Linux-order MSI programming, ensure MSI data matches the enabled GIC SPI, enable xHCI MSI delivery, remove timer-driven HID polling, and migrate BWM to wake-based input consumption.
+
+---
+type=`feature` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-uu0`.
+=== COMMENTS ===

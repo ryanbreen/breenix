@@ -1,0 +1,23 @@
+title:	F32p fix xHCI MSI/SPI input interrupts
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	enhancement
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	475
+--
+Factory run to validate Linux xHCI MSI delivery on Parallels, audit Breenix against Linux, fix MSI/SPI delivery, remove timer-driven HID polling, migrate BWM input to wake-based delivery, and validate/merge.
+
+---
+type=`feature` | priority=P0 | bd status=`blocked`
+
+Migrated from bd issue `breenix-rr9`.
+=== COMMENTS ===

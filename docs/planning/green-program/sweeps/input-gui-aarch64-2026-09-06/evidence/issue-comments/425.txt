@@ -1,0 +1,23 @@
+title:	F32u fix bcheck false fails and boot spawn
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	425
+--
+Factory F32u: diagnose bcheck waitpid false FAIL reports, fix result detection without weakening tests, spawn /bin/bcheck on boot as a sibling to bounce, validate clean boot, and open/merge PR.
+
+---
+type=`task` | priority=P1 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-3tf`.
+=== COMMENTS ===

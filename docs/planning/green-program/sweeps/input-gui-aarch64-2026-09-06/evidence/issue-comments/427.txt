@@ -1,0 +1,60 @@
+title:	Investigate baseline aarch64 /bin/bwm spawn EIO
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	bug
+comments:	1
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	427
+--
+On untouched main 70360350, the native SMP=4 production boot reaches 4 CPUs online, Breenix ARM64 Boot Complete, and CPU0 timer ticks past 10000, but init fails to spawn /bin/bwm with EIO and then stalls spawning /sbin/telnetd. This makes run-aarch64-boot-test-native.sh miss its userspace completion marker despite a healthy kernel boot.
+
+**Acceptance Criteria**
+
+Production aarch64 SMP=4 boot emits an accepted userspace completion marker without spawn EIO, and run-aarch64-boot-test-native.sh passes on main.
+
+---
+type=`bug` | priority=P2 | bd status=`open`
+
+Migrated from bd issue `breenix-5up`.
+=== COMMENTS ===
+author:	ryanbreen
+association:	owner
+edited:	false
+status:	none
+--
+Root-caused as part of #575, which has the same symptom and the same cause. Fix is on
+`fix/575-init-service-sequence`.
+
+The `/bin/bwm` spawn returning `EIO` is not about `bwm` and not about its size — the larger
+`/bin/bsshd` loads fine in the same failing boots. `bwm` is simply the service init spawns
+immediately after `xhci_counters`, the only short-lived, un-reaped child in the sequence.
+
+Chain: `xhci_counters` exits while init is inside its next `spawn()`, leaving `SIGCHLD` pending on
+init. `SignalState::has_deliverable_signals()` had no disposition filter, so a default-*ignored*
+`SIGCHLD` still made `check_signals_for_eintr()` return `EINTR` (that part is #493). The ext2 read
+of `bwm.elf` decomposes into ~838 synchronous 512-byte `block_mmio::read_sector` calls, each of
+which published its request to the device and then waited on the **interruptible**
+`Completion::wait_timeout`. The pending signal aborted one of those waits, and the error arm kept
+the request gate locked so the in-flight DMA buffers stayed quarantined — but the gate's only
+unlock is the guard's `Drop`, which that arm suppresses, so the gate leaked permanently. The `EIO`
+you see is that abandoned read; the next spawn parks in `lock()` forever with no wake source, which
+is why the boot appears to hang with the kernel still alive.
+
+Fix: the six remaining published-command waits under `kernel/src/drivers/` use
+`wait_timeout_uninterruptible`, matching the contract `Completion` already documents and that
+`ahci`/`gpu_pci` already followed. Retaining the gate now also latches it and wakes every waiter, so
+the timeout path fails loudly and bounded instead of hanging. A forced-race userspace oracle
+(`/bin/block_eintr_oracle`) reproduces the original failure 12/12 on unmodified `main` and is green
+on the fix, and two 100-boot soaks (both CPU profiles) show zero boots in the #575 bucket.
+
+Suggest closing as a duplicate of #575 once that lands.
+
+--

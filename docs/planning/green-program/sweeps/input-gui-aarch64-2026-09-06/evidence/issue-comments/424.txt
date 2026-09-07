@@ -1,0 +1,23 @@
+title:	F32k ISR wake, op19 waitqueue, cursor restoration
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	enhancement
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	424
+--
+Factory F32k: restore GUI cursor rendering, migrate ReadWindowInput op 19 to waitqueue, replace ISR deferred wake ring with Linux-parity ttwu_queue_wakelist IPI path, validate and merge.
+
+---
+type=`feature` | priority=P0 | bd status=`blocked`
+
+Migrated from bd issue `breenix-3ca`.
+=== COMMENTS ===

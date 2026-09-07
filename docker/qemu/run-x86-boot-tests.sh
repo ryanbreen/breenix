@@ -1241,6 +1241,27 @@ for i in $(seq 1 "$COUNT"); do
     test -n "$RING_SPAN_TICK_EVENTS"
     test "$RING_SPAN_TICK_EVENTS" -gt 0
     test "$RING_SPAN_TICKS_TOTAL" -ge "$((RING_SPAN_TICK_EVENTS * RING_SPAN_RATIO_FLOOR))"
+    # claim-lint:ok: tests/tracing_provider_gate_structure.rs exercises the extracted assertion.
+    # (5a) tracing framework: the deferred-fault-ring overflow provider test,
+    # called directly from kernel/src/main.rs right after the ring-span
+    # self-check above (same shipping boot_tests profile, x86_staged_registry
+    # still off). Exactly one START, exactly one PASS, and zero FAIL for this
+    # test's marker family in the same boot. Scored against serial_user.txt
+    # ALONE, not the serial_*.txt glob every other check above uses: COM1 is
+    # the only port `serial_println!` writes to (kernel/src/serial.rs), and
+    # COM1 is what this script's QEMU invocation maps to serial_user.txt
+    # above -- summing it against the COM2 kernel log as well would risk
+    # double-scoring the same event if a future change ever also logged to
+    # COM2. No `if` wraps this: its nonzero exit reaches the ERR trap
+    # installed at the top of this script, the same as every other `test`
+    # assertion in this loop.
+    test -s "$OUTPUT_DIR/serial_user.txt"
+    awk '
+        index($0, "[TEST:process:deferred_fault_ring_overflow_injection:START]") { started++ }
+        index($0, "[TEST:process:deferred_fault_ring_overflow_injection:PASS]") { passed++ }
+        index($0, "[TEST:process:deferred_fault_ring_overflow_injection:FAIL:") { failed++ }
+        END { exit !(started == 1 && passed == 1 && failed == 0) }
+    ' "$OUTPUT_DIR/serial_user.txt"
     # (6) #766: the wake-to-dispatch latency oracle, emitted once and passing.
     # Pinning the emission count at 1 as well as the PASS line means a FAIL
     # emission cannot hide behind a later PASS, and a deleted call site cannot

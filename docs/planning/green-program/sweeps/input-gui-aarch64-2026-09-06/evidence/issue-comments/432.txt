@@ -1,0 +1,23 @@
+title:	F32u bcheck lockup diagnosis and boot spawn
+state:	OPEN
+author:	ryanbreen (Ryan Breen)
+labels:	
+comments:	0
+assignees:	
+projects:	
+milestone:	
+issue-type:	
+parent:	
+sub-issues:	
+sub-issues-completed:	
+blocked-by:	
+blocking:	
+number:	432
+--
+Investigate bcheck-triggered lockup and false FAIL waitpid reporting, fix root causes honestly, and only add boot spawn after responsiveness is validated.
+
+---
+type=`task` | priority=P0 | bd status=`in_progress`
+
+Migrated from bd issue `breenix-8ka`.
+=== COMMENTS ===
