@@ -239,7 +239,9 @@ impl ProcessManager {
             .and_then(|process| process.main_thread.as_mut())
             .map(|main_thread| Box::new(main_thread.publish_to_scheduler()));
         let Some(main_thread) = main_thread else {
-            self.remove_process(provisional_pid);
+            // A failed initial publication owns only its freshly-created stdio
+            // descriptors; no pipe/FIFO close notification can be produced here.
+            drop(self.remove_process(provisional_pid));
             return Err("init row has no main thread");
         };
 
@@ -1792,15 +1794,16 @@ impl ProcessManager {
         evicted
     }
 
-    /// Unconditional row destructor.
+    /// Unconditional row extraction; the caller destroys the row after PM unlock.
     ///
     /// The sole clearer of `designated_init` and the sole bumper of
     /// `ROW_REMOVAL_EPOCH`, for rows that were never reaped and will never be
     /// retired: the creation-failure retire in `hold_init_publication`, the
     /// `p1_row_epoch_gate` harness, and the in-kernel teardown oracles. Live
     /// reaps do **not** come here — they go through the join.
-    pub fn remove_process(&mut self, pid: ProcessId) {
-        drop(self.take_row_unconditionally(pid));
+    #[must_use]
+    pub fn remove_process(&mut self, pid: ProcessId) -> Option<Process> {
+        self.take_row_unconditionally(pid)
     }
 
     /// The single raw removal of a row from the process-row map, plus the two
@@ -3195,6 +3198,7 @@ impl ProcessManager {
         pid: ProcessId,
         elf_data: &[u8],
         program_name: Option<&str>,
+        closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<u64, &'static str> {
         log::info!(
             "exec_process: Replacing process {} with new program",
@@ -3401,7 +3405,7 @@ impl ProcessManager {
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec();
+        process.fd_table.close_cloexec(closes);
         log::debug!(
             "exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}",
             pid.as_u64(),
@@ -3571,6 +3575,7 @@ impl ProcessManager {
         elf_data: &[u8],
         program_name: Option<&str>,
         argv: &[&[u8]],
+        closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
         log::info!(
             "exec_process_with_argv: Replacing process {} with new program, argc={}",
@@ -3776,7 +3781,7 @@ impl ProcessManager {
         process.vmas.clear();
 
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec();
+        process.fd_table.close_cloexec(closes);
 
         // Replace the page table with the new one
         process.page_table = Some(new_page_table.publish());
@@ -3889,6 +3894,7 @@ impl ProcessManager {
         elf_data: &[u8],
         program_name: Option<&str>,
         argv: &[&[u8]],
+        closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
@@ -4080,7 +4086,7 @@ impl ProcessManager {
         process.vmas.clear();
 
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec();
+        process.fd_table.close_cloexec(closes);
 
         process.page_table = Some(new_page_table.publish());
         // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
@@ -4208,6 +4214,7 @@ impl ProcessManager {
         pid: ProcessId,
         elf_data: &[u8],
         program_name: Option<&str>,
+        closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
@@ -4396,7 +4403,7 @@ impl ProcessManager {
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec();
+        process.fd_table.close_cloexec(closes);
         log::debug!(
             "exec_process [ARM64]: Reset signal/heap/mmap for process {}, heap_start={:#x}",
             pid.as_u64(),

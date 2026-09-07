@@ -50,7 +50,7 @@ pub mod fcntl_cmd {
 
 /// Regular file descriptor
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Fields will be used when open/read/write are fully implemented
+#[allow(dead_code)]// Fields will be used when open/read/write are fully implemented
 pub struct RegularFile {
     pub inode_num: u64,
     pub mount_id: usize,
@@ -396,7 +396,7 @@ impl FdTable {
 
     /// Duplicate a file descriptor to a specific slot
     /// Used for dup2() syscall
-    pub fn dup2(&mut self, old_fd: i32, new_fd: i32) -> Result<i32, i32> {
+    pub fn dup2(&mut self, old_fd: i32, new_fd: i32) -> Result<(i32, Option<FileDescriptor>), i32> {
         if old_fd < 0 || old_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
         }
@@ -412,57 +412,14 @@ impl FdTable {
             if self.fds[old_fd as usize].is_none() {
                 return Err(9); // EBADF
             }
-            return Ok(new_fd);
+            return Ok((new_fd, None));
         }
 
         let fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
 
-        // If new_fd is open, close it and decrement ref counts.
-        // TcpListener/TcpConnection mirror sys_close's arms (syscall/pipe.rs)
-        // exactly: this IS a close of new_fd's old contents, so it must use
-        // the same decrement protocol sys_close uses, not a bare drop.
-        if let Some(old_entry) = self.fds[new_fd as usize].take() {
-            match old_entry.kind {
-                FdKind::PipeRead(buffer) => buffer.lock().close_read(),
-                FdKind::PipeWrite(buffer) => buffer.lock().close_write(),
-                FdKind::FifoRead(ref path, ref buffer) => {
-                    super::fifo::close_fifo_read(path);
-                    buffer.lock().close_read();
-                }
-                FdKind::FifoWrite(ref path, ref buffer) => {
-                    super::fifo::close_fifo_write(path);
-                    buffer.lock().close_write();
-                }
-                FdKind::PtyMaster(pty_num) => {
-                    if let Some(pair) = crate::tty::pty::get(pty_num) {
-                        let old_count = pair
-                            .master_refcount
-                            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                        if old_count == 1 {
-                            crate::tty::pty::release(pty_num);
-                        }
-                    }
-                }
-                FdKind::PtySlave(pty_num) => {
-                    if let Some(pair) = crate::tty::pty::get(pty_num) {
-                        pair.slave_close();
-                    }
-                }
-                FdKind::TcpListener(port) => {
-                    // M1 (#724 review): dup2() overwriting an already-open
-                    // new_fd IS a close of whatever new_fd held. Without
-                    // this arm the overwritten listener's ref count was
-                    // never decremented, so it could never reach zero and
-                    // its port would leak forever even after every real fd
-                    // referencing it closed.
-                    crate::net::tcp::tcp_listener_ref_dec(port);
-                }
-                FdKind::TcpConnection(conn_id) => {
-                    let _ = crate::net::tcp::tcp_close(&conn_id);
-                }
-                _ => {}
-            }
-        }
+        // Extract the overwritten descriptor under PM. Its caller closes it
+        // after releasing PM, after the replacement reference is established.
+        let overwritten = self.fds[new_fd as usize].take();
 
         // Increment ref counts for the duplicated fd. TcpListener/
         // TcpConnection mirror clone_for_fork's arms (this file, above):
@@ -510,7 +467,7 @@ impl FdTable {
         }
 
         self.fds[new_fd as usize] = Some(fd_entry);
-        Ok(new_fd)
+        Ok((new_fd, overwritten))
     }
 
     /// Duplicate a file descriptor to the lowest available slot
@@ -539,6 +496,12 @@ impl FdTable {
 
         // POSIX: dup and F_DUPFD clear FD_CLOEXEC, F_DUPFD_CLOEXEC sets it
         fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };
+
+        // Reserve a free slot before creating any reference, so EMFILE needs
+        // no rollback close or notification while the caller holds PM.
+        let free_slot = ((min_fd as usize)..MAX_FDS)
+            .find(|&i| self.fds[i].is_none())
+            .ok_or(24)?; // EMFILE
 
         // Increment reference counts for the duplicated fd. Same protocol as
         // dup2()'s increment block above and clone_for_fork's arms: every
@@ -583,44 +546,8 @@ impl FdTable {
             _ => {}
         }
 
-        // Find lowest available slot >= min_fd
-        for i in (min_fd as usize)..MAX_FDS {
-            if self.fds[i].is_none() {
-                self.fds[i] = Some(fd_entry);
-                return Ok(i as i32);
-            }
-        }
-
-        // No slot found - need to decrement the counts we just added
-        match &fd_entry.kind {
-            FdKind::PipeRead(buffer) => buffer.lock().close_read(),
-            FdKind::PipeWrite(buffer) => buffer.lock().close_write(),
-            FdKind::FifoRead(path, buffer) => {
-                super::fifo::close_fifo_read(path);
-                buffer.lock().close_read();
-            }
-            FdKind::FifoWrite(path, buffer) => {
-                super::fifo::close_fifo_write(path);
-                buffer.lock().close_write();
-            }
-            FdKind::PtyMaster(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    let old = pair
-                        .master_refcount
-                        .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                    if old == 1 {
-                        crate::tty::pty::release(*pty_num);
-                    }
-                }
-            }
-            FdKind::PtySlave(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.slave_close();
-                }
-            }
-            _ => {}
-        }
-        Err(24) // EMFILE
+        self.fds[free_slot] = Some(fd_entry);
+        Ok(free_slot as i32)
     }
 
     /// Get file descriptor flags (for F_GETFD)
@@ -646,54 +573,15 @@ impl FdTable {
     /// Close all file descriptors marked with FD_CLOEXEC.
     /// Called during exec() per POSIX semantics.
     /// Properly decrements pipe/fifo reference counts.
-    pub fn close_cloexec(&mut self) {
+    pub fn close_cloexec(&mut self, closes: &mut DeferredFdCloses) {
         for i in 0..MAX_FDS {
             let should_close = self.fds[i]
                 .as_ref()
                 .map(|fd| (fd.flags & flags::FD_CLOEXEC) != 0)
                 .unwrap_or(false);
             if should_close {
-                if let Some(fd_entry) = self.fds[i].take() {
-                    // Decrement reference counts for pipe/fifo buffers
-                    match &fd_entry.kind {
-                        FdKind::PipeRead(buffer) | FdKind::FifoRead(_, buffer) => {
-                            buffer.lock().close_read();
-                        }
-                        FdKind::PipeWrite(buffer) | FdKind::FifoWrite(_, buffer) => {
-                            buffer.lock().close_write();
-                        }
-                        FdKind::UnixStream(socket) => {
-                            socket.lock().close();
-                        }
-                        FdKind::PtyMaster(pty_num) => {
-                            // #704-class: mirrors sys_close's PtyMaster arm exactly.
-                            if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                                let old_count = pair
-                                    .master_refcount
-                                    .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                                if old_count == 1 {
-                                    crate::tty::pty::release(*pty_num);
-                                }
-                            }
-                        }
-                        FdKind::PtySlave(pty_num) => {
-                            // #704-class: mirrors sys_close's PtySlave arm exactly.
-                            if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                                pair.slave_close();
-                            }
-                        }
-                        FdKind::TcpListener(port) => {
-                            // #707: mirrors close_all_fds/FdTable::drop's TcpListener arm -
-                            // decrement ref count, remove only if it reaches 0.
-                            crate::net::tcp::tcp_listener_ref_dec(*port);
-                        }
-                        FdKind::TcpConnection(conn_id) => {
-                            // #707: mirrors close_all_fds/FdTable::drop's TcpConnection arm -
-                            // close the TCP connection.
-                            let _ = crate::net::tcp::tcp_close(conn_id);
-                        }
-                        _ => {}
-                    }
+                if let Some(entry) = self.fds[i].take() {
+                    closes.entries.push((i, entry));
                 }
             }
         }
@@ -725,11 +613,13 @@ impl Drop for FdTable {
             if let Some(fd_entry) = self.fds[i].take() {
                 match fd_entry.kind {
                     FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
+                        let notifications = buffer.lock().close_read();
+                        notifications.deliver();
                         log::debug!("FdTable::drop() - closed pipe read fd {}", i);
                     }
                     FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
+                        let notifications = buffer.lock().close_write();
+                        notifications.deliver();
                         log::debug!("FdTable::drop() - closed pipe write fd {}", i);
                     }
                     FdKind::UdpSocket(_) => {
@@ -830,13 +720,15 @@ impl Drop for FdTable {
                     FdKind::FifoRead(path, buffer) => {
                         // Decrement FIFO reader count and pipe buffer reader count
                         super::fifo::close_fifo_read(&path);
-                        buffer.lock().close_read();
+                        let notifications = buffer.lock().close_read();
+                        notifications.deliver();
                         log::debug!("FdTable::drop() - closed FIFO read fd {} ({})", i, path);
                     }
                     FdKind::FifoWrite(path, buffer) => {
                         // Decrement FIFO writer count and pipe buffer writer count
                         super::fifo::close_fifo_write(&path);
-                        buffer.lock().close_write();
+                        let notifications = buffer.lock().close_write();
+                        notifications.deliver();
                         log::debug!("FdTable::drop() - closed FIFO write fd {} ({})", i, path);
                     }
                     FdKind::ProcfsFile { .. } => {
@@ -852,5 +744,20 @@ impl Drop for FdTable {
                 }
             }
         }
+    }
+}
+
+/// Caller-owned exec cleanup, declared before any process-manager guard.
+/// Reverse local destruction order releases PM before this performs cleanup,
+/// including error returns after descriptors have been extracted.
+#[must_use]
+#[derive(Default)]
+pub struct DeferredFdCloses {
+    entries: alloc::vec::Vec<(usize, FileDescriptor)>,
+}
+
+impl Drop for DeferredFdCloses {
+    fn drop(&mut self) {
+        crate::task::process_task::close_extracted_fds(core::mem::take(&mut self.entries));
     }
 }

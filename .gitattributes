@@ -170,3 +170,9 @@ docs/planning/green-program/irq-locks/serials/908/**/*.txt -text
 # part of the preserved evidence DISPOSITIONS.md quotes by line number, and a
 # CRLF normalisation would edit it.
 docs/planning/green-program/sweeps/network-483-465-2026-09-07/evidence/**/*.log -text
+
+# #483/#465 round-3 two-capture re-verification sweep (2026-09-07): same
+# reason as the round-1/2 evidence above -- the CR bytes the guest console and
+# run.sh emit are part of the preserved evidence round3/DISPOSITIONS.md quotes
+# by line number, and a CRLF normalisation would edit it.
+docs/planning/green-program/sweeps/network-483-465-2026-09-07/round3/evidence/**/*.log -text

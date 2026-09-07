@@ -1,0 +1,8 @@
+docs(ipc): record #813 PR-A ARM verification and mutation evidence
+
+Record ARM matrix, mutation pairs, regression gates, the ignored-signal
+observer correction, and claim-lint results. Retain x86 verification as
+pending with the orchestrator and preserve the #919 fault-path carve-out.
+
+Co-Authored-By: Ryan Breen <ryan@ryanbreen.com>
+Co-Authored-By: Claude Code <noreply@anthropic.com>

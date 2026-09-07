@@ -1,0 +1,2 @@
+# Keep raw serial and gate transcript bytes, including guest CRLF endings.
+*.txt -text whitespace=cr-at-eol

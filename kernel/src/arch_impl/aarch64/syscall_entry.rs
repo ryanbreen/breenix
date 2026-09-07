@@ -1080,6 +1080,7 @@ fn sys_exec_aarch64(
     program_name_ptr: u64,
     argv_ptr: u64,
 ) -> u64 {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     // Trace: exec syscall entered
     super::trace::trace_exec(b'E');
 
@@ -1253,7 +1254,7 @@ fn sys_exec_aarch64(
             previous_ttbr0 = read_ttbr0_for_exec();
             super::switch_ttbr0_to_kernel();
 
-            manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices)
+            manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices, &mut closes)
         };
 
         let (new_entry_point, new_rsp, commit) = match exec_result {

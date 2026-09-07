@@ -508,44 +508,9 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 SyscallResult::Err(5) // EIO
             }
         }
-        WriteOperation::Pipe {
-            pipe_buffer,
-            is_nonblocking,
-        } => {
-            let mut pipe = pipe_buffer.lock();
-            match pipe.write(&buffer) {
-                Ok(n) => {
-                    log::debug!("sys_write: Wrote {} bytes to pipe", n);
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(11) if !is_nonblocking => {
-                    // Blocking pipe write not implemented, return EAGAIN
-                    log::debug!(
-                        "sys_write: Pipe full, blocking not implemented - returning EAGAIN"
-                    );
-                    SyscallResult::Err(11) // EAGAIN
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            }
-        }
-        WriteOperation::Fifo {
-            pipe_buffer,
-            is_nonblocking,
-        } => {
-            let mut pipe = pipe_buffer.lock();
-            match pipe.write(&buffer) {
-                Ok(n) => {
-                    log::debug!("sys_write: Wrote {} bytes to FIFO", n);
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(11) if !is_nonblocking => {
-                    log::debug!(
-                        "sys_write: FIFO full, blocking not implemented - returning EAGAIN"
-                    );
-                    SyscallResult::Err(11) // EAGAIN
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            }
+        WriteOperation::Pipe { pipe_buffer, is_nonblocking }
+        | WriteOperation::Fifo { pipe_buffer, is_nonblocking } => {
+            super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking)
         }
         WriteOperation::UnixStream { socket } => {
             let sock = socket.lock();
@@ -1924,6 +1889,8 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
 /// kernel/src/process/mod.rs -- one arm, not a survey.
 #[cfg(target_arch = "x86_64")]
 fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext) -> SyscallResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     use super::errno::{EINVAL, ENOMEM, ESRCH};
 
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
@@ -2028,7 +1995,7 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
                         parent.children.retain(|&pid| pid != child_pid);
                     }
                     manager.remove_from_ready_queue(child_pid);
-                    manager.remove_process(child_pid);
+                    retired_rows.push(manager.remove_process(child_pid));
                 }
                 drop(manager_guard);
                 log::error!(
@@ -2116,6 +2083,8 @@ pub fn sys_exec_with_frame(
     program_name_ptr: u64,
     elf_data_ptr: u64,
 ) -> SyscallResult {
+    #[cfg(feature = "testing")]
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     crate::arch_without_interrupts(|| {
         log::info!(
             "sys_exec_with_frame called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
@@ -2239,7 +2208,7 @@ pub fn sys_exec_with_frame(
             // Replace the process's address space
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process(current_pid, elf_data, exec_program_name) {
+                match manager.exec_process(current_pid, elf_data, exec_program_name, &mut closes) {
                     Ok(new_entry_point) => {
                         log::info!(
                             "sys_exec: Successfully replaced process address space, entry point: {:#x}",
@@ -2403,6 +2372,7 @@ pub fn sys_execv_with_frame(
     program_name_ptr: u64,
     argv_ptr: u64,
 ) -> SyscallResult {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     // IMPORTANT: Do NOT wrap the entire function in without_interrupts()!
     // ELF loading from ext2 filesystem requires interrupts for VirtIO I/O.
     // Only the final frame manipulation needs to be interrupt-safe.
@@ -2589,7 +2559,7 @@ pub fn sys_execv_with_frame(
                 elf_data,
                 Some(program_name),
                 &argv_slices,
-            ) {
+             &mut closes) {
                 Ok(value) => value,
                 Err("exec blocked while CLONE_VM sibling shares old address space") => {
                     return SyscallResult::Err(11); // EAGAIN
@@ -2754,7 +2724,7 @@ pub fn sys_execv_with_frame(
                 elf_data,
                 Some(program_name),
                 &argv_slices,
-            ) {
+             &mut closes) {
                 Ok(value) => value,
                 Err("exec blocked while CLONE_VM sibling shares old address space") => {
                     return SyscallResult::Err(11); // EAGAIN
@@ -2845,6 +2815,8 @@ pub fn sys_execv_with_frame(
 /// aarch64's raw-syscall encoding, not this arch's `SyscallResult`).
 #[cfg(target_arch = "x86_64")]
 pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     use super::errno::{EFAULT, EINVAL, EIO, EISDIR, ENOENT, ENOMEM, ESRCH};
 
     if path_ptr == 0 {
@@ -3028,13 +3000,15 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
                         parent.children.retain(|&pid| pid != child_pid);
                     }
                     manager.remove_from_ready_queue(child_pid);
-                    manager.remove_process(child_pid);
+                    retired_rows.push(manager.remove_process(child_pid));
                 }
                 thread
             }
             None => None,
         }
     };
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
 
     let scheduler_thread = match scheduler_thread {
         Some(thread) => thread,
@@ -3064,6 +3038,8 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
 /// DEPRECATED: Use sys_exec_with_frame instead to properly update the syscall frame
 #[cfg(target_arch = "x86_64")]
 pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
+    #[cfg(feature = "testing")]
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     crate::arch_without_interrupts(|| {
         log::info!(
             "sys_exec called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
@@ -3189,7 +3165,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             // Replace the process's address space
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process(current_pid, _elf_data, _exec_program_name) {
+                match manager.exec_process(current_pid, _elf_data, _exec_program_name, &mut closes) {
                     Ok(new_entry_point) => {
                         log::info!(
                         "sys_exec: Successfully replaced process address space, entry point: {:#x}",
@@ -3795,8 +3771,13 @@ pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
     };
 
     // Call the fd_table's dup2 implementation
-    match process.fd_table.dup2(old_fd as i32, new_fd as i32) {
-        Ok(fd) => {
+    let duplicated = process.fd_table.dup2(old_fd as i32, new_fd as i32);
+    drop(manager_guard);
+    match duplicated {
+        Ok((fd, overwritten)) => {
+            if let Some(entry) = overwritten {
+                crate::task::process_task::close_extracted_fds(alloc::vec![(new_fd as usize, entry)]);
+            }
             log::debug!("sys_dup2: Successfully duplicated fd {} to {}", old_fd, fd);
             SyscallResult::Ok(fd as u64)
         }
