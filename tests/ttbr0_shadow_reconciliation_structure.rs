@@ -34,6 +34,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -46,7 +47,7 @@ fn repo_text(relative: &str) -> String {
 
 /// Every Rust source below `relative`, as (repo-relative path, contents).
 /// claim-lint:ok: the walk is the same one `tests/teardown_structure.rs` uses
-fn rust_sources_below(relative: &str) -> Vec<(String, String)> {
+fn rust_sources_below(relative: &str) -> &'static Vec<(String, String)> {
     fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
         for entry in fs::read_dir(dir).expect("read source directory") {
             let path = entry.expect("read directory entry").path();
@@ -63,11 +64,19 @@ fn rust_sources_below(relative: &str) -> Vec<(String, String)> {
         }
     }
 
-    let root = repo_root();
-    let mut sources = Vec::new();
-    visit(&root, &root.join(relative), &mut sources);
-    sources.sort_by(|left, right| left.0.cmp(&right.0));
-    sources
+    // Test mutations use private copies; the repository snapshot is read once.
+    static KERNEL_SOURCES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    let sources = match relative {
+        "kernel/src" => &KERNEL_SOURCES,
+        _ => panic!("uncached source root {relative}"),
+    };
+    sources.get_or_init(|| {
+        let root = repo_root();
+        let mut sources = Vec::new();
+        visit(&root, &root.join(relative), &mut sources);
+        sources.sort_by(|left, right| left.0.cmp(&right.0));
+        sources
+    })
 }
 
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
@@ -2399,7 +2408,7 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
         (
             "docker/qemu/run-aarch64-boot-test-strict.sh",
             "BREENIX_STRICT_SCORE_ONLY",
-            "docs/planning/green-program/aarch64-testing/serials/slice3e/01-strict-boot1-serial.txt",
+            "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
         ),
         (
             "docker/qemu/run-aarch64-prod-profile-boot-test.sh",

@@ -1,0 +1,28 @@
+[smoke 22:02:54] lock check: macOS screen is unlocked
+[smoke 22:02:54] started caffeinate -d (pid 55011) to keep the display awake
+[smoke 22:02:54] stale serial log present (inode 183275333); will wait for run.sh to recreate it
+[smoke 22:02:54] launching: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/x482/wt-baseline/run.sh --parallels (background)
+[smoke 22:02:54] run.sh pid=55017, log=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/x482/wt-baseline/logs/parallels-launcher-test/run-20260906-220254/run-sh.log
+[smoke 22:02:55] waiting for readiness marker: bwm-fps|hotkeys: using built-in defaults
+[smoke 22:03:37] lowered Breenix VM pid=60758 to nice 20 — yields CPU to your foreground apps under contention (stays on perf cores so injection stays responsive)
+[smoke 22:03:40] readiness marker seen
+[smoke 22:03:40] resolved VM from run.sh output: breenix-1788746581
+[smoke 22:03:40] USB mouse enumerated: slot 1 ([xhci] start_hid_polling: kbd=slot2/dci3 nkro=dci5 mouse=slot1/dci3 mouse2=dci5)
+[smoke 22:03:40] VirGL warmup: sleeping 60s
+[smoke 22:04:40] capturing display (pre-trigger)
+[smoke 22:04:46] keyboard-delivery handshake: probing with an inert tap (code=44, no modifiers) before the test gesture
+[smoke 22:04:46] handshake baseline kbd_nonzero=0
+[smoke 22:04:46] restored Breenix VM pid=60758 to nice 0 for the double-tap injection window
+[smoke 22:04:47] handshake OK: kbd_nonzero 0 -> 1 (probe key arrived in guest)
+[smoke 22:04:48] restored Breenix VM pid=60758 to nice 0 for the double-tap injection window
+[smoke 22:04:48] serial line baseline: 1622
+[smoke 22:04:48] injecting double-Super (prefix= code=29 gap=150ms)
+[smoke 22:04:49] double-tap injected as one -j batch; prlctl wall-time 432ms (inter-tap spacing dispatcher-controlled at 150ms, load-independent)
+[smoke 22:04:50] launcher opened (saw [spawn] path='/bin/blauncher')
+[smoke 22:04:50] pressing Enter (code=28)
+[smoke 22:04:53] capturing display (post-enter)
+[smoke 22:04:59] terminal launched + loaded: saw '[bterm] config:' AND '[bterm] spawned child pid='
+[smoke 22:04:59] result: PASS (inject_retries=0)
+[smoke 22:04:59] cleanup: killing run.sh pid 55017
+[smoke 22:04:59] cleanup: killing caffeinate pid 55011
+[smoke 22:04:59] cleanup: stopping VM breenix-1788746581

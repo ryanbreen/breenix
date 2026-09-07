@@ -291,9 +291,13 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             match &fd_entry.kind {
                 FdKind::UdpSocket(s) => {
                     // Bind UDP socket
+                    //
+                    // #823: hold this lock masked for the whole bind() call --
+                    // see kernel/src/socket/udp.rs::with_locked_masked.
                     let socket_ref = s.clone();
-                    let mut socket = socket_ref.lock();
-                    match socket.bind(pid, addr.addr, addr.port_host()) {
+                    match crate::socket::udp::with_locked_masked(&socket_ref, |socket| {
+                        socket.bind(pid, addr.addr, addr.port_host())
+                    }) {
                         Ok(actual_port) => {
                             log::info!(
                                 "UDP: Socket bound to port {} (requested: {})",
@@ -445,7 +449,11 @@ pub fn sys_sendto(
 
         // Verify it's a UDP socket and extract source port
         match &fd_entry.kind {
-            FdKind::UdpSocket(s) => s.lock().local_port().unwrap_or(0),
+            // #823: mask around this read of the same lock the NetRx IRQ
+            // route locks -- see kernel/src/socket/udp.rs::with_locked_masked.
+            FdKind::UdpSocket(s) => {
+                crate::socket::udp::with_locked_masked(s, |socket| socket.local_port().unwrap_or(0))
+            }
             _ => return SyscallResult::Err(ENOTSOCK as u64),
         }
         // manager_guard dropped here, releasing the lock
@@ -609,7 +617,10 @@ pub fn sys_recvfrom(
             _ => return SyscallResult::Err(ENOTSOCK as u64),
         };
 
-        let nonblocking = socket.lock().nonblocking;
+        // #823: mask around this read too, for the same reason the 8 other
+        // acquisitions in this function already use Cpu::without_interrupts --
+        // see kernel/src/socket/udp.rs::with_locked_masked.
+        let nonblocking = crate::socket::udp::with_locked_masked(&socket, |s| s.nonblocking);
         (socket, nonblocking)
         // manager_guard dropped here
     };

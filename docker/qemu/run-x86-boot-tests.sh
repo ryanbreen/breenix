@@ -413,6 +413,7 @@ FCNTL_PM_CONTENTION_ORACLE_LITERAL='[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:rea
 # not earn. Pinning the SKIP line keeps the emitter alive on this arch --
 # deleting the oracle would otherwise leave this gate green.
 IRQ_HOLD_ORACLE_LITERAL='[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]'
+UDP_LOCK_ORACLE_LITERAL='[UDP_LOCK_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]'
 # #821. Unlike the two SKIPs above, this oracle has a real arm on x86: the
 # defect it measures is worse here than on aarch64, because `manager()`
 # performs no mask operation on this architecture, so the boot thread's
@@ -750,6 +751,8 @@ for i in $(seq 1 "$COUNT"); do
             && grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qF "$IRQ_HOLD_ORACLE_LITERAL" \
+                "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
+            && grep -qF "$UDP_LOCK_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
             && grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
@@ -1304,6 +1307,9 @@ for i in $(seq 1 "$COUNT"); do
     IRQ_HOLD_ORACLE_LINE=$(grep -h -F "$IRQ_HOLD_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$IRQ_HOLD_ORACLE_LINE"
+    UDP_LOCK_ORACLE_LINE=$(grep -h -F "$UDP_LOCK_ORACLE_LITERAL" \
+        "$OUTPUT_DIR"/serial_*.txt | tail -1)
+    echo "$UDP_LOCK_ORACLE_LINE"
     TTY_IRQ_PM_ORACLE_LINE=$(grep -h -E "$TTY_IRQ_PM_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TTY_IRQ_PM_ORACLE_LINE"

@@ -418,6 +418,7 @@ TEST_ONLY_MARKERS=(
     '[CENSUS_WIDEN_ORACLE:'
     '[FCNTL_PM_CONTENTION_ORACLE:'
     '[IRQ_HOLD_ORACLE:'
+    '[UDP_LOCK_ORACLE:'
     '[TTY_IRQ_PM_ORACLE:'  # #821's TTY input IRQ oracle (boot_tests-only)
     '[TTY_IRQ_FG_ORACLE:'  # #822's TTY foreground-pgrp oracle (boot_tests-only)
     '[RING_SPAN:'  # failure-trace-capture PR-2 ring-depth self-check (boot_tests-only)
