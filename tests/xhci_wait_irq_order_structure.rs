@@ -114,8 +114,9 @@ fn code_mask(source: &str) -> Vec<bool> {
                 mask[index + 1..=index + hashes].fill(false);
                 raw_string_hashes = None;
                 index += hashes + 1;
+            } else {
+                index += 1;
             }
-            index += 1;
             continue;
         }
         if string || character {
@@ -1005,4 +1006,33 @@ fn deliberately_broken_copies_redden_the_rules() {
         "must redden when a direct db_base write32( call has a comment between the \
          identifier and its opening paren"
     );
+}
+
+#[test]
+fn code_mask_raw_string_close_preserves_next_byte() {
+    // Check scanner correctness with a consistent live-code token.
+    // Hash counts 0, 1, 2, and 3 are exercised directly here, not just 0 and 1.
+    for fixture in [
+        r##"r"x"serial_println!"##,
+        r##"r#"x"#serial_println!"##,
+        r####"r##"x"##serial_println!"####,
+        r#####"r###"x"###serial_println!"#####,
+    ] {
+        let mask = code_mask(fixture);
+        let offset = fixture.find("serial_println!").unwrap();
+        assert!(mask[offset], "raw-string close swallowed the next byte");
+    }
+    // A skipped ordinary identifier byte stays true in the default mask.
+    // A skipped raw opener instead changes lexical state: the embedded quote
+    // closes an ordinary string, hiding the real token after the raw close.
+    // Exercised at a 0-then-1 hash boundary and again at a 1-then-2 hash
+    // boundary, so the compound-skip fix is checked past the smallest counts too.
+    for fixture in [
+        r###"r"x"r#"a"b"#serial_println!"###,
+        r######"r#"x"#r##"a"b"##serial_println!"######,
+    ] {
+        let mask = code_mask(fixture);
+        let offset = fixture.find("serial_println!").unwrap();
+        assert!(mask[offset], "raw-string close swallowed the next byte");
+    }
 }

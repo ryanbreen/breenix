@@ -127,8 +127,9 @@ fn code_mask(source: &str) -> Vec<bool> {
                 mask[index + 1..=index + hashes].fill(false);
                 raw_string_hashes = None;
                 index += hashes + 1;
+            } else {
+                index += 1;
             }
-            index += 1;
             continue;
         }
         if string || character {
@@ -1028,4 +1029,33 @@ fn census_validator_rejects_a_logging_macro_inside_the_soft_lockup_dump() {
             "+ kernel/src/arch_impl/aarch64/timer_interrupt.rs :: fn dump_lockup_state  (1 occurrences, expected none)".to_owned()
         ])
     );
+}
+
+#[test]
+fn code_mask_raw_string_close_preserves_next_byte() {
+    // Check scanner correctness with a consistent live-code token.
+    // Hash counts 0, 1, 2, and 3 are exercised directly here, not just 0 and 1.
+    for fixture in [
+        r##"r"x"serial_println!"##,
+        r##"r#"x"#serial_println!"##,
+        r####"r##"x"##serial_println!"####,
+        r#####"r###"x"###serial_println!"#####,
+    ] {
+        let mask = code_mask(fixture);
+        assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
+                   vec![fixture.find("serial_println!").unwrap()]);
+    }
+    // A skipped ordinary identifier byte stays true in the default mask.
+    // A skipped raw opener instead changes lexical state: the embedded quote
+    // closes an ordinary string, hiding the real token after the raw close.
+    // Exercised at a 0-then-1 hash boundary and again at a 1-then-2 hash
+    // boundary, so the compound-skip fix is checked past the smallest counts too.
+    for fixture in [
+        r###"r"x"r#"a"b"#serial_println!"###,
+        r######"r#"x"#r##"a"b"##serial_println!"######,
+    ] {
+        let mask = code_mask(fixture);
+        assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
+                   vec![fixture.find("serial_println!").unwrap()]);
+    }
 }
