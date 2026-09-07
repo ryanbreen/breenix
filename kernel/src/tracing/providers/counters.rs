@@ -117,6 +117,13 @@ pub static COW_FAULT_TOTAL: TraceCounter =
 pub static IDLE_TICK_TOTAL: TraceCounter =
     TraceCounter::new("IDLE_TICK_TOTAL", "Total idle timer ticks");
 
+/// SCHED_DIAG_* ring-write sampling drops (#855), once per skipped call.
+#[no_mangle]
+pub static SCHED_DIAG_SAMPLE_DROPPED: TraceCounter = TraceCounter::new(
+    "SCHED_DIAG_SAMPLE_DROPPED",
+    "trace_sched_diag calls sampled out of the ring",
+);
+
 /// CTX_DIAG_* ring-write sampling drops (#855), counted once per skipped
 /// trace_ctx_diag call, rather than once per skipped event.
 #[no_mangle]
@@ -907,6 +914,7 @@ pub fn init() {
     register_counter(&EXEC_TOTAL);
     register_counter(&COW_FAULT_TOTAL);
     register_counter(&IDLE_TICK_TOTAL);
+    register_counter(&SCHED_DIAG_SAMPLE_DROPPED);
     register_counter(&CTX_DIAG_SAMPLE_DROPPED);
     register_counter(&DEFER_REQUEUE_SAMPLE_DROPPED);
     register_counter(&GPU_BYTES_UPLOADED);

@@ -63,13 +63,13 @@ fn guard_blocks(body: &str, header: &str) -> Vec<(usize, usize)> {
     blocks
 }
 
-fn assert_sampling_decision(body: &str, counter: &str) -> usize {
+fn assert_sampling_decision(body: &str, counter: &str, sample: &str) -> usize {
     let code = compact(body);
     let increment = code
         .find(&format!("{counter}[cpu_id].fetch_add(1,Ordering::Relaxed)"))
         .expect("each call must advance its relaxed per-CPU sampling counter");
     let mask = code
-        .find("count&(TRACE_DIAG_SAMPLE-1)==0")
+        .find(&format!("count&({sample}-1)==0"))
         .expect("sampling must use the named power-of-two mask");
     assert!(
         increment < mask,
@@ -85,7 +85,7 @@ fn assert_sampling_decision(body: &str, counter: &str) -> usize {
 }
 
 fn assert_ctx_sampling(body: &str) {
-    let decision = assert_sampling_decision(body, "CTX_DIAG_CALL_COUNT");
+    let decision = assert_sampling_decision(body, "CTX_DIAG_CALL_COUNT", "TRACE_DIAG_SAMPLE");
     let guards = guard_blocks(body, "if !sampled {");
     assert_eq!(
         guards.len(),
@@ -111,7 +111,7 @@ fn assert_ctx_sampling(body: &str) {
 }
 
 fn assert_defer_sampling(body: &str) {
-    assert_sampling_decision(body, "DEFER_REQUEUE_CALL_COUNT");
+    assert_sampling_decision(body, "DEFER_REQUEUE_CALL_COUNT", "TRACE_DIAG_SAMPLE");
     let guards = guard_blocks(body, "if sampled {");
     let records: Vec<_> = body.match_indices("record_event(").collect();
     // Stage plus SP, ELR, X30 and FLAGS: five existing calls, despite the
@@ -216,4 +216,42 @@ fn sampling_snapshot_stores_would_be_caught() {
         &body[end..]
     );
     assert_defer_sampling(&mutated);
+}
+
+const SCHED_SOURCE: &str = "kernel/src/task/scheduler.rs";
+
+fn assert_sched_sampling(body: &str) {
+    let decision = assert_sampling_decision(body, "SCHED_DIAG_CALL_COUNT", "TRACE_SCHED_DIAG_SAMPLE");
+    let guards = guard_blocks(body, "if !sampled {");
+    assert_eq!(guards.len(), 1, "SCHED sampling requires its early-return guard");
+    let (start, end) = guards[0];
+    assert!(decision < start);
+    assert!(compact(&body[start..end]).contains("SCHED_DIAG_SAMPLE_DROPPED.increment();return;"));
+    let records: Vec<_> = body.match_indices("record_event(").collect();
+    assert_eq!(records.len(), 3, "keep all three SCHED ring writes");
+    for (record, _) in records {
+        assert!(end <= record, "SCHED ring writes must follow the early-return guard");
+    }
+}
+
+#[test]
+fn sched_sample_constant_is_named_and_asserted_power_of_two() {
+    let source = compact(&read(SCHED_SOURCE));
+    assert!(source.contains("constTRACE_SCHED_DIAG_SAMPLE:u64="));
+    assert!(source.contains("const_:()=assert!(TRACE_SCHED_DIAG_SAMPLE.is_power_of_two(),"));
+}
+
+#[test]
+fn sched_ring_writes_are_sampled() {
+    assert_sched_sampling(&function_body(&read(SCHED_SOURCE), "trace_sched_diag"));
+}
+
+#[test]
+#[should_panic(expected = "SCHED sampling requires its early-return guard")]
+fn deleting_sched_early_return_would_be_caught() {
+    let body = function_body(&read(SCHED_SOURCE), "trace_sched_diag");
+    assert_sched_sampling(&body);
+    let (start, end) = guard_blocks(&body, "if !sampled {")[0];
+    let mutated = format!("{}{}", &body[..start], &body[end..]);
+    assert_sched_sampling(&mutated);
 }
