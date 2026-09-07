@@ -1,0 +1,7 @@
+claim-lint: clean (2 file(s) checked, whole files).
+requested-files exit 0
+claim-lint: clean commit message (../../../../../../../../dev/fd/11).
+head-message exit 0
+claim-lint: clean (22 file(s) checked, changed hunks vs c12ff1409b7e).
+claim-lint: 127 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+tree exit 0

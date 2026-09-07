@@ -1,0 +1,9 @@
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure loopback_guest_budget ==
+
+running 2 tests
+test loopback_guest_budget_requires_measured_starvation ... ok
+test loopback_guest_budget_ratchet_rejects_always_extend_and_deleted_extensions ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 124 filtered out; finished in 0.07s
+

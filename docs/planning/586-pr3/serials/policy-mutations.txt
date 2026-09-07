@@ -1,0 +1,61 @@
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure loopback_guest_budget ==
+
+running 4 tests
+test loopback_guest_budget_wiring ... ok
+
+running 4 tests
+test extension_does_not_hide_wake_or_receive_defects ... ok
+test policy_boundaries ... ok
+test policy_cap ... ok
+test starved_recovery ... fixture: before verdict=starved extensions=0 FAIL
+fixture: after verdict=starved extensions=100 PASS
+ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+test loopback_guest_budget_policy_and_starved_recovery ... ok
+always-extend (all-extend alias):
+
+running 4 tests
+test extension_does_not_hide_wake_or_receive_defects ... FAILED
+test policy_boundaries ... FAILED
+test policy_cap ... FAILED
+test starved_recovery ... FAILED
+
+failures:
+
+failures:
+    extension_does_not_hide_wake_or_receive_defects
+    policy_boundaries
+    policy_cap
+    starved_recovery
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+always-extend (all-extend alias):
+
+running 4 tests
+test extension_does_not_hide_wake_or_receive_defects ... FAILED
+test policy_boundaries ... FAILED
+test policy_cap ... FAILED
+test starved_recovery ... FAILED
+
+failures:
+
+failures:
+    extension_does_not_hide_wake_or_receive_defects
+    policy_boundaries
+    policy_cap
+    starved_recovery
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+test loopback_guest_budget_always_extend_mutation ... ok
+test loopback_guest_budget_all_extend_mutation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 124 filtered out; finished in 0.10s
+
