@@ -55,7 +55,7 @@ const PROD_GATE: &str = "docker/qemu/run-aarch64-prod-profile-boot-test.sh";
 const X86_BOOT_GATE: &str = "docker/qemu/run-x86-boot-tests.sh";
 const X86_PROD_GATE: &str = "docker/qemu/run-x86-prod-profile-boot-test.sh";
 const GREEN_SERIAL: &str =
-    "docs/planning/green-program/irq-locks/serials/821/02-a64-green-repaired-serial.txt";
+    "tests/fixtures/udp-socket-lock-aarch64-serial.txt";
 const PROD_SERIAL: &str =
     "docs/planning/green-program/irq-locks/serials/821/03-a64-prod-profile-serial.txt";
 const ORACLE_MARKER: &str = "[TTY_IRQ_PM_ORACLE:";

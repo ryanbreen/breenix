@@ -2436,7 +2436,7 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         (
             "docker/qemu/run-aarch64-boot-test-strict.sh",
             "BREENIX_STRICT_SCORE_ONLY",
-            "docs/planning/green-program/aarch64-testing/serials/slice3e/01-strict-boot1-serial.txt",
+            "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
         ),
         (
             "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
@@ -2580,7 +2580,7 @@ fn the_gates_score_the_pin_guard_oracle_in_opposite_directions() {
 
     let strict = "docker/qemu/run-aarch64-boot-test-strict.sh";
     let strict_serial = repo_text(
-        "docs/planning/green-program/aarch64-testing/serials/slice3e/01-strict-boot1-serial.txt",
+        "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
     );
     let pass_line = strict_serial
         .lines()

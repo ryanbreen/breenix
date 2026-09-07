@@ -2399,7 +2399,7 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
         (
             "docker/qemu/run-aarch64-boot-test-strict.sh",
             "BREENIX_STRICT_SCORE_ONLY",
-            "docs/planning/green-program/aarch64-testing/serials/slice3e/01-strict-boot1-serial.txt",
+            "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
         ),
         (
             "docker/qemu/run-aarch64-prod-profile-boot-test.sh",
