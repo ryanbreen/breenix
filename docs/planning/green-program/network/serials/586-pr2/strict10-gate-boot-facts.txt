@@ -1,0 +1,50 @@
+== boot1 ==
+[GATE_BOOT_FACTS:boot=1:host_ms=1788794855019-1788794914295:qemu_at_start=0:load_at_start=10.24:qemu_at_end=1:load_at_end=7.00:qemu_cpu_s=91.69:guest_uptime_ms=58769:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot2 ==
+[GATE_BOOT_FACTS:boot=2:host_ms=1788794915604-1788794975010:qemu_at_start=0:load_at_start=7.00:qemu_at_end=1:load_at_end=6.58:qemu_cpu_s=89.72:guest_uptime_ms=58492:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot3 ==
+[GATE_BOOT_FACTS:boot=3:host_ms=1788794976318-1788795034393:qemu_at_start=0:load_at_start=6.58:qemu_at_end=1:load_at_end=18.60:qemu_cpu_s=73.91:guest_uptime_ms=57447:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot4 ==
+[GATE_BOOT_FACTS:boot=4:host_ms=1788795035636-1788795093335:qemu_at_start=0:load_at_start=18.60:qemu_at_end=1:load_at_end=10.66:qemu_cpu_s=87.69:guest_uptime_ms=56891:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot5 ==
+[GATE_BOOT_FACTS:boot=5:host_ms=1788795094613-1788795158023:qemu_at_start=0:load_at_start=10.66:qemu_at_end=1:load_at_end=17.45:qemu_cpu_s=90.72:guest_uptime_ms=62766:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot6 ==
+[GATE_BOOT_FACTS:boot=6:host_ms=1788795159816-1788795217922:qemu_at_start=0:load_at_start=17.25:qemu_at_end=1:load_at_end=12.09:qemu_cpu_s=85.28:guest_uptime_ms=57427:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot7 ==
+[GATE_BOOT_FACTS:boot=7:host_ms=1788795331918-1788795391138:qemu_at_start=0:load_at_start=3.90:qemu_at_end=1:load_at_end=3.38:qemu_cpu_s=89.61:guest_uptime_ms=59133:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot8 ==
+[GATE_BOOT_FACTS:boot=8:host_ms=1788795507029-1788795566847:qemu_at_start=0:load_at_start=12.59:qemu_at_end=1:load_at_end=12.95:qemu_cpu_s=87.40:guest_uptime_ms=59519:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot9 ==
+[GATE_BOOT_FACTS:boot=9:host_ms=1788795739146-1788795798540:qemu_at_start=0:load_at_start=23.94:qemu_at_end=1:load_at_end=11.63:qemu_cpu_s=90.16:guest_uptime_ms=58619:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+== boot10 ==
+[GATE_BOOT_FACTS:boot=10:host_ms=1788795856501-1788795914453:qemu_at_start=0:load_at_start=6.22:qemu_at_end=1:load_at_end=5.68:qemu_cpu_s=86.89:guest_uptime_ms=57274:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
