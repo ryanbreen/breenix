@@ -1,0 +1,7 @@
+26893a4fb55bb3de33b62e5c522348d231e2a26a
+[GATE_PREFLIGHT:structure_suites=63/64:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 64 structure suite(s) red: gate_capture_drain_structure -- per-suite logs under /root/breenix-813c-tmp/breenix_gate_structure_preflight.52ltKN)
+x86 frame-custody gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
+x86 frame-custody gate: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:157, exit 1)
+  failing command: false
+gate-exit=1

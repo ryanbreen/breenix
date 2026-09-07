@@ -1,0 +1,20 @@
+base revision: 19427ef42612d14bb4cc4474a7dd460cdc850a03; candidate ratchet with original source restored
+== compiling pipe_fifo_blocking_structure ==
+== running pipe_fifo_blocking_structure prepared_wait_retains_identity_for_both_cleanup_operations ==
+
+running 1 test
+
+thread 'prepared_wait_retains_identity_for_both_cleanup_operations' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/tests/pipe_fifo_blocking_structure.rs:926:5:
+assertion failed: retained_wait_identity(&source, &queue)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test prepared_wait_retains_identity_for_both_cleanup_operations ... FAILED
+
+failures:
+
+failures:
+    prepared_wait_retains_identity_for_both_cleanup_operations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+
+exit 101
