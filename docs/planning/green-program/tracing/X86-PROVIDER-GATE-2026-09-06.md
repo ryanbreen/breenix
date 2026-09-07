@@ -1015,3 +1015,72 @@ claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/tr
 claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/tracing/X86-PROVIDER-GATE-2026-09-06.md -> exit 0 (revised wording)
 claim-lint: python3 scripts/claim-lint.py -> exit 0 (5 file(s) checked, changed hunks vs 5bfc7077af7d)
 ```
+
+## Landing
+
+`git fetch origin && git merge origin/main --no-edit` merged cleanly as
+commit `b0019cfb7a65206537862d10fd463a0b860ec8b5` (origin/main was at
+`5f68fedd3b3056fce3eec4be2792e8f54a310a60`, 31 commits ahead of this
+branch's merge-base `5bfc7077af7dfde2e0aa81189088cc838584dea3`). No conflict
+of any kind occurred — `git status --short` was empty immediately after the
+merge — so the "STOP on any kernel/ conflict" condition did not apply.
+`git diff --stat 5bfc7077..HEAD -- kernel/` shows main's own changes to
+`kernel/src/main.rs`, `kernel/src/main_aarch64.rs`,
+`kernel/src/task/scheduler.rs`, and `kernel/src/test_framework/registry.rs`
+merged in alongside this branch's own edits with no textual conflict.
+
+`bash scripts/run-structure-tests.sh` (default: `teardown_structure`, whole
+file) exited 0: `test result: ok. 92 passed; 0 failed; 0 ignored; 0
+measured; 0 filtered out`.
+
+`bash docker/qemu/run-aarch64-boot-test-strict.sh 1`: `[GATE_PREFLIGHT:
+structure_suites=53/53:critical_path_lines=260:pinned=120]`, then
+`[OK] Boot 1: SUCCESS`, `PASS: 1/1 boots succeeded`.
+
+`bash docker/qemu/run-x86-boot-tests.sh 1` on beast, in
+`/root/breenix-slot1`: **first attempt's structure-suite preflight came
+back `GATE_PREFLIGHT: FAIL (2 of 53 ... red: coreproof_component_h_structure
+coreproof_coverage_structure)`.** Both suites pass cleanly in this worktree
+(`5/5` and `4/4` respectively, same commit `b0019cfb`), and neither suite's
+own log file existed under the shared `/tmp/breenix_gate_structure_preflight`
+afterward, even though 51 other suites' logs did. At the time, another lane
+(clone `/root/breenix-823`, confirmed via `ps`) was concurrently running the
+same gate script on the same beast container, and both
+`docker/qemu/lib/gate-structure-preflight.sh` (its `rm -rf "$log_dir"` +
+shared log directory) and `scripts/run-structure-tests.sh` (its shared
+`${TMPDIR:-/tmp}/breenix-structure-tests/<stem>` compile-output path) default
+to the bare, non-run-scoped `/tmp` unless the caller sets `BREENIX_GATE_TMP`
+and `TMPDIR`. This reads as a cross-lane race on those two shared paths, not
+a source defect newly introduced by this branch or by origin/main's merged
+commits — it is a preexisting gap in this gate's own temp-path scoping, not
+touched by this branch's diff, so it is not fixed here; a session
+encountering it again should isolate `BREENIX_GATE_TMP`/`TMPDIR` per run, as
+done below. **Second attempt, with `TMPDIR=/root/slot1-gate-tmp
+BREENIX_GATE_TMP=/root/slot1-gate-tmp`** (a run-scoped directory, avoiding
+the shared-`/tmp` race): `[GATE_PREFLIGHT:structure_suites=53/53:
+critical_path_lines=260:pinned=120]`, kernel + userspace + ext2 build
+succeeded, queued on the shared `x86-qemu.lock` behind other lanes'
+concurrent boots (normal per this task's own instructions), then booted and
+scored `x86 frame-custody gate run 1: PASS`. The provider gate's own lines
+in `/root/slot1-gate-tmp/breenix_x86_boot_tests_1/serial_user.txt` (copied
+locally to
+`/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/slot1/landing-evidence/x86-serial-user.txt`,
+lines 119-120):
+
+```text
+[TEST:process:deferred_fault_ring_overflow_injection:START]
+[TEST:process:deferred_fault_ring_overflow_injection:PASS]
+```
+
+No leftover `qemu-system-x86_64` process for `breenix-slot1` remained after
+the run (`ps aux | grep qemu-system-x86_64 | grep breenix-slot1` came back
+empty). Full stdout is saved locally at
+`.../scratchpad/slot1/landing-evidence/x86-gate-stdout.log` and the full
+serial capture at `.../landing-evidence/x86-serial-user.txt`.
+
+### Claim-lint invocation record for landing
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 0 (5 file(s) checked, changed hunks vs 5bfc7077af7d)
+claim-lint: python3 scripts/claim-lint.py --commit-msg /tmp/slot1-landing-commit-msg.txt -> exit 0
+```
