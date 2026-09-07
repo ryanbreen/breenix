@@ -2964,8 +2964,10 @@ fn run_loopback_recv_wake_test_inner(
     // woken", so the reader fact is the only source that can answer it.
     // claim-lint:ok: the misreport is 1 of 1 preserved specimen -- the
     // service-sequence max boot 24 at 5c53ba59 printed reader_state=Ready on
-    // the same line as the "never woken" text; serial in-repo at
-    // docs/planning/green-program/network/serials/586-pr1/. See #586.
+    // the same line as the "never woken" text; the specimen is not
+    // committed in-repo -- see docs/planning/green-program/network/
+    // 586-PR1-2026-09-07.md Step 0 for its path and the exact bytes quoted
+    // verbatim. See #586.
     //
     // `ReaderFact::NoRow` is "no scheduler row": either `with_scheduler`
     // declined or `get_thread` found no thread with this id.

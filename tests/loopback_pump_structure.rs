@@ -2015,8 +2015,9 @@ fn loopback_arch_validator_rejects_arch_specific_test() {
 /// one cell #586 hit.
 /// claim-lint:ok: 1 of 1 preserved specimen, the service-sequence max boot 24
 /// at 5c53ba59, printed reader_state=Ready beside the "never woken" text;
-/// serial in-repo at docs/planning/green-program/network/serials/586-pr1/.
-/// See #586.
+/// the specimen is not committed in-repo -- see
+/// docs/planning/green-program/network/586-PR1-2026-09-07.md Step 0 for its
+/// path and the exact bytes quoted verbatim. See #586.
 fn validate_loopback_wake_classification_reads_reader_state(source: &str) -> Result<(), String> {
     let body = function_body(source, "run_loopback_recv_wake_test_inner")
         .ok_or_else(|| "missing run_loopback_recv_wake_test_inner".to_string())?;
