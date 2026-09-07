@@ -8264,10 +8264,13 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
     use alloc::vec::Vec;
     use core::sync::atomic::AtomicBool;
 
-    const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 8_000;
-    const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 3_000;
-    const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 15_000;
-    const GATE_CEILING_MILLISECONDS: u64 = EXIT_KICK_GATE_CEILING_MILLISECONDS;
+    // Fixture-only 1:10 scaling of C4 windows. Preserve no-progress < first-progress
+    // < absolute < gate, so live siblings mask the union until its absolute
+    // ceiling while each frozen worker is named at its own earlier deadline.
+    const FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 800;
+    const NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 300;
+    const ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 1_500;
+    const GATE_CEILING_MILLISECONDS: u64 = 4_500;
     const RESCHED_REKICK_INTERVAL_MILLISECONDS: u64 = 50;
     const BREADCRUMB_INTERVAL_MILLISECONDS: u64 = 1_000;
     const CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 100_000;
@@ -8942,7 +8945,6 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
         Ok(())
     }
 
-
     struct Accounting {
         progress: [AtomicU64; 3],
         completed: AtomicU64,
@@ -8984,7 +8986,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
     };
     // #522 C5 fix pass (V-8): this test is a second, deeper consumer of the
     // same test_phase_liveness budget the real exit_kick_gate spends -- its
-    // five scenarios' own ceilings sum to about 39 seconds of that shared
+    // five scenarios deliberately spend 3.9 seconds of that shared
     // budget (versus the real gate's own 2-3 seconds), yet only the real
     // gate's `exit_kick_protocol_gate_test` reported how much of the budget
     // was already spent on entry. Report it here too, so the truncation
@@ -8993,8 +8995,9 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
     // claim-lint:ok: #522 C5 fix pass V-8; pinned by
     // tests/teardown_structure.rs::fix_pass_v8_worker_isolation_reports_budget_anchor_age,
     // which reddens if this breadcrumb is removed.
+    let fixture_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
     {
-        let entry_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+        let entry_started_at = fixture_started_at;
         crate::serial_println!(
             "[exit_kick_worker_isolation] budget_anchor=test_phase anchor_age_at_entry_ms={} budget_ms={} scenario_ceiling_ms={}",
             crate::arch_impl::aarch64::timer::elapsed_ticks(entry_started_at, test_phase_started_at)
@@ -9006,7 +9009,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
     }
     // Completion needs TWO own increments, so the frozen worker does not complete.
     // The two live siblings continue doing work even after their completion bits.
-    // This distinguishes the old union's 15s ceiling from the independent 8s floor.
+    // This distinguishes the union's scaled 1.5s ceiling from the independent 800ms floor.
     for (scenario, frozen, union) in [
         ("before_union_worker_1", Some(0usize), true),
         ("after_worker_1", Some(0), false),
@@ -9046,9 +9049,9 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
                         }
                     }
                     // Leave idle handoffs available to the concurrent strand
-                    // injection oracle during these deliberate multi-second waits.
+                    // injection oracle during these deliberate fixture waits.
                     // A 50ms sleep still advances live counters well within the
-                    // 3s no-progress window; the frozen counter stays at one.
+                    // 300ms no-progress window; the frozen counter stays at one.
                     crate::task::strand_oracle::sleep_sample_period();
                 }
             }, names[target], worker_cpus[target]) {
@@ -9159,9 +9162,18 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
             crate::serial_println!("[exit_kick_worker_isolation] healthy_baseline=PASS");
         }
     }
+    crate::serial_println!(
+        "[exit_kick_worker_isolation] fixture_elapsed_ms={}",
+        ticks_to_milliseconds(
+            crate::arch_impl::aarch64::timer::elapsed_ticks(
+                crate::arch_impl::aarch64::timer::rdtsc_serialized(),
+                fixture_started_at,
+            ),
+            frequency,
+        ),
+    );
     TestResult::Pass
 }
-
 
 /// #522 C5 oracle: the test-phase liveness budget must be anchored at
 /// test-phase entry, so a slow pre-test interval cannot consume a later
@@ -9172,8 +9184,7 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
 /// deadline classifier twice over an identical frozen target: once with the
 /// pre-burn "kernel entry" anchor the previous code fed this gate, and once
 /// with the post-burn "test-phase entry" anchor this change introduces.
-/// The budgets are scaled down so the whole oracle fits in about eleven
-/// seconds of wall clock; the real gate's own anchoring is pinned by
+/// The scaled budgets request 2.2 seconds of deliberate waits; the real gate's own anchoring is pinned by
 /// tests/teardown_structure.rs and reported by its budget_anchor breadcrumb.
 /// The ceiling order here is the real gate's: test-phase budget, then gate
 /// ceiling, then absolute wait ceiling, then no-progress.
@@ -9182,16 +9193,16 @@ pub fn exit_kick_budget_anchor_isolation_test() -> crate::test_framework::regist
     use crate::arch_impl::aarch64::timer_interrupt::record_exit_kick_gate_watchdog_heartbeat;
     use crate::test_framework::registry::TestResult;
 
-    // Scaled analogues of the real gate's constants. The ordering relations
-    // that matter are preserved: no_progress < first_progress < gate <
+    // Fixture-only 1:5 scaling of the C5 analogues (previously 6/5/3/4/2/1s).
+    // Preserve the ordering relations: no_progress < first_progress < gate <
     // absolute, and gate < test_phase, so a whole-gate overrun still reports
     // the gate ceiling rather than being pre-empted by the enclosing budget.
-    const FIXTURE_PRE_TEST_DELAY_MILLISECONDS: u64 = 6_000;
-    const FIXTURE_TEST_PHASE_BUDGET_MILLISECONDS: u64 = 5_000;
-    const FIXTURE_GATE_CEILING_MILLISECONDS: u64 = 3_000;
-    const FIXTURE_ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 4_000;
-    const FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 2_000;
-    const FIXTURE_NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 1_000;
+    const FIXTURE_PRE_TEST_DELAY_MILLISECONDS: u64 = 1_200;
+    const FIXTURE_TEST_PHASE_BUDGET_MILLISECONDS: u64 = 1_000;
+    const FIXTURE_GATE_CEILING_MILLISECONDS: u64 = 600;
+    const FIXTURE_ABSOLUTE_WAIT_CEILING_MILLISECONDS: u64 = 800;
+    const FIXTURE_FIRST_PROGRESS_WINDOW_MILLISECONDS: u64 = 400;
+    const FIXTURE_NO_PROGRESS_WINDOW_MILLISECONDS: u64 = 200;
     const FIXTURE_TARGET_NAME: &str = "worker_1";
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -9403,5 +9414,15 @@ pub fn exit_kick_budget_anchor_isolation_test() -> crate::test_framework::regist
             verdict = TestResult::Fail("exit-kick budget anchor oracle scenario misclassified");
         }
     }
+    crate::serial_println!(
+        "[exit_kick_budget_anchor] fixture_elapsed_ms={}",
+        ticks_to_milliseconds(
+            crate::arch_impl::aarch64::timer::elapsed_ticks(
+                crate::arch_impl::aarch64::timer::rdtsc_serialized(),
+                pre_test_started_at,
+            ),
+            counter_frequency_hz,
+        ),
+    );
     verdict
 }
