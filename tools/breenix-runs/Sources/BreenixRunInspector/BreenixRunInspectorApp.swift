@@ -3,6 +3,23 @@ import SwiftUI
 
 @main
 struct BreenixRunInspectorApp: App {
+    init() {
+        // Packaging diagnostic: use the shipped executable and its Bundle.module.
+        if CommandLine.arguments.contains("--resource-probe") {
+            do {
+                print("Bundle.main=\(Bundle.main.bundleURL.path)")
+                for arch in [Arch.aarch64, .x86_64] {
+                    let stages = try StageCatalog.load(for: arch)
+                    print("catalog=\(arch.rawValue) stages=\(stages.count) path=\(StageCatalog.catalogURL(for: arch)!.path)")
+                }
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("resource probe: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             InspectorRootView()
@@ -19,6 +36,7 @@ private struct LoadedRun: Identifiable, Equatable {
 struct InspectorRootView: View {
     private let store = RunStore.defaultStore()
 
+    @State private var loadWarnings: [String] = []
     @State private var runs: [LoadedRun] = []
     @State private var selectedRunID: String?
     @State private var selectedComparisonRunID: String?
@@ -29,8 +47,16 @@ struct InspectorRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(rows: runs.map(\.row), selection: $selectedRunID)
-                .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 460)
+            VStack(alignment: .leading) {
+                if !loadWarnings.isEmpty {
+                    Text(loadWarnings.joined(separator: "\n"))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("run-load-warnings")
+                }
+                SidebarView(rows: runs.map(\.row), selection: $selectedRunID)
+            }
+            .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 460)
         } detail: {
             detailView
         }
@@ -64,14 +90,17 @@ struct InspectorRootView: View {
 
                 TabView {
                     SubsystemsPane(viewModel: detail.subsystems)
+                        .accessibilityIdentifier("pane-subsystems")
                         .tabItem {
                             Label("Subsystems", systemImage: "checklist")
                         }
                     MessagesPane(messages: detail.messages)
+                        .accessibilityIdentifier("pane-messages")
                         .tabItem {
                             Label("Messages", systemImage: "text.alignleft")
                         }
                     TracesPane(viewModel: detail.traces)
+                        .accessibilityIdentifier("pane-traces")
                         .tabItem {
                             Label("Traces", systemImage: "waveform.path.ecg")
                         }
@@ -127,8 +156,9 @@ struct InspectorRootView: View {
 
     private func loadRuns() async {
         do {
-            let loadedRuns = try await RunInspectorLoader.loadRuns(store: store)
-            runs = loadedRuns.map { LoadedRun(row: $0.row, manifest: $0.manifest) }
+            let loadedList = try await RunInspectorLoader.loadRunList(store: store)
+            loadWarnings = loadedList.warnings
+            runs = loadedList.runs.map { LoadedRun(row: $0.row, manifest: $0.manifest) }
             loadError = nil
 
             if self.selectedRunID == nil {

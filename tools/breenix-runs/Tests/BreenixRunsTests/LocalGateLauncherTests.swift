@@ -124,8 +124,8 @@ final class LocalGateLauncherTests: XCTestCase {
 
     private static func hostFactsFixture() -> [String: ProcessResult] {
         [
-            "/usr/bin/pgrep -c qemu-system-aarch64": ProcessResult(stdout: Data("0\n".utf8), exitCode: 1),
-            "/usr/bin/pgrep -c qemu-system-x86_64": ProcessResult(stdout: Data("0\n".utf8), exitCode: 1),
+            "/usr/bin/pgrep -x qemu-system-aarch64": ProcessResult(stdout: Data(), exitCode: 1),
+            "/usr/bin/pgrep -x qemu-system-x86_64": ProcessResult(stdout: Data(), exitCode: 1),
             "/usr/sbin/sysctl -n vm.loadavg": ProcessResult(stdout: Data("{ 1.00 1.00 1.00 }\n".utf8), exitCode: 0),
             "/usr/bin/pmset -g therm": ProcessResult(stdout: Data(), stderr: Data("unsupported\n".utf8), exitCode: 1),
             "/usr/sbin/sysctl hw.model hw.memsize": ProcessResult(stdout: Data("hw.model: Mac16,1\nhw.memsize: 34359738368\n".utf8), exitCode: 0),

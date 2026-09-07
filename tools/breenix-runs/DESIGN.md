@@ -822,6 +822,73 @@ hand-built from the schema and its header comment says so; treating it as a
 real capture would be exactly the kind of claim this project's evidence
 discipline exists to prevent.
 
+### 4.5 Automatic gate-run capture (the six-gate import hook)
+
+6 of 34 `docker/qemu/run-*.sh` scripts now call into the store themselves,
+after each one's own verdict is final, instead of relying on the operator to
+remember `breenix-runs import`. `docker/qemu/lib/run-inspector-import.sh`
+defines `breenix_runs_import_nonfatal()`, and is sourced (`|| :`, so a
+missing file cannot fail the gate) by those 6:
+`run-aarch64-boot-test-strict.sh`,
+`run-aarch64-testing-profile-boot-test.sh`,
+`run-aarch64-prod-profile-boot-test.sh`, `run-x86-gate.sh`,
+`run-x86-boot-tests.sh`, and `run-x86-prod-profile-boot-test.sh` — the other
+28 `run-*.sh` scripts do not source it. Each of the 6 calls it
+once per boot, at the point the verdict is known, as
+`breenix_runs_import_nonfatal "$OUTPUT_DIR" <arch> <profile> <VERDICT>
+<exit-code> "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}"` (e.g.
+`run-aarch64-boot-test-strict.sh:1069,1074`), and the helper itself is
+opt-out (`BREENIX_RUNS_NO_IMPORT=1`) and fully backgrounded from the gate's
+own output: it redirects the whole subshell so even a failed log open cannot
+reach the gate's stdout, and always returns 0.
+
+The helper hands off to `docker/qemu/lib/run-inspector-import.py`, which does
+two things in order:
+
+1. **Writes gate-owned provenance, atomically.** It lists the evidence
+   directory's own `serial*.{txt,log}` files and any other `.txt`/`.log`
+   captures, and writes a `run-inspector.json` sidecar — `schemaVersion: 1`,
+   a freshly minted `uuid.uuid4()` **`id`**, the gate's own `arch`/`profile`/
+   `verdict`/`exitCode`, start/end timestamps, and the exact `command`
+   argv — via write-to-temp-then-`rename()` (`run-inspector-import.py:29-31`),
+   the same atomic-publish pattern the store itself uses for manifests
+   (§3.4). `GateProvenance.swift` reads and schema-validates that file
+   (`schemaVersion == 1`, a parseable UUID, `endedAt >= startedAt`, a
+   non-empty command, and path-safe serial/capture names) and rejects
+   anything that fails those checks rather than importing a malformed
+   record. Its doc comment states the policy this exists to enforce: **gate-owned
+   classification; serial markers cannot override it** — `projectedVerdict`
+   maps the gate's own verdict string and exit code onto the store's
+   `Verdict` enum (`PASS-WITH-ATTRIBUTED-LOCKUP` → `.attributed`, a
+   `REFUSED*` prefix → `.refused`, a nonzero exit code → `.fail`, an exact
+   `PASS` → `.gateScript`, anything else → `.attributed`), so the Importer
+   does not re-derive a verdict from scanning the serial in that case — it
+   uses the gate's own recorded classification instead
+   (`Importer.swift:561`).
+2. **Attempts a bounded local import.** It resolves a `breenix-runs` binary
+   (`$BREENIX_RUNS_BIN`, then `PATH`, then the repo's own release build) and,
+   if one is executable, runs `breenix-runs import <dir>` in its own process
+   group with a timeout — `$BREENIX_RUNS_IMPORT_TIMEOUT` (default 15s),
+   NaN-guarded and clamped to `0.1...60` seconds (the F10 fix). On timeout or
+   an interrupting signal it kills the whole child process group
+   (`os.killpg`) rather than leaving an orphaned importer running past the
+   gate's own exit. A missing or non-executable binary is not an error: the
+   sidecar has already been written, so the run can be imported later by
+   hand even if this opportunistic import step could not run.
+
+**UUID-based gate-run identity.** The other 2 import paths (a preserved-failure
+directory, a loose serials directory) each derive their store ID by hashing the
+first serial's bytes and source path (`RunManifest.makeImportedID`), because
+no other identifier is available to name the run. When a `run-inspector.json`
+sidecar is present, `Importer.importRun` uses `"gate-" + provenance.id` instead
+(`Importer.swift:521-522`) — the UUID the gate itself minted at the moment
+its verdict became final, not a hash of any file's contents. Re-running the
+same gate boot's import (the opportunistic in-gate attempt, then a later
+manual `breenix-runs import` of the same directory) resolves to the same ID
+either way and the second import is the existing already-existed no-op
+(`Importer.swift:523-527`) rather than a duplicate row, without depending on
+serial bytes being byte-identical across the two reads.
+
 ---
 
 ## 5. Launcher

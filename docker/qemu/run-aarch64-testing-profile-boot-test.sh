@@ -29,6 +29,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
+BREENIX_RUNS_GATE_ARGV=("$0" "$@")
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
 # host-wide lock in lib/qemu-host-lock.sh, so at most one aarch64 QEMU is
@@ -233,6 +235,7 @@ for i in $(seq 1 "$ITERATIONS"); do
     # freed by the trap below. Backgrounding it and waiting on the captured
     # PID makes it trackable the same way each other native launch in this
     # lock's family already is.
+    INSPECTOR_START_MS="$(date +%s)000" || INSPECTOR_START_MS=""
     timeout "$BOOT_SECONDS" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -250,12 +253,20 @@ for i in $(seq 1 "$ITERATIONS"); do
     wait "$QEMU_PID" 2>/dev/null || true
     qemu_host_lock_release
 
+    INSPECTOR_VERDICT=PASS
+    INSPECTOR_STATUS=0
+    INSPECTOR_LOCKUPS_BEFORE=$LOCKUP_728
     if ! classify_serial "$SERIAL" "Testing boot $i"; then
+        INSPECTOR_VERDICT=FAIL
+        INSPECTOR_STATUS=1
         mkdir -p "$FAILURE_ROOT"
         FAILED_COPY="$FAILURE_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-boot$i.txt"
         cp "$SERIAL" "$FAILED_COPY"
         echo "       preserved serial: $FAILED_COPY"
+    elif [ "$LOCKUP_728" -gt "$INSPECTOR_LOCKUPS_BEFORE" ]; then
+        INSPECTOR_VERDICT=PASS-WITH-ATTRIBUTED-LOCKUP
     fi
+    breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 testing "$INSPECTOR_VERDICT" "$INSPECTOR_STATUS" "$INSPECTOR_START_MS" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
 done
 
 print_summary

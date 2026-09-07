@@ -196,6 +196,8 @@ set -euo pipefail
 set -E
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
+BREENIX_RUNS_GATE_ARGV=("$0" "$@")
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
 # BXCAP capture (if one is open) before this gate's own kill line runs. This
@@ -914,6 +916,7 @@ report_gate_failure() {
         echo "--- serial tail (last 60 lines per file) ---"
         tail -n 60 "$OUTPUT_DIR"/serial_*.txt
     fi
+    breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 prod FAIL "$exit_code" "${HOST_MS_START:-}" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
     exit "$exit_code"
 }
 trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
@@ -1541,3 +1544,9 @@ print_observed_values
 echo "  console prompt count over ${LIVENESS_WINDOW_SECONDS}s: $PROMPT_BEFORE -> $PROMPT_AFTER"
 echo "  (informational) total serial bytes at exit: $(serial_bytes)"
 printf '%s\n' "$CAPTURE_LINES"
+
+INSPECTOR_VERDICT=PASS
+if [ -n "$X86_PROD_PROFILE_EXTRA_FEATURES" ]; then
+    INSPECTOR_VERDICT="PASS (feature-mutated build, features=$X86_PROD_PROFILE_EXTRA_FEATURES; NOT the shipped profile)"
+fi
+breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 prod "$INSPECTOR_VERDICT" 0 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :

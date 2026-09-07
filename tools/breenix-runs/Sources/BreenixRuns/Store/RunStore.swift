@@ -4,6 +4,7 @@ import Foundation
 public enum RunStoreError: Error, Equatable {
     case runNotFound(String)
     case renameFailed(errno: Int32)
+    case lockFailed(errno: Int32)
 }
 
 public struct RunStore: Sendable {
@@ -14,6 +15,9 @@ public struct RunStore: Sendable {
     }
 
     public static func defaultStore() -> RunStore {
+        if let path = ProcessInfo.processInfo.environment["BREENIX_RUNS_STORE"], !path.isEmpty {
+            return RunStore(root: URL(fileURLWithPath: path))
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return RunStore(root: base.appendingPathComponent("BreenixRuns", isDirectory: true))
     }
@@ -58,6 +62,39 @@ public struct RunStore: Sendable {
         return chunks.joined(separator: "\n")
     }
 
+    /// Shared facts projection for the CLI and app, with per-file line identity.
+    public func readBootFacts(manifest: RunManifest) throws -> [BootFactsRecord] {
+        var records: [BootFactsRecord] = []
+        for serial in manifest.serials {
+            let url = serial.path.hasPrefix("/") ? URL(fileURLWithPath: serial.path)
+                : runDirectory(id: manifest.id).appendingPathComponent(serial.path)
+            let text = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+            records += BootFactsParser.parse(text: text).map { record in
+                var record = record
+                record.sourceFile = serial.name
+                return record
+            }
+        }
+        return records + (try readGateFacts(manifest: manifest))
+    }
+
+    public func readGateFacts(manifest: RunManifest) throws -> [BootFactsRecord] {
+        var seen = Set<String>()
+        var records: [BootFactsRecord] = []
+        for capture in manifest.captures where capture.name == "gate-stdout.txt"
+            || capture.name == "gate_boot_facts.txt" || capture.name.hasSuffix(".facts.txt") {
+            let text = String(decoding: try Data(contentsOf: captureURL(capture, manifest: manifest)), as: UTF8.self)
+            for var record in BootFactsParser.parse(text: text) {
+                let key = "boot=\(record.boot)\n" + record.fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
+                if seen.insert(key).inserted {
+                    record.sourceFile = capture.name
+                    records.append(record)
+                }
+            }
+        }
+        return records
+    }
+
     public func prepareRoot() throws {
         try FileManager.default.createDirectory(at: runsDirectory, withIntermediateDirectories: true)
         let schemaURL = root.appendingPathComponent("schema-version")
@@ -73,11 +110,13 @@ public struct RunStore: Sendable {
         return directory
     }
 
-    public func writeManifest(_ manifest: RunManifest) throws {
-        _ = try createRunDirectory(id: manifest.id)
-        let data = try RunStore.encoder.encode(manifest)
-        try writeAtomically(data: data, to: manifestURL(id: manifest.id))
-        _ = try rebuildIndex()
+    public func writeManifest(_ manifest: RunManifest, rebuildIndex: Bool = true) throws {
+        try withWriterLock {
+            _ = try createRunDirectory(id: manifest.id)
+            let data = try RunStore.encoder.encode(manifest)
+            try writeAtomically(data: data, to: manifestURL(id: manifest.id))
+            if rebuildIndex { _ = try rebuildIndexUnlocked() }
+        }
     }
 
     public func readManifest(id: String) throws -> RunManifest {
@@ -97,6 +136,20 @@ public struct RunStore: Sendable {
 
     @discardableResult
     public func rebuildIndex() throws -> RunIndex {
+        try withWriterLock { try rebuildIndexUnlocked() }
+    }
+
+    private func withWriterLock<T>(_ body: () throws -> T) throws -> T {
+        try prepareRoot()
+        let fd = open(root.appendingPathComponent(".writer-lock").path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw RunStoreError.lockFailed(errno: errno) }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { throw RunStoreError.lockFailed(errno: errno) }
+        defer { _ = flock(fd, LOCK_UN) }
+        return try body()
+    }
+
+    private func rebuildIndexUnlocked() throws -> RunIndex {
         try prepareRoot()
         let runDirectories = try FileManager.default.contentsOfDirectory(
             at: runsDirectory,
@@ -162,8 +215,9 @@ public struct RunStore: Sendable {
 
     public func writeAtomically(data: Data, to finalURL: URL) throws {
         let tmpURL = finalURL.deletingLastPathComponent()
-            .appendingPathComponent(finalURL.lastPathComponent + ".tmp")
+            .appendingPathComponent(finalURL.lastPathComponent + "." + UUID().uuidString + ".tmp")
         try FileManager.default.createDirectory(at: finalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
         try data.write(to: tmpURL, options: [.atomic])
         if rename(tmpURL.path, finalURL.path) != 0 {
             throw RunStoreError.renameFailed(errno: errno)

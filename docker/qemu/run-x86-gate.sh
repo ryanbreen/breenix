@@ -53,6 +53,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
+BREENIX_RUNS_GATE_ARGV=("$0" "$@")
 DEFAULT_REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 COUNT="${1:-1}"
@@ -159,6 +161,7 @@ for i in $(seq 1 "$COUNT"); do
   # host port 2323; disabling networking avoids lingering port state between
   # runs and is not needed for these boot markers.
   # claim-lint:ok: src/bin/qemu-uefi.rs resolves the hostfwd source.
+  INSPECTOR_START_MS="$(date +%s)000" || INSPECTOR_START_MS=""
   BREENIX_NET_MODE=none timeout "$TIMEOUT_SECS" ./target/release/qemu-uefi \
     -serial file:"$OUTDIR/serial_user.log" \
     -serial file:"$OUTDIR/serial_kernel.log" \
@@ -266,6 +269,8 @@ for i in $(seq 1 "$COUNT"); do
     echo "  Test $i: PASS"
     echo "  Device census: $pci_census_line"
     PASS=$((PASS+1))
+    INSPECTOR_VERDICT=PASS
+    INSPECTOR_STATUS=0
   else
     combined_reason="$verdict_reason"
     if [ "$census_ok" != true ]; then
@@ -277,7 +282,10 @@ for i in $(seq 1 "$COUNT"); do
     fi
     echo "  Test $i: FAIL ($combined_reason)"
     FAIL=$((FAIL+1))
+    INSPECTOR_VERDICT=FAIL
+    INSPECTOR_STATUS=1
   fi
+  breenix_runs_import_nonfatal "$OUTDIR" x86_64 gate "$INSPECTOR_VERDICT" "$INSPECTOR_STATUS" "$INSPECTOR_START_MS" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
 done
 BOOT_SECS=$((SECONDS - BOOT_START))
 TOTAL_SECS=$((SECONDS - TOTAL_START))

@@ -14,9 +14,11 @@ public enum ImporterError: Error, Equatable, CustomStringConvertible {
 public struct ImportedRun: Equatable {
     public var id: String
     public var sourcePath: String
+    public var alreadyExisted: Bool
 
-    public init(id: String, sourcePath: String) {
+    public init(id: String, sourcePath: String, alreadyExisted: Bool = false) {
         self.id = id
+        self.alreadyExisted = alreadyExisted
         self.sourcePath = sourcePath
     }
 }
@@ -81,6 +83,17 @@ public struct Importer {
     }
 
     public func importPath(_ url: URL) throws -> ImportPathResult {
+        do {
+            let result = try importPathContents(url)
+            _ = try store.rebuildIndex()
+            return result
+        } catch {
+            _ = try? store.rebuildIndex()
+            throw error
+        }
+    }
+
+    private func importPathContents(_ url: URL) throws -> ImportPathResult {
         let sourceURL = url.standardizedFileURL
         guard fileManager.fileExists(atPath: sourceURL.path),
               fileManager.isReadableFile(atPath: sourceURL.path) else {
@@ -91,6 +104,12 @@ public struct Importer {
         _ = fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
         if !isDirectory.boolValue {
             return try importSingleFile(sourceURL)
+        }
+
+        if let provenance = try GateProvenance.read(from: sourceURL) {
+            var result = ImportPathResult(sourcePath: sourceURL.path)
+            try importGateIteration(sourceURL, info: GateInfo(arch: provenance.arch, profile: provenance.profile), into: &result)
+            return result
         }
 
         if isPreservedFailureContainer(sourceURL) {
@@ -211,6 +230,13 @@ public struct Importer {
         }
 
         let firstSerialData = try Data(contentsOf: serials[0].url)
+        if try GateProvenance.read(from: directory) != nil {
+            for index in preservedFailuresBySerialData[firstSerialData] ?? [] {
+                consumedPreservedFailures.insert(index)
+            }
+            try importGateIteration(directory, info: info, into: &result)
+            return
+        }
         if let matchingIndexes = preservedFailuresBySerialData[firstSerialData],
            let matchingIndex = matchingIndexes.first(where: { !consumedPreservedFailures.contains($0) }) {
             consumedPreservedFailures.insert(matchingIndex)
@@ -491,7 +517,14 @@ public struct Importer {
             return
         }
         let firstSerialData = try preloadedFirstSerialData ?? Data(contentsOf: firstSerial.url)
-        let id = RunManifest.makeImportedID(serialData: firstSerialData, sourcePath: sourceURL.standardizedFileURL.path)
+        let provenance = try GateProvenance.read(from: sourceURL)
+        let id = provenance.map { "gate-" + $0.id } ??
+            RunManifest.makeImportedID(serialData: firstSerialData, sourcePath: sourceURL.standardizedFileURL.path)
+        if fileManager.fileExists(atPath: store.manifestURL(id: id).path),
+           (try? store.readManifest(id: id)) != nil {
+            result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path, alreadyExisted: true))
+            return
+        }
         let runDirectory = try store.createRunDirectory(id: id)
 
         var serialRefs: [SerialRef] = []
@@ -518,24 +551,24 @@ public struct Importer {
         let firstIndex = try preloadedFirstSerialIndex ?? scanner.scan(data: firstSerialData)
         let manifest = RunManifest(
             id: id,
-            startedAt: startedAt,
-            endedAt: nil,
-            arch: arch,
-            profile: profile,
+            startedAt: provenance?.startedAt ?? startedAt,
+            endedAt: provenance?.endedAt,
+            arch: provenance?.arch ?? arch,
+            profile: provenance?.profile ?? profile,
             launcher: .imported,
             kernel: KernelIdentity(buildID: extractBuildID(from: firstIndex)),
             host: nil,
-            verdict: verdict,
-            verdictSource: .imported,
+            verdict: provenance?.projectedVerdict ?? verdict,
+            verdictSource: provenance.map { .gateScript(command: $0.command, exitCode: $0.exitCode) } ?? .imported,
             serials: serialRefs,
             captures: captureRefs,
-            command: [],
+            command: provenance?.command ?? [],
             env: [:],
             tags: ["imported"],
             notes: nil
         )
 
-        try store.writeManifest(manifest)
+        try store.writeManifest(manifest, rebuildIndex: false)
         result.imported.append(ImportedRun(id: id, sourcePath: sourceURL.path))
     }
 
@@ -570,6 +603,9 @@ public struct Importer {
     }
 
     private func gateInfo(for directory: URL) -> GateInfo? {
+        if let provenance = try? GateProvenance.read(from: directory) {
+            return GateInfo(arch: provenance.arch, profile: provenance.profile)
+        }
         let name = directory.lastPathComponent
         if hasIntegerSuffix(name, after: "breenix_aarch64_strict_") {
             return GateInfo(arch: .aarch64, profile: "strict")
@@ -604,7 +640,8 @@ public struct Importer {
         try directoryContents(of: directory).filter { url in
             isRegularFile(url)
                 && !url.lastPathComponent.hasPrefix("serial")
-                && ["txt", "log"].contains(url.pathExtension)
+                && (["txt", "log"].contains(url.pathExtension) || url.lastPathComponent == "run-inspector.json")
+                && url.lastPathComponent != "inspector-import.log"
         }.sorted(by: urlPathLessThan).map {
             CaptureSource(url: $0, destinationName: $0.lastPathComponent)
         }

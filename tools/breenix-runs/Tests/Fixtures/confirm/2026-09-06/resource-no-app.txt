@@ -1,0 +1,22 @@
+[0/1] Planning build
+Building for debugging...
+[0/6] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.12s)
+Test Suite 'Selected tests' started at 2026-09-06 18:20:44.715.
+Test Suite 'breenix-runsPackageTests.xctest' started at 2026-09-06 18:20:44.715.
+Test Suite 'PackagedResourceTests' started at 2026-09-06 18:20:44.715.
+Test Case '-[BreenixRunsTests.PackagedResourceTests testPackagedExecutableResolvesItsOwnCatalogs]' started.
+/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ri/wt/tools/breenix-runs/Tests/BreenixRunsTests/PackagedResourceTests.swift:16: -[BreenixRunsTests.PackagedResourceTests testPackagedExecutableResolvesItsOwnCatalogs] : Test skipped - Packaged app absent; run make app to exercise shipped resource resolution
+Test Case '-[BreenixRunsTests.PackagedResourceTests testPackagedExecutableResolvesItsOwnCatalogs]' skipped (0.001 seconds).
+Test Case '-[BreenixRunsTests.PackagedResourceTests testSwiftPMCatalogResolution]' started.
+Test Case '-[BreenixRunsTests.PackagedResourceTests testSwiftPMCatalogResolution]' passed (0.001 seconds).
+Test Suite 'PackagedResourceTests' passed at 2026-09-06 18:20:44.718.
+	 Executed 2 tests, with 1 test skipped and 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'breenix-runsPackageTests.xctest' passed at 2026-09-06 18:20:44.718.
+	 Executed 2 tests, with 1 test skipped and 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'Selected tests' passed at 2026-09-06 18:20:44.718.
+	 Executed 2 tests, with 1 test skipped and 0 failures (0 unexpected) in 0.002 (0.003) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

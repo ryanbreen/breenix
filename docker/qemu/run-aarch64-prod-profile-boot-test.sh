@@ -13,6 +13,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
+BREENIX_RUNS_GATE_ARGV=("$0" "$@")
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # #826/R181: this gate's qemu-system-aarch64 boot(s) run behind the
@@ -446,6 +448,9 @@ cleanup() {
         echo "Preserved failing serial: $failure_dir/serial.txt"
         print_observed_values "$failure_dir/serial.txt"
     fi
+    local inspector_verdict=FAIL
+    [ "$status" -ne 0 ] || inspector_verdict=PASS
+    breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 prod "$inspector_verdict" "$status" "${PROD_HOST_MS_START:-}" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
     exit "$status"
 }
 if [ -z "$SCORE_ONLY_SERIAL" ]; then

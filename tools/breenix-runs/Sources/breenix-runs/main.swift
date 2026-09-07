@@ -30,6 +30,8 @@ struct FactsJSONEnvelope: Codable {
     var arch: Arch
     var profile: String
     var host: HostFactsTrace?
+    var kernel: KernelIdentity
+    var gateRecords: [BootFactsRecord]
 }
 
 struct ShowArguments {
@@ -43,10 +45,24 @@ func usage() -> String {
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
       breenix-runs run x86 [gate] [--boots N] [--sha SHA] [--mode kthread|full] [--host HOST] [--dry-run] [--tag T] [--no-store]
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
+      breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
       breenix-runs facts <run-id|latest> [--json]
       breenix-runs compare <run-id-a|latest|latest-fail> <run-id-b|latest|latest-fail>
       breenix-runs tail [<run-id|latest|latest-fail>]
       breenix-runs import <path>...
+
+    Read existing evidence first (recursive import accepts serial directories):
+      breenix-runs import <dir>
+      breenix-runs show latest --messages
+
+    Selectors: exact run ID, latest (newest start time), latest-fail (newest failure).
+    Default store: ~/Library/Application Support/BreenixRuns
+    Override for CLI and app: BREENIX_RUNS_STORE=/absolute/store/path
+    show defaults to subsystems; combine flags to select panes.
+    run arm launches local QEMU; run x86 supports the remote gate profile only.
+    --no-store avoids persistence; --dry-run prints the x86 remote plan.
+    import preserves gate metadata when present; loose serial verdicts remain unknown.
+    Use --help or <command> --help to print this usage without accessing the store.
     """
 }
 
@@ -129,7 +145,7 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
                 throw CLIError(description: "unknown run x86 flag \(arg)")
             }
             guard let profile = X86Profile(rawValue: arg) else {
-                throw CLIError(description: "x86 \(arg) is not implemented in PR-5")
+                throw CLIError(description: "x86 \(arg) is not supported (supported x86 profile: gate)")
             }
             guard !parsed.profileWasSet else {
                 throw CLIError(description: "run x86 accepts exactly one profile, got both \(parsed.profile.rawValue) and \(profile.rawValue)")
@@ -222,17 +238,18 @@ func loadManifest(selector: String, store: RunStore) throws -> RunManifest {
     return try store.readManifest(id: selector)
 }
 
-func printJSONFacts(_ manifest: RunManifest) throws {
-    let envelope = FactsJSONEnvelope(id: manifest.id, arch: manifest.arch, profile: manifest.profile, host: manifest.host)
+func printJSONFacts(_ manifest: RunManifest, records: [BootFactsRecord]) throws {
+    let envelope = FactsJSONEnvelope(id: manifest.id, arch: manifest.arch, profile: manifest.profile, host: manifest.host, kernel: manifest.kernel, gateRecords: records)
     let data = try RunStore.encoder.encode(envelope)
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
-func printFactsBlock(manifest: RunManifest, manifestPath: URL?, includeBootFactsNotice: Bool) {
+func printFactsBlock(manifest: RunManifest, manifestPath: URL?, records: [BootFactsRecord] = []) {
     print("Run: \(manifest.id)")
     print("Arch: \(manifest.arch.rawValue)")
     print("Profile: \(manifest.profile)")
+    print("Kernel image SHA256: \(manifest.kernel.imageSHA256 ?? "unavailable (not captured)")")
     print("Kernel BUILD_ID: \(manifest.kernel.buildID ?? "none")")
     print("Git SHA: \(manifest.kernel.gitSHA ?? manifest.host?.start.gitSHA ?? "unknown")")
     print("Git dirty: \(formatBool(manifest.kernel.gitDirty ?? manifest.host?.start.gitDirty))")
@@ -248,9 +265,13 @@ func printFactsBlock(manifest: RunManifest, manifestPath: URL?, includeBootFacts
         print("Host facts trace: unknown")
     }
 
-    if includeBootFactsNotice {
-        print("")
-        print("[GATE_BOOT_FACTS] record ingestion from the serial is not wired up yet (lands in PR-7 BootFactsParser).")
+    print("")
+    print("Gate records (separate from Inspector host samples): \(records.count)")
+    for record in records {
+        print("  \(record.sourceFile ?? "unknown source"):L\(record.lineNumber.map(String.init) ?? "?") boot=\(record.boot)")
+        for key in record.fields.keys.sorted() {
+            print("    \(key)=\(record.fields[key]!)")
+        }
     }
 
     if let manifestPath {
@@ -292,7 +313,7 @@ func printSample(_ label: String, _ sample: HostFactsSample) {
     print("  qemu version: \(sample.qemuVersion ?? "unknown")")
     print("  git sha: \(sample.gitSHA ?? "unknown")")
     print("  git dirty: \(formatBool(sample.gitDirty))")
-    print("  clock ratio: not sampled in PR-1")
+    print("  clock ratio: unavailable (not sampled)")
 }
 
 func printDeltas(start: HostFactsSample, end: HostFactsSample) {
@@ -348,6 +369,12 @@ func main() -> Int32 {
             throw CLIError(description: usage())
         }
 
+        let commands = ["run", "show", "facts", "compare", "tail", "import", "list"]
+        if subcommand == "--help" || subcommand == "-h"
+            || (commands.contains(subcommand) && args.dropFirst().contains(where: { $0 == "--help" || $0 == "-h" })) {
+            print(usage())
+            return 0
+        }
         let store = RunStore.defaultStore()
         switch subcommand {
         case "run":
@@ -366,7 +393,8 @@ func main() -> Int32 {
                     persist: runArgs.persist
                 ))
                 print("")
-                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, includeBootFactsNotice: false)
+                let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
+                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)
                 // A preflight refusal (LocalGateLauncher.bootTestsPreflightRefusalMarker)
                 // never ran a boot, but it is still not success: an unmapped verdict
                 // here fell through to `return 0`, which reported the CLI's exit
@@ -382,7 +410,7 @@ func main() -> Int32 {
             case "x86":
                 let runArgs = try parseRunX86(args.dropFirst(2))
                 guard runArgs.host == "beast" else {
-                    throw CLIError(description: "unsupported x86 host \(runArgs.host); PR-5 supports only beast and does not fall back to local TCG on this Mac")
+                    throw CLIError(description: "unsupported x86 host \(runArgs.host); this command supports only beast and does not fall back to local TCG on this Mac")
                 }
                 let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
                 let runner = RealProcessRunner()
@@ -415,7 +443,8 @@ func main() -> Int32 {
 
                 let result = try launcher.runX86(options: options)
                 print("")
-                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, includeBootFactsNotice: false)
+                let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
+                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)
                 switch result.manifest.verdict {
                 case .gateScript(_, let exitCode):
                     return Int32(exitCode)
@@ -426,13 +455,18 @@ func main() -> Int32 {
                 throw CLIError(description: "run \(args[1]) is not a recognized architecture (supported: arm, x86)")
             }
 
+        case "list":
+            try runList(args.dropFirst(), store: store)
+            return 0
+
         case "facts":
             let parsed = try parseFacts(args.dropFirst())
             let manifest = try loadManifest(selector: parsed.selector, store: store)
+            let records = try store.readBootFacts(manifest: manifest)
             if parsed.json {
-                try printJSONFacts(manifest)
+                try printJSONFacts(manifest, records: records)
             } else {
-                printFactsBlock(manifest: manifest, manifestPath: store.manifestURL(id: manifest.id), includeBootFactsNotice: true)
+                printFactsBlock(manifest: manifest, manifestPath: store.manifestURL(id: manifest.id), records: records)
             }
             return 0
 
@@ -458,7 +492,7 @@ func main() -> Int32 {
             return 0
 
         default:
-            throw CLIError(description: "\(subcommand) is not implemented in PR-1\n\(usage())")
+            throw CLIError(description: "\(subcommand) is not a supported command\n\(usage())")
         }
     } catch {
         FileHandle.standardError.write(Data("error: \(error)\n".utf8))
