@@ -1,3 +1,14 @@
 Serial archive audit: lane serial.txt files have byte-identical archived copies.
-Accepted source SHA256 manifest matches current source.
+Accepted source SHA256 manifest matches source as of implementation commit
+113d1f80 (the revision the manifested ARM oracle-matrix and mutation boots
+below were run against); it is a snapshot of that commit, not a standing
+claim about branch tip. Two later commits (5263e0e4 kernel/src/test_exec.rs,
+51eaa3e6 docker/qemu/run-blocking-io-oracle-gate.sh) and the "Fix pass: P-2"
+round-document section (kernel/src/ipc/pipe.rs, kernel/src/process/process.rs,
+kernel/src/task/waitqueue.rs, tests/pipe_fifo_blocking_structure.rs) change
+six of the manifested files in total, so `shasum -a 256 -c` against this
+manifest at HEAD correctly reports those six as mismatched -- that is not a
+manifest defect. The P-2 section's own "Gates run (fix pass)" table is the
+current verification for the four files it changes; this manifest is not
+re-verified against them.
 Mutation pipe.rs, blocking_io.rs and pipe_fifo_blocking_oracle.rs match accepted source byte-for-byte.
