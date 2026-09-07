@@ -31,6 +31,23 @@ final class ImporterTests: XCTestCase {
         XCTAssertEqual(try store.readIndex().runs.count, 0)
     }
 
+    func testImportRejectsSidecarThatDeclaresManifestJsonAsEvidence() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, evidence, initial) = try declaredFixture(root: root)
+        var provenance = initial
+        provenance.captures.append("manifest.json")
+        try Data("ORIGINAL CAPTURE BYTES - REAL EVIDENCE\n".utf8)
+            .write(to: evidence.appendingPathComponent("manifest.json"))
+        try RunStore.encoder.encode(provenance).write(to: evidence.appendingPathComponent("run-inspector.json"))
+
+        XCTAssertThrowsError(try Importer(store: store).importPath(evidence))
+        XCTAssertEqual(try store.readIndex().runs.count, 0)
+
+        let stillOriginal = try Data(contentsOf: evidence.appendingPathComponent("manifest.json"))
+        XCTAssertEqual(String(decoding: stillOriginal, as: UTF8.self), "ORIGINAL CAPTURE BYTES - REAL EVIDENCE\n")
+    }
+
     func testImportOfDirectoryScanNeverPicksUpAFileTheSidecarDidNotDeclare() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

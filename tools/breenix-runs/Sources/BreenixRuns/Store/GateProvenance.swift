@@ -22,6 +22,11 @@ struct GateProvenance: Codable {
               value.endedAt >= value.startedAt, !value.command.isEmpty,
               (value.serials + value.captures).allSatisfy({
                   !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/")
+                      // "manifest.json" is RunStore's own reserved filename
+                      // (RunStore.manifestURL) -- a declared evidence file with this
+                      // name would be silently destroyed by, and would corrupt the
+                      // byte count reported by, the run's real manifest.json write.
+                      && $0 != "manifest.json"
               }) else {
             throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Invalid gate provenance at \(url.path)"))
         }
