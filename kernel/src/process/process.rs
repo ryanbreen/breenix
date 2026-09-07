@@ -548,10 +548,14 @@ impl Process {
                 }
                 match fd_entry.kind {
                     FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
+                        // #813 PR-A: cannot safely deliver under fault-caller PM; see #919
+                        // and docs/planning/green-program/ipc/813-PR-A-2026-09-07.md.
+                        let _should_notify = buffer.lock().close_read();
                     }
                     FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
+                        // #813 PR-A: cannot safely deliver under fault-caller PM; see #919
+                        // and docs/planning/green-program/ipc/813-PR-A-2026-09-07.md.
+                        let _should_notify = buffer.lock().close_write();
                     }
                     FdKind::TcpListener(port) => {
                         crate::net::tcp::tcp_listener_ref_dec(port);
@@ -579,11 +583,15 @@ impl Process {
                     }
                     FdKind::FifoRead(path, buffer) => {
                         crate::ipc::fifo::close_fifo_read(&path);
-                        buffer.lock().close_read();
+                        // #813 PR-A: cannot safely deliver under fault-caller PM; see #919
+                        // and docs/planning/green-program/ipc/813-PR-A-2026-09-07.md.
+                        let _should_notify = buffer.lock().close_read();
                     }
                     FdKind::FifoWrite(path, buffer) => {
                         crate::ipc::fifo::close_fifo_write(&path);
-                        buffer.lock().close_write();
+                        // #813 PR-A: cannot safely deliver under fault-caller PM; see #919
+                        // and docs/planning/green-program/ipc/813-PR-A-2026-09-07.md.
+                        let _should_notify = buffer.lock().close_write();
                     }
                     _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
                 }
@@ -606,10 +614,14 @@ impl Process {
                 }
                 match fd_entry.kind {
                     FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
+                        // #813 PR-A: cannot safely deliver under fault-caller PM; see #919
+                        // and docs/planning/green-program/ipc/813-PR-A-2026-09-07.md.
+                        let _should_notify = buffer.lock().close_read();
                     }
                     FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
+                        // #813 PR-A: cannot safely deliver under fault-caller PM; see #919
+                        // and docs/planning/green-program/ipc/813-PR-A-2026-09-07.md.
+                        let _should_notify = buffer.lock().close_write();
                     }
                     FdKind::TcpListener(port) => {
                         crate::net::tcp::tcp_listener_ref_dec(port);
@@ -637,11 +649,15 @@ impl Process {
                     }
                     FdKind::FifoRead(path, buffer) => {
                         crate::ipc::fifo::close_fifo_read(&path);
-                        buffer.lock().close_read();
+                        // #813 PR-A: cannot safely deliver under fault-caller PM; see #919
+                        // and docs/planning/green-program/ipc/813-PR-A-2026-09-07.md.
+                        let _should_notify = buffer.lock().close_read();
                     }
                     FdKind::FifoWrite(path, buffer) => {
                         crate::ipc::fifo::close_fifo_write(&path);
-                        buffer.lock().close_write();
+                        // #813 PR-A: cannot safely deliver under fault-caller PM; see #919
+                        // and docs/planning/green-program/ipc/813-PR-A-2026-09-07.md.
+                        let _should_notify = buffer.lock().close_write();
                     }
                     _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
                 }

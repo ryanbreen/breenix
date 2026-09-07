@@ -1,0 +1,11 @@
+v2-mutation-drain exit 1
+v2-accepted-after-drain exit 0
+v2-mutation-peer-close exit 1
+v2-accepted-after-peer-close exit 0
+v2-mutation-blocking-eagain exit 1
+v2-accepted-after-blocking-eagain exit 0
+v2-mutation-success-without-copy exit 1
+v2-accepted-after-success-without-copy exit 0
+v2-mutation-ignored-handler exit 1
+v2-accepted-after-ignored-handler exit 0
+All revised-oracle runtime mutation pairs completed

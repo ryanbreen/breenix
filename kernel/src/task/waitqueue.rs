@@ -248,6 +248,12 @@ impl WaitQueueHead {
         self.with_waiters(|waiters| waiters.len())
     }
 
+    /// Read-only membership for the boot-only blocking I/O observer.
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn contains_waiter(&self, tid: u64) -> bool {
+        self.with_waiters(|waiters| waiters.iter().any(|waiter| waiter.tid == tid))
+    }
+
     #[cfg(test)]
     fn contains_waiter_for_test(&self, tid: u64) -> bool {
         self.with_waiters(|waiters| waiters.iter().any(|waiter| waiter.tid == tid))

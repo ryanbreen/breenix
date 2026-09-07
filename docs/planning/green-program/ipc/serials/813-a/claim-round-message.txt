@@ -1,0 +1,1 @@
+claim-lint: clean commit message (.gate-tmp/round-message.txt).

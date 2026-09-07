@@ -79,7 +79,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
 
             // Check for space available
             if (events & events::POLLOUT) != 0 {
-                if pipe.space() > 0 && pipe.has_readers() {
+                if pipe.has_write_space(1) {
                     revents |= events::POLLOUT;
                 }
             }
@@ -100,7 +100,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
         }
         FdKind::FifoWrite(_, buffer) => {
             let pipe = buffer.lock();
-            if (events & events::POLLOUT) != 0 && pipe.space() > 0 && pipe.has_readers() {
+            if (events & events::POLLOUT) != 0 && pipe.has_write_space(1) {
                 revents |= events::POLLOUT;
             }
             if !pipe.has_readers() {

@@ -1,0 +1,119 @@
+//! Boot-only, read-only witnesses for #813. No query performs a wake or transfer.
+use super::{errno, userptr, SyscallResult};
+use crate::ipc::fd::FdKind;
+use alloc::sync::Arc;
+
+pub const QUERY: u64 = 0xB8130001;
+pub const FIFO_FIXTURE: u64 = 0xB8130002;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Witness {
+    tid: u64,
+    target_fd: u64,
+    kind: u64,
+    identity: u64,
+    queued: u64,
+    blocked: u64,
+    blocked_in_syscall: u64,
+    occupancy: u64,
+    capacity: u64,
+    atomic_limit: u64,
+}
+
+pub fn dispatch(fd: u64, request: u64, arg: u64) -> SyscallResult {
+    let result = if request == FIFO_FIXTURE {
+        fixture(fd, arg)
+    } else {
+        query(fd, arg)
+    };
+    match result {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(error) => SyscallResult::Err(error),
+    }
+}
+
+fn fixture(fd: u64, arg: u64) -> Result<(), u64> {
+    // A valid caller-owned descriptor is required even for fixture setup.
+    let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH as u64)?;
+    let path = userptr::copy_cstr_from_user(arg)?;
+    if !path.starts_with("/tmp/pipe_fifo_oracle_")
+        || path.len() > 128
+        || path.contains("..")
+        || fd > i32::MAX as u64
+    {
+        return Err(errno::EINVAL as u64);
+    }
+    {
+        let guard = crate::process::manager();
+        let manager = guard.as_ref().ok_or(errno::ESRCH as u64)?;
+        let (_, caller) = manager
+            .find_process_by_thread(tid)
+            .ok_or(errno::ESRCH as u64)?;
+        caller.fd_table.get(fd as i32).ok_or(errno::EBADF as u64)?;
+    }
+    crate::ipc::fifo::FIFO_REGISTRY
+        .create(&path, 0o600)
+        .map_err(|e| e as u64)
+}
+
+fn query(fd: u64, arg: u64) -> Result<(), u64> {
+    if arg % core::mem::align_of::<Witness>() as u64 != 0 {
+        return Err(errno::EINVAL as u64);
+    }
+    let mut witness = userptr::copy_from_user(arg as *const Witness)?;
+    if fd > i32::MAX as u64 || witness.target_fd > i32::MAX as u64 {
+        return Err(errno::EBADF as u64);
+    }
+    let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH as u64)?;
+    let (buffer, kind) = {
+        let guard = crate::process::manager();
+        let manager = guard.as_ref().ok_or(errno::ESRCH as u64)?;
+        let (caller_pid, caller) = manager
+            .find_process_by_thread(tid)
+            .ok_or(errno::ESRCH as u64)?;
+        let (target_pid, target) = manager
+            .find_process_by_thread(witness.tid)
+            .ok_or(errno::ESRCH as u64)?;
+        if target_pid != caller_pid && target.parent != Some(caller_pid) {
+            return Err(errno::EPERM as u64);
+        }
+        let own = caller.fd_table.get(fd as i32).ok_or(errno::EBADF as u64)?;
+        let other = target
+            .fd_table
+            .get(witness.target_fd as i32)
+            .ok_or(errno::EBADF as u64)?;
+        let (buffer, kind) = match &own.kind {
+            FdKind::PipeWrite(buffer) => (buffer.clone(), 1),
+            FdKind::FifoWrite(_, buffer) => (buffer.clone(), 2),
+            _ => return Err(errno::EINVAL as u64),
+        };
+        let same = match &other.kind {
+            FdKind::PipeWrite(other) | FdKind::FifoWrite(_, other) => Arc::ptr_eq(&buffer, other),
+            _ => false,
+        };
+        if !same {
+            return Err(errno::EPERM as u64);
+        }
+        (buffer, kind)
+    };
+    witness.kind = kind;
+    witness.identity = Arc::as_ptr(&buffer) as u64;
+    {
+        let buffer = buffer.lock();
+        witness.queued = buffer.write_waiters.contains_waiter(witness.tid) as u64;
+        witness.occupancy = buffer.available() as u64;
+        witness.capacity = crate::ipc::pipe::PIPE_BUF_SIZE as u64;
+        witness.atomic_limit = crate::ipc::pipe::PIPE_BUF as u64;
+    }
+    let (blocked, in_syscall) = crate::task::scheduler::with_thread_mut(witness.tid, |thread| {
+        (
+            thread.state == crate::task::thread::ThreadState::BlockedOnIO,
+            thread.blocked_in_syscall,
+        )
+    })
+    .ok_or(errno::ESRCH as u64)?;
+    witness.blocked = blocked as u64;
+    witness.blocked_in_syscall = in_syscall as u64;
+    userptr::copy_to_user(arg as *mut Witness, &witness)
+}

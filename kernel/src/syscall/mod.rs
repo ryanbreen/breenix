@@ -27,6 +27,9 @@ pub mod handler;
 // - dispatcher is x86_64-only (ARM64 dispatch is in arch_impl/aarch64/syscall_entry.rs)
 // - handlers is shared across architectures (arch-specific parts are cfg-gated internally)
 pub mod audio;
+pub(crate) mod blocking_io;
+#[cfg(feature = "boot_tests")]
+pub mod blocking_io_oracle;
 pub mod clone;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;

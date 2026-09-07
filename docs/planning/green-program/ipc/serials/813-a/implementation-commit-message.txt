@@ -1,0 +1,21 @@
+fix(ipc): defer close delivery and implement blocking pipe/FIFO writes
+
+Release process-manager and object guards before ordinary close notifications,
+including dup2 overwrite, CLOEXEC, and descriptor-capable row destruction.
+Retain the #919 carve-out for new writer notifications in full fault teardown;
+legacy close_write reader-EOF wakes and their pre-existing lock concern remain
+unchanged and outside this repair.
+
+Start FIFO buffers without phantom references and decrement buffer references
+once per descriptor cleanup. Add prepared, interruptible pipe/FIFO blocking
+writes with atomic small requests, retained large-write progress, and explicit
+nonblocking behavior. Share writable readiness with poll.
+
+Add the boot-only observational seam, userspace matrix and reaping supervisor,
+source ratchets, and isolated oracle gate. Install both oracle binaries, check
+the authorized #559 toolchain notice precisely, and observe ignored-signal
+wake/repark behavior through both the result channel and a fresh wait witness.
+ARM evidence is included; x86 runtime verification remains pending on beast.
+
+Co-Authored-By: Ryan Breen <ryan@ryanbreen.com>
+Co-Authored-By: Claude Code <noreply@anthropic.com>

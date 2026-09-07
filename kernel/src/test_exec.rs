@@ -107,6 +107,7 @@ pub fn test_userspace_fork() {
 
 /// Test fork/exec pattern - the standard UNIX way to create processes
 pub fn test_fork_exec() {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     log::info!("=== Testing fork() + exec() pattern ===");
 
     // First create a parent process that will fork
@@ -144,7 +145,7 @@ pub fn test_fork_exec() {
                     let hello_time_elf = &create_minimal_elf_no_bss();
 
                     match crate::process::with_process_manager(|manager| {
-                        manager.exec_process(child_pid, hello_time_elf, Some("hello_time"))
+                        manager.exec_process(child_pid, hello_time_elf, Some("hello_time"), &mut closes)
                     }) {
                         Some(Ok(entry_point)) => {
                             log::info!("✓ exec succeeded! Child process {} now running hello_time at {:#x}", 
@@ -178,6 +179,7 @@ pub fn test_fork_exec() {
 
 /// Test exec directly by creating a process and then calling exec on it
 pub fn test_exec_directly() {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     log::info!("=== Testing exec() directly ===");
 
     // First create a process with fork_test.elf
@@ -212,7 +214,7 @@ pub fn test_exec_directly() {
 
             // Use with_process_manager to properly disable interrupts
             match crate::process::with_process_manager(|manager| {
-                manager.exec_process(pid, hello_time_elf, Some("hello_time"))
+                manager.exec_process(pid, hello_time_elf, Some("hello_time"), &mut closes)
             }) {
                 Some(Ok(entry_point)) => {
                     log::info!("✓ exec succeeded! New entry point: {:#x}", entry_point);
@@ -234,6 +236,7 @@ pub fn test_exec_directly() {
 
 /// Test exec with real userspace programs (fork_test.elf -> hello_time.elf)
 pub fn test_exec_real_userspace() {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     log::info!("=== Testing exec() with Real Userspace Programs ===");
 
     #[cfg(feature = "testing")]
@@ -264,7 +267,7 @@ pub fn test_exec_real_userspace() {
                 // Now exec hello_time.elf into this process
                 log::info!("Executing hello_time.elf into process {}", pid.as_u64());
                 match crate::process::with_process_manager(|manager| {
-                    manager.exec_process(pid, hello_time_elf, Some("hello_time"))
+                    manager.exec_process(pid, hello_time_elf, Some("hello_time"), &mut closes)
                 }) {
                     Some(Ok(entry_point)) => {
                         log::info!("✓ Real userspace exec succeeded! Entry: {:#x}", entry_point);
@@ -323,6 +326,7 @@ pub fn test_exec_real_userspace() {
 
 /// Test exec with a minimal ELF to isolate BSS issues
 pub fn test_exec_minimal() {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     log::info!("=== Testing exec() with minimal ELF ===");
 
     // Create a minimal ELF without BSS segment
@@ -349,7 +353,7 @@ pub fn test_exec_minimal() {
             // Use with_process_manager to properly disable interrupts
             log::info!("Attempting exec with hello_time.elf...");
             match crate::process::with_process_manager(|manager| {
-                manager.exec_process(pid, hello_time_elf, Some("hello_time"))
+                manager.exec_process(pid, hello_time_elf, Some("hello_time"), &mut closes)
             }) {
                 Some(Ok(entry_point)) => {
                     log::info!("✓ Minimal exec test passed! Entry: {:#x}", entry_point);
@@ -370,6 +374,7 @@ pub fn test_exec_minimal() {
 
 /// Test fork/exec pattern as a shell would do it
 pub fn test_shell_fork_exec() {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     log::info!("=== Testing fork/exec as a shell would ===");
 
     // Simulate a shell process that wants to run a command
@@ -419,7 +424,7 @@ pub fn test_shell_fork_exec() {
                     });
 
                     match crate::process::with_process_manager(|manager| {
-                        manager.exec_process(child_pid, command_elf, Some("hello_time"))
+                        manager.exec_process(child_pid, command_elf, Some("hello_time"), &mut closes)
                     }) {
                         Some(Ok(entry_point)) => {
                             log::info!(
@@ -523,6 +528,7 @@ pub fn test_timer_functionality() {
 
 /// Test exec without scheduling - creates process without adding to scheduler
 pub fn test_exec_without_scheduling() {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     log::info!("=== Testing exec() without immediate scheduling ===");
 
     // Create a process without scheduling it
@@ -570,7 +576,7 @@ pub fn test_exec_without_scheduling() {
         log::info!("Calling exec to load target program...");
 
         match crate::process::with_process_manager(|manager| {
-            manager.exec_process(pid, target_elf, Some("hello_time"))
+            manager.exec_process(pid, target_elf, Some("hello_time"), &mut closes)
         }) {
             Some(Ok(entry_point)) => {
                 log::info!("✓ exec succeeded! New entry point: {:#x}", entry_point);

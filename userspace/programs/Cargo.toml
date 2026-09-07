@@ -127,6 +127,14 @@ name = "getdents_test"
 path = "src/getdents_test.rs"
 
 [[bin]]
+name = "pipe_fifo_blocking_oracle"
+path = "src/pipe_fifo_blocking_oracle.rs"
+
+[[bin]]
+name = "pipe_fifo_blocking_supervisor"
+path = "src/pipe_fifo_blocking_supervisor.rs"
+
+[[bin]]
 name = "pipe_test"
 path = "src/pipe_test.rs"
 

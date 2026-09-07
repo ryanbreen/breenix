@@ -1,0 +1,43 @@
+#!/bin/bash
+set -Eeuo pipefail
+export TMPDIR="$PWD/.tmp"
+export BREENIX_GATE_TMP="$PWD/.gate-tmp"
+source docker/qemu/lib/qemu-host-lock.sh
+out="$BREENIX_GATE_TMP/prod-negative"
+mkdir -p "$out"
+image=$(python3 - <<'PY'
+from pathlib import Path
+s=Path('.gate-tmp/oracle-final.log').read_text()
+print(next(x[11:] for x in s.splitlines() if x.startswith('Artifacts: '))+'/oracle.img')
+PY
+)
+cp "$image" "$out/ext2.img"
+kernel="$PWD/target/aarch64-breenix-kernel/release/kernel-aarch64"
+shasum -a 256 "$kernel" > "$out/kernel.sha256"
+qemu_host_lock_acquire qemu-system-aarch64
+qemu-system-aarch64 -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
+ -kernel "$kernel" -display none -no-reboot \
+ -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
+ -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$out/ext2.img" \
+ -device virtio-net-device,netdev=net0 -netdev user,id=net0 \
+ -serial "file:$out/serial.txt" > "$out/qemu.txt" 2>&1 &
+pid=$!
+qemu_host_lock_track_pid "$pid"
+for ((i=0;i<120;i++)); do
+ if grep -aqF '[PIPE_WRITE_RESULT:' "$out/serial.txt"; then break; fi
+ kill -0 "$pid" 2>/dev/null || break
+ sleep 1
+done
+kill "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+qemu_host_lock_release
+python3 - "$out/serial.txt" <<'PY'
+import pathlib,sys,re
+s=pathlib.Path(sys.argv[1]).read_text()
+assert '[PIPE_WRITE_ORACLE:aarch64:pipe:full_block:verdict=FAIL:query=-25]' in s
+assert '[PIPE_WRITE_ORACLE:aarch64:fifo:full_block:verdict=FAIL:FIFO fixture create failed]' in s
+assert re.findall(r'\[PIPE_WRITE_RESULT:([^\]]+)\]',s)==['aarch64:status=1']
+assert '[PIPE_WRITE_SUMMARY:aarch64:passed=0:failed=2]' in s
+assert not re.search(r'KERNEL PANIC|DATA_ABORT|INSTRUCTION_ABORT|soft lockup detected',s)
+print('PASS: production rejects query with ENOTTY and rejects FIFO fixture; worker reaped status=1')
+PY

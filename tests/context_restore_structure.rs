@@ -2417,10 +2417,50 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     let parent_state_block = braced_block(clone_body, &clone_mask, parent_state_binding)
         .ok_or_else(|| "sys_clone parent-state copy block is not brace balanced".to_string())?;
     let parent_state_end = parent_state_binding + parent_state_block.len();
-    if !(parent_state_binding..parent_state_end).contains(&cwd_clones[0])
-        || !(parent_state_binding..parent_state_end).contains(&fd_table_clones[0])
+    if !(parent_state_binding..parent_state_end).contains(&cwd_clones[0]) {
+        return Err("sys_clone cwd read escaped the parent-state copy block".to_string());
+    }
+    // #813: acquiring descriptor references is delayed until fallible setup is
+    // finished. It remains in the SAME admission-to-publication PM transaction,
+    // checked below, and derives the table from the admitted parent.
+    let fd_clone = fd_table_clones[0];
+    let fd_copy_arm = identifier_offsets(clone_body, &clone_mask, "if")
+        .into_iter()
+        .find_map(|if_offset| {
+            let block = braced_block(clone_body, &clone_mask, if_offset)?;
+            let open = block.find('{')?;
+            (normalized_code(&block[..open]).replace(' ', "") == "ifflags&CLONE_FILES!=0"
+                && (if_offset..if_offset + block.len()).contains(&fd_clone))
+            .then_some(block)
+        })
+        .ok_or_else(|| "sys_clone fd copy must be guarded by CLONE_FILES".to_string())?;
+    let fd_copy = normalized_code(fd_copy_arm).replace(' ', "");
+    if !fd_copy.contains("child_process.fd_table=manager.get_process(parent_pid).expect(") {
+        return Err("sys_clone fd copy does not derive from the admitted parent".to_string());
+    }
+    let stack_allocations = call_offsets(clone_body, &clone_mask, "alloc_kernel_stack");
+    if stack_allocations.len() != 1
+        || !(admission < stack_allocations[0]
+            && stack_allocations[0] < fd_clone
+            && fd_clone < insert)
     {
-        return Err("sys_clone cwd/fd_table reads escaped the parent-state copy block".to_string());
+        return Err(
+            "sys_clone fd references must be acquired after allocation and before publication"
+                .to_string(),
+        );
+    }
+    let after_fd_copy = &clone_body[fd_clone..insert];
+    let after_fd_mask = code_mask(after_fd_copy);
+    if !identifier_offsets(after_fd_copy, &after_fd_mask, "return").is_empty()
+        || after_fd_copy
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .any(|(i, byte)| after_fd_mask[i] && *byte == b'?')
+    {
+        return Err(
+            "sys_clone has a fallible exit after copying descriptor references".to_string(),
+        );
     }
     if admission >= insert || admission >= parent_state_binding {
         return Err(
@@ -3806,6 +3846,54 @@ fn clone_publication_lifecycle_is_closed() {
         "let _ignored =",
     );
     assert!(validate_clone_publication_lifecycle(&nonterminal_refusal).is_err());
+
+    let clone_mask = code_mask(&clone);
+    let fd_start = clone
+        .find("if flags & CLONE_FILES != 0 {")
+        .expect("descriptor copy arm");
+    let fd_arm = braced_block(&clone, &clone_mask, fd_start).expect("balanced descriptor copy arm");
+    let without_fd_copy = clone.replacen(fd_arm, "", 1);
+    let early_copy = without_fd_copy.replacen(
+        "let kernel_stack =",
+        &format!("{fd_arm}\n    let kernel_stack ="),
+        1,
+    );
+    assert!(
+        validate_clone_publication_lifecycle(&early_copy).is_err(),
+        "fd acquisition before fallible allocation escaped"
+    );
+    let late_copy = without_fd_copy.replacen(
+        "manager.insert_process(child_pid, child_process);",
+        &format!("manager.insert_process(child_pid, child_process);\n    {fd_arm}"),
+        1,
+    );
+    assert!(
+        validate_clone_publication_lifecycle(&late_copy).is_err(),
+        "fd acquisition after publication escaped"
+    );
+    let early_unlock = clone.replacen(fd_arm, &format!("drop(manager_guard);\n    {fd_arm}"), 1);
+    assert!(
+        validate_clone_publication_lifecycle(&early_unlock).is_err(),
+        "fd acquisition outside PM escaped"
+    );
+    let foreign_parent = clone.replacen(
+        fd_arm,
+        &fd_arm.replace("get_process(parent_pid)", "get_process(child_pid)"),
+        1,
+    );
+    assert!(
+        validate_clone_publication_lifecycle(&foreign_parent).is_err(),
+        "foreign fd table acquisition escaped"
+    );
+    let fallible_after_copy = clone.replacen(
+        ".fd_table.clone();",
+        ".fd_table.clone(); return SyscallResult::Err(super::errno::ENOMEM as u64);",
+        1,
+    );
+    assert!(
+        validate_clone_publication_lifecycle(&fallible_after_copy).is_err(),
+        "fallible exit after fd acquisition escaped"
+    );
 }
 
 #[test]

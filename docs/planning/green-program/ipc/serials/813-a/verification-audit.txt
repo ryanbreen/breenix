@@ -1,0 +1,3 @@
+Serial archive audit: lane serial.txt files have byte-identical archived copies.
+Accepted source SHA256 manifest matches current source.
+Mutation pipe.rs, blocking_io.rs and pipe_fifo_blocking_oracle.rs match accepted source byte-for-byte.
