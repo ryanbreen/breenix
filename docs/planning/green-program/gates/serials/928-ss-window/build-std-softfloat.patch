@@ -1,0 +1,51 @@
+--- a/stdarch/crates/core_arch/src/aarch64/mod.rs
++++ b/stdarch/crates/core_arch/src/aarch64/mod.rs
+@@ -17,8 +17,10 @@
+ #[unstable(feature = "stdarch_aarch64_mte", issue = "129010")]
+ pub use self::mte::*;
+ 
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ mod neon;
+ #[stable(feature = "neon_intrinsics", since = "1.59.0")]
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ pub use self::neon::*;
+ 
+ mod tme;
+--- a/stdarch/crates/core_arch/src/arm_shared/mod.rs
++++ b/stdarch/crates/core_arch/src/arm_shared/mod.rs
+@@ -72,6 +72,7 @@
+     target_feature = "v7",
+     doc
+ ))]
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ pub(crate) mod neon;
+ 
+ #[cfg(any(
+@@ -88,6 +89,7 @@
+     target_arch = "arm",
+     unstable(feature = "stdarch_arm_neon_intrinsics", issue = "111800")
+ )]
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ pub use self::neon::*;
+ 
+ #[cfg(test)]
+--- a/portable-simd/crates/core_simd/src/vendor.rs
++++ b/portable-simd/crates/core_simd/src/vendor.rs
+@@ -25,6 +25,7 @@
+ mod wasm32;
+ 
+ #[cfg(any(target_arch = "aarch64", target_arch = "arm64ec", target_arch = "arm",))]
++#[cfg(not(all(target_arch = "aarch64", target_abi = "softfloat")))]
+ mod arm;
+ 
+ #[cfg(any(target_arch = "powerpc", target_arch = "powerpc64"))]
+--- a/portable-simd/crates/core_simd/src/swizzle_dyn.rs
++++ b/portable-simd/crates/core_simd/src/swizzle_dyn.rs
+@@ -20,6 +20,7 @@
+             any(target_arch = "aarch64", target_arch = "arm64ec"),
+             target_endian = "little"
+         ))]
++        #[cfg(not(target_abi = "softfloat"))]
+         use core::arch::aarch64::{uint8x8_t, vqtbl1q_u8, vtbl1_u8};
+         #[cfg(all(
+             target_arch = "arm",

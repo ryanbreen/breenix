@@ -1,0 +1,10 @@
+revision=612309cdbe70a5c706b1270fafdb23caece1f412
+command=python3 scripts/claim-lint.py
+docs/planning/green-program/aarch64-testing/3F-PR2-2026-09-07.md:455: [unproven-claim] Not claimed in this fix pass: x86 boot validation, prod-profile validation, repair of issue 941, a live fourth oracle leg, SGI delivery demonstrated by host probes, or closure of the earlier round's broader acceptance gaps.
+    -> 'demonstrated' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+
+claim-lint: 1 finding(s) across 111 file(s) [changed hunks vs 5a96f7fbadc1]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 86 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 11 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/first-mutation-attempt/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2-astra/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2/beast-interrupted-build.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-prod-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-strict3-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/continuation-x86-retry-preflight.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/failed-candidate.patch, docs/planning/green-program/aarch64-testing/serials/3f-pr2/mutation-results.json, docs/planning/green-program/aarch64-testing/serials/3f-pr2/strict-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2/toolchain-softfloat.patch
+
+exit=1

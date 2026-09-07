@@ -1,0 +1,6 @@
+Revision: c98d7cc77e2298f46fbc796d3d74cd7575a18d1e
+Command: cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+Library: lane-local patched fork, as documented in round doc
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ss928/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 9.60s
+Exit: 0

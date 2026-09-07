@@ -1,0 +1,11 @@
+5a96f7fbadc1a510cadcc6c959f4110a85753a1b
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure forced_offline_home_declines_retention ==
+
+running 1 test
+forced-offline-home: queue=0 discard=1 pin_cleared=true held=0 refused=0 first_marker=false PASS
+
+test forced_offline_home_declines_retention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 0.16s
+

@@ -1,0 +1,11 @@
+--- docker/qemu/run-aarch64-boot-test-strict.sh
++++ docker/qemu/.946-strict-max.sh
+@@ -931,7 +931,7 @@
+     QEMU_AT_START="$(qemu_host_lock_count)"
+     LOAD_AT_START="$(gbf_load_1m)"
+     timeout "${BREENIX_STRICT_TIMEOUT_SECONDS:-90}" qemu-system-aarch64 \
+-        -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
++        -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
+         -kernel "$KERNEL" \
+         -qmp unix:"$QMP_SOCK",server=on,wait=off \
+         -display none -no-reboot \
