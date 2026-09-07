@@ -102,6 +102,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # battery was this script, at a measured 4-6 concurrent QEMUs on this host.
 # shellcheck source=lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+source "$SCRIPT_DIR/lib/gate-qmp-backstop.sh"
 # driven=2 proves both handoff seams ran; stage1/2 return, wake, and park fields
 # expose D1/D2. stage3_elapsed_ok=1 proves the interval the oracle measured
 # reached the full requested duration -- since #627 that interval is anchored
@@ -1043,6 +1044,22 @@ print_census() {
     echo "  Saved-LR non-PC words: $lr_nontext_lines marker line(s) across $lr_nontext_boots/$count_boots boot(s) — reported, not gated"
 }
 
+# Per-boot verdict path only: capture decision first, SIGTERM last.
+ssg_kill_with_backstop() {
+    local qemu_pid="$1" qmp_sock="$2" output_dir="$3" is_pass="$4"
+    local qmp_line
+    if [ "$is_pass" = "1" ]; then
+        qmp_line="$(gqb_pass_report)"
+    else
+        qmp_line="$(gqb_dump_and_report "$qmp_sock" "$output_dir" \
+            "$BREENIX_ROOT/scripts/forensic-capture.sh" \
+            "$BREENIX_ROOT/scripts/trace_memory_dump.py" \
+            "$KERNEL" "${BREENIX_GATE_QMP_TIMEOUT_S:-30}")"
+    fi
+    printf '%s\n' "$qmp_line" >> "${output_dir}.qmp.txt"
+    kill "$qemu_pid" 2>/dev/null || true
+}
+
 run_profile() {
     local cpu_profile="$1"
     local profile_dir="$OUTPUT_DIR/$cpu_profile"
@@ -1096,6 +1113,8 @@ run_profile() {
     local census_sum
 
     mkdir -p "$profile_dir"
+    mkdir -p -m 700 "$profile_dir/qmp"
+    chmod 700 "$profile_dir/qmp"
     # One name per column the row printf below writes. The two lists are only
     # correct together: a row printf with more arguments than conversion
     # specifiers silently REUSES the format and appends a second, headerless row
@@ -1107,6 +1126,7 @@ run_profile() {
     echo "Profile $cpu_profile: running $BOOTS sequential boots"
 
     for boot in $(seq 1 "$BOOTS"); do
+        local QMP_SOCK="$profile_dir/qmp/boot-$boot.sock"
         serial_file="$profile_dir/serial-$boot.txt"
         writable_disk="$profile_dir/ext2-writable-$boot.img"
         : > "$serial_file"
@@ -1122,6 +1142,7 @@ run_profile() {
         qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu "$cpu_profile" -m 512 -smp 4 \
             -kernel "$KERNEL" \
+            -qmp unix:"$QMP_SOCK",server=on,wait=off \
             -display none -no-reboot \
             -device virtio-gpu-device \
             -device virtio-keyboard-device \
@@ -1138,7 +1159,7 @@ run_profile() {
         while :; do
             boot_seconds=$((SECONDS - boot_start))
             if [ "$boot_seconds" -ge "$BOOT_TIMEOUT" ]; then
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 0
                 break
             fi
             sleep_seconds=$((BOOT_TIMEOUT - boot_seconds))
@@ -1150,42 +1171,42 @@ run_profile() {
 
             if grep -qF "[BLOCK_EINTR_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
                 boot_end="early"
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 0
                 break
             fi
             if grep -qF "[POLL_TCP_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
                 boot_end="early"
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 0
                 break
             fi
             if grep -qF "[POLL_TCP_READY_LOST]" "$serial_file" 2>/dev/null; then
                 boot_end="early"
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 0
                 break
             fi
             if grep -qF "[INSTRUCTION_ABORT]" "$serial_file" 2>/dev/null; then
                 boot_end="early"
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 0
                 break
             fi
             if grep -qF "[CTX596_ORACLE:FAIL" "$serial_file" 2>/dev/null; then
                 boot_end="early"
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 0
                 break
             fi
             if grep -qE "\[DATA_ABORT\]" "$serial_file" 2>/dev/null; then
                 boot_end="early"
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 0
                 break
             fi
             if green_sequence_complete "$serial_file"; then
                 boot_end="early"
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 1
                 break
             fi
             if [ "$boot_seconds" -ge "$BOOT_TIMEOUT" ]; then
                 boot_seconds=$((SECONDS - boot_start))
-                kill "$QEMU_PID" 2>/dev/null || true
+                ssg_kill_with_backstop "$QEMU_PID" "$QMP_SOCK" "$profile_dir/serial-$boot" 0
                 break
             fi
         done

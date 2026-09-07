@@ -42,6 +42,7 @@ source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 # docs/planning/green-program/failure-capture/PLAN-2026-09-05.md section 6.
 # shellcheck source=lib/gate-capture-drain.sh
 source "$SCRIPT_DIR/lib/gate-capture-drain.sh"
+source "$SCRIPT_DIR/lib/gate-qmp-backstop.sh"
 # R191/PR-1 (gate-tooling round): runs each tests/*_structure.rs suite via
 # scripts/run-structure-tests.sh's rustc --test path (not cargo test -- see
 # that file's own header for why the kernel-swap hazard below does not
@@ -796,6 +797,7 @@ report_failure() {
     local serial_file="$3"
     local facts_line="$4"
     local capture_lines="$5"
+    local qmp_lines="$6"
     local failure_dir="$BREENIX_GATE_TMP/breenix_aarch64_strict_failures"
     local timestamp
     local preserved_serial
@@ -822,10 +824,12 @@ report_failure() {
     {
         printf '%s\n' "$facts_line"
         printf '%s\n' "$capture_lines"
+        printf '%s\n' "$qmp_lines"
     } > "$failure_dir/${timestamp}-boot${iteration}.facts.txt"
     echo "  [FAIL] Boot $iteration: $reason ($lines lines); serial: $preserved_serial"
     echo "  $facts_line"
     printf '%s\n' "$capture_lines" | sed 's/^/  /'
+    printf '%s\n' "$qmp_lines" | sed 's/^/  /'
 }
 
 run_single_test() {
@@ -833,6 +837,8 @@ run_single_test() {
     local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_strict_$iteration"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
+    local QMP_SOCK="$OUTPUT_DIR/qmp.sock"
+    chmod 700 "$OUTPUT_DIR"
 
     # Create writable copy of ext2 disk to allow filesystem write tests
     local EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
@@ -854,6 +860,7 @@ run_single_test() {
     timeout 20 qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
+        -qmp unix:"$QMP_SOCK",server=on,wait=off \
         -display none -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
@@ -901,7 +908,7 @@ run_single_test() {
     # extends the capture window. It accepts nothing score_serial would reject —
     # the verdict below is still a fresh score of the serial QEMU left behind —
     # and the crash-marker break and the wall-clock bound are unchanged.
-    for POLL in $(seq 1 12); do
+    for POLL in $(seq 1 "${BREENIX_STRICT_POLL_ITERATIONS:-12}"); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
             if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
                 break
@@ -966,6 +973,17 @@ run_single_test() {
         CAPTURE_LINES="$(gcd_pass_report)"
     else
         CAPTURE_LINES="$(gcd_drain_and_report "$OUTPUT_DIR/serial.txt")"
+    fi
+
+    # PR-6: score the same frozen snapshot as SCORE_PASS below; this pure
+    # precheck changes neither its verdict nor the drain decision above.
+    # QMP runs before our kill, inside the host-facts measurement window.
+    local QMP_PRECHECK_PASS=0 QMP_LINES
+    if score_serial "$DEADLINE_SERIAL" >/dev/null 2>&1; then QMP_PRECHECK_PASS=1; fi
+    if [ "$QMP_PRECHECK_PASS" = "1" ]; then
+        QMP_LINES="$(gqb_pass_report)"
+    else
+        QMP_LINES="$(gqb_dump_and_report "$QMP_SOCK" "$OUTPUT_DIR/qmp-backstop" "$BREENIX_ROOT/scripts/forensic-capture.sh" "$BREENIX_ROOT/scripts/trace_memory_dump.py" "$KERNEL" "${BREENIX_GATE_QMP_TIMEOUT_S:-30}")"
     fi
 
     # #827: sampled together, immediately before this boot's own kill --
@@ -1093,17 +1111,19 @@ run_single_test() {
     {
         printf '%s\n' "$FACTS_LINE"
         printf '%s\n' "$CAPTURE_LINES"
+        printf '%s\n' "$QMP_LINES"
     } > "$OUTPUT_DIR/gate_boot_facts.txt"
 
     if [ "$SCORE_PASS" = "1" ]; then
         echo "  [OK] Boot $iteration: SUCCESS"
         echo "  $FACTS_LINE"
         printf '%s\n' "$CAPTURE_LINES" | sed 's/^/  /'
+        printf '%s\n' "$QMP_LINES" | sed 's/^/  /'
         breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 strict PASS 0 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
         return 0
     fi
 
-    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE" "$CAPTURE_LINES"
+    report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE" "$CAPTURE_LINES" "$QMP_LINES"
     breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 strict FAIL 1 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
     return 1
 }
