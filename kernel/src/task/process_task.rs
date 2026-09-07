@@ -1233,6 +1233,9 @@ pub fn reclaim_deferred_process_resources() {
     #[cfg(feature = "coreproof_mut_reclaim_bracket")]
     reclaim_preempt_disable();
 
+    // Keep detached Unix close work inside the existing preemption/ownership
+    // bracket, after PM and scheduler-scope refusal.
+    crate::socket::unix::drain_close_notifications();
     reclaim_deferred_process_resources_for_pass(my_pass, false);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
     reclaim_preempt_enable();

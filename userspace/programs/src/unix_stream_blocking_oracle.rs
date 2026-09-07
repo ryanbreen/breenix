@@ -399,6 +399,7 @@ fn main() {
     };
     let mut passed = 0;
     for arm in ARMS {
+        println!("[UNIX_WRITE_START:{}:{}]", arch, arm);
         let result = (|| -> TestResult<usize> {
             if arm == "mode" {
                 construction_control()?;

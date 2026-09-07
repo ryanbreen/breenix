@@ -32,6 +32,8 @@ pub struct UnixStreamPair {
     closed_a: Mutex<bool>,
     /// Endpoint B closed
     closed_b: Mutex<bool>,
+    /// Intrusive owned close work; no allocation or fixed-capacity wake buffer.
+    pending_close: Mutex<PendingClose>,
 }
 
 impl UnixStreamPair {
@@ -46,6 +48,10 @@ impl UnixStreamPair {
             write_waiters_b: Arc::new(WaitQueueHead::new()),
             closed_a: Mutex::new(false),
             closed_b: Mutex::new(false),
+            pending_close: Mutex::new(PendingClose {
+                queued: false,
+                next: None,
+            }),
         }
     }
 }
@@ -204,41 +210,96 @@ impl UnixStreamSocket {
             UnixEndpoint::B => *self.pair.closed_b.lock() = true,
         }
 
-        // Wake peer's waiters (they'll see EOF)
-        let waiters = match self.endpoint {
-            UnixEndpoint::A => &self.pair.waiters_b,
-            UnixEndpoint::B => &self.pair.waiters_a,
-        };
-
-        let waiter_ids: Vec<u64> = waiters.lock().clone();
-        for thread_id in waiter_ids {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(thread_id);
-            });
+        UnixCloseNotifications {
+            pair: self.pair.clone(),
         }
-        let writers = match self.endpoint {
-            UnixEndpoint::A => self.pair.write_waiters_b.clone(),
-            UnixEndpoint::B => self.pair.write_waiters_a.clone(),
-        };
-        UnixCloseNotifications { writers }
     }
 }
 
-/// Owned peer-writer notification; closed-flag and endpoint guards must drop
-/// before delivery. Caller-owned PM uses the established deferred wake route.
+struct PendingClose {
+    queued: bool,
+    next: Option<Arc<UnixStreamPair>>,
+}
+
+// Queue lock precedes the embedded link lock. Neither is held while delivering
+// wakes, acquiring closed flags, or calling the scheduler. IRQ masking prevents
+// a same-CPU fault/termination publisher from interrupting a queue operation.
+static PENDING_CLOSES: Mutex<Option<Arc<UnixStreamPair>>> = Mutex::new(None);
+
+/// Both peer-reader EOF and peer-writer EPIPE notifications own the pair until
+/// delivery. Callers release the endpoint and PM guards first.
 #[must_use = "deliver Unix close notifications after releasing object guards"]
 pub struct UnixCloseNotifications {
-    writers: Arc<WaitQueueHead>,
+    pair: Arc<UnixStreamPair>,
 }
 
 impl UnixCloseNotifications {
     pub fn deliver(self) {
-        self.writers.wake_up();
+        // FdTable destruction may run under PM or from fault cleanup.
+        if crate::process::process_manager_held_on_current_cpu()
+            || crate::per_cpu::in_interrupt()
+            || crate::tracing::providers::teardown::scheduler_scope_active()
+        {
+            self.deliver_deferred();
+            return;
+        }
+        let closed_a = *self.pair.closed_a.lock();
+        let closed_b = *self.pair.closed_b.lock();
+        for (closed, readers, writers) in [
+            (closed_a, &self.pair.waiters_b, &self.pair.write_waiters_b),
+            (closed_b, &self.pair.waiters_a, &self.pair.write_waiters_a),
+        ] {
+            if closed {
+                let ids = core::mem::take(&mut *readers.lock());
+                for tid in ids {
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        sched.unblock(tid);
+                    });
+                }
+                writers.wake_up();
+            }
+        }
     }
 
-    /// Uses PR A's PM-context mechanism, including issue 936's residual caveat.
+    /// Retain the pair in an intrusive queue for the existing thread-context
+    /// reclamation boundary. Duplicate closes coalesce; no capacity can overflow.
     pub fn deliver_deferred(self) {
-        self.writers.wake_up_deferred();
+        crate::arch_without_interrupts(|| {
+            let mut head = PENDING_CLOSES.lock();
+            let mut pending = self.pair.pending_close.lock();
+            if !pending.queued {
+                pending.next = head.take();
+                pending.queued = true;
+                *head = Some(self.pair.clone());
+            }
+        });
+    }
+}
+
+/// Called from the existing PM-free reclamation entry on both architectures.
+/// A bounded pass leaves remaining pairs owned by the queue for the next pass.
+pub(crate) fn drain_close_notifications() {
+    if crate::process::process_manager_held_on_current_cpu()
+        || crate::per_cpu::in_interrupt()
+        || crate::tracing::providers::teardown::scheduler_scope_active()
+    {
+        return;
+    }
+    for _ in 0..64 {
+        let pair = crate::arch_without_interrupts(|| {
+            let mut head = PENDING_CLOSES.lock();
+            let pair = head.take()?;
+            {
+                let mut pending = pair.pending_close.lock();
+                *head = pending.next.take();
+                pending.queued = false;
+            }
+            Some(pair)
+        });
+        let Some(pair) = pair else {
+            break;
+        };
+        UnixCloseNotifications { pair }.deliver();
     }
 }
 

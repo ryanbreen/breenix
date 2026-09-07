@@ -14,7 +14,7 @@ fn drain_ok(unix: &str) -> bool {
     body.contains("UnixEndpoint::A=>&self.pair.write_waiters_b")
         && body.contains("UnixEndpoint::B=>&self.pair.write_waiters_a")
         && body.contains("writers.wake_up()")
-        && body.find("drop(rx_buf)") < body.find("writers.wake_up()")
+        && matches!((body.find("drop(rx_buf)"), body.find("writers.wake_up()")), (Some(drop_at), Some(wake_at)) if drop_at < wake_at)
 }
 fn poll_ok(poll: &str) -> bool {
     match_arms(&lex(poll), "FdKind")
@@ -40,6 +40,7 @@ fn mode_drain_and_poll_mutations_are_rejected_singly() {
     let unix = read("kernel/src/socket/unix.rs");
     for changed in [
         unix.replace("writers.wake_up();", ""),
+        unix.replace("drop(rx_buf);", ""),
         unix.replace("&self.pair.write_waiters_b", "&self.pair.write_waiters_a"),
     ] {
         assert!(!drain_ok(&changed));
@@ -51,13 +52,50 @@ fn mode_drain_and_poll_mutations_are_rejected_singly() {
         ));
     }
 }
+fn transmit_predicate_ok(unix: &str) -> bool {
+    let state_impl = unix.split("impl UnixWriteState<'_>").nth(1).unwrap_or("");
+    compact(&function(state_impl, "has_write_space"))
+        == "!*self.peer_closed&&self.buffer.len()<UNIX_SOCKET_BUFFER_SIZE"
+        && compact(&function(
+            unix.split("impl UnixWriteState").next().unwrap(),
+            "has_write_space",
+        )) == "self.writer().state().has_write_space()"
+}
+
+#[test]
+fn transmit_predicate_and_single_mutations() {
+    let unix = read("kernel/src/socket/unix.rs");
+    assert!(transmit_predicate_ok(&unix));
+    for changed in [
+        unix.replace(
+            "!*self.peer_closed && self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE",
+            "!*self.peer_closed",
+        ),
+        unix.replace(
+            "self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE",
+            "self.buffer.len() <= UNIX_SOCKET_BUFFER_SIZE",
+        ),
+        unix.replace(
+            "self.writer().state().has_write_space()",
+            "!self.peer_closed()",
+        ),
+    ] {
+        assert!(!transmit_predicate_ok(&changed));
+    }
+}
+
 #[test]
 fn guarded_state_defines_transmit_space_and_publication() {
     let unix = read("kernel/src/socket/unix.rs");
     let state = compact(&function(&unix, "state"));
     assert!(state.contains("UnixEndpoint::A=>(&self.pair.buffer_a_to_b,&self.pair.closed_b)"));
     assert!(state.contains("UnixEndpoint::B=>(&self.pair.buffer_b_to_a,&self.pair.closed_a)"));
-    assert!(state.find("buffer.lock()") < state.find("closed.lock()"));
+    assert!(
+        state.find("buffer.lock()").expect("buffer guard")
+            < state.find("closed.lock()").expect("closed guard")
+    );
+    assert!(unix.contains("peer_closed: MutexGuard<'a, bool>"));
+    assert!(unix.contains("buffer: MutexGuard<'a, VecDeque<u8>>"));
     assert!(compact(&function(&unix, "copy")).contains("self.has_write_space()"));
     let helper = compact(&function(
         &read("kernel/src/syscall/blocking_io.rs"),
@@ -84,7 +122,10 @@ fn driver_and_gate_have_six_scored_legs() {
         assert!(gate.contains(arm));
     }
     let body = compact(&function(&driver, "connection"));
-    assert!(body.find("process::fork()") < body.find("socket::socket("));
+    assert!(
+        body.find("process::fork()").expect("fork")
+            < body.find("socket::socket(").expect("endpoint creation")
+    );
     assert!(body.contains("wait_witness(peer,writer,tid)"));
     assert!(body.contains("reap(pid)"));
     assert!(gate.contains("gate_structure_preflight"));
@@ -92,23 +133,61 @@ fn driver_and_gate_have_six_scored_legs() {
 }
 
 #[test]
-fn close_returns_owned_peer_notifications_and_pm_consumers_defer() {
+fn close_notifications_leave_pm_without_the_isr_buffer() {
     let unix = read("kernel/src/socket/unix.rs");
     let close = compact(&function(&unix, "close"));
-    assert!(close.contains("UnixEndpoint::A=>self.pair.write_waiters_b.clone()"));
-    assert!(close.contains("UnixEndpoint::B=>self.pair.write_waiters_a.clone()"));
-    assert!(close.contains("UnixCloseNotifications{writers}"));
-    assert!(!close.contains("writers.wake_up"));
+    assert!(close.contains("UnixCloseNotifications{pair:self.pair.clone(),}"));
+    assert!(!close.contains("with_scheduler"));
+    assert!(!close.contains("wake_up"));
+    let deferred = compact(&function(&unix, "deliver_deferred"));
+    assert!(deferred.contains("PENDING_CLOSES.lock()"));
+    assert!(!deferred.contains("isr_unblock"));
+    assert!(!deferred.contains("wake_up_deferred"));
+    assert!(!deferred.contains("with_scheduler"));
+    assert!(!deferred.contains("Vec::"));
+    let drain = compact(&function(&unix, "drain_close_notifications"));
+    assert!(drain.contains("head.take()"));
+    assert!(drain.contains("next.take()"));
+    assert!(drain.contains("queued=false"));
+    assert!(drain.contains("UnixCloseNotifications{pair}.deliver()"));
     let process = compact(&lex(&read("kernel/src/process/process.rs")));
     assert_eq!(process.matches("FdKind::UnixStream(socket)=>{letnotifications=socket.lock().close();notifications.deliver_deferred();}").count(), 2);
+    let drop_fd = compact(&lex(&read("kernel/src/ipc/fd.rs")));
+    assert!(drop_fd
+        .contains("letnotifications=socket.lock().close();notifications.deliver_deferred();"));
+    let boundary = compact(&function(
+        &read("kernel/src/task/process_task.rs"),
+        "reclaim_deferred_process_resources",
+    ));
+    let drain_at = boundary
+        .find("drain_close_notifications()")
+        .expect("drain call");
+    for guard in [
+        "process_manager_held_on_current_cpu()",
+        "scheduler_scope_active()",
+    ] {
+        assert!(boundary.find(guard).expect("context guard") < drain_at);
+    }
+    assert!(
+        boundary
+            .find("reclaim_preempt_disable()")
+            .expect("preemption guard")
+            < drain_at
+    );
+    assert!(boundary.find("compare_exchange(").expect("drain ownership") < drain_at);
+    assert!(
+        drain_at
+            < boundary
+                .find("reclaim_deferred_process_resources_for_pass(")
+                .expect("reclaim pass")
+    );
     for path in [
-        "kernel/src/ipc/fd.rs",
         "kernel/src/task/process_task.rs",
         "kernel/src/syscall/pipe.rs",
     ] {
-        let text = compact(&lex(&read(path)));
         assert!(
-            text.contains("letnotifications=socket.lock().close();notifications.deliver();"),
+            compact(&lex(&read(path)))
+                .contains("letnotifications=socket.lock().close();notifications.deliver();"),
             "{path}"
         );
     }
