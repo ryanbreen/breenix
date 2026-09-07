@@ -1,0 +1,12 @@
+== compiling coreproof_component_h_structure ==
+== running coreproof_component_h_structure  ==
+
+running 5 tests
+test self_retraction_latch_cannot_outlive_one_measured_window ... ok
+test the_new_inline_slot_instrument_is_entirely_coreproof_gated ... ok
+test inline_slot_classification_counters_fire_from_exactly_one_site_each_and_stay_co_located ... ok
+test inline_schedule_state_is_only_ever_read_via_a_consumed_swap ... ok
+test self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
