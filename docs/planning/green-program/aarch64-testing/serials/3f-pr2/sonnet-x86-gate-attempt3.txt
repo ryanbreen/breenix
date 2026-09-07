@@ -1,0 +1,28 @@
+revision=10cd3cfeccd1ba18a3f71f0cadcad1b3bffe1ebd
+[GATE_PREFLIGHT:structure_suites=63/64:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 64 structure suite(s) red: context_restore_structure -- per-suite logs under /root/breenix-3f2-tmp/breenix_gate_structure_preflight.aMzLBh)
+x86 frame-custody gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
+x86 frame-custody gate: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:157, exit 1)
+  failing command: false
+exit=1
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25htest the_dead_first_entry_eret_entry_point_stays_deleted ... ok
+test the_mutation_leg_exemption_is_exactly_as_narrow_as_it_claims ... ok
+test unblock_preserves_blocked_syscall_context_ownership ... ok
+test unblock_validator_rejects_foreign_flag_clear ... ok
+test every_eret_under_the_resume_pc_root_is_dispositioned ... ok
+test unpublished_dispatch_is_retry_only_on_both_architectures ... ok
+test userspace_fault_idle_return_validator_rejects_private_stack_derivation ... ok
+test userspace_fault_termination_returns_on_the_idle_thread_stack ... ok
+test userspace_resume_pc_predicate_stays_outside_the_kernel_text_window ... ok
+test user_rsp_scratch_kernel_stack_installs_follow_the_pending_exception_level ... ok
+test work_stealing_declines_a_thread_pinned_to_another_cpus_stack ... ok
+test userspace_resume_pc_producers_refuse_before_publishing_frame_elr ... ok
+test clone_publication_lifecycle_is_closed ... ok
+test fatal_exception_reports_never_take_blocking_scheduler_accessors has been running for over 60 seconds
+test fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site has been running for over 60 seconds
+test fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee has been running for over 60 seconds
+test fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee has been running for over 60 seconds
+test fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation has been running for over 60 seconds
+test fatal_exception_reports_never_take_blocking_scheduler_accessors ... ok
+test fatal_scheduler_census_m_f_rejects_broken_fatal_callee_derivation ... ok
+[?1000l[?1002l[?1003l[?1005l[?1006l[?1015l[?1016l[?2004l[?1l>[?25h
