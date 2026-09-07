@@ -1,0 +1,22 @@
+diff --git a/docker/qemu/run-aarch64-boot-test-strict.sh b/docker/qemu/run-aarch64-boot-test-strict.sh
+index 709f6bbe..ea9e2f25 100755
+--- a/docker/qemu/run-aarch64-boot-test-strict.sh
++++ b/docker/qemu/run-aarch64-boot-test-strict.sh
+@@ -998,7 +998,7 @@ run_single_test() {
+     # before this file existed -- it is a read taken immediately after the
+     # loop already stopped, naming which guarded branch a moment ago is
+     # still true right now. Left empty when neither is true, i.e. the loop
+-    # simply ran out its 12 iterations without either break firing.
++    # simply ran out its 60 iterations without either break firing.
+     local ENDED_BY_LOOP=""
+     if [ -f "$OUTPUT_DIR/serial.txt" ] && check_crash_markers "$OUTPUT_DIR/serial.txt" >/dev/null 2>&1; then
+         ENDED_BY_LOOP="crash"
+@@ -1137,7 +1137,7 @@ run_single_test() {
+     #                      flipped the post-kill rescore to FAIL
+     #   poll_exhausted  -- neither break fired, the post-kill rescore is
+     #                      also not a PASS, and QEMU was still alive when
+-    #                      the loop's own 12 iterations ran out (this
++    #                      the loop's own 60 iterations ran out (this
+     #                      script's own kill ends it)
+     #   hard_timeout    -- neither break fired, the post-kill rescore is
+     #                      also not a PASS, and QEMU was already dead when

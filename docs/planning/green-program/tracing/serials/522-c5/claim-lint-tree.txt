@@ -1,0 +1,2 @@
+claim-lint: clean (24 file(s) checked, changed hunks vs fbe821714094).
+claim-lint: 324 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).

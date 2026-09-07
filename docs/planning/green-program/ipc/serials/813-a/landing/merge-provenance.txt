@@ -1,0 +1,5 @@
+merge commit: fa15a29ee02dad7bc3d9f83c0002542a0df12576
+pre-merge branch tip (prose-fix commit): 8f916531a27c383f08f4bab40e7b14e5d9fba600
+origin/main tip merged: fe874f15cbe4c81bd12311015542b9ba309e9ac0 (Merge pull request #929 from ryanbreen/docs/verify-483-465-round3-2026-09-07)
+git merge-base HEAD fe874f15cbe4c81bd12311015542b9ba309e9ac0: fe874f15cbe4c81bd12311015542b9ba309e9ac0 (fast-forward-clean; fe874f15 is an ancestor of the merge commit)
+kernel/ conflict check: none. git merge origin/main auto-merged with the 'ort' strategy; the only kernel/ files touched by both sides (kernel/src/test_framework/registry.rs, kernel/src/tracing/providers/teardown.rs) auto-merged with no conflict markers, confirmed by grep -rn '^<<<<<<<|^=======$|^>>>>>>>' across kernel/ tests/ docker/qemu/ after the merge (0 matches).

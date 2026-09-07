@@ -18,6 +18,39 @@ fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
 }
 
+/// Parse a `const NAME: u64 = 1_234;`-shaped declaration's numeric value out
+/// of source text. #522 C5 fix pass (V-6): a prior ratchet asserted a
+/// relationship between two `u64` literals bound directly in the TEST body
+/// (`let gate_ceiling_milliseconds = 45_000u64; ...`), which cannot redden for
+/// any change to the source constants it was meant to describe. Every caller
+/// of this helper instead reads the real value out of the kernel source, so a
+/// changed constant is what the assertion sees. claim-lint:ok: #522 C5 fix
+/// pass V-6; proven by `parse_u64_const_reads_real_values` below and by
+/// `fix_pass_v3_watchdog_and_test_phase_budgets_fit_under_hard_timeout`'s own
+/// mutation transcript.
+fn parse_u64_const(source: &str, name: &str) -> u64 {
+    let marker = format!("{name}: u64 = ");
+    let at = source
+        .find(&marker)
+        .unwrap_or_else(|| panic!("const {name} not found in source"));
+    let digits_start = at + marker.len();
+    let rest = &source[digits_start..];
+    let digits_end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '_'))
+        .unwrap_or(rest.len());
+    rest[..digits_end]
+        .replace('_', "")
+        .parse::<u64>()
+        .unwrap_or_else(|_| panic!("const {name} value {:?} not a parseable u64", &rest[..digits_end]))
+}
+
+#[test]
+fn parse_u64_const_reads_real_values() {
+    let source = "    pub const FOO: u64 = 45_000;\n    pub const BAR: u64 = 1;\n";
+    assert_eq!(parse_u64_const(source, "FOO"), 45_000);
+    assert_eq!(parse_u64_const(source, "BAR"), 1);
+}
+
 fn rust_sources_below(relative: &str) -> &'static Vec<(String, String)> {
     fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
         for entry in fs::read_dir(dir).expect("read source directory") {
@@ -8581,7 +8614,7 @@ fn process_row_map_mutations_are_authority_scoped() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 
     let raw_removal = manager.replacen(
-        "        self.remove_process(provisional_pid);",
+        "        drop(self.remove_process(provisional_pid));",
         "        self.processes.remove(&provisional_pid);",
         1,
     );
@@ -8602,8 +8635,8 @@ fn process_row_map_mutations_are_authority_scoped() {
     );
 
     let retained = manager.replacen(
-        "    pub fn remove_process(&mut self, pid: ProcessId) {",
-        "    pub fn remove_process(&mut self, pid: ProcessId) {\n        self.processes.retain(|_, _| true);",
+        "    pub fn remove_process(&mut self, pid: ProcessId) -> Option<Process> {",
+        "    pub fn remove_process(&mut self, pid: ProcessId) -> Option<Process> {\n        self.processes.retain(|_, _| true);",
         1,
     );
     assert_ne!(retained, manager, "process-row retain injection anchor");
@@ -9903,8 +9936,8 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert_eq!(
         gate.matches("record_exit_kick_gate_watchdog_heartbeat();")
             .count(),
-        3,
-        "the soft-lockup heartbeat must cover gate entry, wait entry, and each periodic re-kick"
+        5,
+        "the soft-lockup heartbeat must cover gate entry and both wait loops entry/re-kick"
     );
     assert!(!gate.contains("let storm_progress ="));
     assert_eq!(
@@ -9912,6 +9945,67 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         4,
         "workers_ready and all three storm joins must kick every worker CPU"
     );
+    assert!(gate.contains("if let Err((failure, target)) = spin_with_resched_workers(\n        \"workers_ready\""));
+    let worker_wait = function_body(gate, "spin_with_resched_workers");
+    // Mutation proof: replacing this indexed update with advanced_from plus a
+    // shared timestamp must fail here, even though the evidence still has 3 counters.
+    for required in [
+        "let mut last_advance = [wait_start; 3];",
+        "for target in 0..3",
+        "progress_current.workers[target] > last_progress.workers[target]",
+        "last_progress.workers[target] = progress_current.workers[target];",
+        "last_advance[target] = now;",
+        "elapsed_ticks(last_advance[target], wait_start)",
+        "!target_complete(target, progress_current.workers[target])",
+        "elapsed >= target_deadline",
+        "stalled_target = Some(target);",
+        "stalled_target.map(|i| workers[i].0)",
+    ] {
+        assert!(worker_wait.contains(required), "missing per-worker window: {required}");
+    }
+    assert!(!worker_wait.contains("advanced_from("));
+    assert!(!worker_wait.contains("last_advance.fill("));
+    for message in [
+        "exit_kick_gate: workers_ready never reached 3, worker 1 (publisher A, CPU 1) made no progress",
+        "exit_kick_gate: workers_ready never reached 3, worker 2 (publisher B, CPU 2) made no progress",
+        "exit_kick_gate: workers_ready never reached 3, worker 3 (observer, CPU 3) made no progress",
+    ] {
+        assert!(gate.contains(message));
+    }
+    assert!(!gate.contains("workers_ready never reached 3, a worker CPU (1/2/3) is unresponsive"));
+    let fixture = function_body(&provider, "exit_kick_worker_window_isolation_test");
+    // Keep the real old control and new mechanism identical, not two simulations.
+    for helper in ["spin_with_resched", "spin_with_resched_workers", "join_with_resched", "print_wait_evidence"] {
+        let code_lines = |body: &str| body.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(code_lines(function_body(gate, helper)), code_lines(function_body(fixture, helper)), "fixture drift: {helper}");
+    }
+    for required in [
+        "before_union_worker_1", "after_worker_1", "after_worker_2", "after_worker_3",
+        "exit_kick_worker_isolation: worker 1 made no progress",
+        "exit_kick_worker_isolation: worker 2 made no progress",
+        "exit_kick_worker_isolation: worker 3 made no progress",
+        "healthy_baseline=PASS", "WaitFailureKind::AbsoluteCeiling, None",
+        "WaitFailureKind::NoProgress, Some(name)", "name == names[frozen]",
+        "elapsed_ms < FIRST_PROGRESS_WINDOW_MILLISECONDS",
+        "elapsed_ms > FIRST_PROGRESS_WINDOW_MILLISECONDS + NO_PROGRESS_WINDOW_MILLISECONDS",
+        "elapsed_ms < ABSOLUTE_WAIT_CEILING_MILLISECONDS",
+        "final_progress[frozen] != 1", "final_progress[i] <= 2",
+        "struct StormAbortGuard", "core::mem::drop(abort_guard);", "joined != 3",
+    ] {
+        assert!(fixture.contains(required), "missing isolation fixture proof: {required}");
+    }
+    let strict = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
+    assert!(strict.contains("BREENIX_STRICT_TIMEOUT_SECONDS:-90"));
+    assert!(strict.contains("BREENIX_STRICT_POLL_ITERATIONS:-60"));
+    let registry = repo_text("kernel/src/test_framework/registry.rs");
+    let registration = registry.find("name: \"exit_kick_worker_window_isolation\"").expect("isolation registry entry");
+    assert!(registry[..registration].trim_end().ends_with("#[cfg(target_arch = \"aarch64\")]\n    TestDef {"));
+    let registration = &registry[registration..registry[registration..].find("},").unwrap() + registration];
+    for required in ["exit_kick_worker_window_isolation_test", "Arch::Aarch64", "TestStage::PostScheduler", "timeout_ms: 90000"] {
+        assert!(registration.contains(required));
+    }
     let storm_union_start = gate.find("\"workers_ready\"").expect("workers_ready wait");
     let storm_union_end = gate[storm_union_start..]
         .find("accounting.start.store(true, Ordering::Release);")
@@ -9928,16 +10022,52 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
             "workers_ready dependency union lost {counter}"
         );
     }
+    // W-1 fix pin (#522 review): the aggregate `workers_ready` condition
+    // and each worker's `target_complete` completeness check must derive
+    // from the SAME write -- a shared per-worker readiness bitmask -- so a
+    // worker cannot be marked complete before it has actually contributed
+    // to the aggregate. Before the fix, target_complete tested each
+    // worker's own progress counter (`progress != 0`), which goes nonzero
+    // one store before workers_ready was bumped for that worker; a CPU
+    // freezing in that gap was permanently excluded from NoProgress
+    // attribution. Mutation proof: reverting target_complete to
+    // `|_, progress| progress != 0` must redden this test.
+    assert!(
+        storm_union.contains("workers_ready_bits.load(Ordering::Acquire).count_ones() as u64"),
+        "workers_ready's aggregate condition must read the shared readiness bitmask"
+    );
+    assert!(
+        storm_union.contains("workers_ready_bits.load(Ordering::Acquire) & (1 << target) != 0"),
+        "workers_ready's per-worker completeness check must test the same bitmask, not raw progress"
+    );
+    assert!(
+        !storm_union.contains("progress != 0"),
+        "workers_ready target_complete regressed to the vacuous nonzero-progress heuristic (#522 W-1)"
+    );
+    assert_eq!(
+        gate.split_whitespace().collect::<String>().matches("workers_ready_bits.fetch_or(").count(),
+        2,
+        "publisher and observer readiness publication must each set their own bit exactly once"
+    );
+    assert!(
+        !gate.contains("workers_ready.fetch_add("),
+        "the pre-fix per-worker counter increment on workers_ready must not reappear"
+    );
+    for bit in ["WORKER_BIT_A", "WORKER_BIT_B", "WORKER_BIT_OBSERVER"] {
+        assert!(gate.contains(bit), "missing readiness bit constant {bit}");
+    }
     for (progress_source, counter) in [
+        ("storm_publisher_a_progress", "publisher_a_progress"),
         ("storm_publisher_b_progress", "publisher_b_progress"),
         ("storm_observer_progress", "observer_progress"),
     ] {
         let declaration = gate
             .find(&format!("let {progress_source} ="))
             .unwrap_or_else(|| panic!("missing {progress_source} declaration"));
-        let call = gate[declaration..]
+        let body_start = declaration + format!("let {progress_source} =").len();
+        let call = gate[body_start..]
             .find(';')
-            .map(|end| &gate[declaration..declaration + end])
+            .map(|end| &gate[body_start..body_start + end])
             .expect("storm progress closure terminator");
         assert!(
             call.contains(counter),
@@ -9960,18 +10090,6 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
             "{progress_source} must govern exactly one storm join"
         );
     }
-    let publisher_a_progress_declaration = gate
-        .find("let storm_publisher_a_progress =")
-        .expect("publisher A dependency-progress declaration");
-    let publisher_a_progress = gate[publisher_a_progress_declaration..]
-        .find(';')
-        .map(|end| &gate[publisher_a_progress_declaration..publisher_a_progress_declaration + end])
-        .expect("publisher A dependency-progress closure terminator");
-    assert!(publisher_a_progress.contains("publisher_a_progress"));
-    assert!(publisher_a_progress.contains("observer_progress"));
-    assert!(!publisher_a_progress.contains("publisher_b_progress"));
-    assert_eq!(gate.matches("&storm_publisher_a_progress").count(), 1);
-
     assert!(
         !gate.contains("while observer_accounting.publishers_done.load(Ordering::Acquire) != 2")
     );
@@ -10025,7 +10143,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
         "Self::GateCeiling =>",
         "exit_kick_gate: gate liveness ceiling exhausted before this wait's condition was observed (not a per-CPU stall)",
         "Self::PhaseOneCeiling =>",
-        "exit_kick_gate: shared Phase-1 liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)",
+        "exit_kick_gate: Phase-1 test-phase liveness budget exhausted before this wait's condition was observed (not a per-CPU stall)",
         "Self::CounterStall =>",
         "exit_kick_gate: CNTVCT stalled while enforcing wait deadline",
         "Self::CounterUnavailable =>",
@@ -10174,9 +10292,9 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     let main = repo_text("kernel/src/main_aarch64.rs");
     let compact_main: String = main.chars().filter(|ch| !ch.is_whitespace()).collect();
     for required in [
-        "#[cfg(feature = \"boot_tests\")]\n            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;",
+        "#[cfg(feature = \"boot_tests\")]\n            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 10;",
         "#[cfg(not(feature = \"boot_tests\"))]\n            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 2;",
-        "#[cfg(feature = \"boot_tests\")]\n            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;",
+        "#[cfg(feature = \"boot_tests\")]\n            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 15;",
         "#[cfg(not(feature = \"boot_tests\"))]\n            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 4;",
     ] {
         assert!(main.contains(required), "missing SMP timeout profile: {required}");
@@ -10208,7 +10326,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(main.contains("let counter_delta = timer::elapsed_ticks(now, last_counter_sample);"));
     assert!(main.contains("if counter_delta == 0"));
     for deadline in [
-        "timer::elapsed_ticks(now, phase_one_started_at)",
+        "timer::elapsed_ticks(now, initialization_started_at)",
         "timer::elapsed_ticks(now, start)",
         "timer::elapsed_ticks(now, last_advance)",
         "timer::elapsed_ticks(now, last_breadcrumb)",
@@ -10289,7 +10407,7 @@ fn aarch64_exit_kick_waits_are_progress_bounded() {
     assert!(elapsed_ticks.contains("now.checked_sub(start).unwrap_or(0)"));
     assert!(provider.contains("crate::arch_impl::aarch64::timer::milliseconds_to_ticks("));
     assert!(compact_main.contains(
-        "timer::milliseconds_to_ticks(counter_frequency_hz,kernel::test_framework::PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS,)"
+        "timer::milliseconds_to_ticks(counter_frequency_hz,kernel::test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS,)"
     ));
 
     let timer_interrupt = repo_text("kernel/src/arch_impl/aarch64/timer_interrupt.rs");
@@ -17354,4 +17472,301 @@ fn unpublished_page_table_from_box_uses_single_blank_line_separators() {
         !module.contains(glued_below),
         "missing blank line reintroduced between from_box and publish"
     );
+}
+
+/// #522 C5: the boot-test phase liveness budget must be anchored at test-phase
+/// entry, and the pre-test CPU bring-up watchdog must be a separately named
+/// budget anchored at kernel entry. Re-anchoring the test-phase budget at
+/// kernel entry reddens this test.
+#[test]
+fn test_phase_budget_is_anchored_at_test_phase_entry() {
+    let framework = repo_text("kernel/src/test_framework/mod.rs");
+    // Two separately named budgets, not one shared clock.
+    assert!(framework
+        .contains("pub const INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS: u64 = 20_000;"));
+    assert!(framework
+        .contains("pub const TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS: u64 = 60_000;"));
+    assert!(!framework.contains("PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS"));
+    for required in [
+        "pub fn begin_initialization_watchdog(started_at: u64)",
+        "pub fn initialization_watchdog_started_at() -> Option<u64>",
+        "pub fn begin_test_phase_liveness_budget(started_at: u64)",
+        "pub fn test_phase_liveness_started_at() -> Option<u64>",
+    ] {
+        assert!(framework.contains(required), "missing budget API: {required}");
+    }
+    // The test-phase anchor is published at test-phase entry, inside
+    // run_all_tests; the kernel entry path in main_aarch64.rs must not
+    // publish or read it.
+    // claim-lint:ok: #522 C5; the mutation transcript is
+    // docs/planning/green-program/tracing/serials/522-c5-fixpass/mutation-kernel-entry-anchor-red.txt.
+    let executor = repo_text("kernel/src/test_framework/executor.rs");
+    let run_all_tests = function_body(&executor, "run_all_tests");
+    assert!(run_all_tests.contains("super::begin_test_phase_liveness_budget("));
+    let main = repo_text("kernel/src/main_aarch64.rs");
+    assert!(main.contains("kernel::test_framework::begin_initialization_watchdog("));
+    assert!(!main.contains("begin_test_phase_liveness_budget"));
+    assert!(!main.contains("test_phase_liveness_started_at"));
+    // The bring-up watchdog reads only the initialization anchor.
+    assert!(main.contains("kernel::test_framework::initialization_watchdog_started_at()"));
+    assert!(!main.contains("PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS"));
+
+    // The exit-kick gate spends the test-phase budget rather than the
+    // kernel-entry one, and its own local ceiling stays strictly below that
+    // budget so a real whole-gate overrun is still classified as the gate
+    // ceiling.
+    // claim-lint:ok: #522 C5; read back in 3 of 3 boots in
+    // docs/planning/green-program/tracing/522-C5-2026-09-07.md.
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    assert!(provider.contains("crate::test_framework::test_phase_liveness_started_at()"));
+    assert!(provider.contains("crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS"));
+    assert!(!provider.contains("phase_one_liveness_started_at"));
+    assert!(!provider.contains("PHASE_ONE_LIVENESS_BUDGET_MILLISECONDS"));
+    assert!(!provider.contains("initialization_watchdog_started_at"));
+    assert!(provider.contains("const EXIT_KICK_GATE_CEILING_MILLISECONDS: u64 = 45_000;"));
+    // The real headroom assertion (parsed from source, not two literals bound
+    // in this test body) lives in
+    // fix_pass_v6_headroom_ratchet_reads_real_values below.
+
+    // The oracle fixture exists, keeps the real ceiling order, and carries the
+    // control, treatment, and real-exhaustion legs.
+    let oracle = function_body(&provider, "exit_kick_budget_anchor_isolation_test");
+    for required in [
+        "\"inherited_kernel_entry_anchor\"",
+        "\"test_phase_entry_anchor\"",
+        "\"gate_window_exhaustion\"",
+        "burn_milliseconds(counter_frequency_hz, FIXTURE_PRE_TEST_DELAY_MILLISECONDS);",
+    ] {
+        assert!(oracle.contains(required), "missing C5 oracle leg: {required}");
+    }
+    let test_phase_position = oracle
+        .find("FixtureCause::TestPhaseCeiling, None")
+        .expect("oracle test-phase ceiling arm");
+    let gate_position = oracle
+        .find("FixtureCause::GateCeiling, None")
+        .expect("oracle gate ceiling arm");
+    let absolute_position = oracle
+        .find("FixtureCause::AbsoluteCeiling, None")
+        .expect("oracle absolute ceiling arm");
+    let no_progress_position = oracle
+        .find("FixtureCause::NoProgress, Some(FIXTURE_TARGET_NAME)")
+        .expect("oracle no-progress arm");
+    assert!(test_phase_position < gate_position);
+    assert!(gate_position < absolute_position);
+    assert!(absolute_position < no_progress_position);
+}
+
+
+/// #522 C5 fix pass, finding V-1: the initialization watchdog must never be
+/// able to reach its deadline before the SMP bring-up wait's own local
+/// absolute ceiling does. Round 1 published the watchdog at the SAME
+/// magnitude as the local ceiling but anchored strictly earlier (kernel
+/// entry vs. the wait's own `start`), which is definitionally tighter for any
+/// nonzero gap between the two anchors -- real initialization work always
+/// makes that gap nonzero, so the local ceiling's own diagnostic was
+/// unreachable in every boot_tests boot. The fix computes the watchdog's real
+/// ceiling dynamically as max(published floor, local ceiling + measured gap +
+/// margin), which cannot undercut the local ceiling's own deadline. This test
+/// pins that construction and that the false "not a tighter bound" / "no
+/// sooner than before" claims are gone. claim-lint:ok: #522 C5 fix pass V-1;
+/// this test's own body, below, is the resolving proof.
+#[test]
+fn fix_pass_v1_watchdog_not_tighter_than_local_ceiling() {
+    let framework = repo_text("kernel/src/test_framework/mod.rs");
+    assert!(
+        !framework.contains("not a tighter bound"),
+        "V-1: the false 'not a tighter bound' claim must not survive in mod.rs"
+    );
+    assert!(
+        !framework.contains("no sooner than before"),
+        "V-1: the false 'no sooner than before' claim must not survive in mod.rs"
+    );
+
+    let main = repo_text("kernel/src/main_aarch64.rs");
+    assert!(
+        !main.contains("can only shorten the local 40-second ceiling"),
+        "V-1: the false 'can only shorten' claim must not survive in main_aarch64.rs"
+    );
+    // The dynamic ceiling formula: computed after `start`, using the real
+    // measured gap between the kernel-entry anchor and this wait's own start,
+    // and a fixed margin, taking the max against the published floor so it
+    // can only be extended relative to the local ceiling's own window, not
+    // shortened below it.
+    for required in [
+        "let initialization_watchdog_ceiling_ticks = {",
+        "timer::elapsed_ticks(start, initialization_started_at)",
+        "const INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS: u64 = 3;",
+        "let gap_extended_ticks = absolute_ceiling_ticks",
+        "let effective_ticks = published_floor_ticks.max(gap_extended_ticks);",
+        "[smp] initialization_watchdog gap_ms=",
+    ] {
+        assert!(main.contains(required), "V-1: missing dynamic ceiling fragment: {required}");
+    }
+    // The formula's inputs are computed strictly after `start` is captured,
+    // so the gap it measures is real rather than assumed negligible: the
+    // ceiling binding must appear after `let start = timer::rdtsc();` in
+    // source order.
+    let start_offset = main
+        .find("let start = timer::rdtsc();")
+        .expect("bring-up wait's start capture");
+    let ceiling_offset = main
+        .find("let initialization_watchdog_ceiling_ticks = {")
+        .expect("dynamic ceiling binding");
+    assert!(
+        start_offset < ceiling_offset,
+        "V-1: the dynamic ceiling must be computed after `start`, not before it"
+    );
+
+    // The fired-message now reports the real computed ceiling, not the raw
+    // published floor constant, so the diagnostic stays honest if the
+    // dynamic formula ever extends past the floor.
+    let fired_message = main
+        .find("Timeout waiting for CPUs: initialization watchdog ceiling")
+        .map(|at| &main[at..(at + 400).min(main.len())])
+        .expect("initialization watchdog fired-message");
+    assert!(
+        fired_message.contains("initialization_watchdog_ceiling_ticks.saturating_mul(1_000)"),
+        "V-1: the fired-message must report the computed ceiling, not the raw floor constant"
+    );
+    assert!(
+        !fired_message.contains("kernel::test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS"),
+        "V-1: the fired-message must not print the raw published-floor constant as the reached ceiling"
+    );
+}
+
+/// #522 C5 fix pass, finding V-3: the two sequential watchdogs' worst cases
+/// must fit inside the strict harness's own hard timeout with real margin, so
+/// a pathological boot reaches an attributed in-kernel verdict rather than
+/// the harness's unattributed external `ended_by=hard_timeout` kill. Round 1
+/// published a 40,000ms watchdog floor plus a 60,000ms test-phase budget --
+/// 100,000ms, past the harness's 90,000ms timeout. This test reads both real
+/// constants (and the local absolute ceiling they must not undercut) out of
+/// source and asserts the sum leaves real headroom under the hard timeout.
+#[test]
+fn fix_pass_v3_watchdog_and_test_phase_budgets_fit_under_hard_timeout() {
+    let framework = repo_text("kernel/src/test_framework/mod.rs");
+    let init_watchdog_floor_ms =
+        parse_u64_const(&framework, "INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS");
+    let test_phase_budget_ms =
+        parse_u64_const(&framework, "TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS");
+
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let gate_ceiling_ms = parse_u64_const(&provider, "EXIT_KICK_GATE_CEILING_MILLISECONDS");
+    // Headroom, not merely ordering: the gate is entered part-way into the
+    // test phase, so the budget must still cover the whole gate ceiling from
+    // there. Measured distance from test-phase entry to gate entry is about
+    // 2.4-2.7s.
+    assert!(
+        gate_ceiling_ms + 10_000 <= test_phase_budget_ms,
+        "V-3/V-6: test-phase budget {test_phase_budget_ms}ms leaves too little \
+         headroom over the {gate_ceiling_ms}ms gate ceiling"
+    );
+
+    // The strict harness's own hard kill: docker/qemu/run-aarch64-boot-test-strict.sh
+    // sets `timeout "${{BREENIX_STRICT_TIMEOUT_SECONDS:-90}}"`.
+    let strict_script = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
+    assert!(strict_script.contains(r#"timeout "${BREENIX_STRICT_TIMEOUT_SECONDS:-90}""#));
+    const STRICT_HARNESS_HARD_TIMEOUT_MILLISECONDS: u64 = 90_000;
+
+    let summed_ms = init_watchdog_floor_ms.saturating_add(test_phase_budget_ms);
+    assert!(
+        summed_ms < STRICT_HARNESS_HARD_TIMEOUT_MILLISECONDS,
+        "V-3: watchdog floor {init_watchdog_floor_ms}ms + test-phase budget \
+         {test_phase_budget_ms}ms = {summed_ms}ms must stay under the \
+         {STRICT_HARNESS_HARD_TIMEOUT_MILLISECONDS}ms hard timeout"
+    );
+    // Real margin, not a bare inequality: at least five seconds of headroom
+    // under the hard timeout for the rest of boot and script overhead, on top
+    // of whatever the dynamic watchdog formula in main_aarch64.rs adds beyond
+    // this published floor for a boot's actual measured gap.
+    assert!(
+        summed_ms + 5_000 <= STRICT_HARNESS_HARD_TIMEOUT_MILLISECONDS,
+        "V-3: only {}ms of headroom under the hard timeout; want at least 5000ms",
+        STRICT_HARNESS_HARD_TIMEOUT_MILLISECONDS.saturating_sub(summed_ms)
+    );
+
+    // The local absolute ceiling the watchdog floor must not undercut (V-1):
+    // the floor should already clear local_ceiling + margin for a negligible
+    // gap, so the dynamic formula in main_aarch64.rs only needs to extend it
+    // for a real, nonzero measured gap rather than as a matter of course.
+    let main = repo_text("kernel/src/main_aarch64.rs");
+    assert!(main.contains("const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 15;"));
+    assert!(main.contains("const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 10;"));
+    assert!(main.contains("const INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS: u64 = 3;"));
+    let local_ceiling_ms = parse_u64_const(&main, "SMP_ONLINE_ABSOLUTE_CEILING_SECONDS") * 1_000;
+    let margin_ms =
+        parse_u64_const(&main, "INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS") * 1_000;
+    assert!(
+        local_ceiling_ms + margin_ms <= init_watchdog_floor_ms,
+        "V-1: watchdog floor {init_watchdog_floor_ms}ms should already clear \
+         local ceiling {local_ceiling_ms}ms + margin {margin_ms}ms for a \
+         near-zero measured gap"
+    );
+}
+
+/// #522 C5 fix pass, finding V-6: the ratchet's headroom assertion must read
+/// the real source constants rather than comparing two `u64` literals bound
+/// directly in the test body (which cannot redden for any source change).
+/// This test's own existence and its use of `parse_u64_const` closes the
+/// finding; `parse_u64_const_reads_real_values` above additionally proves the
+/// parser reads what it claims to.
+#[test]
+fn fix_pass_v6_headroom_ratchet_reads_real_values() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let gate_ceiling_ms = parse_u64_const(&provider, "EXIT_KICK_GATE_CEILING_MILLISECONDS");
+    assert_eq!(gate_ceiling_ms, 45_000, "sanity: gate ceiling parses to its known value");
+
+    let framework = repo_text("kernel/src/test_framework/mod.rs");
+    let test_phase_budget_ms =
+        parse_u64_const(&framework, "TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS");
+    assert!(gate_ceiling_ms + 10_000 <= test_phase_budget_ms);
+
+    // The old ratchet's own vacuous form must not have simply moved rather
+    // than been fixed: the test it used to live in (which still separately
+    // pins the real budget API and oracle shape) must no longer bind two bare
+    // `u64` literals to perform this headroom comparison itself.
+    let this_file = repo_text("tests/teardown_structure.rs");
+    let anchoring_test =
+        function_body(&this_file, "test_phase_budget_is_anchored_at_test_phase_entry");
+    assert!(
+        !anchoring_test.contains("let gate_ceiling_milliseconds = 45_000u64;"),
+        "V-6: the vacuous literal-comparison form must be gone, not duplicated"
+    );
+}
+
+/// #522 C5 fix pass, finding V-8: `exit_kick_worker_window_isolation_test` is
+/// a second, deeper consumer of the same test_phase_liveness budget the real
+/// exit_kick_gate spends (about 39s of scenario ceilings versus the real
+/// gate's 2-3s), but only the real gate reported its budget_anchor age on
+/// entry. This test pins that the worker-isolation test now reports its own
+/// anchor age too, so the round doc's "visible in every boot" claim is true
+/// for every consumer of the budget, not only the shallowest one.
+/// claim-lint:ok: #522 C5 fix pass V-8; this test's own body, below, is the
+/// resolving proof.
+#[test]
+fn fix_pass_v8_worker_isolation_reports_budget_anchor_age() {
+    let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
+    assert!(provider.contains(
+        "\"[exit_kick_worker_isolation] budget_anchor=test_phase anchor_age_at_entry_ms={} budget_ms={} scenario_ceiling_ms={}\","
+    ));
+    // The real gate's own breadcrumb, for symmetry -- both consumers now
+    // report their budget_anchor age on entry.
+    assert!(provider.contains(
+        "\"[exit_kick_gate] budget_anchor=test_phase anchor_age_at_gate_entry_ms={} budget_ms={} gate_ceiling_ms={}\","
+    ));
+    // The breadcrumb is bound to the worker-isolation test's own function
+    // body, positioned after it obtains the test-phase anchor and before its
+    // scenario loop begins spending the budget.
+    let worker_isolation = function_body(&provider, "exit_kick_worker_window_isolation_test");
+    let anchor_offset = worker_isolation
+        .find("let Some(test_phase_started_at) = crate::test_framework::test_phase_liveness_started_at()")
+        .expect("test-phase anchor binding");
+    let breadcrumb_offset = worker_isolation
+        .find("[exit_kick_worker_isolation] budget_anchor=test_phase")
+        .expect("budget_anchor breadcrumb");
+    let scenario_loop_offset = worker_isolation
+        .find("for (scenario, frozen, union) in [")
+        .expect("scenario loop");
+    assert!(anchor_offset < breadcrumb_offset);
+    assert!(breadcrumb_offset < scenario_loop_offset);
 }

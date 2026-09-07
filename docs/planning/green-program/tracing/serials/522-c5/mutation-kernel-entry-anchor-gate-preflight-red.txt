@@ -1,0 +1,3 @@
+[GATE_PREFLIGHT:structure_suites=61/62:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 62 structure suite(s) red: teardown_structure -- per-suite logs under /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/.gate-tmp/breenix_gate_structure_preflight.sodCna)
+GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)

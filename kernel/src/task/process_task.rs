@@ -695,16 +695,18 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
 /// PTY refcounting, TCP close, etc.
 ///
 /// CRITICAL: No PM lock is held when this runs.
-fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
+pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
     use crate::ipc::FdKind;
 
     for (_fd, fd_entry) in entries {
         match fd_entry.kind {
             FdKind::PipeRead(buffer) => {
-                buffer.lock().close_read();
+                let notifications = buffer.lock().close_read();
+                notifications.deliver();
             }
             FdKind::PipeWrite(buffer) => {
-                buffer.lock().close_write();
+                let notifications = buffer.lock().close_write();
+                notifications.deliver();
             }
             FdKind::TcpListener(port) => {
                 crate::net::tcp::tcp_listener_ref_dec(port);
@@ -732,11 +734,13 @@ fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
             }
             FdKind::FifoRead(path, buffer) => {
                 crate::ipc::fifo::close_fifo_read(&path);
-                buffer.lock().close_read();
+                let notifications = buffer.lock().close_read();
+                notifications.deliver();
             }
             FdKind::FifoWrite(path, buffer) => {
                 crate::ipc::fifo::close_fifo_write(&path);
-                buffer.lock().close_write();
+                let notifications = buffer.lock().close_write();
+                notifications.deliver();
             }
             _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
         }
@@ -1950,6 +1954,8 @@ fn x86_shadow_proof_case(pid: u64) -> Result<(), &'static str> {
 
 #[cfg(feature = "boot_tests")]
 pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResult {
+    // Declared before PM guards: removed FD tables are destroyed after PM unlock.
+    let mut retired_rows = alloc::vec::Vec::new();
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::VirtAddr;
     use crate::test_framework::registry::TestResult;
@@ -2410,9 +2416,11 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             VirtAddr::new(0x400000),
         );
         manager.insert_process(pid, process);
-        manager.remove_process(pid);
+        retired_rows.push(manager.remove_process(pid));
         ROW_REMOVAL_EPOCH.load(Ordering::Relaxed)
     };
+    // #813: PM scope ended; release removed rows before further observations.
+    retired_rows.clear();
     let row_before = trace::RECLAIM_UNPARKED_ROW.aggregate();
     unpark_sweep_with_snapshot(park_snapshot, row_marker);
     let row_unpark_delta = trace::RECLAIM_UNPARKED_ROW

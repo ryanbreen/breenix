@@ -151,18 +151,23 @@ pub fn sys_close(fd: i32) -> SyscallResult {
     );
 
     // Close the file descriptor
-    match process.fd_table.close(fd) {
+    let closed = process.fd_table.close(fd);
+    // #813: descriptor ownership escapes PM before any endpoint cleanup.
+    drop(manager_guard);
+    match closed {
         Ok(fd_entry) => {
             // Handle cleanup for specific fd types
             match fd_entry.kind {
                 FdKind::PipeRead(buffer) => {
                     // Mark reader as closed
-                    buffer.lock().close_read();
+                    let notifications = buffer.lock().close_read();
+                    notifications.deliver();
                     log::debug!("sys_close: Closed pipe read end fd={}", fd);
                 }
                 FdKind::PipeWrite(buffer) => {
                     // Mark writer as closed
-                    buffer.lock().close_write();
+                    let notifications = buffer.lock().close_write();
+                    notifications.deliver();
                     log::debug!("sys_close: Closed pipe write end fd={}", fd);
                 }
                 FdKind::StdIo(_) => {
@@ -256,13 +261,15 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 FdKind::FifoRead(path, buffer) => {
                     // Close FIFO read end - decrement both FIFO entry and pipe buffer counts
                     crate::ipc::fifo::close_fifo_read(&path);
-                    buffer.lock().close_read();
+                    let notifications = buffer.lock().close_read();
+                    notifications.deliver();
                     log::debug!("sys_close: Closed FIFO read end fd={} ({})", fd, path);
                 }
                 FdKind::FifoWrite(path, buffer) => {
                     // Close FIFO write end - decrement both FIFO entry and pipe buffer counts
                     crate::ipc::fifo::close_fifo_write(&path);
-                    buffer.lock().close_write();
+                    let notifications = buffer.lock().close_write();
+                    notifications.deliver();
                     log::debug!("sys_close: Closed FIFO write end fd={} ({})", fd, path);
                 }
                 FdKind::ProcfsFile { .. } => {
@@ -279,23 +286,7 @@ pub fn sys_close(fd: i32) -> SyscallResult {
             log::debug!("sys_close: returning to userspace fd={}", fd);
             SyscallResult::Ok(0)
         }
-        Err(e) => {
-            log::error!(
-                "sys_close: Failed to close fd={} for process {} '{}' (thread {}): error {}",
-                fd,
-                process_pid.as_u64(),
-                process.name,
-                thread_id,
-                e
-            );
-            // Log what fds ARE present
-            for i in 0..10 {
-                if let Some(fd_entry) = process.fd_table.get(i) {
-                    log::debug!("  fd_table[{}] = {:?}", i, fd_entry.kind);
-                }
-            }
-            SyscallResult::Err(e as u64)
-        }
+        Err(e) => SyscallResult::Err(e as u64),
     }
 }
 

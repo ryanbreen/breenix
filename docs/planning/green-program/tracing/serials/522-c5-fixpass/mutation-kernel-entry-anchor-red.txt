@@ -1,0 +1,17 @@
+== compiling teardown_structure ==
+== running teardown_structure test_phase_budget_is_anchored_at_test_phase_entry ==
+
+running 1 test
+
+thread 'test_phase_budget_is_anchored_at_test_phase_entry' panicked at /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/tests/teardown_structure.rs:17266:5:
+assertion failed: run_all_tests.contains("super::begin_test_phase_liveness_budget(")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test test_phase_budget_is_anchored_at_test_phase_entry ... FAILED
+
+failures:
+
+failures:
+    test_phase_budget_is_anchored_at_test_phase_entry
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 99 filtered out; finished in 0.00s
+

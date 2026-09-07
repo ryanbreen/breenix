@@ -1,0 +1,20 @@
+docs/planning/green-program/tracing/serials/522-c4/strict-boot1-serial.txt:
+[exit_kick_worker_isolation] scenario=before_union_worker_1 elapsed_ms=15002 cause=absolute_ceiling target=none progress=[1, 298, 298] completed=6 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_1 elapsed_ms=8001 cause=no_progress target=worker_1 progress=[1, 160, 159] completed=6 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_2 elapsed_ms=8002 cause=no_progress target=worker_2 progress=[159, 1, 159] completed=5 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_3 elapsed_ms=8002 cause=no_progress target=worker_3 progress=[159, 160, 1] completed=3 joined=3
+[exit_kick_worker_isolation] scenario=after_healthy elapsed_ms=2 cause=success target=none progress=[2, 2, 2] completed=7 joined=3
+
+docs/planning/green-program/tracing/serials/522-c4/strict-boot2-serial.txt:
+[exit_kick_worker_isolation] scenario=before_union_worker_1 elapsed_ms=15001 cause=absolute_ceiling target=none progress=[1, 298, 298] completed=6 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_1 elapsed_ms=8002 cause=no_progress target=worker_1 progress=[1, 160, 159] completed=6 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_2 elapsed_ms=8001 cause=no_progress target=worker_2 progress=[159, 1, 159] completed=5 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_3 elapsed_ms=8000 cause=no_progress target=worker_3 progress=[159, 160, 1] completed=3 joined=3
+[exit_kick_worker_isolation] scenario=after_healthy elapsed_ms=2 cause=success target=none progress=[2, 2, 2] completed=7 joined=3
+
+docs/planning/green-program/tracing/serials/522-c4/strict-boot3-serial.txt:
+[exit_kick_worker_isolation] scenario=before_union_worker_1 elapsed_ms=15004 cause=absolute_ceiling target=none progress=[1, 297, 297] completed=6 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_1 elapsed_ms=8002 cause=no_progress target=worker_1 progress=[1, 160, 159] completed=6 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_2 elapsed_ms=8003 cause=no_progress target=worker_2 progress=[159, 1, 160] completed=5 joined=3
+[exit_kick_worker_isolation] scenario=after_worker_3 elapsed_ms=8001 cause=no_progress target=worker_3 progress=[159, 160, 1] completed=3 joined=3
+[exit_kick_worker_isolation] scenario=after_healthy elapsed_ms=2 cause=success target=none progress=[2, 2, 2] completed=7 joined=3

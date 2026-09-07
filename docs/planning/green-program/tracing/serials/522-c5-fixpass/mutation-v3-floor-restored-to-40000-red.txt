@@ -1,0 +1,17 @@
+== compiling teardown_structure ==
+== running teardown_structure fix_pass_v3_watchdog_and_test_phase_budgets_fit_under_hard_timeout ==
+
+running 1 test
+
+thread 'fix_pass_v3_watchdog_and_test_phase_budgets_fit_under_hard_timeout' panicked at /Users/wrb/fun/code/breenix/.claude/worktrees/wf_723c5bef-433-1/tests/teardown_structure.rs:17427:5:
+V-3: watchdog floor 40000ms + test-phase budget 60000ms = 100000ms must stay under the 90000ms hard timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fix_pass_v3_watchdog_and_test_phase_budgets_fit_under_hard_timeout ... FAILED
+
+failures:
+
+failures:
+    fix_pass_v3_watchdog_and_test_phase_budgets_fit_under_hard_timeout
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 99 filtered out; finished in 0.00s
+

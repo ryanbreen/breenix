@@ -51,6 +51,13 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         arg
     );
 
+    #[cfg(feature = "boot_tests")]
+    if request == super::blocking_io_oracle::QUERY
+        || request == super::blocking_io_oracle::FIFO_FIXTURE
+    {
+        return super::blocking_io_oracle::dispatch(fd, request, arg);
+    }
+
     // First, try to look up the fd in the process's fd table
     // to check if it's a PTY device
     if let Some((fd_kind, pid)) = get_fd_kind_and_pid(fd as i32) {

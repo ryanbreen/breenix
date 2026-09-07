@@ -876,6 +876,7 @@ fn test_fork_from_process(test_pid: crate::process::ProcessId) {
 /// Test exec on a specific process
 #[allow(dead_code)]
 fn test_exec_on_process(pid: crate::process::ProcessId) {
+    let mut closes = crate::ipc::fd::DeferredFdCloses::default();
     log::info!("test_exec_on_process: Testing exec on PID {}", pid.as_u64());
 
     // Use the same minimal ELF that works for fork instead of create_exec_test_elf
@@ -883,7 +884,7 @@ fn test_exec_on_process(pid: crate::process::ProcessId) {
 
     let mut manager_guard = crate::process::manager();
     if let Some(ref mut manager) = *manager_guard {
-        match manager.exec_process(pid, &exec_elf_data, None) {
+        match manager.exec_process(pid, &exec_elf_data, None, &mut closes) {
             Ok(entry_point) => {
                 log::info!(
                     "🎉 EXEC SUCCESS: Process {} replaced with entry point {:#x}",

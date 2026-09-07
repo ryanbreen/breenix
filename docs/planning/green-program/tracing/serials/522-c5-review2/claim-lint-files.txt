@@ -1,0 +1,276 @@
+docs/polling-allowlist.md:46: [universal-claim] - **File:** `kernel/src/task/completion.rs:415-446+` (the `else` branch in `Completion::wait_timeout()` taken when `current_thread_id()` returns `None`)
+    -> unquantified absolute ('None') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+docs/polling-allowlist.md:57: [universal-claim] - **Loop:** A bounded `loop { ... core::hint::spin_loop(); }` exits immediately once `cpus_online() >= expected` and otherwise observes both the online count and the sum of monotonic per-CPU bring-up stages. The stage sum is sampled ever...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+docs/polling-allowlist.md:58: [universal-claim] - **Justification:** Boot CPU waits for secondary CPUs to come online after issuing PSCI CPU_ON requests. The secondary CPUs increment `cpus_online` once they reach their entry point. Bounded CPU-management handshake (NOT event polling) ...
+    -> unquantified absolute ('fully') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+docs/polling-allowlist.md:68: [unproven-claim] - **Justification:** A transient firmware/hypervisor failure should not permanently reduce the expected CPU count. `SUCCESS` and `ON_PENDING` are accepted; `ON_PENDING` is left to P17's separately bounded online wait. `ALREADY_ON` is ret...
+    -> 'proves' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+docs/polling-allowlist.md:69: [universal-claim] - **Bounded:** At most four attempts and three 500µs backoffs per CPU. A zero `CNTFRQ_EL0` reading uses the same conservative 1MHz fallback as P17. The last raw status is retained per CPU for P17 timeout diagnostics.
+    -> unquantified absolute ('zero') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:127: [universal-claim] `raw_code_mask`, with every compiled-out core-proof mutation leg additionally masked out. See `shared_coreproof/mutation_leg_mask.rs` for why the exemption exists and exactly how narrow it is.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:327: [universal-claim] Every named `static` and its declared type, without depending on line layout.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:416: [universal-claim] Every `fn NAME(` definition in a module, keyed by name. Names may repeat (`cfg`-split, or same-named inherent methods on different types); every body is kept so a check over a name covers all of them.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:1705: [universal-claim] Blanks every index/slice suffix applied to `alias`, so an indexed element reads as the alias itself.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:1942: [universal-claim] A closing paren, an index and a slice all leave the walk on the same physical storage: `(free_list)`, `free_list[0]` and `free_list[..]` are the alias, so a method called on any of them is a method called on the alias.
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2114: [universal-claim] `alias_method_calls` and `alias_argument_exports` only see calls; an index or deref store (`alias[i] = frame`, `*alias = other`) publishes a frame into the reuse pool without any method and without any ledger transition, which is precise...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2301: [universal-claim] A ratchet site is named by `(repo-relative path, canonical item path)` plus an occurrence count -- never by a source line, so reflowing or moving code inside a pinned function costs nothing while an added, removed or relocated site is st...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2315: [universal-claim] Every anchor holding at least one match, with its match count.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2386: [universal-claim] The `#[cfg(...)]` attributes decorating the item whose keyword sits at `keyword`, in source order with whitespace and quotes removed, or `""` when it has none. Keeping every attribute in the anchor makes `cfg`-split siblings distinct ite...
+    -> unquantified absolute ('none') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2463: [universal-claim] A `fn NAME` declaration wins over every other keyword in the same header, so neither an `-> impl Iterator` return type nor a bare `fn()` pointer parameter can rename the item.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2489: [universal-claim] Every `fn` / `impl` / `mod` / `trait` / `struct` block in the file, as `(open brace offset, close brace offset, anchor segment)`.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2526: [universal-claim] Render each item span's complete path in one source-order sweep. Duplicate renderings are marked so distinct items can never silently share an anchor.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2579: [universal-claim] Every match of `matcher`, bucketed by enclosing item. A non-empty tag is appended to the item path, so a matcher can put a payload (the abandon reason) into the key instead of re-reading a pinned line.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2605: [universal-claim] Every match of `matcher`, bucketed by enclosing item.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2618: [universal-claim] Offsets of calls to `name`: the identifier followed, modulo trivia, by `(`. The definition is excluded, so a validator never has to subtract it.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2781: [universal-claim] `(fn keyword offset, body brace offset)` for the definition whose name spans `offset..end`, or `None` when that identifier is not a definition name or the definition has no body. The body brace is found at paren/bracket depth zero, so an...
+    -> unquantified absolute ('None') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2819: [universal-claim] `(fn keyword offset, body brace offset)` for every `fn NAME` definition that has a body. A census anchors on the brace, so a definition is named by the item path that already includes the definition itself.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2829: [universal-claim] The same, for every definition whose name *begins* with `prefix`. A family pinned by prefix stays sensitive to a newly named member such as `block_current_probe`, which an exact-name list cannot see at all.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2864: [universal-claim] Every divergence between the observed and the pinned census, never just the first: a legitimate kernel change is re-anchored in one pass.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2898: [universal-claim] Accumulate a census-carrying outcome under `label` instead of failing on the first divergence, so one run reports every anchor that needs re-pinning.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:2935: [universal-claim] Every integer constant definition whose dynamically discovered name contains both INIT and PID and whose value has the literal init-PID shape.
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:3199: [universal-claim] The map methods that can neither add nor drop a process row (`get_mut` hands out a mutable row, never a mutable row *set*). Anything NOT on this list is treated as a row-set mutation, so an unfamiliar method is red until it is pinned: th...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:3204: [universal-claim] P6a delta: the three `ProcessRowMap` predicates join the list. They are keyed *reads* by construction — each one is a `get`/`get_mut` plus a tombstone filter, and `keyed_row_lookups_go_through_the_tombstone_predicates` pins their bodies ...
+    -> unquantified absolute ('always') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:3848: [universal-claim] P6a PR-2 re-derivation, per delta: the destructor's body moved out of `remove_process` and into `take_row_unconditionally`, which is now the single raw removal of a row from the map. The census keeps exactly the two writers it had — one ...
+    -> unquantified absolute ('none') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:3886: [universal-claim] P6a C1/C9. Raw keyed lookups of the process-row map — `self.processes.get(…)` and `.get_mut(…)`. Every one of them was migrated onto the two tombstone predicates (`live_row`/`live_row_mut`, and the deliberately-named tombstone-visible `r...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:3906: [universal-claim] P6a PR-2 re-derivation, per delta: PR-1's two bare writers became the join's two arms, and the join's own removal predicate is the third — it has to read the row it is about to remove, and that row is a tombstone by definition. Nothing e...
+    -> unquantified absolute ('Nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:3914: [universal-claim] P6a D-1. Every mention of the derived `RowState` authority, by enclosing item. `row_state` is the only producer; the predicates below it are the only consumers, and `is_terminated` must stay among them — see `tombstone_row_state_is_the_s...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:3936: [unproven-claim] The four legitimate leaks convert owned vectors into static test-binary slices; the non-empty companion proves the empty `Box::leak(Box::new(` census can still see real `Box::leak(` sites.
+    -> 'proves' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:3952: [universal-claim] Class 2 — creation-failure retire. Never reaped, never retired.
+    -> unquantified absolute ('Never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:3954: [universal-claim] Class 2 — sys_spawn's Window-3 teardown arm: the child's main thread was never published to the scheduler, so (like hold_init_publication) the row was never reaped and will never be retired; the join would strand it.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4002: [universal-claim] P6a PR-2, condition C4. This census is the ratchet the condition asks for: every producer of a retirement receipt is named here, so a future site that enqueues a *second* reclaim naming a pid that already has one is a `+` row rather than...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4042: [unproven-claim] The core-proof harness's departure probe. Same shape as the departure gate above and registered on the same footing: it plants a queue entry, calls the real primitive, and restores. It is a family member rather than a caller — the caller...
+    -> 'proof' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:4062: [universal-claim] Census A: every right-hand-side publication of a `ThreadState::Blocked*` value under `kernel/src`. The six production rows are all blocking-family primitives, which `validate_blocked_state_publication_family` asserts as a derived rule; t...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4081: [universal-claim] Census B: stores into a field named `state` whose right-hand side is opaque (not a path), the shape that would launder a blocked publication past census A. All four rows today are fixtures or a PRNG counter; a production opaque store on ...
+    -> unquantified absolute ('All') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4094: [unproven-claim] The core-proof departure probe restores the state it snapshotted, for the same reason and in the same shape as the gate above.
+    -> 'proof' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:4101: [universal-claim] Census C: struct-literal `state:` fields whose value is a `ThreadState` path. Neither census A (which requires an `=` immediately before the path) nor census B (which requires a `.state =` field store) can see a thread that is *construct...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4101: [unproven-claim] Census C: struct-literal `state:` fields whose value is a `ThreadState` path. Neither census A (which requires an `=` immediately before the path) nor census B (which requires a `.state =` field store) can see a thread that is *construct...
+    -> 'prove' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:4111: [universal-claim] The `sys_clone` row is the census's first finding and corrects the premise it was built on: #650 recorded this shape as dormant, and it is not. A clone child is *constructed* `Blocked` under the fully qualified spelling and made ready at...
+    -> unquantified absolute ('fully') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4132: [universal-claim] The core-proof driver's census scratch arrays, each initialised to the same `Running` placeholder the strand oracle uses below. None of these is a thread publication: all three are array fill values immediately overwritten by `collect_st...
+    -> unquantified absolute ('None') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4154: [unproven-claim] Census D: `use … ThreadState as ALIAS` renamings. Censuses A and C resolve same-file aliases into their needle set, but a renaming that is re-exported and read from another file leaves no `ThreadState` token in the reading file at all, w...
+    -> 'proves' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:4154: [absolute-guarantee] Census D: `use … ThreadState as ALIAS` renamings. Censuses A and C resolve same-file aliases into their needle set, but a renaming that is re-exported and read from another file leaves no `ThreadState` token in the reading file at all, w...
+    -> 'structurally' asserted with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4268: [universal-claim] Whole-tree writes include the boot-test alias arm. The separate production subset check in the page-table validator remains fixed to clone.rs + manager.rs + process.rs and exactly one non-`None` write.
+    -> unquantified absolute ('None') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4307: [universal-claim] P6a PR-2 re-derivation, per delta: the bump moved with the raw removal into `take_row_unconditionally`. Both entry points — the unconditional destructor and the join's `remove_row_joined` — reach it, so P1's parked-reclaimer `{row}` unpa...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4322: [universal-claim] #663 M2: every call site of `remove_from_ready_queue` under `kernel/src`, by enclosing item, whatever the receiver — `Scheduler`'s tid-keyed queue departure and `ProcessManager`'s pid-keyed one share the method name, and this census does...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4346: [universal-claim] #713 fix-round-2, N4: sys_spawn's Window-3 teardown arm now undoes the ready-queue push from create_process_with_argv when the child's main thread was never published, alongside retracting the parent's `children` entry and the row itself.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4457: [universal-claim] Every definition whose name begins with a blocking-family prefix, at any visibility. Visibility is not what makes something a blocking primitive: filtering on a literal `pub` token hid `pub(crate)` members from the census entirely, becau...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4479: [universal-claim] The start of the whole path expression whose tail begins at `offset`: walk back over every `SEGMENT::` qualifier. Without this, the fully qualified `crate::task::thread::ThreadState::Blocked` spelling escapes the assignment test entirely...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4532: [universal-claim] Offsets of the alias identifier in every `use … ThreadState as ALIAS` renaming. An alias renames the type out of every needle in this family, so the renaming is both resolved (below) and censused (census D).
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4549: [universal-claim] Every spelling the `ThreadState` type answers to in this file: its own name plus each same-file `use … as` renaming of it. Without this an alias hides a publication from census A and a construction from census C, because the needle those...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4565: [universal-claim] Offsets of `<spelling>::Blocked*` paths. The tail is matched as a prefix, so `Blocked`, `BlockedOnIO`, `BlockedOnSignal`, `BlockedOnChildExit` and `BlockedOnTimer` are all covered by one needle, and the head is matched on identifier boun...
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4577: [universal-claim] Offsets of `ThreadState::Blocked*` paths — under any same-file spelling of the type — that sit on the right-hand side of an assignment. `path_expression_start` covers the fully qualified spelling. Comparisons (`==`, `!=`, `<=`, `>=`), `m...
+    -> unquantified absolute ('fully') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4654: [universal-claim] Whether a rendered `#[cfg(...)]` predicate can hold ONLY when the `test` configuration is enabled. Positive-shaped and polarity-aware, which the old substring test was not: it read `test` anywhere inside the predicate as a fixture marker...
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4684: [universal-claim] Whether a rendered item path names a test fixture, judged by shape: one of the `#[cfg(...)]` attributes carried in the path holds only with the `test` configuration enabled (`test`, `all(test,…)`, `any(test,test)`). Never a list of fixtu...
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4703: [universal-claim] The innermost function name in a rendered item path, or `None` when the path names no function at all (in which case the family predicate fails closed).
+    -> unquantified absolute ('None') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4713: [universal-claim] The derived rule over census A's own rows: every production publication of a blocked state must live inside a blocking-family primitive. This sees the *class* — a new direct write anywhere under `kernel/src`, under any name and in any fi...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:4842: [universal-claim] The body of the item `path` names, or `None` when the file holds no such item.
+    -> unquantified absolute ('None') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:5715: [universal-claim] The publication primitives whose callers owe preempt discipline. The former `publish_current_io_wait_state` entry is gone with the wrapper it named: its only call site, `WaitQueueHead::prepare_to_wait`, now reaches the same publication t...
+    -> unquantified absolute ('nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:6638: [universal-claim] #533 re-pin, per delta: the join-inline arm is now taken for the SerialBoot stage on either architecture OR for every stage on an architecture that dispatches subsystems one at a time. x86 became such an architecture because the parallel...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:6822: [universal-claim] The x86 harness's *pass mechanism*, not just its shape. The five `contains` checks below prove the gate looks for the right markers; the block above them proves the recorded verdict is actually spent — `set -e` still on, `$passed` assert...
+    -> unquantified absolute ('zero') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:6822: [unproven-claim] The x86 harness's *pass mechanism*, not just its shape. The five `contains` checks below prove the gate looks for the right markers; the block above them proves the recorded verdict is actually spent — `set -e` still on, `$passed` assert...
+    -> 'prove' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:6833: [universal-claim] The verdict assertion is `test "$passed" = true`, not a bare `$passed`: a bare boolean variable executed as a command is silent on failure under `set -e` (bash prints nothing of its own), so a genuine FAIL died with no verdict text and n...
+    -> unquantified absolute ('nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:7596: [universal-claim] Census the writer shapes across production modules, not a known-name list: exec may clear the pair, but it must never become another group-join site.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:7656: [universal-claim] Q2's asymmetric cached-root proof is intentional: x86 has no per-thread cached CR3 writer. Discover assignments structurally, then require every writer to belong to the one aarch64 setter used by both cache and clear.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:7656: [unproven-claim] Q2's asymmetric cached-root proof is intentional: x86 has no per-thread cached CR3 writer. Discover assignments structurally, then require every writer to belong to the one aarch64 setter used by both cache and clear.
+    -> 'proof' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:7656: [absolute-guarantee] Q2's asymmetric cached-root proof is intentional: x86 has no per-thread cached CR3 writer. Discover assignments structurally, then require every writer to belong to the one aarch64 setter used by both cache and clear.
+    -> 'structurally' asserted with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:7680: [unproven-claim] The shared proof must dispatch to both architectures' real hardware and shadow readers without taking the scheduler or process-manager lock in its lock-free phase.
+    -> 'proof' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:7823: [universal-claim] The interrupt-return hook may stamp one epoch and do nothing before it.
+    -> unquantified absolute ('nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:8360: [unproven-claim] This ratchet catches a kernel oracle marker or gate grep being removed, which would let a boot gate pass without proving that the load-bearing futex self-check actually ran.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:9005: [universal-claim] The registration ratchet for the blocking-family censuses. A validator that is defined but never invoked, or an anchor table that has been emptied, is a ratchet in name only: the mutations it is supposed to catch pass silently. Deleting ...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:9627: [universal-claim] P6a PR-2, a deliberate and derived edit to this boundary: the two TOMBSTONE_JOIN counters left the declaration-only region because this phase gave them their producers. The tombstone gauge and its removal counter are new and were never d...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:9637: [universal-claim] P6a PR-2, review finding B1: the censuses above pin that the join oracle EXISTS; they cannot see whether anything runs it. Gate extra (g)'s only evidence is the oracle's own marker, so both of its drivers are pinned here — the aarch64 re...
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:10546: [unproven-claim] Replacing the queue-head value with a bare vector must be rejected, proving the declaration shape cannot silently reintroduce an unsynchronised waiter list.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10558: [unproven-claim] Removing the futex wait loop's preempt enable must be rejected, proving the derived sleeping-function census does not pass merely because a loop and publication call exist.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10592: [unproven-claim] Inserting a manager acquisition between group lookup and map locking must be rejected, proving the lock-order ratchet catches the deadlock-prone inversion directly.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10608: [unproven-claim] Adding a logger call to futex_wake must be rejected, proving the wait/wake path remains free of timing-changing output and logger-lock reentrancy.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10624: [unproven-claim] Removing the oracle's exact prefix must be rejected, proving a gate cannot silently lose the load-bearing self-check while retaining only unrelated boot markers.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10663: [universal-claim] Removing a handoff-stage timeout must be rejected, proving every wait remains bounded even if the driver and boot_tests-only seam drift after the handshake.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:10663: [unproven-claim] Removing a handoff-stage timeout must be rejected, proving every wait remains bounded even if the driver and boot_tests-only seam drift after the handshake.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10679: [unproven-claim] Removing the handshake guard's exit must be rejected, proving an unarmed kernel cannot reach the later waits after its probe times out.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10691: [unproven-claim] Adding boot_tests to the build must be rejected, proving the negative control continues to exercise the featureless profile shipped to production.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10707: [unproven-claim] Renaming the bsshd accept pin must be rejected, proving a driver exit alone cannot make the production-profile boot gate pass before init reaches the service.
+    -> 'proving' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:10813: [universal-claim] PR #648 review, F2: `#[cfg(not(test))]` is PRODUCTION code — it compiles in exactly when `test` is off. The old exemption substring-tested the cfg for `test`, so this probe moved census A and the derived family rule stayed silent; the cl...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:10897: [universal-claim] #647, caller side: a caller that open-codes either post-condition the primitive owns fires the caller rule, however the departure is spelled and wherever in the function it sits. The control arms keep the rule readable: the same caller w...
+    -> unquantified absolute ('nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:10935: [universal-claim] #663 M2: the caller rule's own blind spot, demonstrated rather than just described. `reap` here is exactly one of the caller rule's permitted arms above — it holds the dequeue but never calls the blocking family, so the caller rule does ...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:10935: [absolute-guarantee] #663 M2: the caller rule's own blind spot, demonstrated rather than just described. `reap` here is exactly one of the caller rule's permitted arms above — it holds the dequeue but never calls the blocking family, so the caller rule does ...
+    -> 'structurally' asserted with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:10957: [universal-claim] The fully qualified spelling must not escape the census. It does not carry `=` immediately before the needle, and a mutation reverting `kthread_park` to its inline write is exactly this shape.
+    -> unquantified absolute ('fully') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:10976: [universal-claim] A comparison must not be read as a publication, or census A would be unreadable and every re-anchor meaningless.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:11009: [universal-claim] The fully qualified construction must not escape census C either, for the same reason the qualified publication must not escape census A.
+    -> unquantified absolute ('fully') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:11031: [universal-claim] …and census C stays readable: a field *declaration* names the type without a variant and is not a construction. Reading it as one would put a row on every struct that has a thread state at all.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:11041: [universal-claim] …and the census is scoped to the field named `state`, the same field census B is scoped to. A different field that merely holds a thread state — a remembered prior value, a default — publishes nothing about the thread's own state, and ro...
+    -> unquantified absolute ('nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:11074: [absolute-guarantee] …and the renaming itself is censused, which is the part same-file resolution structurally cannot reach: a renaming re-exported under a new name and read from a file carrying no `ThreadState` token at all.
+    -> 'structurally' asserted with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:11241: [universal-claim] R4: ProcessPageTable's Drop can count but can never return a frame.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:11254: [universal-claim] R5: bare, block-wrapped, and qualified raw drops are all rejected.
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:11279: [unproven-claim] The exec-supersede walk is gone: `cleanup_for_exec` is one arch-neutral custody body, and the only frame returns left anywhere in process_memory.rs are the two inside the boot-test custody fixture. These five negatives pin that state thr...
+    -> 'proven' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:11317: [universal-claim] 3. The same free spelled as a fully qualified path: the census resolves call sites, not one import spelling.
+    -> unquantified absolute ('fully') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:11374: [unproven-claim] R3: a second retirement call, even with a different receiver spelling, is outside the one proof-gated site and must fail exact site membership.
+    -> 'proof' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:11591: [universal-claim] PR-2: virtual-page records precede descriptor publication, decref is fail-closed, and a live leaf can never enter the reuse pool.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:13271: [unproven-claim] #653. The production claim window is entered non-preemptibly and left preemptible, proven by shape rather than by comment.
+    -> 'proven' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:13946: [universal-claim] This check previously required the drop to sit AFTER `without_interrupts` returned on every arch. That pinned the pre-#609 shape.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14176: [universal-claim] The shape the kernel now carries, reduced to the three functions this check reads. Validating it first is the anti-vacuity half: every mutation below is a single edit away from something that passes.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14259: [universal-claim] Dropping one arm entirely leaves an arch with no release at all.
+    -> unquantified absolute ('entirely') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14487: [unproven-claim] The named census below proves the three teardown operations are each present exactly once; this anchor is what stops a FOURTH operation from being added to the idle-path reclamation sequence without anyone deciding to. Bumping it is the ...
+    -> 'proves' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:14657: [universal-claim] * **class 2 — creation-failure retire** (`hold_init_publication`, `sys_spawn`'s Window-3 arm): the row was never reaped and will never be retired, so the join would strand it. `sys_spawn`'s arm fires when the child's main thread was neve...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14667: [universal-claim] * **class 3 — the twenty in-kernel oracle callers** in `teardown.rs`: per-site dispositions live in the PR body. All twenty stay on the unconditional destructor because none of their fixture rows has a retirement event to join against in...
+    -> unquantified absolute ('All') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14754: [universal-claim] P6a condition C8 and the #609 lesson: the retire arm's PM acquisition must never migrate into a masked window or a window that already holds the deferred-reclaim queue, and the `Process` destructor it can trigger must run after the guard...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14789: [universal-claim] Between taking PM and dropping the evicted row, the drain touches no queue lock: PM is never held across the loop's next PENDING acquisition.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14823: [universal-claim] The abandon path settles the same latch and declines rather than re-entering PM, so a violated enqueue contract is a counted leak and never a deadlock (P6a condition C2, path (c)).
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14903: [universal-claim] Review finding B2: the x86 post-userspace samples, and there are two because one cannot carry both halves of the claim. The `sys_exit` arm runs when the last userspace thread is gone and measures the gauge nonzero on the four real rows t...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14935: [universal-claim] The sample must be unconditional once the backstop has elapsed: a census that only prints when the gauge already reads zero cannot fail, and the gate literal it feeds would be self-fulfilling. Nothing before the emit may read the gauge.
+    -> unquantified absolute ('zero') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14960: [universal-claim] #661 F2 anti-vacuity. `leaked` can only ever be nonzero while the watched window is open, and the window is exactly the ownership gate's stress window. If the gate stops opening it, every watch bit stays clear, the census reads zero for ...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:14993: [universal-claim] The watch is only populated and cleared from the allocator's own cohort hooks; without those it is an empty bitmap that nothing ever sets.
+    -> unquantified absolute ('nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15004: [universal-claim] P6a gate extras (b) and (f) need a **production** reader, not a fixture one: `TOMBSTONE_RESIDENT` has to be observably nonzero while a real workload is reaping children and back to zero once the drain has retired them. The census rides t...
+    -> unquantified absolute ('zero') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15029: [universal-claim] Anti-vacuity: an emitter that only exists in the boot-test profile proves nothing about the production drain, and neither does one the heartbeat never calls.
+    -> unquantified absolute ('nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15029: [unproven-claim] Anti-vacuity: an emitter that only exists in the boot-test profile proves nothing about the production drain, and neither does one the heartbeat never calls.
+    -> 'proves' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:15108: [universal-claim] #661 F2. The two mutations that would leave the quiesce-leak census structurally present and permanently blind: the gate stops opening the watched window, and the count stops intersecting the watch with the live slot bitmap. Both read `l...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15108: [absolute-guarantee] #661 F2. The two mutations that would leave the quiesce-leak census structurally present and permanently blind: the gate stops opening the watched window, and the count stops intersecting the watch with the live slot bitmap. Both read `l...
+    -> 'structurally' asserted with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15146: [universal-claim] Review finding B2's own mutation: the post-userspace x86 sample deleted. Without it the only x86 census samples are the two that precede every live reap, which is exactly the evidence gap this finding named.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15204: [universal-claim] P6a condition C3, review finding F7. Nothing exercises `complete_wait`'s own return: the join oracle calls `reap_row` directly, so the syscall-level behaviour C3 specifies — the loser of the claim returns ECHILD and copies nothing — was ...
+    -> unquantified absolute ('Nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15210: [unproven-claim] What this does **not** prove, stated plainly: that two *concurrent* waiters serialize correctly. C3's last sentence asks for a concurrent injection and this PR's is sequential; that narrowing is disclosed in PLAN gate (h) and the equival...
+    -> 'prove' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:15263: [universal-claim] #646: the kernel-stack ownership oracle must measure its own workload by slot identity, never by a before/after delta on the process-wide slot counters. Those counters move for every kernel stack in the system, so the old `slot_alloc_del...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15270: [universal-claim] The shapes below are census-derived, not line pins: every site that counts a slot return must classify that return by identity first, and every allocator entry point that counts an allocation must clear the identity state, so a new alloc...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15329: [universal-claim] Census: every counted slot return classifies by identity first, and the classification happens before the bitmap bit is released, so the index cannot be reallocated underneath it.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15369: [universal-claim] Census: every allocator entry point that counts an allocation also clears the identity state, so an ordinary return of a reallocated slot is never misreported as a double return of the slot's previous occupant.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15435: [universal-claim] A census rather than a pinned list: the shape is "every marker constant this script declares is spent on an assertion", so adding a constant without asserting it, or deleting the assertion that spends one, is what reddens the ratchet. A ...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15513: [universal-claim] This gate is the only x86 boot that ever executes the shipped zero-feature kernel, so a silent abort inside it is worse than in the boot-test harness: there is no second x86 gate that would catch the same regression. The checks below the...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15571: [absolute-guarantee] #673 review, mi6: the anti-vacuity knob's own constraint (only empty or exactly "disable_x86_prod_init") must stay enforced structurally, not only at runtime -- deleting this one line would silently restore the unconstrained knob B5 was ...
+    -> 'structurally' asserted with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15595: [universal-claim] Census: every declared marker constant is spent on an exact-count assertion, directly or indirectly (#673 review, B2: a before/after liveness delta captures a marker_count() into a variable so it can be pinned twice).
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15609: [universal-claim] Census: every declared marker array is spent on a zero-count loop, and carries at least one marker.
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:15871: [universal-claim] A marker constant declared but never spent.
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:16798: [universal-claim] And the exemption must actually apply to something in the sources this file reads, or this file's half of it proves nothing.
+    -> unquantified absolute ('nothing') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+tests/teardown_structure.rs:16798: [unproven-claim] And the exemption must actually apply to something in the sources this file reads, or this file's half of it proves nothing.
+    -> 'proves' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+tests/teardown_structure.rs:16812: [unproven-claim] Count masked-in occurrences of `needle`, for the exemption proof above.
+    -> 'proof' with no named mutation/experiment (mutation, revert, redden, falsify, reproduce, regression, --boots, bisect), N-of-M count, or resolving evidence-log citation in this paragraph
+
+claim-lint: 137 finding(s) across 3 file(s) [whole files]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.

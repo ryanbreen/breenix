@@ -1,0 +1,6 @@
+accepted-after-peer-close exit 0
+mutation-blocking-eagain exit 1
+accepted-after-blocking-eagain exit 0
+mutation-success-without-copy exit 1
+accepted-after-success-without-copy exit 0
+All runtime mutation pairs completed

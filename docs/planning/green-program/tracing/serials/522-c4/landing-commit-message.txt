@@ -1,0 +1,20 @@
+docs(522,c4,landing): merge main, re-run structure gates and one strict boot
+
+Merged origin/main (1ee30c10) for landing. No conflicts; 27 incoming
+commits touch the tests/*_structure.rs raw-string scanner helper
+(#920/#917-family) across many files and add two new suite files, but 0
+of them touch this branch's own exit_kick_gate/workers_ready mechanism
+or the strict script's timeout/poll defaults, so no fixture re-recording
+was needed beyond the fresh run below.
+
+bash scripts/run-structure-tests.sh: 94/94 (teardown_structure). Full
+structure preflight sweep: 62/62 (up from 61, the merge's two new suite
+files). Rebuilt (boot_tests, aarch64, 0 project-source warnings) and ran
+one strict boot: PASS 1/1, exit_kick_protocol_gate and
+exit_kick_worker_window_isolation both PASS, 131 :PASS] / 0 :FAIL]
+markers in the fresh serial.
+
+See docs/planning/green-program/tracing/522-C4-2026-09-07.md's new
+"Landing" section for full evidence and citations.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
