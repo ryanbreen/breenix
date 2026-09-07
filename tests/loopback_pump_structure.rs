@@ -2007,6 +2007,12 @@ fn loopback_arch_validator_rejects_arch_specific_test() {
 /// check, not a list of the strings: the arms may be re-worded freely, and a
 /// new delivery or reader case may be added, so long as every arm's text is
 /// distinct and the reader fact is derived from `reader_state` and consulted.
+/// One exception: no arm may claim "never woken" verbatim, in any cell,
+/// however the rest of that arm is worded. None of `queue_depth`,
+/// `client_has_data` or `reader_fact` observes whether a wake happened --
+/// `reader_fact` only observes where the reader sits now -- so the phrase is
+/// unsupportable by any fact this selector reads, in every cell, not only the
+/// one cell #586 hit.
 /// claim-lint:ok: 1 of 1 preserved specimen, the service-sequence max boot 24
 /// at 5c53ba59, printed reader_state=Ready beside the "never woken" text;
 /// serial in-repo at docs/planning/green-program/network/serials/586-pr1/.
@@ -2082,6 +2088,22 @@ fn validate_loopback_wake_classification_reads_reader_state(source: &str) -> Res
             ));
         }
     }
+    // #586's own misreport claimed a fact the selector cannot observe: the
+    // selector reads 3 facts -- `queue_depth`, `client_has_data`,
+    // `reader_fact` -- and 0 of 3 witness whether a wake happened, only where
+    // the reader sits now. The shape checks above let the arms be reworded
+    // freely and still pass with this exact phrase sitting in a different
+    // cell (V-4: reproduced by moving it into the LeftBlocked arm without
+    // touching the arm count, arm distinctness, or reader-fact derivation),
+    // so this is a dedicated content check, not a shape one.
+    const MISREPORT_PHRASE: &str = "never woken";
+    for arm in &arms {
+        if arm.contains(MISREPORT_PHRASE) {
+            return Err(format!(
+                "a loopback wake classification claims \"{MISREPORT_PHRASE}\" -- no fact this selector reads can prove that (#586)"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -2123,6 +2145,29 @@ fn loopback_wake_classification_validator_rejects_a_deleted_reader_state_arm() {
     assert!(
         validate_loopback_wake_classification_reads_reader_state(&dropped_derivation).is_err(),
         "a reader fact not derived from reader_state must redden the validator"
+    );
+}
+
+/// V-4: the 4 shape checks above (arm count, arm distinctness, reader fact
+/// derived from `reader_state` and `is_blocked`, the selector's 3-fact read)
+/// stayed green 4 of 4 when the review reproduced this by replacing only the
+/// LeftBlocked arm's text with the verbatim #586 misreport string -- 0 of 4
+/// moved, so 0 of 4 could catch it. This is the content check that does.
+#[test]
+fn loopback_wake_classification_validator_rejects_the_586_misreport_phrase() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_loopback_wake_classification_reads_reader_state(&source)
+        .expect("baseline source must pass, or the mutation below proves nothing");
+
+    let reintroduced = source.replacen(
+        "\"delivery landed and the recv waiter left Blocked but had not run by the deadline\"",
+        "\"delivery landed but the recv waiter was never woken\"",
+        1,
+    );
+    assert_ne!(reintroduced, source, "misreport mutation must apply");
+    assert!(
+        validate_loopback_wake_classification_reads_reader_state(&reintroduced).is_err(),
+        "the #586 misreport text returning verbatim into a different cell must redden the validator"
     );
 }
 
