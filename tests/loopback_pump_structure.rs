@@ -4103,3 +4103,217 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         assert!(mask[offset], "raw-string close swallowed the next byte");
     }
 }
+
+/// The wake-budget marker is printed on the passing path and on every
+/// failing path, from one producer, over three bracketed clocks.
+/// claim-lint:ok: "every failing path" is the 2 failing returns and 1
+/// passing return this validator enumerates below, 3 of 3, and the mutation
+/// test beneath reddens on deleting either print; see #586.
+///
+/// #586 PR 2. The budget window is bracketed by a tick clock
+/// (`get_monotonic_time`, which advances only on delivered timer
+/// interrupts), a counter clock (`monotonic_now_ns`, CNTVCT_EL0 on aarch64
+/// and the TSC on x86_64, which advances with the host), and
+/// `CTX_SWITCH_TOTAL`, the switches the guest performed. A marker printed
+/// only on the failing path would have no green population to be read
+/// against, and the two verdict constants were chosen from exactly that
+/// population, so "printed on both paths" is the load-bearing property here
+/// rather than a convenience.
+///
+/// This is a shape check: the field values, the wording of the
+/// classification and the arithmetic of the verdict may all change. What it
+/// pins is that the grammar carries its 13 fields, that each of the 3 clock
+/// stamps straddles the sleep, and that no exit of the function returns
+/// without a call to the single emitter.
+/// claim-lint:ok: "may all change" scopes what this validator does NOT pin;
+/// the 3 properties it does pin are enumerated in the same sentence, 3 of 3;
+/// see #586.
+fn validate_loopback_wake_budget_marker(source: &str) -> Result<(), String> {
+    // The literal as a producer writes it: opening quote included, so the
+    // prose above and in the kernel comments -- which spell the marker in
+    // backticks -- is not counted as a second producer.
+    const MARKER: &'static str = "\"[LOOPBACK_WAKE_BUDGET:";
+    let producers = source.matches(MARKER).count();
+    if producers != 1 {
+        return Err(format!(
+            "the wake-budget marker has {producers} producers; exactly 1 is the contract"
+        ));
+    }
+
+    let body = function_body(source, "run_loopback_recv_wake_test_inner")
+        .ok_or_else(|| "missing run_loopback_recv_wake_test_inner".to_string())?;
+
+    let grammar_start = body.find(MARKER).ok_or_else(|| {
+        "the wake-budget marker is not produced inside the loopback wake test".to_string()
+    })?;
+    let grammar_len = body[grammar_start..]
+        .find(']')
+        .ok_or_else(|| "the wake-budget marker literal is unterminated".to_string())?;
+    let grammar = &body[grammar_start + 1..grammar_start + grammar_len];
+    for field in [
+        "arch=",
+        "test=",
+        "budget_ms=",
+        "elapsed_tick_ms=",
+        "elapsed_ctr_ms=",
+        "ctx_delta=",
+        "extensions=",
+        "reader_state=",
+        "queued_cpu=",
+        "queued_idx=",
+        "idle_cpus=",
+        "woke_ms=",
+        "verdict=",
+    ] {
+        if !grammar.contains(field) {
+            return Err(format!("the wake-budget marker omits the {field} field"));
+        }
+    }
+    let sleep = code_text_offset(body, "sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS)")
+        .ok_or_else(|| "the wake budget is not spent in one named sleep".to_string())?;
+    for (before, after, clock) in [
+        ("let tick_before_ms", "let tick_after_ms", "get_monotonic_time"),
+        ("let ctr_before_ns", "let ctr_after_ns", "monotonic_now_ns"),
+        ("let ctx_before", "let ctx_after", "CTX_SWITCH_TOTAL"),
+    ] {
+        let before_at = code_text_offset(body, before)
+            .ok_or_else(|| format!("the wake budget is not stamped by {before}"))?;
+        let after_at = code_text_offset(body, after)
+            .ok_or_else(|| format!("the wake budget is not stamped by {after}"))?;
+        if before_at >= sleep || after_at <= sleep {
+            return Err(format!(
+                "{before} and {after} do not straddle the wake budget"
+            ));
+        }
+        for (statement_at, label) in [(before_at, before), (after_at, after)] {
+            let statement_len = body[statement_at..]
+                .find(';')
+                .ok_or_else(|| format!("{label} is unterminated"))?;
+            let statement = &body[statement_at..statement_at + statement_len];
+            if !has_identifier(statement, clock) {
+                return Err(format!("{label} does not read {clock}"));
+            }
+        }
+    }
+    let verdict_at = code_text_offset(body, "let verdict =")
+        .ok_or_else(|| "the wake budget reaches no verdict".to_string())?;
+    let verdict_len = body[verdict_at..]
+        .find("\n    };")
+        .ok_or_else(|| "the verdict selector is unterminated".to_string())?;
+    let verdict = &body[verdict_at..verdict_at + verdict_len];
+    for token in ["ok", "wake", "starved", "dispatch"] {
+        if !verdict.contains(&format!("\"{token}\"")) {
+            return Err(format!("the wake-budget verdict cannot read {token}"));
+        }
+    }
+
+    if !has_identifier(body, "thread_placement_facts") {
+        return Err("the wake-budget marker reads no placement facts".to_string());
+    }
+
+    let emitter_at = code_text_offset(body, "let emit_wake_budget =")
+        .ok_or_else(|| "the wake-budget marker has no single emitter".to_string())?;
+    let tail = &body[emitter_at..];
+    let mask = code_mask(tail);
+    let mut exits: Vec<usize> = Vec::new();
+    for pattern in ["TestResult::Fail", "TestResult::Pass"] {
+        for (offset, _) in tail.match_indices(pattern) {
+            if mask[offset] {
+                exits.push(offset);
+            }
+        }
+    }
+    exits.sort_unstable();
+    if exits.len() < 3 {
+        return Err(format!(
+            "the loopback wake test has {} exits after the emitter; 2 failing and 1 passing are the contract",
+            exits.len()
+        ));
+    }
+    let mut previous = 0usize;
+    for exit in exits {
+        if !tail[previous..exit].contains("emit_wake_budget()") {
+            return Err(
+                "an exit of the loopback wake test returns without printing the wake-budget marker"
+                    .to_string(),
+            );
+        }
+        previous = exit;
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_wake_budget_marker_is_printed_on_both_paths() {
+    validate_loopback_wake_budget_marker(&repo_text(
+        "kernel/src/test_framework/registry.rs",
+    ))
+    .expect("the wake-budget marker is printed on the passing and the failing paths");
+}
+
+/// The accessor the marker reads is read-only: it takes one snapshot and
+/// writes no scheduler state. A census of the mutating call names the
+/// scheduler uses on its queues and per-CPU rows, not a list of the lines.
+#[test]
+fn loopback_wake_budget_placement_accessor_is_read_only() {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&scheduler, "thread_placement_facts")
+        .expect("the placement accessor the wake-budget marker reads is gone");
+    for mutation in ["push_back", "pop_front", "remove", "store", "insert", "push"] {
+        assert!(
+            !has_identifier(body, mutation),
+            "the placement accessor calls {mutation}; it must only read"
+        );
+    }
+}
+
+/// The mutation legs. Deleting the fail-path print, deleting the pass-path
+/// print, dropping one grammar field, and unhooking one clock stamp each
+/// redden the validator; without them the validator could be satisfied by a
+/// marker nobody prints and a budget nobody measured.
+#[test]
+fn loopback_wake_budget_validator_rejects_a_deleted_print() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_loopback_wake_budget_marker(&source)
+        .expect("baseline source must pass, or the mutations below prove nothing");
+
+    let no_fail_print = source.replacen(
+        "        emit_wake_budget();\n        return TestResult::Fail(diagnostic_message);",
+        "        return TestResult::Fail(diagnostic_message);",
+        1,
+    );
+    assert_ne!(no_fail_print, source, "fail-path mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_fail_print).is_err(),
+        "a failing path that returns without the wake-budget marker must redden the validator"
+    );
+
+    let no_pass_print = source.replacen(
+        "    emit_wake_budget();\n    TestResult::Pass",
+        "    TestResult::Pass",
+        1,
+    );
+    assert_ne!(no_pass_print, source, "pass-path mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_pass_print).is_err(),
+        "a passing path that returns without the wake-budget marker must redden the validator"
+    );
+
+    let no_ctx_field = source.replacen(":ctx_delta={}", ":ctx={}", 1);
+    assert_ne!(no_ctx_field, source, "grammar mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&no_ctx_field).is_err(),
+        "a grammar that drops a field must redden the validator"
+    );
+
+    let unbracketed = source.replacen(
+        "    let tick_before_ms = crate::time::get_monotonic_time();",
+        "    let tick_before_ms = 0u64;",
+        1,
+    );
+    assert_ne!(unbracketed, source, "clock mutation must apply");
+    assert!(
+        validate_loopback_wake_budget_marker(&unbracketed).is_err(),
+        "a tick stamp that reads no clock must redden the validator"
+    );
+}
