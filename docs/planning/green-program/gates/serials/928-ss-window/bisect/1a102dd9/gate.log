@@ -1,0 +1,147 @@
+Revision: 1a102dd9 (supplied bisect run; not rerun in this lane)
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ssbisect/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ssbisect/wt/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ssbisect/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   eeddb7d65ad6f7e8ff815cfc28431d4e4a865966f34196f000dd92f4eaddca7a
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h61ecf85f7d566472E
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 #575 Service Sequence Gate
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ssbisect/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ssbisect/wt/target/ext2-aarch64.img
+Boots per profile: 2
+Profile selection: both
+Block IOPS throttle: 2000
+Per-boot timeout: 45s
+Output: /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219
+
+Profile max: running 2 sequential boots
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 84219 (<unknown process>)
+  Boot 1/2: futex handoff oracle marker missing or failed
+  Boot 1/2: UNATTRIBUTED — oracle marker absent [timeout, 45s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=8]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 84219 (<unknown process>)
+  Boot 2/2: futex handoff oracle marker missing or failed
+  Boot 2/2: UNATTRIBUTED — oracle marker absent [timeout, 45s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=8]
+
+Profile max census
+  575           0
+  576           0
+  626           0
+  635           0
+  641           0
+  690           0
+  DATA_ABORT    0
+  CLONE_EXEC    0
+  STRAND        0
+  BOOT_TEST_FAIL 0
+  596           0
+  612           0
+  609           0
+  P5B           0
+  GREEN         0
+  UNATTRIBUTED  2
+  GREEN rate: 0/2 (0.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+  CTX596 divergence: 0 marker line(s) across 0/2 boot(s) — reported, not gated
+  RET dispatch refused: 0 marker line(s) across 0/2 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/2 boot(s) — gate-failing
+  Per-CPU stack alien: 0 marker line(s) across 0/2 boot(s) — gate-failing
+  CPU identity split: 0 marker line(s) across 0/2 boot(s) — gate-failing
+  Ret-dispatch staging refused: 0 marker line(s) across 0/2 boot(s) — gate-failing
+  Saved-LR non-PC words: 16 marker line(s) across 2/2 boot(s) — reported, not gated
+Profile max gate: FAILED (575=0, 576=0, 626=0, 635=0, 641=0, 690=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=2, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)
+
+Profile cortex-a72: running 2 sequential boots
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 84219 (<unknown process>)
+  Boot 1/2: futex handoff oracle marker missing or failed
+  Boot 1/2: UNATTRIBUTED — oracle marker absent [timeout, 45s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=8]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 84219 (<unknown process>)
+  Boot 2/2: futex handoff oracle marker missing or failed
+  Boot 2/2: UNATTRIBUTED — oracle marker absent [timeout, 45s, ctx596_divergence=0, ret_dispatch_refusals=0, resume_pc_refusals=0, percpu_stack_aliens=0, cpu_identity_splits=0, ret_stage_refusals=0, lr_nontext=8]
+
+Profile cortex-a72 census
+  575           0
+  576           0
+  626           0
+  635           0
+  641           0
+  690           0
+  DATA_ABORT    0
+  CLONE_EXEC    0
+  STRAND        0
+  BOOT_TEST_FAIL 0
+  596           0
+  612           0
+  609           0
+  P5B           0
+  GREEN         0
+  UNATTRIBUTED  2
+  GREEN rate: 0/2 (0.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+  CTX596 divergence: 0 marker line(s) across 0/2 boot(s) — reported, not gated
+  RET dispatch refused: 0 marker line(s) across 0/2 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/2 boot(s) — gate-failing
+  Per-CPU stack alien: 0 marker line(s) across 0/2 boot(s) — gate-failing
+  CPU identity split: 0 marker line(s) across 0/2 boot(s) — gate-failing
+  Ret-dispatch staging refused: 0 marker line(s) across 0/2 boot(s) — gate-failing
+  Saved-LR non-PC words: 16 marker line(s) across 2/2 boot(s) — reported, not gated
+Profile cortex-a72 gate: FAILED (575=0, 576=0, 626=0, 635=0, 641=0, 690=0, DATA_ABORT=0, CLONE_EXEC=0, STRAND=0, BOOT_TEST_FAIL=0, 596=0, 612=0, 609=0, P5B=0, UNATTRIBUTED=2, RESUME_PC_REFUSED=0, PERCPU_STACK_ALIEN=0, CPU_IDENTITY_SPLIT=0, RET_STAGE_REFUSED=0)
+
+Total census
+  575           0
+  576           0
+  626           0
+  635           0
+  641           0
+  690           0
+  DATA_ABORT    0
+  CLONE_EXEC    0
+  STRAND        0
+  BOOT_TEST_FAIL 0
+  596           0
+  612           0
+  609           0
+  P5B           0
+  GREEN         0
+  UNATTRIBUTED  4
+  GREEN rate: 0/4 (0.0%) — census-only: every non-GREEN bucket is gate-failing, with no exceptions, including the open #576, #626, #635, #641 and #690 defects
+  CTX596 divergence: 0 marker line(s) across 0/4 boot(s) — reported, not gated
+  RET dispatch refused: 0 marker line(s) across 0/4 boot(s) — reported, not gated
+  Resume PC refused: 0 marker line(s) across 0/4 boot(s) — gate-failing
+  Per-CPU stack alien: 0 marker line(s) across 0/4 boot(s) — gate-failing
+  CPU identity split: 0 marker line(s) across 0/4 boot(s) — gate-failing
+  Ret-dispatch staging refused: 0 marker line(s) across 0/4 boot(s) — gate-failing
+  Saved-LR non-PC words: 32 marker line(s) across 4/4 boot(s) — reported, not gated
+
+ARM64 #575 SERVICE SEQUENCE GATE: FAILED
+Non-GREEN boots:
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/cortex-a72/serial-1.txt: UNATTRIBUTED — oracle marker absent (qemu_status=0) [timeout, 45s]
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/cortex-a72/serial-2.txt: UNATTRIBUTED — oracle marker absent (qemu_status=0) [timeout, 45s]
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/max/serial-1.txt: UNATTRIBUTED — oracle marker absent (qemu_status=0) [timeout, 45s]
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/max/serial-2.txt: UNATTRIBUTED — oracle marker absent (qemu_status=0) [timeout, 45s]
+Preserved serials:
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/cortex-a72/serial-1.qmp.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/cortex-a72/serial-1.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/cortex-a72/serial-2.qmp.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/cortex-a72/serial-2.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/max/serial-1.qmp.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/max/serial-1.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/max/serial-2.qmp.txt
+  /tmp/breenix_aarch64_service_sequence_gate_20260907T181901Z-84219/max/serial-2.txt
