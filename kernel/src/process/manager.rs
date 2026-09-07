@@ -374,7 +374,7 @@ impl ProcessManager {
 
         // Create a new page table for this process
         crate::serial_println!("manager.create_process: Creating ProcessPageTable");
-        let mut page_table = Box::new(
+        let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
             crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
                 log::error!(
                     "Failed to create process page table for PID {}: {}",
@@ -387,6 +387,7 @@ impl ProcessManager {
                 );
                 "Failed to create process page table"
             })?,
+            pid.as_u64(),
         );
         crate::serial_println!("manager.create_process: ProcessPageTable created");
 
@@ -494,7 +495,15 @@ impl ProcessManager {
         // Create the process
         crate::serial_println!("manager.create_process: Creating Process struct");
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
-        process.page_table = Some(page_table);
+        process.page_table = Some(page_table.publish());
+        // Unpublished-construction ownership boundary (issue 588). From here
+        // until the row insert below, every error exit drops this guard, which
+        // releases the address space through the same never-installed path exec
+        // already uses.
+        // claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+        let mut unpublished =
+            crate::process::unpublished::UnpublishedProcess::new(process, pid.as_u64());
+        let process = unpublished.as_mut();
 
         // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
         let heap_base = loaded_elf.segments_end;
@@ -559,7 +568,7 @@ impl ProcessManager {
 
         // Create the main thread
         crate::serial_println!("manager.create_process: Creating main thread");
-        let thread = self.create_main_thread(&mut process, stack_top)?;
+        let thread = self.create_main_thread(&mut *process, stack_top)?;
         crate::serial_println!("manager.create_process: Main thread created");
         process.set_main_thread(thread);
         crate::serial_println!("manager.create_process: Main thread set on process");
@@ -572,7 +581,7 @@ impl ProcessManager {
             pid.as_u64()
         );
 
-        self.processes.insert(pid, process);
+        self.processes.insert(pid, unpublished.commit());
         Ok(())
     }
 
@@ -637,7 +646,7 @@ impl ProcessManager {
         argv: &[&[u8]],
     ) -> Result<(), &'static str> {
         // --- Page table + ELF load (build_process_at's block) ---
-        let mut page_table = Box::new(
+        let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
             crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
                 log::error!(
                     "create_process_with_argv: Failed to create process page table for PID {}: {}",
@@ -646,6 +655,7 @@ impl ProcessManager {
                 );
                 "Failed to create process page table"
             })?,
+            pid.as_u64(),
         );
 
         let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
@@ -694,7 +704,15 @@ impl ProcessManager {
         }
 
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
-        process.page_table = Some(page_table);
+        process.page_table = Some(page_table.publish());
+        // Unpublished-construction ownership boundary (issue 588). From here
+        // until the row insert below, every error exit drops this guard, which
+        // releases the address space through the same never-installed path exec
+        // already uses.
+        // claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+        let mut unpublished =
+            crate::process::unpublished::UnpublishedProcess::new(process, pid.as_u64());
+        let process = unpublished.as_mut();
 
         let heap_base = loaded_elf.segments_end;
         process.heap_start = heap_base;
@@ -761,7 +779,11 @@ impl ProcessManager {
         // create_main_thread's hardcoded stack_top-16 (precheck C3 — x86 had no
         // SP-carrying thread creator before this).
         let thread =
-            self.create_main_thread_with_sp(&mut process, stack_top, VirtAddr::new(initial_rsp))?;
+            self.create_main_thread_with_sp(
+                &mut *process,
+                stack_top,
+                VirtAddr::new(initial_rsp),
+            )?;
         process.set_main_thread(thread);
 
         log::info!(
@@ -771,7 +793,7 @@ impl ProcessManager {
             argv.len()
         );
 
-        self.processes.insert(pid, process);
+        self.processes.insert(pid, unpublished.commit());
         Ok(())
     }
 
@@ -852,7 +874,7 @@ impl ProcessManager {
         // On ARM64, this creates a TTBR0 page table for userspace only
         // Kernel mappings are handled automatically via TTBR1
         crate::serial_println!("manager.create_process [ARM64]: Creating ProcessPageTable");
-        let mut page_table = Box::new(
+        let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
             crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
                 log::error!(
                     "ARM64: Failed to create process page table for PID {}: {}",
@@ -865,6 +887,7 @@ impl ProcessManager {
                 );
                 "Failed to create process page table"
             })?,
+            pid.as_u64(),
         );
         crate::serial_println!("manager.create_process [ARM64]: ProcessPageTable created");
 
@@ -890,7 +913,15 @@ impl ProcessManager {
         crate::serial_println!("manager.create_process [ARM64]: Creating Process struct");
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
-        process.page_table = Some(page_table);
+        process.page_table = Some(page_table.publish());
+        // Unpublished-construction ownership boundary (issue 588). From here
+        // until the row insert below, every error exit drops this guard, which
+        // releases the address space through the same never-installed path exec
+        // already uses.
+        // claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+        let mut unpublished =
+            crate::process::unpublished::UnpublishedProcess::new(process, pid.as_u64());
+        let process = unpublished.as_mut();
 
         // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
         let heap_base = loaded_elf.segments_end;
@@ -1001,7 +1032,7 @@ impl ProcessManager {
         crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
         let user_stack_top_vaddr = VirtAddr::new(user_stack_top);
         let thread =
-            self.create_main_thread(&mut process, user_stack_top_vaddr, initial_tpidr_el0)?;
+            self.create_main_thread(&mut *process, user_stack_top_vaddr, initial_tpidr_el0)?;
         crate::serial_println!("manager.create_process [ARM64]: Main thread created");
         process.set_main_thread(thread);
         crate::serial_println!("manager.create_process [ARM64]: Main thread set on process");
@@ -1017,7 +1048,7 @@ impl ProcessManager {
         crate::serial_println!(
             "manager.create_process [ARM64]: Inserting process into process table"
         );
-        self.processes.insert(pid, process);
+        self.processes.insert(pid, unpublished.commit());
 
         log::info!("ARM64: Created process {} (PID {})", name, pid.as_u64());
         crate::serial_println!(
@@ -1089,7 +1120,7 @@ impl ProcessManager {
         crate::serial_println!(
             "manager.create_process_with_argv [ARM64]: Creating ProcessPageTable"
         );
-        let mut page_table = Box::new(
+        let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
             crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
                 log::error!(
                     "ARM64: Failed to create process page table for PID {}: {}",
@@ -1098,6 +1129,7 @@ impl ProcessManager {
                 );
                 "Failed to create process page table"
             })?,
+            pid.as_u64(),
         );
 
         // Load the ELF binary into the process's page table
@@ -1116,7 +1148,15 @@ impl ProcessManager {
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
-        process.page_table = Some(page_table);
+        process.page_table = Some(page_table.publish());
+        // Unpublished-construction ownership boundary (issue 588). From here
+        // until the row insert below, every error exit drops this guard, which
+        // releases the address space through the same never-installed path exec
+        // already uses.
+        // claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+        let mut unpublished =
+            crate::process::unpublished::UnpublishedProcess::new(process, pid.as_u64());
+        let process = unpublished.as_mut();
 
         // Initialize heap tracking
         let heap_base = loaded_elf.segments_end;
@@ -1204,7 +1244,7 @@ impl ProcessManager {
 
         // Create the main thread with the adjusted stack pointer (pointing to argc)
         let thread = self.create_main_thread_with_sp(
-            &mut process,
+            &mut *process,
             VirtAddr::new(user_stack_top),
             VirtAddr::new(initial_sp),
             initial_tpidr_el0,
@@ -1222,7 +1262,7 @@ impl ProcessManager {
             pid.as_u64()
         );
 
-        self.processes.insert(pid, process);
+        self.processes.insert(pid, unpublished.commit());
         Ok(())
     }
 

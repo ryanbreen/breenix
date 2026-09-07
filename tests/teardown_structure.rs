@@ -4233,6 +4233,8 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn exec_process_with_argv", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context", 1),
+    // The unpublished-construction guard's own gate leg builds one table, commits it through the guard, then releases it (issue 588).
+    ("kernel/src/process/unpublished.rs", "#[cfg(feature=boot_tests)] fn commit_preserves_live_table_for_gate", 1),
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn boot_page_table_reclaim", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_oversized_page_table", 1),
@@ -8845,8 +8847,8 @@ fn init_row_builders_insert_only_after_all_fallible_steps() {
     }
 
     let fallible_after = manager.replacen(
-        "        self.processes.insert(pid, process);\n        Ok(())",
-        "        self.processes.insert(pid, process);\n        self.map_kernel_pages_for_process(pid)?;\n        Ok(())",
+        "        self.processes.insert(pid, unpublished.commit());\n        Ok(())",
+        "        self.processes.insert(pid, unpublished.commit());\n        self.map_kernel_pages_for_process(pid)?;\n        Ok(())",
         1,
     );
     assert_ne!(
@@ -8865,13 +8867,13 @@ fn init_row_builders_insert_only_after_all_fallible_steps() {
     );
 
     let hoisted = manager.replacen(
-        "        let thread = self.create_main_thread(&mut process, stack_top)?;",
-        "        self.processes.insert(pid, process);\n        let thread = self.create_main_thread(&mut process, stack_top)?;",
+        "        let thread = self.create_main_thread(&mut *process, stack_top)?;",
+        "        self.processes.insert(pid, unpublished.commit());\n        let thread = self.create_main_thread(&mut *process, stack_top)?;",
         1,
     );
     assert_ne!(hoisted, manager, "init-row insert hoist anchor");
     let moved = hoisted.replacen(
-        "        self.processes.insert(pid, process);\n        Ok(())",
+        "        self.processes.insert(pid, unpublished.commit());\n        Ok(())",
         "        Ok(())",
         1,
     );
@@ -11647,9 +11649,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         format!("{}\nfn synthetic_leaf_bypass(frame: PhysFrame) {{ frame_incref(frame); }}", source(&sources, "kernel/src/process/fork.rs")),
     );
     assert!(validate_leaf_custody(&restored_fork_incref).is_err());
-    // File order: n=0 is x86 exec_process, n=1 is x86 exec_process_with_argv,
-    // n=2 is aarch64 exec_process_with_argv, and n=3 is aarch64 exec_process.
-    for n in 0..4 {
+    // File order in manager.rs: the four process builders come first (issue 588's
+    // unpublished-construction guard), then the four exec bodies. n=4 is x86
+    // exec_process, n=5 is x86 exec_process_with_argv, n=6 is aarch64
+    // exec_process_with_argv, and n=7 is aarch64 exec_process.
+    for n in 4..8 {
         let missing_exec_carrier = replace_nth(
             process_manager,
             "crate::memory::process_memory::UnpublishedPageTable::new(",
@@ -17233,6 +17237,241 @@ fn function_body_raw_string_close_preserves_next_byte() {
         assert!(!a.contains("CANARY"));
         assert_eq!(function_body(&fixture, "b"), "fn b() { CANARY }");
     }
+}
+
+/// Every path that builds a process from an image and inserts its row must hold
+/// unpublished-construction ownership across the whole fallible middle (issue
+/// 588): UnpublishedPageTable before a local Process exists, UnpublishedProcess
+/// after, and a commit that disarms the release only at the row insert.
+/// claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+///
+/// The census is shape-derived: a builder is a function in the process manager
+/// that loads an ELF into a page table and inserts a process row. Removing the
+/// guard does not remove a function from that census, so the mutations below
+/// redden rather than vacuously pass.
+fn validate_unpublished_construction_ownership(manager: &str) -> Result<(), Vec<String>> {
+    let bodies = module_function_bodies(manager);
+    let mut builders: Vec<(String, &str)> = Vec::new();
+    for (name, candidates) in bodies.iter() {
+        for body in candidates {
+            let mask = code_mask(body);
+            let loads_image = !call_offsets(body, &mask, "load_elf_into_page_table").is_empty();
+            let inserts_row = process_row_map_mutation_offsets(body, &mask)
+                .iter()
+                .any(|(_, method)| method == "insert");
+            if loads_image && inserts_row {
+                builders.push((name.clone(), *body));
+            }
+        }
+    }
+
+    let mut failures = Vec::new();
+    check(
+        &mut failures,
+        "process-builder census did not resolve exactly four image-loading row builders",
+        builders.len() == 4,
+    );
+
+    for (name, body) in builders {
+        let mask = code_mask(body);
+        let carriers = code_offsets(body, &mask, "UnpublishedPageTable::new(");
+        let raw_tables = code_offsets(body, &mask, "ProcessPageTable::new(");
+        let publishes = code_offsets(body, &mask, ".publish()");
+        let guards = code_offsets(body, &mask, "UnpublishedProcess::new(");
+        let commits = code_offsets(body, &mask, "unpublished.commit()");
+        let inserts: Vec<usize> = process_row_map_mutation_offsets(body, &mask)
+            .into_iter()
+            .filter_map(|(offset, method)| (method == "insert").then_some(offset))
+            .collect();
+
+        check(
+            &mut failures,
+            &format!("{name} does not wrap its one page-table construction in an unpublished carrier"),
+            carriers.len() == 1 && raw_tables.len() == 1 && carriers[0] < raw_tables[0],
+        );
+        check(
+            &mut failures,
+            &format!("{name} does not publish the carrier into the process exactly once"),
+            publishes.len() == 1,
+        );
+        check(
+            &mut failures,
+            &format!("{name} does not arm exactly one unpublished-construction guard"),
+            guards.len() == 1,
+        );
+        check(
+            &mut failures,
+            &format!("{name} does not insert its row through the guard commit"),
+            commits.len() == 1 && inserts.len() == 1,
+        );
+        if carriers.len() != 1
+            || raw_tables.len() != 1
+            || publishes.len() != 1
+            || guards.len() != 1
+            || commits.len() != 1
+            || inserts.len() != 1
+        {
+            continue;
+        }
+
+        check(
+            &mut failures,
+            &format!("{name} arms its guard before it publishes the carrier"),
+            publishes[0] < guards[0] && guards[0] < commits[0],
+        );
+        check(
+            &mut failures,
+            &format!("{name} commits the guard somewhere other than its row insert"),
+            commits[0] > inserts[0] && commits[0] < statement_end(body, &mask, inserts[0]),
+        );
+
+        let carrier_span = &body[carriers[0]..publishes[0]];
+        let guard_span = &body[guards[0]..inserts[0]];
+        check(
+            &mut failures,
+            &format!("{name} carries no fallible step under the unpublished page table"),
+            code_offsets(carrier_span, &code_mask(carrier_span), ")?").len() >= 1,
+        );
+        check(
+            &mut failures,
+            &format!("{name} carries no fallible step under the construction guard"),
+            code_offsets(guard_span, &code_mask(guard_span), ")?").len() >= 1,
+        );
+
+        // The window between the publish and the construction guard arming
+        // must itself carry no fallible step: this is the property the
+        // module doc and commit message both claim ("between them there is
+        // no fallible step") but that carrier_span/guard_span leave
+        // uninspected, since neither spans from publishes[0] to guards[0].
+        let unguarded_gap = &body[publishes[0]..guards[0]];
+        check(
+            &mut failures,
+            &format!("{name} has a fallible step between the publish and the construction guard"),
+            code_offsets(unguarded_gap, &code_mask(unguarded_gap), ")?").is_empty(),
+        );
+    }
+
+    failures.is_empty().then_some(()).ok_or(failures)
+}
+
+#[test]
+fn fallible_process_construction_holds_unpublished_ownership() {
+    let sources = rust_sources_below("kernel/src");
+    let manager = source(&sources, "kernel/src/process/manager.rs");
+    if let Err(failures) = validate_unpublished_construction_ownership(manager) {
+        panic!("{}", failures.join("\n"));
+    }
+
+    // Drop the guard on one path: nothing then owns the address space between
+    // the publish and the row insert, which is the defect issue 588 reports.
+    // claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
+    let unguarded = manager.replacen(
+        "UnpublishedProcess::new(",
+        "core::convert::identity(",
+        1,
+    );
+    assert_ne!(unguarded, manager, "construction-guard removal anchor");
+    let unguarded_failures = validate_unpublished_construction_ownership(&unguarded)
+        .expect_err("a builder with no construction guard escaped the ownership ratchet");
+    eprintln!("588 guard-removal mutation:\n{}", unguarded_failures.join("\n"));
+
+    // Un-carry the page table: the ELF load and the kernel-mapping restore run
+    // over a plain box again, so a failure there drops the root Undecided.
+    let uncarried = manager.replacen(
+        "UnpublishedPageTable::new(",
+        "alloc::boxed::Box::new(",
+        1,
+    );
+    assert_ne!(uncarried, manager, "unpublished-carrier removal anchor");
+    let uncarried_failures = validate_unpublished_construction_ownership(&uncarried)
+        .expect_err("a builder with an uncarried page table escaped the ownership ratchet");
+    eprintln!("588 carrier-removal mutation:\n{}", uncarried_failures.join("\n"));
+
+    // Insert the row without disarming the guard: the guard would then release
+    // an address space a live row already owns.
+    let uncommitted = manager.replacen(
+        "self.processes.insert(pid, unpublished.commit());",
+        "self.processes.insert(pid, unpublished.as_mut().clone_shape());",
+        1,
+    );
+    assert_ne!(uncommitted, manager, "guard-commit removal anchor");
+    let uncommitted_failures = validate_unpublished_construction_ownership(&uncommitted)
+        .expect_err("a builder that never commits its guard escaped the ownership ratchet");
+    eprintln!("588 commit-removal mutation:\n{}", uncommitted_failures.join("\n"));
+
+    // Open a fallible step between the publish and the construction guard:
+    // the address space in that window has no owner until the guard arms,
+    // which the module doc and commit message both claim is unreachable
+    // (E-4).
+    let republished = manager.replacen(
+        "process.page_table = Some(page_table.publish());\n",
+        "process.page_table = Some(page_table.publish());\n        record_publish_watermark(pid)?;\n",
+        1,
+    );
+    assert_ne!(republished, manager, "publish-to-guard gap mutation anchor");
+    let republished_failures = validate_unpublished_construction_ownership(&republished)
+        .expect_err("a fallible step between publish and the construction guard escaped the ownership ratchet");
+    eprintln!("588 publish-to-guard-gap mutation:\n{}", republished_failures.join("\n"));
+}
+
+/// The census-failure message must describe both directions of a wrong count
+/// (issue 588, E-9): `builders.len() == 4` is an equality, so a fifth
+/// qualifying builder is just as much a failure as a third, and the message
+/// must not claim "fewer than four" when there are more.
+#[test]
+fn process_builder_census_message_does_not_claim_fewer_when_over_four() {
+    let fixture = r#"
+fn builder_one() { load_elf_into_page_table(); self.processes.insert(pid, one); }
+fn builder_two() { load_elf_into_page_table(); self.processes.insert(pid, two); }
+fn builder_three() { load_elf_into_page_table(); self.processes.insert(pid, three); }
+fn builder_four() { load_elf_into_page_table(); self.processes.insert(pid, four); }
+fn builder_five() { load_elf_into_page_table(); self.processes.insert(pid, five); }
+"#;
+    let failures = validate_unpublished_construction_ownership(fixture)
+        .expect_err("five qualifying builders must fail the four-builder census");
+    let census_message =
+        "process-builder census did not resolve exactly four image-loading row builders";
+    assert!(
+        failures.iter().any(|failure| failure == census_message),
+        "expected the corrected census-count failure message, got: {failures:?}"
+    );
+    assert!(
+        !failures.iter().any(|failure| failure.contains("fewer than four")),
+        "a five-builder census must not claim \"fewer than four\": {failures:?}"
+    );
+}
+
+/// `UnpublishedPageTable::from_box` was inserted between `as_mut` and
+/// `publish` (issue 588, E-10) with a stray doubled blank line above it and
+/// a missing blank line separating its closing brace from `publish` below.
+/// Both gaps in this impl block should be exactly one blank line, not a
+/// missing one and not a doubled one.
+#[test]
+fn unpublished_page_table_from_box_uses_single_blank_line_separators() {
+    let sources = rust_sources_below("kernel/src");
+    let module = source(&sources, "kernel/src/memory/process_memory.rs");
+
+    let above = "self.page_table.as_deref_mut().expect(\"unpublished table\")\n    }\n\n    /// Take custody of a table that is already boxed";
+    assert!(
+        module.contains(above),
+        "expected exactly one blank line between as_mut and from_box's doc comment"
+    );
+    let doubled_above = "self.page_table.as_deref_mut().expect(\"unpublished table\")\n    }\n\n\n    /// Take custody of a table that is already boxed";
+    assert!(
+        !module.contains(doubled_above),
+        "doubled blank line reintroduced above from_box's doc comment"
+    );
+
+    let below = "            pid,\n        }\n    }\n\n    pub(crate) fn publish(mut self)";
+    assert!(
+        module.contains(below),
+        "expected exactly one blank line between from_box and publish"
+    );
+    let glued_below = "            pid,\n        }\n    }\n    pub(crate) fn publish(mut self)";
+    assert!(
+        !module.contains(glued_below),
+        "missing blank line reintroduced between from_box and publish"
+    );
 }
 
 /// #522 C5: the boot-test phase liveness budget must be anchored at test-phase

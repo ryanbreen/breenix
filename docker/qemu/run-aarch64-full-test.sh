@@ -301,7 +301,7 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
         FAIL_REASON="Phase 1: missing creating-dispatch refusal oracle marker"
     elif ! grep -Fq '[TEST:process:init_designation_oracle:PASS]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init designation oracle PASS marker"
-    elif ! grep -Fq '[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=2:construct_residual=2:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    elif ! grep -Fq '[INIT_DESIGNATION_ORACLE:aarch64:construct_failed=2:construct_undecided=0:construct_residual=0:construct_roots_retired=2:construct_leaf_balance=0:construct_commit_balance=0:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init designation oracle counter marker"
     elif ! grep -Fq '[INIT_GROUP_REFUSAL_ORACLE:aarch64:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init-group refusal oracle counter marker"
