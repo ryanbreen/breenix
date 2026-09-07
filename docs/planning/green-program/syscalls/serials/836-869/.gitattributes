@@ -1,0 +1,3 @@
+# Preserve guest-console CR bytes and captured log bytes in this evidence set.
+*.txt -text
+*.log -text

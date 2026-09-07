@@ -1,0 +1,1 @@
+{"number":836,"state":"OPEN","title":"aarch64 strict gate: fcntl contention oracle reds with FAIL:hold_safety_release because the driver's pin starts after the holder is spawned","url":"https://github.com/ryanbreen/breenix/issues/836"}

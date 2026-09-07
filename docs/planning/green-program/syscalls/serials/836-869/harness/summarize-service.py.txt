@@ -1,0 +1,23 @@
+import pathlib,re,collections
+root=pathlib.Path('docs/planning/green-program/syscalls/serials/836-869/service-sequence')
+lines=[];summary=[]
+for profile in ['max','cortex-a72']:
+    files=list((root/'gate-tmp/output'/profile).glob('serial-*.txt'))
+    assert len(files)==25,(profile,len(files))
+    outcomes=collections.Counter()
+    for boot in range(1,26):
+        p=root/'gate-tmp/output'/profile/f'serial-{boot}.txt'
+        text=p.read_text(errors='replace')
+        for tag in ['FCNTL_PM_CONTENTION_ORACLE','IRQ_HOLD_ORACLE']:
+            matches=[(i+1,l) for i,l in enumerate(text.splitlines()) if f'[{tag}:aarch64:' in l]
+            if len(matches)!=1:
+                lines.append(f'{p}: {tag}: INVALID count={len(matches)}')
+                outcomes[tag+':INVALID']+=1
+            else:
+                n,l=matches[0]
+                lines.append(f'{p}:{n} {l}')
+                outcomes[tag+(' FAIL' if ':FAIL' in l else ' PASS' if ':PASS' in l else ' UNKNOWN')]+=1
+    summary.append(profile+' '+str(dict(outcomes)))
+(root/'oracle-markers.txt').write_text('\n'.join(lines)+'\n')
+(root/'oracle-summary.txt').write_text('\n'.join(summary)+'\n')
+print('\n'.join(summary))

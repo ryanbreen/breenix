@@ -1,0 +1,281 @@
+  4760	/// point at which this thread can be descheduled.
+  4761	///
+  4762	/// The release deadline is read from CNTVCT_EL0, which advances whether or not
+  4763	/// any CPU is masked, so the window closes even while the driver waits for the
+  4764	/// lock with its own interrupts off. The acquire is a bounded try-loop rather
+  4765	/// than a blocking manager(): an unbounded masked wait for a lock this oracle
+  4766	/// does not control would reintroduce the same hang from the other side.
+  4767	#[cfg(target_arch = "aarch64")]
+  4768	fn fcntl_pm_holder_body() {
+  4769	    crate::arch_impl::aarch64::cpu::without_interrupts(|| {
+  4770	        let acquire_start = crate::tracing::trace_timestamp();
+  4771	        let guard = loop {
+  4772	            if let Some(guard) = crate::process::try_manager() {
+  4773	                break Some(guard);
+  4774	            }
+  4775	            if FCNTL_PM_RELEASE_REQ.load(AtomicOrdering::Acquire) {
+  4776	                // The driver gave up before this thread reached the lock. No
+  4777	                // reader is left for a hold, so do not take one.
+  4778	                break None;
+  4779	            }
+  4780	            if fcntl_pm_elapsed_us(acquire_start) > FCNTL_PM_ACQUIRE_US {
+  4781	                break None;
+  4782	            }
+  4783	            core::hint::spin_loop();
+  4784	        };
+  4785	        let Some(guard) = guard else {
+  4786	            return;
+  4787	        };
+  4788	
+  4789	        FCNTL_PM_HOLD_ACQUIRED.store(true, AtomicOrdering::Release);
+  4790	        FCNTL_PM_HOLD_CPU.store(
+  4791	            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64,
+  4792	            AtomicOrdering::Relaxed,
+  4793	        );
+  4794	        let held_from = crate::tracing::trace_timestamp();
+  4795	        FCNTL_PM_HOLD_ACTIVE.store(true, AtomicOrdering::Release);
+  4796	
+  4797	        // The rendezvous. The hold lasts as long as it takes the driver to
+  4798	        // notice it and ask for it back, which is what the previous design could
+  4799	        // not do: it released on an 8 ms timer, and a driver that was off-CPU
+  4800	        // for those 8 ms scored `armed=0` with `calls=0` -- 2 of 40 boots of the
+  4801	        // 2026-09-05 health run.
+  4802	        let mut safety_fired = true;
+  4803	        while fcntl_pm_elapsed_us(held_from) < FCNTL_PM_HOLD_SAFETY_US {
+  4804	            if FCNTL_PM_RELEASE_REQ.load(AtomicOrdering::Acquire) {
+  4805	                safety_fired = false;
+  4806	                break;
+  4807	            }
+  4808	            core::hint::spin_loop();
+  4809	        }
+  4810	        if !safety_fired {
+  4811	            // The driver asks immediately BEFORE its blocking call, because it
+  4812	            // cannot ask after one -- the call does not return until this lock
+  4813	            // is free. So the request is answered by holding one further overlap
+  4814	            // window, which is the wait the driver measures.
+  4815	            let overlap_from = crate::tracing::trace_timestamp();
+  4816	            while fcntl_pm_elapsed_us(overlap_from) < FCNTL_PM_HOLD_OVERLAP_US {
+  4817	                core::hint::spin_loop();
+  4818	            }
+  4819	        }
+  4820	
+  4821	        FCNTL_PM_HOLD_SAFETY_FIRED.store(safety_fired, AtomicOrdering::Release);
+  4822	        FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+  4823	        drop(guard);
+  4824	    });
+  4825	    FCNTL_PM_HOLD_DONE.store(true, AtomicOrdering::Release);
+  4826	}
+  4827	
+  4828	#[cfg(target_arch = "aarch64")]
+  4829	fn fcntl_pm_setfd_once() -> u64 {
+  4830	    use crate::ipc::fd::fcntl_cmd::F_SETFD;
+  4831	    use crate::ipc::fd::flags::FD_CLOEXEC;
+  4832	    match crate::syscall::handlers::sys_fcntl(
+  4833	        crate::ipc::fd::STDOUT as u64,
+  4834	        F_SETFD as u64,
+  4835	        u64::from(FD_CLOEXEC),
+  4836	    ) {
+  4837	        crate::syscall::SyscallResult::Ok(_) => 0,
+  4838	        crate::syscall::SyscallResult::Err(errno) => errno,
+  4839	    }
+  4840	}
+  4841	
+  4842	/// Measure which arm fcntl() takes while a peer CPU holds the process-manager
+  4843	/// lock, and score EAGAIN as a failure (#796). This reddens on origin/main --
+  4844	/// eagain=64:first_errno=11 -- and is green once the preamble blocks for the
+  4845	/// lock instead of reporting its contention.
+  4846	pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+  4847	    #[cfg(target_arch = "aarch64")]
+  4848	    {
+  4849	        use crate::task::kthread::{
+  4850	            kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
+  4851	        };
+  4852	        use crate::task::scheduler::{
+  4853	            live_peer_cpu_for_test, live_peer_cpu_for_test_excluding_cpu0,
+  4854	            release_cpu_affine_thread_for_test,
+  4855	        };
+  4856	
+  4857	        // A peer that is still dispatching. Taking the first CPU that is merely
+  4858	        // "not me" picked a stale CPU on this gate's own profile: the probe was
+  4859	        // migrated off it by the scheduler's unschedulable-queue reclaim and
+  4860	        // then bounced by the boot-test affinity retain check, so on 3 of 3
+  4861	        // smoke boots it armed and then reported joined=0. CPU 0 is the second
+  4862	        // choice rather than the first because it is the only writer of the
+  4863	        // global tick counter and the holder masks interrupts while it holds
+  4864	        // the lock.
+  4865	        let peer = live_peer_cpu_for_test();
+  4866	        let peer = match peer {
+  4867	            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+  4868	            other => other,
+  4869	        };
+  4870	
+  4871	        let mut arm_wait_us = 0u64;
+  4872	        let mut armed = 0u64;
+  4873	        let mut acquired = 0u64;
+  4874	        let mut holder_cpu = u64::MAX;
+  4875	        let mut pm_busy_probe = 0u64;
+  4876	        let mut calls = 0u64;
+  4877	        let mut eagain = 0u64;
+  4878	        let mut first_errno = u64::MAX;
+  4879	        let mut first_wait_us = 0u64;
+  4880	        let mut hold_safety = 0u64;
+  4881	        let mut hold_done = 0u64;
+  4882	        let mut joined = 0u64;
+  4883	        let mut arm = FcntlPmArm::NoPeerCpu;
+  4884	
+  4885	        if let Some(peer) = peer {
+  4886	            FCNTL_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
+  4887	            FCNTL_PM_HOLD_DONE.store(false, AtomicOrdering::Release);
+  4888	            FCNTL_PM_RELEASE_REQ.store(false, AtomicOrdering::Release);
+  4889	            FCNTL_PM_HOLD_ACQUIRED.store(false, AtomicOrdering::Release);
+  4890	            FCNTL_PM_HOLD_SAFETY_FIRED.store(false, AtomicOrdering::Release);
+  4891	            FCNTL_PM_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
+  4892	
+  4893	            match kthread_run_on_cpu_for_test(fcntl_pm_holder_body, "fcntl-pm-holder", peer) {
+  4894	                Err(_) => arm = FcntlPmArm::HolderSpawnFailed,
+  4895	                Ok(handle) => {
+  4896	                    // Pinned for the whole rendezvous, not just for the measured
+  4897	                    // calls. The hold ends when this thread asks, so this thread
+  4898	                    // must not need a dispatch while the hold is up: a peer
+  4899	                    // thread spinning inside the blocking `manager()` masks
+  4900	                    // interrupts on whatever CPU it is on, and when that was the
+  4901	                    // driver's CPU the driver could not reach its own release
+  4902	                    // request until the holder's safety deadline had fired --
+  4903	                    // 2 of 20 boots of the first rendezvous this round tried.
+  4904	                    // Pinning also keeps the driver off the peer, where it would
+  4905	                    // be waiting, with interrupts masked inside the syscall, for
+  4906	                    // a holder that cannot be dispatched on the CPU the driver is
+  4907	                    // occupying.
+  4908	                    crate::per_cpu::preempt_disable();
+  4909	
+  4910	                    // Spin first, halt later. The peer publishes from inside a
+  4911	                    // masked hold, so a driver that notices a tick late is a
+  4912	                    // driver that holds PROCESS_MANAGER busy for a tick longer;
+  4913	                    // past FCNTL_PM_ARM_SPIN_US the wait is pathological and
+  4914	                    // halting is the friendlier way to keep waiting out the
+  4915	                    // deadline.
+  4916	                    let arm_start = crate::tracing::trace_timestamp();
+  4917	                    while !FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+  4918	                        && !FCNTL_PM_HOLD_DONE.load(AtomicOrdering::Acquire)
+  4919	                        && fcntl_pm_elapsed_us(arm_start) < FCNTL_PM_ARM_WAIT_US
+  4920	                    {
+  4921	                        if fcntl_pm_elapsed_us(arm_start) < FCNTL_PM_ARM_SPIN_US {
+  4922	                            core::hint::spin_loop();
+  4923	                        } else {
+  4924	                            crate::arch_halt();
+  4925	                        }
+  4926	                    }
+  4927	                    arm_wait_us = fcntl_pm_elapsed_us(arm_start);
+  4928	
+  4929	                    if FCNTL_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
+  4930	                        armed = 1;
+  4931	                        // Independent read of the same lock, immediately before
+  4932	                        // the measured call: this is what makes "contended" a
+  4933	                        // reading rather than an assumption about the peer.
+  4934	                        pm_busy_probe = u64::from(crate::process::try_manager().is_none());
+  4935	                        FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);
+  4936	
+  4937	                        let call_start = crate::tracing::trace_timestamp();
+  4938	                        first_errno = fcntl_pm_setfd_once();
+  4939	                        first_wait_us = fcntl_pm_elapsed_us(call_start);
+  4940	                        calls = 1;
+  4941	                        if first_errno == 11 {
+  4942	                            eagain += 1;
+  4943	                        }
+  4944	                        while calls < FCNTL_PM_CALLS {
+  4945	                            calls += 1;
+  4946	                            if fcntl_pm_setfd_once() == 11 {
+  4947	                                eagain += 1;
+  4948	                            }
+  4949	                        }
+  4950	                    }
+  4951	                    crate::per_cpu::preempt_enable();
+  4952	
+  4953	                    // Idempotent, and set on the give-up paths too: the holder
+  4954	                    // has no reader now, so let it stop instead of spending its
+  4955	                    // acquire deadline or its safety hold.
+  4956	                    FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);
+  4957	
+  4958	                    // Clear the forced placement before waiting, the same way
+  4959	                    // the census widening oracle releases its probe: the holder
+  4960	                    // has done its job by now, and leaving it pinned means its
+  4961	                    // exit depends on the CPU it was placed on continuing to
+  4962	                    // dispatch.
+  4963	                    release_cpu_affine_thread_for_test(handle.tid());
+  4964	
+  4965	                    let join_start = crate::tracing::trace_timestamp();
+  4966	                    while !kthread_has_exited_for_test(&handle)
+  4967	                        && fcntl_pm_elapsed_us(join_start) < FCNTL_PM_JOIN_US
+  4968	                    {
+  4969	                        crate::arch_halt();
+  4970	                    }
+  4971	                    hold_done = u64::from(FCNTL_PM_HOLD_DONE.load(AtomicOrdering::Acquire));
+  4972	                    acquired = u64::from(FCNTL_PM_HOLD_ACQUIRED.load(AtomicOrdering::Acquire));
+  4973	                    hold_safety =
+  4974	                        u64::from(FCNTL_PM_HOLD_SAFETY_FIRED.load(AtomicOrdering::Acquire));
+  4975	                    holder_cpu = FCNTL_PM_HOLD_CPU.load(AtomicOrdering::Relaxed);
+  4976	                    if kthread_has_exited_for_test(&handle) {
+  4977	                        joined = u64::from(kthread_join(&handle).is_ok());
+  4978	                    }
+  4979	
+  4980	                    let settle_start = crate::tracing::trace_timestamp();
+  4981	                    while fcntl_pm_elapsed_us(settle_start) < FCNTL_PM_SETTLE_US {
+  4982	                        crate::arch_halt();
+  4983	                    }
+  4984	
+  4985	                    // The two anti-vacuity readings, in one named binding: the
+  4986	                    // lock read busy at the instant the measured call was
+  4987	                    // issued, and the call really waited for it rather than
+  4988	                    // sailing through an uncontended lock.
+  4989	                    let contention_measured = pm_busy_probe == 1
+  4990	                        && calls == FCNTL_PM_CALLS
+  4991	                        && first_wait_us >= FCNTL_PM_MIN_WAIT_US;
+  4992	
+  4993	                    arm = if eagain > 0 {
+  4994	                        FcntlPmArm::EagainReachedUserspace
+  4995	                    } else if hold_safety == 1 {
+  4996	                        FcntlPmArm::HoldSafetyRelease
+  4997	                    } else if armed == 0 {
+  4998	                        FcntlPmArm::ArmingTimeout
+  4999	                    } else if !contention_measured {
+  5000	                        FcntlPmArm::ContentionNotObserved
+  5001	                    } else if hold_done == 0 || joined == 0 {
+  5002	                        FcntlPmArm::HolderNotJoined
+  5003	                    } else {
+  5004	                        FcntlPmArm::Pass
+  5005	                    };
+  5006	                }
+  5007	            }
+  5008	        }
+  5009	
+  5010	        // `arm_wait_us` is the rendezvous reading: how long the driver waited for
+  5011	        // the peer to publish a hold. `acquired` and `hold_safety` are read from
+  5012	        // the holder's own publications; when `hold_done=0` they are what the
+  5013	        // driver could see before giving up, which is a reading of what it
+  5014	        // observed rather than a claim about what the holder did.
+  5015	        crate::serial_println!(
+  5016	            "[FCNTL_PM_CONTENTION_ORACLE:aarch64:arm_wait_us={}:armed={}:acquired={}:holder_cpu={}:pm_busy_probe={}:calls={}:eagain={}:first_errno={}:first_wait_us={}:hold_safety={}:hold_done={}:joined={}:{}]",
+  5017	            arm_wait_us,
+  5018	            armed,
+  5019	            acquired,
+  5020	            holder_cpu,
+  5021	            pm_busy_probe,
+  5022	            calls,
+  5023	            eagain,
+  5024	            first_errno,
+  5025	            first_wait_us,
+  5026	            hold_safety,
+  5027	            hold_done,
+  5028	            joined,
+  5029	            arm.tag(),
+  5030	        );
+  5031	        return arm.result();
+  5032	    }
+  5033	
+  5034	    #[cfg(not(target_arch = "aarch64"))]
+  5035	    {
+  5036	        // Two threads do not contend for PROCESS_MANAGER on a uniprocessor
+  5037	        // boot: the dispatch path refuses to switch while the lock is held, so
+  5038	        // the holder is not preempted and no second thread runs. SKIP discloses
+  5039	        // that platform limitation; it is deliberately not a passing result.
+  5040	        // The aarch64 arm above carries the reddens-on-main leg.

@@ -37,6 +37,7 @@ BREENIX_ROOT="$(dirname "$SCRIPT_DIR")"
 QMP_SOCK="${BREENIX_QMP_SOCK:-/tmp/breenix-qmp.sock}"
 GDB_PORT="${BREENIX_GDB_PORT:-1234}"
 ACTION="pause"  # pause, resume, kill
+OUTPUT_DIR=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -54,6 +55,11 @@ while [[ $# -gt 0 ]]; do
             QMP_SOCK="$1"
             shift
             ;;
+        --output-dir)
+            shift
+            OUTPUT_DIR="$1"
+            shift
+            ;;
         --gdb-port)
             shift
             GDB_PORT="$1"
@@ -68,6 +74,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --resume       Resume VM after capture"
             echo "  --kill         Kill VM after capture"
             echo "  --qmp SOCK     QMP socket path (default: /tmp/breenix-qmp.sock)"
+            echo "  --output-dir DIR  Capture directory (default: /tmp/breenix-forensic-<timestamp>)"
             echo "  --gdb-port N   GDB port (default: 1234)"
             echo "  -h, --help     Show this help"
             echo ""
@@ -83,7 +90,7 @@ done
 
 # Create output directory
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-OUTPUT_DIR="/tmp/breenix-forensic-${TIMESTAMP}"
+OUTPUT_DIR="${OUTPUT_DIR:-/tmp/breenix-forensic-${TIMESTAMP}}"
 mkdir -p "$OUTPUT_DIR"
 LOG="$OUTPUT_DIR/capture.log"
 
