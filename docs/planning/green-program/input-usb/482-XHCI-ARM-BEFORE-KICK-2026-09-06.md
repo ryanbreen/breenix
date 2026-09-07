@@ -156,7 +156,7 @@ each boot). Screen-lock was checked before every leg that injects input via
 | Original failing workload (fixed branch) | `bash scripts/parallels/launcher-smoke.sh --max-inject-retries 0 --timeout 1200` | **3/3 RESULT: PASS.** Each run: real mouse+keyboard+composite-device enumeration through device/configuration descriptors, `[bterm] config:` and `[bterm] spawned child pid=` both observed. Preserved: `serials/482/launcher-smoke/run{1,2,3}/`. |
 | Carried type-filter check | `bash scripts/parallels/launcher-smoke.sh --max-inject-retries 0 --timeout 1200 --type-filter` | **1/1 RESULT: PASS**, on the second attempt. The first attempt hit an unrelated stall in init's boot-time self-test battery at `CLONEVM_EXEC_TEST: second stage` (clone/exec, not xHCI — full xHCI enumeration had already completed cleanly, slots 1/2/3, before the stall; see §6). Killed and preserved as a non-xHCI finding at `serials/482/type-filter/run1-stalled-clonevm-unrelated/`; the retry passed cleanly and is preserved at `serials/482/type-filter/run2-pass/result.txt`. |
 | Passive lifecycle comparison | `./run.sh --parallels --test 120` | **2/2**: clean enumeration (slots 1/2/3, no `enum_failed` line), full service lifecycle reached, bwm compositing live (~200 fps) at the end of both 120s windows. Preserved: `serials/482/lifecycle/run{1,2}/` (serial log + run.sh stdout + screenshot each). |
-| Standing aarch64 QEMU regression gate | `./docker/qemu/run-aarch64-boot-test-strict.sh 3` (on a fresh `cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`, 0 warnings besides the pre-existing toolchain future-incompat notice) | **3/3 boots succeeded** (100%), structure preflight `structure_suites=54/54`. Preserved: `serials/482/strict-gate/strict-gate-3boots.log`. |
+| Standing aarch64 QEMU regression gate | `./docker/qemu/run-aarch64-boot-test-strict.sh 3` (on a fresh `cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`, 0 warnings besides the pre-existing toolchain future-incompat notice) | **3/3 boots succeeded** (100%), structure preflight `structure_suites=54/54`. Preserved: `serials/482/strict-gate/strict-gate-3boots.txt`. |
 
 **Manual input leg** (at least once on a qualifying boot, per the acceptance
 spec): performed on a fresh, dedicated boot (`breenix-1788749740`).
@@ -171,7 +171,7 @@ spec): performed on a fresh, dedicated boot (`breenix-1788749740`).
   0 throughout. +5 KBD_NONZERO_TOTAL for 5 injected characters and +10 MSI
   events (one per key-down and key-up HID report) is exactly the expected
   shape. Full transcript + serial log preserved at
-  `serials/482/manual-input/attempt2-keyboard-delta/telnet-transcript.log`.
+  `serials/482/manual-input/attempt2-keyboard-delta/telnet-transcript.txt`.
 - *Mouse*: **not performed as live host-cursor injection.** `prlctl` has no
   mouse-event subcommand (only `send-key-event`), and driving a synthetic
   mouse click through macOS's Quartz `CGEvent` API would require first
@@ -204,7 +204,7 @@ source; all 8 named mutations independently redden their target rule (§3).
 
 First `--type-filter` attempt (`serials/482/type-filter/
 run1-stalled-clonevm-unrelated/`): the guest's real serial log
-(`serial-full.log`, 2199 lines at time of capture) shows completely normal,
+(`serial-full.txt`, 2199 lines at time of capture) shows a genuinely normal,
 clean xHCI enumeration (mouse=slot1, keyboard=slot2, composite=slot3, no
 `enum_failed` line, `[xhci] Initialized: 32 slots, MSI irq=56`), followed by
 normal AHCI/ext2/net/timer/SMP init, followed by init's boot-time self-test
