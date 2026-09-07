@@ -1,0 +1,20 @@
+base revision: 19427ef42612d14bb4cc4474a7dd460cdc850a03; candidate ratchet with original source restored
+== compiling pipe_fifo_blocking_structure ==
+== running pipe_fifo_blocking_structure writev_aggregate_atomicity_rejects_per_iovec_mutation ==
+
+running 1 test
+
+thread 'writev_aggregate_atomicity_rejects_per_iovec_mutation' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/tests/pipe_fifo_blocking_structure.rs:896:5:
+small pipe/FIFO writev must gather into one transfer
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test writev_aggregate_atomicity_rejects_per_iovec_mutation ... FAILED
+
+failures:
+
+failures:
+    writev_aggregate_atomicity_rejects_per_iovec_mutation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+
+exit 101

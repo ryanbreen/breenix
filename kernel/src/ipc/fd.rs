@@ -50,7 +50,7 @@ pub mod fcntl_cmd {
 
 /// Regular file descriptor
 #[derive(Clone, Debug)]
-#[allow(dead_code)]// Fields will be used when open/read/write are fully implemented
+#[allow(dead_code)] // Fields will be used when open/read/write are fully implemented
 pub struct RegularFile {
     pub inode_num: u64,
     pub mount_id: usize,

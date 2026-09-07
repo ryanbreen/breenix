@@ -1,0 +1,69 @@
+26893a4fb55bb3de33b62e5c522348d231e2a26a
+[GATE_PREFLIGHT:structure_suites=64/64:critical_path_lines=260:pinned=120]
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   4ed069b4d074549f26f771cf8975362d7a1a834a1aa4c27fcf6531f974fa6d6e
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h61ecf85f7d566472E
+  reachable funcs: 18
+  call edges:      32
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/target/ext2-aarch64.img
+Iterations: 3
+Requirement: 100% success rate (all 3 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (60s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 71550 (<unknown process>)
+  [OK] Boot 1: SUCCESS
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788795681069-1788795738697:qemu_at_start=0:load_at_start=55.84:qemu_at_end=1:load_at_end=23.94:qemu_cpu_s=86.01:guest_uptime_ms=57132:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 77920 (<unknown process>)
+  [OK] Boot 2: SUCCESS
+  [GATE_BOOT_FACTS:boot=2:host_ms=1788795798702-1788795856290:qemu_at_start=0:load_at_start=11.10:qemu_at_end=1:load_at_end=6.22:qemu_cpu_s=88.41:guest_uptime_ms=57374:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (60s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (90s elapsed, host qemu-system-aarch64 count=1)...
+qemu-system-aarch64: terminating on signal 15 from pid 87349 (<unknown process>)
+  [OK] Boot 3: SUCCESS
+  [GATE_BOOT_FACTS:boot=3:host_ms=1788795973064-1788796031070:qemu_at_start=0:load_at_start=5.79:qemu_at_end=1:load_at_end=5.30:qemu_cpu_s=88.10:guest_uptime_ms=57385:ended_by=scored_pass]
+  [CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+  [CAPTURE_DRAIN_EVENTS:last_events=n/a]
+  [QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 3
+Successes: 3
+Failures: 0
+Success rate: 100%
+Duration: 435s
+
+=========================================
+PASS: 3/3 boots succeeded
+=========================================
+gate exit 0
