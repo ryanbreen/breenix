@@ -21,18 +21,49 @@
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Wall-clock budget for the initialization watchdog.
+/// Published floor, in milliseconds, for the initialization watchdog.
 ///
 /// This watchdog bounds pre-test initialization only -- concretely, the
 /// aarch64 secondary-CPU bring-up wait in `main_aarch64.rs`. It is anchored at
-/// kernel entry. It is deliberately equal to that wait's own `boot_tests`
-/// absolute ceiling (`SMP_ONLINE_ABSOLUTE_CEILING_SECONDS = 40`), so the shared
-/// watchdog is not a tighter bound on bring-up than the local ceiling already
-/// in force, so a live-but-slow CPU is given up on no sooner than before.
-/// claim-lint:ok: #522 C5; the two constants are pinned in
-/// tests/teardown_structure.rs and read in docs/planning/green-program/tracing/522-C5-2026-09-07.md.
+/// kernel entry, strictly before that wait's own `start` (`timer::rdtsc()` at
+/// the top of the bring-up loop), because real initialization work -- memory
+/// management, the generic timer, the RTC, the GIC -- runs in between. Because
+/// the anchors differ, a watchdog of exactly this constant's magnitude, timed
+/// from kernel entry, reaches its deadline strictly before a same-magnitude
+/// local ceiling timed from the later `start` would: anchoring earlier at
+/// equal magnitude is definitionally a tighter bound, not an equal one, for
+/// any nonzero gap between the two anchors. #522 C5 review round 1 published
+/// this constant at the SAME magnitude as the local ceiling
+/// (`SMP_ONLINE_ABSOLUTE_CEILING_SECONDS`) and claimed the two were therefore
+/// equally tight; that claim was false in four places (this docstring, the
+/// `main_aarch64.rs` bring-up comment, the round doc, and the round's commit
+/// message), and its practical effect was that the local ceiling's own
+/// `[smp] Timeout waiting for CPUs: absolute ceiling ...` diagnostic became
+/// unreachable in every `boot_tests` boot, silently narrowing a live-but-slow
+/// CPU's promised local window by the (unmeasured, undisclosed) gap between
+/// the two anchors. claim-lint:ok: #522 C5 fix pass V-1; reproduced live in
+/// `tests/teardown_structure.rs::fix_pass_v1_watchdog_not_tighter_than_local_ceiling`'s
+/// mutation transcript, which reddens on reintroducing this exact claim.
+///
+/// This constant is therefore a FLOOR, not the watchdog's whole story: the
+/// bring-up wait in `main_aarch64.rs` computes the watchdog's real, per-boot
+/// ceiling as `max(this constant, local_absolute_ceiling + measured_gap +
+/// margin)`, where `measured_gap` is the actual elapsed time (via `rdtsc`)
+/// between the kernel-entry anchor and this wait's own `start`, sampled fresh
+/// every boot rather than assumed. That construction guarantees, for any
+/// measured gap, that the watchdog's deadline is never earlier than the local
+/// ceiling's own deadline -- so the local ceiling stays reachable and a
+/// live-but-slow CPU keeps its full local window regardless of how long
+/// earlier initialization took. This constant's value is sized so that, for
+/// the gap this repository actually observes, the `max(...)` rarely needs to
+/// extend past it; see `INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS`
+/// in `main_aarch64.rs` for the margin and the `[smp] initialization_watchdog`
+/// breadcrumb for the per-boot measured value.
+/// claim-lint:ok: #522 C5 fix pass (V-1); the constant, the local ceiling it
+/// must not undercut, and the `max(...)` construction are pinned in
+/// tests/teardown_structure.rs.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
-pub const INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS: u64 = 40_000;
+pub const INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS: u64 = 20_000;
 
 /// Wall-clock budget for the boot-test phase's own liveness watchdog waits.
 ///
@@ -45,14 +76,31 @@ pub const INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS: u64 = 40_000;
 /// gate is entered part-way into the test phase, and the measured distance from
 /// test-phase entry to gate entry is about 2.4-2.7 seconds, so the remaining
 /// budget still covers the full 45-second ceiling and a genuine whole-gate
-/// overrun is classified as the gate ceiling rather than pre-empted here.
+/// overrun is classified as the gate ceiling rather than pre-empted here. The
+/// same budget is also spent, sequentially after the real gate, by
+/// `exit_kick_worker_window_isolation_test` (about 39 seconds of deliberate
+/// per-scenario ceilings) and `exit_kick_budget_anchor_isolation_test` (about
+/// 11 seconds), so a healthy boot's real consumption of this budget is closer
+/// to 52 seconds than to the real gate's own 2-3 seconds; this value is not
+/// free to shrink much further without risking a healthy boot's own deliberate
+/// self-tests running into the enclosing ceiling.
 ///
 /// Neither of the two budgets this pair replaces the previous single 65-second
-/// clock with is larger than that clock. They are sequential rather than
-/// shared: initialization is bounded by its own 40-second watchdog, and the
-/// test phase by this one. In the pathological case where both run to
-/// exhaustion the strict script's own 90-second `timeout` is the outer backstop,
-/// as it already is for any boot whose deliberate test waits run long.
+/// clock with is larger than that clock: the pre-#522-C5-fix-pass pair (a
+/// 40,000ms initialization watchdog plus this 60,000ms test-phase budget)
+/// summed to 100,000ms, past the strict harness's 90,000ms hard timeout
+/// (`docker/qemu/run-aarch64-boot-test-strict.sh`'s `BREENIX_STRICT_TIMEOUT_SECONDS`).
+/// #522 C5 review round 1 (V-3) found that a pathological boot that exhausted
+/// both watchdogs in full would therefore be killed by the harness's own
+/// external timeout -- an unattributed `ended_by=hard_timeout` -- rather than
+/// reaching either watchdog's own attributed in-kernel verdict, reproducing
+/// the same class of failure the harness's `ended_by=hard_timeout` boot-facts
+/// field already exists to name. `INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS`
+/// was reduced from 40,000 to 20,000ms (with
+/// `SMP_ONLINE_ABSOLUTE_CEILING_SECONDS` correspondingly reduced from 40 to 15
+/// in `main_aarch64.rs`, still 1.5x the documented realistic worst case and
+/// 1.875x the longest individually observed wait) so the pair now sums to
+/// 80,000ms, ten full seconds inside the 90,000ms hard timeout.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub const TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS: u64 = 60_000;
 

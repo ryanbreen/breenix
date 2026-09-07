@@ -1037,25 +1037,44 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
         if launched > 0 {
             #[cfg(feature = "boot_tests")]
-            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 20;
+            const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 10;
             #[cfg(not(feature = "boot_tests"))]
             const SMP_ONLINE_NO_PROGRESS_WINDOW_SECONDS: u64 = 2;
-            // The boot_tests 40s local ceiling here is additionally capped by
-            // the initialization watchdog, a 40s clock started near kernel entry
-            // that bounds pre-test initialization only. P20's 45s local gate
-            // ceiling now lives under the separate 60s test-phase budget
-            // anchored at test-phase entry, so this bring-up wait can no longer
-            // consume P20's promised window. The two watchdogs are sequential
-            // rather than shared, and neither is larger than the single 65s
-            // clock they replace.
-            // claim-lint:ok: #522 C5; read back over 3 of 3 strict boots in
-            // docs/planning/green-program/tracing/522-C5-2026-09-07.md.
+            // #522 C5 fix pass (V-1, V-3): this local ceiling was 40s until the
+            // review round found the initialization watchdog
+            // (test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS)
+            // anchored strictly earlier than this wait's own `start`, at equal
+            // magnitude, so it always reached its deadline first and this local
+            // ceiling's own diagnostic was unreachable in every boot_tests boot
+            // -- the opposite of the "not a tighter bound" claim published
+            // alongside it. The watchdog's ceiling is now computed dynamically
+            // below as max(published floor, this local ceiling + the measured
+            // gap between the two anchors + a fixed margin), which guarantees
+            // the watchdog cannot reach its deadline before this local ceiling
+            // does. That guarantee interacts with #522 C5 review V-3: the
+            // pre-fix pair (40s watchdog + 60s test-phase budget) summed to
+            // 100s, past the strict harness's 90s hard timeout. Halving this
+            // local ceiling (and, in step, the no-progress window above and the
+            // watchdog's published floor in mod.rs) keeps the summed pair at
+            // 80s -- ten seconds inside the hard timeout -- while remaining
+            // 1.5x the realistic worst case and 1.875x the longest individually
+            // observed wait documented below.
+            // claim-lint:ok: #522 C5 fix pass; the dynamic ceiling formula and
+            // the reduced constants are pinned in tests/teardown_structure.rs.
             // The realistic starved proof remains far inside this backstop:
             // <=10s total, with the longest observed individual wait about 8s.
             #[cfg(feature = "boot_tests")]
-            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 40;
+            const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 15;
             #[cfg(not(feature = "boot_tests"))]
             const SMP_ONLINE_ABSOLUTE_CEILING_SECONDS: u64 = 4;
+            // Fixed safety margin added atop the local absolute ceiling when
+            // computing the initialization watchdog's dynamic ceiling below, so
+            // the watchdog's deadline is strictly later than the local
+            // ceiling's own deadline rather than tying with it (a tie would
+            // still leave the local ceiling's diagnostic unreachable, because
+            // the watchdog is checked first in the loop below).
+            #[cfg(feature = "boot_tests")]
+            const INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS: u64 = 3;
             const SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS: u64 = 1;
             const SMP_ONLINE_STAGE_SAMPLE_INTERVAL_ITERATIONS: u64 = 4_096;
             const SMP_ONLINE_CNTVCT_STALL_SAMPLE_INTERVAL_ITERATIONS: u64 = 10_000_000;
@@ -1078,11 +1097,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             #[cfg(feature = "boot_tests")]
             let initialization_watchdog_started_at =
                 kernel::test_framework::initialization_watchdog_started_at();
-            #[cfg(feature = "boot_tests")]
-            let initialization_watchdog_ceiling_ticks = timer::milliseconds_to_ticks(
-                counter_frequency_hz,
-                kernel::test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS,
-            );
             let breadcrumb_ticks =
                 counter_frequency_hz.saturating_mul(SMP_ONLINE_BREADCRUMB_INTERVAL_SECONDS);
             let stage_at_start: [u32; kernel::arch_impl::aarch64::smp::MAX_CPUS] =
@@ -1090,6 +1104,43 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             let mut last_online = kernel::arch_impl::aarch64::smp::cpus_online();
             let mut last_bringup_progress = kernel::arch_impl::aarch64::smp::bringup_progress();
             let start = timer::rdtsc();
+            // #522 C5 fix pass (V-1): compute the watchdog's real per-boot
+            // ceiling here, now that `start` is known, as max(published floor,
+            // local ceiling + measured gap + margin). The measured gap is the
+            // actual elapsed time between the kernel-entry anchor and this
+            // wait's own `start`, sampled fresh via rdtsc rather than assumed
+            // negligible, so -- unlike the flat same-magnitude constant it
+            // replaces -- this construction cannot reach its deadline before
+            // the local absolute ceiling's own deadline does.
+            #[cfg(feature = "boot_tests")]
+            let initialization_watchdog_ceiling_ticks = {
+                let published_floor_ticks = timer::milliseconds_to_ticks(
+                    counter_frequency_hz,
+                    kernel::test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS,
+                );
+                match initialization_watchdog_started_at {
+                    Some(initialization_started_at) => {
+                        let pre_wait_gap_ticks =
+                            timer::elapsed_ticks(start, initialization_started_at);
+                        let margin_ticks = counter_frequency_hz.saturating_mul(
+                            INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS,
+                        );
+                        let gap_extended_ticks = absolute_ceiling_ticks
+                            .saturating_add(pre_wait_gap_ticks)
+                            .saturating_add(margin_ticks);
+                        let effective_ticks = published_floor_ticks.max(gap_extended_ticks);
+                        serial_println!(
+                            "[smp] initialization_watchdog gap_ms={} local_ceiling_ms={} margin_ms={} effective_ceiling_ms={}",
+                            pre_wait_gap_ticks.saturating_mul(1_000) / counter_frequency_hz.max(1),
+                            SMP_ONLINE_ABSOLUTE_CEILING_SECONDS.saturating_mul(1_000),
+                            INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS.saturating_mul(1_000),
+                            effective_ticks.saturating_mul(1_000) / counter_frequency_hz.max(1),
+                        );
+                        effective_ticks
+                    }
+                    None => published_floor_ticks,
+                }
+            };
             let mut last_advance = start;
             let mut last_breadcrumb = start;
             let mut last_counter_sample = start;
@@ -1117,16 +1168,20 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
             // SMP secondary CPU bring-up wait: boot CPU spins until all
             // released secondary CPUs increment cpus_online. The boot_tests
-            // build retains the starvation-tolerant 20s/40s bounds; the plain
-            // kernel uses 2s/4s: still twenty times the former 100ms allowance,
-            // while preserving at least 16 seconds of the strict harness for the
-            // rest of boot and final diagnostics. The no-progress window is
-            // re-armed only when cpus_online or the sum of secondary bring-up
-            // stages advances. In boot_tests, the initialization watchdog ceiling
-            // can only shorten the local 40-second ceiling; it cannot re-arm it.
-            // claim-lint:ok: #522 C5; the two budgets are pinned in
-            // tests/teardown_structure.rs and read in
-            // docs/planning/green-program/tracing/522-C5-2026-09-07.md. With a
+            // build retains the starvation-tolerant 10s/15s bounds (halved
+            // from 20s/40s by #522 C5 fix pass V-3, still comfortably above
+            // the realistic worst case documented below); the plain kernel
+            // uses 2s/4s. The no-progress window is re-armed only when
+            // cpus_online or the sum of secondary bring-up stages advances. In
+            // boot_tests, the initialization watchdog's ceiling is computed
+            // dynamically above from this local ceiling itself, adding the
+            // measured gap plus margin, so it can only be reached AT OR AFTER
+            // this local ceiling's own deadline, never before it -- #522 C5
+            // fix pass V-1 replaced an earlier same-magnitude constant that
+            // could (and, given real pre-wait initialization time, always did)
+            // fire first.
+            // claim-lint:ok: #522 C5 fix pass; the dynamic formula and the two
+            // budgets are pinned in tests/teardown_structure.rs. With a
             // running CNTVCT those ceilings bound the loop; if CNTVCT freezes,
             // the unconditional delta sample bounds it by iterations instead. No
             // IRQ can signal "CPU online" before each CPU wires its GIC, so this
@@ -1161,7 +1216,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                         }
                         serial_println!(
                             "[smp] Timeout waiting for CPUs: initialization watchdog ceiling of {} ms reached ({} online, {} expected)",
-                            kernel::test_framework::INITIALIZATION_WATCHDOG_BUDGET_MILLISECONDS,
+                            initialization_watchdog_ceiling_ticks.saturating_mul(1_000)
+                                / counter_frequency_hz.max(1),
                             online_at_verdict,
                             expected
                         );

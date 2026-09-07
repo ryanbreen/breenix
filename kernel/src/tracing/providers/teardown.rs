@@ -8839,6 +8839,28 @@ pub fn exit_kick_worker_window_isolation_test() -> crate::test_framework::regist
     let Some(test_phase_started_at) = crate::test_framework::test_phase_liveness_started_at() else {
         return TestResult::Fail("exit-kick isolation test-phase anchor unavailable");
     };
+    // #522 C5 fix pass (V-8): this test is a second, deeper consumer of the
+    // same test_phase_liveness budget the real exit_kick_gate spends -- its
+    // five scenarios' own ceilings sum to about 39 seconds of that shared
+    // budget (versus the real gate's own 2-3 seconds), yet only the real
+    // gate's `exit_kick_protocol_gate_test` reported how much of the budget
+    // was already spent on entry. Report it here too, so the truncation
+    // condition the budget_anchor breadcrumb exists to make visible is
+    // visible for every consumer of the budget, not only the shallowest one.
+    // claim-lint:ok: #522 C5 fix pass V-8; pinned by
+    // tests/teardown_structure.rs::fix_pass_v8_worker_isolation_reports_budget_anchor_age,
+    // which reddens if this breadcrumb is removed.
+    {
+        let entry_started_at = crate::arch_impl::aarch64::timer::rdtsc_serialized();
+        crate::serial_println!(
+            "[exit_kick_worker_isolation] budget_anchor=test_phase anchor_age_at_entry_ms={} budget_ms={} scenario_ceiling_ms={}",
+            crate::arch_impl::aarch64::timer::elapsed_ticks(entry_started_at, test_phase_started_at)
+                .saturating_mul(1_000)
+                / frequency.max(1),
+            crate::test_framework::TEST_PHASE_LIVENESS_BUDGET_MILLISECONDS,
+            ABSOLUTE_WAIT_CEILING_MILLISECONDS,
+        );
+    }
     // Completion needs TWO own increments, so the frozen worker does not complete.
     // The two live siblings continue doing work even after their completion bits.
     // This distinguishes the old union's 15s ceiling from the independent 8s floor.
