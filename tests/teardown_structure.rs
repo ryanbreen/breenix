@@ -17074,7 +17074,13 @@ fn try_manager_mask_ratchet_is_not_vacuous() {
 #[test]
 fn code_mask_raw_string_close_preserves_next_byte() {
     // serial_println! is a forbidden hot-path spelling used by this suite.
-    for fixture in [r##"r"x"serial_println!"##, r##"r#"x"#serial_println!"##] {
+    // Hash counts 0, 1, 2, and 3 are exercised directly here, not just 0 and 1.
+    for fixture in [
+        r##"r"x"serial_println!"##,
+        r##"r#"x"#serial_println!"##,
+        r####"r##"x"##serial_println!"####,
+        r#####"r###"x"###serial_println!"#####,
+    ] {
         let mask = code_mask(fixture);
         assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
                    vec![fixture.find("serial_println!").unwrap()]);
@@ -17082,15 +17088,26 @@ fn code_mask_raw_string_close_preserves_next_byte() {
     // A skipped ordinary identifier byte stays true in the default mask.
     // A skipped raw opener instead changes lexical state: the embedded quote
     // closes an ordinary string, hiding the real token after the raw close.
-    let fixture = r###"r"x"r#"a"b"#serial_println!"###;
-    let mask = code_mask(fixture);
-    assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
-               vec![fixture.find("serial_println!").unwrap()]);
+    // Exercised at a 0-then-1 hash boundary and again at a 1-then-2 hash
+    // boundary, so the compound-skip fix is checked past the smallest counts too.
+    for fixture in [
+        r###"r"x"r#"a"b"#serial_println!"###,
+        r######"r#"x"#r##"a"b"##serial_println!"######,
+    ] {
+        let mask = code_mask(fixture);
+        assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
+                   vec![fixture.find("serial_println!").unwrap()]);
+    }
 }
 
 #[test]
 fn function_body_raw_string_close_preserves_next_byte() {
-    for literal in [r##"r"x""##, r##"r#"x"#"##] {
+    for literal in [
+        r##"r"x""##,
+        r##"r#"x"#"##,
+        r####"r##"x"##"####,
+        r#####"r###"x"###"#####,
+    ] {
         let fixture = format!("fn a() {{ let s = {literal}}} fn b() {{ CANARY }}");
         let a = function_body(&fixture, "a");
         assert_eq!(a, format!("fn a() {{ let s = {literal}}}"));
