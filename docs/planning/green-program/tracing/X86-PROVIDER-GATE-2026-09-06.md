@@ -323,6 +323,17 @@ in isolation; it does not replace the full gate's earlier-failure record.
 The synthetic archived-baseline/malformed-shape rejection remains separately
 covered by the 17-test structure suite.
 
+**Residual gap, recorded for a future round:** the new awk assertion has
+still not been exercised end-to-end inside one unbroken full
+`run-x86-boot-tests.sh` execution that reaches it via the mutated provider
+path, because the softirq panic (#891) aborts the script before that point
+on this mutation boot. A future round should re-run this mutation gate once
+#891 no longer intervenes on this boot (either fixed, or by chance not
+firing) to obtain a direct full-gate red at the new assertion itself; until
+then, the mutation-rejection evidence for this specific assertion is the
+extracted-shell-block replay above against the real captured serial, not a
+direct full-gate result.
+
 Restoration was checked in the runner with `cmp`, then independently with:
 
 ```bash
@@ -380,26 +391,99 @@ this PR, including assessment of the mutation gate's earlier-failure limitation.
 No issue was closed or reclassified by this task. The separately observed
 softirq panic already has issue #891.
 
+## Review in-layer ruling
+
+The review pass answered the issue-scope question above and recorded the
+following ruling (`tracingBlocking: true`), reproduced verbatim:
+
+> **Reasoning:** Two separate questions, answered separately. (1) Are
+> #533/#680/#681 themselves tracing-layer defects that would keep Tracing x86
+> at UNVERIFIED? No. Row 20's path is kernel/src/tracing/ (19 files) +
+> kernel/src/fs/procfs/trace.rs (confirmed from atlas-data.json). #533 lives
+> in kernel/src/test_framework/ (registry executor + kernel_main_continue
+> orchestration) -- row 21/row 2. #680 is a kthread_join hang in
+> kernel/src/task/kthread.rs -- row 6. #681 is sys_exit's premature
+> terminal-verdict publication in kernel/src/syscall/handlers.rs -- row
+> 8/21. None touches kernel/src/tracing/. They were chip-tagged to row 20
+> only because, until this PR, they collectively blocked the only avenue
+> (the off-by-default x86_staged_registry feature) through which the
+> tracing row's one functional test could run on x86 at all -- and this PR
+> supplies an independent, already-precedented route around all three (the
+> same direct-call shape as the existing run_x86_ring_span_gate), landing in
+> the shipping boot_tests profile with a real gate assertion. So the
+> tracing row's own stated functional obligation ("the one registered
+> test... is undispatched") is now met independent of whether #533/#680/#681
+> are ever fixed. They should be removed from row 20's chip list on both x86
+> and blended views (and, since #680/#681 currently chip ONLY row 20, added
+> to their correct homes -- rows 6 and 8/21 respectively -- as a
+> housekeeping item, not part of this PR's scope). (2) Given that, can the
+> atlas honestly declare Tracing x86/blended HIGH with "no open in-layer
+> issues" today? No -- issue #855, filed 2026-09-06 independent of this
+> branch, is a genuine open defect in the tracing framework's own ring
+> buffer (kernel/src/tracing/core.rs, buffer.rs -- squarely inside row 20's
+> path), describing real retained-history being 15-30ms rather than seconds
+> under realistic event density. It has nothing to do with #533/#680/#681
+> or with this PR's scope, and it is not fixed or excluded by this PR. A
+> live post-merge issue sweep run today therefore does NOT come back clean
+> for the tracing row, even after correctly excluding #533/#680/#681.
+>
+> **Allowed prose (MAY say):** the shipping x86 boot_tests profile now
+> directly executes the deferred-fault-ring overflow provider test in a
+> shippable configuration with a gate that requires actual PASS and rejects
+> missing/failed/duplicate results (subject to the narrow F2/F3
+> gate-strictness caveats above); #533/#680/#681 are
+> registry-dispatch/scheduler/syscall-layer issues, not tracing-layer
+> issues, and do not block this row (with citations to the actual
+> files/rows they belong to); full x86_staged_registry execution remains
+> separately tracked (rows 2/21), not asserted as working here.
+>
+> **Allowed prose (MAY NOT say):** "the post-merge issue sweep finds no
+> open tracing-layer defects" or otherwise declare a clean zero-issue HIGH
+> without addressing or explicitly carrying #855 as a remaining open
+> in-layer issue against this row; that #680 or #681 are resolved/closed
+> (they are re-scoped away from tracing, not fixed); that full
+> staged-registry execution, RELIABILITY, or a live (non-synthetic)
+> fault-path result is established by this PR (the round doc's own "Not
+> claimed" section already correctly disclaims these).
+
+This ruling supersedes the "no post-merge issue sweep was performed"
+statement that previously closed this section: the review pass did run a
+live post-merge sweep for this row (`gh issue view 855`, confirmed OPEN,
+filed 2026-09-06T02:44:13Z, independent of this branch) and found it not
+clean. #533/#680/#681 are removed from row 20's chip list per the ruling
+above, but #855 is carried forward as the row's one remaining open
+in-layer issue.
+
 ## Proposed atlas replacement prose (NOT applied)
 
-The following is verbatim proposed text, pending the review question above.
-It is not a claim this document makes about the current atlas or an issue sweep:
+The following was originally drafted as verbatim proposed text pending the
+review question above. Per the ruling recorded just above, its original
+"no open tracing-layer defects"/"no open in-layer issues" clauses were false
+against a live sweep (issue #855 is open and in-layer) and have been
+corrected below to carry #855 forward instead of claiming a clean sweep;
+this corrected text remains proposed, not applied, by this document:
 
-> Tracing × x86 — complete/HIGH (PROPOSED): "HIGH: the shipping x86 boot_tests profile directly executes the deferred-fault-ring overflow provider test, its gate requires the actual PASS and rejects missing or failed results, the sampling/report-site mutations and production regression gate pass, and the post-merge issue sweep finds no open tracing-layer defects; full staged-registry execution remains tracked in the boot/scheduler rows."
+> Tracing × x86 — complete/HIGH (PROPOSED): "HIGH: the shipping x86 boot_tests profile directly executes the deferred-fault-ring overflow provider test, its gate requires the actual PASS and rejects missing or failed results, and the sampling/report-site mutations and production regression gate pass; #533/#680/#681 are registry-dispatch/scheduler/syscall-layer issues (not tracing-layer) and do not block this row; issue #855 (trace-ring retention window, in-layer) remains open and is carried forward rather than dropped; full staged-registry execution remains tracked in the boot/scheduler rows."
 >
-> Tracing × blended — complete/HIGH (PROPOSED): "HIGH follows the existing aarch64 tracing evidence and the newly gated x86 provider execution in the shipping profile, with no open in-layer issues in the post-merge sweep; neither seconds of retained history nor full staged-registry execution is asserted."
+> Tracing × blended — complete/HIGH (PROPOSED): "HIGH follows the existing aarch64 tracing evidence and the newly gated x86 provider execution in the shipping profile; issue #855 (trace-ring retention window) remains open and in-layer and is carried forward rather than dropped; neither seconds of retained history nor full staged-registry execution is asserted."
 
 This document does not itself declare either cell HIGH. No atlas file in
 this repository was edited by this task. No atlas file exists here; the atlas
-lives outside this repository. No post-merge issue sweep was performed.
+lives outside this repository. A live post-merge issue sweep for this row
+WAS performed by the review pass (see the ruling above) and returned one
+open in-layer issue, #855, rather than the clean sweep the original draft
+above assumed.
 
 ## Not claimed
 
 - Full x86 registry execution.
-- The #567/#680/#681 scheduler repair.
+- The #567/#680 scheduler repair.
+- The #681 fix: its decisive logic is `sys_exit`'s premature terminal-verdict
+  publication in `kernel/src/syscall/handlers.rs` (the syscall exit-verdict
+  path), not the scheduler.
 - A live process fault: the injection uses a private fixture with synthetic TIDs, not a real fault path.
 - RELIABILITY.
-- Any atlas colour change; that is left to the review question above.
+- Any atlas colour change; the review ruling above says what MAY be said, but no atlas file was edited by this task.
 - That the full mutation gate reached the new assertion; it stopped earlier on the softirq panic.
 
 ## Runner command appendix
@@ -877,3 +961,57 @@ claim-lint: 164 pre-existing finding(s) outside this branch's changed hunks not 
 `git diff --check` initially returned exit 2 for the two blank context lines
 in the quoted diff (lines 611 and 616, "trailing whitespace"). Their single
 context spaces were removed from this Markdown quotation.
+
+## Prose fix pass — F1, F4, F5 closed, 2026-09-06
+
+This pass closes review-pass findings F1, F4, and F5 (each quoted verbatim
+in the task that produced this pass; F2 and F3 are unaffected — F3 was
+already closed by the astra fix pass above, F2 remains open and out of
+scope here).
+
+- **F1 (major, prose)**: the PROPOSED (not-applied) atlas replacement text
+  claimed the post-merge issue sweep finds no open tracing-layer defects.
+  Issue #855, filed 2026-09-06T02:44:13Z independent of this branch and
+  confirmed OPEN via `gh issue view 855`, is a genuine open in-layer defect
+  in `kernel/src/tracing/core.rs` + `buffer.rs` (row 20's own path per
+  `atlas-data.json`), unrelated to #533/#680/#681 and unaddressed by this
+  PR. Closed by adding a "Review in-layer ruling" section recording the
+  review pass's ruling verbatim, and by rewriting the PROPOSED atlas text
+  to carry #855 forward instead of claiming a clean sweep.
+- **F4 (minor, prose)**: the "Not claimed" section's "#567/#680/#681
+  scheduler repair" bullet mischaracterized #681, whose decisive logic is
+  `sys_exit`'s premature terminal-verdict publication in
+  `kernel/src/syscall/handlers.rs` (the syscall exit-verdict path), not the
+  scheduler. Closed by splitting the bullet into a scheduler item
+  (#567/#680) and a separate syscall-exit-verdict-path item (#681).
+- **F5 (minor, prose)**: the residual evidentiary gap — the new awk
+  assertion has not yet been exercised inside one unbroken full
+  `run-x86-boot-tests.sh` mutation run because #891's softirq panic aborts
+  the script first — was already honestly disclosed in the round doc, but
+  carried no explicit forward action for a future round. Closed by adding
+  a "Residual gap, recorded for a future round" note in the "Runtime
+  mutation" section naming the concrete follow-up (re-run the mutation gate
+  once #891 no longer intervenes on that boot).
+
+No file under `kernel/src/`, `kernel/Cargo.toml`,
+`docker/qemu/run-x86-boot-tests.sh`, or `tests/` changed in this pass — the
+commit for this pass touches only this round doc (a `git diff --name-only`
+before committing shows a single path,
+`docs/planning/green-program/tracing/X86-PROVIDER-GATE-2026-09-06.md`; the
+exact insertion count is not quoted here because this section's own text
+contributes to it).
+
+Because no kernel or script source changed, the aarch64 kernel was not
+rebuilt and neither the aarch64 strict boot gate nor the beast x86 gate was
+re-run for this specific pass. Per the task's own instructions, this
+document's separate "R16" landing step (merge main, structure suites, one
+boot per arch, PR, merge) follows this pass and is recorded in the
+"Landing" section below.
+
+### Claim-lint invocation record for this pass
+
+```text
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/tracing/X86-PROVIDER-GATE-2026-09-06.md -> exit 1 (initial wording: "never"/"zero" universal-claim hits on the new F5 note and the corrected atlas-prose paragraph)
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/tracing/X86-PROVIDER-GATE-2026-09-06.md -> exit 0 (revised wording)
+claim-lint: python3 scripts/claim-lint.py -> exit 0 (5 file(s) checked, changed hunks vs 5bfc7077af7d)
+```
