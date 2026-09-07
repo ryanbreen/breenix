@@ -1,0 +1,4 @@
+base-control: gate_exit=0, 10/10, load_at_start=3.98..9.39, qemu_at_start=0 on 10/10
+base-load: gate_exit=0, 10/10, load_at_start=56.4..60.9, qemu_at_start=0 on 10/10
+fix-control: gate_exit=0, 10/10, load_at_start=3.75..7.12, qemu_at_start=0 on 10/10
+fix-load: gate_exit=0, 10/10, load_at_start=58.16..64.74, qemu_at_start=0 on 10/10

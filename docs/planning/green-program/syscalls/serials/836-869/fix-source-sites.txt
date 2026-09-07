@@ -1,0 +1,50 @@
+4769:fn fcntl_pm_holder_body() {
+4795:        let held_from = crate::tracing::trace_timestamp();
+4847:struct TestOracleDriverPin(core::marker::PhantomData<*mut ()>);
+4850:impl TestOracleDriverPin {
+4862:impl Drop for TestOracleDriverPin {
+4872:pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+4900:        let mut driver_pin = Some(TestOracleDriverPin::enter());
+4909:        let peer = live_peer_cpu_for_test();
+4911:            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+4932:                    let arm_start = crate::tracing::trace_timestamp();
+4951:                        FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);
+4971:                    FCNTL_PM_RELEASE_REQ.store(true, AtomicOrdering::Release);
+4973:                    drop(driver_pin.take());
+4980:                    release_cpu_affine_thread_for_test(handle.tid());
+5006:                    let contention_measured = pm_busy_probe == 1
+5012:                    } else if hold_safety == 1 {
+5014:                    } else if armed == 0 {
+5027:        drop(driver_pin);
+5288:        let held_from = crate::tracing::trace_timestamp();
+5342:        let peer = live_peer_cpu_for_test();
+5344:            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+5404:                let arm_start = crate::tracing::trace_timestamp();
+5415:                release_cpu_affine_thread_for_test(handle.tid());
+5632:        let held_from = crate::tracing::trace_timestamp();
+5656:        let peer = live_peer_cpu_for_test();
+5658:            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+5721:                let arm_start = crate::tracing::trace_timestamp();
+5769:                release_cpu_affine_thread_for_test(handle.tid());
+5959:    let held_from = crate::tracing::trace_timestamp();
+6059:pub fn run_irq_hold_oracle() -> bool {
+6094:        let mut driver_pin = Some(TestOracleDriverPin::enter());
+6099:        let peer = live_peer_cpu_for_test();
+6101:            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+6108:                    driver_pin = Some(TestOracleDriverPin::enter());
+6138:                    drop(driver_pin.take());
+6144:                let arm_start = crate::tracing::trace_timestamp();
+6155:                drop(driver_pin.take());
+6156:                release_cpu_affine_thread_for_test(handle.tid());
+6220:        drop(driver_pin);
+6389:    let held_from = tty_irq_pm_now_us();
+6515:        let peer = live_peer_cpu_for_test();
+6517:            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+6531:                let arm_start = tty_irq_pm_now_us();
+6549:                release_cpu_affine_thread_for_test(handle.tid());
+6805:        let held_from = tty_irq_pm_now_us();
+6958:        let peer = live_peer_cpu_for_test();
+6960:            Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
+6974:                let arm_start = tty_irq_pm_now_us();
+6994:                release_cpu_affine_thread_for_test(handle.tid());
+7015:            let held_from = tty_irq_pm_now_us();

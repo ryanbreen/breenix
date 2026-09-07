@@ -1,0 +1,29 @@
+== compiling fcntl_pm_contention_gate_structure ==
+== running fcntl_pm_contention_gate_structure  ==
+
+running 9 tests
+test oracle_arming_is_a_rendezvous_not_an_attempt_count ... FAILED
+test oracle_pass_predicate_carries_a_wait_floor_conjunct ... ok
+test verdict_arms_are_distinct_and_only_one_describes_a_syscall_result ... ok
+test every_gate_pinning_the_aarch64_pass_verdict_selfchecks_its_pattern ... ok
+test driver_pin_precedes_every_peer_selection ... ok
+test driver_pin_entry_and_cancellation_close_their_own_gaps ... ok
+test driver_pin_covers_holder_publication_and_measurement ... ok
+test arming_bounds_and_failure_contract_are_not_widened ... ok
+test driver_pin_is_balanced_before_cleanup_and_reporting ... ok
+
+failures:
+
+---- oracle_arming_is_a_rendezvous_not_an_attempt_count stdout ----
+
+thread 'oracle_arming_is_a_rendezvous_not_an_attempt_count' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/arm/wt/tests/fcntl_pm_contention_gate_structure.rs:346:5:
+the oracle marker counts arming attempts again. Arming is a rendezvous with a deadline: a retry count means the hold closes on something other than the driver's request, which is the shape that reported armed=0:calls=0 on 2 of 40 boots. Marker was:
+FCNTL_PM_CONTENTION_ORACLE:aarch64:attempts=3:arm_wait_us={}:armed={}:acquired={}:holder_cpu={}:pm_busy_probe={}:calls={}:eagain={}:first_errno={}:first_wait_us={}:hold_safety={}:hold_done={}:joined={}:{}]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    oracle_arming_is_a_rendezvous_not_an_attempt_count
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

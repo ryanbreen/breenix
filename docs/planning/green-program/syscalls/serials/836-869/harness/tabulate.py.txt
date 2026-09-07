@@ -1,0 +1,31 @@
+import pathlib,re
+root=pathlib.Path('docs/planning/green-program/syscalls/serials/836-869')
+rows=[];markers=[]
+for label in ['base-control','base-load','fix-control','fix-load']:
+    folder=root/label
+    if not (folder/'strict.exit').exists(): continue
+    markers.append(f'{label} gate_exit={(folder/"strict.exit").read_text().strip()}')
+    for boot in range(1,11):
+        p=folder/'gate-tmp'/f'breenix_aarch64_strict_{boot}'/'serial.txt'
+        text=p.read_text(errors='replace') if p.exists() else ''
+        got={}
+        for tag in ['FCNTL_PM_CONTENTION_ORACLE','IRQ_HOLD_ORACLE']:
+            found=[(i+1,line) for i,line in enumerate(text.splitlines()) if '['+tag+':aarch64:' in line]
+            if len(found)!=1:
+                markers.append(f'{p}: INVALID {tag} count={len(found)}')
+                got[tag]=None
+                continue
+            line_num,line=found[0]
+            markers.append(f'{p}:{line_num} {line}')
+            got[tag]=dict(re.findall(r'(\w+)=(\d+)',line))
+        f=got['FCNTL_PM_CONTENTION_ORACLE'];irq=got['IRQ_HOLD_ORACLE']
+        if f:
+            if label.startswith('fix'):
+                for name,val in {'armed':'1','acquired':'1','pm_busy_probe':'1','calls':'64','eagain':'0','first_errno':'9','hold_safety':'0','hold_done':'1','joined':'1'}.items():
+                    assert f[name]==val,(p,name,f[name])
+                assert int(f['first_wait_us'])>=1000,(p,f)
+            rows.append(f'| {label} | {boot} | {f["arm_wait_us"]} | {f["armed"]} | {f["hold_safety"]} | {f["first_wait_us"]} | {irq["attempts"] if irq else "MISSING"} | {irq["armed"] if irq else "MISSING"} |')
+        else: rows.append(f'| {label} | {boot} | MISSING | MISSING | MISSING | MISSING | MISSING | MISSING |')
+(root/'four-leg-markers.txt').write_text('\n'.join(markers)+'\n')
+pathlib.Path('.tmp/four-leg-table.md').write_text('| Leg | Boot | fcntl arm_wait_us | armed | hold_safety | first_wait_us | IRQ attempts | IRQ armed |\n|---|---:|---:|---:|---:|---:|---:|---:|\n'+'\n'.join(rows)+'\n')
+print(f'{len(rows)} boots tabulated; fixed PASS conjuncts checked where available')

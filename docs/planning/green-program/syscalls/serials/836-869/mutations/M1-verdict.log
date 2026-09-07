@@ -1,0 +1,28 @@
+== compiling fcntl_pm_contention_gate_structure ==
+== running fcntl_pm_contention_gate_structure  ==
+
+running 9 tests
+test oracle_pass_predicate_carries_a_wait_floor_conjunct ... ok
+test oracle_arming_is_a_rendezvous_not_an_attempt_count ... ok
+test verdict_arms_are_distinct_and_only_one_describes_a_syscall_result ... FAILED
+test every_gate_pinning_the_aarch64_pass_verdict_selfchecks_its_pattern ... ok
+test driver_pin_precedes_every_peer_selection ... ok
+test driver_pin_covers_holder_publication_and_measurement ... ok
+test driver_pin_entry_and_cancellation_close_their_own_gaps ... ok
+test arming_bounds_and_failure_contract_are_not_widened ... ok
+test driver_pin_is_balanced_before_cleanup_and_reporting ... ok
+
+failures:
+
+---- verdict_arms_are_distinct_and_only_one_describes_a_syscall_result stdout ----
+
+thread 'verdict_arms_are_distinct_and_only_one_describes_a_syscall_result' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/arm/wt/tests/fcntl_pm_contention_gate_structure.rs:513:9:
+verdict arm ArmingTimeout says something reached userspace: "fcntl reported a contended process-manager lock to userspace". The arming arms fail before any call is issued -- the line they print carries calls=0 -- and reporting them as a syscall verdict is the 2026-09-05 regression
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    verdict_arms_are_distinct_and_only_one_describes_a_syscall_result
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
