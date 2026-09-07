@@ -1,0 +1,2 @@
+Beast breenix-x86: ps -eo pid,comm,args scanned for QEMU arguments containing /root/breenix-927a-tmp/.
+Owned QEMU processes remaining: 0. No process-name kill used; other lanes left alone.
