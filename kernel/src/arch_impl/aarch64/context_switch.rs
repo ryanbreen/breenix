@@ -1869,12 +1869,32 @@ pub(crate) fn deferred_requeue_contains(thread_id: u64) -> bool {
 /// Per-CPU call counters, advanced before the sampling decision. Relaxed
 /// ordering gates sampling, not synchronization. Registered drop counters
 /// count skipped calls independently of the ring's retained entries.
-static CTX_DIAG_CALL_COUNT: CacheLineAligned<
-    [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS],
-> = CacheLineAligned([const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS]);
-static DEFER_REQUEUE_CALL_COUNT: CacheLineAligned<
-    [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS],
-> = CacheLineAligned([const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS]);
+///
+/// claim-lint:ok: tests/ctx_diag_ring_sample_structure.rs pins the 3/3
+/// padded counter declarations; size/alignment assertions below pin 64 bytes.
+/// One `CacheLineAligned` PER ELEMENT, not one around the whole array (T-3,
+/// #855 fix pass): `CacheLineAligned<[AtomicU64; MAX_CPUS]>` only aligns the
+/// array's *start* -- with MAX_CPUS=8 and AtomicU64=8 bytes the whole array
+/// was exactly one 64-byte line, so every CPU's own-index `fetch_add` on
+/// this hot dispatch/defer-requeue path invalidated every OTHER CPU's line
+/// too. Padding each element to its own line removes that.
+static CTX_DIAG_CALL_COUNT: [CacheLineAligned<AtomicU64>;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+    CacheLineAligned(AtomicU64::new(0))
+}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static DEFER_REQUEUE_CALL_COUNT: [CacheLineAligned<AtomicU64>;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+    CacheLineAligned(AtomicU64::new(0))
+}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+const _: () = assert!(
+    core::mem::size_of::<CacheLineAligned<AtomicU64>>() == 64,
+    "each CTX/DEFER per-CPU call counter must occupy its own 64-byte cache line"
+);
+const _: () = assert!(
+    core::mem::align_of::<CacheLineAligned<AtomicU64>>() == 64,
+    "each CTX/DEFER per-CPU call counter must be 64-byte aligned"
+);
 
 static LAST_DEFER_REQUEUE_INFO: CacheLineAligned<[AtomicU64; 8]> =
     CacheLineAligned([const { AtomicU64::new(0) }; 8]);

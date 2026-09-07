@@ -288,3 +288,57 @@ fn diagnostic_sample_values_are_pinned() {
     assert!(read(SOURCE).contains("const TRACE_DIAG_SAMPLE: u64 = 1024;"));
     assert!(read(SCHED_SOURCE).contains("const TRACE_SCHED_DIAG_SAMPLE: u64 = 8192;"));
 }
+
+fn assert_ctx_counters_are_padded_per_element(source: &str) {
+    let code = compact(source);
+    for name in ["CTX_DIAG_CALL_COUNT", "DEFER_REQUEUE_CALL_COUNT"] {
+        assert!(code.contains(&format!("static{name}:[CacheLineAligned<AtomicU64>;")),
+            "{name} must pad each element to its own cache line, not wrap the whole array");
+    }
+}
+
+#[test]
+fn ctx_and_defer_counters_are_padded_per_element() {
+    assert_ctx_counters_are_padded_per_element(&read(SOURCE));
+}
+
+/// Replace the entire declaration with its pre-fix shared-array form.
+fn revert_counter(source: &str, name: &str, old: &str) -> String {
+    let start = source.find(&format!("static {name}:")).expect("counter declaration");
+    let end = start + source[start..].find("MAX_CPUS];").expect("array initializer end")
+        + "MAX_CPUS];".len();
+    let mutated = format!("{}{}{}", &source[..start], old, &source[end..]);
+    assert_ne!(source, mutated);
+    mutated
+}
+
+#[test]
+#[should_panic(expected = "must pad each element")]
+fn reverting_ctx_counter_to_one_shared_line_would_be_caught() {
+    let source = read(SOURCE);
+    assert_ctx_counters_are_padded_per_element(&source);
+    let mutated = revert_counter(&source, "CTX_DIAG_CALL_COUNT", r#"static CTX_DIAG_CALL_COUNT: CacheLineAligned<
+    [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS],
+> = CacheLineAligned([const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS]);"#);
+    assert_ctx_counters_are_padded_per_element(&mutated);
+}
+
+fn assert_sched_counter_is_padded_per_element(source: &str) {
+    assert!(compact(source).contains("staticSCHED_DIAG_CALL_COUNT:[CacheLinePadded<AtomicU64>;"),
+        "SCHED_DIAG_CALL_COUNT must pad each element to its own cache line");
+}
+
+#[test]
+fn sched_counter_is_padded_per_element() {
+    assert_sched_counter_is_padded_per_element(&read(SCHED_SOURCE));
+}
+
+#[test]
+#[should_panic(expected = "must pad each element")]
+fn reverting_sched_counter_to_one_shared_line_would_be_caught() {
+    let source = read(SCHED_SOURCE);
+    assert_sched_counter_is_padded_per_element(&source);
+    let mutated = revert_counter(&source, "SCHED_DIAG_CALL_COUNT", r#"static SCHED_DIAG_CALL_COUNT: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];"#);
+    assert_sched_counter_is_padded_per_element(&mutated);
+}

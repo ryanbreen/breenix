@@ -1,0 +1,18 @@
+kernel/src/arch_impl/aarch64/context_switch.rs:1873: [universal-claim] One `CacheLineAligned` PER ELEMENT, not one around the whole array (T-3, #855 fix pass): `CacheLineAligned<[AtomicU64; MAX_CPUS]>` only aligns the array's *start* -- with MAX_CPUS=8 and AtomicU64=8 bytes the whole array was exactly one 6...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+kernel/src/task/scheduler.rs:281: [universal-claim] Cache-line pads a single per-CPU counter so 8 CPUs writing 8 different indices do not invalidate each other's line (T-3, #855 fix pass). A bare `[AtomicU64; MAX_CPUS]` packs all 8 elements into one 64-byte line at MAX_CPUS=8; this type g...
+    -> unquantified absolute ('all') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+kernel/src/tracing/providers/irq.rs:510: [universal-claim] # Every ring read is same-CPU-only (T-1, #855 fix pass)
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+kernel/src/tracing/providers/irq.rs:523: [universal-claim] This revision has every CPU read only ITS OWN ring (`publish_self`, below), the moment its own tick crosses `CHECK_AT_MS`, into per-CPU atomics. `claim` then picks the busiest among whichever have self-published so far -- purely from tho...
+    -> unquantified absolute ('every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+kernel/src/tracing/providers/irq.rs:550: [universal-claim] Per-CPU one-shot self-publish state (T-1 fix): guards each CPU's own `publish_self` so it runs at most once per CPU, and carries what it found. Every slot here is written by exactly one CPU (its own index), so cross-CPU readers (`is_read...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+kernel/src/tracing/providers/irq.rs:653: [universal-claim] Ready once the sole selftest call has completed (#847 R188 ordering) and at least one non-`0` CPU has self-published, so `claim` below always has a candidate.
+    -> unquantified absolute ('always') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+kernel/src/tracing/providers/irq.rs:663: [universal-claim] Take the published measurement, once. Picks the busiest non-`0` CPU among whichever have self-published by now, purely from the already-published per-CPU atomics above -- this never touches `TRACE_BUFFERS` (T-1 fix, #855 fix pass): every...
+    -> unquantified absolute ('never') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 7 finding(s) across 46 file(s) [changed hunks vs 45daec35bae5]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 383 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 2 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/tracing/serials/855/aarch64-gdb-rings-sample1024.bin, docs/planning/green-program/tracing/serials/855/aarch64-gdb-rings-sched16384.bin

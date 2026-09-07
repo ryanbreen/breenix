@@ -1,0 +1,8 @@
+kernel/src/tracing/providers/irq.rs:508: [universal-claim] # Every ring read is same-CPU-only (T-1, 855 fix pass)
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+kernel/src/tracing/providers/irq.rs:510: [universal-claim] The earlier oracle selected a live peer by `write_index()` and read its `iter_events()` without synchronization, violating that method's contract. Every CPU now reads its own ring at CHECK_AT_MS into per-CPU atomics. `claim` selects amon...
+    -> unquantified absolute ('Every') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 2 finding(s) across 46 file(s) [changed hunks vs 45daec35bae5]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 383 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 2 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/tracing/serials/855/aarch64-gdb-rings-sample1024.bin, docs/planning/green-program/tracing/serials/855/aarch64-gdb-rings-sched16384.bin

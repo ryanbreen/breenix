@@ -278,9 +278,42 @@ const _: () = assert!(
      with a single bitwise AND instead of a runtime division"
 );
 
+/// claim-lint:ok: tests/ctx_diag_ring_sample_structure.rs pins the 3/3
+/// padded counter declarations; size/alignment assertions below pin 64 bytes.
+/// Cache-line pads a single per-CPU counter so 8 CPUs writing 8 different
+/// indices do not invalidate each other's line (T-3, #855 fix pass). A bare
+/// `[AtomicU64; MAX_CPUS]` packs all 8 elements into one 64-byte line at
+/// MAX_CPUS=8; this type gives each element its own line instead. Same
+/// idea as `context_switch.rs`'s `CacheLineAligned`, kept local here rather
+/// than importing that module's private type across files.
 #[cfg(target_arch = "aarch64")]
-static SCHED_DIAG_CALL_COUNT: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
-    [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+#[repr(align(64))]
+struct CacheLinePadded<T>(T);
+
+#[cfg(target_arch = "aarch64")]
+impl<T> core::ops::Deref for CacheLinePadded<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+static SCHED_DIAG_CALL_COUNT: [CacheLinePadded<AtomicU64>;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+    CacheLinePadded(AtomicU64::new(0))
+}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    core::mem::size_of::<CacheLinePadded<AtomicU64>>() == 64,
+    "each SCHED_DIAG per-CPU call counter must occupy its own 64-byte cache line"
+);
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    core::mem::align_of::<CacheLinePadded<AtomicU64>>() == 64,
+    "each SCHED_DIAG per-CPU call counter must be 64-byte aligned"
+);
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]

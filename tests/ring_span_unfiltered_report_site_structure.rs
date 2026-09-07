@@ -15,12 +15,12 @@ fn unfiltered_report_is_released_after_the_synchronous_capture() {
     let source = read(IRQ_PROVIDER_SOURCE);
     let oracle = item_body(&source, "mod unfiltered_ring_span_self_check {");
     let observe = item_body(&oracle, "fn observe(");
-    let claim = observe.find("CHECKED.swap(true, Ordering::AcqRel)").unwrap();
-    let snapshot = observe.find("publish();").unwrap();
+    let claim = observe.find("SELFTEST_CALLED.swap(true, Ordering::AcqRel)").unwrap();
+    let snapshot = observe.find("publish_self(cpu);").unwrap();
     let capture = observe.find("crate::capture::selftest::observe(tick_count);").unwrap();
-    let ready = observe.find("READY.store(true, Ordering::Release);").unwrap();
-    assert!(claim < snapshot && snapshot < capture && capture < ready);
-    assert!(!item_body(&oracle, "fn publish(").contains("READY.store"));
+    let ready = observe.find("SELFTEST_DONE.store(true, Ordering::Release);").unwrap();
+    assert!(snapshot < claim && claim < capture && capture < ready);
+    assert!(!item_body(&oracle, "fn publish_self(").contains("SELFTEST_DONE.store"));
     let tick = item_body(&source, "fn trace_timer_tick(");
     assert!(tick.contains(
         "#[cfg(feature = \"capture_selftest\")]\n    #[cfg(not(target_arch = \"aarch64\"))]\n    crate::capture::selftest::observe(tick_count);"
@@ -156,15 +156,16 @@ fn the_printing_test_is_registered_in_the_test_table() {
 fn moving_the_print_back_into_the_tick_would_be_caught() {
     let source = read(IRQ_PROVIDER_SOURCE);
     let body = item_body(&source, "mod unfiltered_ring_span_self_check {");
-    let anchor = "        READY.store(true, Ordering::Release);";
+    let anchor = "            SELFTEST_DONE.store(true, Ordering::Release);";
     assert!(
         body.contains(anchor),
         "test fixture assumption broken -- the publication line this test inserts a serial \
          write beside no longer matches the real source:\n{body}"
     );
+    assert_no_unlocked_serial_write("the unfiltered_ring_span_self_check module", &body);
     let mutated = body.replace(
         anchor,
-        "        raw_serial_str(\"[RING_SPAN_UNFILTERED:cpu=\");\n        READY.store(true, Ordering::Release);",
+        "            raw_serial_str(\"[RING_SPAN_UNFILTERED:cpu=\");\n            SELFTEST_DONE.store(true, Ordering::Release);",
     );
     assert_no_unlocked_serial_write("the unfiltered_ring_span_self_check module", &mutated);
 }
@@ -174,15 +175,16 @@ fn moving_the_print_back_into_the_tick_would_be_caught() {
 #[should_panic(expected = "must not carry the")]
 fn moving_the_marker_text_back_into_the_provider_would_be_caught() {
     let source = read(IRQ_PROVIDER_SOURCE);
-    let anchor = "        READY.store(true, Ordering::Release);";
+    let anchor = "            SELFTEST_DONE.store(true, Ordering::Release);";
     assert!(
         source.contains(anchor),
         "test fixture assumption broken -- the publication line this test inserts the marker \
          text beside no longer matches the real source"
     );
+    assert_marker_is_not_emitted_here("the irq trace provider", &source);
     let mutated = source.replace(
         anchor,
-        "        raw_serial_str(\"[RING_SPAN_UNFILTERED:cpu=0:span_ms=\");\n        READY.store(true, Ordering::Release);",
+        "            raw_serial_str(\"[RING_SPAN_UNFILTERED:cpu=0:span_ms=\");\n            SELFTEST_DONE.store(true, Ordering::Release);",
     );
     assert_marker_is_not_emitted_here("the irq trace provider", &mutated);
 }
@@ -293,4 +295,67 @@ fn weakening_the_unfiltered_floor_would_be_caught() {
     let block = gate_block(&read(GATE_SOURCE));
     assert_unfiltered_floor(&block);
     assert_unfiltered_floor(&block.replace("1000", "1"));
+}
+
+fn assert_no_direct_trace_buffers_read(what: &str, body: &str) {
+    assert!(
+        !body.contains("TRACE_BUFFERS"),
+        "{what} must not read TRACE_BUFFERS directly: raw ring reads belong in publish_self (T-1, 855)"
+    );
+}
+
+#[test]
+fn claim_and_is_ready_never_touch_trace_buffers_directly() {
+    let oracle = item_body(&read(IRQ_PROVIDER_SOURCE), "mod unfiltered_ring_span_self_check {");
+    assert_no_direct_trace_buffers_read("claim()", &item_body(&oracle, "fn claim("));
+    assert_no_direct_trace_buffers_read("is_ready()", &item_body(&oracle, "fn is_ready("));
+}
+
+#[test]
+#[should_panic(expected = "must not read TRACE_BUFFERS directly")]
+fn reintroducing_a_cross_cpu_read_in_claim_would_be_caught() {
+    let oracle = item_body(&read(IRQ_PROVIDER_SOURCE), "mod unfiltered_ring_span_self_check {");
+    let claim = item_body(&oracle, "fn claim(");
+    assert_no_direct_trace_buffers_read("claim()", &claim);
+    let anchor = "let mut busiest_cpu = 1usize;";
+    assert!(claim.contains(anchor), "test fixture assumption broken: busiest-cpu loop");
+    let mutated = claim.replace(anchor,
+        "let buffers_ptr = core::ptr::addr_of!(TRACE_BUFFERS);\n        let mut busiest_cpu = 1usize;");
+    assert_ne!(claim, mutated);
+    assert_no_direct_trace_buffers_read("claim()", &mutated);
+}
+
+fn assert_self_only_ring_read(oracle: &str) {
+    // Imports name the static but do not read it; comments describe its contract.
+    let accesses: Vec<_> = code_lines_mentioning(oracle, "TRACE_BUFFERS")
+        .into_iter().filter(|line| !line.trim_start().starts_with("use ")).collect();
+    assert_eq!(accesses.len(), 1, "TRACE_BUFFERS must have exactly one executable access");
+    let publish = item_body(oracle, "fn publish_self(");
+    assert!(publish.contains(accesses[0]), "the ring access must live inside publish_self");
+    assert!(accesses[0].contains("let buffers_ptr = core::ptr::addr_of!(TRACE_BUFFERS);"));
+    let indices = code_lines_mentioning(oracle, "(*buffers_ptr)");
+    assert_eq!(indices.len(), 1, "the ring pointer must be dereferenced once");
+    assert!(indices[0].trim() == "&(*buffers_ptr)[cpu]",
+        "the one TRACE_BUFFERS read must be indexed by `cpu`, not a peer variable");
+    assert!(publish.contains(indices[0]));
+    assert!(publish.contains("fn publish_self(cpu: usize)"));
+    let observe = item_body(oracle, "fn observe(");
+    assert!(observe.contains("let cpu = Aarch64PerCpu::cpu_id() as usize;"));
+    assert!(observe.contains("publish_self(cpu);"));
+    assert_eq!(code_lines_mentioning(oracle, "publish_self(").len(), 2);
+}
+
+#[test]
+fn only_publish_self_reads_trace_buffers_and_only_by_its_own_cpu_parameter() {
+    assert_self_only_ring_read(&item_body(&read(IRQ_PROVIDER_SOURCE), "mod unfiltered_ring_span_self_check {"));
+}
+
+#[test]
+#[should_panic(expected = "must be indexed by `cpu`")]
+fn indexing_by_a_different_variable_would_be_caught() {
+    let oracle = item_body(&read(IRQ_PROVIDER_SOURCE), "mod unfiltered_ring_span_self_check {");
+    assert_self_only_ring_read(&oracle);
+    let mutated = oracle.replace("(*buffers_ptr)[cpu]", "(*buffers_ptr)[busiest_cpu]");
+    assert_ne!(oracle, mutated);
+    assert_self_only_ring_read(&mutated);
 }
