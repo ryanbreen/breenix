@@ -1,0 +1,198 @@
+26893a4fb55bb3de33b62e5c522348d231e2a26a
+Artifacts: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/.gate-tmp/breenix_813_aarch64.w7VGfY
+[GATE_PREFLIGHT:structure_suites=64/64:critical_path_lines=260:pinned=120]
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: aarch64
+
+[1/3] Building libbreenix-libc (aarch64)...
+  Finished `release` profile [optimized] target(s) in 0.02s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (aarch64)...
+  Finished `release` profile [optimized] target(s) in 0.06s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (351184 bytes)
+  Installed exec_smoke.elf (290896 bytes)
+  Installed exec_smoke_target.elf (294528 bytes)
+  Installed fork_smoke.elf (297160 bytes)
+  Installed block_eintr_oracle.elf (304720 bytes)
+  Installed poll_tcp_oracle.elf (320896 bytes)
+  Installed futex_handoff_oracle.elf (296048 bytes)
+  Installed tty_oracle.elf (338232 bytes)
+  Installed df_preempt_oracle.elf (288848 bytes)
+  Installed syscall_enosys.elf (290136 bytes)
+  Installed clock_gettime_test.elf (295064 bytes)
+  Installed file_read_test.elf (292296 bytes)
+  Installed lseek_test.elf (292512 bytes)
+  Installed fs_write_test.elf (293400 bytes)
+  Installed fs_rename_test.elf (297304 bytes)
+  Installed fs_large_file_test.elf (292264 bytes)
+  Installed fs_directory_test.elf (293520 bytes)
+  Installed fs_link_test.elf (293224 bytes)
+  Installed access_test.elf (291496 bytes)
+  Installed devfs_test.elf (292520 bytes)
+  Installed cwd_test.elf (292472 bytes)
+  Installed getdents_test.elf (294200 bytes)
+  Installed pipe_test.elf (299224 bytes)
+  Installed pipe2_test.elf (304256 bytes)
+  Installed pipe_fifo_blocking_oracle.elf (328600 bytes)
+  Installed pipe_fifo_blocking_supervisor.elf (290816 bytes)
+  Installed dup_test.elf (305672 bytes)
+  Installed fcntl_test.elf (299616 bytes)
+  Installed poll_test.elf (304816 bytes)
+  Installed select_test.elf (304536 bytes)
+  Installed epoll_test.elf (292720 bytes)
+  Installed nonblock_test.elf (303960 bytes)
+  Installed brk_test.elf (292848 bytes)
+  Installed signal_handler_test.elf (298000 bytes)
+  Installed signal_return_test.elf (299272 bytes)
+  Installed signal_regs_test.elf (298584 bytes)
+  Installed sigaltstack_test.elf (305256 bytes)
+  Installed sigsuspend_test.elf (304784 bytes)
+  Installed pause_test.elf (299376 bytes)
+  Installed tty_test.elf (300192 bytes)
+  Installed session_test.elf (304792 bytes)
+  Installed unix_socket_test.elf (323112 bytes)
+  Installed unix_named_socket_test.elf (310384 bytes)
+  Installed fifo_test.elf (317272 bytes)
+  Installed fork_test.elf (298096 bytes)
+  Installed fork_memory_test.elf (304304 bytes)
+  Installed fork_state_test.elf (304960 bytes)
+  Installed waitpid_test.elf (298912 bytes)
+  Installed exec_argv_test.elf (291200 bytes)
+  Installed cloexec_test.elf (307520 bytes)
+  Installed kill_process_group_test.elf (299264 bytes)
+  Installed sigchld_test.elf (292008 bytes)
+  Installed sigkill_teardown_test.elf (327112 bytes)
+  Installed sigchld_job_test.elf (294600 bytes)
+  Installed ctrl_c_test.elf (298648 bytes)
+  Installed job_control_test.elf (294536 bytes)
+  Installed signal_fork_test.elf (298760 bytes)
+  Installed signal_exec_test.elf (299680 bytes)
+  Installed wnohang_timing_test.elf (292464 bytes)
+  Installed fork_pending_signal_test.elf (297632 bytes)
+  Installed shell_pipe_test.elf (293152 bytes)
+  Installed pipeline_test.elf (305664 bytes)
+  Installed cow_cleanup_test.elf (292336 bytes)
+  Installed cow_sole_owner_test.elf (297664 bytes)
+  Installed cow_stress_test.elf (293640 bytes)
+  Installed cow_readonly_test.elf (293456 bytes)
+  Installed cow_signal_test.elf (299136 bytes)
+  Installed resolution.elf (301688 bytes)
+  Installed init_shell.elf (389616 bytes)
+  Installed argv_test.elf (298152 bytes)
+  Installed job_table_test.elf (308472 bytes)
+  Installed test_mmap.elf (291928 bytes)
+  Installed clonevm_exec_test.elf (289648 bytes)
+  Installed stdin_test.elf (291824 bytes)
+  Installed true_test.elf (291872 bytes)
+  Installed false_test.elf (291872 bytes)
+  Installed echo_argv_test.elf (291696 bytes)
+  Installed mkdir_argv_test.elf (292168 bytes)
+  Installed rm_argv_test.elf (291808 bytes)
+  Installed cp_mv_argv_test.elf (292864 bytes)
+  Installed nonblock_eagain_test.elf (293448 bytes)
+  Installed blocking_recv_test.elf (298040 bytes)
+  Installed tcp_client_test.elf (297288 bytes)
+  Installed wait_stress.elf (306272 bytes)
+  Installed simple_exit.elf (276792 bytes)
+  Installed simple_exit0.elf (276792 bytes)
+  Installed spawn_smoke_target.elf (276800 bytes)
+  Installed counter.elf (290416 bytes)
+  Installed spinner.elf (290440 bytes)
+  Installed hello_time.elf (290296 bytes)
+  Installed heartbeat.elf (303576 bytes)
+  Installed xhci_counters.elf (292232 bytes)
+  Installed fbinfo_test.elf (297464 bytes)
+  Installed demo.elf (304128 bytes)
+  Installed bounce.elf (388072 bytes)
+  Installed rectangles.elf (305368 bytes)
+  Installed particles.elf (304320 bytes)
+  Installed confetti.elf (303656 bytes)
+  Installed tones.elf (294432 bytes)
+  Installed fart.elf (302520 bytes)
+  Installed http_test.elf (624432 bytes)
+  Installed register_init_test.elf (288856 bytes)
+  Installed head_test.elf (293296 bytes)
+  Installed tail_test.elf (293240 bytes)
+  Installed wc_test.elf (297848 bytes)
+  Installed which_test.elf (293112 bytes)
+  Installed cat_test.elf (293528 bytes)
+  Installed ls_test.elf (298576 bytes)
+  Installed exec_stack_argv_test.elf (292856 bytes)
+  Installed exec_from_ext2_test.elf (298752 bytes)
+  Installed pipe_fork_test.elf (305048 bytes)
+  Installed pipe_concurrent_test.elf (304288 bytes)
+  Installed fs_block_alloc_test.elf (304600 bytes)
+  Installed cow_oom_test.elf (292744 bytes)
+  Installed signal_test.elf (298248 bytes)
+  Installed alarm_test.elf (293344 bytes)
+  Installed itimer_test.elf (293800 bytes)
+  Installed timer_test.elf (291464 bytes)
+  Installed sleep_debug_test.elf (304552 bytes)
+  Installed pipe_refcount_test.elf (316576 bytes)
+  Installed udp_socket_test.elf (309816 bytes)
+  Installed tcp_socket_test.elf (318800 bytes)
+  Installed tcp_dup_listener_test.elf (300024 bytes)
+  Installed tcp_cloexec_exec_test.elf (305184 bytes)
+  Installed tcp_blocking_test.elf (324208 bytes)
+  Installed concurrent_recv_stress.elf (303440 bytes)
+  Installed dns_test.elf (307056 bytes)
+  Installed net_test.elf (303296 bytes)
+  Installed http_fetch_test.elf (618376 bytes)
+  Installed loopback_wake_test.elf (301696 bytes)
+  Installed syscall_diagnostic_test.elf (289040 bytes)
+  Installed pty_test.elf (293560 bytes)
+  Installed signal_exec_check.elf (291048 bytes)
+  Installed bsh.elf (739320 bytes)
+  Installed bwm.elf (432112 bytes)
+  Installed btop.elf (294600 bytes)
+  Installed burl.elf (641816 bytes)
+  Installed init.elf (298632 bytes)
+  Installed telnetd.elf (298200 bytes)
+  Installed blogd.elf (291096 bytes)
+  Installed btrace.elf (311448 bytes)
+  Installed bless.elf (295616 bytes)
+  Installed bcheck.elf (422320 bytes)
+  Installed biconkit.elf (362248 bytes)
+  Installed guskit.elf (540440 bytes)
+  Installed bterm.elf (480688 bytes)
+  Installed blog.elf (472024 bytes)
+  Installed bfontpicker.elf (489232 bytes)
+  Installed blauncher.elf (460864 bytes)
+  Installed bsshd.elf (455248 bytes)
+  Installed bssh.elf (463016 bytes)
+
+========================================
+  STD BUILD COMPLETE (aarch64)
+  Installed: 151 binaries
+========================================
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 8.55s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Disclosed #559 pinned-nightly core NEON notice; no other compile diagnostics
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (60s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (90s elapsed, host qemu-system-aarch64 count=1)...
+PASS: aarch64, 30 arms, exact byte tallies and worker reaped
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (60s elapsed, host qemu-system-aarch64 count=1)...
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (90s elapsed, host qemu-system-aarch64 count=1)...
+PASS: aarch64, 30 arms, exact byte tallies and worker reaped
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+PASS: aarch64, 30 arms, exact byte tallies and worker reaped
+PASS: blocking I/O oracle aarch64 boots=3; serials=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c/wt/.gate-tmp/breenix_813_aarch64.w7VGfY/boot_*/serial.txt
+gate exit 0

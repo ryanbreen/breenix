@@ -63,6 +63,9 @@ impl FifoEntry {
         if let Some(ref buffer) = self.buffer {
             buffer.clone()
         } else {
+            // POSIX read(): an empty FIFO with no writer returns EOF (0),
+            // including an O_NONBLOCK reader opened before the first writer.
+            // Do not invent a writer reference to turn that EOF into EAGAIN.
             let buffer = Arc::new(Mutex::new(PipeBuffer::new_zero_refs()));
             self.buffer = Some(buffer.clone());
             buffer

@@ -1,0 +1,4 @@
+Revision: c2ff822d2f5bf948a4f39bada9f75905c2e1eca4 plus uncommitted manager.rs formatting and round-doc edits
+Command: rustfmt --check --edition 2021 kernel/src/ipc/fd.rs kernel/src/ipc/fifo.rs kernel/src/ipc/poll.rs kernel/src/process/manager.rs kernel/src/syscall/blocking_io.rs kernel/src/syscall/iovec.rs kernel/src/task/waitqueue.rs
+
+Exit: 0

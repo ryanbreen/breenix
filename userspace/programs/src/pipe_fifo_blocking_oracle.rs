@@ -15,7 +15,7 @@ const A: usize = 4096;
 const QUERY: u64 = 0xB8130001;
 #[cfg(target_arch = "aarch64")]
 const FIFO_FIXTURE: u64 = 0xB8130002;
-const ARMS: [&str; 13] = [
+const ARMS: [&str; 15] = [
     "full_block",
     "atomic4096",
     "atomic4095",
@@ -29,6 +29,8 @@ const ARMS: [&str; 13] = [
     "signal_before",
     "signal_after",
     "ignored_signal",
+    "writev_atomic",
+    "no_writer_eof",
 ];
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -168,6 +170,10 @@ fn object(kind: &str, ordinal: usize) -> TestResult<(Fd, Fd)> {
             "FIFO open without reader must be ENXIO",
         )?;
         let reader = cv(fs::open(&path, fs::O_RDONLY | fs::O_NONBLOCK))?;
+        check(
+            cv(io::read(reader, &mut [0; 1]))? == 0,
+            "FIFO reader before first writer must return EOF",
+        )?;
         let writer = cv(fs::open(&path, fs::O_WRONLY | fs::O_NONBLOCK))?;
         (reader, writer)
     };
@@ -436,12 +442,111 @@ fn blocking(reader: Fd, writer: Fd, arm: &str, byte: u8) -> TestResult<usize> {
     cv(io::close(release_w))?;
     result
 }
+#[repr(C)]
+struct IoVec {
+    base: u64,
+    len: u64,
+}
+fn writev_atomic(reader: Fd, writer: Fd, byte: u8) -> TestResult<usize> {
+    let filled = C - A / 2;
+    fill(writer, filled, byte)?;
+    mode(writer, false)?;
+    let mut children = Vec::new();
+    for tag in [0x31u8, 0x52u8] {
+        let (ack_r, ack_w) = cv(io::pipe())?;
+        let (release_r, release_w) = cv(io::pipe())?;
+        mode(ack_r, true)?;
+        mode(release_r, true)?;
+        let pid = match cv(process::fork())? {
+            ForkResult::Child => {
+                let run = || -> TestResult<()> {
+                    cv(io::close(reader))?;
+                    let data = vec![tag; A];
+                    let vectors = [
+                        IoVec {
+                            base: data.as_ptr() as u64,
+                            len: (A / 2) as u64,
+                        },
+                        IoVec {
+                            base: unsafe { data.as_ptr().add(A / 2) } as u64,
+                            len: (A / 2) as u64,
+                        },
+                    ];
+                    send(ack_w, cv(process::gettid())?.raw() as i64)?;
+                    let result =
+                        unsafe { syscall3(nr::WRITEV, writer.raw(), vectors.as_ptr() as u64, 2) }
+                            as i64;
+                    send(ack_w, result)?;
+                    receive(release_r)?;
+                    check(result == A as i64, "writev aggregate result")
+                };
+                process::exit(if run().is_ok() { 0 } else { 1 });
+            }
+            ForkResult::Parent(pid) => pid.raw() as i32,
+        };
+        cv(io::close(ack_w))?;
+        cv(io::close(release_r))?;
+        let tid = receive(ack_r)? as u64;
+        children.push((pid, tid, ack_r, release_w));
+    }
+    let run = || -> TestResult<usize> {
+        // Half a record fits, but neither aggregate may copy any prefix.
+        for &(_, tid, _, _) in &children {
+            wait_witness(writer, tid, filled)?;
+        }
+        check(
+            read_exact(reader, filled)? == vec![byte; filled],
+            "writev filler",
+        )?;
+        for &(_, tid, ack, _) in &children {
+            check(receive(ack)? == A as i64, "writev short/error return")?;
+            let state = query(writer, tid)?;
+            check(
+                state.queued == 0 && state.blocked_in_syscall == 0,
+                "writev residual waiter",
+            )?;
+        }
+        let data = read_exact(reader, 2 * A)?;
+        let tags: Vec<u8> = data.chunks_exact(A).map(|record| record[0]).collect();
+        check(
+            tags == [0x31, 0x52] || tags == [0x52, 0x31],
+            "writev lost/duplicated record",
+        )?;
+        check(
+            data.chunks_exact(A)
+                .all(|record| record.iter().all(|b| *b == record[0])),
+            "writev records interleaved",
+        )?;
+        check(
+            matches!(io::read(reader, &mut [0; 1]), Err(Error::Os(Errno::EAGAIN))),
+            "writev trailing data",
+        )?;
+        for &(pid, _, _, release) in &children {
+            send(release, 1)?;
+            reap(pid)?;
+        }
+        Ok(filled + 2 * A)
+    };
+    let result = run();
+    for &(pid, _, ack, release) in &children {
+        if result.is_err() {
+            let _ = signal::kill(pid, signal::SIGKILL);
+            let _ = reap(pid);
+        }
+        cv(io::close(ack))?;
+        cv(io::close(release))?;
+    }
+    cv(io::close(reader))?;
+    result
+}
 fn expected_bytes(arm: &str) -> usize {
     match arm {
         "full_block" | "ignored_signal" | "large_block" => C + A,
         "atomic4096" | "atomic4095" | "signal_before" | "poll" => C + 1,
         "nonblock_full" | "nonblock_large" | "signal_after" => C,
         "nonblock_atomic" => C - (A - 1),
+        "writev_atomic" => C + 3 * A / 2,
+        "no_writer_eof" => 0,
         "last_reader" | "duplicate_reader" => 0,
         _ => panic!("unknown arm"),
     }
@@ -463,12 +568,23 @@ fn main() {
             let outcome = (|| {
                 let (reader, writer) = object(kind, ordinal)?;
                 let byte = 0x80 + ordinal as u8;
-                let result = if arm.starts_with("nonblock_") || *arm == "poll" {
+                let result = if *arm == "no_writer_eof" {
+                    // FIFO setup above checked EOF before any writer opened.
+                    // Also check the last-writer EOF edge for both kinds.
+                    cv(io::close(writer))?;
+                    check(cv(io::read(reader, &mut [0; 1]))? == 0, "no-writer EOF")?;
+                    cv(io::close(reader))?;
+                    Ok(0)
+                } else if *arm == "writev_atomic" {
+                    writev_atomic(reader, writer, byte)
+                } else if arm.starts_with("nonblock_") || *arm == "poll" {
                     controls(reader, writer, arm, byte)
                 } else {
                     blocking(reader, writer, arm, byte)
                 };
-                cv(io::close(writer))?;
+                if *arm != "no_writer_eof" {
+                    cv(io::close(writer))?;
+                }
                 let bytes = result?;
                 check(bytes == expected_bytes(arm), "incomplete byte tally")?;
                 Ok::<usize, String>(bytes)
