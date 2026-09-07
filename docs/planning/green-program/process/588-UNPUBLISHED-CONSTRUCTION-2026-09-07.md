@@ -82,22 +82,25 @@ claim-lint:ok: issue 588; serials under docs/planning/green-program/process/seri
 
 The row insert is terminal for the four builders themselves, but not for the
 two init entry points that call one of them: `create_init_process_at` (x86,
-`kernel/src/process/manager.rs:583-590`) and
-`create_init_process_with_argv_at` (aarch64, same file, 1268-1276) each run
+`kernel/src/process/manager.rs:589-596`) and
+`create_init_process_with_argv_at` (aarch64, same file, 1270-1279) each run
 `build_process_at`/`build_process_with_argv_at`, then `?`, then
 `hold_init_publication`. `hold_init_publication`'s `init row has no main
-thread` arm (`manager.rs:242-244`) calls `remove_process`, which
-unconditionally drops the just-inserted row (`manager.rs:1841`,
-`drop(self.take_row_unconditionally(pid))`); the row's page table then hits
-`Drop for ProcessPageTable` with `Disposition::Undecided`
-(`kernel/src/memory/process_memory.rs:2022-2027`) -- issue 588's exact defect,
-one step past this table's terminal row. Not reachable today: `set_main_thread`
-precedes `processes.insert` in all 4 of 4 image-loading builders
-(`manager.rs:571`/582, 785/794, 1035/1049, 1250/1263), so the `None` arm
-`hold_init_publication` checks for cannot fire from these callers, and no
-oracle in this round drives it. The table above is scoped to the four
-builders' own fallible steps and does not cover this caller-side step.
-claim-lint:ok: #588; manager.rs:242-244,583-590,1841,1268-1276; process_memory.rs:2022-2027
+thread` arm (`manager.rs:241-245`) calls `drop(self.remove_process(provisional_pid))`;
+`remove_process` (`manager.rs:1845-1847`) is `self.take_row_unconditionally(pid)` --
+it returns the row rather than dropping it internally (this changed shape
+came in on the R16 merge; the drop itself still happens, just at the call
+site in `hold_init_publication` instead of inside `remove_process`) -- and
+that returned row's page table then hits `Drop for ProcessPageTable` with
+`Disposition::Undecided` (`kernel/src/memory/process_memory.rs:2022-2027`) --
+issue 588's exact defect, one step past this table's terminal row. Not
+reachable today: `set_main_thread` precedes `processes.insert` in all 4 of 4
+image-loading builders (`manager.rs:573`/584, 787/796, 1037/1051, 1252/1265),
+so the `None` arm `hold_init_publication` checks for cannot fire from these
+callers, and no oracle in this round drives it. The table above is scoped to
+the four builders' own fallible steps and does not cover this caller-side
+step.
+claim-lint:ok: #588; manager.rs:241-245,589-596,1845-1847,1270-1279; process_memory.rs:2022-2027
 
 ## Why the stack frames are not freed by the release
 
@@ -260,7 +263,7 @@ invocation" rule, not a red -- reconstructed here:
   (`if file_start + file_size > data.len()`, `kernel/src/elf.rs:457`) rejects
   the same 120-byte, `p_offset=120`/`p_filesz=1` image `out_of_bounds_segment_image`
   builds for aarch64. `construct_leaf_balance` is `construct_leaf_recorded -
-  construct_leaf_returned` (`teardown.rs:5228`); it does not print
+  construct_leaf_returned` (`teardown.rs:5280`); it does not print
   `construct_leaf_recorded` itself, so a marker value of 0 cannot distinguish
   0-of-0 leaves from n-of-n. Both new leaf equalities (`leaves released ==
   leaves recorded`, `leaf frames returned == leaves recorded`) are therefore
@@ -270,11 +273,11 @@ invocation" rule, not a red -- reconstructed here:
   failures land inside `load_elf_into_page_table`, a boundary this round's own
   table assigns to `UnpublishedPageTable`, the pre-existing exec carrier -- no
   boot in this round executes `UnpublishedProcess::drop`, the new guard,
-  since `commit_preserves_live_table_for_gate` (`unpublished.rs:104-129`)
+  since `commit_preserves_live_table_for_gate` (`unpublished.rs:100-125`)
   calls `commit()` and then `UnpublishedPageTable::from_box` directly rather
   than letting an armed guard drop; so the red-to-green oracle delta is
   evidence for the old carrier's exactness, not the new guard's.
-  claim-lint:ok: #588; teardown.rs:5228; elf.rs:457; unpublished.rs:104-129
+  claim-lint:ok: #588; teardown.rs:5280; elf.rs:457; unpublished.rs:100-125
 * No failure was injected at the later boundaries (stack allocation, stack
   mapping, TLS, argv, main-thread creation). Those boundaries are covered by the
   structure ratchet and by reading the code, not by an executed error path.
