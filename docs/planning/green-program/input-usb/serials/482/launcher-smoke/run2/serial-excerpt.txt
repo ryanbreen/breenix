@@ -1,0 +1,53 @@
+[spawn] path='/bin/blauncher'
+manager.create_process_with_argv [ARM64]: ENTRY - name='blauncher', elf_size=460856, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 21
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001b3b4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 21
+[spawn] Created child PID 21 for parent PID 18
+[spawn] Success: child PID 21 scheduled
+[blauncher] starting
+[heartbeat] tid=12 uptime_ms=117480 kbd_nonzero=3
+[window] create_window_buffer: 532x540 (1149120 bytes, 281 pages)
+[window] Created buffer id=2 for pid=21: 532x540 at virt=0x7ffffdcb1000 phys=0x4444d000
+[blauncher] TTF display font loaded, size=14
+[bwm] Discovered window 'Launcher' (id=2, 532x540 chromeless) at (374,192)
+[bwm-fps] frames_since_last=221 elapsed_ms=1003 instantaneous_fps=220
+[heartbeat] tid=12 uptime_ms=118481 kbd_nonzero=3
+[bwm-fps] frames_since_last=259 elapsed_ms=1004 instantaneous_fps=257
+F123456789SC[syscall] exit(0) pid=21 name=blauncher
+[TTBR0_ASID_CENSUS:untagged=0:tagged=382482:kernel=186831:cleared=476273]
+[window] create_window_buffer: 750x550 (1650000 bytes, 403 pages)
+[window] Created buffer id=3 for pid=22: 750x550 at virt=0x7ffffdc39000 phys=0x44848000
+[bterm] config: mono_size=10 font_size=10
+[bterm] font_size=10 cell=6x13
+[pty] sys_posix_openpt(flags=0x102)
+[pty] Created master fd=3 (pty 0)
+[pty] Unlocked PTY 0 (fd 3)
+F123456789SC[bterm] spawned child pid=23
+[bwm] Discovered window 'Terminal' (id=3, 750x550) at (80,88)
+[pty] sys_posix_openpt(flags=0x102)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+F123456789SC[bterm] spawned child pid=24
+[heartbeat] tid=12 uptime_ms=119482 kbd_nonzero=4
+[bwm-fps] frames_since_last=204 elapsed_ms=1004 instantaneous_fps=203
+[heartbeat] tid=12 uptime_ms=120483 kbd_nonzero=4
+[bwm-fps] frames_since_last=150 elapsed_ms=1005 instantaneous_fps=149
+[heartbeat] tid=12 uptime_ms=121484 kbd_nonzero=4
+[bwm-fps] frames_since_last=128 elapsed_ms=1003 instantaneous_fps=127
+[heartbeat] tid=12 uptime_ms=122485 kbd_nonzero=4
+[bwm-fps] frames_since_last=131 elapsed_ms=1001 instantaneous_fps=130
+[heartbeat] tid=12 uptime_ms=123487 kbd_nonzero=4
+[bwm-fps] frames_since_last=130 elapsed_ms=1004 instantaneous_fps=129
+[heartbeat] tid=12 uptime_ms=124488 kbd_nonzero=4
+[bwm-fps] frames_since_last=142 elapsed_ms=1001 instantaneous_fps=141
+[heartbeat] tid=12 uptime_ms=125488 kbd_nonzero=4
+[bwm-fps] frames_since_last=146 elapsed_ms=1004 instantaneous_fps=145
+[heartbeat] tid=12 uptime_ms=126489 kbd_nonzero=4
+[bwm-fps] frames_since_last=155 elapsed_ms=1004 instantaneous_fps=154
+[heartbeat] tid=12 uptime_ms=127490 kbd_nonzero=4

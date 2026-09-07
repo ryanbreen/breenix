@@ -1,0 +1,23 @@
+----- banner -----
+Welcome to Breenix OS
+breenish v0.5.0 -- ECMAScript shell for Breenix
+bsh /> 
+----- end banner -----
+----- BASELINE (pre keyboard) -----
+bsh /> /[Kbsh /> /b[Kbsh /> /bi[Kbsh /> /bin[Kbsh /> /bin/[Kbsh /> /bin/x[Kbsh /> /bin/xh[Kbsh /> /bin/xhc[Kbsh /> /bin/xhci[Kbsh /> /bin/xhci_[Kbsh /> /bin/xhci_c[Kbsh /> /bin/xhci_co[Kbsh /> /bin/xhci_cou[Kbsh /> /bin/xhci_coun[Kbsh /> /bin/xhci_count[Kbsh /> /bin/xhci_counte[Kbsh /> /bin/xhci_counter[Kbsh /> /bin/xhci_counters[K
+[xhci-counters] XHCI_MSI_EVENT_TOTAL=66
+[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=66
+[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=0
+[xhci-counters] KBD_NONZERO_TOTAL=5
+bsh /> 
+----- end BASELINE (pre keyboard) -----
+INJECT rc= 0 stdout=  stderr= 
+----- AFTER KEYBOARD (post 'world') -----
+bsh /> /[Kbsh /> /b[Kbsh /> /bi[Kbsh /> /bin[Kbsh /> /bin/[Kbsh /> /bin/x[Kbsh /> /bin/xh[Kbsh /> /bin/xhc[Kbsh /> /bin/xhci[Kbsh /> /bin/xhci_[Kbsh /> /bin/xhci_c[Kbsh /> /bin/xhci_co[Kbsh /> /bin/xhci_cou[Kbsh /> /bin/xhci_coun[Kbsh /> /bin/xhci_count[Kbsh /> /bin/xhci_counte[Kbsh /> /bin/xhci_counter[Kbsh /> /bin/xhci_counters[K
+[xhci-counters] XHCI_MSI_EVENT_TOTAL=76
+[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=76
+[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=0
+[xhci-counters] KBD_NONZERO_TOTAL=10
+bsh /> 
+----- end AFTER KEYBOARD (post 'world') -----
+SOCKET CLOSED

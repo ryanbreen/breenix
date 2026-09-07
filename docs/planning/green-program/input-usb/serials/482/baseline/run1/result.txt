@@ -1,0 +1,6 @@
+RESULT: PASS
+vm=breenix-1788746144
+type_filter=0
+inject_retries=0
+evidence_dir=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/x482/wt-baseline/logs/parallels-launcher-test/run-20260906-215447
+elapsed_s=169
