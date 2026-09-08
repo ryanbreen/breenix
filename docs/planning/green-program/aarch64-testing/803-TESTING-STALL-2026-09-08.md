@@ -150,7 +150,8 @@ represented as a new boot population.
   the 12 original boots plus the required landing population have no observed 803 stalls; a recurrence reopens it. Issues
   562 and 761 remain separate follow-up work.
 - A new kernel fix, ratchet, mutation, or GDB stall capture.
-- Strict, production, x86, or structure-suite validation in this round.
+- Production or x86 validation; initial measurement did not run strict or
+  structure suites. Landing validation is recorded below.
 
 ## Landing
 
@@ -163,3 +164,50 @@ raw serials are unchanged so their hashes and line citations remain valid.
 claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/803-TESTING-STALL-2026-09-08.md docs/planning/green-program/aarch64-testing/serials/803/boot-*.txt -> exit 0
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/803-prose-message.txt -> exit 0
+
+Fetch and integration: `git fetch origin` succeeded; `git merge --no-ff
+--no-commit origin/main` reported already up to date. Origin/main was
+`4394409fca3932296f3468914b5be325ce0d48a6`, already an ancestor, so Git
+created no integration merge commit and encountered no conflicts.
+Landing gate revision: `341dd25d8cc49a82346c2dfec428ebce2f2cb6e0`.
+The branch has 0 changed kernel, docker, script, or test files relative to
+origin/main; R182 fixture re-recording is not applicable because scorer
+requirements did not grow. The conditional six testing-profile boots are
+not applicable to this docs-only branch. No production or x86 gate was
+requested in this landing population.
+
+`bash scripts/run-structure-tests.sh` passed 69/69 suites, exit 0, recorded
+in [landing/structure.txt](serials/803/landing/structure.txt).
+The boot_tests soft-float kernel rebuild exited 0 with 0 project-source
+diagnostics; the accepted pinned-core future-incompatibility notice is
+retained in [landing/build.txt](serials/803/landing/build.txt).
+After commit 341dd25d, source citations were re-derived with `git show HEAD`
+and matched the retained source excerpts; 12/12 committed serial SHA256s
+matched the manifest again.
+
+`bash docker/qemu/run-aarch64-boot-test-strict.sh 1` exited 0: **1/1 GREEN**,
+0/1 stalls, 0/1 inconclusive outcomes, 29 seconds. Its independent preflight
+passed 69/69 suites. [landing/strict.txt](serials/803/landing/strict.txt)
+records the revision and verdict; [landing/serial.txt](serials/803/landing/serial.txt)
+is the raw serial, bound to the revision and kernel SHA256 by
+[landing/inputs.json](serials/803/landing/inputs.json).
+The strict serial reaches boot-test completion and clonevm exec PASS, which
+exclude the pre-self-test issue 803 stall signature. This is a different
+profile from the original 12 boots: it is not a thirteenth testing-profile
+pass. Combined issue 803 stall tally is 0/13 across 12 testing-profile boots
+and 1 strict landing boot at their respective recorded revisions.
+
+The issue 803 closure condition supplied for this docs-only delivery is
+satisfied by those observations. The requested issue comment and closure
+will explicitly say a recurrence reopens it; historical RCA remains
+unassigned. Issue 562's latest comment already distinguishes successful
+deferral from missing loader markers and leaves its profile-pass condition
+unmet; this measurement does not change that disposition, so no comment
+on issue 562 is planned. Issue 761 remains open.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/803-landing-message.txt -> exit 0
+
+Not claimed at landing: a kernel repair, historical RCA, permanent absence
+of issue 803, a testing-profile gate pass, loader completion in the original
+12 boots, production validation, or x86 validation.
