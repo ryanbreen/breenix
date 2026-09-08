@@ -36,6 +36,10 @@ the supplied issues 559/945 precedent; nothing was suppressed.
 [manifest.json](serials/803/manifest.json) binds each serial to its revision,
 raw SHA256, line count, and milestone line numbers. The serials retain their
 captured bytes; Git staging uses command-local `core.autocrlf=false`.
+For V-2, `serials/803/boot-01.txt:4` contains a timestamp-based BUILD_ID,
+not a Git revision; the same limitation applies to all 12 serials. Revision
+attribution comes from the revision-bearing manifest, not serial text.
+All 12 raw SHA256 values were rechecked against that manifest during landing.
 
 ## Classification rule
 
@@ -140,7 +144,22 @@ represented as a new boot population.
 - Issue 761 fixed, loader completion, or a passing testing-profile gate.
 - Issue 803 fixed, a historical RCA, permanent absence, or a lower
   recurrence rate outside these twelve 45-second windows.
-- Closure of issues 803, 562, or 761. They remain open for follow-up;
-  the existing issues track the remaining work without a duplicate issue.
+- Closure at the initial measurement: issue 803 remained open, so the R245
+  closure objective was not delivered by that docs commit (V-1). Landing
+  will close issue 803 only after the required landing gates are green and
+  the 12 original boots plus the required landing population have no observed 803 stalls; a recurrence reopens it. Issues
+  562 and 761 remain separate follow-up work.
 - A new kernel fix, ratchet, mutation, or GDB stall capture.
 - Strict, production, x86, or structure-suite validation in this round.
+
+## Landing
+
+Deferred code findings: 0 (supplied list: []).
+
+V-1 is resolved as a prose scope correction above, not a claim of issue
+closure. V-2 is resolved by explicitly identifying manifest-based provenance;
+raw serials are unchanged so their hashes and line citations remain valid.
+
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/aarch64-testing/803-TESTING-STALL-2026-09-08.md docs/planning/green-program/aarch64-testing/serials/803/boot-*.txt -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/803-prose-message.txt -> exit 0
