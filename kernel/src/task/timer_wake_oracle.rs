@@ -14,8 +14,8 @@
 //! # The barrier, and why it is not optional
 //!
 //! The threads are created before any of them may spin. Creating a kernel
-//! thread is not cheap -- it allocates and maps a kernel stack -- and the boot
-//! thread doing the creating is itself preemptible, so a peer that is runnable
+//! thread is not cheap -- it allocates and maps a kernel stack -- and the
+//! coordinator doing the creating is itself preemptible, so a peer that is runnable
 //! while the later peers are being created takes a full quantum per round away
 //! from the creation. Two earlier versions of this file measured that cost on
 //! the x86 boot-test gate and are recorded in the round doc,
@@ -25,8 +25,9 @@
 //! ready queue, so they still hold a quantum each -- cost 362 s.
 //!
 //! So a peer parks with `kthread_park()`, which blocks it and takes it out of
-//! the ready queue, until the boot thread has created the 9 threads and calls
-//! `kthread_unpark`. The sleeper then waits for `PEERS_SPINNING` to reach
+//! the ready queue, until the schedulable coordinator has created the eight
+//! peers and sleeper and calls `kthread_unpark`. The boot thread creates and
+//! joins that coordinator: ten threads total. The sleeper then waits for `PEERS_SPINNING` to reach
 //! `PEERS` before starting its sleep, so the wait it measures is a wait behind
 //! peers that are actually running. `setup_ms` and `window_ms` on the marker are
 //! those two phases, and `peers_spinning` is the fact the verdict depends on.
