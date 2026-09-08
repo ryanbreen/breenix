@@ -1,0 +1,18 @@
+a1055bab14f031eb0b39ea02ea3ddd79adeb950e
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure pil_resolver_exhaustion_names_candidates_and_remediation ==
+
+running 1 test
+
+thread 'pil_resolver_exhaustion_names_candidates_and_remediation' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957b/wt/tests/parallels_capture_structure.rs:633:13:
+missing candidate python3: ERROR: no Python with Pillow found; install Pillow or set BREENIX_PYTHON to an interpreter with Pillow
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pil_resolver_exhaustion_names_candidates_and_remediation ... FAILED
+
+failures:
+
+failures:
+    pil_resolver_exhaustion_names_candidates_and_remediation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s
