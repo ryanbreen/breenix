@@ -1,0 +1,2 @@
+revision=45ff0a90b76e71671d9499542f6a2165181ee344
+[GATE_BOOT_FACTS:boot=1:host_ms=1788866626087-1788867092664:qemu_at_start=0:load_at_start=11.13:qemu_at_end=0:load_at_end=9.79:qemu_cpu_s=455.00:guest_uptime_ms=NA:ended_by=scored_pass]

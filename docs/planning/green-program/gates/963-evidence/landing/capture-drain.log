@@ -1,0 +1,2 @@
+[CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=300]
+[CAPTURE_DRAIN_EVENTS:last_events=none]

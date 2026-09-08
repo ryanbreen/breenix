@@ -1,0 +1,21 @@
+2d3eb32582c5a36a31ec771d9a50cc305c50bc2f
+Working tree: new V-1 regression, original adapter
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure timeout_marker_requires_expiry_not_early_exit_124 ==
+
+running 1 test
+early-124: status=Some(124) elapsed=185.888667ms bounded=true
+
+thread 'timeout_marker_requires_expiry_not_early_exit_124' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t963/wt/tests/gate_qmp_backstop_structure.rs:368:9:
+assertion `left == right` failed: early-124:
+  left: Some(124)
+ right: Some(1)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test timeout_marker_requires_expiry_not_early_exit_124 ... FAILED
+
+failures:
+
+failures:
+    timeout_marker_requires_expiry_not_early_exit_124
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.19s
