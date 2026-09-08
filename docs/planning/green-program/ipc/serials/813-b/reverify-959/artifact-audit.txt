@@ -1,0 +1,12 @@
+Revision: 21e470ebd8aaf13b909a8449168878678a7d2cbb
+structure: exit=0; suites=67/67; attempt-2 records=0; skip records=0
+strict3: exit=0; suites=67/67; attempt-2 records=0; skip records=0
+unix-oracle: exit=0; suites=67/67; attempt-2 records=0; skip records=0
+pipe-fifo-oracle: exit=0; suites=67/67; attempt-2 records=0; skip records=0
+prod: exit=0; suites=67/67; attempt-2 records=0; skip records=0
+docs/planning/green-program/ipc/serials/813-b/reverify-959/pipe/boot_1/serial.txt: SHA256=303bab082489b93b96538521cbc8b67e85ee0aaa0bdde906712bb85d4878c2e0; TTY records=2; bytes=51240
+docs/planning/green-program/ipc/serials/813-b/reverify-959/prod/serial.txt: SHA256=3d29efb3d467f2f69ea9d2cf78263d11d9933ade6b990b58a9fed394532cc89d; TTY records=0; bytes=23972
+docs/planning/green-program/ipc/serials/813-b/reverify-959/strict-1/serial.txt: SHA256=a65b9181470a7389ab82602b18a5caed8a8e90e558d20acfdd5781515eff36ba; TTY records=2; bytes=58642
+docs/planning/green-program/ipc/serials/813-b/reverify-959/strict-2/serial.txt: SHA256=01873fc51275b536ec36d50839ebd620895ee438c62944252b02a4f81e4e4cb7; TTY records=2; bytes=53880
+docs/planning/green-program/ipc/serials/813-b/reverify-959/strict-3/serial.txt: SHA256=1324d0c6798ab2cf77123f967e356dd12d35568ef737fe18b871581e0794b2ca; TTY records=2; bytes=54142
+docs/planning/green-program/ipc/serials/813-b/reverify-959/unix/boot_1/serial.txt: SHA256=fbfd745f4a9f88187e2964b845029aaf90e6503dff68c49539aad6b9fc7dad71; TTY records=2; bytes=44220

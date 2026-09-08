@@ -1,0 +1,13 @@
+== compiling syscall_return_register_structure ==
+== running syscall_return_register_structure  ==
+
+running 6 tests
+test comments_and_strings_do_not_forge_findings ... ok
+test correct_shapes_are_admitted ... ok
+test deliberately_broken_variants_fail_the_rules ... ok
+test the_census_sees_the_repository_s_syscall_traps ... ok
+test no_trap_names_its_return_register_as_input_only ... ok
+test every_returning_trap_declares_the_return_register_write ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+

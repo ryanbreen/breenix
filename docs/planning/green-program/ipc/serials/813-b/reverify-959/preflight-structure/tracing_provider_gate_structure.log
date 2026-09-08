@@ -1,0 +1,26 @@
+== compiling tracing_provider_gate_structure ==
+== running tracing_provider_gate_structure  ==
+
+running 19 tests
+test direct_call_is_after_ring_span_before_next_disable_with_shipping_cfg ... ok
+test gate_requires_provider_markers_from_com1_with_bare_assertions ... ok
+test printing_pass_unconditionally_would_be_caught - should panic ... ok
+test removing_provider_gate_block_would_be_caught - should panic ... ok
+test registry_dispatches_provider_only_on_aarch64 ... ok
+test removing_direct_call_would_be_caught - should panic ... ok
+test weakening_failed_equality_would_be_caught - should panic ... ok
+test wrapper_uses_shipping_cfg_and_result_dependent_markers ... ok
+test weakening_started_equality_would_be_caught - should panic ... ok
+test gating_direct_call_on_staged_executor_would_be_caught - should panic ... ok
+test restoring_arch_any_duplicate_registration_would_be_caught - should panic ... ok
+test moving_direct_call_past_nearest_disable_would_be_caught - should panic ... ok
+test gating_wrapper_on_staged_executor_would_be_caught - should panic ... ok
+test wrapping_gate_in_if_would_be_caught - should panic ... ok
+test archived_baseline_without_provider_markers_is_rejected ... ok
+test missing_start_is_rejected ... ok
+test fail_alongside_pass_is_rejected ... ok
+test exactly_one_start_and_pass_is_accepted ... ok
+test duplicate_pass_is_rejected ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
