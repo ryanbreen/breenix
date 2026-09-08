@@ -1,0 +1,26 @@
+Revision: 2297746ec5aae00b90dea2a2bf835458c4d6b162
+Scope: restored working fixture patch
+Command: rustfmt --edition 2021 --check tests/gate_qmp_backstop_structure.rs
+exit=0
+
+Revision: 2297746ec5aae00b90dea2a2bf835458c4d6b162
+Scope: restored working fixture patch
+Command: git diff --check
+exit=0
+
+Revision: 2297746ec5aae00b90dea2a2bf835458c4d6b162
+Scope: restored working fixture patch
+Command: git diff --quiet -- kernel docker scripts
+exit=0
+
+Revision: 2297746ec5aae00b90dea2a2bf835458c4d6b162
+Scope: restored working fixture patch
+Command: python3 -c import PIL; print(PIL.__version__)
+12.3.0
+exit=0
+
+Revision: 2297746ec5aae00b90dea2a2bf835458c4d6b162
+Scope: restored working fixture patch
+Command: bash -c command -v socat
+/opt/homebrew/bin/socat
+exit=0

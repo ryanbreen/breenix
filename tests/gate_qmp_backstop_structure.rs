@@ -347,6 +347,16 @@ fn hung_dump_report_rejects_malformed_lines() {
 }
 
 #[test]
+fn invalid_budget_report_rejects_malformed_lines() {
+    rejects_malformed_partial_reports("invalid_budget");
+}
+
+#[test]
+fn missing_tool_report_rejects_malformed_lines() {
+    rejects_malformed_partial_reports("qmp_tool_missing");
+}
+
+#[test]
 fn timeout_marker_requires_expiry_not_early_exit_124() {
     for (name, command, expected_code, expected_marker) in [
         (
@@ -516,10 +526,7 @@ fn fake_qmp_dump_precedes_sigterm_even_when_decode_fails() {
     fixture.terminate(); // the next action, mirroring the gate's first SIGTERM
     if !qmp_tool_available() {
         eprintln!("fake_qmp_dump_precedes_sigterm_even_when_decode_fails: socat missing; asserting qmp_tool_missing");
-        assert!(
-            out.starts_with("[QMP_DUMP:capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms="),
-            "{out}"
-        );
+        assert!(partial_report(&out, "qmp_tool_missing"), "{out}");
         assert_eq!(out.lines().count(), 1);
         eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
         return;
@@ -566,7 +573,8 @@ fn missing_socket_and_hung_dump_are_partial_and_bounded() {
     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
     assert_eq!(out.lines().count(), 1);
     let (invalid, elapsed) = missing.run(false, 0);
-    assert!(invalid.contains("reason=invalid_budget:"), "{invalid}");
+    assert!(partial_report(&invalid, "invalid_budget"), "{invalid}");
+    assert_eq!(invalid.lines().count(), 1);
     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
     let hanging = Fixture::new(Some("hang"));
     let (out, elapsed) = hanging.run(false, 3);
