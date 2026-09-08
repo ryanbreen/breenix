@@ -7,42 +7,42 @@
 [1/3] Building libbreenix-libc (x86_64)...
   Compiling compiler_builtins v0.1.160 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
   Compiling core v0.0.0 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
-  Compiling libbreenix v0.1.0 (/root/breenix-t957/libs/libbreenix)
-  Compiling libbreenix-libc v0.1.0 (/root/breenix-t957/libs/libbreenix-libc)
+  Compiling libbreenix v0.1.0 (<isolated-checkout-80>/libs/libbreenix)
+  Compiling libbreenix-libc v0.1.0 (<isolated-checkout-80>/libs/libbreenix-libc)
   Finished `release` profile [optimized] target(s) in 25.37s
   libbreenix-libc built successfully
 
 [2/3] Building userspace (x86_64)...
   Updating crates.io index
   Locking 10 packages to latest compatible versions
-  Compiling compiler_builtins v0.1.160 (/root/breenix-t957/rust-fork/library/compiler-builtins/compiler-builtins)
-  Compiling core v0.0.0 (/root/breenix-t957/rust-fork/library/core)
-  Compiling libc v0.2.174 (/root/breenix-t957/libs/libc)
-  Compiling std v0.0.0 (/root/breenix-t957/rust-fork/library/std)
-  Compiling rustc-std-workspace-core v1.99.0 (/root/breenix-t957/rust-fork/library/rustc-std-workspace-core)
-  Compiling alloc v0.0.0 (/root/breenix-t957/rust-fork/library/alloc)
-  Compiling panic_abort v0.0.0 (/root/breenix-t957/rust-fork/library/panic_abort)
+  Compiling compiler_builtins v0.1.160 (<isolated-checkout-80>/rust-fork/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (<isolated-checkout-80>/rust-fork/library/core)
+  Compiling libc v0.2.174 (<isolated-checkout-80>/libs/libc)
+  Compiling std v0.0.0 (<isolated-checkout-80>/rust-fork/library/std)
+  Compiling rustc-std-workspace-core v1.99.0 (<isolated-checkout-80>/rust-fork/library/rustc-std-workspace-core)
+  Compiling alloc v0.0.0 (<isolated-checkout-80>/rust-fork/library/alloc)
+  Compiling panic_abort v0.0.0 (<isolated-checkout-80>/rust-fork/library/panic_abort)
   Compiling cfg-if v1.0.1
   Compiling rustc-demangle v0.1.25
-  Compiling unwind v0.0.0 (/root/breenix-t957/rust-fork/library/unwind)
-  Compiling rustc-std-workspace-alloc v1.99.0 (/root/breenix-t957/rust-fork/library/rustc-std-workspace-alloc)
-  Compiling panic_unwind v0.0.0 (/root/breenix-t957/rust-fork/library/panic_unwind)
+  Compiling unwind v0.0.0 (<isolated-checkout-80>/rust-fork/library/unwind)
+  Compiling rustc-std-workspace-alloc v1.99.0 (<isolated-checkout-80>/rust-fork/library/rustc-std-workspace-alloc)
+  Compiling panic_unwind v0.0.0 (<isolated-checkout-80>/rust-fork/library/panic_unwind)
   Compiling hashbrown v0.15.4
-  Compiling std_detect v0.1.5 (/root/breenix-t957/rust-fork/library/stdarch/crates/std_detect)
-  Compiling rustc-std-workspace-std v1.99.0 (/root/breenix-t957/rust-fork/library/rustc-std-workspace-std)
+  Compiling std_detect v0.1.5 (<isolated-checkout-80>/rust-fork/library/stdarch/crates/std_detect)
+  Compiling rustc-std-workspace-std v1.99.0 (<isolated-checkout-80>/rust-fork/library/rustc-std-workspace-std)
   Compiling rustc-literal-escaper v0.0.2
-  Compiling proc_macro v0.0.0 (/root/breenix-t957/rust-fork/library/proc_macro)
-  Compiling libfont v0.1.0 (/root/breenix-t957/libs/libfont)
+  Compiling proc_macro v0.0.0 (<isolated-checkout-80>/rust-fork/library/proc_macro)
+  Compiling libfont v0.1.0 (<isolated-checkout-80>/libs/libfont)
   Compiling noto-sans-mono-bitmap v0.3.2
-  Compiling libbreenix v0.1.0 (/root/breenix-t957/libs/libbreenix)
-  Compiling libimg v0.1.0 (/root/breenix-t957/libs/libimg)
-  Compiling breenish-js v0.1.0 (/root/breenix-t957/libs/breenish-js)
-  Compiling libgfx v0.1.0 (/root/breenix-t957/libs/libgfx)
-  Compiling libbui v0.1.0 (/root/breenix-t957/libs/libbui)
-  Compiling libicon v0.1.0 (/root/breenix-t957/libs/libicon)
-  Compiling breengel v0.1.0 (/root/breenix-t957/libs/breengel)
-  Compiling libcollab v0.1.0 (/root/breenix-t957/libs/libcollab)
-  Compiling userspace-programs v0.1.0 (/root/breenix-t957/userspace/programs)
+  Compiling libbreenix v0.1.0 (<isolated-checkout-80>/libs/libbreenix)
+  Compiling libimg v0.1.0 (<isolated-checkout-80>/libs/libimg)
+  Compiling breenish-js v0.1.0 (<isolated-checkout-80>/libs/breenish-js)
+  Compiling libgfx v0.1.0 (<isolated-checkout-80>/libs/libgfx)
+  Compiling libbui v0.1.0 (<isolated-checkout-80>/libs/libbui)
+  Compiling libicon v0.1.0 (<isolated-checkout-80>/libs/libicon)
+  Compiling breengel v0.1.0 (<isolated-checkout-80>/libs/breengel)
+  Compiling libcollab v0.1.0 (<isolated-checkout-80>/libs/libcollab)
+  Compiling userspace-programs v0.1.0 (<isolated-checkout-80>/userspace/programs)
   Finished `release` profile [optimized] target(s) in 1m 41s
   Userspace build successful
 
@@ -336,7 +336,7 @@
    Compiling futures-task v0.3.34
    Compiling anyhow v1.0.104
    Compiling noto-sans-mono-bitmap v0.2.0
-   Compiling kernel v0.1.0 (/root/breenix-t957/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-80>/kernel)
    Compiling micromath v2.1.0
    Compiling log v0.4.34
    Compiling slab v0.4.12
@@ -387,7 +387,7 @@
    Compiling cpufeatures v0.3.1
    Compiling lzma-rs v0.3.0
    Compiling sha2 v0.11.0
-   Compiling breenix v0.1.0 (/root/breenix-t957)
+   Compiling breenix v0.1.0 (<isolated-checkout-81>)
    Compiling tar v0.4.46
    Compiling base16ct v1.0.0
    Compiling rustls-webpki v0.103.15
@@ -395,7 +395,7 @@
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 35.94s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-t957/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  ELF:      <isolated-checkout-80>/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
   sha256:   061f56edae2054a316a49ccf380b22af3f4e0f64b4e96b5405a5206a9c399333
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -403,11 +403,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 14
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-t957/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-t957)
+   Compiling kernel v0.1.0 (<isolated-checkout-80>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-81>)
     Finished `release` profile [optimized] target(s) in 20.04s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-t957/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-80>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
    Compiling proc-macro2 v1.0.107
    Compiling quote v1.0.47
    Compiling unicode-ident v1.0.24
@@ -434,7 +434,7 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
    Compiling serde_derive v1.0.229
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
-   Compiling xtask v0.1.0 (/root/breenix-t957/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-80>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.01s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -599,7 +599,7 @@ Test disk created: target/test_binaries.img
   Disk size: 61271 sectors (29.92 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-t957/target/ext2.img
+  Output: <isolated-checkout-80>/target/ext2.img
   Size: 256MB
   Payload: 46MB (userspace binaries + fonts)
   Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
@@ -777,55 +777,55 @@ drwxr-xr-x 3 root root   4096 Sep  7 23:51 ..
 -rwxr-xr-x 1 root root 183656 Sep  7 23:51 wc_test
 -rwxr-xr-x 1 root root 182984 Sep  7 23:51 which_test
 -rwxr-xr-x 1 root root 182568 Sep  7 23:51 wnohang_timing_test
--rw-r--r-- 1 root root 83 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/etc/passwd
--rw-r--r-- 1 root root 367 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/etc/bshrc
--rw-r--r-- 1 root root 26 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/etc/group
--rw-r--r-- 1 root root 679 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/etc/init.js
--rw-r--r-- 1 root root 349 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/etc/hotkeys.conf
--rw-r--r-- 1 root root 445 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/etc/fonts.conf
--rw-r--r-- 1 root root 260364 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/FiraCode-Regular.ttf
--rw-r--r-- 1 root root 598060 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/CascadiaCode-Regular.ttf
--rw-r--r-- 1 root root 282844 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Merriweather-Regular.ttf
--rw-r--r-- 1 root root 212196 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Lora-Regular.ttf
--rw-r--r-- 1 root root 351884 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Ubuntu-Regular.ttf
--rw-r--r-- 1 root root 1887192 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/NotoSerif-Regular.ttf
--rw-r--r-- 1 root root 876576 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Inter-Regular.ttf
--rw-r--r-- 1 root root 1209508 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/SourceSerif4-Regular.ttf
--rw-r--r-- 1 root root 488584 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Roboto-Regular.ttf
--rw-r--r-- 1 root root 309408 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Hack-Regular.ttf
--rw-r--r-- 1 root root 300724 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/PlayfairDisplay-Regular.ttf
--rw-r--r-- 1 root root 108684 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Inconsolata-Regular.ttf
--rw-r--r-- 1 root root 757076 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/DejaVuSans.ttf
--rw-r--r-- 1 root root 2049096 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/NotoSans-Regular.ttf
--rw-r--r-- 1 root root 205748 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/UbuntuMono-Regular.ttf
--rw-r--r-- 1 root root 135580 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/IBMPlexMono-Regular.ttf
--rw-r--r-- 1 root root 312352 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Raleway-Regular.ttf
--rw-r--r-- 1 root root 212340 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/SourceCodePro-Regular.ttf
--rw-r--r-- 1 root root 359048 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/PTSerif-Regular.ttf
--rw-r--r-- 1 root root 744936 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Montserrat-Regular.ttf
--rw-r--r-- 1 root root 646340 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/SourceSans3-Regular.ttf
--rw-r--r-- 1 root root 183700 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/RobotoMono-Regular.ttf
--rw-r--r-- 1 root root 276932 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Nunito-Regular.ttf
--rw-r--r-- 1 root root 340712 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/DejaVuSansMono.ttf
--rw-r--r-- 1 root root 656568 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Lato-Regular.ttf
--rw-r--r-- 1 root root 160316 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/Poppins-Regular.ttf
--rw-r--r-- 1 root root 532636 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/OpenSans-Regular.ttf
--rw-r--r-- 1 root root 273900 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/JetBrainsMono-Regular.ttf
--rw-r--r-- 1 root root 1708408 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/usr/share/fonts/NotoSansMono-Regular.ttf
--rw-r--r-- 1 root root 111 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/lines.txt
--rwxr-xr-x 1 root root 187520 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/sbin/init
--rwxr-xr-x 1 root root 184104 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/sbin/telnetd
--rwxr-xr-x 1 root root 181992 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/sbin/blogd
--rw-r--r-- 1 root root 0 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/empty.txt
--rw-r--r-- 1 root root 20 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/test/nested.txt
--rw-r--r-- 1 root root 19 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/trunctest.txt
--rw-r--r-- 1 root root 17 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/hello.txt
--rw-r--r-- 1 root root 20 Sep  7 23:51 /root/breenix-t957-tmp/tmp.DiNdYOvorg/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 83 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/etc/passwd
+-rw-r--r-- 1 root root 367 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/etc/bshrc
+-rw-r--r-- 1 root root 26 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/etc/group
+-rw-r--r-- 1 root root 679 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/etc/init.js
+-rw-r--r-- 1 root root 349 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/etc/hotkeys.conf
+-rw-r--r-- 1 root root 445 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/etc/fonts.conf
+-rw-r--r-- 1 root root 260364 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 2049096 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 656568 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 111 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/lines.txt
+-rwxr-xr-x 1 root root 187520 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/sbin/init
+-rwxr-xr-x 1 root root 184104 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/sbin/telnetd
+-rwxr-xr-x 1 root root 181992 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/sbin/blogd
+-rw-r--r-- 1 root root 0 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/empty.txt
+-rw-r--r-- 1 root root 20 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/test/nested.txt
+-rw-r--r-- 1 root root 19 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/trunctest.txt
+-rw-r--r-- 1 root root 17 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/hello.txt
+-rw-r--r-- 1 root root 20 Sep  7 23:51 <isolated-checkout-82>/tmp.DiNdYOvorg/deep/path/to/file/data.txt
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-t957/target/ext2.img
-  /root/breenix-t957/testdata/ext2.img
+  <isolated-checkout-80>/target/ext2.img
+  <isolated-checkout-80>/testdata/ext2.img
   Size: 256M
 
 Contents:

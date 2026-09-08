@@ -211,7 +211,7 @@ If you believe CPU0 needs special handling that CPUs 1-7 do not:
    `cpu0-trace-dump-probe` (or re-port it) to get a 30-second trace buffer.
    Per-CPU `tick_count` parity is the load-bearing signal.
 
-2. **Verify on the Linux probe VM** (10.211.55.3). Linux runs on the same
+2. **Verify on the Linux probe VM** (<probe-address>). Linux runs on the same
    Parallels hypervisor. If Linux works without the behavior you think CPU0
    needs, Breenix can work without it too. No theory about HVF behavior is
    acceptable without this validation step.

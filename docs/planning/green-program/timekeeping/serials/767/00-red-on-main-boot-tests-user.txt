@@ -1,6 +1,6 @@
 # provenance -- THE RED, on main's producer
-# host: beast, Incus container `breenix-x86` (x86_64, TCG)
-# clone: /root/breenix-p767   BREENIX_GATE_TMP=/root/breenix-p767-tmp
+# host: beast, the x86 build environment (x86_64, TCG)
+# clone: <isolated-checkout-212>   BREENIX_GATE_TMP=<isolated-checkout-214>
 # commit: bebfa6d29f30203daff9c48f5ed0da088500eb3f (main + the oracle; the producer
 #         built is main's unscaled `get_ticks()`), with kernel/src/time_test.rs and
 #         kernel/src/main.rs taken from 2c8481e3 for the second call site
@@ -9,12 +9,12 @@
 #          then a direct qemu-system-x86_64 boot (driver /root/p767-step3b.sh,
 #          log /root/p767-step3b.log), not the gate script
 # captured: 2026-09-05 10:57 (container local), preserved from
-#           /root/breenix-p767-tmp/red_boot3/serial_user.txt
+#           <isolated-checkout-214>/red_boot3/serial_user.txt
 # verdict line: [TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=21:ms=21:ticks_after=21:ticks_nonzero=1:in_range=0:FAIL]
 #               21 ticks are worth 105 ms; the clock returned 21.
 # NOTE: this boot predates the round-1 review fixes. It is the oracle's red, not a
 #       gate run of this branch. The kernel-side serial of the same boot is at
-#       /root/breenix-p767-tmp/red_boot3/serial_kernel.txt (865 lines, 0 oracle lines).
+#       <isolated-checkout-214>/red_boot3/serial_kernel.txt (865 lines, 0 oracle lines).
 #
 # --- raw serial below, unmodified ---
 [2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001H[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)

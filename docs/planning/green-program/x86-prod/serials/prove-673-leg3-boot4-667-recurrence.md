@@ -1,7 +1,7 @@
 # #673 prove-slot (fix round 2) leg 3 — a genuine #667 recurrence, full serial preserved
 
 Branch: fix/673-x86-prod-init @ c3070765f106250b5760047e5062dec756007a1c
-Captured: 2026-08-30, beast (`breenix-x86` Incus container), `docker/qemu/run-x86-boot-tests.sh 21`,
+Captured: 2026-08-30, beast (the x86 build environment), `docker/qemu/run-x86-boot-tests.sh 21`,
 boot 4 of 21 (unmodified kernel, `boot_tests,testing,external_test_bins` profile).
 
 ## What happened

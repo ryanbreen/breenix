@@ -268,17 +268,17 @@ round adds the 56th, rather than the brief's estimated 53–54.
 
 Local builds/gates used this worktree's `.tmp` and `.gate-tmp` for `TMPDIR`
 and `BREENIX_GATE_TMP`. The aarch64 ELFs, font directory and ext2 image were
-copied from `/Users/wrb/fun/code/breenix`; the Rust library override was
-`/Users/wrb/fun/code/breenix-parallels/rust-fork/library`.
+copied from `<local-checkout>`; the Rust library override was
+`<rust-fork-checkout>/library`.
 
-On beast, `/root/breenix` lives inside the `breenix-x86` Incus VM, reached
-with `ssh beast` and `sudo -n incus exec breenix-x86 -- ...`, not directly in
-the SSH user's filesystem. A fresh `/root/breenix-908` clone was made from
+On beast, `<canonical-checkout>` lives inside the x86 build environment, reached
+with `ssh beast` and `sudo -n incus exec <x86-build-environment> -- ...`, not directly in
+the SSH user's filesystem. A fresh `<isolated-checkout-135>` clone was made from
 that source, its origin pointed at GitHub, and the pushed implementation
 commit was fetched and checked out. `rust-fork` points to
-`/root/breenix/rust-fork-real`; userspace ELFs and fonts were copied from
-`/root/breenix`. Both temporary-directory variables were
-`/root/breenix-908-tmp`. The fresh x86 build took 3m37s. The long retirement
+`<rust-fork-checkout>`; userspace ELFs and fonts were copied from
+`<canonical-checkout>`. Both temporary-directory variables were
+`<isolated-checkout-136>`. The fresh x86 build took 3m37s. The long retirement
 and exec cohorts progressed to PASS without debug modifications.
 
 | check | actual result | evidence |
@@ -402,7 +402,7 @@ exited 0 with 18/18 tests again (`.tmp/908-fixpass-n1-restored.txt` and
 the intended contended-arm change and six added doc-comment lines.
 
 With `TMPDIR="$PWD/.tmp"`, `BREENIX_GATE_TMP="$PWD/.gate-tmp"`, and
-`BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library`,
+`BREENIX_RUST_FORK_LIBRARY=<rust-fork-checkout>/library`,
 the rebuild command was:
 
 ```bash
@@ -553,7 +553,7 @@ via the strict gate's own preflight below.
 
 The aarch64 rebuild used `TMPDIR="$PWD/.tmp"`,
 `BREENIX_GATE_TMP="$PWD/.gate-tmp"`, and
-`BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library`:
+`BREENIX_RUST_FORK_LIBRARY=<rust-fork-checkout>/library`:
 
 ```bash
 cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
@@ -581,18 +581,18 @@ Serial:
 Structure-suite default-runner output:
 [10d-landing-structure-default.txt](serials/908/10d-landing-structure-default.txt).
 
-On beast, `ssh beast` then `sudo -n incus exec breenix-x86 -- ...` reached
-the existing `/root/breenix-908` clone (made in an earlier round of this
+On beast, `ssh beast` then `sudo -n incus exec <x86-build-environment> -- ...` reached
+the existing `<isolated-checkout-135>` clone (made in an earlier round of this
 same lane). `git fetch origin net/908-udp-ports-lock && git checkout
 net/908-udp-ports-lock && git reset --hard origin/net/908-udp-ports-lock`
 brought it to `15f11ab06`, matching this worktree exactly. The `rust-fork`
-symlink (`/root/breenix/rust-fork-real`) and the copied userspace ELFs and
+symlink (`<rust-fork-checkout>`) and the copied userspace ELFs and
 `fonts/` directory, made in that earlier round, were already in place.
-With `BREENIX_GATE_TMP=/root/breenix-908-tmp` and
-`TMPDIR=/root/breenix-908-tmp`, `bash docker/qemu/run-x86-boot-tests.sh 1`
+With `BREENIX_GATE_TMP=<isolated-checkout-136>` and
+`TMPDIR=<isolated-checkout-136>`, `bash docker/qemu/run-x86-boot-tests.sh 1`
 was launched under `setsid nohup ... & disown` and polled via its log file
 rather than waited on inline, sharing the VM with an unrelated lane's own
-concurrent x86 gate run (`/root/breenix-855`, left untouched). It ran to
+concurrent x86 gate run (`<isolated-checkout-137>`, left untouched). It ran to
 completion: `x86 frame-custody gate run 1: PASS`, ending in the same
 `[CAPTURE_DRAIN...]`/`[CAPTURE_DRAIN_EVENTS...]` pair the earlier round's
 own x86 evidence file ends in. Fetching the log through `ssh beast 'sudo -n

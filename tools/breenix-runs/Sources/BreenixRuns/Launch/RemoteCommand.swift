@@ -12,13 +12,10 @@ public enum RemoteGateMode: String, CaseIterable, Sendable {
 
 /// Every path/identity value the beast x86 launcher needs, gathered in one
 /// place so `RemoteCommand`'s builders take a single argument rather than
-/// five positional strings. Defaults match the `breenix-x86` Incus container
-/// as verified directly against beast (2026-09-06): repo at `/root/breenix`
-/// (root user - this container has no `wrb` account; CLAUDE.md's generic
-/// `sudo -iu wrb` beast pattern is for a different container and does not
-/// apply here), rust-fork repoint target at `/root/breenix/rust-fork-real`
-/// (gitignored, not part of any clone - see `run-x86-gate.sh`'s own
-/// `BREENIX_RUST_FORK` repoint logic), cargo on PATH via `/root/.cargo/env`.
+/// five positional strings. Deployment settings can be supplied through
+/// the initializer for the target environment.
+/// Keep the rust-fork source external to disposable clones and use the
+/// configured cargo environment for each remote command.
 public struct BeastPaths: Equatable, Sendable {
     public var host: String
     public var container: String
@@ -133,8 +130,8 @@ public enum RemoteCommand {
 
     // Beast's own host-facts sample - DESIGN.md 5.3's concept applied to the
     // ACTUAL execution host for an x86 run, which is beast, not this Mac:
-    // loadavg/mem/CPU model from /proc rather than sysctl (breenix-x86 is
-    // Ubuntu, not macOS), qemu peer counts via `pgrep -c -f` (plain `-x`/`-c`
+    // loadavg/mem/CPU model from /proc on the Linux execution environment;
+    // qemu peer counts via `pgrep -c -f` (plain `-x`/`-c`
     // without `-f` silently matches nothing - the name is >15 chars,
     // verified against beast). No single quote appears anywhere in this
     // script: it runs inside `bash -lc '<script>'`, so a literal `'` would

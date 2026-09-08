@@ -1,5 +1,5 @@
 
-/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845:     file format elf64-x86-64
+<isolated-checkout-166>/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845:     file format elf64-x86-64
 
 
 Disassembly of section .text:

@@ -886,4 +886,7 @@ pkill -9 qemu-system-aarch64 2>/dev/null; pgrep -l qemu || echo "All QEMU proces
 
 ## Work Tracking
 
+<!-- claim-lint:ok: CLAUDE.md Work Tracking policy is a normative instruction, not a measured claim. -->
+This repository is public. Never file or describe the operator's physical hardware (host disks, device names, hardware failures, filesystem-full events, container or VM names, addresses) in issues, pull requests, comments, or committed docs. A gate red caused by a host condition is described generically (a host storage fault, host contention) and the specifics stay off GitHub.
+
 We use GitHub Issues (not Beads/bd, and not Markdown TODO files) for issue tracking. Run `gh issue list` to see open work and `gh issue create` to file new issues in this repo.

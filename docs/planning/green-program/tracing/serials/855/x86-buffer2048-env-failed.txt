@@ -1,4 +1,4 @@
-# Provenance: gate=bash docker/qemu/run-x86-boot-tests.sh 1; exit=127; host=beast/breenix-x86; checkout=/root/breenix-855; branch=tracing/855-ring-window; base_commit=e63edadbc10e69c926c3245ef864a17ef0b6b4a9; features=boot_tests,testing,external_test_bins; TRACE_BUFFER_SIZE=2048; TRACE_DIAG_SAMPLE=1024 (aarch64-only); TRACE_SCHED_DIAG_SAMPLE=8192 (aarch64-only)
+# Provenance: gate=bash docker/qemu/run-x86-boot-tests.sh 1; exit=127; host=beast/<x86-build-environment>; checkout=<isolated-checkout-137>; branch=tracing/855-ring-window; base_commit=e63edadbc10e69c926c3245ef864a17ef0b6b4a9; features=boot_tests,testing,external_test_bins; TRACE_BUFFER_SIZE=2048; TRACE_DIAG_SAMPLE=1024 (aarch64-only); TRACE_SCHED_DIAG_SAMPLE=8192 (aarch64-only)
 From https://github.com/ryanbreen/breenix
    504d36679..e63edadbc  tracing/855-ring-window -> origin/tracing/855-ring-window
 Already on 'tracing/855-ring-window'

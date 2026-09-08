@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
-export BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork-real/library
+export BREENIX_RUST_FORK_LIBRARY=<rust-fork-checkout>/library
 export BREENIX_QEMU_ACCEL=kvm
 export BREENIX_QEMU_CPU=host
 cd /root/p702-rca/repo

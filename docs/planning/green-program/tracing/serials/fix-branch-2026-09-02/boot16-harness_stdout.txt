@@ -1,5 +1,5 @@
 Architecture:  x86_64
-Kernel binary: /root/breenix-prove-tracing/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663
+Kernel binary: <isolated-checkout-188>/target/x86_64-unknown-none/release/deps/artifact/kernel-10a65b692264a663/bin/kernel-10a65b692264a663
 
 Derived layout (from kernel sources, not hardcoded):
   MAX_CPUS:            16

@@ -248,7 +248,7 @@ x86's futex marker, same boot, gained the identical `arm_delay_us` field
 [FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=892:arm_delay_us=145:rescues=0:queue_residual=0:balance=0]
 ```
 
-Beast clone (`/root/breenix-p627`) and its gate tmp dir removed at the end of
+Beast clone (`<isolated-checkout-67>`) and its gate tmp dir removed at the end of
 this round.
 
 ### Structure test suites
@@ -329,7 +329,7 @@ lines are the STEP 1/STEP 2 evidence committed alongside this doc update.
 Re-smoke ran at `99820c62d665ad0bcd1a9a95db717fa6b42f0c98` -- the merge
 commit above, pushed as `fix/627-futex-oracle-anchor` -- on the Mac at
 `/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ld-627`
-and on beast at `/root/breenix-p627` (`BREENIX_GATE_TMP=/root/breenix-p627-tmp`
+and on beast at `<isolated-checkout-67>` (`BREENIX_GATE_TMP=<isolated-checkout-68>`
 for the x86 gates; the aarch64 strict and production-profile gates were run
 with an isolated `BREENIX_GATE_TMP` on the Mac instead, since a per-worktree
 override for those two scripts predates this round -- `pgrep -fl
@@ -350,11 +350,11 @@ load/store instructions in kernel .text (allowlisted & suppressed: 0)`.
 | strict, 20 boots (`docker/qemu/run-aarch64-boot-test-strict.sh 20`) | `PASS: 20/20 boots succeeded`; every boot `stage3_elapsed_ok=1`; `stage3_elapsed_ms` ranged 50-53; `arm_delay_us` ranged 2-86 (microseconds) |
 | production (`docker/qemu/run-aarch64-prod-profile-boot-test.sh`) | `PASS: production profile reached bsshd with the futex oracle seam absent` |
 
-### x86 (beast, `breenix-x86` container)
+### x86 (beast, the x86 build environment)
 
-`git -C /root/breenix fetch origin` then `git -C /root/breenix-p627 fetch
-/root/breenix refs/remotes/origin/fix/627-futex-oracle-anchor:refs/heads/ld-627`
-(the intermediate `/root/breenix` hop the container's no-outbound-GitHub rule
+`git -C <canonical-checkout> fetch origin` then `git -C <isolated-checkout-67> fetch
+<canonical-checkout> refs/remotes/origin/fix/627-futex-oracle-anchor:refs/heads/ld-627`
+(the intermediate `<canonical-checkout>` hop the container's no-outbound-GitHub rule
 requires does not carry a bare local branch of this name, only the
 remote-tracking ref, so the explicit refspec was needed -- same shape as the
 `#812` landing's equivalent step above) then `git checkout ld-627`.
@@ -366,7 +366,7 @@ qemu-uefi` piped through `grep -cE "^(warning|error)"`: `0`.
 | `docker/qemu/run-x86-boot-tests.sh 1` | `x86 frame-custody gate run 1: PASS`; futex marker carries the new field on x86 too: `[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=836:arm_delay_us=131:rescues=0:queue_residual=0:balance=0]` |
 | `docker/qemu/run-x86-prod-profile-boot-test.sh` | `PASS: x86 production profile reached steady state with the teardown census at rest` |
 
-Beast clone (`/root/breenix-p627`) and its gate tmp dir removed at the end of
+Beast clone (`<isolated-checkout-67>`) and its gate tmp dir removed at the end of
 this landing.
 
 ### Structure suites

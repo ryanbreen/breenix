@@ -23,7 +23,7 @@ failures:
 ---- missing_socket_and_hung_dump_are_partial_and_bounded stdout ----
 missing_socket_and_hung_dump_are_partial_and_bounded: socat present; asserting QMP timeout after dump command
 
-thread 'missing_socket_and_hung_dump_are_partial_and_bounded' panicked at /root/breenix-rv946/tests/gate_qmp_backstop_structure.rs:472:5:
+thread 'missing_socket_and_hung_dump_are_partial_and_bounded' panicked at <isolated-checkout-149>/tests/gate_qmp_backstop_structure.rs:472:5:
 hang must reach dump
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 

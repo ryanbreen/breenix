@@ -7,42 +7,42 @@
 [1/3] Building libbreenix-libc (x86_64)...
   Compiling compiler_builtins v0.1.160 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
   Compiling core v0.0.0 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
-  Compiling libbreenix v0.1.0 (/root/breenix-i813d/libs/libbreenix)
-  Compiling libbreenix-libc v0.1.0 (/root/breenix-i813d/libs/libbreenix-libc)
+  Compiling libbreenix v0.1.0 (<isolated-checkout-115>/libs/libbreenix)
+  Compiling libbreenix-libc v0.1.0 (<isolated-checkout-115>/libs/libbreenix-libc)
   Finished `release` profile [optimized] target(s) in 25.49s
   libbreenix-libc built successfully
 
 [2/3] Building userspace (x86_64)...
   Updating crates.io index
   Locking 10 packages to latest compatible versions
-  Compiling compiler_builtins v0.1.160 (/root/breenix-i813d/rust-fork/library/compiler-builtins/compiler-builtins)
-  Compiling core v0.0.0 (/root/breenix-i813d/rust-fork/library/core)
-  Compiling libc v0.2.174 (/root/breenix-i813d/libs/libc)
-  Compiling std v0.0.0 (/root/breenix-i813d/rust-fork/library/std)
-  Compiling rustc-std-workspace-core v1.99.0 (/root/breenix-i813d/rust-fork/library/rustc-std-workspace-core)
-  Compiling alloc v0.0.0 (/root/breenix-i813d/rust-fork/library/alloc)
-  Compiling panic_abort v0.0.0 (/root/breenix-i813d/rust-fork/library/panic_abort)
+  Compiling compiler_builtins v0.1.160 (<isolated-checkout-115>/rust-fork/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (<isolated-checkout-115>/rust-fork/library/core)
+  Compiling libc v0.2.174 (<isolated-checkout-115>/libs/libc)
+  Compiling std v0.0.0 (<isolated-checkout-115>/rust-fork/library/std)
+  Compiling rustc-std-workspace-core v1.99.0 (<isolated-checkout-115>/rust-fork/library/rustc-std-workspace-core)
+  Compiling alloc v0.0.0 (<isolated-checkout-115>/rust-fork/library/alloc)
+  Compiling panic_abort v0.0.0 (<isolated-checkout-115>/rust-fork/library/panic_abort)
   Compiling cfg-if v1.0.1
   Compiling rustc-demangle v0.1.25
-  Compiling unwind v0.0.0 (/root/breenix-i813d/rust-fork/library/unwind)
-  Compiling rustc-std-workspace-alloc v1.99.0 (/root/breenix-i813d/rust-fork/library/rustc-std-workspace-alloc)
-  Compiling panic_unwind v0.0.0 (/root/breenix-i813d/rust-fork/library/panic_unwind)
-  Compiling std_detect v0.1.5 (/root/breenix-i813d/rust-fork/library/stdarch/crates/std_detect)
+  Compiling unwind v0.0.0 (<isolated-checkout-115>/rust-fork/library/unwind)
+  Compiling rustc-std-workspace-alloc v1.99.0 (<isolated-checkout-115>/rust-fork/library/rustc-std-workspace-alloc)
+  Compiling panic_unwind v0.0.0 (<isolated-checkout-115>/rust-fork/library/panic_unwind)
+  Compiling std_detect v0.1.5 (<isolated-checkout-115>/rust-fork/library/stdarch/crates/std_detect)
   Compiling hashbrown v0.15.4
-  Compiling rustc-std-workspace-std v1.99.0 (/root/breenix-i813d/rust-fork/library/rustc-std-workspace-std)
+  Compiling rustc-std-workspace-std v1.99.0 (<isolated-checkout-115>/rust-fork/library/rustc-std-workspace-std)
   Compiling rustc-literal-escaper v0.0.2
-  Compiling proc_macro v0.0.0 (/root/breenix-i813d/rust-fork/library/proc_macro)
+  Compiling proc_macro v0.0.0 (<isolated-checkout-115>/rust-fork/library/proc_macro)
   Compiling noto-sans-mono-bitmap v0.3.2
-  Compiling libfont v0.1.0 (/root/breenix-i813d/libs/libfont)
-  Compiling libbreenix v0.1.0 (/root/breenix-i813d/libs/libbreenix)
-  Compiling breenish-js v0.1.0 (/root/breenix-i813d/libs/breenish-js)
-  Compiling libimg v0.1.0 (/root/breenix-i813d/libs/libimg)
-  Compiling libgfx v0.1.0 (/root/breenix-i813d/libs/libgfx)
-  Compiling libbui v0.1.0 (/root/breenix-i813d/libs/libbui)
-  Compiling libicon v0.1.0 (/root/breenix-i813d/libs/libicon)
-  Compiling libcollab v0.1.0 (/root/breenix-i813d/libs/libcollab)
-  Compiling breengel v0.1.0 (/root/breenix-i813d/libs/breengel)
-  Compiling userspace-programs v0.1.0 (/root/breenix-i813d/userspace/programs)
+  Compiling libfont v0.1.0 (<isolated-checkout-115>/libs/libfont)
+  Compiling libbreenix v0.1.0 (<isolated-checkout-115>/libs/libbreenix)
+  Compiling breenish-js v0.1.0 (<isolated-checkout-115>/libs/breenish-js)
+  Compiling libimg v0.1.0 (<isolated-checkout-115>/libs/libimg)
+  Compiling libgfx v0.1.0 (<isolated-checkout-115>/libs/libgfx)
+  Compiling libbui v0.1.0 (<isolated-checkout-115>/libs/libbui)
+  Compiling libicon v0.1.0 (<isolated-checkout-115>/libs/libicon)
+  Compiling libcollab v0.1.0 (<isolated-checkout-115>/libs/libcollab)
+  Compiling breengel v0.1.0 (<isolated-checkout-115>/libs/breengel)
+  Compiling userspace-programs v0.1.0 (<isolated-checkout-115>/userspace/programs)
   Finished `release` profile [optimized] target(s) in 1m 41s
   Userspace build successful
 

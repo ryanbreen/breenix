@@ -1,5 +1,5 @@
 Architecture:  x86_64
-Kernel binary: /root/breenix/target/x86_64-unknown-none/release/deps/artifact/kernel-781238d2dede9f03/bin/kernel-781238d2dede9f03
+Kernel binary: <canonical-checkout>/target/x86_64-unknown-none/release/deps/artifact/kernel-781238d2dede9f03/bin/kernel-781238d2dede9f03
 
 Derived layout (from kernel sources, not hardcoded):
   MAX_CPUS:            16

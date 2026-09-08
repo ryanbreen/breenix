@@ -1,5 +1,5 @@
 Running 5 parallel full boot tests (runner: native)...
-Image: /root/breenix-728-prove-hist/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
+Image: <isolated-checkout-159>/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
   Started test 1
   Started test 2
   Started test 3
@@ -37,7 +37,7 @@ Results: 4 passed, 1 failed out of 5
 =========================================
 ===batch2===
 Running 5 parallel full boot tests (runner: native)...
-Image: /root/breenix-728-prove-hist/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
+Image: <isolated-checkout-159>/target/release/build/breenix-1d02de7a9db89273/out/breenix-uefi.img
   Started test 1
   Started test 2
   Started test 3

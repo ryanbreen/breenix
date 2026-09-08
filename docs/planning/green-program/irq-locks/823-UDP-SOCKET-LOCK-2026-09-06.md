@@ -500,9 +500,9 @@ succeeded`. Its serial contains:
 
 Serial: `serials/823/11-landing-a64-strict-boot-serial.txt`.
 
-On beast, the pre-existing clone at `/root/breenix-823` (from the
-implementation round, `rust-fork` symlinked to `/root/breenix/rust-fork-real`,
-`userspace/programs/*.elf` and `fonts/` already copied from `/root/breenix`)
+On beast, the pre-existing clone at `<isolated-checkout-132>` (from the
+implementation round, `rust-fork` symlinked to `<rust-fork-checkout>`,
+`userspace/programs/*.elf` and `fonts/` already copied from `<canonical-checkout>`)
 was fetched and reset to this branch's pushed merge commit
 (`e15a5112e060c36e4a988b82ebf3e101ccec860b`). `cargo build --release
 --features boot_tests,testing,external_test_bins --bin qemu-uefi` there

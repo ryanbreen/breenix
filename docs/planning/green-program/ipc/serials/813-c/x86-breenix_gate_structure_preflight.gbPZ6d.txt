@@ -1,6 +1,6 @@
 revision=e1e42bd1a9a9742a5c0f2aaf450f250a32830e1d
-directory=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/aarch64_testing_profile_structure.log exit=0
+directory=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/aarch64_testing_profile_structure.log exit=0
 == compiling aarch64_testing_profile_structure ==
 == running aarch64_testing_profile_structure  ==
 
@@ -11,7 +11,7 @@ test the_testing_profile_gate_detects_and_classifies_a_soft_lockup ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/block_request_lifetime_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/block_request_lifetime_structure.log exit=0
 == compiling block_request_lifetime_structure ==
 == running block_request_lifetime_structure  ==
 
@@ -33,7 +33,7 @@ test every_wedged_driver_gate_refuses_inside_lock ... ok
 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/blocking_fd_eagain_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/blocking_fd_eagain_structure.log exit=0
 == compiling blocking_fd_eagain_structure ==
 == running blocking_fd_eagain_structure  ==
 
@@ -45,7 +45,7 @@ test repaired_families_have_no_blocking_eagain_exit ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/capture_bxcap_schema_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/capture_bxcap_schema_structure.log exit=0
 == compiling capture_bxcap_schema_structure ==
 == running capture_bxcap_schema_structure  ==
 
@@ -85,7 +85,7 @@ test every_committed_fixture_decodes ... ok
 test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/capture_path_lock_free_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/capture_path_lock_free_structure.log exit=0
 == compiling capture_path_lock_free_structure ==
 == running capture_path_lock_free_structure  ==
 
@@ -115,7 +115,7 @@ test the_strict_lockup_scope_carries_no_lock_allocation_or_formatting ... ok
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/check-critical-path-violations.log exit=not separately recorded for helper; see gate transcript
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/check-critical-path-violations.log exit=not separately recorded for helper; see gate transcript
 Checking critical path files for logging violations...
 
 586:    crate::serial_println!(
@@ -377,7 +377,7 @@ Allowed alternatives:
 
 See kernel/src/trace.rs for the lock-free tracing framework.
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/console_read_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/console_read_structure.log exit=0
 == compiling console_read_structure ==
 == running console_read_structure  ==
 
@@ -391,7 +391,7 @@ test device_modes_poll_and_non_sleeping_device_api ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/context_restore_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/context_restore_structure.log exit=0
 == compiling context_restore_structure ==
 == running context_restore_structure  ==
 
@@ -503,7 +503,7 @@ test fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee ... o
 test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 224.27s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/coreproof_component_h_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/coreproof_component_h_structure.log exit=0
 == compiling coreproof_component_h_structure ==
 == running coreproof_component_h_structure  ==
 
@@ -517,7 +517,7 @@ test self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads ... 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/coreproof_coverage_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/coreproof_coverage_structure.log exit=0
 == compiling coreproof_coverage_structure ==
 == running coreproof_coverage_structure  ==
 
@@ -530,7 +530,7 @@ test every_coverage_placement_names_a_declared_site ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/coreproof_mutation_register_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/coreproof_mutation_register_structure.log exit=0
 == compiling coreproof_mutation_register_structure ==
 == running coreproof_mutation_register_structure  ==
 
@@ -544,7 +544,7 @@ test every_declared_mutation_perturbs_a_real_site ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/coreproof_sites_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/coreproof_sites_structure.log exit=0
 == compiling coreproof_sites_structure ==
 == running coreproof_sites_structure  ==
 
@@ -557,7 +557,7 @@ test every_placed_site_is_declared ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/critical_path_logging_census_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/critical_path_logging_census_structure.log exit=0
 == compiling critical_path_logging_census_structure ==
 == running critical_path_logging_census_structure  ==
 
@@ -578,7 +578,7 @@ test the_anchor_table_sums_to_the_ledger_total ... ok
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.84s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/ctx_diag_ring_sample_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/ctx_diag_ring_sample_structure.log exit=0
 == compiling ctx_diag_ring_sample_structure ==
 == running ctx_diag_ring_sample_structure  ==
 
@@ -603,7 +603,7 @@ test reverting_sched_counter_to_one_shared_line_would_be_caught - should panic .
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/degenerate_transfer_fd_validation_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/degenerate_transfer_fd_validation_structure.log exit=0
 == compiling degenerate_transfer_fd_validation_structure ==
 == running degenerate_transfer_fd_validation_structure  ==
 
@@ -617,7 +617,7 @@ test the_degenerate_transfer_census_is_not_vacuous ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/dispatch_fact_census_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/dispatch_fact_census_structure.log exit=0
 == compiling dispatch_fact_census_structure ==
 == running dispatch_fact_census_structure  ==
 
@@ -633,7 +633,7 @@ test every_deleted_site_still_publishes_its_fact ... ok
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/dispatch_path_lock_free_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/dispatch_path_lock_free_structure.log exit=0
 == compiling dispatch_path_lock_free_structure ==
 == running dispatch_path_lock_free_structure  ==
 
@@ -646,7 +646,7 @@ test the_kernel_page_table_readers_go_through_the_accessor ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/dispatch_strand_census_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/dispatch_strand_census_structure.log exit=0
 == compiling dispatch_strand_census_structure ==
 == running dispatch_strand_census_structure  ==
 
@@ -662,7 +662,7 @@ test the_staleness_bound_has_exactly_one_copy_in_the_repository ... ok
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/dma_and_log_sink_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/dma_and_log_sink_structure.log exit=0
 == compiling dma_and_log_sink_structure ==
 == running dma_and_log_sink_structure  ==
 
@@ -676,7 +676,7 @@ test framebuffer_log_sink_is_nonblocking_and_bounded ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/entry_point_df_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/entry_point_df_structure.log exit=0
 == compiling entry_point_df_structure ==
 == running entry_point_df_structure  ==
 
@@ -690,7 +690,7 @@ test every_hand_written_entry_clears_df_before_its_first_call_or_string_op ... o
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/exec_lock_order_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/exec_lock_order_structure.log exit=0
 == compiling exec_lock_order_structure ==
 == running exec_lock_order_structure  ==
 
@@ -745,7 +745,7 @@ test arm64_exec_bodies_never_touch_the_scheduler_lock ... ok
 test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.65s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/exit_tally_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/exit_tally_structure.log exit=0
 == compiling exit_tally_structure ==
 == running exit_tally_structure  ==
 
@@ -761,7 +761,7 @@ test terminated_state_assignments_are_confined_to_the_two_termination_functions 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/ext2_disk_size_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/ext2_disk_size_structure.log exit=0
 == compiling ext2_disk_size_structure ==
 == running ext2_disk_size_structure  ==
 
@@ -773,7 +773,7 @@ test no_caller_passes_a_size_flag ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/ext2_lock_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/ext2_lock_structure.log exit=0
 == compiling ext2_lock_structure ==
 == running ext2_lock_structure  ==
 
@@ -819,7 +819,7 @@ test negative_bare_prepare_to_wait_is_rejected ... ok
 test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/fcntl_pm_contention_gate_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/fcntl_pm_contention_gate_structure.log exit=0
 == compiling fcntl_pm_contention_gate_structure ==
 == running fcntl_pm_contention_gate_structure  ==
 
@@ -837,7 +837,7 @@ test driver_pin_is_balanced_before_cleanup_and_reporting ... ok
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/fork_lock_order_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/fork_lock_order_structure.log exit=0
 == compiling fork_lock_order_structure ==
 == running fork_lock_order_structure  ==
 
@@ -857,7 +857,7 @@ test both_production_forks_restore_the_parent_page_table_before_propagating ... 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/gate_boot_facts_pipefail_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/gate_boot_facts_pipefail_structure.log exit=0
 == compiling gate_boot_facts_pipefail_structure ==
 == running gate_boot_facts_pipefail_structure  ==
 
@@ -871,7 +871,7 @@ test gbf_helpers_survive_pipefail_with_a_nonexistent_pid_on_every_bash_here ... 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/gate_boot_facts_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/gate_boot_facts_structure.log exit=0
 == compiling gate_boot_facts_structure ==
 == running gate_boot_facts_structure  ==
 
@@ -885,7 +885,7 @@ test gate_boot_facts_predicates_are_not_vacuous ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/gate_capture_drain_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/gate_capture_drain_structure.log exit=0
 == compiling gate_capture_drain_structure ==
 == running gate_capture_drain_structure  ==
 
@@ -900,7 +900,7 @@ test drain_disabled_reads_partial_drain_enabled_reads_complete_same_race ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.10s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/gate_qmp_backstop_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/gate_qmp_backstop_structure.log exit=0
 == compiling gate_qmp_backstop_structure ==
 == running gate_qmp_backstop_structure  ==
 
@@ -924,7 +924,7 @@ test fake_qmp_dump_precedes_sigterm_even_when_decode_fails ... ok
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.02s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/gate_structure_preflight_wiring_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/gate_structure_preflight_wiring_structure.log exit=0
 == compiling gate_structure_preflight_wiring_structure ==
 == running gate_structure_preflight_wiring_structure  ==
 
@@ -940,7 +940,7 @@ test missing_wiring_validator_rejects_a_gate_with_the_call_site_removed ... ok
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/green_program_envelope_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/green_program_envelope_structure.log exit=0
 == compiling green_program_envelope_structure ==
 == running green_program_envelope_structure  ==
 
@@ -963,7 +963,7 @@ test item5_mutation_proof ... ok
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/launcher_smoke_xhci_evidence_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/launcher_smoke_xhci_evidence_structure.log exit=0
 == compiling launcher_smoke_xhci_evidence_structure ==
 == running launcher_smoke_xhci_evidence_structure  ==
 
@@ -974,7 +974,7 @@ test deliberately_broken_copy_reddens_the_rule ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/lockup_capture_guard_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/lockup_capture_guard_structure.log exit=0
 == compiling lockup_capture_guard_structure ==
 == running lockup_capture_guard_structure  ==
 
@@ -993,7 +993,7 @@ test the_guard_passes_a_clean_nonallocating_helper_chain ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/loopback_pump_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/loopback_pump_structure.log exit=0
 == compiling loopback_pump_structure ==
 == running loopback_pump_structure  ==
 
@@ -1132,7 +1132,7 @@ test both_aarch64_gates_fail_on_a_pinned_placement_refusal ... ok
 test result: ok. 130 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.63s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/masked_binary_load_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/masked_binary_load_structure.log exit=0
 == compiling masked_binary_load_structure ==
 == running masked_binary_load_structure  ==
 
@@ -1146,7 +1146,7 @@ test the_boot_path_still_loads_binaries_and_still_masks ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/mmap_floor_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/mmap_floor_structure.log exit=0
 == compiling mmap_floor_structure ==
 == running mmap_floor_structure  ==
 
@@ -1165,7 +1165,7 @@ test neither_census_is_empty ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/net_lock_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/net_lock_structure.log exit=0
 == compiling net_lock_structure ==
 == running net_lock_structure  ==
 
@@ -1194,7 +1194,7 @@ test every_cross_context_net_static_is_guarded_or_declared_thread_only ... ok
 test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.35s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/parallels_capture_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/parallels_capture_structure.log exit=0
 == compiling parallels_capture_structure ==
 == running parallels_capture_structure  ==
 
@@ -1218,7 +1218,7 @@ test f24_render_verdict_still_passes_a_real_capture ... ok
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.19s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/parallels_kill_by_name_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/parallels_kill_by_name_structure.log exit=0
 == compiling parallels_kill_by_name_structure ==
 == running parallels_kill_by_name_structure  ==
 
@@ -1231,7 +1231,7 @@ test census_reaches_the_known_unfixed_run_sh_instances ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/pipe_fifo_blocking_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/pipe_fifo_blocking_structure.log exit=0
 == compiling pipe_fifo_blocking_structure ==
 == running pipe_fifo_blocking_structure  ==
 
@@ -1257,7 +1257,7 @@ test every_removed_process_row_is_retained_past_the_callers_pm_guard ... ok
 test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.08s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/poll_tcp_gate_wiring_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/poll_tcp_gate_wiring_structure.log exit=0
 == compiling poll_tcp_gate_wiring_structure ==
 == running poll_tcp_gate_wiring_structure  ==
 
@@ -1269,7 +1269,7 @@ test every_oracle_fail_gate_also_requires_the_kernel_ready_lost_marker ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/preempt_bracket_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/preempt_bracket_structure.log exit=0
 == compiling preempt_bracket_structure ==
 == running preempt_bracket_structure  ==
 
@@ -1287,7 +1287,7 @@ test boot_path_preempt_brackets_are_cfg_symmetric ... ok
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/qemu_host_lock_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/qemu_host_lock_structure.log exit=0
 == compiling qemu_host_lock_structure ==
 == running qemu_host_lock_structure  ==
 
@@ -1299,7 +1299,7 @@ test every_x86_qemu_launch_script_sources_and_acquires_the_host_lock ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/qemu_kill_by_name_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/qemu_kill_by_name_structure.log exit=0
 == compiling qemu_kill_by_name_structure ==
 == running qemu_kill_by_name_structure  ==
 
@@ -1310,7 +1310,7 @@ test no_shell_script_kills_qemu_by_name_or_pattern ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/ring_span_report_site_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/ring_span_report_site_structure.log exit=0
 == compiling ring_span_report_site_structure ==
 == running ring_span_report_site_structure  ==
 
@@ -1325,7 +1325,7 @@ test the_registry_prints_the_marker_through_the_locked_writer ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/ring_span_unfiltered_report_site_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/ring_span_unfiltered_report_site_structure.log exit=0
 == compiling ring_span_unfiltered_report_site_structure ==
 == running ring_span_unfiltered_report_site_structure  ==
 
@@ -1348,7 +1348,7 @@ test the_registry_prints_the_marker_through_the_locked_writer ... ok
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/run_inspector_import_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/run_inspector_import_structure.log exit=0
 == compiling run_inspector_import_structure ==
 == running run_inspector_import_structure  ==
 
@@ -1358,7 +1358,7 @@ test six_gates_source_and_call_the_post_verdict_importer ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/serial_line_atomicity_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/serial_line_atomicity_structure.log exit=0
 == compiling serial_line_atomicity_structure ==
 == running serial_line_atomicity_structure  ==
 
@@ -1377,7 +1377,7 @@ test census_validator_rejects_a_synthetic_unlocked_multi_byte_writer ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.81s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/signal_eintr_predicate_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/signal_eintr_predicate_structure.log exit=0
 == compiling signal_eintr_predicate_structure ==
 == running signal_eintr_predicate_structure  ==
 
@@ -1389,7 +1389,7 @@ test syscall_eintr_uses_disposition_aware_signal_predicate ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/strand_handoff_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/strand_handoff_structure.log exit=0
 == compiling strand_handoff_structure ==
 == running strand_handoff_structure  ==
 
@@ -1437,7 +1437,7 @@ test aarch64_census_widen_oracle_has_real_disarmed_and_armed_legs ... ok
 test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.23s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/structure_preflight_parallel_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/structure_preflight_parallel_structure.log exit=0
 == compiling structure_preflight_parallel_structure ==
 == running structure_preflight_parallel_structure  ==
 
@@ -1451,7 +1451,7 @@ test mutation_is_green_red_green_with_default_and_one_job ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.66s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/syscall_return_register_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/syscall_return_register_structure.log exit=0
 == compiling syscall_return_register_structure ==
 == running syscall_return_register_structure  ==
 
@@ -1466,7 +1466,7 @@ test every_returning_trap_declares_the_return_register_write ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.79s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/teardown_rustfmt_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/teardown_rustfmt_structure.log exit=0
 == compiling teardown_rustfmt_structure ==
 == running teardown_rustfmt_structure  ==
 
@@ -1476,7 +1476,7 @@ test teardown_provider_is_rustfmt_clean ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/teardown_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/teardown_structure.log exit=0
 == compiling teardown_structure ==
 == running teardown_structure  ==
 
@@ -1592,7 +1592,7 @@ test deliberately_broken_variants_fail_the_ratchet ... ok
 test result: ok. 105 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 85.67s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/terminal_edge_capture_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/terminal_edge_capture_structure.log exit=0
 == compiling terminal_edge_capture_structure ==
 == running terminal_edge_capture_structure  ==
 
@@ -1612,7 +1612,7 @@ test deleting_one_panic_handlers_emit_call_would_be_caught - should panic ... ok
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.77s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/timer_wake_dispatch_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/timer_wake_dispatch_structure.log exit=0
 == compiling timer_wake_dispatch_structure ==
 == running timer_wake_dispatch_structure  ==
 
@@ -1629,7 +1629,7 @@ test a_late_timer_wake_is_enqueued_at_the_head ... ok
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/trace_ring_depth_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/trace_ring_depth_structure.log exit=0
 == compiling trace_ring_depth_structure ==
 == running trace_ring_depth_structure  ==
 
@@ -1642,7 +1642,7 @@ test the_ring_event_is_recorded_only_inside_the_sampling_guard ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/tracing_provider_gate_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/tracing_provider_gate_structure.log exit=0
 == compiling tracing_provider_gate_structure ==
 == running tracing_provider_gate_structure  ==
 
@@ -1670,7 +1670,7 @@ test wrapping_gate_in_if_would_be_caught - should panic ... ok
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/ttbr0_shadow_reconciliation_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/ttbr0_shadow_reconciliation_structure.log exit=0
 == compiling ttbr0_shadow_reconciliation_structure ==
 == running ttbr0_shadow_reconciliation_structure  ==
 
@@ -1712,7 +1712,7 @@ test every_shadow_publish_has_an_accounted_asid ... ok
 test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 90.82s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/tty_irq_fg_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/tty_irq_fg_structure.log exit=0
 == compiling tty_irq_fg_structure ==
 == running tty_irq_fg_structure  ==
 
@@ -1732,7 +1732,7 @@ test the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it ... ok
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.64s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/tty_irq_pm_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/tty_irq_pm_structure.log exit=0
 == compiling tty_irq_pm_structure ==
 == running tty_irq_pm_structure  ==
 
@@ -1751,7 +1751,7 @@ test the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.07s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/tty_oracle_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/tty_oracle_structure.log exit=0
 == compiling tty_oracle_structure ==
 == running tty_oracle_structure  ==
 
@@ -1774,7 +1774,7 @@ test the_x86_gate_carries_the_668_err_trap ... ok
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/udp_ports_lock_irq_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/udp_ports_lock_irq_structure.log exit=0
 == compiling udp_ports_lock_irq_structure ==
 == running udp_ports_lock_irq_structure  ==
 
@@ -1802,7 +1802,7 @@ test green_control_all_rules_hold_at_head ... ok
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/udp_socket_lock_irq_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/udp_socket_lock_irq_structure.log exit=0
 == compiling udp_socket_lock_irq_structure ==
 == running udp_socket_lock_irq_structure  ==
 
@@ -1826,7 +1826,7 @@ test green_control_all_rules_hold_at_head ... ok
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/x86_boot_tests_profile_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/x86_boot_tests_profile_structure.log exit=0
 == compiling x86_boot_tests_profile_structure ==
 == running x86_boot_tests_profile_structure  ==
 
@@ -1845,7 +1845,7 @@ test oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms ..
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.23s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/x86_smp_enum_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/x86_smp_enum_structure.log exit=0
 == compiling x86_smp_enum_structure ==
 == running x86_smp_enum_structure  ==
 
@@ -1860,7 +1860,7 @@ test the_enumeration_marker_has_exactly_one_emission_site ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.gbPZ6d/xhci_wait_irq_order_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.gbPZ6d/xhci_wait_irq_order_structure.log exit=0
 == compiling xhci_wait_irq_order_structure ==
 == running xhci_wait_irq_order_structure  ==
 

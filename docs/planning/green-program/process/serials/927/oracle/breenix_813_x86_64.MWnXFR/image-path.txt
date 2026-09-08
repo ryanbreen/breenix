@@ -1,1 +1,1 @@
-UEFI_IMAGE=/root/breenix-927a/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img
+UEFI_IMAGE=<isolated-checkout-166>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img

@@ -107,7 +107,7 @@ Commit `8cb20cff` ("docs(748): KVM-vs-TCG comparison...") -- unrelated
 #748 filesystem-row work from a concurrent Fable session -- landed
 directly on this branch, sandwiched between this prove slot's two fix
 commits, because both sessions used the same local worktree
-(`/Users/wrb/fun/code/breenix.worktrees/707-cloexec-tcp-test`) and the
+(`<local-checkout>`) and the
 same branch name concurrently. Checked via `git show 8cb20cff --stat`
 this round: its 3 changed paths are all under
 `docs/planning/green-program/filesystem/serials/748-kvm-comparison-2026-09-02/README.md`
@@ -119,11 +119,11 @@ history per standing policy; flagged here for whoever finishes this
 branch.
 
 A second, earlier collision on shared beast infrastructure: this prove
-slot's first x86 gate attempt ran directly in the default `/root/breenix`
+slot's first x86 gate attempt ran directly in the default `<canonical-checkout>`
 checkout, which turned out to be the SAME directory a concurrent `#693`
 soak-battery lane was actively booting from (`ps aux` on beast showed a
 live `qemu-system-x86_64` reading
-`/root/breenix/target/release/build/.../breenix-uefi.img` at the moment
+`<canonical-checkout>/target/release/build/.../breenix-uefi.img` at the moment
 this slot's own `git checkout`/`cargo build` ran against that same path;
 claim-lint:ok: no serial/log artifact exists for this `ps aux` observation
 -- it is a live process-table read at QEMU-launch time, before any kernel
@@ -132,19 +132,19 @@ for it below). 4 of 4 boots of that first attempt failed at QEMU launch
 with `Failed to get "write" lock` -- consistent with two processes
 contending for the same disk-image file, not a #707 defect. Corrected by
 restoring
-`/root/breenix` to the `#693` lane's own branch (`git checkout
+`<canonical-checkout>` to the `#693` lane's own branch (`git checkout
 fix/693-poll-wake-loss`) and cloning a dedicated, isolated checkout at
-`/root/breenix-707-prove` for the rest of this round (the convention
+`<isolated-checkout-187>` for the rest of this round (the convention
 already used by other concurrent lanes on this host, e.g.
-`/root/breenix-728-prove`, `/root/breenix-prove-tracing`, both observed
-live in `ls /root/` this round). No serials were preserved from the
+`<isolated-checkout-157>`, `<isolated-checkout-188>`, both observed
+live in `ls <host-home>/` this round). No serials were preserved from the
 4 failed launch attempts since they never reached kernel boot.
 
 ## x86 gate results, 25 boots
 
 **Correction (review-707.md finding F4):** this section originally
 reported round 1's own battery (beast, isolated clone directory
-`/root/breenix-707-prove`, `docker/qemu/run-x86-gate.sh N full`,
+`<isolated-checkout-187>`, `docker/qemu/run-x86-gate.sh N full`,
 features=testing,external_test_bins), which established the marker result
 -- `TCP_CLOEXEC_EXEC_TEST_PASSED` in 25/25 boots -- but committed only 4
 user-side serials from one representative batch and none of the 9 failing
@@ -155,7 +155,7 @@ log.
 
 **Round 2's battery lives in [`x86-battery-r2/`](x86-battery-r2/README.md).**
 Same command and feature profile, a fresh isolated clone
-(`/root/breenix-707-r2-b4`), 25 boots, committed in full at
+(`<isolated-checkout-189>`), 25 boots, committed in full at
 `x86-battery-r2/summary.tsv` (one row per boot) with every boot's own
 `serial_kernel.txt`, `serial_user.txt`, and `verdict.txt` alongside it --
 see that directory's own README for full methodology, the host-load

@@ -1,0 +1,58 @@
+revision=4394409fca3932296f3468914b5be325ce0d48a6
+command=bash docker/qemu/run-aarch64-testing-profile-boot-test.sh --classify docs/planning/green-program/aarch64-testing/serials/803/boot-01.txt docs/planning/green-program/aarch64-testing/serials/803/boot-02.txt docs/planning/green-program/aarch64-testing/serials/803/boot-03.txt docs/planning/green-program/aarch64-testing/serials/803/boot-04.txt docs/planning/green-program/aarch64-testing/serials/803/boot-05.txt docs/planning/green-program/aarch64-testing/serials/803/boot-06.txt docs/planning/green-program/aarch64-testing/serials/803/boot-07.txt docs/planning/green-program/aarch64-testing/serials/803/boot-08.txt docs/planning/green-program/aarch64-testing/serials/803/boot-09.txt docs/planning/green-program/aarch64-testing/serials/803/boot-10.txt docs/planning/green-program/aarch64-testing/serials/803/boot-11.txt docs/planning/green-program/aarch64-testing/serials/803/boot-12.txt
+[FAIL] boot-01.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-02.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-03.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-04.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-05.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-06.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-07.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-08.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-09.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-10.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-11.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+[FAIL] boot-12.txt: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+
+Testing profile, 12 boots:
+  marker + loaded: 0/12
+  post-loader lockup, #728-signature: 0/12
+  post-loader lockup, UNATTRIBUTED: 0/12
+  userspace panics (counted, not scored): 0
+  reds: 12/12
+exit=1
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-01.txt
+T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=2247000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-02.txt
+T2T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=2299000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-03.txt
+T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=2209000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-04.txt
+T2T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=2324000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-05.txt
+T2T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=2812000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-06.txt
+T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=2722000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-07.txt
+T2T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=3720000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-08.txt
+T2T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=2912000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-09.txt
+T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=5287000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-10.txt
+T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=4:wait_ns=8011000:dispatches=1:iterations=41:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-11.txt
+T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=3301000:dispatches=5:iterations=25:verdict=ok]
+exit=0
+command=python3 scripts/score-softirq-deferral.py docs/planning/green-program/aarch64-testing/serials/803/boot-12.txt
+T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=3107000:dispatches=5:iterations=25:verdict=ok]
+exit=0

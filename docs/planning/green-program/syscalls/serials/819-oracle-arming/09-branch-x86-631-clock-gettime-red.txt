@@ -1,4 +1,4 @@
-# x86 boot-tests run 2 of 3 (beast breenix-x86, clone /root/breenix-fcntlarm at c9f69055)
+# x86 boot-tests run 2 of 3 (beast <x86-build-environment>, clone <isolated-checkout-207> at c9f69055)
 # The #631 signature. Gate log lines, then the assertion excerpt read from
 # breenix_x86_boot_tests_1/serial_user.txt of THIS run, before run 3 reused
 # the same BREENIX_GATE_TMP directory.

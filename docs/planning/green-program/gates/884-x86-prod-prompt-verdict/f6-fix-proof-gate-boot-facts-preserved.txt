@@ -3,24 +3,24 @@
 #
 # Command: BREENIX_X86_PROD_FORCE_PROMPT_ABSENT=1 bash
 # docker/qemu/run-x86-prod-profile-boot-test.sh, on beast
-# (breenix-x86 container, /root/breenix-884 at this branch's HEAD
+# (the x86 build environment, <isolated-checkout-71> at this branch's HEAD
 # plus the F6/F8/F9/F12 fix-round working-tree changes), captured
 # in full below, then the preserved failure_dir's own listing.
 #
 ===== full gate run log =====
 [GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
 Building the shipped x86_64 production kernel profile...
-   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling kernel v0.1.0 (<isolated-checkout-71>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-72>)
     Finished `release` profile [optimized] target(s) in 13.94s
-   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling kernel v0.1.0 (<isolated-checkout-71>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-72>)
     Finished `release` profile [optimized] target(s) in 14.99s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-884/target/release/build/breenix-03b3b4f3cd901e39/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-71>/target/release/build/breenix-03b3b4f3cd901e39/out/breenix-uefi.img (7405568 bytes)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-884/target/ext2.img
+  Output: <isolated-checkout-71>/target/ext2.img
   Size: 256MB
   Payload: 45MB (userspace binaries + fonts)
   Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
@@ -243,8 +243,8 @@ drwxr-xr-x 3 root root   4096 Sep  6 20:33 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-884/target/ext2.img
-  /root/breenix-884/testdata/ext2.img
+  <isolated-checkout-71>/target/ext2.img
+  <isolated-checkout-71>/testdata/ext2.img
   Size: 256M
 
 Contents:
@@ -277,7 +277,7 @@ x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-prof
   failing command: false
 [CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=0]
 [CAPTURE_DRAIN_EVENTS:last_events=none]
-  preserved failing serial: /root/breenix-884-tmp/breenix_x86_prod_profile_failures/20260906T203911Z_2964142
+  preserved failing serial: <isolated-checkout-73>/breenix_x86_prod_profile_failures/20260906T203911Z_2964142
 --- observed values ---
   ext2 root mounted:            1
   PCI_FN blk/e1000/total lines: 3/1/9
@@ -373,7 +373,7 @@ x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-prof
 [TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=49:ms=245:ticks_after=49:ticks_nonzero=1:in_range=1:PASS]
 [INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
 --- serial tail (last 60 lines per file) ---
-==> /root/breenix-884-tmp/breenix_x86_prod_profile/serial_kernel.txt <==
+==> <isolated-checkout-73>/breenix_x86_prod_profile/serial_kernel.txt <==
 [DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
 [DISPATCH_STRAND_CENSUS:seq=49:tick=10581:ms=56897:saved=12:stranded=6:tids=5,15,17,19,20,22:tid_overflow=0:ledger_overflow=0]
 [DEBUG] kernel::syscall::fs: sys_open: raw_path="/proc/kmsg", flags=0x0, mode=0o0
@@ -435,7 +435,7 @@ x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-prof
 [DEBUG] kernel::syscall::pipe: sys_close: Closed procfs file fd=3
 [DEBUG] kernel::syscall::pipe: sys_close: returning to userspace fd=3
 
-==> /root/breenix-884-tmp/breenix_x86_prod_profile/serial_user.txt <==
+==> <isolated-checkout-73>/breenix_x86_prod_profile/serial_user.txt <==
 [TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=3:crossed_ends=1]
 <S>[SW]<K>[SW]<T><U><R>[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
 [TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]

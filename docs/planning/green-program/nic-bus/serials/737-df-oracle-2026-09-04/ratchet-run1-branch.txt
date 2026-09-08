@@ -54,7 +54,7 @@
    Compiling x86_64 v0.14.13
    Compiling x86_64 v0.15.4
    Compiling llvm-tools v0.1.1
-   Compiling kernel v0.1.0 (/root/breenix-737-oracle/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-153>/kernel)
    Compiling slab v0.4.12
    Compiling noto-sans-mono-bitmap v0.2.0
    Compiling futures-task v0.3.34
@@ -103,7 +103,7 @@
    Compiling lzma-rs v0.3.0
    Compiling sha2 v0.11.0
    Compiling tar v0.4.46
-   Compiling breenix v0.1.0 (/root/breenix-737-oracle)
+   Compiling breenix v0.1.0 (<isolated-checkout-162>)
    Compiling base16ct v1.0.0
    Compiling ureq v3.4.0
    Compiling ovmf-prebuilt v0.2.9

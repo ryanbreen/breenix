@@ -1,2 +1,2 @@
 owned QEMU PIDs terminated: []
-scope: /root/breenix-t959 ; other processes left untouched
+scope: <isolated-checkout-228> ; other processes left untouched

@@ -3,10 +3,10 @@
 `docker/qemu/run-x86-boot-tests.sh 1`, 3 separate invocations (`set -e`
 aborts a multi-boot run on the first red, so each boot ran as its own
 process). Fresh scratch clone of `https://github.com/ryanbreen/breenix.git`
-inside the `breenix-x86` Incus VM on beast, checked out at
+inside the x86 build environment on beast, checked out at
 `fix/693-poll-wake-loss` @ `712ae668e966fa858c3a8c6e18d05e21929a3113` (this
 slot's merge-forward of the branch onto `origin/main` @ `910deceb`).
-`rust-fork` symlinked to the pre-built clone at `/root/breenix/rust-fork-real`
+`rust-fork` symlinked to the pre-built clone at `<rust-fork-checkout>`
 (read-only reference, unmodified); `Cargo.lock` copied from that same
 pre-built checkout as a starting lockfile (pins `x86_64 = 0.15.4`, avoiding
 the known 0.15.5 nightly-pin break). `userspace/programs/build.sh` (x86_64,

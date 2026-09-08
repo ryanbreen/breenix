@@ -19,7 +19,7 @@ plus the bytes of 4 of them:
   cells from anything committed. Issue #783 states the same thing.
 
 They were produced by the round-3 implementation slot on the beast
-`breenix-x86` container, in `/root/p775r3-out`, one QEMU at a time, with
+the x86 build environment, in `<host-artifact-dir-200>`, one QEMU at a time, with
 `docker/qemu/run-x86-prod-profile-boot-test.sh`. The round-4 slot recovered
 what was left; the `source` column is the path each row came from.
 <!-- claim-lint:ok: 4 and 18 are the specimens listed below against the 22-row

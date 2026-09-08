@@ -6,17 +6,16 @@
 
 ## 🚨 SMOKING GUN: Raw VirGL Rendering WORKS on Parallels 🚨
 
-**PROVEN March 2026:** A hand-crafted VirGL CLEAR command (our bytes, NOT Mesa) produced a
-visible BLUE screen on the Parallels display. Screenshot saved at `~/Downloads/linux-probe-virgl-test.png`.
+**March 2026 experiment notes:** A hand-crafted VirGL CLEAR command (our bytes, NOT Mesa) reportedly produced a visible BLUE screen. The screenshot remains private and is not repository evidence.
 
-**What the test did (`/tmp/gbm_virgl_test.c` on linux-probe VM):**
+**What the test did (`/tmp/gbm_virgl_test.c` on <probe-environment> VM):**
 1. Used GBM/EGL to create the resource and set up the VirGL context (Mesa handles plumbing)
 2. Injected a **raw VirGL CLEAR command** (hand-crafted, identical encoding to Breenix)
 3. The BLUE clear overwrote Mesa's GREEN clear — the M3 Max GPU executed OUR command
 
 **What this proves:**
 - Our VirGL CLEAR command encoding is CORRECT
-- The Apple M3 Max GPU executes raw VirGL commands through Parallels
+- The host GPU executes raw VirGL commands through Parallels
 - Hardware-accelerated GL rendering is fully achievable on Parallels
 
 **Why virgl_raw_test.c (standalone, no Mesa) shows BLACK:**
@@ -79,7 +78,7 @@ Mesa's actual VirGL command bytes and compare against hand-crafted commands.
 - **gl_display.c (EGL/Mesa) renders at 120+ FPS on Linux probe VM** — proves VirGL works
 
 ### Linux Probe VM Findings
-- VirGL rendering works at 120+ FPS via `virgl (Apple M3 Max (Compat))`
+- VirGL rendering works at 120+ FPS through the host-compatible renderer
 - gl_display.c (EGL/Mesa) shows bouncing balls — WORKING reference
 - **Raw VirGL CLEAR on Mesa's context → BLUE screen** — our encoding is correct
 - virgl_raw_test.c (standalone, no Mesa) shows BLACK — resource creation issue, NOT encoding
@@ -99,9 +98,9 @@ Mesa's actual VirGL command bytes and compare against hand-crafted commands.
 ## Linux Probe VM (Parallels)
 
 - **OS:** Ubuntu 24.04.4 Server ARM64 (Linux 6.8.0-101-generic)
-- **Name:** linux-probe, **IP:** 10.211.55.149
-- **SSH:** `sshpass -p root ssh wrb@10.211.55.149`
-- **Snapshot:** "baseline-with-devtools" — gcc, libdrm-dev, virgl_raw_test built
+- **Name:** <probe-environment>, **IP:** <probe-address>
+- **SSH:** `sshpass -p root ssh wrb@<probe-address>`
+- **Probe baseline:** a development-tools snapshot with gcc, libdrm-dev, and virgl_raw_test built
 - **DRM:** card1 (virtio_gpu), renderD128. 3D accel = highest
 - **Programs:** virgl_raw_test, dumb_blue_test, gl_display, modetest all built and tested
 - **Finding:** DRM SetCrtc works for GBM-created resources (shared backing), fails for raw RESOURCE_CREATE (host-only backing)
