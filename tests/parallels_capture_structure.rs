@@ -615,3 +615,27 @@ fn pil_consumers_use_shared_resolution() {
         assert!(text.contains("\"$BREENIX_PYTHON\" -"), "{} missing selected interpreter", path.display());
     }
 }
+
+#[test]
+fn pil_resolver_exhaustion_names_candidates_and_remediation() {
+    for preferred in ["", "/missing/python with pillow"] {
+        // Make discovery fail independently of the host's installed interpreters.
+        let out = Command::new("bash")
+            .args(["-c", "command() { return 1; }; source \"$1\"", "pil-exhaustion"])
+            .arg(repo_root().join("scripts/lib/python-with-pil.sh"))
+            .env("BREENIX_PYTHON", preferred)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+        let error = String::from_utf8(out.stderr).unwrap();
+        for candidate in ["python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"] {
+            assert!(error.contains(candidate), "missing candidate {candidate}: {error}");
+        }
+        if !preferred.is_empty() {
+            assert!(error.contains(preferred), "missing override: {error}");
+        }
+        assert!(error.contains("install Pillow"), "{error}");
+        assert!(error.contains("set BREENIX_PYTHON"), "{error}");
+    }
+}
