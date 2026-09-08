@@ -1,0 +1,558 @@
+5baa559f402efaac0d87490c2335148cde4b623a
+COMMAND: bash docker/qemu/run-x86-boot-tests.sh
+ 11:30:23 up 26 days, 17:45,  0 user,  load average: 2.25, 6.64, 6.75
+[GATE_SUITE:stem=aarch64_testing_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=block_request_lifetime_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=blocking_fd_eagain_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=capture_bxcap_schema_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=capture_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=console_read_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=context_restore_structure:attempt=1:timeout_s=300:wall_s=213:exit=0]
+[GATE_SUITE:stem=coreproof_component_h_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=coreproof_coverage_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_mutation_register_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_sites_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=critical_path_logging_census_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ctx_diag_ring_sample_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=degenerate_transfer_fd_validation_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_fact_census_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_strand_census_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=dma_and_log_sink_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=entry_point_df_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=exec_lock_order_structure:attempt=1:timeout_s=300:wall_s=5:exit=0]
+[GATE_SUITE:stem=exit_tally_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ext2_disk_size_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ext2_lock_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=fcntl_pm_contention_gate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=fork_lock_order_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_pipefail_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=gate_capture_drain_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=gate_qmp_backstop_structure:attempt=1:timeout_s=300:wall_s=7:exit=0]
+[GATE_SUITE:stem=gate_structure_preflight_wiring_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=green_program_envelope_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=launcher_smoke_xhci_evidence_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=lockup_capture_guard_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=loopback_pump_structure:attempt=1:timeout_s=300:wall_s=14:exit=0]
+[GATE_SUITE:stem=masked_binary_load_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=mmap_floor_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=net_lock_structure:attempt=1:timeout_s=300:wall_s=15:exit=0]
+[GATE_SUITE:stem=parallels_capture_structure:attempt=1:timeout_s=300:wall_s=12:exit=0]
+[GATE_SUITE:stem=parallels_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=pipe_fifo_blocking_structure:attempt=1:timeout_s=300:wall_s=6:exit=0]
+[GATE_SUITE:stem=poll_tcp_gate_wiring_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=preempt_bracket_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=qemu_host_lock_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=qemu_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ring_span_report_site_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ring_span_unfiltered_report_site_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=run_inspector_import_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=serial_line_atomicity_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=signal_eintr_predicate_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=softirq_deferral_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=strand_handoff_structure:attempt=1:timeout_s=300:wall_s=7:exit=0]
+[GATE_SUITE:stem=structure_preflight_parallel_structure:attempt=1:timeout_s=300:wall_s=11:exit=0]
+[GATE_SUITE:stem=syscall_return_register_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=teardown_rustfmt_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=teardown_structure:attempt=1:timeout_s=300:wall_s=83:exit=0]
+[GATE_SUITE:stem=terminal_edge_capture_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=timer_wake_dispatch_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=trace_ring_depth_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=tracing_provider_gate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ttbr0_shadow_reconciliation_structure:attempt=1:timeout_s=300:wall_s=77:exit=0]
+[GATE_SUITE:stem=tty_irq_fg_structure:attempt=1:timeout_s=300:wall_s=5:exit=0]
+[GATE_SUITE:stem=tty_irq_pm_structure:attempt=1:timeout_s=300:wall_s=6:exit=0]
+[GATE_SUITE:stem=tty_oracle_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=udp_ports_lock_irq_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=udp_socket_lock_irq_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=unix_stream_blocking_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=x86_boot_tests_profile_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=x86_smp_enum_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=xhci_wait_irq_order_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_PREFLIGHT:structure_suites=69/69:critical_path_lines=260:pinned=120]
+  RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
+   Compiling kernel v0.1.0 (/root/breenix-sig2/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-sig2)
+    Finished `release` profile [optimized] target(s) in 19.48s
+Guard: x86 kernel-thread dispatch allocation check (#791)
+  ELF:      /root/breenix-sig2/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  sha256:   8c640303dd4f95b883e0e4545d9103b26b796200726fbd74bc79325d335773c5
+  objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
+  readelf:  readelf
+  function: setup_kernel_thread_return (its own body and its closures)
+  symbols in scope: 3
+  call targets resolved: 14
+[0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
+   Compiling kernel v0.1.0 (/root/breenix-sig2/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-sig2)
+    Finished `release` profile [optimized] target(s) in 15.48s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-sig2/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.85s
+     Running `target/debug/xtask create-test-disk`
+Creating test disk image...
+  Including std test: hello_std_real (227168 bytes)
+  Found 154 test binaries
+  Added: access_test (177952 bytes, sectors 128-475)
+  Added: alarm_test (182776 bytes, sectors 476-832)
+  Added: argv_test (184368 bytes, sectors 833-1193)
+  Added: bcheck (299360 bytes, sectors 1194-1778)
+  Added: bfontpicker (346352 bytes, sectors 1779-2455)
+  Added: biconkit (248280 bytes, sectors 2456-2940)
+  Added: blauncher (325480 bytes, sectors 2941-3576)
+  Added: bless (185624 bytes, sectors 3577-3939)
+  Added: block_eintr_oracle (190016 bytes, sectors 3940-4311)
+  Added: blocking_recv_test (184032 bytes, sectors 4312-4671)
+  Added: blog (331208 bytes, sectors 4672-5318)
+  Added: blogd (181968 bytes, sectors 5319-5674)
+  Added: bounce (275256 bytes, sectors 5675-6212)
+  Added: brk_test (182496 bytes, sectors 6213-6569)
+  Added: bsh (579560 bytes, sectors 6570-7701)
+  Added: bssh (322472 bytes, sectors 7702-8331)
+  Added: bsshd (314216 bytes, sectors 8332-8945)
+  Added: bterm (338720 bytes, sectors 8946-9607)
+  Added: btop (184192 bytes, sectors 9608-9967)
+  Added: btrace (198952 bytes, sectors 9968-10356)
+  Added: burl (483296 bytes, sectors 10357-11300)
+  Added: bwm (331648 bytes, sectors 11301-11948)
+  Added: cat_test (183248 bytes, sectors 11949-12306)
+  Added: clock_gettime_test (184568 bytes, sectors 12307-12667)
+  Added: cloexec_test (192592 bytes, sectors 12668-13044)
+  Added: clonevm_exec_test (184656 bytes, sectors 13045-13405)
+  Added: concurrent_recv_stress (188960 bytes, sectors 13406-13775)
+  Added: confetti (189248 bytes, sectors 13776-14145)
+  Added: counter (177648 bytes, sectors 14146-14492)
+  Added: cow_cleanup_test (182552 bytes, sectors 14493-14849)
+  Added: cow_oom_test (182512 bytes, sectors 14850-15206)
+  Added: cow_readonly_test (187056 bytes, sectors 15207-15572)
+  Added: cow_signal_test (188328 bytes, sectors 15573-15940)
+  Added: cow_sole_owner_test (187016 bytes, sectors 15941-16306)
+  Added: cow_stress_test (187104 bytes, sectors 16307-16672)
+  Added: cp_mv_argv_test (182816 bytes, sectors 16673-17030)
+  Added: ctrl_c_test (187992 bytes, sectors 17031-17398)
+  Added: cwd_test (182632 bytes, sectors 17399-17755)
+  Added: demo (189712 bytes, sectors 17756-18126)
+  Added: devfs_test (182448 bytes, sectors 18127-18483)
+  Added: df_preempt_oracle (187648 bytes, sectors 18484-18850)
+  Added: dns_test (195240 bytes, sectors 18851-19232)
+  Added: dup_test (189168 bytes, sectors 19233-19602)
+  Added: echo_argv_test (182480 bytes, sectors 19603-19959)
+  Added: epoll_test (182840 bytes, sectors 19960-20317)
+  Added: exec_argv_test (178216 bytes, sectors 20318-20666)
+  Added: exec_from_ext2_test (188088 bytes, sectors 20667-21034)
+  Added: exec_smoke (178072 bytes, sectors 21035-21382)
+  Added: exec_smoke_target (185048 bytes, sectors 21383-21744)
+  Added: exec_stack_argv_test (183448 bytes, sectors 21745-22103)
+  Added: false_test (182576 bytes, sectors 22104-22460)
+  Added: fart (191712 bytes, sectors 22461-22835)
+  Added: fbinfo_test (187576 bytes, sectors 22836-23202)
+  Added: fcntl_test (188760 bytes, sectors 23203-23571)
+  Added: fifo_test (198456 bytes, sectors 23572-23959)
+  Added: file_read_test (182416 bytes, sectors 23960-24316)
+  Added: fork_memory_test (188680 bytes, sectors 24317-24685)
+  Added: fork_pending_signal_test (187752 bytes, sectors 24686-25052)
+  Added: fork_smoke (187624 bytes, sectors 25053-25419)
+  Added: fork_state_test (189192 bytes, sectors 25420-25789)
+  Added: fork_test (188104 bytes, sectors 25790-26157)
+  Added: fs_block_alloc_test (188624 bytes, sectors 26158-26526)
+  Added: fs_directory_test (183168 bytes, sectors 26527-26884)
+  Added: fs_large_file_test (182624 bytes, sectors 26885-27241)
+  Added: fs_link_test (182816 bytes, sectors 27242-27599)
+  Added: fs_rename_test (182720 bytes, sectors 27600-27956)
+  Added: fs_write_test (182904 bytes, sectors 27957-28314)
+  Added: futex_handoff_oracle (188040 bytes, sectors 28315-28682)
+  Added: getdents_test (184000 bytes, sectors 28683-29042)
+  Added: guskit (391808 bytes, sectors 29043-29808)
+  Added: head_test (183072 bytes, sectors 29809-30166)
+  Added: heartbeat (189112 bytes, sectors 30167-30536)
+  Added: hello_std_real (227168 bytes, sectors 30537-30980)
+  Added: hello_time (177640 bytes, sectors 30981-31327)
+  Added: hello_world (227168 bytes, sectors 31328-31771)
+  Added: http_fetch_test (464384 bytes, sectors 31772-32678)
+  Added: http_test (468536 bytes, sectors 32679-33594)
+  Added: init (187496 bytes, sectors 33595-33961)
+  Added: init_shell (262664 bytes, sectors 33962-34475)
+  Added: itimer_test (183208 bytes, sectors 34476-34833)
+  Added: job_control_test (187664 bytes, sectors 34834-35200)
+  Added: job_table_test (192264 bytes, sectors 35201-35576)
+  Added: kill_process_group_test (188496 bytes, sectors 35577-35945)
+  Added: loopback_wake_test (190448 bytes, sectors 35946-36317)
+  Added: ls_test (183304 bytes, sectors 36318-36676)
+  Added: lseek_test (182520 bytes, sectors 36677-37033)
+  Added: mkdir_argv_test (182680 bytes, sectors 37034-37390)
+  Added: net_test (191600 bytes, sectors 37391-37765)
+  Added: nonblock_eagain_test (179624 bytes, sectors 37766-38116)
+  Added: nonblock_test (188752 bytes, sectors 38117-38485)
+  Added: particles (193944 bytes, sectors 38486-38864)
+  Added: pause_test (188368 bytes, sectors 38865-39232)
+  Added: pipe2_test (188928 bytes, sectors 39233-39601)
+  Added: pipe_concurrent_test (188728 bytes, sectors 39602-39970)
+  Added: pipe_fifo_blocking_oracle (225120 bytes, sectors 39971-40410)
+  Added: pipe_fifo_blocking_supervisor (178056 bytes, sectors 40411-40758)
+  Added: pipe_fork_test (188832 bytes, sectors 40759-41127)
+  Added: pipe_refcount_test (199960 bytes, sectors 41128-41518)
+  Added: pipe_test (188256 bytes, sectors 41519-41886)
+  Added: pipeline_test (191608 bytes, sectors 41887-42261)
+  Added: poll_tcp_oracle (207176 bytes, sectors 42262-42666)
+  Added: poll_test (189032 bytes, sectors 42667-43036)
+  Added: pty_test (183016 bytes, sectors 43037-43394)
+  Added: rectangles (197096 bytes, sectors 43395-43779)
+  Added: register_init_test (177120 bytes, sectors 43780-44125)
+  Added: resolution (186936 bytes, sectors 44126-44491)
+  Added: rm_argv_test (182496 bytes, sectors 44492-44848)
+  Added: select_test (188920 bytes, sectors 44849-45217)
+  Added: session_test (187984 bytes, sectors 45218-45585)
+  Added: shell_pipe_test (183144 bytes, sectors 45586-45943)
+  Added: sigaltstack_test (189016 bytes, sectors 45944-46313)
+  Added: sigchld_job_test (187536 bytes, sectors 46314-46680)
+  Added: sigchld_test (182448 bytes, sectors 46681-47037)
+  Added: sigkill_teardown_test (206728 bytes, sectors 47038-47441)
+  Added: signal_exec_check (177888 bytes, sectors 47442-47789)
+  Added: signal_exec_test (188728 bytes, sectors 47790-48158)
+  Added: signal_fork_test (188176 bytes, sectors 48159-48526)
+  Added: signal_handler_test (187904 bytes, sectors 48527-48893)
+  Added: signal_regs_test (188216 bytes, sectors 48894-49261)
+  Added: signal_return_test (188328 bytes, sectors 49262-49629)
+  Added: signal_test (187872 bytes, sectors 49630-49996)
+  Added: sigsuspend_test (188880 bytes, sectors 49997-50365)
+  Added: simple_exit (170592 bytes, sectors 50366-50699)
+  Added: simple_exit0 (170592 bytes, sectors 50700-51033)
+  Added: sleep_debug_test (188600 bytes, sectors 51034-51402)
+  Added: spawn_smoke_target (170600 bytes, sectors 51403-51736)
+  Added: spinner (177648 bytes, sectors 51737-52083)
+  Added: stdin_test (182296 bytes, sectors 52084-52440)
+  Added: syscall_diagnostic_test (170872 bytes, sectors 52441-52774)
+  Added: syscall_enosys (177536 bytes, sectors 52775-53121)
+  Added: tail_test (183072 bytes, sectors 53122-53479)
+  Added: tcp_blocking_test (203448 bytes, sectors 53480-53877)
+  Added: tcp_client_test (187632 bytes, sectors 53878-54244)
+  Added: tcp_cloexec_exec_test (189464 bytes, sectors 54245-54615)
+  Added: tcp_dup_listener_test (188848 bytes, sectors 54616-54984)
+  Added: tcp_socket_test (202304 bytes, sectors 54985-55380)
+  Added: telnetd (184088 bytes, sectors 55381-55740)
+  Added: test_mmap (182240 bytes, sectors 55741-56096)
+  Added: timer_test (182160 bytes, sectors 56097-56452)
+  Added: tones (184232 bytes, sectors 56453-56812)
+  Added: true_test (182568 bytes, sectors 56813-57169)
+  Added: tty_oracle (218400 bytes, sectors 57170-57596)
+  Added: tty_test (188096 bytes, sectors 57597-57964)
+  Added: udp_socket_test (193408 bytes, sectors 57965-58342)
+  Added: unix_named_socket_test (195352 bytes, sectors 58343-58724)
+  Added: unix_socket_test (205328 bytes, sectors 58725-59126)
+  Added: unix_stream_blocking_oracle (208304 bytes, sectors 59127-59533)
+  Added: unix_stream_blocking_supervisor (178056 bytes, sectors 59534-59881)
+  Added: wait_stress (195568 bytes, sectors 59882-60263)
+  Added: waitpid_test (188152 bytes, sectors 60264-60631)
+  Added: wc_test (183640 bytes, sectors 60632-60990)
+  Added: which_test (182968 bytes, sectors 60991-61348)
+  Added: wnohang_timing_test (182552 bytes, sectors 61349-61705)
+  Added: xhci_counters (183128 bytes, sectors 61706-62063)
+
+Test disk created: target/test_binaries.img
+  Binaries: 154
+  Data size: 31675096 bytes (30.21 MB)
+  Disk size: 62064 sectors (30.30 MB)
+Creating ext2 disk image...
+  Arch: x86_64
+  Output: /root/breenix-sig2/target/ext2.img
+  Size: 256MB
+  Payload: 46MB (userspace binaries + fonts)
+  Minimum image size for this payload: 71MB (incl. ext2 overhead + headroom)
+  busybox.elf not found, attempting to build...
+Error: x86_64-linux-musl-gcc not found in PATH
+
+Install with:
+  brew tap filosottile/musl-cross
+  brew install musl-cross
+  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 49 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 101 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+total 11492
+drwxr-xr-x  2 root root   4096 Sep  8 11:34 .
+drwxr-xr-x 12 root root   4096 Sep  8 11:34 ..
+-rwxr-xr-x  1 root root 299360 Sep  8 11:34 bcheck
+-rwxr-xr-x  1 root root 346352 Sep  8 11:34 bfontpicker
+-rwxr-xr-x  1 root root 248280 Sep  8 11:34 biconkit
+-rwxr-xr-x  1 root root 325480 Sep  8 11:34 blauncher
+-rwxr-xr-x  1 root root 185624 Sep  8 11:34 bless
+-rwxr-xr-x  1 root root 190016 Sep  8 11:34 block_eintr_oracle
+-rwxr-xr-x  1 root root 331208 Sep  8 11:34 blog
+-rwxr-xr-x  1 root root 275256 Sep  8 11:34 bounce
+-rwxr-xr-x  1 root root 579560 Sep  8 11:34 bsh
+-rwxr-xr-x  1 root root 322472 Sep  8 11:34 bssh
+-rwxr-xr-x  1 root root 314216 Sep  8 11:34 bsshd
+-rwxr-xr-x  1 root root 338720 Sep  8 11:34 bterm
+-rwxr-xr-x  1 root root 184192 Sep  8 11:34 btop
+-rwxr-xr-x  1 root root 198952 Sep  8 11:34 btrace
+-rwxr-xr-x  1 root root 483296 Sep  8 11:34 burl
+-rwxr-xr-x  1 root root 331648 Sep  8 11:34 bwm
+-rwxr-xr-x  1 root root 188960 Sep  8 11:34 concurrent_recv_stress
+-rwxr-xr-x  1 root root 189248 Sep  8 11:34 confetti
+-rwxr-xr-x  1 root root 177648 Sep  8 11:34 counter
+-rwxr-xr-x  1 root root 189712 Sep  8 11:34 demo
+-rwxr-xr-x  1 root root 187648 Sep  8 11:34 df_preempt_oracle
+-rwxr-xr-x  1 root root 178072 Sep  8 11:34 exec_smoke
+-rwxr-xr-x  1 root root 185048 Sep  8 11:34 exec_smoke_target
+-rwxr-xr-x  1 root root 191712 Sep  8 11:34 fart
+-rwxr-xr-x  1 root root 187624 Sep  8 11:34 fork_smoke
+-rwxr-xr-x  1 root root 188040 Sep  8 11:34 futex_handoff_oracle
+-rwxr-xr-x  1 root root 391808 Sep  8 11:34 guskit
+-rwxr-xr-x  1 root root 189112 Sep  8 11:34 heartbeat
+-rwxr-xr-x  1 root root 177640 Sep  8 11:34 hello_time
+-rwxr-xr-x  1 root root 227168 Sep  8 11:34 hello_world
+-rwxr-xr-x  1 root root 262664 Sep  8 11:34 init_shell
+-rwxr-xr-x  1 root root 193944 Sep  8 11:34 particles
+-rwxr-xr-x  1 root root 225120 Sep  8 11:34 pipe_fifo_blocking_oracle
+-rwxr-xr-x  1 root root 178056 Sep  8 11:34 pipe_fifo_blocking_supervisor
+-rwxr-xr-x  1 root root 207176 Sep  8 11:34 poll_tcp_oracle
+-rwxr-xr-x  1 root root 197096 Sep  8 11:34 rectangles
+-rwxr-xr-x  1 root root 186936 Sep  8 11:34 resolution
+-rwxr-xr-x  1 root root 177888 Sep  8 11:34 signal_exec_check
+-rwxr-xr-x  1 root root 170592 Sep  8 11:34 simple_exit
+-rwxr-xr-x  1 root root 170592 Sep  8 11:34 simple_exit0
+-rwxr-xr-x  1 root root 170600 Sep  8 11:34 spawn_smoke_target
+-rwxr-xr-x  1 root root 177648 Sep  8 11:34 spinner
+-rwxr-xr-x  1 root root 177536 Sep  8 11:34 syscall_enosys
+-rwxr-xr-x  1 root root 184232 Sep  8 11:34 tones
+-rwxr-xr-x  1 root root 218400 Sep  8 11:34 tty_oracle
+-rwxr-xr-x  1 root root 208304 Sep  8 11:34 unix_stream_blocking_oracle
+-rwxr-xr-x  1 root root 178056 Sep  8 11:34 unix_stream_blocking_supervisor
+-rwxr-xr-x  1 root root 195568 Sep  8 11:34 wait_stress
+-rwxr-xr-x  1 root root 183128 Sep  8 11:34 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 19564
+drwxr-xr-x 2 root root   4096 Sep  8 11:34 .
+drwxr-xr-x 3 root root   4096 Sep  8 11:34 ..
+-rwxr-xr-x 1 root root 177952 Sep  8 11:34 access_test
+-rwxr-xr-x 1 root root 182776 Sep  8 11:34 alarm_test
+-rwxr-xr-x 1 root root 184368 Sep  8 11:34 argv_test
+-rwxr-xr-x 1 root root 184032 Sep  8 11:34 blocking_recv_test
+-rwxr-xr-x 1 root root 182496 Sep  8 11:34 brk_test
+-rwxr-xr-x 1 root root 183248 Sep  8 11:34 cat_test
+-rwxr-xr-x 1 root root 184568 Sep  8 11:34 clock_gettime_test
+-rwxr-xr-x 1 root root 192592 Sep  8 11:34 cloexec_test
+-rwxr-xr-x 1 root root 184656 Sep  8 11:34 clonevm_exec_test
+-rwxr-xr-x 1 root root 182552 Sep  8 11:34 cow_cleanup_test
+-rwxr-xr-x 1 root root 182512 Sep  8 11:34 cow_oom_test
+-rwxr-xr-x 1 root root 187056 Sep  8 11:34 cow_readonly_test
+-rwxr-xr-x 1 root root 188328 Sep  8 11:34 cow_signal_test
+-rwxr-xr-x 1 root root 187016 Sep  8 11:34 cow_sole_owner_test
+-rwxr-xr-x 1 root root 187104 Sep  8 11:34 cow_stress_test
+-rwxr-xr-x 1 root root 182816 Sep  8 11:34 cp_mv_argv_test
+-rwxr-xr-x 1 root root 187992 Sep  8 11:34 ctrl_c_test
+-rwxr-xr-x 1 root root 182632 Sep  8 11:34 cwd_test
+-rwxr-xr-x 1 root root 182448 Sep  8 11:34 devfs_test
+-rwxr-xr-x 1 root root 195240 Sep  8 11:34 dns_test
+-rwxr-xr-x 1 root root 189168 Sep  8 11:34 dup_test
+-rwxr-xr-x 1 root root 182480 Sep  8 11:34 echo_argv_test
+-rwxr-xr-x 1 root root 182840 Sep  8 11:34 epoll_test
+-rwxr-xr-x 1 root root 178216 Sep  8 11:34 exec_argv_test
+-rwxr-xr-x 1 root root 188088 Sep  8 11:34 exec_from_ext2_test
+-rwxr-xr-x 1 root root 183448 Sep  8 11:34 exec_stack_argv_test
+-rwxr-xr-x 1 root root 182576 Sep  8 11:34 false_test
+-rwxr-xr-x 1 root root 187576 Sep  8 11:34 fbinfo_test
+-rwxr-xr-x 1 root root 188760 Sep  8 11:34 fcntl_test
+-rwxr-xr-x 1 root root 198456 Sep  8 11:34 fifo_test
+-rwxr-xr-x 1 root root 182416 Sep  8 11:34 file_read_test
+-rwxr-xr-x 1 root root 188680 Sep  8 11:34 fork_memory_test
+-rwxr-xr-x 1 root root 187752 Sep  8 11:34 fork_pending_signal_test
+-rwxr-xr-x 1 root root 189192 Sep  8 11:34 fork_state_test
+-rwxr-xr-x 1 root root 188104 Sep  8 11:34 fork_test
+-rwxr-xr-x 1 root root 188624 Sep  8 11:34 fs_block_alloc_test
+-rwxr-xr-x 1 root root 183168 Sep  8 11:34 fs_directory_test
+-rwxr-xr-x 1 root root 182624 Sep  8 11:34 fs_large_file_test
+-rwxr-xr-x 1 root root 182816 Sep  8 11:34 fs_link_test
+-rwxr-xr-x 1 root root 182720 Sep  8 11:34 fs_rename_test
+-rwxr-xr-x 1 root root 182904 Sep  8 11:34 fs_write_test
+-rwxr-xr-x 1 root root 184000 Sep  8 11:34 getdents_test
+-rwxr-xr-x 1 root root 183072 Sep  8 11:34 head_test
+-rwxr-xr-x 1 root root 464384 Sep  8 11:34 http_fetch_test
+-rwxr-xr-x 1 root root 468536 Sep  8 11:34 http_test
+-rwxr-xr-x 1 root root 183208 Sep  8 11:34 itimer_test
+-rwxr-xr-x 1 root root 187664 Sep  8 11:34 job_control_test
+-rwxr-xr-x 1 root root 192264 Sep  8 11:34 job_table_test
+-rwxr-xr-x 1 root root 188496 Sep  8 11:34 kill_process_group_test
+-rwxr-xr-x 1 root root 190448 Sep  8 11:34 loopback_wake_test
+-rwxr-xr-x 1 root root 183304 Sep  8 11:34 ls_test
+-rwxr-xr-x 1 root root 182520 Sep  8 11:34 lseek_test
+-rwxr-xr-x 1 root root 182680 Sep  8 11:34 mkdir_argv_test
+-rwxr-xr-x 1 root root 191600 Sep  8 11:34 net_test
+-rwxr-xr-x 1 root root 179624 Sep  8 11:34 nonblock_eagain_test
+-rwxr-xr-x 1 root root 188752 Sep  8 11:34 nonblock_test
+-rwxr-xr-x 1 root root 188368 Sep  8 11:34 pause_test
+-rwxr-xr-x 1 root root 188928 Sep  8 11:34 pipe2_test
+-rwxr-xr-x 1 root root 188728 Sep  8 11:34 pipe_concurrent_test
+-rwxr-xr-x 1 root root 188832 Sep  8 11:34 pipe_fork_test
+-rwxr-xr-x 1 root root 199960 Sep  8 11:34 pipe_refcount_test
+-rwxr-xr-x 1 root root 188256 Sep  8 11:34 pipe_test
+-rwxr-xr-x 1 root root 191608 Sep  8 11:34 pipeline_test
+-rwxr-xr-x 1 root root 189032 Sep  8 11:34 poll_test
+-rwxr-xr-x 1 root root 183016 Sep  8 11:34 pty_test
+-rwxr-xr-x 1 root root 177120 Sep  8 11:34 register_init_test
+-rwxr-xr-x 1 root root 182496 Sep  8 11:34 rm_argv_test
+-rwxr-xr-x 1 root root 188920 Sep  8 11:34 select_test
+-rwxr-xr-x 1 root root 187984 Sep  8 11:34 session_test
+-rwxr-xr-x 1 root root 183144 Sep  8 11:34 shell_pipe_test
+-rwxr-xr-x 1 root root 189016 Sep  8 11:34 sigaltstack_test
+-rwxr-xr-x 1 root root 187536 Sep  8 11:34 sigchld_job_test
+-rwxr-xr-x 1 root root 182448 Sep  8 11:34 sigchld_test
+-rwxr-xr-x 1 root root 206728 Sep  8 11:34 sigkill_teardown_test
+-rwxr-xr-x 1 root root 188728 Sep  8 11:34 signal_exec_test
+-rwxr-xr-x 1 root root 188176 Sep  8 11:34 signal_fork_test
+-rwxr-xr-x 1 root root 187904 Sep  8 11:34 signal_handler_test
+-rwxr-xr-x 1 root root 188216 Sep  8 11:34 signal_regs_test
+-rwxr-xr-x 1 root root 188328 Sep  8 11:34 signal_return_test
+-rwxr-xr-x 1 root root 187872 Sep  8 11:34 signal_test
+-rwxr-xr-x 1 root root 188880 Sep  8 11:34 sigsuspend_test
+-rwxr-xr-x 1 root root 188600 Sep  8 11:34 sleep_debug_test
+-rwxr-xr-x 1 root root 182296 Sep  8 11:34 stdin_test
+-rwxr-xr-x 1 root root 170872 Sep  8 11:34 syscall_diagnostic_test
+-rwxr-xr-x 1 root root 183072 Sep  8 11:34 tail_test
+-rwxr-xr-x 1 root root 203448 Sep  8 11:34 tcp_blocking_test
+-rwxr-xr-x 1 root root 187632 Sep  8 11:34 tcp_client_test
+-rwxr-xr-x 1 root root 189464 Sep  8 11:34 tcp_cloexec_exec_test
+-rwxr-xr-x 1 root root 188848 Sep  8 11:34 tcp_dup_listener_test
+-rwxr-xr-x 1 root root 202304 Sep  8 11:34 tcp_socket_test
+-rwxr-xr-x 1 root root 182240 Sep  8 11:34 test_mmap
+-rwxr-xr-x 1 root root 182160 Sep  8 11:34 timer_test
+-rwxr-xr-x 1 root root 182568 Sep  8 11:34 true_test
+-rwxr-xr-x 1 root root 188096 Sep  8 11:34 tty_test
+-rwxr-xr-x 1 root root 193408 Sep  8 11:34 udp_socket_test
+-rwxr-xr-x 1 root root 195352 Sep  8 11:34 unix_named_socket_test
+-rwxr-xr-x 1 root root 205328 Sep  8 11:34 unix_socket_test
+-rwxr-xr-x 1 root root 188152 Sep  8 11:34 waitpid_test
+-rwxr-xr-x 1 root root 183640 Sep  8 11:34 wc_test
+-rwxr-xr-x 1 root root 182968 Sep  8 11:34 which_test
+-rwxr-xr-x 1 root root 182552 Sep  8 11:34 wnohang_timing_test
+-rw-r--r-- 1 root root 17 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/hello.txt
+-rw-r--r-- 1 root root 26 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/etc/group
+-rw-r--r-- 1 root root 349 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/etc/hotkeys.conf
+-rw-r--r-- 1 root root 445 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/etc/fonts.conf
+-rw-r--r-- 1 root root 367 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/etc/bshrc
+-rw-r--r-- 1 root root 679 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/etc/init.js
+-rw-r--r-- 1 root root 83 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/etc/passwd
+-rw-r--r-- 1 root root 19 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/trunctest.txt
+-rwxr-xr-x 1 root root 187496 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/sbin/init
+-rwxr-xr-x 1 root root 184088 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/sbin/telnetd
+-rwxr-xr-x 1 root root 181968 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/sbin/blogd
+-rw-r--r-- 1 root root 20 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 160316 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 2049096 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 488584 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 312352 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 0 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/empty.txt
+-rw-r--r-- 1 root root 111 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/lines.txt
+-rw-r--r-- 1 root root 20 Sep  8 11:34 /root/breenix-sig2-tmp/tmp.7esD4LnWgq/test/nested.txt
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /root/breenix-sig2/target/ext2.img
+  /root/breenix-sig2/testdata/ext2.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/ls - native Breenix ls
+  /bin/{cat,head,tail,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (30s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (60s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (90s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (120s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (150s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (180s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (210s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (240s elapsed, host qemu-system-x86_64 count=0)...
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788867549006-1788868024840:qemu_at_start=0:load_at_start=2.50:qemu_at_end=0:load_at_end=1.33:qemu_cpu_s=454.00:guest_uptime_ms=NA:ended_by=scored_pass]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=12126474:dispatches=1:iterations=41:verdict=ok]
+  Device census: [ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+  PCI function facts (PCI_FN_TOTAL 9):
+    PCI_FN 00:00.0 8086:1237 class=06/00 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.0 8086:7000 class=06/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.1 8086:7010 class=01/01 bar0=0x0/0x0 irq=0xff
+    PCI_FN 00:01.3 8086:7113 class=06/80 bar0=0x0/0x0 irq=0x0a
+    PCI_FN 00:02.0 1234:1111 class=03/00 bar0=0x80000000/0x1000000 irq=0xff
+    PCI_FN 00:03.0 8086:100e class=02/00 bar0=0x81080000/0x20000 irq=0x0b
+    PCI_FN 00:04.0 1af4:1001 class=01/00 bar0=0xc100/0x80 irq=0x0b
+    PCI_FN 00:05.0 1af4:1001 class=01/00 bar0=0xc080/0x80 irq=0x0a
+    PCI_FN 00:06.0 1af4:1001 class=01/00 bar0=0xc000/0x80 irq=0x0a
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=12126474:dispatches=1:iterations=41:verdict=ok]
+strand census: latest snapshot seq=332 tick=42819 at 459021 ms; 332 valid snapshot(s), previous 1003 ms earlier, largest gap 3524 ms
+strand census: age at the completion marker: 512 ms (newest cadence snapshot seq=320 at 447978 ms, completion snapshot seq=321 at 448490 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=18769
+x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0
+[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
+[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]
+[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
+[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]
+[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]
+[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]
+[INIT_DESIGNATION_ORACLE:x86:construct_failed=2:construct_undecided=0:construct_residual=0:construct_roots_retired=2:construct_leaf_balance=0:construct_commit_balance=0:refused=4:accepted=1:published=1:retired=1:held_error_removals=1:reparented=1:reparent_skipped=1:ordinary_allocated=5:reserved_collisions=0:designation_balance=0]
+[INIT_GROUP_REFUSAL_ORACLE:x86:none_probes=3:none_refusals=0:init_refused=1:alias_refused=1:alias_pid_refused=0:nonit_probes=2:nonit_refusals=0:rows_delta=0:refusal_counter_delta=0:designation_residual=0:balance=0]
+[SCHED_STRAND_ORACLE:x86:samples=2:checked=32:stranded=0:running_shape=0:ready_shape=0:resolved_production=0:resolved_exercised=0:worst_dwell_ms=0:overflow=0:worst_nonprogress_ms=0:nonprogress=0:queued_on_nondispatching_cpu=0:worst_queued_nondispatch_ms=0:worst_cpu_scheduler_silence_ms=2:worst_silence_cpu=0]
+[CENSUS_WIDEN_ORACLE:x86:arm=none:reason=uniprocessor_no_dispatching_peer:baseline_reported=0:axes=6:SKIP]
+[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus=1:SKIP]
+[IRQ_HOLD_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]
+[UDP_LOCK_ORACLE:x86:arm=none:reason=irq_exit_gates_softirq_on_preempt_count:online_cpus=1:SKIP]
+[UDP_PORTS_LOCK_ORACLE:x86:arm=none:reason=uniprocessor_no_udp_ports_contention_peer:online_cpus=1:SKIP]
+[TTY_IRQ_PM_ORACLE:x86:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:pm_held_during_entry=1:entry_us=32:adopted=1:adopted_pgrp=821:restored=1:PASS:local_hold]
+[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:fg_busy_probe=1:entry_us=1300:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:local_hold]
+[FUTEX_HANDOFF_ORACLE:x86:driven=2:stage1_ret=EAGAIN:stage1_wake=0:stage1_parked=0:stage2_ret=0:stage2_wake=1:stage2_parked=0:stage3_ret=ETIMEDOUT:stage3_elapsed_ok=1:stage3_elapsed_ms=61:arm_delay_us=137:rescues=0:queue_residual=0:balance=0]
+[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]
+[KSTACK_OWNER_ORACLE:x86:creation_rows=1000:creation_owned=1000:one_owner=1000:two_owner=0:zero_owner=0:fork_rows=2:fork_owned=2:slot_returns_exact_one=2:slot_alloc_delta=1000:slot_free_delta=1000:slot_balance=0:cohort_enrolled=1000:cohort_returned=1000:cohort_double_return=0:foreign_alloc_delta=0:foreign_returned=0:frames_mapped_delta=128000:frames_released_delta=128000:frame_balance=0:frame_used_delta=0:frame_used_bounded=1:live_checks=1082:live_refusals_production=0:live_refusals_injected=1:drop_refused_live=0:pte_overwrite_refusals=0:pub_pooled=1074:pub_sched_owned=1074:pub_row_residual=0:pub_unowned=0:classifier_sched_owned=1:classifier_row_residual=1:classifier_unowned=1:classifier_not_pooled=1:sched_publications=3:sched_pm_held_production=0:sched_pm_held_injected=1:reconciliation_diff=0:reconciliation_skew_bound=0:balance=0]
+[CREATION_LOCK_ORDER:INJECTED:PM_HELD]
+[TOMBSTONE_JOIN_ORACLE:x86:retire_second=1:reap_second=1:removed=2:resident_delta=0:tombstone_rows=0:PASS]
+[TOMBSTONE_CENSUS:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1]
+[TOMBSTONE_QUIESCE:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1:pending=1:parked=0]
+[RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=3:injected=1:pend_epoch=0:pend_hw=0:pend_shadow=1:pend_selectable=0]
+[SW]<K>[SW]<K>[SW]<K>[SW]<1>[TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=24:ms=120:ticks_after=24:ticks_nonzero=1:in_range=1:PASS]
+[RING_SPAN:cpu=0:span_ms=4310:writes=36:dropped=0:ticks_total=200:tick_events=12]
+[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[SW]<K>[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=49:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=2:peers_started=8:peers_spinning=8:backstops=0:setup_ms=505:window_ms=667:measured=1:PASS]
+x86 frame-custody gate run 1: PASS
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+EXIT: 0
