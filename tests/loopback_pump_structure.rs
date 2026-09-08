@@ -2632,9 +2632,7 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         );
         let leg = |name: &str, body: &str| {
             let path = scratch.join(format!("{variable}-{name}.txt"));
-            // Compose a scorer fixture with the new required oracle; this is synthetic,
-            // not an edit to the historical runtime capture.
-            fs::write(&path, format!("{body}\n{}", include_str!("fixtures/softirq-deferral-ok.txt"))).expect("write a gate leg serial");
+            fs::write(&path, body).expect("write a gate leg serial");
             score_with_gate(gate, variable, &path)
         };
 
@@ -2751,9 +2749,7 @@ fn the_gates_score_the_pin_guard_oracle_in_opposite_directions() {
     fs::create_dir_all(&scratch).expect("create the scratch directory for the oracle gate legs");
     let leg = |name: &str, body: &str, gate: &str, variable: &str| {
         let path = scratch.join(format!("{variable}-{name}.txt"));
-        // Compose a scorer fixture with the new required oracle; this is synthetic,
-            // not an edit to the historical runtime capture.
-            fs::write(&path, format!("{body}\n{}", include_str!("fixtures/softirq-deferral-ok.txt"))).expect("write an oracle gate leg serial");
+        fs::write(&path, body).expect("write an oracle gate leg serial");
         score_with_gate(gate, variable, &path)
     };
 

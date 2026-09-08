@@ -2430,9 +2430,7 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
         );
         let leg = |name: &str, body: &str| {
             let path = scratch.join(format!("{}-{name}.txt", gate.replace('/', "_")));
-            // Compose a scorer fixture with the new required oracle; this is synthetic,
-            // not an edit to the historical runtime capture.
-            fs::write(&path, format!("{body}\n{}", include_str!("fixtures/softirq-deferral-ok.txt"))).expect("write a gate leg serial");
+            fs::write(&path, body).expect("write a gate leg serial");
             score_with_gate(gate, variable, &path)
         };
 

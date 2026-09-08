@@ -488,3 +488,38 @@ Deferred code findings supplied for landing: [] (0 findings).
 claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/irq-locks/serials/891/testing-diagnostic.txt docs/planning/green-program/irq-locks/serials/891/preflight.txt docs/planning/green-program/irq-locks/serials/891/preflight2.txt -> exit 0
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/landing-prose-message.txt -> exit 0
+
+Landing synchronization: `git fetch origin` followed by
+`git merge --no-ff --no-commit origin/main` returned Already up to date.
+Main was `c93ecf5297f42bf4127849f0b26961d74c25f85c`; 0 incoming commits
+and 0 conflicts. Git did not create an empty merge commit.
+
+At `b97ff8a716b44b523be82a1eea9dd03109da97e4`, the standalone structure
+suite passed 68/68 and the required strict aarch64 gate passed 1/1, with
+0 inconclusive boots; see `serials/891/landing/structure.txt` and
+`serials/891/landing/aarch64-strict.txt`. The deferral oracle in
+`serials/891/landing/aarch64-serial.txt` reports 2 delivered ticks,
+3618000 ns, 5 dispatches, 25 iterations, and verdict ok.
+
+R182: this branch's added deferral requirement requires a new strict
+fixture despite 0 incoming scorer changes. The required landing boot's
+raw serial replaces `tests/fixtures/udp-socket-lock-aarch64-serial.txt`;
+the five replay helpers in four suites now use the capture directly, without appending
+a synthetic deferral oracle. The two production fixtures have no new
+production requirement; their unchanged replays are checked by the suites.
+No additional production boot is part of the requested landing population.
+
+PR 967 already exists for this branch; landing will update that PR.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/landing-fixture-message.txt -> exit 0
+
+The first R182 refresh check passed 67/68 suites: two loopback replay
+helpers still appended the synthetic oracle and correctly failed on a
+duplicate oracle. `serials/891/landing/fixture-structure.txt` retains this
+red. Removing the two remaining compositions completes the fixture refresh.
+
+The completed fixture refresh passes 68/68 suites in
+`serials/891/landing/fixture-structure-final.txt`. Raw serial bytes retain
+CRLF where the guest emitted it; diff whitespace checking with
+`git -c core.whitespace=cr-at-eol diff --check` exits 0.
