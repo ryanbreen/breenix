@@ -1,3 +1,5 @@
+Revision under test: 735bdf01225d372cdc42f0d3b5d2f148276380e9
+Retrospective provenance annotation from the continuation record; original stdout follows.
 Running 5 parallel full boot tests (runner: native)...
 Image: /root/breenix-n586p4/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0

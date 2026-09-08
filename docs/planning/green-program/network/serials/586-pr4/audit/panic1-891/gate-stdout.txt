@@ -1,3 +1,5 @@
+Revision under test: 735bdf01225d372cdc42f0d3b5d2f148276380e9
+Retrospective provenance annotation from the continuation record; original stdout follows.
 [GATE_PREFLIGHT:structure_suites=64/64:critical_path_lines=260:pinned=120]
   RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
    Compiling kernel v0.1.0 (/root/breenix-n586p4/kernel)

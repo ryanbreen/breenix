@@ -30,7 +30,11 @@ batch2/boot-5: START at serial_user.txt:894, PASS at serial_user.txt:1068.
   reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
 
 Totals across all 10 boots: [TEST:userspace:loopback_recv_wake:FAIL:reader_exit_15]
-occurs 0 times (grep -rc across all ten serial_user.txt files sums to 0). The
+occurs 0 times. Recount uses literal substring occurrences (Python bytes.count),
+not a regular expression; brackets are literal. Reproduce per-file matching-line
+counts with: grep -Fc -- '[TEST:userspace:loopback_recv_wake:FAIL:reader_exit_15]'
+<serial_user.txt>. grep exits 1 for zero matches; this is expected. All ten
+files have zero literal occurrences and zero matching lines. The
 new reader_eof_dispatch_probe print (userspace/programs/src/loopback_wake_test.rs:230)
 occurs 0 times -- the EOF bound (4000 ms) was not breached on any of the five
 boots that reached the arm-scoped test; there are no dispatch-gap lines to quote.
