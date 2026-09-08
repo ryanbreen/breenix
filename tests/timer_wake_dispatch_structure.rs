@@ -184,8 +184,12 @@ fn the_oracle_is_boot_tests_only_and_runs_on_both_architectures() {
         let call = source
             .lines()
             .position(|line| line.contains("timer_wake_oracle::run()"))
-            .unwrap_or_else(|| panic!("{path} must call the #766 oracle: the two architectures \
-                 run the same leg, and an arm that is never called cannot fail"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "{path} must call the #766 oracle: the two architectures \
+                 run the same leg, and an arm that is never called cannot fail"
+                )
+            });
         let guard = source
             .lines()
             .nth(call - 1)
@@ -265,4 +269,58 @@ fn the_quantum_check_rejects_a_drifted_aarch64_quantum() {
         "const TIME_QUANTUM: u32 = 10;",
         "const TIME_QUANTUM: u32 = 7;",
     );
+}
+
+#[test]
+fn barrier_coordinator_is_schedulable_during_partial_peer_release() {
+    let source = read(ORACLE_SOURCE);
+    let entry = item_body(&source, "pub fn run()");
+    assert!(
+        entry.contains("kthread_run(run_coordinator, \"t766_coord\")"),
+        "idle cannot finish releasing peers while a CPU-bound peer is runnable"
+    );
+    assert!(!entry.contains("run_coordinator();"));
+    assert!(entry.contains("kthread_join(&handle)"));
+    let coordinator = item_body(&source, "fn run_coordinator()");
+    assert!(coordinator.contains("kthread_unpark(handle)"));
+    assert!(coordinator.contains("if index == 0"));
+    assert!(coordinator.contains("scheduler::yield_current()"));
+    assert!(coordinator.contains("arch_halt_with_interrupts()"));
+    let emitter = item_body(&source, "fn emit(");
+    assert!(emitter.contains("backstops == 0"));
+    assert!(emitter.contains("overrun_ms <= BOUND_MS"));
+}
+
+#[test]
+fn partial_release_model_distinguishes_idle_from_a_queued_coordinator() {
+    use std::collections::VecDeque;
+    // Peer 0 is released, then preempts the coordinator before peer one
+    // is released. Runnable work excludes idle, exactly as schedule() does.
+    // Peers keep running until the sleeper completes; it needs both peers.
+    fn barrier_completes(coordinator_is_idle: bool) -> bool {
+        let mut queue = VecDeque::from([0]);
+        if !coordinator_is_idle {
+            queue.push_back(2);
+        }
+        let mut started = [false; 2];
+        for _ in 0..8 {
+            match queue.pop_front() {
+                Some(2) => queue.push_back(1),
+                Some(peer) => {
+                    started[peer] = true;
+                    queue.push_back(peer);
+                }
+                None => break,
+            }
+            if started == [true, true] {
+                return true;
+            }
+        }
+        false
+    }
+    assert!(!barrier_completes(true));
+    assert!(barrier_completes(false));
+    let scheduler = read(SCHEDULER_SOURCE);
+    assert!(item_body(&scheduler, "pub fn schedule(&mut self)")
+        .contains("current_id != self.cpu_state[Self::current_cpu_id()].idle_thread"));
 }

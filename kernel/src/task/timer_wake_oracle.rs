@@ -300,6 +300,27 @@ fn emit(overrun_ms: u64, spawned: usize, reason: &str) {
 /// the state it had; the peers and the sleeper need interrupts on to be
 /// preempted at all.
 pub fn run() {
+    let interrupts_were_enabled = crate::arch_interrupts_enabled();
+    if !interrupts_were_enabled {
+        unsafe { arch_enable_interrupts() };
+    }
+    // The boot caller is the idle task on x86. Once a spinning peer runs,
+    // idle cannot finish a partially completed unpark loop until that peer
+    // exits. A queued coordinator can resume while the peers remain runnable.
+    match kthread_run(run_coordinator, "t766_coord") {
+        Ok(handle) => {
+            if kthread_join(&handle).is_err() {
+                emit(0, 0, ":reason=coordinator_join_failed");
+            }
+        }
+        Err(_) => emit(0, 0, ":reason=coordinator_spawn_failed"),
+    }
+    if !interrupts_were_enabled {
+        unsafe { arch_disable_interrupts() };
+    }
+}
+
+fn run_coordinator() {
     MEASURE_OPEN.store(false, Ordering::Release);
     PEERS_RUN.store(true, Ordering::Release);
     PEERS_STARTED.store(0, Ordering::Release);
@@ -342,7 +363,10 @@ pub fn run() {
         );
         let open = now_ns();
         OPEN_NS.store(open, Ordering::Release);
-        SETUP_MS.store(open.saturating_sub(started_ns) / 1_000_000, Ordering::Release);
+        SETUP_MS.store(
+            open.saturating_sub(started_ns) / 1_000_000,
+            Ordering::Release,
+        );
         MEASURE_OPEN.store(true, Ordering::Release);
         // Unpark in a retry loop: a peer that entered `kthread_park()` after a
         // single unpark would block with nobody left to wake it. Repeating the
@@ -353,8 +377,15 @@ pub fn run() {
             if PEERS_SPINNING.load(Ordering::Acquire) as usize >= PEERS {
                 break;
             }
-            for handle in peers.iter() {
+            for (index, handle) in peers.iter().enumerate() {
                 kthread_unpark(handle);
+                // Exercise partial release: the coordinator must regain a
+                // dispatch turn with the first peer already CPU-bound. This
+                // would starve an idle-task coordinator until a backstop.
+                if index == 0 {
+                    scheduler::yield_current();
+                    arch_halt_with_interrupts();
+                }
             }
             if now_ns() >= deadline {
                 BACKSTOPS.fetch_add(1, Ordering::Relaxed);
@@ -403,7 +434,11 @@ pub fn run() {
     };
     let overrun_ms = OVERRUN_MS.load(Ordering::Acquire);
     emit(
-        if overrun_ms == u64::MAX { 0 } else { overrun_ms },
+        if overrun_ms == u64::MAX {
+            0
+        } else {
+            overrun_ms
+        },
         spawned,
         reason,
     );
