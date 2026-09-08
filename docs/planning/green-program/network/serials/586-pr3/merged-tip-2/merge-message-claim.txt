@@ -1,0 +1,5 @@
+Revision: 88caad32080578784eca1a38c1a89c97aecfa081
+Index tree: a57bdbf7b78f27ba3bc0ed575834ebddc32c40e3
+Command: python3 scripts/claim-lint.py --commit-msg .tmp/merge2-msg.txt
+claim-lint: clean commit message (.tmp/merge2-msg.txt).
+EXIT: 0

@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "entry": "/sbin/init",
+      "sha256": "cbc92fc7a16c3420755dd0329bea8f3e2c31c03860f94bf2f8c58c1c6c54c8f3",
+      "old_sha256": "93480bd6705a719572dbbbc0c229141c1ea6c049624e6dd585b648ce89b3429a",
+      "byte_equal": true
+    },
+    {
+      "entry": "/bin/poll_tcp_oracle",
+      "sha256": "70b67c8ffa8ffe33249f460676b96560ceac05808e23eccb3b78255e38c8e944",
+      "old_sha256": "ee9646f33ef35f3c59ae28724d9b361248645877c2dee828444544f6811cc16b",
+      "byte_equal": true
+    }
+  ],
+  "revision": "88caad32080578784eca1a38c1a89c97aecfa081"
+}

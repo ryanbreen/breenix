@@ -1,0 +1,25 @@
+== compiling pipe_fifo_blocking_structure ==
+== running pipe_fifo_blocking_structure  ==
+
+running 18 tests
+test observation_seam_is_boot_only_and_queries_do_not_wake ... ok
+test parser::parser_tracks_renames_negation_formatting_and_extracted_errors ... ok
+test close_delivery_releases_pm_before_cleanup ... ok
+test prepared_sleep_owns_no_guard_and_cleans_up_eintr ... ok
+test poll_and_transfer_share_one_readiness_predicate ... ok
+test writev_aggregate_atomicity_rejects_per_iovec_mutation ... ok
+test parser::blocking_eagain_mutations_fail_the_live_helper_census ... ok
+test writer_queue_notifications_atomic_copy_and_progress_exist ... ok
+test deferred_delivery_never_touches_the_scheduler_lock ... ok
+test new_writer_close_notifications_are_owned_and_deferred ... ok
+test gate_scores_the_drivers_emitted_arm_set_and_mutations_fail ... ok
+test prepared_wait_retains_identity_for_both_cleanup_operations ... ok
+test queue_wake_copy_and_threshold_mutations_are_detected ... ok
+test parser::repaired_families_have_no_blocking_eagain_exit ... ok
+test dup_exec_and_row_drop_keep_cleanup_outside_pm ... ok
+test parser::console_result_route_rejects_blocking_eagain_with_adapter_retained ... ok
+test close_call_census_requires_delivery_or_the_documented_fault_carveout ... ok
+test every_removed_process_row_is_retained_past_the_callers_pm_guard ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+

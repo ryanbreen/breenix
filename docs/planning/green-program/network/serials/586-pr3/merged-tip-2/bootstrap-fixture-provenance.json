@@ -1,0 +1,7 @@
+{
+  "source": "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap-final/serial.txt",
+  "fixture": "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
+  "sha256": "ff0da107ffcbcbe28c4cc8b9b17d7cc15642ef20853dfdf555589692685cc69a",
+  "byte_equal": true,
+  "index_tree": "a57bdbf7b78f27ba3bc0ed575834ebddc32c40e3"
+}

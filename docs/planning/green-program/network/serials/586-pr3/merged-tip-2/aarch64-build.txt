@@ -1,0 +1,12 @@
+Revision: 88caad32080578784eca1a38c1a89c97aecfa081
+tests/fixtures/udp-socket-lock-aarch64-serial.txt: unmerged (0f62c4c1d33c23ab338cd43a415280763ba4a3c3)
+tests/fixtures/udp-socket-lock-aarch64-serial.txt: unmerged (c7a0561bcf25059ebc7786dbc5d9e77a4d8f9503)
+tests/fixtures/udp-socket-lock-aarch64-serial.txt: unmerged (d121f3f3a98805eef099cbd84460e709036f7eb0)
+fatal: git-write-tree: error building trees
+Index tree: 
+Command: cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core\,alloc -Z build-std-features=compiler-builtins-mem --features boot_tests -p kernel --bin kernel-aarch64
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 6.83s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+EXIT: 0

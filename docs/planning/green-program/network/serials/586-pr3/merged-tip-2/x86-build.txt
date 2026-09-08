@@ -1,0 +1,13 @@
+Already up to date.
+Auto-merging docker/qemu/run-aarch64-boot-test-strict.sh
+Auto-merging tests/fixtures/udp-socket-lock-aarch64-serial.txt
+CONFLICT (content): Merge conflict in tests/fixtures/udp-socket-lock-aarch64-serial.txt
+Automatic merge failed; fix conflicts and then commit the result.
+Updated 1 path from the index
+Revision: 88caad32080578784eca1a38c1a89c97aecfa081
+Merge parent: e664e4bc9fc83ba27f2a62cda987d7a170b282b3
+Index tree: 37edff85047e01f79ee8361189e2c7275b81792e
+   Compiling kernel v0.1.0 (/root/breenix-n956/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-n956)
+    Finished `release` profile [optimized] target(s) in 2m 18s
+EXIT: 0

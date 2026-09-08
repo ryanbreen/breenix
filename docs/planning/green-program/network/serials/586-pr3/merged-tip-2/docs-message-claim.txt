@@ -1,0 +1,5 @@
+Revision: 240e0e85b08a116a417c046ac71f727c18194319
+Index tree: 61671167530df1b77b88ab603edd2788af13b757
+Command: python3 scripts/claim-lint.py --commit-msg .tmp/docs2-msg.txt
+claim-lint: clean commit message (.tmp/docs2-msg.txt).
+EXIT: 0

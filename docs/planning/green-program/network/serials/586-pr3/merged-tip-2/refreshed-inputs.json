@@ -1,0 +1,27 @@
+{
+  "revision": "88caad32080578784eca1a38c1a89c97aecfa081",
+  "index_tree": "37edff85047e01f79ee8361189e2c7275b81792e",
+  "entries": [
+    {
+      "entry": "/bin/init",
+      "sha256": "cbc92fc7a16c3420755dd0329bea8f3e2c31c03860f94bf2f8c58c1c6c54c8f3",
+      "byte_equal": true
+    },
+    {
+      "entry": "/bin/bssh",
+      "sha256": "c66117151b4d649565e1b7b9a99eec9e7ed9874a54c10af64d2acc60f24b6763",
+      "byte_equal": true
+    },
+    {
+      "entry": "/bin/bsshd",
+      "sha256": "3f1bdce0955c9fdc014047b1f96b4ff565d9fffc92c58caf46014120bed55217",
+      "byte_equal": true
+    },
+    {
+      "entry": "/bin/futex_handoff_oracle",
+      "sha256": "8ae116930cc66f83e28a9f6447be6ab46df6495e0818ed541f999c344070c935",
+      "byte_equal": true
+    }
+  ],
+  "image_sha256": "f9e05596c8c211b60072c607048ab6a8fce5e9031515e456b80ab1c10aea3b65"
+}

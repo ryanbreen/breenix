@@ -1,0 +1,16 @@
+== compiling fcntl_pm_contention_gate_structure ==
+== running fcntl_pm_contention_gate_structure  ==
+
+running 9 tests
+test oracle_pass_predicate_carries_a_wait_floor_conjunct ... ok
+test verdict_arms_are_distinct_and_only_one_describes_a_syscall_result ... ok
+test oracle_arming_is_a_rendezvous_not_an_attempt_count ... ok
+test every_gate_pinning_the_aarch64_pass_verdict_selfchecks_its_pattern ... ok
+test driver_pin_entry_and_cancellation_close_their_own_gaps ... ok
+test driver_pin_precedes_every_peer_selection ... ok
+test driver_pin_covers_holder_publication_and_measurement ... ok
+test arming_bounds_and_failure_contract_are_not_widened ... ok
+test driver_pin_is_balanced_before_cleanup_and_reporting ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

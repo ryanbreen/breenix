@@ -1,0 +1,6 @@
+Revision: 88caad32080578784eca1a38c1a89c97aecfa081
+Index tree: 37edff85047e01f79ee8361189e2c7275b81792e
+Command: env BREENIX_STRICT_SCORE_ONLY=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap-refreshed/serial.txt bash docker/qemu/run-aarch64-boot-test-strict.sh
+SCORE: FAIL - T3T4T5T6[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=3:wait_ns=4191008:dispatches=1:iterations=31:verdict=ok]
+BSSH publickey oracle missing, duplicated, or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap-refreshed/serial.txt)
+EXIT: 1

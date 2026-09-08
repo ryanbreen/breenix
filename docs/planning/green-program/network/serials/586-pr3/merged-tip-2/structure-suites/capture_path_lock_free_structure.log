@@ -1,0 +1,28 @@
+== compiling capture_path_lock_free_structure ==
+== running capture_path_lock_free_structure  ==
+
+running 21 tests
+test an_allocation_in_a_new_capture_module_file_would_be_caught - should panic ... ok
+test dropping_the_must_use_on_close_would_be_caught - should panic ... ok
+test deleting_the_budget_guard_would_be_caught - should panic ... ok
+test a_section_that_drops_the_close_verdict_would_be_caught - should panic ... ok
+test every_section_reports_the_verdict_its_own_record_close_returned ... ok
+test removing_the_version_field_would_be_caught - should panic ... ok
+test silently_dropping_the_scheduler_refusal_would_be_caught - should panic ... ok
+test the_schema_version_is_emitted_on_both_bracket_lines ... ok
+test the_only_output_primitive_is_the_raw_serial_writer ... ok
+test the_shell_guard_and_this_suite_deny_the_same_shapes ... ok
+test the_shell_guard_consumes_the_strict_lockup_scope ... ok
+test the_thread_section_asks_for_the_scheduler_and_never_waits_for_it ... ok
+test the_shell_guard_covers_the_capture_directory ... ok
+test the_writer_enforces_a_byte_budget_before_every_write ... ok
+test the_capture_path_carries_no_lock_allocation_or_formatting ... ok
+test the_selftest_edge_is_feature_gated_and_no_gate_builds_it ... ok
+test an_allocation_behind_a_newly_named_local_helper_would_be_caught - should panic ... ok
+test the_strict_lockup_scope_carries_no_lock_allocation_or_formatting ... ok
+test an_allocation_inserted_into_the_dump_would_be_caught - should panic ... ok
+test the_strict_lockup_scope_reaches_the_helpers_the_dump_calls ... ok
+test a_dump_the_extractor_cannot_find_is_a_failure ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

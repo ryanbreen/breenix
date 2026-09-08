@@ -1,0 +1,82 @@
+[
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/service/service-merged-tip-2/cortex-a72/serial-1.txt",
+    "revision": "240e0e85b08a116a417c046ac71f727c18194319",
+    "sha256": "76dab3dc9fbaa23dcefd495815933c3481fc6af2a3015a89d3c0d33d35fb71b4",
+    "wake_budget_lines": [
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=127:elapsed_ctr_ms=200:ctx_delta=255:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=838:silence_cpu=0:woke_ms=712:verdict=ok]",
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=under_load:budget_ms=200:elapsed_tick_ms=131:elapsed_ctr_ms=200:ctx_delta=317:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=980:silence_cpu=0:woke_ms=850:verdict=ok]"
+    ],
+    "wake_test_lines": [
+      "[TEST:network:loopback_recv_wake_when_idle:START]",
+      "[TEST:network:loopback_recv_wake_when_idle:PASS]",
+      "[TEST:network:loopback_recv_wake_under_load:START]",
+      "[TEST:network:loopback_recv_wake_under_load:PASS]"
+    ],
+    "wake_fail_count": 0
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/service/service-merged-tip-2/cortex-a72/serial-2.txt",
+    "revision": "240e0e85b08a116a417c046ac71f727c18194319",
+    "sha256": "41e9f78dcb76b0136a3ab35281c0f3a866f3f71f4166e8f3d8c8db8f249abce9",
+    "wake_budget_lines": [
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=134:elapsed_ctr_ms=202:ctx_delta=132:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=723:silence_cpu=0:woke_ms=591:verdict=ok]",
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=under_load:budget_ms=200:elapsed_tick_ms=129:elapsed_ctr_ms=200:ctx_delta=355:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=883:silence_cpu=0:woke_ms=755:verdict=ok]"
+    ],
+    "wake_test_lines": [
+      "[TEST:network:loopback_recv_wake_when_idle:START]",
+      "[TEST:network:loopback_recv_wake_when_idle:PASS]",
+      "[TEST:network:loopback_recv_wake_under_load:START]",
+      "[TEST:network:loopback_recv_wake_under_load:PASS]"
+    ],
+    "wake_fail_count": 0
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/service/service-merged-tip-2/max/serial-1.txt",
+    "revision": "240e0e85b08a116a417c046ac71f727c18194319",
+    "sha256": "7ab74d69802618b3e5a3b486810acb732041078f30bb2437a3173d2eb9956502",
+    "wake_budget_lines": [
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=130:elapsed_ctr_ms=200:ctx_delta=100:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=875:silence_cpu=0:woke_ms=746:verdict=ok]",
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=under_load:budget_ms=200:elapsed_tick_ms=129:elapsed_ctr_ms=200:ctx_delta=305:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=1019:silence_cpu=0:woke_ms=892:verdict=ok]"
+    ],
+    "wake_test_lines": [
+      "[TEST:network:loopback_recv_wake_when_idle:START]",
+      "[TEST:network:loopback_recv_wake_when_idle:PASS]",
+      "[TEST:network:loopback_recv_wake_under_load:START]",
+      "[TEST:network:loopback_recv_wake_under_load:PASS]"
+    ],
+    "wake_fail_count": 0
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/service/service-merged-tip-2/max/serial-2.txt",
+    "revision": "240e0e85b08a116a417c046ac71f727c18194319",
+    "sha256": "2778507aa332929e4cfd888693feb39109d63c173980a117248b73408285f7b9",
+    "wake_budget_lines": [
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=132:elapsed_ctr_ms=200:ctx_delta=72:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=terminated:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=773:silence_cpu=0:woke_ms=654:verdict=ok]",
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=under_load:budget_ms=200:elapsed_tick_ms=127:elapsed_ctr_ms=200:ctx_delta=258:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x6:cpu_silence_ms=1041:silence_cpu=0:woke_ms=915:verdict=ok]"
+    ],
+    "wake_test_lines": [
+      "[TEST:network:loopback_recv_wake_when_idle:START]",
+      "[TEST:network:loopback_recv_wake_when_idle:PASS]",
+      "[TEST:network:loopback_recv_wake_under_load:START]",
+      "[TEST:network:loopback_recv_wake_under_load:PASS]"
+    ],
+    "wake_fail_count": 0
+  },
+  {
+    "file": "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/strict/breenix_aarch64_strict_1/serial.txt",
+    "revision": "240e0e85b08a116a417c046ac71f727c18194319",
+    "sha256": "3643bbf2a6abfd7b062c24ac95b614eb60deac5f8d943e3c305950885e5ca89b",
+    "wake_budget_lines": [
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=when_idle:budget_ms=200:elapsed_tick_ms=153:elapsed_ctr_ms=204:ctx_delta=92:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=terminated:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=1134:silence_cpu=0:woke_ms=984:verdict=ok]",
+      "[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=under_load:budget_ms=200:elapsed_tick_ms=148:elapsed_ctr_ms=200:ctx_delta=278:extensions=0:max_extensions=4:extension_ms=0:extension_bound_ms=1000:reader_state=absent:queued_cpu=none:queued_idx=none:idle_cpus=0x0:cpu_silence_ms=1324:silence_cpu=0:woke_ms=1178:verdict=ok]"
+    ],
+    "wake_test_lines": [
+      "[TEST:network:loopback_recv_wake_when_idle:START]",
+      "[TEST:network:loopback_recv_wake_when_idle:PASS]",
+      "[TEST:network:loopback_recv_wake_under_load:START]",
+      "[TEST:network:loopback_recv_wake_under_load:PASS]"
+    ],
+    "wake_fail_count": 0
+  }
+]

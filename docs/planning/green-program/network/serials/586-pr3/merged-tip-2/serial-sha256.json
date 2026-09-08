@@ -1,0 +1,12 @@
+{
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap/serial.txt": "716ff1a4735d90e0ecfc659070071b4f325102caa1c32332ead19b91dfd066f9",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap-final/serial.txt": "ff0da107ffcbcbe28c4cc8b9b17d7cc15642ef20853dfdf555589692685cc69a",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap-refreshed/serial.txt": "ac6f93466b82ae50a2a46e3dabde07f905e3683a67ee334d0ffe390877a6c6bb",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-strict/breenix_aarch64_strict_1/serial.txt": "962d79b8a9a5cc615ab6b30b343f0f83a4a4b1aa4345b7f875e1e24a321f2b04",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/prod/breenix_aarch64_prod_profile/serial.txt": "4542430b2cd648e2afca655643ac4dff9e93b7eec4ca60fb1eb6304c16b3c1c1",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/strict/breenix_aarch64_strict_1/serial.txt": "3643bbf2a6abfd7b062c24ac95b614eb60deac5f8d943e3c305950885e5ca89b",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/service/service-merged-tip-2/cortex-a72/serial-1.txt": "76dab3dc9fbaa23dcefd495815933c3481fc6af2a3015a89d3c0d33d35fb71b4",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/service/service-merged-tip-2/cortex-a72/serial-2.txt": "41e9f78dcb76b0136a3ab35281c0f3a866f3f71f4166e8f3d8c8db8f249abce9",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/service/service-merged-tip-2/max/serial-1.txt": "7ab74d69802618b3e5a3b486810acb732041078f30bb2437a3173d2eb9956502",
+  "docs/planning/green-program/network/serials/586-pr3/merged-tip-2/service/service-merged-tip-2/max/serial-2.txt": "2778507aa332929e4cfd888693feb39109d63c173980a117248b73408285f7b9"
+}
