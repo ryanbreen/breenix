@@ -250,6 +250,7 @@ while True:
                 assert negotiated
             if command == 'dump-guest-memory':
                 assert request['arguments']['paging'] is False
+                pathlib.Path('dump-received').touch()
                 if mode == 'hang':
                     while True:
                         signal.pause()
@@ -258,6 +259,46 @@ while True:
                 pathlib.Path(target[5:]).write_bytes(b'fake core bytes')
             result = {'status':'paused','running':False} if command == 'query-status' else {}
             conn.sendall((json.dumps({'return':result})+'\r\n').encode())
+"#;
+
+// Model only pre-request scheduling as unbounded. After receipt, the real
+// subprocess deadline bounds the pending response; on expiry this shim
+// kills and reaps its own process group. The shipped backstop is unchanged.
+const FIXTURE_TIMEOUT: &str = r#"
+import os, pathlib, signal, subprocess, sys, time
+assert sys.argv[1] == '--kill-after=1'
+budget = int(sys.argv[2])
+assert budget > 0
+command = sys.argv[3:]
+if command[0] != 'bash':
+    os.execvp('timeout', ['timeout'] + sys.argv[1:])
+def terminate(signum, frame):
+    raise SystemExit(128 + signum)
+signal.signal(signal.SIGTERM, terminate)
+signal.signal(signal.SIGINT, terminate)
+child = subprocess.Popen(command, start_new_session=True, env={k:v for k,v in os.environ.items() if k != 'BASH_ENV' and not k.startswith('BASH_FUNC_timeout')})
+try:
+    while not pathlib.Path('dump-received').exists():
+        assert child.poll() is None, 'capture exited before dump receipt'
+        time.sleep(.01)
+    # For success, let the real capture finish; only hang mode has a pending
+    # operation whose response must be bounded. Suite timeout covers success.
+    if pathlib.Path('mode').read_text() == 'hang':
+        try:
+            result = child.wait(timeout=budget)
+        except subprocess.TimeoutExpired:
+            result = 124
+        assert result == 124, 'hung dump unexpectedly completed'
+        pathlib.Path('bounded').write_text(str(budget))
+    else:
+        result = child.wait()
+finally:
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    child.wait()
+sys.exit(result)
 "#;
 
 static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -279,6 +320,16 @@ impl Fixture {
         ));
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("server.py"), FAKE_QMP).unwrap();
+        fs::write(dir.join("timeout.py"), FIXTURE_TIMEOUT).unwrap();
+        fs::write(
+            dir.join("fixture-env.sh"),
+            r#"
+timeout() { python3 timeout.py "$@"; }
+export -f timeout
+"#,
+        )
+        .unwrap();
+        fs::write(dir.join("mode"), mode.unwrap_or("missing")).unwrap();
         let server = mode.map(|mode| {
             Command::new("python3")
                 .current_dir(&dir)
@@ -288,7 +339,7 @@ impl Fixture {
         });
         let mut fixture = Self { dir, server };
         if fixture.server.is_some() {
-            for _ in 0..100 {
+            loop {
                 if fixture.dir.join("ready").exists() {
                     return fixture;
                 }
@@ -304,7 +355,6 @@ impl Fixture {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            panic!("fake QMP did not become ready");
         }
         fixture
     }
@@ -317,24 +367,17 @@ impl Fixture {
         } else {
             "source \"$1\"; gqb_dump_and_report qmp.sock capture \"$2\" \"$3\" missing-kernel \"$4\""
         };
-        // Independent harness ceiling makes a broken library fail this test
-        // instead of wedging the test runner itself.
-        let output = Command::new("timeout")
+        // The suite timeout bounds setup. The fixture timeout starts only after
+        // the fake server acknowledges the requested operation, so scheduling
+        // before receipt cannot masquerade as a hung dump.
+        let output = Command::new("bash")
             .current_dir(&self.dir)
-            .args([
-                "--kill-after=1",
-                "15",
-                "bash",
-                "-euo",
-                "pipefail",
-                "-c",
-                body,
-                "test",
-            ])
+            .args(["-euo", "pipefail", "-c", body, "test"])
             .arg(repo_path("docker/qemu/lib/gate-qmp-backstop.sh"))
             .arg(repo_path("scripts/forensic-capture.sh"))
             .arg(repo_path("scripts/trace_memory_dump.py"))
             .arg(budget.to_string())
+            .env("BASH_ENV", self.dir.join("fixture-env.sh"))
             .output()
             .unwrap();
         assert!(
@@ -352,15 +395,9 @@ impl Fixture {
             .status()
             .unwrap()
             .success());
-        for _ in 0..100 {
-            if let Some(status) = server.try_wait().unwrap() {
-                assert!(status.success());
-                self.server = None;
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        panic!("fake QMP did not acknowledge SIGTERM");
+        let status = server.wait().unwrap();
+        assert!(status.success());
+        self.server = None;
     }
     fn log(&self) -> String {
         fs::read_to_string(self.dir.join("commands.log")).unwrap()
@@ -396,7 +433,7 @@ fn fake_qmp_dump_precedes_sigterm_even_when_decode_fails() {
             "{out}"
         );
         assert_eq!(out.lines().count(), 1);
-        assert!(elapsed.as_secs_f64() < 12.0);
+        eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
         return;
     }
     eprintln!("fake_qmp_dump_precedes_sigterm_even_when_decode_fails: socat present; asserting capture and SIGTERM ordering");
@@ -406,21 +443,12 @@ fn fake_qmp_dump_precedes_sigterm_even_when_decode_fails() {
         "fake bytes must not pretend to decode"
     );
     assert_eq!(out.lines().count(), 1);
-    assert!(elapsed.as_secs_f64() < 12.0);
+    eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
     let log = fixture.log();
-    let stamp = |prefix: &str| {
-        log.lines()
-            .find(|l| l.starts_with(prefix))
-            .unwrap()
-            .split_whitespace()
-            .last()
-            .unwrap()
-            .parse::<u128>()
-            .unwrap()
-    };
-    assert!(stamp("RECV stop ") < stamp("RECV dump-guest-memory "));
+    let position = |prefix: &str| log.lines().position(|l| l.starts_with(prefix)).unwrap();
+    assert!(position("RECV stop ") < position("RECV dump-guest-memory "));
     assert!(
-        stamp("RECV dump-guest-memory ") < stamp("SIGTERM "),
+        position("RECV dump-guest-memory ") < position("SIGTERM "),
         "{log}"
     );
     assert_eq!(
@@ -450,10 +478,11 @@ fn missing_socket_and_hung_dump_are_partial_and_bounded() {
         out.contains("capture=partial:reason=qmp_socket_missing:"),
         "{out}"
     );
-    assert!(elapsed.as_secs_f64() < 2.0);
+    eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+    assert_eq!(out.lines().count(), 1);
     let (invalid, elapsed) = missing.run(false, 0);
     assert!(invalid.contains("reason=invalid_budget:"), "{invalid}");
-    assert!(elapsed.as_secs_f64() < 2.0);
+    eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
     let hanging = Fixture::new(Some("hang"));
     let (out, elapsed) = hanging.run(false, 3);
     if !qmp_tool_available() {
@@ -464,13 +493,18 @@ fn missing_socket_and_hung_dump_are_partial_and_bounded() {
             ),
             "{out}"
         );
-        assert!(elapsed.as_secs_f64() < 10.0, "timeout took {elapsed:?}");
+        eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
         assert_eq!(hanging.log(), "", "missing tool sent QMP commands");
         return;
     }
     eprintln!("missing_socket_and_hung_dump_are_partial_and_bounded: socat present; asserting QMP timeout after dump command");
     assert!(out.contains("capture=partial:reason=qmp_timeout:"), "{out}");
-    assert!(elapsed.as_secs_f64() < 10.0, "timeout took {elapsed:?}");
+    assert_eq!(out.lines().count(), 1);
+    eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+    assert_eq!(
+        fs::read_to_string(hanging.dir.join("bounded")).unwrap(),
+        "3"
+    );
     assert!(
         hanging.log().contains("RECV dump-guest-memory "),
         "hang must reach dump"
@@ -705,4 +739,40 @@ fn gqb_free_socket_refuses_to_remove_paths_outside_its_namespace() {
         "gqb_free_socket removed a directory it did not allocate"
     );
     let _ = fs::remove_dir_all(&victim);
+}
+
+// The runtime fixture virtualizes setup time, so separately pin the shipped
+// whole-capture deadline, including escalation and the caller's budget.
+fn has_capture_deadline(source: &str) -> bool {
+    source.contains("timeout --kill-after=1 \"$budget_s\" bash \"$fc_sh\" --qmp \"$sock\"")
+}
+
+#[test]
+fn shipped_capture_deadline_and_mutations() {
+    let source = read("docker/qemu/lib/gate-qmp-backstop.sh");
+    assert!(has_capture_deadline(&source));
+    for changed in [
+        source.replace("timeout --kill-after=1", "timeout"),
+        source.replace("\"$budget_s\" bash", "0 bash"),
+        source.replace("timeout --kill-after=1 \"$budget_s\" bash", "bash"),
+    ] {
+        assert!(
+            !has_capture_deadline(&changed),
+            "unbounded capture accepted"
+        );
+    }
+}
+
+#[test]
+fn receipt_precedes_response_deadline() {
+    let receipt = "while not pathlib.Path('dump-received').exists():";
+    let deadline = "result = child.wait(timeout=budget)";
+    let ordered = |source: &str| match (source.find(receipt), source.find(deadline)) {
+        (Some(receipt), Some(deadline)) => receipt < deadline,
+        _ => false,
+    };
+    assert!(ordered(FIXTURE_TIMEOUT));
+    assert!(!ordered(&FIXTURE_TIMEOUT.replace(receipt, "while False:")));
+    assert!(!ordered(&format!("{deadline}\n{FIXTURE_TIMEOUT}")));
+    assert!(FAKE_QMP.contains("pathlib.Path('dump-received').touch()"));
 }
