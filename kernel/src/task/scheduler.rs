@@ -2341,7 +2341,8 @@ impl Scheduler {
 
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
-    pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
+    #[cfg(not(target_arch = "aarch64"))]
+    fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
         let current_cpu = Self::current_cpu_id();
         self.cpu_state[current_cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
@@ -5815,9 +5816,19 @@ pub fn schedule() {
     crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
 }
 
-/// Perform scheduling and return threads to switch between
+/// Request an x86 switch. Selection must be paired with an interrupt return;
+/// changing current_thread here would let the next IRQ save the caller's
+/// RIP/RSP/RFLAGS into a different thread's context.
 #[cfg(not(target_arch = "aarch64"))]
-pub fn schedule() -> Option<(u64, u64)> {
+pub fn schedule() {
+    set_need_resched();
+}
+
+/// Select the next x86 thread only for the admitted interrupt-return dispatcher.
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) fn schedule_for_interrupt_return(
+    _: &crate::interrupts::context_switch::InterruptDispatch,
+) -> Option<(u64, u64)> {
     // Check if interrupts are already disabled (i.e., we're in interrupt context)
     let interrupts_were_enabled = are_enabled();
 

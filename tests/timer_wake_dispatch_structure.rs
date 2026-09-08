@@ -321,6 +321,6 @@ fn partial_release_model_distinguishes_idle_from_a_queued_coordinator() {
     assert!(!barrier_completes(true));
     assert!(barrier_completes(false));
     let scheduler = read(SCHEDULER_SOURCE);
-    assert!(item_body(&scheduler, "pub fn schedule(&mut self)")
+    assert!(item_body(&scheduler, "fn schedule(&mut self)")
         .contains("current_id != self.cpu_state[Self::current_cpu_id()].idle_thread"));
 }

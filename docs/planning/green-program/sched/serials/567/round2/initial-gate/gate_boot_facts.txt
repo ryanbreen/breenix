@@ -1,0 +1,1 @@
+[GATE_BOOT_FACTS:boot=1:host_ms=1788879926739-1788880394846:qemu_at_start=0:load_at_start=2.86:qemu_at_end=0:load_at_end=1.16:qemu_cpu_s=462.00:guest_uptime_ms=NA:ended_by=scored_pass]

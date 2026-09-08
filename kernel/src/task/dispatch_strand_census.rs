@@ -298,6 +298,9 @@ pub(crate) fn report_heartbeat_if_due() {
         return;
     }
 
+    #[cfg(target_arch = "x86_64")]
+    super::dispatch_boot_facts::emit_if_enabled();
+
     let now = monotonic_now_ns();
     let last = LAST_HEARTBEAT_NS.load(Ordering::Acquire);
     if last != 0 && now.saturating_sub(last) < HEARTBEAT_INTERVAL_NS {

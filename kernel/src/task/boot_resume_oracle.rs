@@ -117,6 +117,9 @@ pub fn run() {
         kthread::kthread_unpark(&peer);
         loop {
             scheduler::yield_current();
+            // Exercise the public x86 entry with IF=0 before the witness.
+            // It must request dispatch without changing the snapshot owner.
+            scheduler::schedule();
             // IF=0 before entry and after return. No Rust runs with DF=1.
             mismatch += unsafe { witness_resume() };
             if ACK.load(Ordering::Acquire) == cycle {

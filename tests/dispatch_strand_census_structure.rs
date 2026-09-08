@@ -97,29 +97,10 @@ fn the_surviving_record_census_in_the_dispatch_path_is_pinned() {
     }
     histogram.sort();
 
-    // Moved consciously by PR-1 of the critical-path logging drain
-    // (docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md),
-    // which deleted the sixteen H1 calls that file's classification table names:
-    // 2 debug, 10 error and 4 info. 30 -> 14, and the `debug` row is gone
-    // rather than present with a count of 0, because a level with no records
-    // is not a histogram row.
-    // The 9 `trace` records are untouched: `CombinedLogger::log` returns before
-    // taking any lock on a Trace record, so they emit 0 bytes today, and the
-    // drain plan classifies them H3 and hands them to a later PR.
-    assert_eq!(
-        records.len(),
-        14,
-        "context_switch.rs record census moved: {histogram:?}"
-    );
-    assert_eq!(
-        histogram,
-        vec![
-            ("error".to_string(), 1),
-            ("info".to_string(), 4),
-            ("trace".to_string(), 9),
-        ],
-        "context_switch.rs record level histogram moved"
-    );
+    // 567 round 2 removes the remaining 14 logging macros, including Trace.
+    // Pin 0 records: restoring an inherited record fails this assertion.
+    assert_eq!(records.len(), 0, "context_switch.rs record census moved: {histogram:?}");
+    assert!(histogram.is_empty());
 }
 
 #[test]

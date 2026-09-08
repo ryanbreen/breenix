@@ -285,3 +285,85 @@ outside the changed hunks. It does not validate the truth of runtime claims.
 - SMP or aarch64 register-resume coverage from this x86-only oracle.
 - A full boot pass from either inherited debugger capture.
 - The cause of the later timer-latency overrun, or BusyBox/coreutils coverage.
+
+## Round 2: V-2 and V-3
+
+V-2 now has a production API change. The former public x86 `schedule()`
+selected another current thread and returned to its caller without installing
+an interrupt-return frame. A caller executing with RSP=A could therefore leave
+`current_thread=B`, after which the next interrupt could save A's RIP/RSP/RFLAGS
+into B's context. The comments beside `yield_current` already describe this
+sequence; changing test placement did not constrain that API.
+
+The x86 public entry now only requests rescheduling
+(`kernel/src/task/scheduler.rs:5823`). The selecting method is private
+(`kernel/src/task/scheduler.rs:2345`), and its wrapper requires an
+`InterruptDispatch` whose field is private to the dispatcher
+(`kernel/src/task/scheduler.rs:5829`,
+`kernel/src/interrupts/context_switch.rs:31`). The dispatcher constructs that
+permit after its admission and process-manager checks
+(`kernel/src/interrupts/context_switch.rs:285`). The register witness retains
+its yield and also calls the public scheduling entry
+(`kernel/src/task/boot_resume_oracle.rs:122`). This constrains safe callers
+outside the dispatcher/scheduler modules. Writes to `CpuContext` through other
+APIs and the historical 567 instruction-pointer failure remain outside this
+API regression test's scope.
+
+V-3 removes the dispatch file's 14 inherited logging macros and its two
+port-writing helpers. The raw marker calls are removed with them. The
+KernelFrame refusal distinction is retained as a relaxed counter
+(`kernel/src/interrupts/context_switch.rs:1244`); existing refusal and abandon
+control flow remains scored by `tests/context_restore_structure.rs`.
+The logging census falls from 119 to 105 sites (wider census: 106), and the
+raw-writer census removes the corresponding dispatch anchors. These are
+reductions to the permitted inventory, not exemptions for new output.
+
+Boot-stage marker consumers in `xtask/src/boot_stages.rs:422` still need the
+schedule-return fact. Dispatch now publishes atomic facts; the existing
+thread-context heartbeat invokes their emitter
+(`kernel/src/task/dispatch_strand_census.rs:302`). The emitter requires IF=1,
+and the userspace smoke marker additionally requires the syscall-side latch
+(`kernel/src/task/dispatch_boot_facts.rs:23`). No marker is emitted from the
+interrupt-return file. The Tier-2 edit is confined to `context_switch.rs`,
+where selection admission and the inherited output live. Tier-1 files were
+not edited.
+
+`tests/x86_dispatch_admission_structure.rs:40` pins V-2, including four
+in-memory mutations. Its compiler probe executes the real public entry and
+rejects an external permit construction with E0451. The V-3 ratchet at
+`tests/x86_dispatch_admission_structure.rs:94` rejects five output mutations.
+The emitter test at `tests/x86_dispatch_admission_structure.rs:201` executes
+the production emitter with IF=0, IF=1 without syscall confirmation, then
+with confirmation; observed line counts are 0, 1 and 3, and remain 3 after
+another publication. The final V-2 and V-3 ratchets each reject an isolated
+copy of unmodified fe491f47 source with exit 101. The working kernel was not
+mutated for those controls.
+
+Evidence is under `serials/567/round2/`; copied paths, line endings and trailing
+whitespace are normalized. The first local structure run was
+68/71: three inherited inventories still required removed output. After
+updating those inventories and preserving the KernelFrame counter, the next
+run was 71/71. The final local run, including deferred marker publication,
+also passed 71/71; `structure-suites.log` retains individual mutation verdicts.
+Kernel formatting and diff-whitespace checks passed.
+
+The initial x86 gate ran at ed03fd9b plus `round2-source.tar.gz`, at recorded
+launcher load 0.10. It passed 71/71 preflight suites on attempt 1, its Rust
+build, five loopback tests, the 32-cycle witness, and the full gate. The timer
+observation was overrun_ms=44 with bound_ms=100. This run preceded deferred
+marker publication and is not final-source runtime validation. The updated
+source archive is `round2-final-source.tar.gz`, with per-file hashes in
+`source-sha256.log`. Its x86 boot_tests build passed at launch load 0.65,
+without project warning/error diagnostics. Runtime mutation and committed
+revision gate evidence is appended below when collected.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-round2-code-message.txt -> exit 0
+
+### Round 2 not claimed
+
+- Historical root-cause attribution or reproduction of the original 567 faults.
+- Protection from arbitrary memory corruption or unsafe fabrication of a permit.
+- Aarch64/SMP coverage, or a production-profile runtime result in this round.
+- Final-source runtime validation from the initial gate that preceded marker deferral.

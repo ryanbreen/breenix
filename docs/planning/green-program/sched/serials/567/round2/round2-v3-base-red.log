@@ -1,0 +1,20 @@
+LOCAL_BASE_REVISION=fe491f4794f2f91914f3e184b99b25e668a7fe83
+BASE_REVISION=fe491f4794f2f91914f3e184b99b25e668a7fe83
+== compiling x86_dispatch_admission_structure ==
+== running x86_dispatch_admission_structure v3_dispatch_has ==
+
+running 1 test
+test v3_dispatch_has_no_serial_or_formatting_path ... FAILED
+
+failures:
+
+failures:
+    v3_dispatch_has_no_serial_or_formatting_path
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+thread 'v3_dispatch_has_no_serial_or_formatting_path' panicked at <lane-tmp>/round2-base/tests/x86_dispatch_admission_structure.rs:96:5:
+assertion failed: silent(&dispatch)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+EXIT=101

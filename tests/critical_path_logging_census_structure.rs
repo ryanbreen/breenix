@@ -642,13 +642,6 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn handle_syscall", 8),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn dump_gic_state", 9),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn init", 9),
-    ("kernel/src/interrupts/context_switch.rs", "fn check_need_resched_and_switch", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn restore_userspace_thread_context", 5),
-    ("kernel/src/interrupts/context_switch.rs", "fn save_current_thread_context_with_guard", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn save_kthread_context", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn setup_first_userspace_entry", 3),
-    ("kernel/src/interrupts/context_switch.rs", "fn setup_idle_return", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn switch_to_thread", 2),
     ("kernel/src/per_cpu.rs", "fn can_schedule", 1),
     ("kernel/src/per_cpu.rs", "fn init", 9),
     ("kernel/src/per_cpu.rs", "fn set_kernel_cr3", 2),
@@ -676,7 +669,7 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_signal_with_context", 2),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn dump_thread_placement", 3),
-    ("kernel/src/task/scheduler.rs", "impl Scheduler::fn schedule", 5),
+    ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(not(target_arch=aarch64))] fn schedule", 5),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn unblock_for_signal", 6),
@@ -704,7 +697,7 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 /// pinned as its own number so a PR that moves rows around without changing
 /// the total -- or changes the total without saying so -- fails on the number
 /// the plan is written in, not only on the per-row diff.
-const CRITICAL_PATH_LOG_TOTAL: usize = 119;
+const CRITICAL_PATH_LOG_TOTAL: usize = 105;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();

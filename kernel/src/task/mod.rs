@@ -1,3 +1,5 @@
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod dispatch_boot_facts;
 use alloc::boxed::Box;
 use core::{
     future::Future,

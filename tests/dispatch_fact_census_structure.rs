@@ -124,9 +124,8 @@ const SITE_PUBLICATIONS: [(&str, &str, usize); 16] = [
         1,
     ),
     // The KernelFrame arm's own split, which `IdleRestoreError` does not
-    // carry: a lock-free raw-serial marker that was already there beside the
-    // deleted `log::error!`.
-    ("restore_userspace_thread_context", "<KFRAME>", 1),
+    // carry: a relaxed counter replaces the inherited raw serial marker.
+    ("restore_userspace_thread_context", "KERNEL_FRAME_RESTORE_REFUSED.fetch_add", 1),
     // New this PR.
     (
         "save_current_thread_context_with_guard",

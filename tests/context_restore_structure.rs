@@ -1059,7 +1059,7 @@ fn validate_dispatch_guard_precheck(source: &str) -> Result<(), String> {
         Ok(bindings[0])
     }
 
-    fn qualified_zero_arg_call_offsets(scope: &str, qualifier: &str, call: &str) -> Vec<usize> {
+    fn qualified_call_offsets(scope: &str, qualifier: &str, call: &str) -> Vec<usize> {
         let mask = code_mask(scope);
         let bytes = scope.as_bytes();
         identifier_offsets(scope, &mask, call)
@@ -1100,11 +1100,7 @@ fn validate_dispatch_guard_precheck(source: &str) -> Result<(), String> {
                 if bytes.get(open) != Some(&b'(') {
                     return false;
                 }
-                let mut close = open + 1;
-                while close < bytes.len() && (!mask[close] || bytes[close].is_ascii_whitespace()) {
-                    close += 1;
-                }
-                bytes.get(close) == Some(&b')')
+                true
             })
             .collect()
     }
@@ -1131,7 +1127,7 @@ fn validate_dispatch_guard_precheck(source: &str) -> Result<(), String> {
         );
     }
 
-    let schedule_offsets = qualified_zero_arg_call_offsets(body, "scheduler", "schedule");
+    let schedule_offsets = qualified_call_offsets(body, "scheduler", "schedule_for_interrupt_return");
     let schedule_offset = schedule_offsets
         .first()
         .copied()
@@ -1155,7 +1151,7 @@ fn validate_dispatch_guard_precheck(source: &str) -> Result<(), String> {
     {
         return Err("guard-unavailable arm does not re-arm rescheduling and return".to_string());
     }
-    if !identifier_offsets(unavailable, &unavailable_mask, "schedule").is_empty()
+    if !identifier_offsets(unavailable, &unavailable_mask, "schedule_for_interrupt_return").is_empty()
         || !identifier_offsets(unavailable, &unavailable_mask, "abort_dispatch_and_resume")
             .is_empty()
     {
@@ -1516,12 +1512,13 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
     let no_cr3_mask = code_mask(no_cr3_arm);
     let normalized_arm = normalized_code(no_cr3_arm);
     let compact_arm = normalized_arm.replace(' ', "");
-    if !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add")
-        || !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_LOGGED.swap")
-        || identifier_offsets(no_cr3_arm, &no_cr3_mask, "raw_serial_str").is_empty()
-        || identifier_offsets(no_cr3_arm, &no_cr3_mask, "raw_serial_u64").len() < 2
+    if !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1,Ordering::Relaxed)") {
+        return Err("unavailable CR3 arm lacks its refusal counter".to_string());
+    }
+    if !identifier_offsets(no_cr3_arm, &no_cr3_mask, "raw_serial_str").is_empty()
+        || !identifier_offsets(no_cr3_arm, &no_cr3_mask, "raw_serial_u64").is_empty()
     {
-        return Err("unavailable CR3 arm lacks the guarded raw breadcrumb".to_string());
+        return Err("unavailable CR3 arm writes serial output".to_string());
     }
 
     let with_thread_mut_source = identifier_offsets(no_cr3_arm, &no_cr3_mask, "with_thread_mut")
@@ -1952,7 +1949,7 @@ fn dispatch_guard_validator_rejects_userspace_only_acquisition() {
             } else {
                 None
             };
-            let schedule_result = scheduler::schedule();
+            let schedule_result = scheduler::schedule_for_interrupt_return(&admission);
         }
     "#;
     assert!(validate_dispatch_guard_precheck(synthetic).is_err());
@@ -1962,7 +1959,7 @@ fn dispatch_guard_validator_rejects_userspace_only_acquisition() {
 fn dispatch_guard_validator_rejects_acquisition_after_scheduling() {
     let synthetic = r#"
         fn check_need_resched_and_switch() {
-            let schedule_result = scheduler::schedule();
+            let schedule_result = scheduler::schedule_for_interrupt_return(&admission);
             let mut process_manager_guard = match crate::process::try_manager() {
                 Some(guard) => guard,
                 None => {
@@ -1983,10 +1980,10 @@ fn dispatch_guard_validator_rejects_unavailable_fallthrough() {
                 Some(guard) => guard,
                 None => {
                     scheduler::set_need_resched();
-                    scheduler::schedule();
+                    scheduler::schedule_for_interrupt_return(&admission);
                 }
             };
-            let schedule_result = scheduler::schedule();
+            let schedule_result = scheduler::schedule_for_interrupt_return(&admission);
         }
     "#;
     assert!(validate_dispatch_guard_precheck(synthetic).is_err());
@@ -2176,13 +2173,6 @@ fn valid_blocked_syscall_no_cr3_arm() -> &'static str {
             Some(cr3_value) => cr3_value,
             None => {
                 USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
-                if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                    raw_serial_str("[PMGUARD] no-cr3 dispatch refused tid=");
-                    raw_serial_u64(thread_id);
-                    raw_serial_str(" pid=");
-                    raw_serial_u64(pid.as_u64());
-                    raw_serial_str("\n");
-                }
                 if let Some(ref mut thread) = process.main_thread {
                     thread.set_terminated();
                 }

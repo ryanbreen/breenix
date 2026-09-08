@@ -10,6 +10,7 @@ fn validate(source: &str) -> Result<(), &'static str> {
     for required in [
         "const CYCLES: u64 = 32;",
         "scheduler::yield_current();",
+        "scheduler::schedule();",
         "mismatch += unsafe { witness_resume() };",
         "ACK.load(Ordering::Acquire) == cycle",
         "REQUEST.store(cycle, Ordering::Release);",
@@ -58,6 +59,7 @@ fn witnesses_and_peer_are_required() {
     for needle in [
         "mismatch += unsafe { witness_resume() };",
         "kthread::kthread_unpark(&peer);",
+        "scheduler::schedule();",
         "\"cmp rdx, 0x567e\"",
     ] {
         let mutated = source.replace(needle, "");

@@ -1,0 +1,20 @@
+LOCAL_BASE_REVISION=fe491f4794f2f91914f3e184b99b25e668a7fe83
+BASE_REVISION=fe491f4794f2f91914f3e184b99b25e668a7fe83
+== compiling x86_dispatch_admission_structure ==
+== running x86_dispatch_admission_structure v2_selection_requires ==
+
+running 1 test
+test v2_selection_requires_dispatch_admission_and_public_schedule_only_requests ... FAILED
+
+failures:
+
+failures:
+    v2_selection_requires_dispatch_admission_and_public_schedule_only_requests
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+thread 'v2_selection_requires_dispatch_admission_and_public_schedule_only_requests' panicked at <lane-tmp>/round2-base/tests/x86_dispatch_admission_structure.rs:43:5:
+assertion failed: admission(&scheduler, &dispatch)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+EXIT=101
