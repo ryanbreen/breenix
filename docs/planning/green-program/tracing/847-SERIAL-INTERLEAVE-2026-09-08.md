@@ -335,6 +335,19 @@ The tree lint checks changed hunks against the baseline. It reports existing
 findings outside those hunks separately, and skips the two census TSV files
 because that extension is outside its supported source/document types.
 
+The evidence directory sets `* -text` in its scoped `.gitattributes` so Git
+preserves CR bytes in the captured serials. `serials/847/SHA256SUMS.txt`
+hashes the original preserved files; committed blobs are checked against it.
+The initial documentation staging normalized CRLF; a follow-up restores the
+original bytes, without changing the normalized grep or scorer results.
+
+Before the byte-preservation documentation correction:
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/847-bytes-commit.txt -> exit 0
+```
+
 Citations were re-derived from the committed source: 106 file:line anchors
 resolve at the final code revision, including the scheduler's one-line shift.
 The documentation commit adds evidence only; the source anchors are checked
