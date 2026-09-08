@@ -1,0 +1,10 @@
+Citations re-derived at e0f6e21156ee56aea2caa77959bbcd0e4cc21f6b
+userspace/programs/src/loopback_wake_test.rs blob=67bc58e9d54e4c9e043a028b3472d92e4a425503
+userspace/programs/src/loopback_wake_test.rs:96: fn dispatch_gap_probe(window_ms: u64) -> (u64, u64) {
+userspace/programs/src/loopback_wake_test.rs:225:     if eof_wait_ms > EOF_WAKE_BOUND_MS {
+userspace/programs/src/loopback_wake_test.rs:230:             "LOOPBACK_WAKE_TEST: reader_eof_dispatch_probe max_gap_ms={} samples={} window_ms={} verdict=eof_timeout",
+tests/loopback_pump_structure.rs blob=0aa3c9fb7398cfc0601faca391dd06e20a70fc24
+tests/loopback_pump_structure.rs:899: fn validate_loopback_eof_timeout_measures_dispatch(source: &str) -> Result<(), String> {
+tests/loopback_pump_structure.rs:2021: fn loopback_eof_timeout_measures_dispatch() {
+tests/loopback_pump_structure.rs:2029: fn loopback_eof_dispatch_validator_rejects_deleted_probe() {
+tests/loopback_pump_structure.rs:2046: fn loopback_eof_dispatch_validator_rejects_commented_verdict() {
