@@ -1,0 +1,36 @@
+author:	ryanbreen
+association:	owner
+edited:	false
+status:	none
+--
+Reverification reproduced the failure at `09d03f2d`: `overrun_ms=5`, `backstops=3`, `window_ms=30057`, `FAIL`.
+
+The boot-only oracle coordinator ran on the x86 idle task and could be starved partway through releasing CPU-bound peers. Commit `dfe14edf` moves coordination to a schedulable kthread and forces a dispatch after releasing the first peer. The existing peer count, backstop rejection, and 100 ms bound remain unchanged; the new source ratchet is red on the original implementation and green with the correction.
+
+Both full x86 boot-test reruns passed at `dfe14edf`, with timer records `(overrun_ms=45, backstops=0, window_ms=720, PASS)` and `(overrun_ms=45, backstops=0, window_ms=668, PASS)`. The x86 and aarch64 blocking-I/O gates each passed 42 distinct arms; ARM strict 1/1 and production also passed. The direct production INPUT_INJECT probe returns ENOTTY, closing review finding V-1.
+
+[Round evidence and complete timer records](https://github.com/ryanbreen/breenix/blob/182d28e32fe6a0b9f934565cf67811db499f8b73/docs/planning/green-program/ipc/813-PR-C-2026-09-07.md). The original failed serial is retained. The correction is pushed on PR 958; leaving this issue open pending landing. This round did not merge the PR.
+
+--
+author:	ryanbreen
+association:	owner
+edited:	false
+status:	none
+--
+PR 967 landing evidence: https://github.com/ryanbreen/breenix/pull/967. R242 attributes the first timer-backstop red below to issues 960 and 965; PR 958 carries the separate coordinator repair. The second-attempt run passes. This is evidence for that follow-up, not a claim that PR 967 fixes the timer oracle.
+
+Verdict: FAIL, attributed under R242. Revision: 27ac5db1695d754f5592db1415f9a7eb0279bac4. Beast load: launch 0.23; QEMU-start 3.18; end 0.26. Source: docs/planning/green-program/irq-locks/serials/891/landing-merged/beast/breenix_x86_boot_tests_1/serial_user.txt (verbatim oracle token, preceding switch breadcrumbs omitted).
+
+```text
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=4:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=3:setup_ms=504:window_ms=30057:measured=1:FAIL]
+```
+
+Verdict: PASS. Revision: 5733a504703385abaeed0ec2807acb4203dc9bd2. Beast load: launch 5.12; QEMU-start 13.73; end 0.87. Source: docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_x86_boot_tests_1/serial_user.txt (verbatim oracle token, preceding switch breadcrumbs omitted).
+
+```text
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=44:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=552:window_ms=509:measured=1:PASS]
+```
+
+The five second-attempt parallel user serials contain 0 timer-wake oracle tokens in their testing profile; no timer verdict is inferred. See docs/planning/green-program/irq-locks/serials/891/landing-second/serial-audit.txt. No additional timer-wake lines were observed in this attempt.
+
+--

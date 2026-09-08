@@ -8,6 +8,11 @@ if args[:1] == ['--program']:
 else:
     arms = args
 assert program in ('pipe_fifo_blocking_oracle', 'unix_stream_blocking_oracle'), 'unsupported program'
+console_arms = []
+if program == 'pipe_fifo_blocking_oracle':
+    separator = arms.index('--console')
+    arms, console_arms = arms[:separator], arms[separator + 1:]
+    assert console_arms, 'missing console arm set'
 text = '\n'.join(p.read_text(errors='replace') for p in pathlib.Path(directory).glob('*.txt'))
 # Remove only the two known GDT initialization messages, not whole lines:
 # a fault banner on the same line must still fail the gate.
@@ -43,3 +48,14 @@ for kind in ('pipe', 'fifo'):
 summary = f'[PIPE_WRITE_SUMMARY:{arch}:passed={2 * len(arms)}:failed=0]'
 assert summary in text, 'missing complete arm tally'
 print(f'PASS: {arch}, {2 * len(arms)} arms, exact byte tallies and worker reaped')
+
+console_records = re.findall(r'\[CONSOLE_READ_ORACLE:([^\]]+)\]', text)
+expected_bytes = {'blocking': 1, 'nonblock_open': 0, 'nonblock_fcntl': 0,
+                  'readiness_partial': 2, 'eintr': 1, 'immediate': 8}
+assert set(console_arms) == set(expected_bytes), 'console arm set drift'
+for device in ('/dev/console', '/dev/tty'):
+    for arm in console_arms:
+        expected = f'{arch}:{device}:{arm}:verdict=PASS:bytes={expected_bytes[arm]}'
+        assert expected in console_records, f'missing console record: {expected}'
+assert f'[CONSOLE_READ_SUMMARY:{arch}:passed={2 * len(console_arms)}:failed=0]' in text, 'console tally'
+print(f'PASS: {arch}, {2 * len(console_arms)} console/tty arms')

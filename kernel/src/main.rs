@@ -643,7 +643,6 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         }
     }
 
-
     // ext2/VFS fault-injection leg (test profile only, feature `fs_fault_inject`).
     // Runs immediately after the root filesystem mounts, so every marker the rest
     // of this boot prints is evidence the kernel survived the injected faults.
@@ -883,7 +882,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     kernel::task::kthread_tests::test_kthread_stop_after_exit();
 
     // #766's wake-to-dispatch latency leg. Placed HERE, and not in the IF=1
-    // driver-self-test window above, for two reasons. First, it creates 9
+    // driver-self-test window above, for two reasons. First, it creates 10
     // kernel threads and lets them run, which moves the frame, page-table and
     // kernel-stack counts the gates in that window pin absolutely. Second,
     // #567 says a scheduling event in this x86 boot window can resume the boot
@@ -1270,8 +1269,7 @@ fn kernel_main_continue() -> ! {
         // thread. The Userspace stage stays marker-only on both architectures:
         // it is reached from syscall context, where #533 itself says not to run
         // blocking staged tests.
-        failures +=
-            test_framework::advance_to_stage(test_framework::TestStage::ProcessContext);
+        failures += test_framework::advance_to_stage(test_framework::TestStage::ProcessContext);
 
         if !interrupts_were_enabled {
             x86_64::instructions::interrupts::disable();
@@ -1353,10 +1351,8 @@ fn kernel_main_continue() -> ! {
             kernel::userspace_test::get_test_binary("tcp_cloexec_exec_test");
         let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
         let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
-        let loopback_wake_test_buf =
-            kernel::userspace_test::get_test_binary("loopback_wake_test");
-        let clonevm_exec_test_buf =
-            kernel::userspace_test::get_test_binary("clonevm_exec_test");
+        let loopback_wake_test_buf = kernel::userspace_test::get_test_binary("loopback_wake_test");
+        let clonevm_exec_test_buf = kernel::userspace_test::get_test_binary("clonevm_exec_test");
         let futex_handoff_oracle_buf =
             kernel::userspace_test::get_test_binary("futex_handoff_oracle");
         // #737 direction-flag preempt oracle. Fork-free on purpose: the gate's
@@ -1367,8 +1363,7 @@ fn kernel_main_continue() -> ! {
         // claim-lint:ok: 0 of 0 fork() call sites in
         // userspace/programs/src/df_preempt_oracle.rs under the gate's own
         // census pattern, measured in the round that added this launch. #737.
-        let df_preempt_oracle_buf =
-            kernel::userspace_test::get_test_binary("df_preempt_oracle");
+        let df_preempt_oracle_buf = kernel::userspace_test::get_test_binary("df_preempt_oracle");
 
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;

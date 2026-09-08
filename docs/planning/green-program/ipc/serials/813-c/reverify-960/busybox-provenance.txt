@@ -1,0 +1,5 @@
+revision=7c448dd90912d45a832c4689a365e099c139f929 plus merge and working changes; code committed as 09d03f2d02c74f050d299f5c4288df2e06805614
+source=/Users/wrb/fun/code/breenix/userspace/programs/busybox.elf
+sha256=bb03430893fc30380e6823043ce2c658aef8abd2750161dbd9804b99aae4cdd0
+file=ELF 64-bit LSB executable x86-64 statically linked
+destination=beast:/root/breenix-i813pd/userspace/programs/busybox.elf

@@ -1,0 +1,14 @@
+revision=9ee19079c7310ee5d617c85ed64072ad6e0c8367
+debugfs 1.47.4 (6-Mar-2025)
+debugfs: rm /sbin/init
+
+debugfs: write supervisor.elf /sbin/init
+Allocated inode: 1987
+debugfs: set_inode_field /sbin/init mode 0100755
+debugfs: rm /bin/pipe_fifo_blocking_oracle
+rm: File not found by ext2_lookup while trying to resolve filename
+debugfs: write worker.elf /bin/pipe_fifo_blocking_oracle
+Allocated inode: 19886
+debugfs: set_inode_field /bin/pipe_fifo_blocking_oracle mode 0100755
+debugfs: dump /sbin/init installed-supervisor.elf
+debugfs: dump /bin/pipe_fifo_blocking_oracle installed-worker.elf

@@ -1,0 +1,57 @@
+revision=9ee19079c7310ee5d617c85ed64072ad6e0c8367
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling rustversion v1.0.23
+   Compiling quote v1.0.47
+   Compiling bit_field v0.10.3
+   Compiling scopeguard v1.2.0
+   Compiling bitflags v2.13.1
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling bitflags v1.3.2
+   Compiling const_fn v0.4.12
+   Compiling x86 v0.52.0
+   Compiling volatile v0.4.6
+   Compiling conquer-util v0.3.0
+   Compiling az v1.2.1
+   Compiling rand_core v0.6.4
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-utils v0.8.23
+   Compiling byteorder v1.5.0
+   Compiling raw-cpuid v10.7.0
+   Compiling zero v0.1.3
+   Compiling lock_api v0.4.14
+   Compiling conquer-once v0.3.2
+   Compiling xmas-elf v0.8.0
+   Compiling rand_hc v0.3.2
+   Compiling rand v0.8.8
+   Compiling slab v0.4.12
+   Compiling noto-sans-mono-bitmap v0.2.0
+   Compiling micromath v2.1.0
+   Compiling spinning_top v0.2.5
+   Compiling futures-task v0.3.34
+   Compiling log v0.4.34
+   Compiling pin-project-lite v0.2.17
+   Compiling usize_conversions v0.2.0
+   Compiling futures-core v0.3.34
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c2/wt/kernel)
+   Compiling linked_list_allocator v0.10.6
+   Compiling spin v0.9.9
+   Compiling conquer-once v0.4.0
+   Compiling futures-util v0.3.34
+   Compiling crossbeam-queue v0.3.14
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling float-cmp v0.9.0
+   Compiling x86_64 v0.14.13
+   Compiling x86_64 v0.15.4
+   Compiling embedded-graphics-core v0.4.1
+   Compiling syn v3.0.5
+   Compiling embedded-graphics v0.8.2
+   Compiling uart_16550 v0.3.2
+   Compiling pic8259 v0.10.4
+   Compiling serde_derive v1.0.229
+   Compiling bootloader-boot-config v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling bootloader-x86_64-common v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+    Finished `release` profile [optimized] target(s) in 33.28s
+BUILD_EXIT=0

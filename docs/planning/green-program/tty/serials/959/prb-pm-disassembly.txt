@@ -1,0 +1,139 @@
+Dump of assembler code from 0xffff000040561430 to 0xffff0000405615fc:
+   0xffff000040561430 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+0>:	sub	sp, sp, #0x30
+   0xffff000040561434 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+4>:	str	x30, [sp, #32]
+   0xffff000040561438 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+8>:	mrs	x8, tpidr_el1
+   0xffff00004056143c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+12>:	cbz	x8, 0xffff000040561454 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+36>
+   0xffff000040561440 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+16>:	add	x8, x8, #0x20
+   0xffff000040561444 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+20>:	ldxr	w9, [x8]
+   0xffff000040561448 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+24>:	add	w9, w9, #0x1
+   0xffff00004056144c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+28>:	stxr	w10, w9, [x8]
+   0xffff000040561450 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+32>:	cbnz	w10, 0xffff000040561444 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+20>
+   0xffff000040561454 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+36>:	add	x8, sp, #0x8
+   0xffff000040561458 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+40>:	bl	0xffff000040526978 <_ZN6kernel7process7manager17h5e4e18781a260e17E>
+   0xffff00004056145c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+44>:	mrs	x8, tpidr_el1
+   0xffff000040561460 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+48>:	cbz	x8, 0xffff000040561474 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+68>
+   0xffff000040561464 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+52>:	mrs	x8, tpidr_el1
+   0xffff000040561468 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+56>:	cbz	x8, 0xffff00004056147c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+76>
+   0xffff00004056146c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+60>:	ldr	x8, [x8]
+   0xffff000040561470 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+64>:	b	0xffff00004056147c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+76>
+   0xffff000040561474 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+68>:	mrs	x8, mpidr_el1
+   0xffff000040561478 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+72>:	and	x8, x8, #0xff
+   0xffff00004056147c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+76>:	adrp	x9, 0xffff000040a05000 <_ZN6kernel7drivers6virtio7gpu_pci13GPU_PCI_STATE17hb81ae91ffa5433d3E+56>
+   0xffff000040561480 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+80>:	adrp	x10, 0xffff0000413e5000 <_ZN6kernel7process20NO_BLOCKING_PM_DEPTH17he25d545c59f55506E+120>
+   0xffff000040561484 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+84>:	add	x10, x10, #0xa90
+   0xffff000040561488 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+88>:	str	x8, [x9, #2360]
+   0xffff00004056148c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+92>:	mov	w8, #0x4240                	// #16960
+   0xffff000040561490 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+96>:	mov	w11, #0x1                   	// #1
+   0xffff000040561494 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+100>:	movk	w8, #0xf, lsl #16
+   0xffff000040561498 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+104>:	stlrb	w11, [x10]
+   0xffff00004056149c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+108>:	mrs	x9, cntfrq_el0
+   0xffff0000405614a0 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+112>:	cbz	x9, 0xffff0000405614e4 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+180>
+   0xffff0000405614a4 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+116>:	mrs	x10, cntvct_el0
+   0xffff0000405614a8 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+120>:	udiv	x11, x10, x9
+   0xffff0000405614ac <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+124>:	msub	x10, x11, x9, x10
+   0xffff0000405614b0 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+128>:	umulh	x12, x10, x8
+   0xffff0000405614b4 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+132>:	mul	x10, x10, x8
+   0xffff0000405614b8 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+136>:	cmp	xzr, x12
+   0xffff0000405614bc <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+140>:	csinv	x10, x10, xzr, eq	// eq = none
+   0xffff0000405614c0 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+144>:	udiv	x9, x10, x9
+   0xffff0000405614c4 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+148>:	mul	x10, x11, x8
+   0xffff0000405614c8 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+152>:	umulh	x11, x11, x8
+   0xffff0000405614cc <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+156>:	adds	x9, x10, x9
+   0xffff0000405614d0 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+160>:	csinv	x9, x9, xzr, cc	// cc = lo, ul, last
+   0xffff0000405614d4 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+164>:	cmp	xzr, x11
+   0xffff0000405614d8 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+168>:	csinv	x9, x9, xzr, eq	// eq = none
+   0xffff0000405614dc <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+172>:	b	0xffff0000405614e4 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+180>
+   0xffff0000405614e0 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+176>:	isb
+   0xffff0000405614e4 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+180>:	mrs	x10, cntfrq_el0
+   0xffff0000405614e8 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+184>:	cbz	x10, 0xffff000040561524 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+244>
+   0xffff0000405614ec <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+188>:	mrs	x11, cntvct_el0
+   0xffff0000405614f0 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+192>:	udiv	x12, x11, x10
+   0xffff0000405614f4 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+196>:	msub	x11, x12, x10, x11
+   0xffff0000405614f8 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+200>:	umulh	x13, x11, x8
+   0xffff0000405614fc <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+204>:	mul	x11, x11, x8
+   0xffff000040561500 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+208>:	cmp	xzr, x13
+   0xffff000040561504 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+212>:	csinv	x11, x11, xzr, eq	// eq = none
+   0xffff000040561508 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+216>:	udiv	x10, x11, x10
+   0xffff00004056150c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+220>:	mul	x11, x12, x8
+   0xffff000040561510 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+224>:	umulh	x12, x12, x8
+   0xffff000040561514 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+228>:	adds	x10, x11, x10
+   0xffff000040561518 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+232>:	csinv	x10, x10, xzr, cc	// cc = lo, ul, last
+   0xffff00004056151c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+236>:	cmp	xzr, x12
+   0xffff000040561520 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+240>:	csinv	x10, x10, xzr, eq	// eq = none
+   0xffff000040561524 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+244>:	sub	x10, x10, x9
+   0xffff000040561528 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+248>:	lsr	x11, x10, #5
+   0xffff00004056152c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+252>:	cmp	x11, #0x270
+   0xffff000040561530 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+256>:	b.ls	0xffff0000405614e0 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+176>  // b.plast
+   0xffff000040561534 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+260>:	adrp	x8, 0xffff0000413e5000 <_ZN6kernel7process20NO_BLOCKING_PM_DEPTH17he25d545c59f55506E+120>
+   0xffff000040561538 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+264>:	mov	x9, #0xffffffffffffffff    	// #-1
+   0xffff00004056153c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+268>:	str	x10, [x8, #2712]
+   0xffff000040561540 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+272>:	adrp	x8, 0xffff000040a05000 <_ZN6kernel7drivers6virtio7gpu_pci13GPU_PCI_STATE17hb81ae91ffa5433d3E+56>
+   0xffff000040561544 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+276>:	ldr	x10, [sp, #8]
+   0xffff000040561548 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+280>:	ldr	x11, [sp, #24]
+   0xffff00004056154c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+284>:	str	x9, [x8, #296]
+   0xffff000040561550 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+288>:	adrp	x8, 0xffff000040a05000 <_ZN6kernel7drivers6virtio7gpu_pci13GPU_PCI_STATE17hb81ae91ffa5433d3E+56>
+   0xffff000040561554 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+292>:	add	x8, x8, #0x120
+   0xffff000040561558 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+296>:	stlr	x9, [x8]
+   0xffff00004056155c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+300>:	stlrb	wzr, [x10]
+   0xffff000040561560 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+304>:	msr	daif, x11
+   0xffff000040561564 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+308>:	mrs	x8, tpidr_el1
+   0xffff000040561568 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+312>:	cbz	x8, 0xffff000040561580 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+336>
+   0xffff00004056156c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+316>:	add	x8, x8, #0x20
+   0xffff000040561570 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+320>:	ldxr	w9, [x8]
+   0xffff000040561574 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+324>:	sub	w9, w9, #0x1
+   0xffff000040561578 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+328>:	stlxr	w10, w9, [x8]
+   0xffff00004056157c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+332>:	cbnz	w10, 0xffff000040561570 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+320>
+   0xffff000040561580 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+336>:	mov	w8, #0x1                   	// #1
+   0xffff000040561584 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+340>:	adrp	x9, 0xffff0000413e5000 <_ZN6kernel7process20NO_BLOCKING_PM_DEPTH17he25d545c59f55506E+120>
+   0xffff000040561588 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+344>:	add	x9, x9, #0xa94
+   0xffff00004056158c <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+348>:	stlrb	w8, [x9]
+   0xffff000040561590 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+352>:	ldr	x30, [sp, #32]
+   0xffff000040561594 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+356>:	add	sp, sp, #0x30
+   0xffff000040561598 <_ZN6kernel14test_framework8registry22tty_irq_pm_holder_body17h4f8757b2edaa021fE+360>:	ret
+   0xffff00004056159c <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+0>:	sub	sp, sp, #0x60
+   0xffff0000405615a0 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+4>:	stp	x30, x27, [sp, #16]
+   0xffff0000405615a4 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+8>:	stp	x26, x25, [sp, #32]
+   0xffff0000405615a8 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+12>:	stp	x24, x23, [sp, #48]
+   0xffff0000405615ac <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+16>:	adrp	x23, 0xffff0000413e4000 <_ZN6kernel7drivers6virtio7net_pci14PCI_TX_BUFFERS17h395134c9633ddbefE.llvm.7075944769503600960+22528>
+   0xffff0000405615b0 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+20>:	stp	x22, x21, [sp, #64]
+   0xffff0000405615b4 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+24>:	adrp	x22, 0xffff000040a54000 <_ZN6kernel3ipc5stdin12STDIN_BUFFER17hdc26ea8f25f429acE.llvm.6567107105475765849+3096>
+   0xffff0000405615b8 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+28>:	stp	x20, x19, [sp, #80]
+   0xffff0000405615bc <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+32>:	ldr	x20, [x23, #2888]
+   0xffff0000405615c0 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+36>:	ldr	x21, [x22, #1032]
+   0xffff0000405615c4 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+40>:	mrs	x8, tpidr_el1
+   0xffff0000405615c8 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+44>:	cbz	x8, 0xffff0000405615e0 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+68>
+   0xffff0000405615cc <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+48>:	add	x8, x8, #0x20
+   0xffff0000405615d0 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+52>:	ldxr	w9, [x8]
+   0xffff0000405615d4 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+56>:	add	w9, w9, #0x1
+   0xffff0000405615d8 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+60>:	stxr	w10, w9, [x8]
+   0xffff0000405615dc <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+64>:	cbnz	w10, 0xffff0000405615d0 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+52>
+   0xffff0000405615e0 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+68>:	mov	w25, #0x4240                	// #16960
+   0xffff0000405615e4 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+72>:	mrs	x8, cntfrq_el0
+   0xffff0000405615e8 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+76>:	movk	w25, #0xf, lsl #16
+   0xffff0000405615ec <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+80>:	cbz	x8, 0xffff00004056162c <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+144>
+   0xffff0000405615f0 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+84>:	mrs	x9, cntvct_el0
+   0xffff0000405615f4 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+88>:	udiv	x10, x9, x8
+   0xffff0000405615f8 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E+92>:	msub	x9, x10, x8, x9
+End of assembler dump.
+Dump of assembler code from 0xffff000040561a48 to 0xffff000040561a98:
+   0xffff000040561a48 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+732>:	ldarb	w8, [x23]
+   0xffff000040561a4c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+736>:	cbz	w8, 0xffff000040561c50 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1252>
+   0xffff000040561a50 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+740>:	mrs	x8, daif
+   0xffff000040561a54 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+744>:	mov	w9, #0xffffffff            	// #-1
+   0xffff000040561a58 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+748>:	mov	w10, #0x1                   	// #1
+   0xffff000040561a5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+752>:	eor	w8, w9, w8, lsr #7
+   0xffff000040561a60 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+756>:	adrp	x9, 0xffff000040a05000 <_ZN6kernel7drivers6virtio7gpu_pci13GPU_PCI_STATE17hb81ae91ffa5433d3E+56>
+   0xffff000040561a64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+760>:	add	x9, x9, #0x130
+   0xffff000040561a68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+764>:	and	x8, x8, #0x1
+   0xffff000040561a6c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+768>:	str	x8, [sp, #136]
+   0xffff000040561a70 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+772>:	mrs	x8, daif
+   0xffff000040561a74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+776>:	msr	daifset, #0xf
+   0xffff000040561a78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+780>:	ldaxrb	w11, [x9]
+   0xffff000040561a7c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+784>:	cbnz	w11, 0xffff000040561c74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1288>
+   0xffff000040561a80 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+788>:	stxrb	w11, w10, [x9]
+   0xffff000040561a84 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+792>:	cbnz	w11, 0xffff000040561a78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+780>
+   0xffff000040561a88 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+796>:	mrs	x10, tpidr_el1
+   0xffff000040561a8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+800>:	cbz	x10, 0xffff000040561c88 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1308>
+   0xffff000040561a90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+804>:	mrs	x10, tpidr_el1
+   0xffff000040561a94 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+808>:	cbz	x10, 0xffff000040561c94 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1320>
+End of assembler dump.

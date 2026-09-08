@@ -1,0 +1,8 @@
+Commands executed:
+bash -n docker/qemu/run-aarch64-boot-test-strict.sh
+rustfmt --check --edition 2021 --config skip_children=true kernel/src/task/mod.rs kernel/src/task/softirqd.rs kernel/src/task/softirq_tests.rs kernel/src/task/kthread.rs
+git diff --check
+
+bash syntax exit=0
+rustfmt exit=0
+diff check exit=0

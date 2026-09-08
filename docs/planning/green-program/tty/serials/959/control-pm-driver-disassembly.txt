@@ -1,0 +1,552 @@
+Dump of assembler code from 0xffff00004054e9c8 to 0xffff00004054f260:
+   0xffff00004054e9c8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+0>:	stp	x29, x30, [sp, #-96]!
+   0xffff00004054e9cc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+4>:	stp	x28, x27, [sp, #16]
+   0xffff00004054e9d0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+8>:	stp	x26, x25, [sp, #32]
+   0xffff00004054e9d4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+12>:	stp	x24, x23, [sp, #48]
+   0xffff00004054e9d8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+16>:	stp	x22, x21, [sp, #64]
+   0xffff00004054e9dc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+20>:	stp	x20, x19, [sp, #80]
+   0xffff00004054e9e0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+24>:	sub	sp, sp, #0x290
+   0xffff00004054e9e4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+28>:	adrp	x26, 0xffff00004147f000 <_ZN6kernel3ipc5stdin12STDIN_BUFFER17hdc26ea8f25f429acE.llvm.1715941770912626423+1816>
+   0xffff00004054e9e8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+32>:	add	x26, x26, #0x948
+   0xffff00004054e9ec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+36>:	adrp	x27, 0xffff00004147f000 <_ZN6kernel3ipc5stdin12STDIN_BUFFER17hdc26ea8f25f429acE.llvm.1715941770912626423+1816>
+   0xffff00004054e9f0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+40>:	ldaxrb	w8, [x26]
+   0xffff00004054e9f4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+44>:	cbz	w8, 0xffff00004054ecfc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+820>
+   0xffff00004054e9f8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+48>:	clrex
+   0xffff00004054e9fc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+52>:	mov	w8, #0x1                   	// #1
+   0xffff00004054ea00 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+56>:	b	0xffff00004054ea08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+64>
+   0xffff00004054ea04 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+60>:	isb
+   0xffff00004054ea08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+64>:	ldrb	w9, [x27, #2376]
+   0xffff00004054ea0c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+68>:	cbnz	w9, 0xffff00004054ea04 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+60>
+   0xffff00004054ea10 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+72>:	ldaxrb	w9, [x26]
+   0xffff00004054ea14 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+76>:	cbnz	w9, 0xffff00004054e9f8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+48>
+   0xffff00004054ea18 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+80>:	stxrb	w9, w8, [x26]
+   0xffff00004054ea1c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+84>:	cbnz	w9, 0xffff00004054ea08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+64>
+   0xffff00004054ea20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+88>:	adrp	x24, 0xffff00004147f000 <_ZN6kernel3ipc5stdin12STDIN_BUFFER17hdc26ea8f25f429acE.llvm.1715941770912626423+1816>
+   0xffff00004054ea24 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+92>:	ldr	x8, [x24, #2384]
+   0xffff00004054ea28 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+96>:	cbz	x8, 0xffff00004054ed0c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+836>
+   0xffff00004054ea2c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+100>:	ldxr	x9, [x8]
+   0xffff00004054ea30 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+104>:	add	x10, x9, #0x1
+   0xffff00004054ea34 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+108>:	stxr	w11, x10, [x8]
+   0xffff00004054ea38 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+112>:	cbnz	w11, 0xffff00004054ea2c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+100>
+   0xffff00004054ea3c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+116>:	tbnz	x9, #63, 0xffff00004054f7ac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+3556>
+   0xffff00004054ea40 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+120>:	ldr	x28, [x26, #8]
+   0xffff00004054ea44 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+124>:	stlrb	wzr, [x26]
+   0xffff00004054ea48 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+128>:	str	x28, [sp, #40]
+   0xffff00004054ea4c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+132>:	add	x21, x28, #0x10
+   0xffff00004054ea50 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+136>:	ldaxrb	w8, [x21]
+   0xffff00004054ea54 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+140>:	cbz	w8, 0xffff00004054ee10 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1096>
+   0xffff00004054ea58 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+144>:	clrex
+   0xffff00004054ea5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+148>:	mov	w8, #0x1                   	// #1
+   0xffff00004054ea60 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+152>:	b	0xffff00004054ea68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+160>
+   0xffff00004054ea64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+156>:	isb
+   0xffff00004054ea68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+160>:	ldrb	w9, [x21]
+   0xffff00004054ea6c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+164>:	cbnz	w9, 0xffff00004054ea64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+156>
+   0xffff00004054ea70 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+168>:	ldaxrb	w9, [x21]
+   0xffff00004054ea74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+172>:	cbnz	w9, 0xffff00004054ea58 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+144>
+   0xffff00004054ea78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+176>:	stxrb	w9, w8, [x21]
+   0xffff00004054ea7c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+180>:	cbnz	w9, 0xffff00004054ea68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+160>
+   0xffff00004054ea80 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+184>:	mov	x20, x28
+   0xffff00004054ea84 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+188>:	add	x0, sp, #0x250
+   0xffff00004054ea88 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+192>:	mov	w2, #0x2c                  	// #44
+   0xffff00004054ea8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+196>:	ldr	x8, [x20, #120]!
+   0xffff00004054ea90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+200>:	add	x1, x20, #0x10
+   0xffff00004054ea94 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+204>:	ldp	w9, w22, [x20, #8]
+   0xffff00004054ea98 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+208>:	str	x8, [sp, #568]
+   0xffff00004054ea9c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+212>:	str	w9, [sp, #576]
+   0xffff00004054eaa0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+216>:	bl	0xffff0000405ffe88 <memcpy>
+   0xffff00004054eaa4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+220>:	sub	x8, x20, #0x68
+   0xffff00004054eaa8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+224>:	mov	x0, x21
+   0xffff00004054eaac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+228>:	stlrb	wzr, [x8]
+   0xffff00004054eab0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+232>:	bl	0xffff0000405ca7a0 <_ZN6kernel3tty6driver9TtyDevice19get_foreground_pgrp17hf7ae418267066fd4E>
+   0xffff00004054eab4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+236>:	mov	x19, x0
+   0xffff00004054eab8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+240>:	str	x1, [sp, #32]
+   0xffff00004054eabc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+244>:	add	x0, sp, #0x30
+   0xffff00004054eac0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+248>:	add	x1, sp, #0x250
+   0xffff00004054eac4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+252>:	mov	w2, #0x2c                  	// #44
+   0xffff00004054eac8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+256>:	bl	0xffff0000405ffe88 <memcpy>
+   0xffff00004054eacc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+260>:	ldr	x8, [sp, #568]
+   0xffff00004054ead0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+264>:	ldr	w9, [sp, #576]
+   0xffff00004054ead4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+268>:	add	x0, sp, #0x128
+   0xffff00004054ead8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+272>:	add	x1, sp, #0x250
+   0xffff00004054eadc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+276>:	mov	w2, #0x2c                  	// #44
+   0xffff00004054eae0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+280>:	str	x8, [sp, #232]
+   0xffff00004054eae4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+284>:	str	w9, [sp, #240]
+   0xffff00004054eae8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+288>:	bl	0xffff0000405ffe88 <memcpy>
+   0xffff00004054eaec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+292>:	ldaxrb	w9, [x21]
+   0xffff00004054eaf0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+296>:	and	w8, w22, #0xfffffff7
+   0xffff00004054eaf4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+300>:	cbz	w9, 0xffff00004054ee20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1112>
+   0xffff00004054eaf8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+304>:	clrex
+   0xffff00004054eafc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+308>:	mov	w9, #0x1                   	// #1
+   0xffff00004054eb00 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+312>:	b	0xffff00004054eb08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+320>
+   0xffff00004054eb04 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+316>:	isb
+   0xffff00004054eb08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+320>:	ldrb	w10, [x21]
+   0xffff00004054eb0c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+324>:	cbnz	w10, 0xffff00004054eb04 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+316>
+   0xffff00004054eb10 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+328>:	ldaxrb	w10, [x21]
+   0xffff00004054eb14 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+332>:	cbnz	w10, 0xffff00004054eaf8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+304>
+   0xffff00004054eb18 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+336>:	stxrb	w10, w9, [x21]
+   0xffff00004054eb1c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+340>:	cbnz	w10, 0xffff00004054eb08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+320>
+   0xffff00004054eb20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+344>:	ldp	w9, w10, [sp, #232]
+   0xffff00004054eb24 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+348>:	ldr	w11, [sp, #240]
+   0xffff00004054eb28 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+352>:	add	x0, x20, #0x10
+   0xffff00004054eb2c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+356>:	add	x1, sp, #0x128
+   0xffff00004054eb30 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+360>:	mov	w2, #0x2c                  	// #44
+   0xffff00004054eb34 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+364>:	str	w8, [x28, #132]
+   0xffff00004054eb38 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+368>:	stp	w9, w10, [x20]
+   0xffff00004054eb3c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+372>:	str	w11, [x20, #8]
+   0xffff00004054eb40 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+376>:	bl	0xffff0000405ffe88 <memcpy>
+   0xffff00004054eb44 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+380>:	add	x8, x28, #0x10
+   0xffff00004054eb48 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+384>:	mov	x0, x21
+   0xffff00004054eb4c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+388>:	mov	x1, xzr
+   0xffff00004054eb50 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+392>:	stlrb	wzr, [x8]
+   0xffff00004054eb54 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+396>:	bl	0xffff0000405caa10 <_ZN6kernel3tty6driver9TtyDevice32set_foreground_pgrp_raw_for_test17hedba2e5ae95397ebE>
+   0xffff00004054eb58 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+400>:	mov	x0, x21
+   0xffff00004054eb5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+404>:	bl	0xffff0000405ca7a0 <_ZN6kernel3tty6driver9TtyDevice19get_foreground_pgrp17hf7ae418267066fd4E>
+   0xffff00004054eb60 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+408>:	cmp	x0, #0x1
+   0xffff00004054eb64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+412>:	add	x0, sp, #0x128
+   0xffff00004054eb68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+416>:	mov	w1, #0x71                  	// #113
+   0xffff00004054eb6c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+420>:	cset	w8, ne	// ne = any
+   0xffff00004054eb70 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+424>:	str	x8, [sp, #96]
+   0xffff00004054eb74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+428>:	bl	0xffff00004054e7f8 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E>
+   0xffff00004054eb78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+432>:	ldp	x10, x8, [sp, #312]
+   0xffff00004054eb7c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+436>:	mov	x0, x21
+   0xffff00004054eb80 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+440>:	ldr	x9, [sp, #296]
+   0xffff00004054eb84 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+444>:	stp	x10, x9, [sp, #8]
+   0xffff00004054eb88 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+448>:	str	x8, [sp, #24]
+   0xffff00004054eb8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+452>:	bl	0xffff0000405ca7a0 <_ZN6kernel3tty6driver9TtyDevice19get_foreground_pgrp17hf7ae418267066fd4E>
+   0xffff00004054eb90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+456>:	adrp	x8, 0xffff000040847000
+   0xffff00004054eb94 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+460>:	add	x10, x8, #0x577
+   0xffff00004054eb98 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+464>:	cmp	x0, #0x1
+   0xffff00004054eb9c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+468>:	cset	w8, eq	// eq = none
+   0xffff00004054eba0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+472>:	mov	w9, #0x7                   	// #7
+   0xffff00004054eba4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+476>:	stp	xzr, xzr, [sp, #152]
+   0xffff00004054eba8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+480>:	stp	x8, x10, [sp, #104]
+   0xffff00004054ebac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+484>:	mov	x8, #0xffffffffffffffff    	// #-1
+   0xffff00004054ebb0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+488>:	stp	x9, xzr, [sp, #120]
+   0xffff00004054ebb4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+492>:	stp	xzr, x8, [sp, #136]
+   0xffff00004054ebb8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+496>:	str	xzr, [sp, #168]
+   0xffff00004054ebbc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+500>:	bl	0xffff000040407710 <_ZN6kernel4task9scheduler22live_peer_cpu_for_test17h87901ef1c6b096cdE>
+   0xffff00004054ebc0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+504>:	mov	x21, x0
+   0xffff00004054ebc4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+508>:	mov	x2, x1
+   0xffff00004054ebc8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+512>:	tbz	w21, #0, 0xffff00004054ebe0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+536>
+   0xffff00004054ebcc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+516>:	cbnz	x2, 0xffff00004054ebe0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+536>
+   0xffff00004054ebd0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+520>:	bl	0xffff0000404079d4 <_ZN6kernel4task9scheduler37live_peer_cpu_for_test_excluding_cpu017hc5172d76799cdfbcE>
+   0xffff00004054ebd4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+524>:	tst	w0, #0x1
+   0xffff00004054ebd8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+528>:	csel	x2, x1, xzr, ne	// ne = any
+   0xffff00004054ebdc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+532>:	csinc	x21, x21, xzr, eq	// eq = none
+   0xffff00004054ebe0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+536>:	tbz	w21, #0, 0xffff00004054ede8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1056>
+   0xffff00004054ebe4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+540>:	adrp	x23, 0xffff000041460000 <_ZN6kernel7process20NO_BLOCKING_PM_DEPTH17he25d545c59f55506E+120>
+   0xffff00004054ebe8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+544>:	add	x23, x23, #0x8b0
+   0xffff00004054ebec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+548>:	adrp	x24, 0xffff000041460000 <_ZN6kernel7process20NO_BLOCKING_PM_DEPTH17he25d545c59f55506E+120>
+   0xffff00004054ebf0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+552>:	add	x24, x24, #0x8b4
+   0xffff00004054ebf4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+556>:	adrp	x21, 0xffff000040a31000 <_ZN6kernel7drivers3usb4xhci18XHCI_TRACE_RECORDS17hb98745f4323c2e63E+9784>
+   0xffff00004054ebf8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+560>:	mov	x8, #0xffffffffffffffff    	// #-1
+   0xffff00004054ebfc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+564>:	stlrb	wzr, [x23]
+   0xffff00004054ec00 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+568>:	adrp	x0, 0xffff000040847000
+   0xffff00004054ec04 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+572>:	add	x0, x0, #0x57e
+   0xffff00004054ec08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+576>:	stlrb	wzr, [x24]
+   0xffff00004054ec0c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+580>:	mov	w1, #0xe                   	// #14
+   0xffff00004054ec10 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+584>:	str	x8, [x21, #3560]
+   0xffff00004054ec14 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+588>:	adrp	x8, 0xffff000041460000 <_ZN6kernel7process20NO_BLOCKING_PM_DEPTH17he25d545c59f55506E+120>
+   0xffff00004054ec18 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+592>:	str	xzr, [x8, #2232]
+   0xffff00004054ec1c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+596>:	add	x8, sp, #0x250
+   0xffff00004054ec20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+600>:	bl	0xffff0000404a2034 <_ZN6kernel4task7kthread16kthread_run_with17h75aeb7045659303dE>
+   0xffff00004054ec24 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+604>:	ldrb	w8, [sp, #592]
+   0xffff00004054ec28 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+608>:	mov	x29, xzr
+   0xffff00004054ec2c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+612>:	mov	x25, xzr
+   0xffff00004054ec30 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+616>:	mov	x20, xzr
+   0xffff00004054ec34 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+620>:	tbnz	w8, #0, 0xffff00004054f238 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2160>
+   0xffff00004054ec38 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+624>:	ldr	x8, [sp, #600]
+   0xffff00004054ec3c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+628>:	mov	x28, x21
+   0xffff00004054ec40 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+632>:	mov	w21, #0x4240                	// #16960
+   0xffff00004054ec44 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+636>:	adrp	x9, 0xffff000040847000
+   0xffff00004054ec48 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+640>:	add	x9, x9, #0x58c
+   0xffff00004054ec4c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+644>:	movk	w21, #0xf, lsl #16
+   0xffff00004054ec50 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+648>:	str	x8, [sp, #232]
+   0xffff00004054ec54 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+652>:	mov	w8, #0x9                   	// #9
+   0xffff00004054ec58 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+656>:	stp	x9, x8, [sp, #112]
+   0xffff00004054ec5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+660>:	mrs	x8, cntfrq_el0
+   0xffff00004054ec60 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+664>:	cbz	x8, 0xffff00004054ec9c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+724>
+   0xffff00004054ec64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+668>:	mrs	x9, cntvct_el0
+   0xffff00004054ec68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+672>:	udiv	x10, x9, x8
+   0xffff00004054ec6c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+676>:	msub	x9, x10, x8, x9
+   0xffff00004054ec70 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+680>:	umulh	x11, x9, x21
+   0xffff00004054ec74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+684>:	mul	x9, x9, x21
+   0xffff00004054ec78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+688>:	cmp	xzr, x11
+   0xffff00004054ec7c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+692>:	csinv	x9, x9, xzr, eq	// eq = none
+   0xffff00004054ec80 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+696>:	udiv	x8, x9, x8
+   0xffff00004054ec84 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+700>:	mul	x9, x10, x21
+   0xffff00004054ec88 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+704>:	umulh	x10, x10, x21
+   0xffff00004054ec8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+708>:	adds	x8, x9, x8
+   0xffff00004054ec90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+712>:	csinv	x8, x8, xzr, cc	// cc = lo, ul, last
+   0xffff00004054ec94 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+716>:	cmp	xzr, x10
+   0xffff00004054ec98 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+720>:	csinv	x8, x8, xzr, eq	// eq = none
+   0xffff00004054ec9c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+724>:	ldarb	w9, [x23]
+   0xffff00004054eca0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+728>:	cbz	w9, 0xffff00004054ee40 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1144>
+   0xffff00004054eca4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+732>:	ldarb	w8, [x23]
+   0xffff00004054eca8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+736>:	cbz	w8, 0xffff00004054eeac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1252>
+   0xffff00004054ecac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+740>:	mrs	x8, daif
+   0xffff00004054ecb0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+744>:	mov	w9, #0xffffffff            	// #-1
+   0xffff00004054ecb4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+748>:	mov	w10, #0x1                   	// #1
+   0xffff00004054ecb8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+752>:	eor	w8, w9, w8, lsr #7
+   0xffff00004054ecbc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+756>:	adrp	x9, 0xffff000040a31000 <_ZN6kernel7drivers3usb4xhci18XHCI_TRACE_RECORDS17hb98745f4323c2e63E+9784>
+   0xffff00004054ecc0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+760>:	add	x9, x9, #0xc50
+   0xffff00004054ecc4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+764>:	and	x8, x8, #0x1
+   0xffff00004054ecc8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+768>:	str	x8, [sp, #136]
+   0xffff00004054eccc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+772>:	mrs	x8, daif
+   0xffff00004054ecd0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+776>:	msr	daifset, #0xf
+   0xffff00004054ecd4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+780>:	ldaxrb	w11, [x9]
+   0xffff00004054ecd8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+784>:	cbnz	w11, 0xffff00004054eed0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1288>
+   0xffff00004054ecdc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+788>:	stxrb	w11, w10, [x9]
+   0xffff00004054ece0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+792>:	cbnz	w11, 0xffff00004054ecd4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+780>
+   0xffff00004054ece4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+796>:	mrs	x10, tpidr_el1
+   0xffff00004054ece8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+800>:	cbz	x10, 0xffff00004054eee4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1308>
+   0xffff00004054ecec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+804>:	mrs	x10, tpidr_el1
+   0xffff00004054ecf0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+808>:	cbz	x10, 0xffff00004054eef0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1320>
+   0xffff00004054ecf4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+812>:	ldr	x12, [x10]
+   0xffff00004054ecf8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+816>:	b	0xffff00004054eef4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1324>
+   0xffff00004054ecfc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+820>:	mov	w8, #0x1                   	// #1
+   0xffff00004054ed00 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+824>:	stxrb	w9, w8, [x26]
+   0xffff00004054ed04 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+828>:	cbnz	w9, 0xffff00004054e9fc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+52>
+   0xffff00004054ed08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+832>:	b	0xffff00004054ea20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+88>
+   0xffff00004054ed0c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+836>:	adrp	x8, 0xffff000040847000
+   0xffff00004054ed10 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+840>:	add	x8, x8, #0x758
+   0xffff00004054ed14 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+844>:	nop
+   0xffff00004054ed18 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+848>:	adr	x9, 0xffff000040555a1c <_ZN44_$LT$$RF$T$u20$as$u20$core..fmt..Display$GT$3fmt17he66bc751ad2c6c6eE>
+   0xffff00004054ed1c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+852>:	stlrb	wzr, [x26]
+   0xffff00004054ed20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+856>:	adrp	x21, 0xffff000040b04000 <TRACE_BUFFERS+521344>
+   0xffff00004054ed24 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+860>:	add	x21, x21, #0xf94
+   0xffff00004054ed28 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+864>:	stp	x8, x9, [sp, #48]
+   0xffff00004054ed2c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+868>:	adrp	x8, 0xffff000040847000
+   0xffff00004054ed30 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+872>:	add	x8, x8, #0x7b0
+   0xffff00004054ed34 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+876>:	mov	w9, #0x2                   	// #2
+   0xffff00004054ed38 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+880>:	str	xzr, [sp, #624]
+   0xffff00004054ed3c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+884>:	str	x8, [sp, #592]
+   0xffff00004054ed40 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+888>:	add	x8, sp, #0x30
+   0xffff00004054ed44 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+892>:	str	x9, [sp, #600]
+   0xffff00004054ed48 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+896>:	mov	w9, #0x1                   	// #1
+   0xffff00004054ed4c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+900>:	str	x8, [sp, #608]
+   0xffff00004054ed50 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+904>:	str	x9, [sp, #616]
+   0xffff00004054ed54 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+908>:	mrs	x20, daif
+   0xffff00004054ed58 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+912>:	msr	daifset, #0x3
+   0xffff00004054ed5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+916>:	ldaxrb	w8, [x21]
+   0xffff00004054ed60 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+920>:	cbz	w8, 0xffff00004054ee30 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1128>
+   0xffff00004054ed64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+924>:	clrex
+   0xffff00004054ed68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+928>:	adrp	x8, 0xffff000040b04000 <TRACE_BUFFERS+521344>
+   0xffff00004054ed6c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+932>:	mov	w9, #0x1                   	// #1
+   0xffff00004054ed70 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+936>:	b	0xffff00004054ed78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+944>
+   0xffff00004054ed74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+940>:	isb
+   0xffff00004054ed78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+944>:	ldrb	w10, [x8, #3988]
+   0xffff00004054ed7c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+948>:	cbnz	w10, 0xffff00004054ed74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+940>
+   0xffff00004054ed80 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+952>:	ldaxrb	w10, [x21]
+   0xffff00004054ed84 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+956>:	cbnz	w10, 0xffff00004054ed64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+924>
+   0xffff00004054ed88 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+960>:	stxrb	w10, w9, [x21]
+   0xffff00004054ed8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+964>:	cbnz	w10, 0xffff00004054ed78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+944>
+   0xffff00004054ed90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+968>:	add	x8, x21, #0x1
+   0xffff00004054ed94 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+972>:	add	x9, sp, #0x250
+   0xffff00004054ed98 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+976>:	adrp	x1, 0xffff00004082b000
+   0xffff00004054ed9c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+980>:	add	x1, x1, #0x7e0
+   0xffff00004054eda0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+984>:	str	x8, [sp, #640]
+   0xffff00004054eda4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+988>:	nop
+   0xffff00004054eda8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+992>:	adr	x8, 0xffff000040605b70 <_ZN59_$LT$core..fmt..Arguments$u20$as$u20$core..fmt..Display$GT$3fmt17h5f369b80e129a98fE>
+   0xffff00004054edac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+996>:	add	x0, sp, #0x280
+   0xffff00004054edb0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1000>:	add	x2, sp, #0x128
+   0xffff00004054edb4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1004>:	stp	x9, x8, [sp, #232]
+   0xffff00004054edb8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1008>:	adrp	x8, 0xffff000040805000
+   0xffff00004054edbc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1012>:	add	x8, x8, #0xd70
+   0xffff00004054edc0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1016>:	mov	w9, #0x1                   	// #1
+   0xffff00004054edc4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1020>:	stp	x8, x9, [sp, #296]
+   0xffff00004054edc8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1024>:	add	x8, sp, #0xe8
+   0xffff00004054edcc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1028>:	stp	x9, xzr, [sp, #320]
+   0xffff00004054edd0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1032>:	str	x8, [sp, #312]
+   0xffff00004054edd4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1036>:	bl	0xffff000040605b80 <_ZN4core3fmt5write17h59373aed596da09fE>
+   0xffff00004054edd8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1040>:	mov	w19, wzr
+   0xffff00004054eddc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1044>:	stlrb	wzr, [x21]
+   0xffff00004054ede0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1048>:	msr	daif, x20
+   0xffff00004054ede4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1052>:	b	0xffff00004054f768 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+3488>
+   0xffff00004054ede8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1056>:	mov	x20, xzr
+   0xffff00004054edec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1060>:	mov	x25, xzr
+   0xffff00004054edf0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1064>:	mov	x29, xzr
+   0xffff00004054edf4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1068>:	adrp	x21, 0xffff00004147f000 <_ZN6kernel3ipc5stdin12STDIN_BUFFER17hdc26ea8f25f429acE.llvm.1715941770912626423+1816>
+   0xffff00004054edf8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1072>:	add	x8, x28, #0xf4
+   0xffff00004054edfc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1076>:	ldr	x23, [x21, #2320]
+   0xffff00004054ee00 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1080>:	ldarb	w28, [x8]
+   0xffff00004054ee04 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1084>:	ldaxrb	w8, [x26]
+   0xffff00004054ee08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1088>:	cbnz	w8, 0xffff00004054f254 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2188>
+   0xffff00004054ee0c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1092>:	b	0xffff00004054f2d4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2316>
+   0xffff00004054ee10 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1096>:	mov	w8, #0x1                   	// #1
+   0xffff00004054ee14 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1100>:	stxrb	w9, w8, [x21]
+   0xffff00004054ee18 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1104>:	cbnz	w9, 0xffff00004054ea5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+148>
+   0xffff00004054ee1c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1108>:	b	0xffff00004054ea80 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+184>
+   0xffff00004054ee20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1112>:	mov	w9, #0x1                   	// #1
+   0xffff00004054ee24 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1116>:	stxrb	w10, w9, [x21]
+   0xffff00004054ee28 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1120>:	cbnz	w10, 0xffff00004054eafc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+308>
+   0xffff00004054ee2c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1124>:	b	0xffff00004054eb20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+344>
+   0xffff00004054ee30 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1128>:	mov	w8, #0x1                   	// #1
+   0xffff00004054ee34 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1132>:	stxrb	w9, w8, [x21]
+   0xffff00004054ee38 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1136>:	cbnz	w9, 0xffff00004054ed68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+928>
+   0xffff00004054ee3c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1140>:	b	0xffff00004054ed90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+968>
+   0xffff00004054ee40 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1144>:	mov	w9, #0xa11f                	// #41247
+   0xffff00004054ee44 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1148>:	movk	w9, #0x7, lsl #16
+   0xffff00004054ee48 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1152>:	ldarb	w10, [x24]
+   0xffff00004054ee4c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1156>:	cbnz	w10, 0xffff00004054eca4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+732>
+   0xffff00004054ee50 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1160>:	mrs	x10, cntfrq_el0
+   0xffff00004054ee54 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1164>:	cbz	x10, 0xffff00004054ee90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1224>
+   0xffff00004054ee58 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1168>:	mrs	x11, cntvct_el0
+   0xffff00004054ee5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1172>:	udiv	x12, x11, x10
+   0xffff00004054ee60 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1176>:	msub	x11, x12, x10, x11
+   0xffff00004054ee64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1180>:	umulh	x13, x11, x21
+   0xffff00004054ee68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1184>:	mul	x11, x11, x21
+   0xffff00004054ee6c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1188>:	cmp	xzr, x13
+   0xffff00004054ee70 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1192>:	csinv	x11, x11, xzr, eq	// eq = none
+   0xffff00004054ee74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1196>:	udiv	x10, x11, x10
+   0xffff00004054ee78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1200>:	mul	x11, x12, x21
+   0xffff00004054ee7c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1204>:	umulh	x12, x12, x21
+   0xffff00004054ee80 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1208>:	adds	x10, x11, x10
+   0xffff00004054ee84 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1212>:	csinv	x10, x10, xzr, cc	// cc = lo, ul, last
+   0xffff00004054ee88 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1216>:	cmp	xzr, x12
+   0xffff00004054ee8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1220>:	csinv	x10, x10, xzr, eq	// eq = none
+   0xffff00004054ee90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1224>:	sub	x10, x10, x8
+   0xffff00004054ee94 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1228>:	cmp	x10, x9
+   0xffff00004054ee98 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1232>:	b.hi	0xffff00004054eca4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+732>  // b.pmore
+   0xffff00004054ee9c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1236>:	isb
+   0xffff00004054eea0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1240>:	ldarb	w10, [x23]
+   0xffff00004054eea4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1244>:	cbz	w10, 0xffff00004054ee48 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1152>
+   0xffff00004054eea8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1248>:	b	0xffff00004054eca4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+732>
+   0xffff00004054eeac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1252>:	mov	x20, xzr
+   0xffff00004054eeb0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1256>:	mov	x25, xzr
+   0xffff00004054eeb4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1260>:	mov	x29, xzr
+   0xffff00004054eeb8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1264>:	ldr	x23, [sp, #232]
+   0xffff00004054eebc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1268>:	ldr	x0, [x23, #16]
+   0xffff00004054eec0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1272>:	bl	0xffff000040415890 <_ZN6kernel4task9scheduler34release_cpu_affine_thread_for_test17h3cf7220bc58f5f17E>
+   0xffff00004054eec4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1276>:	mrs	x8, cntfrq_el0
+   0xffff00004054eec8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1280>:	cbnz	x8, 0xffff00004054efd0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1544>
+   0xffff00004054eecc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1284>:	b	0xffff00004054f008 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1600>
+   0xffff00004054eed0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1288>:	mov	w9, #0x1                   	// #1
+   0xffff00004054eed4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1292>:	clrex
+   0xffff00004054eed8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1296>:	msr	daif, x8
+   0xffff00004054eedc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1300>:	str	x9, [sp, #152]
+   0xffff00004054eee0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1304>:	b	0xffff00004054efa4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1500>
+   0xffff00004054eee4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1308>:	mrs	x10, mpidr_el1
+   0xffff00004054eee8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1312>:	and	x12, x10, #0xff
+   0xffff00004054eeec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1316>:	b	0xffff00004054eef4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1324>
+   0xffff00004054eef0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1320>:	mov	x12, xzr
+   0xffff00004054eef4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1324>:	adrp	x10, 0xffff000040a31000 <_ZN6kernel7drivers3usb4xhci18XHCI_TRACE_RECORDS17hb98745f4323c2e63E+9784>
+   0xffff00004054eef8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1328>:	adrp	x11, 0xffff000040a31000 <_ZN6kernel7drivers3usb4xhci18XHCI_TRACE_RECORDS17hb98745f4323c2e63E+9784>
+   0xffff00004054eefc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1332>:	add	x11, x11, #0xc40
+   0xffff00004054ef00 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1336>:	str	xzr, [x10, #3144]
+   0xffff00004054ef04 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1340>:	stlr	x12, [x11]
+   0xffff00004054ef08 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1344>:	mrs	x12, tpidr_el1
+   0xffff00004054ef0c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1348>:	cbz	x12, 0xffff00004054ef20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1368>
+   0xffff00004054ef10 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1352>:	mrs	x12, tpidr_el1
+   0xffff00004054ef14 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1356>:	cbz	x12, 0xffff00004054ef34 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1388>
+   0xffff00004054ef18 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1360>:	ldr	x12, [x12]
+   0xffff00004054ef1c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1364>:	b	0xffff00004054ef28 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1376>
+   0xffff00004054ef20 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1368>:	mrs	x12, mpidr_el1
+   0xffff00004054ef24 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1372>:	and	x12, x12, #0xff
+   0xffff00004054ef28 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1376>:	cmp	x12, #0xf
+   0xffff00004054ef2c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1380>:	mov	w13, #0xf                   	// #15
+   0xffff00004054ef30 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1384>:	csel	x12, x12, x13, cc	// cc = lo, ul, last
+   0xffff00004054ef34 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1388>:	adrp	x13, 0xffff000040a7d000 <_ZN6kernel7tracing9providers8teardown15EXIT_KICK_SLOTS17hbc345e82d99d5506E+504>
+   0xffff00004054ef38 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1392>:	add	x13, x13, #0xa18
+   0xffff00004054ef3c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1396>:	ldr	x12, [x13, x12, lsl #3]
+   0xffff00004054ef40 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1400>:	cbz	x12, 0xffff00004054ef8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1476>
+   0xffff00004054ef44 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1404>:	mrs	x12, tpidr_el1
+   0xffff00004054ef48 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1408>:	cbz	x12, 0xffff00004054ef5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1428>
+   0xffff00004054ef4c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1412>:	mrs	x12, tpidr_el1
+   0xffff00004054ef50 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1416>:	cbz	x12, 0xffff00004054ef6c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1444>
+   0xffff00004054ef54 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1420>:	ldr	x12, [x12]
+   0xffff00004054ef58 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1424>:	b	0xffff00004054ef64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1436>
+   0xffff00004054ef5c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1428>:	mrs	x12, mpidr_el1
+   0xffff00004054ef60 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1432>:	and	x12, x12, #0xff
+   0xffff00004054ef64 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1436>:	cmp	x12, #0x10
+   0xffff00004054ef68 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1440>:	b.cs	0xffff00004054ef8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1476>  // b.hs, b.nlast
+   0xffff00004054ef6c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1444>:	adrp	x13, 0xffff000040a1c000 <RETIRE_EMPTY_ONLINE_MASK+128>
+   0xffff00004054ef70 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1448>:	add	x13, x13, #0x3c0
+   0xffff00004054ef74 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1452>:	add	x12, x13, x12, lsl #6
+   0xffff00004054ef78 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1456>:	add	x12, x12, #0x40
+   0xffff00004054ef7c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1460>:	ldxr	x13, [x12]
+   0xffff00004054ef80 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1464>:	add	x13, x13, #0x1
+   0xffff00004054ef84 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1468>:	stxr	w14, x13, [x12]
+   0xffff00004054ef88 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1472>:	cbnz	w14, 0xffff00004054ef7c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1460>
+   0xffff00004054ef8c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1476>:	mov	x12, #0xffffffffffffffff    	// #-1
+   0xffff00004054ef90 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1480>:	str	xzr, [sp, #152]
+   0xffff00004054ef94 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1484>:	str	x12, [x10, #3144]
+   0xffff00004054ef98 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1488>:	stlr	x12, [x11]
+   0xffff00004054ef9c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1492>:	stlrb	wzr, [x9]
+   0xffff00004054efa0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1496>:	msr	daif, x8
+   0xffff00004054efa4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1500>:	add	x0, sp, #0x128
+   0xffff00004054efa8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1504>:	mov	w1, #0x72                  	// #114
+   0xffff00004054efac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1508>:	bl	0xffff00004054e7f8 <_ZN6kernel14test_framework8registry17tty_irq_pm_inject17h204c1f6b05588868E>
+   0xffff00004054efb0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1512>:	ldp	x29, x8, [sp, #296]
+   0xffff00004054efb4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1516>:	ldp	x25, x20, [sp, #312]
+   0xffff00004054efb8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1520>:	str	x8, [sp, #128]
+   0xffff00004054efbc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1524>:	ldr	x23, [sp, #232]
+   0xffff00004054efc0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1528>:	ldr	x0, [x23, #16]
+   0xffff00004054efc4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1532>:	bl	0xffff000040415890 <_ZN6kernel4task9scheduler34release_cpu_affine_thread_for_test17h3cf7220bc58f5f17E>
+   0xffff00004054efc8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1536>:	mrs	x8, cntfrq_el0
+   0xffff00004054efcc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1540>:	cbz	x8, 0xffff00004054f008 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1600>
+   0xffff00004054efd0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1544>:	mrs	x9, cntvct_el0
+   0xffff00004054efd4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1548>:	udiv	x10, x9, x8
+   0xffff00004054efd8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1552>:	msub	x9, x10, x8, x9
+   0xffff00004054efdc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1556>:	umulh	x11, x9, x21
+   0xffff00004054efe0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1560>:	mul	x9, x9, x21
+   0xffff00004054efe4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1564>:	cmp	xzr, x11
+   0xffff00004054efe8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1568>:	csinv	x9, x9, xzr, eq	// eq = none
+   0xffff00004054efec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1572>:	udiv	x8, x9, x8
+   0xffff00004054eff0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1576>:	mul	x9, x10, x21
+   0xffff00004054eff4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1580>:	umulh	x10, x10, x21
+   0xffff00004054eff8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1584>:	adds	x8, x9, x8
+   0xffff00004054effc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1588>:	csinv	x8, x8, xzr, cc	// cc = lo, ul, last
+   0xffff00004054f000 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1592>:	cmp	xzr, x10
+   0xffff00004054f004 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1596>:	csinv	x8, x8, xzr, eq	// eq = none
+   0xffff00004054f008 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1600>:	add	x9, x23, #0x1d
+   0xffff00004054f00c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1604>:	adrp	x16, 0xffff000041460000 <_ZN6kernel7process20NO_BLOCKING_PM_DEPTH17he25d545c59f55506E+120>
+   0xffff00004054f010 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1608>:	ldarb	w9, [x9]
+   0xffff00004054f014 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1612>:	cbnz	w9, 0xffff00004054f118 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1872>
+   0xffff00004054f018 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1616>:	adrp	x9, 0xffff00004148a000 <_ZN6kernel9arch_impl7aarch6414context_switch27INLINE_SCHEDULE_ERET_FRAMES17hd0cbcd6e2b9a8aefE+1504>
+   0xffff00004054f01c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1620>:	add	x9, x9, #0xd38
+   0xffff00004054f020 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1624>:	adrp	x10, 0xffff000040a7d000 <_ZN6kernel7tracing9providers8teardown15EXIT_KICK_SLOTS17hbc345e82d99d5506E+504>
+   0xffff00004054f024 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1628>:	add	x10, x10, #0xb30
+   0xffff00004054f028 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1632>:	adrp	x11, 0xffff000040a25000 <PT_ROOT_DROPPED_MID_RETIRE+1024>
+   0xffff00004054f02c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1636>:	add	x11, x11, #0xd00
+   0xffff00004054f030 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1640>:	mrs	x12, cntfrq_el0
+   0xffff00004054f034 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1644>:	cbz	x12, 0xffff00004054f070 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1704>
+   0xffff00004054f038 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1648>:	mrs	x13, cntvct_el0
+   0xffff00004054f03c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1652>:	udiv	x14, x13, x12
+   0xffff00004054f040 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1656>:	msub	x13, x14, x12, x13
+   0xffff00004054f044 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1660>:	umulh	x15, x13, x21
+   0xffff00004054f048 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1664>:	mul	x13, x13, x21
+   0xffff00004054f04c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1668>:	cmp	xzr, x15
+   0xffff00004054f050 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1672>:	csinv	x13, x13, xzr, eq	// eq = none
+   0xffff00004054f054 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1676>:	udiv	x12, x13, x12
+   0xffff00004054f058 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1680>:	mul	x13, x14, x21
+   0xffff00004054f05c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1684>:	umulh	x14, x14, x21
+   0xffff00004054f060 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1688>:	adds	x12, x13, x12
+   0xffff00004054f064 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1692>:	csinv	x12, x12, xzr, cc	// cc = lo, ul, last
+   0xffff00004054f068 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1696>:	cmp	xzr, x14
+   0xffff00004054f06c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1700>:	csinv	x12, x12, xzr, eq	// eq = none
+   0xffff00004054f070 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1704>:	sub	x12, x12, x8
+   0xffff00004054f074 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1708>:	cmp	x12, x21
+   0xffff00004054f078 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1712>:	b.cs	0xffff00004054f118 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1872>  // b.hs, b.nlast
+   0xffff00004054f07c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1716>:	ldarb	w12, [x9]
+   0xffff00004054f080 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1720>:	cbz	w12, 0xffff00004054f0a4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1756>
+   0xffff00004054f084 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1724>:	mrs	x12, tpidr_el1
+   0xffff00004054f088 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1728>:	cbz	x12, 0xffff00004054f0ac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1764>
+   0xffff00004054f08c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1732>:	mrs	x12, tpidr_el1
+   0xffff00004054f090 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1736>:	cbz	x12, 0xffff00004054f0bc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1780>
+   0xffff00004054f094 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1740>:	ldr	x12, [x12]
+   0xffff00004054f098 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1744>:	cmp	x12, #0x10
+   0xffff00004054f09c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1748>:	b.cc	0xffff00004054f0bc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1780>  // b.lo, b.ul, b.last
+   0xffff00004054f0a0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1752>:	b	0xffff00004054f0d4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1804>
+   0xffff00004054f0a4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1756>:	mov	x12, x10
+   0xffff00004054f0a8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1760>:	b	0xffff00004054f0f4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1836>
+   0xffff00004054f0ac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1764>:	mrs	x12, mpidr_el1
+   0xffff00004054f0b0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1768>:	and	x12, x12, #0xff
+   0xffff00004054f0b4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1772>:	cmp	x12, #0x10
+   0xffff00004054f0b8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1776>:	b.cs	0xffff00004054f0d4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1804>  // b.hs, b.nlast
+   0xffff00004054f0bc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1780>:	add	x12, x11, x12, lsl #6
+   0xffff00004054f0c0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1784>:	add	x12, x12, #0x40
+   0xffff00004054f0c4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1788>:	ldxr	x13, [x12]
+   0xffff00004054f0c8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1792>:	add	x13, x13, #0x1
+   0xffff00004054f0cc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1796>:	stxr	w14, x13, [x12]
+   0xffff00004054f0d0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1800>:	cbnz	w14, 0xffff00004054f0c4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1788>
+   0xffff00004054f0d4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1804>:	mrs	x12, tpidr_el1
+   0xffff00004054f0d8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1808>:	cbz	x12, 0xffff00004054f0f0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1832>
+   0xffff00004054f0dc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1812>:	ldr	x12, [x12, #8]
+   0xffff00004054f0e0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1816>:	add	x13, x12, #0x338
+   0xffff00004054f0e4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1820>:	cmp	x12, #0x0
+   0xffff00004054f0e8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1824>:	csel	x12, x10, x13, eq	// eq = none
+   0xffff00004054f0ec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1828>:	b	0xffff00004054f0f4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1836>
+   0xffff00004054f0f0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1832>:	mov	x12, x10
+   0xffff00004054f0f4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1836>:	ldxr	x13, [x12]
+   0xffff00004054f0f8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1840>:	add	x13, x13, #0x1
+   0xffff00004054f0fc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1844>:	stxr	w14, x13, [x12]
+   0xffff00004054f100 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1848>:	cbnz	w14, 0xffff00004054f0f4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1836>
+   0xffff00004054f104 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1852>:	wfi
+   0xffff00004054f108 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1856>:	ldr	x12, [sp, #232]
+   0xffff00004054f10c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1860>:	add	x12, x12, #0x1d
+   0xffff00004054f110 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1864>:	ldarb	w12, [x12]
+   0xffff00004054f114 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1868>:	cbz	w12, 0xffff00004054f030 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1640>
+   0xffff00004054f118 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1872>:	ldr	x8, [sp, #232]
+   0xffff00004054f11c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1876>:	add	x8, x8, #0x1d
+   0xffff00004054f120 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1880>:	ldarb	w8, [x8]
+   0xffff00004054f124 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1884>:	cbz	w8, 0xffff00004054f200 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2104>
+   0xffff00004054f128 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1888>:	ldr	x8, [sp, #232]
+   0xffff00004054f12c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1892>:	add	x9, x8, #0x1d
+   0xffff00004054f130 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1896>:	ldarb	w10, [x9]
+   0xffff00004054f134 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1900>:	cbnz	w10, 0xffff00004054f1f0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2088>
+   0xffff00004054f138 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1904>:	ldarb	w9, [x9]
+   0xffff00004054f13c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1908>:	cbnz	w9, 0xffff00004054f1f0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2088>
+   0xffff00004054f140 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1912>:	adrp	x9, 0xffff00004148a000 <_ZN6kernel9arch_impl7aarch6414context_switch27INLINE_SCHEDULE_ERET_FRAMES17hd0cbcd6e2b9a8aefE+1504>
+   0xffff00004054f144 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1916>:	add	x9, x9, #0xd38
+   0xffff00004054f148 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1920>:	adrp	x10, 0xffff000040a7d000 <_ZN6kernel7tracing9providers8teardown15EXIT_KICK_SLOTS17hbc345e82d99d5506E+504>
+   0xffff00004054f14c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1924>:	add	x10, x10, #0xb30
+   0xffff00004054f150 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1928>:	adrp	x11, 0xffff000040a25000 <PT_ROOT_DROPPED_MID_RETIRE+1024>
+   0xffff00004054f154 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1932>:	add	x11, x11, #0xd00
+   0xffff00004054f158 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1936>:	ldarb	w12, [x9]
+   0xffff00004054f15c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1940>:	cbz	w12, 0xffff00004054f180 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1976>
+   0xffff00004054f160 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1944>:	mrs	x12, tpidr_el1
+   0xffff00004054f164 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1948>:	cbz	x12, 0xffff00004054f188 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1984>
+   0xffff00004054f168 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1952>:	mrs	x12, tpidr_el1
+   0xffff00004054f16c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1956>:	cbz	x12, 0xffff00004054f198 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2000>
+   0xffff00004054f170 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1960>:	ldr	x12, [x12]
+   0xffff00004054f174 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1964>:	cmp	x12, #0x10
+   0xffff00004054f178 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1968>:	b.cc	0xffff00004054f198 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2000>  // b.lo, b.ul, b.last
+   0xffff00004054f17c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1972>:	b	0xffff00004054f1b0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2024>
+   0xffff00004054f180 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1976>:	mov	x12, x10
+   0xffff00004054f184 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1980>:	b	0xffff00004054f1d0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2056>
+   0xffff00004054f188 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1984>:	mrs	x12, mpidr_el1
+   0xffff00004054f18c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1988>:	and	x12, x12, #0xff
+   0xffff00004054f190 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1992>:	cmp	x12, #0x10
+   0xffff00004054f194 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1996>:	b.cs	0xffff00004054f1b0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2024>  // b.hs, b.nlast
+   0xffff00004054f198 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2000>:	add	x12, x11, x12, lsl #6
+   0xffff00004054f19c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2004>:	add	x12, x12, #0x40
+   0xffff00004054f1a0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2008>:	ldxr	x13, [x12]
+   0xffff00004054f1a4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2012>:	add	x13, x13, #0x1
+   0xffff00004054f1a8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2016>:	stxr	w14, x13, [x12]
+   0xffff00004054f1ac <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2020>:	cbnz	w14, 0xffff00004054f1a0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2008>
+   0xffff00004054f1b0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2024>:	mrs	x12, tpidr_el1
+   0xffff00004054f1b4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2028>:	cbz	x12, 0xffff00004054f1cc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2052>
+   0xffff00004054f1b8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2032>:	ldr	x12, [x12, #8]
+   0xffff00004054f1bc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2036>:	add	x13, x12, #0x338
+   0xffff00004054f1c0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2040>:	cmp	x12, #0x0
+   0xffff00004054f1c4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2044>:	csel	x12, x10, x13, eq	// eq = none
+   0xffff00004054f1c8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2048>:	b	0xffff00004054f1d0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2056>
+   0xffff00004054f1cc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2052>:	mov	x12, x10
+   0xffff00004054f1d0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2056>:	ldxr	x13, [x12]
+   0xffff00004054f1d4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2060>:	add	x13, x13, #0x1
+   0xffff00004054f1d8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2064>:	stxr	w14, x13, [x12]
+   0xffff00004054f1dc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2068>:	cbnz	w14, 0xffff00004054f1d0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2056>
+   0xffff00004054f1e0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2072>:	add	x12, x8, #0x1d
+   0xffff00004054f1e4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2076>:	wfi
+   0xffff00004054f1e8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2080>:	ldarb	w12, [x12]
+   0xffff00004054f1ec <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2084>:	cbz	w12, 0xffff00004054f158 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+1936>
+   0xffff00004054f1f0 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2088>:	add	x8, x8, #0x18
+   0xffff00004054f1f4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2092>:	ldar	wzr, [x8]
+   0xffff00004054f1f8 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2096>:	mov	w8, #0x1                   	// #1
+   0xffff00004054f1fc <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2100>:	str	x8, [sp, #168]
+   0xffff00004054f200 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2104>:	ldr	x8, [x28, #3560]
+   0xffff00004054f204 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2108>:	str	x8, [sp, #144]
+   0xffff00004054f208 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2112>:	ldr	x9, [x16, #2232]
+   0xffff00004054f20c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2116>:	ldr	x8, [sp, #232]
+   0xffff00004054f210 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2120>:	str	x9, [sp, #160]
+   0xffff00004054f214 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2124>:	ldxr	x9, [x8]
+   0xffff00004054f218 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2128>:	subs	x9, x9, #0x1
+   0xffff00004054f21c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2132>:	stlxr	w10, x9, [x8]
+   0xffff00004054f220 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2136>:	cbnz	w10, 0xffff00004054f214 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2124>
+   0xffff00004054f224 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2140>:	b.ne	0xffff00004054f234 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2156>  // b.any
+   0xffff00004054f228 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2144>:	add	x0, sp, #0xe8
+   0xffff00004054f22c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2148>:	dmb	ishld
+   0xffff00004054f230 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2152>:	bl	0xffff0000404d5f74 <_ZN5alloc4sync16Arc$LT$T$C$A$GT$9drop_slow17h29cb743bb8fabea9E>
+   0xffff00004054f234 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2156>:	ldr	x28, [sp, #40]
+   0xffff00004054f238 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2160>:	adrp	x24, 0xffff00004147f000 <_ZN6kernel3ipc5stdin12STDIN_BUFFER17hdc26ea8f25f429acE.llvm.1715941770912626423+1816>
+   0xffff00004054f23c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2164>:	adrp	x21, 0xffff00004147f000 <_ZN6kernel3ipc5stdin12STDIN_BUFFER17hdc26ea8f25f429acE.llvm.1715941770912626423+1816>
+   0xffff00004054f240 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2168>:	add	x8, x28, #0xf4
+   0xffff00004054f244 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2172>:	ldr	x23, [x21, #2320]
+   0xffff00004054f248 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2176>:	ldarb	w28, [x8]
+   0xffff00004054f24c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2180>:	ldaxrb	w8, [x26]
+   0xffff00004054f250 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2184>:	cbz	w8, 0xffff00004054f2d4 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2316>
+   0xffff00004054f254 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2188>:	clrex
+   0xffff00004054f258 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2192>:	mov	w8, #0x1                   	// #1
+   0xffff00004054f25c <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2196>:	b	0xffff00004054f264 <_ZN6kernel14test_framework8registry21run_tty_irq_pm_oracle17h49c3a348114f23fbE+2204>
+End of assembler dump.

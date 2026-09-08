@@ -1,0 +1,29 @@
+
+====================================================================
+            Breenix Kernel GDB Configuration (multi-arch)
+====================================================================
+
+Architecture-neutral commands (auto-detect x86_64 / aarch64):
+  breenix-connect      - Connect to QEMU on localhost:1234
+  breenix-breaks       - Set common kernel breakpoints
+  show-all-registers   - Display all registers
+  show-stack [n]       - Display stack (default: 32 entries)
+  ctx                  - Show execution context
+
+x86_64-specific:
+  show-segments        - Display segment registers
+  show-control         - Display control registers (CR0-CR4, CR8)
+  show-idt-entry <n>   - Examine IDT entry
+
+ARM64-specific:
+  show-sysregs         - Display system registers (ELR, ESR, FAR, ...)
+  decode-esr           - Decode ESR_EL1 exception syndrome
+
+Quick start (x86_64):
+  ./breenix-gdb-chat/scripts/gdb_session.sh start
+
+Quick start (ARM64):
+  ./breenix-gdb-chat/scripts/gdb_session.sh start --arch aarch64
+
+0x0000000040080000 in _start ()
+Breakpoint 1 at 0xffff000040564518: file kernel/src/task/softirq_tests.rs, line 207.

@@ -1,0 +1,83 @@
+Source revision: a15ffa600817ce100dce7d8a4c268c1fb6119099 (see parent parallel gate transcripts)
+[
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-1-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-1-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4039229:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-2-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-2-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=6097452:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-3-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-3-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4409206:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-4-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-4-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=3331184:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-5-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-5-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=5869697:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-1-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-1-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=15926611:dispatches=1:iterations=41:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-2-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-2-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4864925:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-3-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-3-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4408896:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-4-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-4-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=5066368:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  },
+  {
+    "user": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-5-user.txt",
+    "kernel": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-5-kernel.txt",
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=3:wait_ns=9190699:dispatches=5:iterations=25:verdict=ok]"
+    ],
+    "panic_markers_both_ports": 0
+  }
+]

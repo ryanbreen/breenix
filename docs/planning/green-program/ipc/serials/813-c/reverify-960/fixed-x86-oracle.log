@@ -1,0 +1,260 @@
+Revision: dfe14edf6e7c90b1973464e31acee1fb6c014989
+Artifacts: /root/breenix-i813pd-tmp/breenix_813_x86_64.e1LVqI
+dfe14edf6e7c90b1973464e31acee1fb6c014989
+Revision: dfe14edf6e7c90b1973464e31acee1fb6c014989
+[GATE_SUITE:stem=aarch64_testing_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=block_request_lifetime_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=blocking_fd_eagain_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=capture_bxcap_schema_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=capture_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=console_read_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=context_restore_structure:attempt=1:timeout_s=300:wall_s=212:exit=0]
+[GATE_SUITE:stem=coreproof_component_h_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_coverage_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_mutation_register_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=coreproof_sites_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=critical_path_logging_census_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=ctx_diag_ring_sample_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=degenerate_transfer_fd_validation_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_fact_census_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dispatch_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=dispatch_strand_census_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=dma_and_log_sink_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=entry_point_df_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=exec_lock_order_structure:attempt=1:timeout_s=300:wall_s=7:exit=0]
+[GATE_SUITE:stem=exit_tally_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ext2_disk_size_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ext2_lock_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=fcntl_pm_contention_gate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=fork_lock_order_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_pipefail_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=gate_capture_drain_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=gate_qmp_backstop_structure:attempt=1:timeout_s=300:wall_s=6:exit=0]
+[GATE_SUITE:stem=gate_structure_preflight_wiring_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=green_program_envelope_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=launcher_smoke_xhci_evidence_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=lockup_capture_guard_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=loopback_pump_structure:attempt=1:timeout_s=300:wall_s=14:exit=0]
+[GATE_SUITE:stem=masked_binary_load_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=mmap_floor_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=net_lock_structure:attempt=1:timeout_s=300:wall_s=15:exit=0]
+[GATE_SUITE:stem=parallels_capture_structure:attempt=1:timeout_s=300:wall_s=11:exit=0]
+[GATE_SUITE:stem=parallels_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=pipe_fifo_blocking_structure:attempt=1:timeout_s=300:wall_s=6:exit=0]
+[GATE_SUITE:stem=poll_tcp_gate_wiring_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=preempt_bracket_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=qemu_host_lock_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=qemu_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=ring_span_report_site_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ring_span_unfiltered_report_site_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=run_inspector_import_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=serial_line_atomicity_structure:attempt=1:timeout_s=300:wall_s=4:exit=0]
+[GATE_SUITE:stem=signal_eintr_predicate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=strand_handoff_structure:attempt=1:timeout_s=300:wall_s=7:exit=0]
+[GATE_SUITE:stem=structure_preflight_parallel_structure:attempt=1:timeout_s=300:wall_s=11:exit=0]
+[GATE_SUITE:stem=syscall_return_register_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=teardown_rustfmt_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=teardown_structure:attempt=1:timeout_s=300:wall_s=84:exit=0]
+[GATE_SUITE:stem=terminal_edge_capture_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=timer_wake_dispatch_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=trace_ring_depth_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=tracing_provider_gate_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=ttbr0_shadow_reconciliation_structure:attempt=1:timeout_s=300:wall_s=77:exit=0]
+[GATE_SUITE:stem=tty_irq_fg_structure:attempt=1:timeout_s=300:wall_s=5:exit=0]
+[GATE_SUITE:stem=tty_irq_pm_structure:attempt=1:timeout_s=300:wall_s=5:exit=0]
+[GATE_SUITE:stem=tty_oracle_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=udp_ports_lock_irq_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=udp_socket_lock_irq_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=unix_stream_blocking_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=x86_boot_tests_profile_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=x86_smp_enum_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=xhci_wait_irq_order_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_PREFLIGHT:structure_suites=68/68:critical_path_lines=260:pinned=120]
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: x86_64
+
+[1/3] Building libbreenix-libc (x86_64)...
+  Finished `release` profile [optimized] target(s) in 2.46s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (x86_64)...
+  Finished `release` profile [optimized] target(s) in 0.58s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (227160 bytes)
+  Installed exec_smoke.elf (178072 bytes)
+  Installed exec_smoke_target.elf (185048 bytes)
+  Installed fork_smoke.elf (187616 bytes)
+  Installed block_eintr_oracle.elf (190024 bytes)
+  Installed poll_tcp_oracle.elf (207192 bytes)
+  Installed futex_handoff_oracle.elf (187632 bytes)
+  Installed tty_oracle.elf (218400 bytes)
+  Installed df_preempt_oracle.elf (187648 bytes)
+  Installed syscall_enosys.elf (177536 bytes)
+  Installed clock_gettime_test.elf (184568 bytes)
+  Installed file_read_test.elf (182408 bytes)
+  Installed lseek_test.elf (182520 bytes)
+  Installed fs_write_test.elf (182904 bytes)
+  Installed fs_rename_test.elf (182720 bytes)
+  Installed fs_large_file_test.elf (182616 bytes)
+  Installed fs_directory_test.elf (183168 bytes)
+  Installed fs_link_test.elf (182816 bytes)
+  Installed access_test.elf (177952 bytes)
+  Installed devfs_test.elf (182448 bytes)
+  Installed cwd_test.elf (182632 bytes)
+  Installed getdents_test.elf (184000 bytes)
+  Installed pipe_test.elf (188256 bytes)
+  Installed pipe2_test.elf (188928 bytes)
+  Installed pipe_fifo_blocking_oracle.elf (224840 bytes)
+  Installed pipe_fifo_blocking_supervisor.elf (178048 bytes)
+  Installed unix_stream_blocking_oracle.elf (208024 bytes)
+  Installed unix_stream_blocking_supervisor.elf (178056 bytes)
+  Installed dup_test.elf (189160 bytes)
+  Installed fcntl_test.elf (188752 bytes)
+  Installed poll_test.elf (189032 bytes)
+  Installed select_test.elf (188920 bytes)
+  Installed epoll_test.elf (182840 bytes)
+  Installed nonblock_test.elf (188752 bytes)
+  Installed brk_test.elf (182496 bytes)
+  Installed signal_handler_test.elf (187904 bytes)
+  Installed signal_return_test.elf (188320 bytes)
+  Installed signal_regs_test.elf (188216 bytes)
+  Installed sigaltstack_test.elf (189016 bytes)
+  Installed sigsuspend_test.elf (188872 bytes)
+  Installed pause_test.elf (188368 bytes)
+  Installed tty_test.elf (188080 bytes)
+  Installed session_test.elf (187976 bytes)
+  Installed unix_socket_test.elf (205328 bytes)
+  Installed unix_named_socket_test.elf (195352 bytes)
+  Installed fifo_test.elf (198456 bytes)
+  Installed fork_test.elf (188104 bytes)
+  Installed fork_memory_test.elf (188672 bytes)
+  Installed fork_state_test.elf (189184 bytes)
+  Installed waitpid_test.elf (188152 bytes)
+  Installed exec_argv_test.elf (178216 bytes)
+  Installed cloexec_test.elf (192600 bytes)
+  Installed kill_process_group_test.elf (188488 bytes)
+  Installed sigchld_test.elf (182448 bytes)
+  Installed sigkill_teardown_test.elf (206720 bytes)
+  Installed sigchld_job_test.elf (187536 bytes)
+  Installed ctrl_c_test.elf (187992 bytes)
+  Installed job_control_test.elf (187656 bytes)
+  Installed signal_fork_test.elf (188168 bytes)
+  Installed signal_exec_test.elf (188728 bytes)
+  Installed wnohang_timing_test.elf (182544 bytes)
+  Installed fork_pending_signal_test.elf (187752 bytes)
+  Installed shell_pipe_test.elf (183136 bytes)
+  Installed pipeline_test.elf (191592 bytes)
+  Installed cow_cleanup_test.elf (182544 bytes)
+  Installed cow_sole_owner_test.elf (187016 bytes)
+  Installed cow_stress_test.elf (187104 bytes)
+  Installed cow_readonly_test.elf (187048 bytes)
+  Installed cow_signal_test.elf (188320 bytes)
+  Installed resolution.elf (191032 bytes)
+  Installed init_shell.elf (262512 bytes)
+  Installed argv_test.elf (184352 bytes)
+  Installed job_table_test.elf (192240 bytes)
+  Installed test_mmap.elf (182232 bytes)
+  Installed clonevm_exec_test.elf (184672 bytes)
+  Installed stdin_test.elf (182288 bytes)
+  Installed true_test.elf (182568 bytes)
+  Installed false_test.elf (182568 bytes)
+  Installed echo_argv_test.elf (182480 bytes)
+  Installed mkdir_argv_test.elf (182680 bytes)
+  Installed rm_argv_test.elf (182488 bytes)
+  Installed cp_mv_argv_test.elf (182816 bytes)
+  Installed nonblock_eagain_test.elf (183720 bytes)
+  Installed blocking_recv_test.elf (188120 bytes)
+  Installed tcp_client_test.elf (187632 bytes)
+  Installed wait_stress.elf (195560 bytes)
+  Installed simple_exit.elf (170584 bytes)
+  Installed simple_exit0.elf (170584 bytes)
+  Installed spawn_smoke_target.elf (170600 bytes)
+  Installed counter.elf (177648 bytes)
+  Installed spinner.elf (177648 bytes)
+  Installed hello_time.elf (177640 bytes)
+  Installed heartbeat.elf (189112 bytes)
+  Installed xhci_counters.elf (183120 bytes)
+  Installed fbinfo_test.elf (187576 bytes)
+  Installed demo.elf (189704 bytes)
+  Installed bounce.elf (275032 bytes)
+  Installed rectangles.elf (197088 bytes)
+  Installed particles.elf (193936 bytes)
+  Installed confetti.elf (189240 bytes)
+  Installed tones.elf (184216 bytes)
+  Installed fart.elf (191704 bytes)
+  Installed http_test.elf (468552 bytes)
+  Installed register_init_test.elf (177104 bytes)
+  Installed head_test.elf (183064 bytes)
+  Installed tail_test.elf (183064 bytes)
+  Installed wc_test.elf (183640 bytes)
+  Installed which_test.elf (182968 bytes)
+  Installed cat_test.elf (183248 bytes)
+  Installed ls_test.elf (183304 bytes)
+  Installed exec_stack_argv_test.elf (183440 bytes)
+  Installed exec_from_ext2_test.elf (188080 bytes)
+  Installed pipe_fork_test.elf (188832 bytes)
+  Installed pipe_concurrent_test.elf (188728 bytes)
+  Installed fs_block_alloc_test.elf (188624 bytes)
+  Installed cow_oom_test.elf (182512 bytes)
+  Installed signal_test.elf (187872 bytes)
+  Installed alarm_test.elf (182768 bytes)
+  Installed itimer_test.elf (187304 bytes)
+  Installed timer_test.elf (182160 bytes)
+  Installed sleep_debug_test.elf (188600 bytes)
+  Installed pipe_refcount_test.elf (199960 bytes)
+  Installed udp_socket_test.elf (193408 bytes)
+  Installed tcp_socket_test.elf (202296 bytes)
+  Installed tcp_dup_listener_test.elf (188848 bytes)
+  Installed tcp_cloexec_exec_test.elf (189456 bytes)
+  Installed tcp_blocking_test.elf (203440 bytes)
+  Installed concurrent_recv_stress.elf (188952 bytes)
+  Installed dns_test.elf (195256 bytes)
+  Installed net_test.elf (191592 bytes)
+  Installed http_fetch_test.elf (464400 bytes)
+  Installed loopback_wake_test.elf (190456 bytes)
+  Installed syscall_diagnostic_test.elf (170864 bytes)
+  Installed pty_test.elf (183016 bytes)
+  Installed signal_exec_check.elf (177888 bytes)
+  Installed bsh.elf (579240 bytes)
+  Installed bwm.elf (331424 bytes)
+  Installed btop.elf (184200 bytes)
+  Installed burl.elf (483328 bytes)
+  Installed init.elf (187496 bytes)
+  Installed telnetd.elf (184080 bytes)
+  Installed blogd.elf (181968 bytes)
+  Installed btrace.elf (198936 bytes)
+  Installed bless.elf (185624 bytes)
+  Installed bcheck.elf (299144 bytes)
+  Installed biconkit.elf (248040 bytes)
+  Installed guskit.elf (391432 bytes)
+  Installed bterm.elf (338520 bytes)
+  Installed blog.elf (330992 bytes)
+  Installed bfontpicker.elf (346152 bytes)
+  Installed blauncher.elf (325256 bytes)
+  Installed bsshd.elf (314264 bytes)
+  Installed bssh.elf (322488 bytes)
+
+========================================
+  STD BUILD COMPLETE (x86_64)
+  Installed: 153 binaries
+========================================
+   Compiling kernel v0.1.0 (/root/breenix-i813pd/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-i813pd)
+    Finished `release` profile [optimized] target(s) in 19.05s
+   Compiling kernel v0.1.0 (/root/breenix-i813pd/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-i813pd)
+    Finished `release` profile [optimized] target(s) in 16.57s
+     Running `target/release/qemu-uefi`
+[qemu-uefi] Using UEFI image: /root/breenix-i813pd/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (30s elapsed, host qemu-system-x86_64 count=0)...
+QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (60s elapsed, host qemu-system-x86_64 count=0)...
+PASS: x86_64, 30 arms, exact byte tallies and worker reaped
+PASS: x86_64, 12 console/tty arms
+PASS: blocking I/O oracle x86_64 boots=1; serials=/root/breenix-i813pd-tmp/breenix_813_x86_64.e1LVqI/boot_*/serial.txt
+GATE_EXIT=0

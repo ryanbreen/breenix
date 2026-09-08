@@ -14,8 +14,8 @@
 //! # The barrier, and why it is not optional
 //!
 //! The threads are created before any of them may spin. Creating a kernel
-//! thread is not cheap -- it allocates and maps a kernel stack -- and the boot
-//! thread doing the creating is itself preemptible, so a peer that is runnable
+//! thread is not cheap -- it allocates and maps a kernel stack -- and the
+//! coordinator doing the creating is itself preemptible, so a peer that is runnable
 //! while the later peers are being created takes a full quantum per round away
 //! from the creation. Two earlier versions of this file measured that cost on
 //! the x86 boot-test gate and are recorded in the round doc,
@@ -25,8 +25,9 @@
 //! ready queue, so they still hold a quantum each -- cost 362 s.
 //!
 //! So a peer parks with `kthread_park()`, which blocks it and takes it out of
-//! the ready queue, until the boot thread has created the 9 threads and calls
-//! `kthread_unpark`. The sleeper then waits for `PEERS_SPINNING` to reach
+//! the ready queue, until the schedulable coordinator has created the eight
+//! peers and sleeper and calls `kthread_unpark`. The boot thread creates and
+//! joins that coordinator: ten threads total. The sleeper then waits for `PEERS_SPINNING` to reach
 //! `PEERS` before starting its sleep, so the wait it measures is a wait behind
 //! peers that are actually running. `setup_ms` and `window_ms` on the marker are
 //! those two phases, and `peers_spinning` is the fact the verdict depends on.
@@ -300,6 +301,27 @@ fn emit(overrun_ms: u64, spawned: usize, reason: &str) {
 /// the state it had; the peers and the sleeper need interrupts on to be
 /// preempted at all.
 pub fn run() {
+    let interrupts_were_enabled = crate::arch_interrupts_enabled();
+    if !interrupts_were_enabled {
+        unsafe { arch_enable_interrupts() };
+    }
+    // The boot caller is the idle task on x86. Once a spinning peer runs,
+    // idle cannot finish a partially completed unpark loop until that peer
+    // exits. A queued coordinator can resume while the peers remain runnable.
+    match kthread_run(run_coordinator, "t766_coord") {
+        Ok(handle) => {
+            if kthread_join(&handle).is_err() {
+                emit(0, 0, ":reason=coordinator_join_failed");
+            }
+        }
+        Err(_) => emit(0, 0, ":reason=coordinator_spawn_failed"),
+    }
+    if !interrupts_were_enabled {
+        unsafe { arch_disable_interrupts() };
+    }
+}
+
+fn run_coordinator() {
     MEASURE_OPEN.store(false, Ordering::Release);
     PEERS_RUN.store(true, Ordering::Release);
     PEERS_STARTED.store(0, Ordering::Release);
@@ -342,7 +364,10 @@ pub fn run() {
         );
         let open = now_ns();
         OPEN_NS.store(open, Ordering::Release);
-        SETUP_MS.store(open.saturating_sub(started_ns) / 1_000_000, Ordering::Release);
+        SETUP_MS.store(
+            open.saturating_sub(started_ns) / 1_000_000,
+            Ordering::Release,
+        );
         MEASURE_OPEN.store(true, Ordering::Release);
         // Unpark in a retry loop: a peer that entered `kthread_park()` after a
         // single unpark would block with nobody left to wake it. Repeating the
@@ -353,8 +378,15 @@ pub fn run() {
             if PEERS_SPINNING.load(Ordering::Acquire) as usize >= PEERS {
                 break;
             }
-            for handle in peers.iter() {
+            for (index, handle) in peers.iter().enumerate() {
                 kthread_unpark(handle);
+                // Exercise partial release: the coordinator must regain a
+                // dispatch turn with the first peer already CPU-bound. This
+                // would starve an idle-task coordinator until a backstop.
+                if index == 0 {
+                    scheduler::yield_current();
+                    arch_halt_with_interrupts();
+                }
             }
             if now_ns() >= deadline {
                 BACKSTOPS.fetch_add(1, Ordering::Relaxed);
@@ -403,7 +435,11 @@ pub fn run() {
     };
     let overrun_ms = OVERRUN_MS.load(Ordering::Acquire);
     emit(
-        if overrun_ms == u64::MAX { 0 } else { overrun_ms },
+        if overrun_ms == u64::MAX {
+            0
+        } else {
+            overrun_ms
+        },
         spawned,
         reason,
     );

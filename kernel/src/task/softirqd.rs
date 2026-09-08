@@ -15,10 +15,12 @@
 
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
+use crate::arch_impl::PerCpuOps;
+use spin::Once;
 
 use super::kthread::{
-    kthread_park, kthread_run, kthread_should_stop, kthread_unpark, KthreadHandle,
+    kthread_park_if, kthread_run_on_cpu, kthread_should_stop, kthread_unpark, KthreadHandle,
 };
 use crate::per_cpu;
 
@@ -109,8 +111,31 @@ static SOFTIRQ_HANDLERS: [AtomicPtr<()>; NR_SOFTIRQS] = [
     AtomicPtr::new(core::ptr::null_mut()),
 ];
 
-/// Per-CPU ksoftirqd handle (single CPU for now)
-static KSOFTIRQD: Mutex<Option<KthreadHandle>> = Mutex::new(None);
+// Static ownership keeps handles valid for lock-free IRQ readers.
+// CPU hot-unplug is not implemented; these daemons live for the kernel lifetime.
+static KSOFTIRQD: [Once<KthreadHandle>; 8] = [const { Once::new() }; 8];
+
+pub(crate) fn current_cpu() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize
+    }
+}
+
+#[cfg(any(feature = "testing", feature = "boot_tests"))]
+pub(crate) static KSOFTIRQD_TASKLET_DISPATCHES: crate::tracing::counter::TraceCounter =
+    crate::tracing::counter::TraceCounter::new(
+        "KSOFTIRQD_TASKLET_DISPATCHES",
+        "Daemon tasklet callbacks",
+    );
+
+fn local_handle() -> Option<&'static KthreadHandle> {
+    KSOFTIRQD.get(current_cpu())?.get()
+}
 
 /// Flag indicating softirq system is initialized
 static SOFTIRQ_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -119,7 +144,7 @@ static SOFTIRQ_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Returns None if softirq system is not initialized
 #[allow(dead_code)] // Part of public softirq API surface
 pub fn ksoftirqd_tid() -> Option<u64> {
-    KSOFTIRQD.lock().as_ref().map(|h| h.tid())
+    local_handle().map(|h| h.tid())
 }
 
 /// Register a softirq handler
@@ -233,7 +258,7 @@ pub fn do_softirq() -> bool {
 
 /// Wake up ksoftirqd to process remaining softirqs
 fn wakeup_ksoftirqd() {
-    if let Some(ref handle) = *KSOFTIRQD.lock() {
+    if let Some(handle) = local_handle() {
         kthread_unpark(handle);
     }
 }
@@ -241,8 +266,6 @@ fn wakeup_ksoftirqd() {
 /// ksoftirqd kernel thread function
 /// Processes softirqs that were deferred due to high load
 fn ksoftirqd_fn() {
-    log::info!("KSOFTIRQD_SPAWN: ksoftirqd/0 started");
-
     // Enable interrupts so timer can preempt us and switch to other threads
     unsafe {
         arch_enable_interrupts();
@@ -270,6 +293,10 @@ fn ksoftirqd_fn() {
                 if !handler_ptr.is_null() {
                     let handler: SoftirqHandler = unsafe { core::mem::transmute(handler_ptr) };
                     if let Some(softirq_type) = SoftirqType::from_nr(nr) {
+                        #[cfg(any(feature = "testing", feature = "boot_tests"))]
+                        if softirq_type == SoftirqType::Tasklet {
+                            KSOFTIRQD_TASKLET_DISPATCHES.increment();
+                        }
                         handler(softirq_type);
                     }
                 }
@@ -283,7 +310,7 @@ fn ksoftirqd_fn() {
             // This handles handlers that re-raised softirqs
         } else {
             // No work - park until woken by wakeup_ksoftirqd()
-            kthread_park();
+            kthread_park_if(|| per_cpu::softirq_pending() == 0);
         }
     }
 }
@@ -298,36 +325,37 @@ pub fn init_softirq() {
 
     log::info!("SOFTIRQ_INIT: Initializing softirq subsystem");
 
-    // Spawn ksoftirqd thread
-    match kthread_run(ksoftirqd_fn, "ksoftirqd/0") {
-        Ok(handle) => {
-            *KSOFTIRQD.lock() = Some(handle);
-            log::info!("SOFTIRQ_INIT: ksoftirqd spawned successfully");
-        }
-        Err(e) => {
-            log::error!("SOFTIRQ_INIT: Failed to spawn ksoftirqd: {:?}", e);
-        }
-    }
+    init_online_daemons();
 
     log::info!("SOFTIRQ_INIT: Softirq subsystem initialized");
 }
 
-/// Shutdown the softirq subsystem
-#[allow(dead_code)] // Part of public API for clean system shutdown
-pub fn shutdown_softirq() {
-    if !SOFTIRQ_INITIALIZED.load(Ordering::Acquire) {
-        return;
+/// Called by the boot CPU at initial setup and after secondary CPU bringup.
+/// The boot coordinator serializes these calls; published slots are retained.
+pub fn init_online_daemons() {
+    #[cfg(target_arch = "aarch64")]
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    #[cfg(target_arch = "x86_64")]
+    let online = 1;
+    for cpu in 0..online.min(KSOFTIRQD.len()) {
+        // CPU0's boot stack cannot dispatch pinned workers until init handoff.
+        // Publishing it earlier strands a Ready thread through the boot tests.
+        #[cfg(target_arch = "aarch64")]
+        if cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0 {
+            continue;
+        }
+        if KSOFTIRQD[cpu].get().is_some() {
+            continue;
+        }
+        let handle = KSOFTIRQD[cpu].call_once(|| {
+            let name = alloc::format!("ksoftirqd/{cpu}");
+            kthread_run_on_cpu(ksoftirqd_fn, &name, cpu)
+                .expect("could not spawn CPU-local ksoftirqd")
+        });
+        // The worker may have parked before its handle became visible to IRQs.
+        // Wake once after publication to cover work raised in that interval.
+        kthread_unpark(handle);
     }
-
-    log::info!("Shutting down softirq subsystem");
-
-    // Stop ksoftirqd
-    if let Some(handle) = KSOFTIRQD.lock().take() {
-        let _ = super::kthread::kthread_stop(&handle);
-        let _ = super::kthread::kthread_join(&handle);
-    }
-
-    SOFTIRQ_INITIALIZED.store(false, Ordering::Release);
 }
 
 /// Check if softirq system is initialized

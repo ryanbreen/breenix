@@ -1,0 +1,1 @@
+{"state":"CLOSED","title":"x86 boot_tests-only profile: run_x86_retire_cohort_gate pairing-fork fails (pre-existing, blocks #813 PR-A's x86 oracle boot)","url":"https://github.com/ryanbreen/breenix/issues/927"}

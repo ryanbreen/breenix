@@ -25,6 +25,8 @@ for serial_log in "$@"; do
     [[ -r "$serial_log" ]] || fail "serial log is not readable: $serial_log"
 done
 
+python3 "$SCRIPT_DIR/score-softirq-deferral.py" "$@" || exit $?
+
 [[ -r "$ALLOWLIST_PATH" ]] || fail "allowlist is not readable: $ALLOWLIST_PATH"
 
 # Run the strand census first. The kernel emits a ledger snapshot from three

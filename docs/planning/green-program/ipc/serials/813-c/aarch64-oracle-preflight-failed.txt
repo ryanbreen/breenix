@@ -1,0 +1,8 @@
+7cd13af22acf5076e86c103a0a7a44d1bc87dd1a
+Artifacts: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813pc/wt/.gate-tmp/breenix_813_aarch64.v1vhw7
+7cd13af22acf5076e86c103a0a7a44d1bc87dd1a
+[GATE_PREFLIGHT:structure_suites=66/67:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 67 structure suite(s) red: x86_boot_tests_profile_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813pc/wt/.gate-tmp/breenix_gate_structure_preflight.HVptIM)
+blocking I/O oracle gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
+blocking I/O oracle gate: FAIL at docker/qemu/run-blocking-io-oracle-gate.sh:74: false (exit 1)
+exit=1

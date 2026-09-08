@@ -133,10 +133,21 @@ fn oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms() {
         [PIPE_WRITE_ORACLE:x86_64:fifo:full_block:verdict=PASS:bytes=4096:expected=4096]\n\
         [PIPE_WRITE_SUMMARY:x86_64:passed=2:failed=0]\n\
         [PIPE_WRITE_RESULT:x86_64:status=0]\n";
+    let mut good = good.to_string();
+    let console_arms = [("blocking", 1), ("nonblock_open", 0), ("nonblock_fcntl", 0),
+        ("readiness_partial", 2), ("eintr", 1), ("immediate", 8)];
+    for device in ["/dev/console", "/dev/tty"] {
+        for (arm, bytes) in console_arms {
+            good.push_str(&format!("[CONSOLE_READ_ORACLE:x86_64:{device}:{arm}:verdict=PASS:bytes={bytes}]\n"));
+        }
+    }
+    good.push_str("[CONSOLE_READ_SUMMARY:x86_64:passed=12:failed=0]\n");
+    let good = good.as_str();
     let run = |source: &str, serial: &str| {
         fs::write(dir.join("serial.txt"), serial).unwrap();
         Command::new("python3").args(["-c", source, "x86_64"])
-            .arg(&dir).arg("full_block").output().unwrap()
+            .arg(&dir).arg("full_block").arg("--console")
+            .args(console_arms.iter().map(|(arm, _)| *arm)).output().unwrap()
     };
     let result = run(&scorer, good);
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
@@ -151,7 +162,10 @@ fn oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms() {
         assert!(!result.status.success(), "accepted {fault}");
         assert!(String::from_utf8_lossy(&result.stderr).contains("kernel crash"));
     }
-    for bad in [good.replace("fifo:full_block", "fifo:missing_arm"),
+    for bad in [good.replace("/dev/tty:blocking", "/dev/tty:missing_arm"),
+        good.replace("blocking:verdict=PASS:bytes=1", "blocking:verdict=PASS:bytes=0"),
+        good.replace("CONSOLE_READ_SUMMARY:x86_64:passed=12", "CONSOLE_READ_SUMMARY:x86_64:passed=11"),
+        good.replace("fifo:full_block", "fifo:missing_arm"),
         good.replace("bytes=4096", "bytes=4095"), good.replace("status=0", "status=1"),
         good.replace("verdict=PASS", "verdict=FAIL"), good.replace("passed=2", "passed=1"),
         format!("{good}[PIPE_WRITE_RESULT:x86_64:status=0]\n")] {

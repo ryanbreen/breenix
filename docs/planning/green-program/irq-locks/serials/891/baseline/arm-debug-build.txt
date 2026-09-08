@@ -1,0 +1,60 @@
+   Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+   Compiling autocfg v1.5.1
+   Compiling az v1.2.1
+   Compiling crossbeam-utils v0.8.23
+   Compiling bootloader_api v0.11.13 (https://github.com/rust-osdev/bootloader.git?rev=707db11201b19541b7cfef84037866ee03aa0927#707db112)
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/kernel)
+   Compiling num-traits v0.2.19
+   Compiling alloc v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling byteorder v1.5.0
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-task v0.3.34
+   Compiling conquer-util v0.3.0
+   Compiling tock-registers v0.8.1
+   Compiling futures-core v0.3.34
+   Compiling slab v0.4.12
+   Compiling micromath v2.1.0
+   Compiling rlibc v1.0.0
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling log v0.4.34
+   Compiling lock_api v0.4.14
+   Compiling conquer-once v0.4.0
+   Compiling aarch64-cpu v9.4.0
+   Compiling futures-util v0.3.34
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.9
+   Compiling crossbeam-queue v0.3.14
+   Compiling linked_list_allocator v0.10.6
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+error: linking with `rust-lld` failed: exit status: 1
+  |
+  = note:  "rust-lld" "-flavor" "gnu" "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/.tmp/rustcujkCo7/symbols.o" "<3 object files omitted>" "--as-needed" "-Bstatic" "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/{libkernel-bc4c6c736b986404.rlib,liblog-258dce6f8771f8f6.rlib,libnoto_sans_mono_bitmap-f608391e6dc58368.rlib,libcrossbeam_queue-e21938c891b6c515.rlib,libcrossbeam_utils-bb455bab223e7f9c.rlib,libconquer_once-0e1b3c8d0111f8c8.rlib,liblinked_list_allocator-0cc31cf488c85f26.rlib,libspinning_top-581abfa053518e66.rlib,libbootloader_api-9ab4b895c187141e.rlib,libspin-49e364591d410b30.rlib,liblock_api-5b5d1bff93196a7a.rlib,libscopeguard-020a4e099916e4aa.rlib,librlibc-72934c4c326538e7.rlib,liballoc-e342c802ef5d21ad.rlib,libcore-ad532f48b4e96dc6.rlib,libcompiler_builtins-debac8e82482bf42.rlib}.rlib" "-L" "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/.tmp/rustcujkCo7/raw-dylibs" "-Bdynamic" "--eh-frame-hdr" "-z" "noexecstack" "-o" "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42" "--gc-sections" "-O1" "-Tkernel/src/arch_impl/aarch64/linker.ld" "--fix-cortex-a53-843419" "--orphan-handling=error"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.0.rcgu.o:(.debug_loc) is being placed in '.debug_loc'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.0.rcgu.o:(.debug_abbrev) is being placed in '.debug_abbrev'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.0.rcgu.o:(.debug_info) is being placed in '.debug_info'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.0.rcgu.o:(.debug_aranges) is being placed in '.debug_aranges'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.0.rcgu.o:(.debug_ranges) is being placed in '.debug_ranges'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.0.rcgu.o:(.debug_str) is being placed in '.debug_str'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.0.rcgu.o:(.debug_frame) is being placed in '.debug_frame'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.0.rcgu.o:(.debug_line) is being placed in '.debug_line'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.1.rcgu.o:(.debug_loc) is being placed in '.debug_loc'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.1.rcgu.o:(.debug_abbrev) is being placed in '.debug_abbrev'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.1.rcgu.o:(.debug_info) is being placed in '.debug_info'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.1.rcgu.o:(.debug_aranges) is being placed in '.debug_aranges'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.1.rcgu.o:(.debug_ranges) is being placed in '.debug_ranges'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.1.rcgu.o:(.debug_str) is being placed in '.debug_str'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.1.rcgu.o:(.debug_frame) is being placed in '.debug_frame'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/kernel_aarch64-35b0906c9bbc6f42.kernel_aarch64.1fc115432213b007-cgu.1.rcgu.o:(.debug_line) is being placed in '.debug_line'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/libkernel-bc4c6c736b986404.rlib(kernel-bc4c6c736b986404.kernel.3dfd83c83a566da7-cgu.01.rcgu.o):(.debug_loc) is being placed in '.debug_loc'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/libkernel-bc4c6c736b986404.rlib(kernel-bc4c6c736b986404.kernel.3dfd83c83a566da7-cgu.01.rcgu.o):(.debug_abbrev) is being placed in '.debug_abbrev'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/libkernel-bc4c6c736b986404.rlib(kernel-bc4c6c736b986404.kernel.3dfd83c83a566da7-cgu.01.rcgu.o):(.debug_info) is being placed in '.debug_info'
+          rust-lld: error: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/deps/libkernel-bc4c6c736b986404.rlib(kernel-bc4c6c736b986404.kernel.3dfd83c83a566da7-cgu.01.rcgu.o):(.debug_aranges) is being placed in '.debug_aranges'
+          rust-lld: error: too many errors emitted, stopping now (use --error-limit=0 to see all errors)
+          
+
+error: could not compile `kernel` (bin "kernel-aarch64") due to 1 previous error

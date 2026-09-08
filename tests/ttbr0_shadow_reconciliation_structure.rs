@@ -30,7 +30,6 @@
 //! is recorded verbatim under
 //! docs/planning/green-program/aarch64-testing/serials/slice1b/
 
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,7 +58,10 @@ fn rust_sources_below(relative: &str) -> &'static Vec<(String, String)> {
                     .expect("source below repository root")
                     .to_string_lossy()
                     .replace('\\', "/");
-                out.push((relative, fs::read_to_string(path).expect("read Rust source")));
+                out.push((
+                    relative,
+                    fs::read_to_string(path).expect("read Rust source"),
+                ));
             }
         }
     }
@@ -829,8 +831,7 @@ fn last_call_argument(body: &str, call: &str) -> Option<String> {
 fn settles_both_shadows(body: &str) -> bool {
     let publishes = last_call_argument(body, "set_saved_process_cr3")
         .is_some_and(|root| !root.is_empty() && root != "0");
-    let retires =
-        last_call_argument(body, "set_next_cr3").is_some_and(|pending| pending == "0");
+    let retires = last_call_argument(body, "set_next_cr3").is_some_and(|pending| pending == "0");
     publishes && retires
 }
 
@@ -844,10 +845,8 @@ fn settles_both_shadows(body: &str) -> bool {
 /// 0; this is its counterpart, and the two are not interchangeable. Scored on
 /// the LAST write to each word for the same reason.
 fn zeroes_both_shadows(body: &str) -> bool {
-    let cleared =
-        last_call_argument(body, "set_saved_process_cr3").is_some_and(|root| root == "0");
-    let retired =
-        last_call_argument(body, "set_next_cr3").is_some_and(|pending| pending == "0");
+    let cleared = last_call_argument(body, "set_saved_process_cr3").is_some_and(|root| root == "0");
+    let retired = last_call_argument(body, "set_next_cr3").is_some_and(|pending| pending == "0");
     cleared && retired
 }
 
@@ -1033,7 +1032,10 @@ fn the_dispatch_ttbr0_switch_settles_both_shadows() {
         switch.contains("msr ttbr0_el1"),
         "the dispatch switch must be the site that installs the register"
     );
-    assert!(!operand.is_empty(), "find the value the dispatch switch installs");
+    assert!(
+        !operand.is_empty(),
+        "find the value the dispatch switch installs"
+    );
     assert_eq!(
         last_call_argument(switch, "set_saved_process_cr3").as_deref(),
         Some(operand.as_str()),
@@ -2099,8 +2101,13 @@ fn unresolved_caller_borne(
             let signature = function_signature(source, &name);
             let body = without_line_comments(&raw_body);
             for argument in call_arguments(&body, &publish.function) {
-                let provenance =
-                    value_provenance(&signature, &body, &argument, &register_readers, dispatch_tag);
+                let provenance = value_provenance(
+                    &signature,
+                    &body,
+                    &argument,
+                    &register_readers,
+                    dispatch_tag,
+                );
                 if !provenance.is_accounted() {
                     out.push(format!(
                         "{file}::{name} -> {}({argument}) [{}]",
@@ -2249,8 +2256,10 @@ fn the_publication_census_catches_an_untagged_root() {
     )];
     let census = shadow_publish_census(&sources, tag);
     assert!(
-        census.iter().any(|publish| publish.provenance == Provenance::CallerBorne
-            && publish.function == "adopt_process_ttbr0"),
+        census
+            .iter()
+            .any(|publish| publish.provenance == Provenance::CallerBorne
+                && publish.function == "adopt_process_ttbr0"),
         "the discipline publishing its raw operand is caller-borne, which the census fails on \
          inside the discipline module"
     );
@@ -2422,7 +2431,14 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
     fs::create_dir_all(&scratch).expect("create the scratch directory for the gate legs");
 
     for (gate, variable, baseline) in gates {
-        let serial = repo_text(baseline);
+        let mut serial = repo_text(baseline);
+        // Synthetic scorer fixture extension for the new production control;
+        // the saved historical serial remains unchanged. This is not a boot.
+        if variable == "BREENIX_PROD_SCORE_ONLY" {
+            serial.push_str(
+                "\n[INPUT_INJECT_NEGATIVE_CONTROL:request=0xb8130004:probe=-25:verdict=PASS]\n",
+            );
+        }
         assert!(
             serial.contains("[TTBR0_ASID_CENSUS:untagged=0:tagged="),
             "{baseline} is the green baseline for {gate} and has to carry the census it is the \
@@ -2441,7 +2457,7 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
         let (passed, output) = leg("green", &serial);
         assert!(
             passed,
-            "{gate} has to pass the serial it was recorded green on, or the failing legs below \
+            "{gate} has to pass the extended scorer fixture, or the failing legs below \
              say nothing: {output}"
         );
 
@@ -2532,8 +2548,7 @@ fn asid_tag_constructions(source: &str, discipline_tag: (u64, u32)) -> Vec<Strin
         if !line.contains('|') {
             continue;
         }
-        if line.contains("USER_ASID_TTBR0") || asid_tag(line) == Some(discipline_tag)
-        {
+        if line.contains("USER_ASID_TTBR0") || asid_tag(line) == Some(discipline_tag) {
             let mut record = String::new();
             record.push_str(&(index + 1).to_string());
             record.push_str(": ");
@@ -2735,10 +2750,7 @@ fn offset_writers(touching: &[(String, String)], offset: &str) -> Vec<String> {
 #[test]
 fn each_corridor_shadow_word_has_exactly_one_writer() {
     let sources = rust_sources_below("kernel/src");
-    let offsets = [
-        "PERCPU_SAVED_PROCESS_CR3_OFFSET",
-        "PERCPU_NEXT_CR3_OFFSET",
-    ];
+    let offsets = ["PERCPU_SAVED_PROCESS_CR3_OFFSET", "PERCPU_NEXT_CR3_OFFSET"];
     for offset in offsets {
         let touching = functions_naming(&sources, offset);
         let mut names = Vec::new();
@@ -2802,7 +2814,10 @@ fn the_writer_census_catches_a_second_writer() {
     let path = "kernel/src/arch_impl/aarch64/percpu.rs".to_string();
 
     let one = vec![(path.clone(), one_writer.to_string())];
-    assert_eq!(offset_writers(&functions_naming(&one, offset), offset).len(), 1);
+    assert_eq!(
+        offset_writers(&functions_naming(&one, offset), offset).len(),
+        1
+    );
 
     let mut both = one_writer.to_string();
     both.push_str(second_writer);

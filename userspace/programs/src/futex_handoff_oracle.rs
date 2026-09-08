@@ -51,13 +51,7 @@ unsafe fn map_region() -> *mut u8 {
     }
 }
 
-unsafe fn futex(
-    address: *mut u32,
-    operation: u64,
-    value: u64,
-    timeout: u64,
-    val3: u64,
-) -> i64 {
+unsafe fn futex(address: *mut u32, operation: u64, value: u64, timeout: u64, val3: u64) -> i64 {
     raw::syscall6(
         nr::FUTEX,
         address as u64,
@@ -67,6 +61,29 @@ unsafe fn futex(
         0,
         val3,
     ) as i64
+}
+
+// Use a valid self-targeted request so an accidentally enabled seam would accept
+// the request. ENOTTY, rather than a bad pointer/fd error, is the required rejection here.
+fn input_inject_negative_control() {
+    const INPUT_INJECT: u64 = 0xB8130004;
+    process::setsid().expect("production probe setsid");
+    let fd = libbreenix::fs::open("/dev/console", 0).expect("production probe console");
+    let mut witness = [0u64; 10];
+    witness[0] = process::gettid().expect("production probe tid").raw();
+    witness[1] = fd.raw();
+    witness[3] = b'8' as u64;
+    let result =
+        unsafe { raw::syscall3(nr::IOCTL, fd.raw(), INPUT_INJECT, witness.as_ptr() as u64) as i64 };
+    let verdict = if result == -25 { "PASS" } else { "FAIL" };
+    println!(
+        "[INPUT_INJECT_NEGATIVE_CONTROL:request=0xb8130004:probe={}:verdict={}]",
+        result, verdict
+    );
+    libbreenix::io::close(fd).expect("production probe close");
+    if result != -25 {
+        process::exit(1);
+    }
 }
 
 fn main() {
@@ -93,6 +110,7 @@ fn main() {
         );
         if probe != PROBE_ACK {
             println!("[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe={}]", probe);
+            input_inject_negative_control();
             process::exit(0);
         }
 
@@ -113,7 +131,13 @@ fn main() {
             tv_sec: 0,
             tv_nsec: 50_000_000,
         };
-        let stage3 = futex(word2, FUTEX_WAIT, 9, &timeout as *const Timespec as u64, STAGE3);
+        let stage3 = futex(
+            word2,
+            FUTEX_WAIT,
+            9,
+            &timeout as *const Timespec as u64,
+            STAGE3,
+        );
 
         let _report = futex(word0, FUTEX_WAKE, 0, 0, REPORT);
         println!(

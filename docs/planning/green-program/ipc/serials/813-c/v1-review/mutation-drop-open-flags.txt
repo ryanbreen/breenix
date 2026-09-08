@@ -1,0 +1,31 @@
+revision=9cb3efb327537c7b45657034468a200bf33801b9 + V-1 test changes + single mutation
+kernel/src/syscall/fs.rs
+== compiling console_read_structure ==
+== running console_read_structure  ==
+
+running 6 tests
+test both_architectures_score_all_console_arms ... ok
+test observer_is_read_only_and_injection_requires_witness ... ok
+test same_guard_check_prepare_and_common_enqueue_wake ... ok
+test data_signal_and_immediate_controls_remain_observable ... ok
+test device_modes_poll_and_non_sleeping_device_api ... FAILED
+test production_input_inject_control_requires_actual_rejection ... ok
+
+failures:
+
+---- device_modes_poll_and_non_sleeping_device_api stdout ----
+
+thread 'device_modes_poll_and_non_sleeping_device_api' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c2/wt/tests/console_read_structure.rs:52:5:
+assertion `left == right` failed
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    device_modes_poll_and_non_sleeping_device_api
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+
+exit=101

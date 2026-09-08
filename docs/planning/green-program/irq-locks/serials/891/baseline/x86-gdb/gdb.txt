@@ -1,0 +1,21 @@
+add symbol table from file "target/baseline-891/kernel" with all sections offset by 0x0
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000100003744df in kernel::logger::LogFrameBuffer::write_pixel ()
+Breakpoint 1 at 0x100003315a0
+
+Breakpoint 1, 0x00000100003315a0 in kernel::task::softirq_tests::test_softirq ()
+0x100004a19c4 <_ZN6kernel4task13softirq_tests12test_softirq15ITERATION_COUNT17hc8d6891605816f08E>:	0
+0x100004a19c8 <_ZN6kernel4task13softirq_tests12test_softirq19KSOFTIRQD_PROCESSED17h21e2b8170fef3e96E>:	0
+0x100004a18a8 <_ZN6kernel4task9scheduler17WAKE_SITE_UNBLOCK17h2e680cd6a486071fE>:	8
+0x100004a18d8 <_ZN6kernel4task9scheduler20ENQUEUE_SAME_LOCK_OK17hf0ae196b110396a1E>:	14
+0x00000100000b2262 in kernel::kernel_main_on_kernel_stack ()
+0x100004a19c4 <_ZN6kernel4task13softirq_tests12test_softirq15ITERATION_COUNT17hc8d6891605816f08E>:	25
+0x100004a19c8 <_ZN6kernel4task13softirq_tests12test_softirq19KSOFTIRQD_PROCESSED17h21e2b8170fef3e96E>:	1
+0x100004a18a8 <_ZN6kernel4task9scheduler17WAKE_SITE_UNBLOCK17h2e680cd6a486071fE>:	9
+0x100004a18d8 <_ZN6kernel4task9scheduler20ENQUEUE_SAME_LOCK_OK17hf0ae196b110396a1E>:	16
+0x100003f7bc0 <CTX_SWITCH_TOTAL+64>:	41
+#0  0x00000100000b2262 in kernel::kernel_main_on_kernel_stack ()
+#1  0x0000000000000002 in ?? ()
+#2  0x0000000000000000 in ?? ()
+[Inferior 1 (process 1) detached]
