@@ -1,0 +1,4 @@
+base=09d03f2d02c74f050d299f5c4288df2e06805614; working fix committed as dfe14edf6e7c90b1973464e31acee1fb6c014989
+claim-lint: clean (146 file(s) checked, changed hunks vs c93ecf5297f4).
+claim-lint: 159 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 6 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/ipc/serials/813-c/landing-arm-oracle-boot_1-qemu.log, docs/planning/green-program/ipc/serials/813-c/landing-arm-oracle-install.log, docs/planning/green-program/ipc/serials/813-c/landing-arm-oracle-kernel-build.log, docs/planning/green-program/ipc/serials/813-c/landing-arm-oracle-userspace-build.log, docs/planning/green-program/ipc/serials/813-c/landing-arm-strict-inspector-import.log, docs/planning/green-program/ipc/serials/813-c/reverify-960/source-sha256.json
