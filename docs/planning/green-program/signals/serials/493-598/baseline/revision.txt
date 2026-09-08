@@ -1,0 +1,2 @@
+4394409fca3932296f3468914b5be325ce0d48a6
+Diagnostic boot of uncommitted changes atop the revision above, before code commit 5e1a3923d823e3ab8593f38063f404a10ec51684. Required gate transcripts record the committed revision separately.

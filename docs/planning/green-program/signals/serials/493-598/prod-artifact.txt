@@ -1,0 +1,2 @@
+Source revision: 5e1a3923d823e3ab8593f38063f404a10ec51684
+191e9cf43878627915020e3efd9b312524b87f0d75543eca53924e57a0db7d20  target/aarch64-breenix-kernel/release/kernel-aarch64
