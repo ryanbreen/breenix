@@ -1,0 +1,3 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+After production: own-worktree QEMU process count=0
+Checked executable and worktree path in process arguments; no name-based killing.

@@ -1,0 +1,5 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+command=bash docker/qemu/run-aarch64-service-sequence-gate.sh --boots 2
+profiles=max,cortex-a72
+exit=0
+source=/tmp/breenix_aarch64_service_sequence_gate_20260908T023623Z-83722

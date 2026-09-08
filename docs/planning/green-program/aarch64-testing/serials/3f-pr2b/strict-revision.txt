@@ -1,0 +1,4 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+command=bash docker/qemu/run-aarch64-boot-test-strict.sh 3
+boots=1,2,3
+exit=0

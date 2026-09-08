@@ -447,6 +447,12 @@ fn try_lock_scheduler() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> 
 pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// Reachability credits for wakes parked on each home CPU, under the scheduler
+/// lock. Unlike the cumulative failure census, these credits retire on delivery
+/// or when a completed home scan finds that another path consumed the wake.
+static PINNED_HOLDS_OUTSTANDING: [core::sync::atomic::AtomicU64; MAX_CPUS] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; MAX_CPUS];
+
 /// Pins rejected at publication because the CPU they named is outside the
 /// online range -- counted here, where slice 3c discarded them in silence.
 ///
@@ -571,13 +577,17 @@ static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
 /// the 4 gate legs that score it are in tests/loopback_pump_structure.rs
 pub fn emit_pinned_placement_census() {
     crate::serial_println!(
-        "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}:hold_pen_migrated={}:delivered={}:migration_refused={}:stack_home_conflict={}]",
+        "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}:hold_pen_migrated={}:delivered={}:migration_refused={}:stack_home_conflict={}]\n[PINNED_HOLDS_OUTSTANDING:count={}]",
         PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
         PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed),
         PINNED_HOLD_PEN_MIGRATED.load(Ordering::Relaxed),
         PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
         PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed),
         PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed),
+        PINNED_HOLDS_OUTSTANDING
+            .iter()
+            .map(|count| count.load(Ordering::Relaxed))
+            .sum::<u64>(),
     );
 }
 
@@ -4745,6 +4755,18 @@ impl Scheduler {
     /// that cleared one would leave the other naming a CPU the thread is not
     /// pinned to.
     fn hold_pinned_wake_for_home(&self, thread_id: u64) {
+        let home = self
+            .get_thread(thread_id)
+            .and_then(|thread| thread.cpu_affinity)
+            .map(|pin| pin.cpu)
+            .unwrap_or(usize::MAX);
+        if home < MAX_CPUS {
+            let _ = PINNED_HOLDS_OUTSTANDING[home].fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |count| Some(count.saturating_add(1)),
+            );
+        }
         let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
         if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
             // Raw serial, one shot: this runs under the scheduler lock with
@@ -4752,11 +4774,6 @@ impl Scheduler {
             // tid and its home CPU are on the line because "something got held"
             // is not actionable and "this worker's home stopped dispatching"
             // is.
-            let home = self
-                .get_thread(thread_id)
-                .and_then(|thread| thread.cpu_affinity)
-                .map(|pin| pin.cpu)
-                .unwrap_or(usize::MAX);
             crate::tracing::output::raw_serial_str("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
             crate::tracing::output::raw_serial_dec(thread_id);
             crate::tracing::output::raw_serial_str(":home=");
@@ -4819,18 +4836,15 @@ impl Scheduler {
     /// wake to rescue it -- which matters, because the wake that was refused
     /// may have been the only one its waiter was ever going to get.
     ///
-    /// The early return reads a counter with 1 writer, a `fetch_add`, so it can
-    /// skip the scan only on a boot where 0 holds have happened -- which is
-    /// what a healthy boot is. Once one has, the scan runs on each scheduler
-    /// entry, and the gate is already red.
-    /// claim-lint:ok: 1 of 1 writer of `PINNED_HOME_CPU_UNAVAILABLE` is the
-    /// `fetch_add` in `hold_pinned_wake_for_home`; 3 of 3 strict boots and 3 of
-    /// 3 production boots at this head read it at 0
+    /// The per-CPU credit guard bounds scans to scheduler entries with pending
+    /// holds on this CPU, including in the shipped no-feature profile. A full
+    /// pass retires credits for wakes delivered here or consumed elsewhere.
+    /// The scheduler lock excludes concurrent holds during this reconciliation.
     fn deliver_pinned_wakes_for_this_cpu(&mut self) {
-        if PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed) == 0 {
+        let cpu = Self::current_cpu_id();
+        if PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) == 0 {
             return;
         }
-        let cpu = Self::current_cpu_id();
         let mut index = 0;
         while index < self.threads.len() {
             let tid = self.threads[index].id();
@@ -4840,8 +4854,22 @@ impl Scheduler {
             }
             self.per_cpu_queues[cpu].push_back(tid);
             PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
+            let _ = PINNED_HOLDS_OUTSTANDING[cpu].fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |count| Some(count.saturating_sub(1)),
+            );
             ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
         }
+        // A completed pass has placed the eligible wakes. Remaining credits
+        // represent duplicate holds or wakes requeued, terminated, unpinned or
+        // removed by other paths; discard those credits without consuming a wake.
+        let discarded = PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed);
+        let _ = PINNED_HOLDS_OUTSTANDING[cpu].fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |count| Some(count.saturating_sub(discarded)),
+        );
     }
 
     /// Keep a CPU-pinned thread on the CPU its pin names, instead of letting a

@@ -4314,6 +4314,7 @@ const MAX_CPUS: usize = 4;
 const CPU_STALL_TICKS: u64 = 20;
 const PIN_GUARD_ORACLE_HELD: usize = 255;
 static PINNED_HOME_CPU_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+static PINNED_HOLDS_OUTSTANDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
 static PINNED_PUBLISH_DISCARDED: AtomicU64 = AtomicU64::new(0);
 static PINNED_HOLD_PEN_MIGRATED: AtomicU64 = AtomicU64::new(0);
@@ -4842,3 +4843,177 @@ fn loopback_wake_budget_emitter_validator_rejects_the_unavailable_collapse() {
         "reintroducing an idle_cpus print with no availability flag must redden the validator"
     );
 }
+
+
+// PR 2b: discover the reachability array through its incrementing writer,
+// then pin the entry guard and the delivery/discard balance by function shape.
+fn validate_pinned_scan_bound(source: &str) -> Result<(), String> {
+    let hold = compact_code(function_body(source, "hold_pinned_wake_for_home").ok_or("missing hold")?);
+    let write = hold.find("[home].fetch_update(").ok_or("missing home increment")?;
+    let name = hold[..write].rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '_').next().ok_or("missing counter")?;
+    if name.is_empty() || !hold.contains("|count|Some(count.saturating_add(1))") {
+        return Err("hold increment must saturate".into());
+    }
+    let source_code = compact_code(source);
+    if !source_code.contains(&format!("{name}:[core::sync::atomic::AtomicU64;MAX_CPUS]=[const{{core::sync::atomic::AtomicU64::new(0)}};MAX_CPUS]")) {
+        return Err("counter must size itself to MAX_CPUS".into());
+    }
+    let delivery = compact_code(function_body(source, "deliver_pinned_wakes_for_this_cpu").ok_or("missing delivery")?);
+    let guard = format!("letcpu=Self::current_cpu_id();if{name}[cpu].load(Ordering::Relaxed)==0{{return;}}letmutindex=0;whileindex<self.threads.len(){{");
+    if !delivery.starts_with(&format!("{{{guard}")) {
+        return Err("per-CPU guard must dominate scan entry".into());
+    }
+    let decrement = format!("let_={name}[cpu].fetch_update(Ordering::Relaxed,Ordering::Relaxed,|count|Some(count.saturating_sub(1)),);");
+    let balanced = format!("if!self.pinned_wake_is_waiting_here(tid,cpu){{continue;}}self.per_cpu_queues[cpu].push_back(tid);PINNED_WAKES_DELIVERED.fetch_add(1,Ordering::Relaxed);{decrement}ENQUEUE_SAME_LOCK_OK.fetch_add(1,Ordering::Relaxed);}}");
+    if !delivery.contains(&balanced) {
+        return Err("delivery decrement must share the delivered branch and saturate".into());
+    }
+    let discard = format!("letdiscarded={name}[cpu].load(Ordering::Relaxed);let_={name}[cpu].fetch_update(Ordering::Relaxed,Ordering::Relaxed,|count|Some(count.saturating_sub(discarded)),);}}");
+    if !delivery.ends_with(&discard) {
+        return Err("discard reconciliation must follow the completed pass".into());
+    }
+    for (needle, expected) in [(format!("{name}[home].fetch_update("), 1), (format!("{name}[cpu].fetch_update("), 2)] {
+        if source_code.matches(&needle).count() != expected { return Err("unexpected credit writers".into()); }
+    }
+    Ok(())
+}
+
+#[test]
+fn pinned_scan_bound() {
+    validate_pinned_scan_bound(&repo_text("kernel/src/task/scheduler.rs")).unwrap();
+}
+
+#[test]
+fn pinned_scan_bound_mutations() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let guard = "if PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) == 0 {\n            return;\n        }";
+    let decrement = "|count| Some(count.saturating_sub(1))";
+    for (label, mutated) in [
+        ("delete guard", source.replacen(guard, "", 1)),
+        ("global guard", source.replacen("PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) == 0", "PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed) == 0", 1)),
+        ("drop decrement", source.replacen(decrement, "|count| Some(count)", 1)),
+        ("non-saturating decrement", source.replacen(decrement, "|count| Some(count - 1)", 1)),
+        ("delete increment", source.replacen("|count| Some(count.saturating_add(1))", "|count| Some(count)", 1)),
+        ("drop discard", source.replacen("count.saturating_sub(discarded)", "count", 1)),
+    ] {
+        assert_ne!(source, mutated, "{label} must edit source");
+        assert!(validate_pinned_scan_bound(&mutated).is_err(), "{label} must be RED");
+        println!("pinned-scan mutation: {label} -> RED");
+    }
+    let delivery = function_body(&source, "deliver_pinned_wakes_for_this_cpu").unwrap();
+    let start = delivery.find("            let _ = PINNED_HOLDS_OUTSTANDING[cpu].fetch_update(").unwrap();
+    let end = start + delivery[start..].find("            ENQUEUE_SAME_LOCK_OK").unwrap();
+    let decrement_statement = &delivery[start..end];
+    let moved = delivery.replace(decrement_statement, "").replace("        let mut index = 0;", &format!("{decrement_statement}        let mut index = 0;"));
+    assert!(validate_pinned_scan_bound(&source.replacen(delivery, &moved, 1)).is_err());
+    println!("pinned-scan mutation: unconditional decrement -> RED");
+    validate_pinned_scan_bound(&source.replace("PINNED_HOLDS_OUTSTANDING", "RENAMED_HOLD_CREDITS")).unwrap();
+    assert!(validate_pinned_scan_bound(&source.replacen(delivery, &delivery.replace(decrement_statement, ""), 1)).is_err());
+    println!("pinned-scan mutation: delete decrement statement -> RED");
+}
+
+// Execute the production hold, predicate and delivery bodies with isolated
+// scheduler state. The walk meter is injected in the extracted loop, so the
+// probe exercises the source without adding instrumentation to the hot path.
+fn forced_pinned_scan_probe(baseline: bool) {
+    let source = if baseline {
+        let output = std::process::Command::new("git").args(["show", "58af1a7f:kernel/src/task/scheduler.rs"]).output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    } else { repo_text("kernel/src/task/scheduler.rs") };
+    if baseline { assert!(validate_pinned_scan_bound(&source).is_err()); }
+    let mut harness = String::from(r#"
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::collections::VecDeque;
+const MAX_CPUS: usize = 8;
+static PINNED_HOME_CPU_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+static PINNED_HOME_CPU_UNAVAILABLE_MARKED: AtomicBool = AtomicBool::new(false);
+static PINNED_HOLDS_OUTSTANDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static PINNED_WAKES_DELIVERED: AtomicU64 = AtomicU64::new(0);
+static ENQUEUE_SAME_LOCK_OK: AtomicU64 = AtomicU64::new(0);
+static CPU: AtomicUsize = AtomicUsize::new(0);
+static WALKS: AtomicU64 = AtomicU64::new(0);
+mod tracing { pub mod output { pub fn raw_serial_str(s: &str) { print!("{s}"); } pub fn raw_serial_dec(n: u64) { print!("{n}"); } } }
+#[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
+#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
+struct Thread { state: ThreadState, cpu_affinity: Option<CpuPin> }
+impl Thread { fn id(&self) -> u64 { 7 } }
+struct CpuState { current_thread: Option<u64>, previous_thread: Option<u64>, pending_next: Option<u64> }
+struct Scheduler { per_cpu_queues: [VecDeque<u64>; MAX_CPUS], cpu_state: [CpuState; MAX_CPUS], threads: Vec<Thread> }
+impl Scheduler {
+fn current_cpu_id() -> usize { CPU.load(Ordering::Relaxed) }
+fn get_thread(&self, tid: u64) -> Option<&Thread> { self.threads.iter().find(|thread| thread.id() == tid) }
+"#);
+    for (name, signature) in [
+        ("hold_pinned_wake_for_home", "fn hold_pinned_wake_for_home(&self, thread_id: u64)"),
+        ("pinned_wake_is_waiting_here", "fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool"),
+        ("deliver_pinned_wakes_for_this_cpu", "fn deliver_pinned_wakes_for_this_cpu(&mut self)"),
+    ] {
+        let body = function_body(&source, name).unwrap()
+            .replace("#[cfg(target_arch = \"aarch64\")]", "#[cfg(any())]")
+            .replace("while index < self.threads.len() {", "while index < self.threads.len() { WALKS.fetch_add(1, Ordering::Relaxed);");
+        harness.push_str(&format!("{signature} {body}\n"));
+    }
+    harness.push_str("}\n");
+    harness.push_str(&format!("const BASELINE: bool = {baseline};\n"));
+    harness.push_str(r#"
+fn main() {
+    let mut s = Scheduler {
+        per_cpu_queues: std::array::from_fn(|_| VecDeque::new()),
+        cpu_state: std::array::from_fn(|_| CpuState { current_thread: None, previous_thread: None, pending_next: None }),
+        threads: vec![Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: 1, per_cpu_worker: true }) }],
+    };
+    s.hold_pinned_wake_for_home(7);
+    assert_eq!(PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed), 1);
+    assert_eq!(PINNED_HOLDS_OUTSTANDING[0].load(Ordering::Relaxed), 0);
+    if !BASELINE { assert_eq!(PINNED_HOLDS_OUTSTANDING[1].load(Ordering::Relaxed), 1); }
+    for _ in 0..128 { s.deliver_pinned_wakes_for_this_cpu(); }
+    let peer_walks = WALKS.load(Ordering::Relaxed);
+    assert_eq!(peer_walks, if BASELINE { 128 } else { 0 });
+    CPU.store(1, Ordering::Relaxed);
+    s.deliver_pinned_wakes_for_this_cpu();
+    assert_eq!(s.per_cpu_queues[1].front(), Some(&7));
+    assert_eq!(PINNED_WAKES_DELIVERED.load(Ordering::Relaxed), 1);
+    assert_eq!(PINNED_HOLDS_OUTSTANDING[1].load(Ordering::Relaxed), 0);
+    let before = WALKS.load(Ordering::Relaxed);
+    for _ in 0..128 { s.deliver_pinned_wakes_for_this_cpu(); }
+    let after_walks = WALKS.load(Ordering::Relaxed) - before;
+    assert_eq!(after_walks, if BASELINE { 128 } else { 0 });
+    assert_eq!(PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed), 1);
+    println!("PINNED_SCAN_ORACLE baseline={} held_delta=1 delivered_delta=1 outstanding_home=0 peer_entries=128 peer_walk_delta={} after_entries=128 after_walk_delta={} verdict={}", BASELINE, peer_walks, after_walks, if BASELINE { "RED" } else { "PASS" });
+    // Requeue, termination, pin clear, removal and repeated hold dispositions.
+    for disposition in 0..5 {
+        s.per_cpu_queues[1].clear();
+        s.threads = vec![Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: 1, per_cpu_worker: true }) }];
+        s.hold_pinned_wake_for_home(7);
+        match disposition {
+            0 => s.per_cpu_queues[1].push_back(7),
+            1 => s.threads[0].state = ThreadState::Terminated,
+            2 => s.threads[0].cpu_affinity = None,
+            3 => s.threads.clear(),
+            _ => s.hold_pinned_wake_for_home(7),
+        }
+        s.deliver_pinned_wakes_for_this_cpu();
+        assert_eq!(PINNED_HOLDS_OUTSTANDING[1].load(Ordering::Relaxed), 0);
+    }
+    println!("discard dispositions=5 outstanding_home=0 PASS");
+}
+"#);
+    let scratch = std::env::temp_dir().join(format!("pinned-scan-probe-{}-{baseline}", std::process::id()));
+    fs::create_dir_all(&scratch).unwrap();
+    let input = scratch.join("probe.rs"); let binary = scratch.join("probe");
+    // The after leg doubles the model's CPU capacity using the same inline-const array.
+    if !baseline { harness = harness.replace("const MAX_CPUS: usize = 8;", "const MAX_CPUS: usize = 16;"); }
+    fs::write(&input, harness).unwrap();
+    let build = std::process::Command::new("rustc").args(["--edition=2021", "-Dwarnings"]).arg(&input).arg("-o").arg(&binary).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = std::process::Command::new(&binary).output().unwrap();
+    println!("{}", String::from_utf8_lossy(&run.stdout));
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn forced_pinned_scan_before() { forced_pinned_scan_probe(true); }
+#[test]
+fn forced_pinned_scan_after() { forced_pinned_scan_probe(false); }

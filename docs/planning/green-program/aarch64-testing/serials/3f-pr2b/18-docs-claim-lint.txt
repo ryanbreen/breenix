@@ -1,0 +1,14 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b + evidence documentation
+claim-lint: clean (42 file(s) checked, changed hunks vs 58af1a7fb63e).
+claim-lint: 86 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 4 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2b/beast-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2b/mac-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2b/service/cortex-a72/census.tsv, docs/planning/green-program/aarch64-testing/serials/3f-pr2b/service/max/census.tsv
+claim-lint: clean commit message (.tmp/docs-commit.txt).
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/docs-commit.txt -> exit 0
+
+Evidence-byte preservation amend checks:
+claim-lint: clean (44 file(s) checked, changed hunks vs 58af1a7fb63e).
+claim-lint: 86 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 6 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/aarch64-testing/serials/3f-pr2b/SHA256SUMS, docs/planning/green-program/aarch64-testing/serials/3f-pr2b/beast-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2b/mac-preflight-logs.tar.gz, docs/planning/green-program/aarch64-testing/serials/3f-pr2b/service/cortex-a72/census.tsv, docs/planning/green-program/aarch64-testing/serials/3f-pr2b/service/max/census.tsv, docs/planning/green-program/aarch64-testing/serials/3f-pr2b/.gitattributes
+claim-lint: clean commit message (.tmp/docs-commit.txt).

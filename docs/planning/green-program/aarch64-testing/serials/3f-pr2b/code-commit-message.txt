@@ -1,0 +1,9 @@
+sched: bound pinned wake scans by outstanding home holds
+
+Keep per-CPU reachability credits separate from cumulative failures.
+Retire delivered and discarded credits under the scheduler lock and guard
+scan entry on the local balance. Add source ratchets and extracted-method
+before/after probes covering the guard, balance and discard dispositions.
+
+Co-authored-by: Ryan Breen <ryan@breen.io>
+Co-authored-by: Claude Code <noreply@anthropic.com>
