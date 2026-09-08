@@ -1,0 +1,17 @@
+code revision: 0d78cacedbad4f4199b9206d1e36beeb6bc50e28
+committed source patch SHA256: 1336a23d695811dfde35f71ae123d1addcdde394bd03d8f10e3c79b715797d10
+committed helper SHA256: e2a9833367590ca684ceb29460cee70e5be0ae49f3ca0694cfdb7a9cb5bef936
+docker/qemu/run-aarch64-boot-test-strict.sh:855: SCORE_STATUS=$?
+docker/qemu/run-aarch64-boot-test-strict.sh:857: echo "SCORE: INCONCLUSIVE - host starvation: $SCORE_REASON ($SCORE_ONLY_SERIAL)"
+docker/qemu/run-aarch64-boot-test-strict.sh:1103: SCORE_STATUS=$?
+docker/qemu/run-aarch64-boot-test-strict.sh:1212: breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 strict INCONCLUSIVE 2 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
+docker/qemu/run-aarch64-boot-test-strict.sh:1238: BOOT_STATUS=$?
+docker/qemu/run-aarch64-boot-test-strict.sh:1266: elif [ $FAILURES -eq 0 ]; then
+scripts/score-softirq-deferral.py:27: if verdict == "starved" and int(ns) < 15_000_000_000:
+kernel/src/task/mod.rs:87: init_softirq, raise_softirq, register_softirq_handler, SoftirqHandler, SoftirqType,
+tests/softirq_deferral_structure.rs:44: fn scorer_rejects_forged_ok_and_reports_starvation_separately() {
+tests/softirq_deferral_structure.rs:86: fn strict_gate_preserves_starvation_status() {
+tests/softirq_deferral_structure.rs:93: fn softirq_reexport_is_rustfmt_clean() {
+scripts/test-softirq-strict-status.py:22: for contents, status, label in [(oracle, 2, "INCONCLUSIVE"),
+scripts/test-softirq-strict-status.py:38: for status, label in [(0, "PASS"), (1, "FAIL"), (2, "INCONCLUSIVE")]:
+scripts/test-softirq-strict-status.py:68: for statuses, expected in [("0 0", 0), ("0 2", 2), ("2 2", 2), ("2 1", 1), ("1 2", 1)]:

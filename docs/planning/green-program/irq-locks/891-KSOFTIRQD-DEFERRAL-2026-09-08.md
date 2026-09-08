@@ -454,3 +454,23 @@ owned PIDs, without name-based killing. No task-created stash exists.
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/review-commit-message.txt -> exit 0
+
+### Post-commit source verification
+
+Code commit `0d78cacedbad4f4199b9206d1e36beeb6bc50e28` has the same
+full-index source patch and helper hashes recorded by the two gate runs.
+[Committed citations](serials/891/review-fix/committed-citations.txt) were
+re-derived with git show after that commit, including the gate's status
+capture/import/aggregation sites, the scorer backstop, the formatted
+re-export, and their regression tests. The follow-up commit changes only
+documentation and evidence, so it does not require another kernel build.
+
+The first commit unexpectedly invoked the inherited core.hooksPath at
+`/Users/wrb/fun/code/breenix/.beads/hooks`, which reported exporting issues
+to the main checkout. Subsequent Git mutations use a command-local empty
+hooks path to avoid repeating that obsolete tracking hook. No persistent
+Git hook configuration was changed.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/review-citations-message.txt -> exit 0
