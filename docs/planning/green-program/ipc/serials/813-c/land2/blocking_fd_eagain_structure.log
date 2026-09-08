@@ -1,0 +1,11 @@
+revision=9ee19079c7310ee5d617c85ed64072ad6e0c8367
+== compiling blocking_fd_eagain_structure ==
+== running blocking_fd_eagain_structure  ==
+
+running 3 tests
+test parser_tracks_renames_negation_formatting_and_extracted_errors ... ok
+test blocking_eagain_mutations_fail_the_live_helper_census ... ok
+test repaired_families_have_no_blocking_eagain_exit ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
