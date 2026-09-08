@@ -63,15 +63,8 @@ where
 
 /// Create a kernel thread whose per-CPU work requires it to stay on `cpu`.
 ///
-/// Unreached on this branch: the per-CPU daemons that need it are a separate
-/// change. It is the production counterpart of `kthread_run_on_cpu_for_test`,
-/// which places a thread for a boot-test gate through a test-only table rather
-/// than through the thread's own pin.
-pub fn kthread_run_on_cpu<F>(
-    func: F,
-    name: &str,
-    cpu: usize,
-) -> Result<KthreadHandle, KthreadError>
+/// Used by CPU-local softirq daemons and their deferral probe.
+pub fn kthread_run_on_cpu<F>(func: F, name: &str, cpu: usize) -> Result<KthreadHandle, KthreadError>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -137,7 +130,11 @@ where
     })
 }
 
-fn kthread_run_with<F, S>(func: F, name: &str, spawn_thread: S) -> Result<KthreadHandle, KthreadError>
+fn kthread_run_with<F, S>(
+    func: F,
+    name: &str,
+    spawn_thread: S,
+) -> Result<KthreadHandle, KthreadError>
 where
     F: FnOnce() + Send + 'static,
     S: FnOnce(Box<Thread>),
@@ -211,6 +208,13 @@ pub fn kthread_should_stop() -> bool {
 /// Park current thread until unparked (sleep)
 /// Use this in kthread wait loops instead of bare HLT to ensure kthread_stop() can wake promptly.
 pub fn kthread_park() {
+    kthread_park_if(|| true);
+}
+
+/// Publish sleep intent before checking the work predicate. An unpark after
+/// publication clears the flag; work published earlier makes the predicate false.
+/// The predicate must be nonblocking and safe with interrupts enabled.
+pub fn kthread_park_if(should_park: impl FnOnce() -> bool) {
     let handle = match current_kthread() {
         Some(h) => h,
         None => return, // Not a kthread, nothing to do
@@ -222,7 +226,7 @@ pub fn kthread_park() {
     // CRITICAL: Check should_stop AFTER setting parked to handle race with kthread_stop().
     // If kthread_stop() was called before we set parked, we need to return immediately.
     // If kthread_stop() is called after we set parked, it will call kthread_unpark().
-    if handle.inner.should_stop.load(Ordering::Acquire) {
+    if !should_park() || handle.inner.should_stop.load(Ordering::Acquire) {
         handle.inner.parked.store(false, Ordering::Release);
         return;
     }
@@ -246,7 +250,10 @@ pub fn kthread_park() {
             // thread from every per-CPU ready queue in the same acquisition, so
             // there is no longer a caller-side dequeue to forget.
             scheduler::with_scheduler(|sched| {
-                sched.block_current();
+                // Serialize the final sleep decision with unpark's flag clear.
+                if handle.inner.parked.load(Ordering::Acquire) {
+                    sched.block_current();
+                }
             });
         });
 
@@ -265,8 +272,8 @@ pub fn kthread_park() {
 
 /// Unpark a parked thread (wake)
 pub fn kthread_unpark(handle: &KthreadHandle) {
-    handle.inner.parked.store(false, Ordering::Release);
     scheduler::with_scheduler(|sched| {
+        handle.inner.parked.store(false, Ordering::Release);
         sched.unblock(handle.inner.tid);
     });
     // CRITICAL: Set need_resched to ensure a context switch happens soon.

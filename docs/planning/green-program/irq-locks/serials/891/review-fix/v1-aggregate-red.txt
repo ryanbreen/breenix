@@ -1,0 +1,43 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure strict_gate_preserves_starvation_status ==
+
+running 1 test
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/scripts/test-softirq-strict-status.py", line 81, in <module>
+    assert result.returncode == expected, result.stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 
+=========================================
+RESULTS
+=========================================
+Total iterations: 2
+Successes: 1
+Failures: 1
+Inconclusive (host starvation): 0
+Success rate: 50%
+Duration: 0s
+
+Failed iterations: 2
+
+=========================================
+FAIL: Only 1/2 boots succeeded
+=========================================
+
+This indicates a regression or timing bug that needs investigation.
+Serial output from failed boots can be found in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/.tmp/softirq-status-pgbsud6q/breenix_aarch64_strict_N/
+
+
+thread 'strict_gate_preserves_starvation_status' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:88:5:
+assertion failed: std::process::Command::new("python3").current_dir(root).arg("scripts/test-softirq-strict-status.py").status().unwrap().success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test strict_gate_preserves_starvation_status ... FAILED
+
+failures:
+
+failures:
+    strict_gate_preserves_starvation_status
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.38s
+
+
+exit=101

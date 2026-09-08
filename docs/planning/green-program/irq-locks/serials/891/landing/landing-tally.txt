@@ -1,0 +1,33 @@
+Source revision: 1fdab37b40d0e955b6f131b2a65c6cca377be05d
+[
+  {
+    "directory": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_1",
+    "oracle": "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=5117182:dispatches=5:iterations=25:verdict=ok]",
+    "panic_markers_both_ports": 0
+  },
+  {
+    "directory": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_2",
+    "oracle": "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=3:wait_ns=8611789:dispatches=5:iterations=25:verdict=ok]",
+    "panic_markers_both_ports": 0
+  },
+  {
+    "directory": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_3",
+    "oracle": "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=12237928:dispatches=1:iterations=41:verdict=ok]",
+    "panic_markers_both_ports": 0
+  },
+  {
+    "directory": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_4",
+    "oracle": "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=3407923:dispatches=5:iterations=25:verdict=ok]",
+    "panic_markers_both_ports": 0
+  },
+  {
+    "directory": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_5",
+    "oracle": "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=3:wait_ns=8379217:dispatches=5:iterations=25:verdict=ok]",
+    "panic_markers_both_ports": 0
+  },
+  {
+    "directory": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_x86_boot_tests_1",
+    "oracle": "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=12731531:dispatches=1:iterations=41:verdict=ok]",
+    "panic_markers_both_ports": 0
+  }
+]

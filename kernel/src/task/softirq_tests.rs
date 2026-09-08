@@ -11,8 +11,9 @@
 
 use crate::task::softirqd::{do_softirq, raise_softirq, register_softirq_handler, SoftirqType};
 use crate::{arch_enable_interrupts, arch_halt};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+#[cfg(feature = "testing")]
 pub fn test_softirq() {
     static TIMER_HANDLER_CALLED: AtomicU32 = AtomicU32::new(0);
     static NET_RX_HANDLER_CALLED: AtomicU32 = AtomicU32::new(0);
@@ -140,100 +141,7 @@ pub fn test_softirq() {
     );
     log::info!("SOFTIRQ_TEST: nested interrupt rejection passed");
 
-    // Test 7: Iteration limit and ksoftirqd deferral
-    // A handler that re-raises itself will exceed MAX_SOFTIRQ_RESTART=10
-    // After the limit, remaining work is deferred to ksoftirqd
-    log::info!("SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...");
-    static ITERATION_COUNT: AtomicU32 = AtomicU32::new(0);
-    static KSOFTIRQD_PROCESSED: AtomicBool = AtomicBool::new(false);
-    const MAX_SOFTIRQ_RESTART: u32 = 10;
-    // TARGET must exceed 2 * MAX_SOFTIRQ_RESTART to force ksoftirqd involvement:
-    // - test's do_softirq(): 10 iterations, hits limit, wakes ksoftirqd
-    // - timer's irq_exit do_softirq(): 10 more iterations, hits limit, wakes ksoftirqd
-    // - ksoftirqd finally runs and processes remaining iterations
-    const TARGET_ITERATIONS: u32 = 25;
-
-    ITERATION_COUNT.store(0, Ordering::SeqCst);
-    KSOFTIRQD_PROCESSED.store(false, Ordering::SeqCst);
-
-    // Get ksoftirqd tid for later comparison
-    let ksoftirqd_tid = crate::task::softirqd::ksoftirqd_tid();
-
-    // Register a handler that re-raises itself until TARGET_ITERATIONS
-    // and tracks whether it runs in ksoftirqd context
-    register_softirq_handler(SoftirqType::Tasklet, |_softirq| {
-        let count = ITERATION_COUNT.fetch_add(1, Ordering::SeqCst);
-
-        // Check if we're running in ksoftirqd context
-        if let Some(ksoft_tid) = crate::task::softirqd::ksoftirqd_tid() {
-            if let Some(current_tid) = crate::task::scheduler::current_thread_id() {
-                if current_tid == ksoft_tid {
-                    KSOFTIRQD_PROCESSED.store(true, Ordering::SeqCst);
-                }
-            }
-        }
-
-        if count + 1 < TARGET_ITERATIONS {
-            raise_softirq(SoftirqType::Tasklet);
-        }
-    });
-
-    raise_softirq(SoftirqType::Tasklet);
-    do_softirq();
-
-    // After do_softirq() returns at iteration limit, some iterations should be done
-    let count_after_dosoftirq = ITERATION_COUNT.load(Ordering::SeqCst);
-    assert!(
-        count_after_dosoftirq <= MAX_SOFTIRQ_RESTART,
-        "do_softirq() should stop at iteration limit: got {}, expected <= {}",
-        count_after_dosoftirq,
-        MAX_SOFTIRQ_RESTART
-    );
-    log::info!(
-        "SOFTIRQ_TEST: After do_softirq(): {} iterations (limit={})",
-        count_after_dosoftirq,
-        MAX_SOFTIRQ_RESTART
-    );
-
-    // If ksoftirqd is working, remaining iterations will be processed
-    // Give ksoftirqd some time to process deferred softirqs
-    // Note: Remaining work can be processed by either:
-    // 1. irq_exit's do_softirq() during timer interrupts, or
-    // 2. ksoftirqd when it gets scheduled
-    // We use yield_current() + HLT to ensure scheduling opportunities
-    unsafe {
-        arch_enable_interrupts();
-    } // Ensure interrupts are enabled
-    for _ in 0..100 {
-        // yield_current() sets need_resched, ensuring a context switch opportunity
-        // when the next interrupt occurs
-        crate::task::scheduler::yield_current();
-        arch_halt();
-        let current = ITERATION_COUNT.load(Ordering::SeqCst);
-        if current >= TARGET_ITERATIONS {
-            break;
-        }
-    }
-
-    let final_count = ITERATION_COUNT.load(Ordering::SeqCst);
-    assert!(
-        final_count >= TARGET_ITERATIONS,
-        "ksoftirqd should have processed deferred softirqs: got {} iterations, expected {}",
-        final_count,
-        TARGET_ITERATIONS
-    );
-
-    // Verify ksoftirqd specifically processed the deferred work
-    let ksoftirqd_did_work = KSOFTIRQD_PROCESSED.load(Ordering::SeqCst);
-    assert!(
-        ksoftirqd_did_work,
-        "ksoftirqd should have processed deferred softirqs (tid={:?})",
-        ksoftirqd_tid
-    );
-    log::info!(
-        "SOFTIRQ_TEST: iteration limit passed ({} total iterations, ksoftirqd verified)",
-        final_count
-    );
+    let deferral_ok = test_deferral();
 
     // Test 8: Verify ksoftirqd is initialized (keep original test)
     log::info!("SOFTIRQ_TEST: Verifying ksoftirqd is initialized...");
@@ -243,7 +151,9 @@ pub fn test_softirq() {
     );
     log::info!("SOFTIRQ_TEST: ksoftirqd verification passed");
 
-    log::info!("SOFTIRQ_TEST: all tests passed");
+    if deferral_ok {
+        log::info!("SOFTIRQ_TEST: all tests passed");
+    }
 
     // CRITICAL: Restore the real network softirq handler!
     // The tests above registered test handlers that override the real ones.
@@ -252,4 +162,144 @@ pub fn test_softirq() {
     log::info!("SOFTIRQ_TEST: Restored network softirq handler");
 
     log::info!("=== SOFTIRQ TEST: Completed ===");
+}
+
+// This probe owns Tasklet until ACTIVE is cleared. Interrupt exits may service
+// it, but cannot complete the probe: a callback from the daemon is required.
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+static GUEST_DONE: AtomicBool = AtomicBool::new(false);
+static ITERATIONS: AtomicU32 = AtomicU32::new(0);
+static DISPATCH_BASE: AtomicU64 = AtomicU64::new(0);
+static WAITED_TICKS: AtomicU64 = AtomicU64::new(0);
+static WAITED_NS: AtomicU64 = AtomicU64::new(0);
+static DISPATCHES: AtomicU64 = AtomicU64::new(0);
+static PROBE_CPU: AtomicU64 = AtomicU64::new(0);
+static VERDICT: AtomicU32 = AtomicU32::new(0);
+const TARGET_ITERATIONS: u32 = 25;
+const WAIT_TICKS: u64 = 250;
+const WALL_LIMIT_NS: u64 = 15_000_000_000;
+
+fn counter_ns() -> u64 {
+    crate::tracing::timestamp_to_nanos(crate::tracing::trace_timestamp())
+}
+
+fn deferral_handler(_softirq: SoftirqType) {
+    if !ACTIVE.load(Ordering::Acquire) {
+        return;
+    }
+    let iterations = ITERATIONS.fetch_add(1, Ordering::Relaxed) + 1;
+    let dispatches = crate::task::softirqd::KSOFTIRQD_TASKLET_DISPATCHES
+        .get_cpu(crate::task::softirqd::current_cpu())
+        .wrapping_sub(DISPATCH_BASE.load(Ordering::Relaxed));
+    if !(dispatches > 0 && iterations >= TARGET_ITERATIONS) {
+        raise_softirq(SoftirqType::Tasklet);
+    }
+}
+
+fn deferral_probe() {
+    use crate::task::softirqd::{current_cpu, KSOFTIRQD_TASKLET_DISPATCHES};
+    use crate::tracing::providers::counters::TIMER_TICK_TOTAL;
+    if !ACTIVE.load(Ordering::Acquire) {
+        return;
+    }
+    let cpu = current_cpu();
+    PROBE_CPU.store(cpu as u64, Ordering::Relaxed);
+    let base = KSOFTIRQD_TASKLET_DISPATCHES.get_cpu(cpu);
+    DISPATCH_BASE.store(base, Ordering::Relaxed);
+    let ticks = TIMER_TICK_TOTAL.get_cpu(cpu);
+    let wall = counter_ns();
+    // Keep the initial limit observation together: IRQ-exit service must not
+    // race the count read immediately following the explicit do_softirq call.
+    let initial = crate::arch_without_interrupts(|| {
+        raise_softirq(SoftirqType::Tasklet);
+        do_softirq();
+        ITERATIONS.load(Ordering::Relaxed)
+    });
+    unsafe {
+        arch_enable_interrupts();
+    }
+    loop {
+        let elapsed_ticks = TIMER_TICK_TOTAL.get_cpu(cpu).wrapping_sub(ticks);
+        let elapsed_ns = counter_ns().saturating_sub(wall);
+        let dispatches = KSOFTIRQD_TASKLET_DISPATCHES.get_cpu(cpu).wrapping_sub(base);
+        let iterations = ITERATIONS.load(Ordering::Acquire);
+        WAITED_TICKS.store(elapsed_ticks, Ordering::Relaxed);
+        WAITED_NS.store(elapsed_ns, Ordering::Relaxed);
+        DISPATCHES.store(dispatches, Ordering::Relaxed);
+        if initial != 10 {
+            VERDICT.store(2, Ordering::Relaxed);
+            break;
+        }
+        if dispatches > 0 && iterations >= TARGET_ITERATIONS {
+            VERDICT.store(1, Ordering::Relaxed);
+            break;
+        }
+        // Delivered local timer interrupts are guest execution evidence. A
+        // host pause cannot spend this budget merely by advancing the TSC/CNTVCT.
+        if elapsed_ticks >= WAIT_TICKS {
+            VERDICT.store(2, Ordering::Relaxed);
+            break;
+        }
+        if elapsed_ns >= WALL_LIMIT_NS || !ACTIVE.load(Ordering::Acquire) {
+            VERDICT.store(3, Ordering::Relaxed);
+            break;
+        }
+        crate::task::scheduler::yield_current();
+        arch_halt();
+    }
+    ACTIVE.store(false, Ordering::Release);
+    crate::per_cpu::clear_softirq(SoftirqType::Tasklet.as_nr());
+    GUEST_DONE.store(true, Ordering::Release);
+}
+
+/// Emit a non-panicking deferral verdict. The host scorer rejects `lost` and
+/// reports `starved` as an infrastructure outcome, without a kernel-red marker.
+pub fn test_deferral() -> bool {
+    ITERATIONS.store(0, Ordering::Relaxed);
+    GUEST_DONE.store(false, Ordering::Relaxed);
+    WAITED_TICKS.store(0, Ordering::Relaxed);
+    WAITED_NS.store(0, Ordering::Relaxed);
+    DISPATCHES.store(0, Ordering::Relaxed);
+    VERDICT.store(0, Ordering::Relaxed);
+    ACTIVE.store(true, Ordering::Release);
+    register_softirq_handler(SoftirqType::Tasklet, deferral_handler);
+    let start = counter_ns();
+    #[cfg(target_arch = "aarch64")]
+    {
+        // CPU0 is still the unschedulable boot stack in the testing profile.
+        // Exercise local ownership on a schedulable CPU using a real pinned
+        // kthread, without moving the loader or boot sequence to a new stack.
+        if crate::arch_impl::aarch64::smp::cpus_online() > 1 {
+            if crate::task::kthread::kthread_run_on_cpu(deferral_probe, "softirq-probe", 1).is_err()
+            {
+                VERDICT.store(2, Ordering::Relaxed);
+                GUEST_DONE.store(true, Ordering::Release);
+            }
+        }
+        while !GUEST_DONE.load(Ordering::Acquire)
+            && counter_ns().saturating_sub(start) < WALL_LIMIT_NS
+        {
+            core::hint::spin_loop();
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    deferral_probe();
+    if !GUEST_DONE.load(Ordering::Acquire) {
+        ACTIVE.store(false, Ordering::Release);
+        VERDICT.store(3, Ordering::Relaxed);
+    }
+    let verdict = match VERDICT.load(Ordering::Acquire) {
+        1 => "ok",
+        2 => "lost",
+        _ => "starved",
+    };
+    crate::serial_println!(
+        "[SOFTIRQ_DEFERRAL_ORACLE:arch={}:cpu={}:budget_ticks={}:wait_ticks={}:wait_ns={}:dispatches={}:iterations={}:verdict={}]",
+        if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86" },
+        PROBE_CPU.load(Ordering::Relaxed), WAIT_TICKS,
+        WAITED_TICKS.load(Ordering::Relaxed),
+        counter_ns().saturating_sub(start).max(WAITED_NS.load(Ordering::Relaxed)),
+        DISPATCHES.load(Ordering::Relaxed), ITERATIONS.load(Ordering::Relaxed), verdict
+    );
+    verdict == "ok"
 }

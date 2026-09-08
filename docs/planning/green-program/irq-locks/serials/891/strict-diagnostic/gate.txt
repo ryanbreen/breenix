@@ -1,0 +1,123 @@
+c93ecf5297f42bf4127849f0b26961d74c25f85c
+fa86dadf1de24b71b34a04f521a45d9429e5540ca114f2128929f21a56e463af  -
+[GATE_SUITE:stem=aarch64_testing_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=block_request_lifetime_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=blocking_fd_eagain_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=capture_bxcap_schema_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=capture_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=context_restore_structure:attempt=1:timeout_s=300:wall_s=58:exit=0]
+[GATE_SUITE:stem=coreproof_component_h_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=coreproof_coverage_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=coreproof_mutation_register_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=coreproof_sites_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=critical_path_logging_census_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=ctx_diag_ring_sample_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=degenerate_transfer_fd_validation_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=dispatch_fact_census_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=dispatch_path_lock_free_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=dispatch_strand_census_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=dma_and_log_sink_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=entry_point_df_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=exec_lock_order_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=exit_tally_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=ext2_disk_size_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=ext2_lock_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=fcntl_pm_contention_gate_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=fork_lock_order_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_pipefail_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=gate_boot_facts_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=gate_capture_drain_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=gate_qmp_backstop_structure:attempt=1:timeout_s=300:wall_s=5:exit=0]
+[GATE_SUITE:stem=gate_structure_preflight_wiring_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=green_program_envelope_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=launcher_smoke_xhci_evidence_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=lockup_capture_guard_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=loopback_pump_structure:attempt=1:timeout_s=300:wall_s=3:exit=0]
+[GATE_SUITE:stem=masked_binary_load_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=mmap_floor_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=net_lock_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=parallels_capture_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=parallels_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=pipe_fifo_blocking_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=poll_tcp_gate_wiring_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=preempt_bracket_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=qemu_host_lock_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=qemu_kill_by_name_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=ring_span_report_site_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=ring_span_unfiltered_report_site_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=run_inspector_import_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=serial_line_atomicity_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=signal_eintr_predicate_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=softirq_deferral_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=strand_handoff_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=structure_preflight_parallel_structure:attempt=1:timeout_s=300:wall_s=6:exit=0]
+[GATE_SUITE:stem=syscall_return_register_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=teardown_rustfmt_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=teardown_structure:attempt=1:timeout_s=300:wall_s=18:exit=0]
+[GATE_SUITE:stem=terminal_edge_capture_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=timer_wake_dispatch_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=trace_ring_depth_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=tracing_provider_gate_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=ttbr0_shadow_reconciliation_structure:attempt=1:timeout_s=300:wall_s=17:exit=0]
+[GATE_SUITE:stem=tty_irq_fg_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=tty_irq_pm_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
+[GATE_SUITE:stem=tty_oracle_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=udp_ports_lock_irq_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=udp_socket_lock_irq_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=unix_stream_blocking_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
+[GATE_SUITE:stem=x86_boot_tests_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=x86_smp_enum_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_SUITE:stem=xhci_wait_irq_order_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
+[GATE_PREFLIGHT:structure_suites=68/68:critical_path_lines=260:pinned=120]
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   92e0b9e651b1c5243fdd19f94437704a6e60a24ac160643b9ea9151d9dbeece1
+  objdump:  /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17h61ecf85f7d566472E
+  reachable funcs: 17
+  call edges:      29
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+[0;32mPASS:[0m no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/ext2-aarch64.img
+Iterations: 1
+Requirement: 100% success rate (all 1 must pass)
+
+Running tests...
+
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+qemu-system-aarch64: terminating on signal 15 from pid 83261 (<unknown process>)
+  [FAIL] Boot 1: T2T3T4[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=5668992:dispatches=5:iterations=25:verdict=ok]
+Boot test failure: [TEST:process:census_widen_oracle:FAIL:census widening mutation oracle failed] (1430 lines); serial: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/.gate-tmp/breenix_aarch64_strict_failures/20260908T053431Z-boot1.txt
+  [GATE_BOOT_FACTS:boot=1:host_ms=1788845575231-1788845671175:qemu_at_start=0:load_at_start=6.91:qemu_at_end=0:load_at_end=4.33:qemu_cpu_s=NA:guest_uptime_ms=89674:ended_by=hard_timeout]
+  [CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=300]
+  [CAPTURE_DRAIN_EVENTS:last_events=none]
+  [QMP_DUMP:capture=partial:reason=qmp_socket_missing:core=-:decoded_events=-:dump_ms=15]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 1
+Successes: 0
+Failures: 1
+Success rate: 0%
+Duration: 97s
+
+Failed iterations: 1
+
+=========================================
+FAIL: Only 0/1 boots succeeded
+=========================================
+
+This indicates a regression or timing bug that needs investigation.
+Serial output from failed boots can be found in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/.gate-tmp/breenix_aarch64_strict_N/

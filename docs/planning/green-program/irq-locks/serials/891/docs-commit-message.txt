@@ -1,0 +1,8 @@
+Record issue 891 deferral RCA, mutations, and final gate evidence
+
+Preserve GDB observations, source citations, guest-tick oracle measurements,
+launch loads, and the separate testing-profile loader failure. Distinguish
+historical reports from this round's measured boots and document limits.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

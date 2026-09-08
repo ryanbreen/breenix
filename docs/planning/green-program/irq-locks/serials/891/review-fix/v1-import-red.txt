@@ -1,0 +1,29 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure strict_gate_preserves_starvation_status ==
+
+running 1 test
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/scripts/test-softirq-strict-status.py", line 60, in <module>
+    assert f"IMPORT {label} {status}" in result.stdout, result.stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError:   [INCONCLUSIVE] Boot 1: host starvation: oracle (2 lines); serial: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/.tmp/softirq-status-fysup7iy/breenix_aarch64_strict_failures/20260908T065129Z-boot1.txt
+  facts
+  capture
+  
+IMPORT FAIL 1
+
+
+thread 'strict_gate_preserves_starvation_status' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:88:5:
+assertion failed: std::process::Command::new("python3").current_dir(root).arg("scripts/test-softirq-strict-status.py").status().unwrap().success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test strict_gate_preserves_starvation_status ... FAILED
+
+failures:
+
+failures:
+    strict_gate_preserves_starvation_status
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.35s
+
+
+exit=101

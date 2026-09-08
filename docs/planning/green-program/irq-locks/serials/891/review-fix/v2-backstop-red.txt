@@ -1,0 +1,24 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure scorer_rejects_forged_ok_and_reports_starvation_separately ==
+
+running 1 test
+Traceback (most recent call last):
+  File "<string>", line 13, in <module>
+    assert m.score(line(dispatches=0,iterations=10,verdict='starved',ns=ns))[0] == 1
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+thread 'scorer_rejects_forged_ok_and_reports_starvation_separately' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:65:5:
+assertion failed: result.success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scorer_rejects_forged_ok_and_reports_starvation_separately ... FAILED
+
+failures:
+
+failures:
+    scorer_rejects_forged_ok_and_reports_starvation_separately
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.02s
+
+
+exit=101

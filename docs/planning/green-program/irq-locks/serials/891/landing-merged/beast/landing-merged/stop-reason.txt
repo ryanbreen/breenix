@@ -1,0 +1,2 @@
+Source revision: 27ac5db1695d754f5592db1415f9a7eb0279bac4
+Sent SIGTERM to verified lane-owned QEMU PID 2345055 after explicit TIMER_WAKE_LATENCY_ORACLE FAIL, under the requested STOP-on-red rule. This was not a gate-deadline timeout. Parallel gate was not launched.

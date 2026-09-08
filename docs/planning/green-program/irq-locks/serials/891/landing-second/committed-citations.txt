@@ -1,0 +1,11 @@
+Source revision: 45a1507527cac132df696770d288c29ffc334c9c
+kernel/src/task/softirq_tests.rs:17: pub fn test_softirq() {
+kernel/src/task/softirq_tests.rs:186: fn deferral_handler(_softirq: SoftirqType) {
+kernel/src/task/softirq_tests.rs:199: fn deferral_probe() {
+kernel/src/task/softirq_tests.rs:233:         if dispatches > 0 && iterations >= TARGET_ITERATIONS {
+kernel/src/task/softirq_tests.rs:297:         "[SOFTIRQ_DEFERRAL_ORACLE:arch={}:cpu={}:budget_ticks={}:wait_ticks={}:wait_ns={}:dispatches={}:iterations={}:verdict={}]",
+kernel/src/task/softirqd.rs:313:             kthread_park_if(|| per_cpu::softirq_pending() == 0);
+kernel/src/task/softirqd.rs:344:         if cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0 {
+kernel/src/task/kthread.rs:217: pub fn kthread_park_if(should_park: impl FnOnce() -> bool) {
+kernel/src/task/kthread.rs:274: pub fn kthread_unpark(handle: &KthreadHandle) {
+Code delta from gate revision: 

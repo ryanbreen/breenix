@@ -1,0 +1,2 @@
+3346870ed480e5210c0cdacb46b07f049511df67
+Runtime artifact: HEAD plus callback increment removed from kernel/src/task/softirqd.rs; source restored before launch.

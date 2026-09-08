@@ -1,0 +1,2 @@
+T2T3T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=250:wait_ns=387582000:dispatches=0:iterations=315750:verdict=lost]
+scorer exit=1
