@@ -271,3 +271,24 @@ merged `e664e4bc` without conflicts. The merge commit also records the prose cor
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-merge-commit.txt -> exit 0
 ```
+
+
+The initial merged-tree structure run passed 71/71 suites at
+`327b42f4ab2ce221a575c226229addb8ebe7a3fc`
+(`serials/508/landing/structure.log`). R182: main added the BSSH publickey
+requirement to the strict aarch64 scorer. Its fixture change appended the marker
+to the older capture. This landing replaces the fixture with the complete retained
+`docs/planning/green-program/libbreenix/serials/430-420/landing/strict-1-serial.txt`
+capture, which the merged strict scorer accepts in score-only mode (exit 0).
+This is reuse of recorded serial bytes, not a new boot or fabricated marker.
+The structure suites are repeated after that fixture replacement.
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-fixture-commit.txt -> exit 0
+```
+
+Fixture-replacement structure validation passed 71/71 suites (exit 0), recorded
+in `serials/508/landing/structure-fixture.log`. The Mac soft-float boot_tests
+build exited 0 with the accepted pinned-core future-incompatibility notice and
+no project diagnostics (`serials/508/landing/aarch64-build.log`).
