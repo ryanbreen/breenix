@@ -338,6 +338,12 @@ pub fn init_online_daemons() {
     #[cfg(target_arch = "x86_64")]
     let online = 1;
     for cpu in 0..online.min(KSOFTIRQD.len()) {
+        // CPU0's boot stack cannot dispatch pinned workers until init handoff.
+        // Publishing it earlier strands a Ready thread through the boot tests.
+        #[cfg(target_arch = "aarch64")]
+        if cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0 {
+            continue;
+        }
         if KSOFTIRQD[cpu].get().is_some() {
             continue;
         }

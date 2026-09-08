@@ -183,6 +183,9 @@ fn launch_init_from_elf(
     // From this point on, the init thread is being set as CPU 0's current thread,
     // and the scheduler can run normally.
     kernel::per_cpu_aarch64::preempt_enable();
+    // IRQs remain masked through ERET; CPU0's daemon can now be published
+    // without leaving it queued through the unschedulable boot phase.
+    kernel::task::softirqd::init_online_daemons();
 
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(init_thread);

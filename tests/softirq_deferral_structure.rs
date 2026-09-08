@@ -70,3 +70,11 @@ fn park_final_check_and_unpark_flag_share_scheduler_serialization() {
     let wake = source.split("pub fn kthread_unpark").nth(1).unwrap().split("/// Test-only").next().unwrap();
     assert!(wake.find("scheduler::with_scheduler(|sched| {").unwrap() < wake.find("parked.store(false").unwrap());
 }
+#[test]
+fn boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released() {
+    let core = read("kernel/src/task/softirqd.rs");
+    assert!(core.contains("cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0"));
+    let main = read("kernel/src/main_aarch64.rs");
+    let handoff = main.split("fn launch_init_from_elf").nth(1).unwrap().split("pub extern \"C\" fn kernel_main").next().unwrap();
+    assert!(handoff.find("preempt_enable();").unwrap() < handoff.find("init_online_daemons();").unwrap());
+}
