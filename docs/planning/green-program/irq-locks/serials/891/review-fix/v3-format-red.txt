@@ -1,0 +1,31 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure softirq_reexport_is_rustfmt_clean ==
+
+running 1 test
+Diff in /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/kernel/src/task/mod.rs:84:
+ // Re-export softirqd public API for kernel-wide use
+ #[allow(unused_imports)]
+ pub use softirqd::{
+[31m-    init_softirq, raise_softirq, register_softirq_handler, SoftirqHandler,
+(B[m[31m-    SoftirqType,
+(B[m[32m+    init_softirq, raise_softirq, register_softirq_handler, SoftirqHandler, SoftirqType,
+(B[m };
+ 
+ #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
+
+thread 'softirq_reexport_is_rustfmt_clean' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:95:5:
+assertion failed: std::process::Command::new("rustfmt").current_dir(root).args(["--check",
+                        "--edition", "2021", "--config", "skip_children=true",
+                        "kernel/src/task/mod.rs"]).status().unwrap().success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test softirq_reexport_is_rustfmt_clean ... FAILED
+
+failures:
+
+failures:
+    softirq_reexport_is_rustfmt_clean
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.02s
+
+
+exit=101

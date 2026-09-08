@@ -1,0 +1,19 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released ==
+
+running 1 test
+
+thread 'boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:79:5:
+assertion failed: core.contains("cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released ... FAILED
+
+failures:
+
+failures:
+    boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+
+exit=101

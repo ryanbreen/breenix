@@ -339,3 +339,118 @@ Issue 891 remains open for review of this branch; loader follow-up is already
 tracked by issue 761 (with issue 803 history). The missing requested 586
 artifact and unobserved historical wake attribution remain evidence limits,
 not manufactured successful reproductions.
+
+## Review fix round: V-1, V-2, V-3 (2026-09-08)
+
+V-1: `docker/qemu/run-aarch64-boot-test-strict.sh` now retains the scorer's
+exit 2 through score-only output, frozen-deadline boot scoring, evidence
+reporting, the import hook, and iteration aggregation. It reports
+INCONCLUSIVE with host-starvation context and imports INCONCLUSIVE/2.
+Mixed failure/starvation iterations exit 1; passing/starved iterations exit 2.
+Crash and explicit boot-test failure markers take precedence over a starved
+oracle. The delivered-tick budget and boot deadlines are unchanged.
+
+V-2: `scripts/score-softirq-deferral.py` requires wait_ns of at least
+15000000000 before accepting starved, in addition to wait_ticks below 250.
+The regression checks 0, 123, and 14999999999 ns as failures, with
+15000000000 and 15000000001 ns accepted as starvation when ticks are below
+budget. The existing missing/duplicate/forged-completion checks remain.
+
+V-3: `kernel/src/task/mod.rs` joins the softirq API re-export as rustfmt
+requires. A structure test runs rustfmt --check on this file. This round's
+only retained kernel edit is formatting in that file; it changes no Tier-1
+or Tier-2 file and introduces no logging or warning suppression.
+
+### Regression and mutation evidence
+
+`tests/softirq_deferral_structure.rs` passes 9/9 tests, including the scorer
+boundary test, the strict shell behavior test, and the rustfmt check.
+`scripts/test-softirq-strict-status.py` executes score-only mode directly,
+the actual frozen-snapshot/report/import shell tail with stubbed providers,
+and the actual aggregate loop with five mixed-status sequences. It does
+not launch QEMU or substitute weaker boot-success evidence.
+
+The [mutation runner](serials/891/review-fix/run-mutations.py) records eight
+expected exit-101 reds: score-only exit collapse, frozen-status collapse,
+FAIL/1 import substitution, aggregate-status collapse, removed backstop
+validation, reintroduced formatting defect, omitted iteration-limit wake,
+and removed boot-preemption publication guard. Each source is restored
+byte-for-byte before the next case; the [restored suite](serials/891/review-fix/restored-green.txt)
+passes 9/9. This repeats the prior omit-wake and boot-publication ratchets
+as well as the new review regressions.
+
+The callback-evidence runtime mutation was also repeated: a temporary build
+removed the dispatch counter increment in `kernel/src/task/softirqd.rs`.
+Its [serial](serials/891/review-fix/runtime-serial.txt) records 250 wait_ticks,
+387582000 wait_ns, dispatches=0, 315750 iterations, and lost;
+its [scorer](serials/891/review-fix/runtime-score.txt) exits 1. No panic marker
+was found in that serial. The mutated artifact was copied aside, the source
+restored, and a clean boot_tests kernel rebuilt before the strict gate.
+This measures withheld callback evidence, not a production lost wake.
+
+The initial full structure sweep was 67/68: the existing import ratchet
+expected two strict-gate call sites, before the third inconclusive outcome
+was added. Its [red](serials/891/review-fix/import-pre-update-red.txt) is
+retained. `tests/run_inspector_import_structure.rs` now pins three sites,
+including the INCONCLUSIVE/2 branch's preceding status check. The subsequent
+Mac gate preflight passes 68/68 suites. No structure preflight was skipped.
+
+### Gate provenance and results
+
+Both requested gates ran revision `3346870ed480e5210c0cdacb46b07f049511df67`
+plus [tested-source.patch](serials/891/review-fix/tested-source.patch), whose
+full-index SHA256 is
+`1336a23d695811dfde35f71ae123d1addcdde394bd03d8f10e3c79b715797d10`,
+and the new `scripts/test-softirq-strict-status.py`, SHA256
+`e2a9833367590ca684ceb29460cee70e5be0ae49f3ca0694cfdb7a9cb5bef936`.
+The full-index patch hashes matched between Mac and beast; the ordinary
+patch hashes differ solely because their Git object abbreviations have
+different lengths. The runtime mutation's distinct provenance is in
+[runtime-revision.txt](serials/891/review-fix/runtime-revision.txt).
+
+The Mac command `bash docker/qemu/run-aarch64-boot-test-strict.sh 1` exits 0:
+68/68 structure suites, 1/1 boots, zero failures or inconclusive boots.
+The [gate transcript](serials/891/review-fix/aarch64-strict.txt) and
+[serial](serials/891/review-fix/aarch64-strict-serial.txt) record an ok deferral
+oracle with 2 ticks, 3768992 ns, 5 dispatches, and 25 iterations.
+The soft-float boot_tests build used `aarch64-breenix-kernel.json` and the
+specified fork-library path. Userspace ELFs and ext2 came from the specified
+Mac checkout. The build emitted zero project diagnostics; its pinned-core
+future-incompatibility notice is the accepted toolchain notice under issues
+559 and 945, not a suppressed project warning.
+
+Beast launched the requested `bash docker/qemu/run-x86-boot-tests.sh` in
+`/root/breenix-s891`, with lane-local TMPDIR and BREENIX_GATE_TMP, at a
+one-minute load of 1.43; its QEMU-start facts later record 3.42. The R238 check did not require a wait. Missing x86
+userspace ELFs were built once. The [x86 gate](serials/891/review-fix/x86-gate.txt)
+exits 0 with 68/68 structure suites and 1/1 boot. Its userspace tally is
+exited=110, nonzero=0, failed=[]. The deferral oracle records 3 ticks,
+8063849 ns, 5 dispatches, and 25 iterations; timer-wake latency records
+45 ms overrun within its 100 ms bound. The slow context-restore suite
+completed in 216 seconds on its first attempt. No preflight timeout,
+900-second retry, SCSI/IO failure, or project build warning occurred.
+Raw ports are retained as [user serial](serials/891/review-fix/x86-serial-user.txt)
+and [kernel serial](serials/891/review-fix/x86-serial-kernel.txt).
+
+### Not claimed
+
+- A live host-starved boot in this round: starvation classification and
+  status propagation are exercised with synthetic evidence.
+- A production lost-wake reproduction from the callback-counter mutation.
+- New production-profile, testing-profile, or multi-boot stress coverage;
+  this review round reruns the two requested boot gates.
+- A change to the run-inspector application's UI projection; the gate
+  hook now receives the distinct INCONCLUSIVE string and exit 2.
+- Closure of issue 891 before branch review and merge.
+
+
+### Commit checks
+
+The [static checks](serials/891/review-fix/static-checks.txt) record Bash
+syntax, rustfmt on the four listed task-module files, and git diff --check,
+each exiting 0. No lane-owned QEMU remained after the gates; cleanup used
+owned PIDs, without name-based killing. No task-created stash exists.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/review-commit-message.txt -> exit 0

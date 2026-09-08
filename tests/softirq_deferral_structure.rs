@@ -48,13 +48,16 @@ fn scorer_rejects_forged_ok_and_reports_starvation_separately() {
 import importlib.util
 spec=importlib.util.spec_from_file_location('score','scripts/score-softirq-deferral.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-def line(ticks=2,dispatches=5,iterations=25,verdict='ok'):
-    return f'[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks={ticks}:wait_ns=123:dispatches={dispatches}:iterations={iterations}:verdict={verdict}]'
+def line(ticks=2,dispatches=5,iterations=25,verdict='ok',ns=15000000000):
+    return f'[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks={ticks}:wait_ns={ns}:dispatches={dispatches}:iterations={iterations}:verdict={verdict}]'
 assert m.score(line())[0] == 0
 assert m.score(line(dispatches=0))[0] == 1
 assert m.score(line(iterations=24))[0] == 1
 assert m.score(line(verdict='lost'))[0] == 1
 assert m.score(line(ticks=2,dispatches=0,verdict='starved'))[0] == 2
+for ns in (0, 123, 14999999999):
+    assert m.score(line(dispatches=0,iterations=10,verdict='starved',ns=ns))[0] == 1
+assert m.score(line(dispatches=0,iterations=10,verdict='starved',ns=15000000001))[0] == 2
 assert m.score(line(ticks=250,dispatches=0,verdict='starved'))[0] == 1
 assert m.score('')[0] == 1
 assert m.score(line()+'\n'+line())[0] == 1
@@ -77,4 +80,19 @@ fn boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released() {
     let main = read("kernel/src/main_aarch64.rs");
     let handoff = main.split("fn launch_init_from_elf").nth(1).unwrap().split("pub extern \"C\" fn kernel_main").next().unwrap();
     assert!(handoff.find("preempt_enable();").unwrap() < handoff.find("init_online_daemons();").unwrap());
+}
+
+#[test]
+fn strict_gate_preserves_starvation_status() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert!(std::process::Command::new("python3").current_dir(root)
+        .arg("scripts/test-softirq-strict-status.py").status().unwrap().success());
+}
+
+#[test]
+fn softirq_reexport_is_rustfmt_clean() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert!(std::process::Command::new("rustfmt").current_dir(root)
+        .args(["--check", "--edition", "2021", "--config", "skip_children=true", "kernel/src/task/mod.rs"])
+        .status().unwrap().success());
 }

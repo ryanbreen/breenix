@@ -24,6 +24,8 @@ def score(text):
         return 1, "softirq deferral: FAIL: ok without daemon completion"
     if verdict == "starved" and int(ticks) >= int(budget):
         return 1, "softirq deferral: FAIL: guest execution mislabeled starved"
+    if verdict == "starved" and int(ns) < 15_000_000_000:
+        return 1, "softirq deferral: FAIL: starvation backstop not elapsed"
     return {"ok": 0, "lost": 1, "starved": 2}[verdict], lines[0]
 
 

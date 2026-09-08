@@ -1,0 +1,25 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure strict_gate_preserves_starvation_status ==
+
+running 1 test
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/scripts/test-softirq-strict-status.py", line 31, in <module>
+    assert result.returncode == status, result.stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: SCORE: INCONCLUSIVE - host starvation: [SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=15000000000:dispatches=0:iterations=10:verdict=starved] (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/.tmp/softirq-status-5ugi1p67/serial.txt)
+
+
+thread 'strict_gate_preserves_starvation_status' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:88:5:
+assertion failed: std::process::Command::new("python3").current_dir(root).arg("scripts/test-softirq-strict-status.py").status().unwrap().success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test strict_gate_preserves_starvation_status ... FAILED
+
+failures:
+
+failures:
+    strict_gate_preserves_starvation_status
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.09s
+
+
+exit=101

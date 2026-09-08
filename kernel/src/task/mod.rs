@@ -84,8 +84,7 @@ pub use workqueue::{
 // Re-export softirqd public API for kernel-wide use
 #[allow(unused_imports)]
 pub use softirqd::{
-    init_softirq, raise_softirq, register_softirq_handler, SoftirqHandler,
-    SoftirqType,
+    init_softirq, raise_softirq, register_softirq_handler, SoftirqHandler, SoftirqType,
 };
 
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
