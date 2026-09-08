@@ -1,3 +1,9 @@
+PROVENANCE CORRECTION (V-4, 2026-09-08): Intermediate dirty-tree diagnostic.
+Source revision: not recorded at execution; exact HEAD and dirty diff cannot
+be established from this retained transcript. No committed revision is assigned
+retroactively. Retained for diagnostic history only; excluded from revision-specific
+acceptance evidence and landing boot tallies. Final gates have separate provenance.
+
 [GATE_SUITE:stem=aarch64_testing_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
 [GATE_SUITE:stem=block_request_lifetime_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
 [GATE_SUITE:stem=blocking_fd_eagain_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]

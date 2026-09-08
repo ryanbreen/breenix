@@ -1,3 +1,9 @@
+PROVENANCE CORRECTION (V-4, 2026-09-08): Intermediate dirty-tree diagnostic.
+Source revision: not recorded at execution; exact HEAD and dirty diff cannot
+be established from this retained transcript. No committed revision is assigned
+retroactively. Retained for diagnostic history only; excluded from revision-specific
+acceptance evidence and landing boot tallies. Final gates have separate provenance.
+
 Building the ARM64 testing profile...
     Finished `release` profile [optimized] target(s) in 0.05s
 warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)

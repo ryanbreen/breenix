@@ -474,3 +474,17 @@ Git hook configuration was changed.
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/review-citations-message.txt -> exit 0
+
+## Landing
+
+V-4: inline provenance corrections in `serials/891/testing-diagnostic.txt`,
+`serials/891/preflight.txt`, and `serials/891/preflight2.txt` explicitly mark
+the unrecorded source identity and exclude these intermediate dirty-tree
+transcripts from revision-specific acceptance evidence. Their exact revisions
+are not reconstructed or assigned retrospectively.
+
+Deferred code findings supplied for landing: [] (0 findings).
+
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/irq-locks/serials/891/testing-diagnostic.txt docs/planning/green-program/irq-locks/serials/891/preflight.txt docs/planning/green-program/irq-locks/serials/891/preflight2.txt -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/landing-prose-message.txt -> exit 0
