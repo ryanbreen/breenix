@@ -2,6 +2,7 @@
 """Exercise strict-gate shell status propagation without launching QEMU."""
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -18,13 +19,23 @@ def run(script, env):
 with tempfile.TemporaryDirectory(prefix="softirq-status-") as tmp:
     env = dict(os.environ, BREENIX_GATE_TMP=tmp, OUTPUT_DIR=tmp)
     serial = Path(tmp) / "serial.txt"
+    baseline = (ROOT / "tests/fixtures/udp-socket-lock-aarch64-serial.txt").read_text()
+    serial.write_text(baseline)
+    result = subprocess.run(["bash", str(GATE), "1"],
+                            env=dict(env, BREENIX_STRICT_SCORE_ONLY=str(serial)),
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert result.returncode == 0, result.stdout
+    # Synthetic scorer legs, not guest receipts: retain the other required
+    # oracles so the softirq status is the property under test.
+    baseline, removed = re.subn(r"\[SOFTIRQ_DEFERRAL_ORACLE:[^\]]*\]", "", baseline)
+    assert removed == 1, "expected one recorded softirq oracle"
     oracle = "[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=15000000000:dispatches=0:iterations=10:verdict=starved]"
     for contents, status, label in [(oracle, 2, "INCONCLUSIVE"),
                                     (oracle.replace("15000000000", "0"), 1, "FAIL"),
                                     (oracle.replace("starved", "lost"), 1, "FAIL"),
                                     (oracle + "\nKERNEL PANIC", 1, "FAIL"),
                                     (oracle + "\n[BOOT_TESTS:FAIL]", 1, "FAIL")]:
-        serial.write_text(contents + "\n")
+        serial.write_text(baseline + "\n" + contents + "\n")
         result = subprocess.run(["bash", str(GATE), "1"],
                                 env=dict(env, BREENIX_STRICT_SCORE_ONLY=str(serial)),
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

@@ -1,0 +1,4 @@
+81379ef979928659d2b7ca2efe1ea798efe4d1c2
+    Finished `release` profile [optimized] target(s) in 0.05s
+exit=0
+6e7b99eba5920b772f1a73e32f33004055241795dc30c597b9aa13225516608e  target/aarch64-breenix-kernel/release/kernel-aarch64

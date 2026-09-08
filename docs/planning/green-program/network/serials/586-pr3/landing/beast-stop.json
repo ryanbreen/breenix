@@ -1,0 +1,1 @@
+{"reason": "Stopped after ARM64 strict retry failed before boot; x86 verdict incomplete", "owned_gate_processes": [{"pid": 1323324, "cwd": "/root/breenix-n586p3l", "args": ["bash", "docker/qemu/run-x86-boot-tests.sh"]}]}

@@ -1,0 +1,12 @@
+docs(586 PR 3): record redo proofs and unresolved acceptance outcomes
+
+Preserve strict 3, service sequence 2+2, beast x86 and final production
+receipts; re-record both R182 fixtures and verify their replay suites.
+Record permanent wake suppression and always-extend boot failures, the red
+production-guard ratchet, and unsuccessful starvation reproduction attempts.
+The 64-hog retry exposed armed=0 in the UDP oracle; track it as issue 955.
+Issue 954 tracks the unresolved always-extend control contract.
+Acceptance and issue 586 closure are not claimed.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

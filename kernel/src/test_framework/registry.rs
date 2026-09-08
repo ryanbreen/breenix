@@ -2610,6 +2610,24 @@ const LOOPBACK_BACKSTOP_MS: u64 = 1_000 * crate::time::timer::MS_PER_TICK;
 /// The wake budget the loopback recv-wake tests give the reader, in ms.
 const LOOPBACK_WAKE_BUDGET_MS: u64 = 200;
 
+// Each grant buys one more independently measured window, with a finite count.
+const LOOPBACK_WAKE_MAX_EXTENSIONS: u64 = 4;
+
+fn loopback_window_starved(tick_ms: u64, ctr_ms: u64, ctx_delta: u64) -> bool {
+    ctx_delta < LOOPBACK_WAKE_CTX_FLOOR
+        || ctr_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_DEN)
+            > tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM)
+}
+
+fn loopback_extension_eligible(
+    pending: bool,
+    runnable: bool,
+    starved: bool,
+    extensions: u64,
+) -> bool {
+    pending && runnable && starved && extensions < LOOPBACK_WAKE_MAX_EXTENSIONS
+}
+
 /// The fewest context switches a budget window must buy before the guest is
 /// credited with having executed.
 ///
@@ -2971,30 +2989,8 @@ fn run_loopback_recv_wake_test_inner(
         return TestResult::Fail("tcp_send failed in loopback wake test");
     }
 
-    // #586 PR 2: bracket the budget with three clocks, so a boot that misses
-    // the wake can say where the time went instead of leaving the reader's
-    // state to carry the whole argument.
-    //
-    // `get_monotonic_time()` is the TICK clock -- `TICKS * MS_PER_TICK`, and
-    // `TICKS` only advances when this guest takes a timer interrupt.
-    // `monotonic_now_ns()` is the COUNTER clock -- CNTVCT_EL0 on aarch64, the
-    // TSC on x86_64 -- which advances with the host whether or not this guest
-    // is scheduled. `CTX_SWITCH_TOTAL.aggregate()` counts the context switches
-    // the guest actually performed across the window. A window in which the
-    // counter ran far ahead of the ticks, or in which the guest performed no
-    // switches, is the guest's own measurement of time it did not get.
-    //
-    // All three are reads of state that already exists. Nothing here writes to
-    // a dispatch, interrupt or syscall path, and no Tier-1 or Tier-2 file is
-    // touched.
-    // claim-lint:ok: "all three" is the 3 stamps taken below; the Tier
-    // statement is the 2-file diff of this branch -- this file and
-    // kernel/src/task/scheduler.rs, neither of which is in CLAUDE.md's Tier-1
-    // or Tier-2 tables. See #586 and
-    // docs/planning/green-program/network/586-PR2-2026-09-07.md.
-    let tick_before_ms = crate::time::get_monotonic_time();
-    let ctr_before_ns = monotonic_now_ns();
-    let ctx_before = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
+    // Measure each spent window independently using guest ticks, counter time,
+    // and the existing context-switch counter. No hot-path instrumentation.
     // Two point samples of the per-CPU idle flags, unioned below. This is not
     // a continuous observation of the window: it says a CPU was idle at one of
     // the two instants, never that one was idle throughout.
@@ -3012,18 +3008,41 @@ fn run_loopback_recv_wake_test_inner(
     let idle_before_sampled = idle_before_facts.is_some();
     let idle_before = idle_before_facts.map_or(0u32, |facts| facts.idle_cpu_bitmap);
 
-    sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS);
+    let mut extensions = 0u64;
+    let (elapsed_tick_ms, elapsed_ctr_ms, ctx_delta, wake_ms, reader_state) = loop {
+        let tick_before_ms = crate::time::get_monotonic_time();
+        let ctr_before_ns = monotonic_now_ns();
+        let ctx_before = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
+        sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS);
+        let tick_after_ms = crate::time::get_monotonic_time();
+        let ctr_after_ns = monotonic_now_ns();
+        let ctx_after = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
+        let tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
+        let ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
+        let switches = ctx_after.wrapping_sub(ctx_before);
+        let starved = loopback_window_starved(tick_ms, ctr_ms, switches);
+        let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
+        let pending = wake_ms == 0;
+        let reader_state = scheduler::with_scheduler(|sched| {
+            sched.get_thread(reader_tid).map(|thread| thread.state)
+        });
+        let runnable = matches!(
+            reader_state,
+            Some(Some(
+                crate::task::thread::ThreadState::Ready | crate::task::thread::ThreadState::Running
+            ))
+        );
+        if loopback_extension_eligible(pending, runnable, starved, extensions) {
+            extensions += 1;
+            continue;
+        }
+        break (tick_ms, ctr_ms, switches, wake_ms, reader_state);
+    };
 
-    let tick_after_ms = crate::time::get_monotonic_time();
-    let ctr_after_ns = monotonic_now_ns();
-    let ctx_after = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
-
-    let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
+    // Latch the deadline wake stamp: a dispatch after refusal cannot erase red.
     let received = LOOPBACK_READER_BYTES.load(AtomicOrdering::SeqCst);
     let queue_depth = crate::net::loopback_queue_depth_for_test();
     let client_has_data = tcp::tcp_has_data(&client);
-    let reader_state =
-        scheduler::with_scheduler(|sched| sched.get_thread(reader_tid).map(|thread| thread.state));
     let placement = scheduler::thread_placement_facts(reader_tid);
     // State, placement, and the accessor's unlocked idle flags are separate
     // observations. This census is another snapshot, after the clock stamps.
@@ -3121,9 +3140,6 @@ fn run_loopback_recv_wake_test_inner(
     // the two late failure paths.
     // The strand-census fields below use a separate post-window snapshot;
     // no stack-risk measurement justifies omitting this existing kthread API.
-    let elapsed_tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
-    let elapsed_ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
-    let ctx_delta = ctx_after.wrapping_sub(ctx_before);
     // Same collapse as `idle_before` above, on the deadline-side sample: a
     // `None` here means "unavailable", not "idle_cpu_bitmap of 0". A set bit
     // in the union can only be written by a sample that succeeded, so the
@@ -3139,15 +3155,17 @@ fn run_loopback_recv_wake_test_inner(
     // The guest is credited with having executed across the window when it
     // both performed context switches and kept its tick clock inside the
     // divergence ceiling of its counter clock.
-    let guest_executed = ctx_delta >= LOOPBACK_WAKE_CTX_FLOOR
-        && elapsed_ctr_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_DEN)
-            <= elapsed_tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM);
+    let guest_executed = !loopback_window_starved(elapsed_tick_ms, elapsed_ctr_ms, ctx_delta);
 
     // `verdict` names the BUDGET's outcome, not the test's. A boot that woke
     // inside the budget and then received the wrong byte count fails below
     // and still reads `verdict=ok`, because the budget was in fact met.
     let verdict = if wake_ms != 0 {
-        "ok"
+        if extensions > 0 && received == 3 {
+            "starved"
+        } else {
+            "ok"
+        }
     } else if matches!(reader_fact, ReaderFact::StillBlocked) {
         "wake"
     } else if !guest_executed {
@@ -3232,15 +3250,6 @@ fn run_loopback_recv_wake_test_inner(
         }
     }
 
-    // `extensions` is 0 on every line this PR can print: the budget is still
-    // one fixed window and nothing extends it. The field is here so PR 3's
-    // extension arithmetic lands in a grammar the green population already
-    // carries, and so a reader of these logs is never left guessing whether
-    // an absent field meant zero.
-    // claim-lint:ok: `extensions` is the literal 0 at the 1 of 1 call site of
-    // this format string, and 20 of 20 lines in the measured population read
-    // extensions=0 -- see
-    // docs/planning/green-program/network/586-PR2-2026-09-07.md and #586.
     struct CensusSlot(Option<u64>);
     impl core::fmt::Display for CensusSlot {
         fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -3252,14 +3261,17 @@ fn run_loopback_recv_wake_test_inner(
     }
     let emit_wake_budget = || {
         crate::serial_println!(
-            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
+            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:max_extensions={}:extension_ms={}:extension_bound_ms={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
             arch_token,
             test_token,
             LOOPBACK_WAKE_BUDGET_MS,
             elapsed_tick_ms,
             elapsed_ctr_ms,
             ctx_delta,
-            0u64,
+            extensions,
+            LOOPBACK_WAKE_MAX_EXTENSIONS,
+            extensions * LOOPBACK_WAKE_BUDGET_MS,
+            (1 + LOOPBACK_WAKE_MAX_EXTENSIONS) * LOOPBACK_WAKE_BUDGET_MS,
             reader_state_token,
             PlacementSlot::of(placement, |facts| facts.queued_cpu),
             PlacementSlot::of(placement, |facts| facts.queued_index),
@@ -4695,7 +4707,7 @@ pub fn run_census_widen_oracle() -> bool {
                 // advance around each halt before trying reclamation again. Keep this
                 // bounded attempt so `retired` remains useful evidence, but do not gate
                 // the verdict on it: retirement is asynchronous bookkeeping that needs
-                // the online CPUs to cross a scheduler boundary, which this oracle
+                // online CPUs to cross scheduler boundaries, which this oracle
                 // cannot force. Registration ordering makes the probe non-interfering.
                 crate::task::scheduler::reclaim_terminated_threads();
                 for _ in 0..CENSUS_WIDEN_RETIRE_ROUNDS {

@@ -1,0 +1,5 @@
+revision=290152b19545388a099056988714d132cbea4ff7 cycles=3 hogs=14
+[STARVED_LOOP_FACTS:revision=290152b19545388a099056988714d132cbea4ff7:cycle=1:hogs=14:gate_exit=0:recovered=0]
+[STARVED_LOOP_FACTS:revision=290152b19545388a099056988714d132cbea4ff7:cycle=2:hogs=14:gate_exit=0:recovered=0]
+[STARVED_LOOP_FACTS:revision=290152b19545388a099056988714d132cbea4ff7:cycle=3:hogs=14:gate_exit=0:recovered=0]
+[STARVED_LOOP_RESULT:cycles=3:failed=0:recovered=0]

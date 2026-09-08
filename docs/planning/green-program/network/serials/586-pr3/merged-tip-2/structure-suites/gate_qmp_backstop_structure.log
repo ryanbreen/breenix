@@ -1,0 +1,30 @@
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure  ==
+
+running 23 tests
+test missing_tool_report_rejects_malformed_lines ... ok
+test invalid_budget_report_rejects_malformed_lines ... ok
+test missing_socket_report_rejects_malformed_lines ... ok
+test hung_dump_report_rejects_malformed_lines ... ok
+test receipt_precedes_response_deadline ... ok
+test rejects_malformed_complete_reports ... ok
+test a_socket_path_under_a_worktree_scoped_output_dir_is_the_reproduced_defect ... ok
+test shipped_capture_deadline_and_mutations ... ok
+test service_loop_routes_every_verdict_kill_through_ordered_helper ... ok
+test moving_the_qmp_decision_after_its_kill_reddens_the_check ... ok
+test swapping_helper_kill_and_dump_reddens_the_check ... ok
+test strict_kill_follows_qmp_decision ... ok
+test gqb_alloc_socket_pairs_with_a_reachable_free_call_in_every_converted_gate ... ok
+test neither_converted_gate_builds_qmp_sock_under_its_own_output_dir ... ok
+test census_wiring_calls_both_outcomes ... ok
+test gqb_free_socket_refuses_to_remove_paths_outside_its_namespace ... ok
+test gqb_alloc_socket_returns_a_path_a_real_af_unix_bind_accepts ... ok
+test gqb_free_socket_removes_only_its_own_namespace_directory ... ok
+test pass_emits_exact_contract_without_any_qmp_traffic ... ok
+test core_extraction_uses_physical_load_ranges_and_rejects_missing_or_truncated_bytes ... ok
+test timeout_marker_requires_expiry_not_early_exit_124 ... ok
+test fake_qmp_dump_precedes_sigterm_even_when_decode_fails ... ok
+test missing_socket_and_hung_dump_are_partial_and_bounded ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.60s
+

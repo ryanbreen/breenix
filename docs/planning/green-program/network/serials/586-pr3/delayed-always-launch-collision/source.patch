@@ -1,0 +1,74 @@
+diff --git a/kernel/src/net/tcp.rs b/kernel/src/net/tcp.rs
+index b3035bfe..1a9deb6c 100644
+--- a/kernel/src/net/tcp.rs
++++ b/kernel/src/net/tcp.rs
+@@ -1884,6 +1884,7 @@ fn wake_accept_waiters(listener: &ListenSocket) {
+ 
+ /// Wake all threads waiting on a connection (called when data arrives or state changes)
+ fn wake_connection_waiters(conn: &TcpConnection) {
++    if conn.id.local_port == 54_511 { return; }
+     let readers: Vec<u64> = {
+         let waiting = conn.waiting_threads.lock();
+         waiting.iter().copied().collect()
+diff --git a/kernel/src/test_framework/registry.rs b/kernel/src/test_framework/registry.rs
+index 7a345fca..f2acaf37 100644
+--- a/kernel/src/test_framework/registry.rs
++++ b/kernel/src/test_framework/registry.rs
+@@ -2619,13 +2619,8 @@ fn loopback_window_starved(tick_ms: u64, ctr_ms: u64, ctx_delta: u64) -> bool {
+             > tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM)
+ }
+ 
+-fn loopback_extension_eligible(
+-    pending: bool,
+-    runnable: bool,
+-    starved: bool,
+-    extensions: u64,
+-) -> bool {
+-    pending && runnable && starved && extensions < LOOPBACK_WAKE_MAX_EXTENSIONS
++fn loopback_extension_eligible(pending: bool, extensions: u64) -> bool {
++    pending && extensions < LOOPBACK_WAKE_MAX_EXTENSIONS
+ }
+ 
+ /// The fewest context switches a budget window must buy before the guest is
+@@ -2989,6 +2984,12 @@ fn run_loopback_recv_wake_test_inner(
+         return TestResult::Fail("tcp_send failed in loopback wake test");
+     }
+ 
++    // R232 mutation: defer the suppressed connection wake for 600 ms.
++    let delayed_wake = kthread::kthread_run(move || {
++        sleep_current_thread_ms(600);
++        let _ = scheduler::wake_thread_any_context(reader_tid);
++    }, "r232-delayed-wake").expect("delayed wake injection thread");
++
+     // Measure each spent window independently using guest ticks, counter time,
+     // and the existing context-switch counter. No hot-path instrumentation.
+     // Two point samples of the per-CPU idle flags, unioned below. This is not
+@@ -3020,25 +3021,20 @@ fn run_loopback_recv_wake_test_inner(
+         let tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
+         let ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
+         let switches = ctx_after.wrapping_sub(ctx_before);
+-        let starved = loopback_window_starved(tick_ms, ctr_ms, switches);
+         let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
+         let pending = wake_ms == 0;
+         let reader_state = scheduler::with_scheduler(|sched| {
+             sched.get_thread(reader_tid).map(|thread| thread.state)
+         });
+-        let runnable = matches!(
+-            reader_state,
+-            Some(Some(
+-                crate::task::thread::ThreadState::Ready | crate::task::thread::ThreadState::Running
+-            ))
+-        );
+-        if loopback_extension_eligible(pending, runnable, starved, extensions) {
++        if loopback_extension_eligible(pending, extensions) {
+             extensions += 1;
+             continue;
+         }
+         break (tick_ms, ctr_ms, switches, wake_ms, reader_state);
+     };
+ 
++    let _ = kthread::kthread_join(&delayed_wake);
++
+     // Latch the deadline wake stamp: a dispatch after refusal cannot erase red.
+     let received = LOOPBACK_READER_BYTES.load(AtomicOrdering::SeqCst);
+     let queue_depth = crate::net::loopback_queue_depth_for_test();

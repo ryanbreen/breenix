@@ -1,0 +1,13 @@
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure  ==
+
+running 6 tests
+test oversized_jobs_are_configuration_errors ... ok
+test concurrent_invocations_isolate_logs_and_same_stem_binaries ... ok
+test timeout_retries_only_that_suite_once_with_double_budget ... ok
+test two_jobs_overlap_and_never_exceed_the_bound ... ok
+test mutation_is_green_red_green_with_default_and_one_job ... ok
+test hung_suite_returns_red_within_budget ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.06s
+

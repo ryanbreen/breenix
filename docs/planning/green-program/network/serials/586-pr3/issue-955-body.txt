@@ -1,0 +1,15 @@
+A bounded 586 PR 3 recovery experiment with 64 host CPU hogs produced a UDP socket-lock oracle failure on the unchanged boot_tests kernel at commit `290152b19545388a099056988714d132cbea4ff7`.
+
+Reproduction used `bash docker/qemu/run-aarch64-starved-loop.sh 1 64` on the 18-logical-CPU Mac. The initial attempt hit the context-restore structure suite's 300-second limit before QEMU. The single authorized retry set `BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS=900`, passed 64/64 suites, and booted. No structure skip or test-criterion change was used.
+
+`docs/planning/green-program/network/serials/586-pr3/recovery-heavy-retry/cycle-1/serial.txt:829` records:
+
+```
+[UDP_LOCK_ORACLE:aarch64:attempts=3:armed=0:holder_cpu=1:irqs_enabled_before=1:masked_in_hold=1:sends=12:hold_us=12000:netrx_pending_at_release=1:received=26:stalled=0:hold_done=1:joined=1:FAIL]
+```
+
+The next line in that same file is the generic `udp_socket_lock_oracle` FAIL payload saying the holder was interruptible. That text does not establish interruptibility: the measured record says `masked_in_hold=1` and `armed=0`. At this revision, `kernel/src/test_framework/registry.rs:5764` requires `armed == 1` in the oracle conjunction. Investigate the missing arm under host contention and whether the diagnostic should identify the failing condition. Do not weaken the oracle to obtain a pass.
+
+The strict gate remained red; its GATE_BOOT_FACTS records `ended_by=hard_timeout`. Both loopback tests in the same serial passed with zero extensions, so this is not a loopback starvation-red or recovery receipt. Ordinary strict 3 and service sequence 2+2 passed earlier at the same code revision. The complete gate output, full serial and preflight retry transcript are preserved under the directory above and are included in the redo evidence commit on `net/586-pr3-guest-execution-budget-v2`.
+
+This observation has not been root-caused as an IRQ-masking defect. Refs 586.

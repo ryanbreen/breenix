@@ -1,0 +1,5 @@
+Revision: 88caad32080578784eca1a38c1a89c97aecfa081
+Index tree: 37edff85047e01f79ee8361189e2c7275b81792e
+Command: env BREENIX_STRICT_SCORE_ONLY=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap-final/serial.txt bash docker/qemu/run-aarch64-boot-test-strict.sh
+SCORE: PASS - /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap-final/serial.txt
+EXIT: 0

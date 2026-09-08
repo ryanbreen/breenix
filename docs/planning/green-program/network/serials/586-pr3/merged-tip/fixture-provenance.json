@@ -1,0 +1,7 @@
+{
+  "source": "docs/planning/green-program/network/serials/586-pr3/merged-tip/fixture-recording-repeat/serial.txt",
+  "target": "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
+  "sha256": "ec3a60d65371aa8f3f0c7642fe2bbf3e60d79114ae33ba1d60336ee2595d4582",
+  "index_byte_equal": true,
+  "kind": "bootstrap direct recording of uncommitted merged code; not a full gate"
+}

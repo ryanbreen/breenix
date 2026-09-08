@@ -1,0 +1,6 @@
+Revision: 88caad32080578784eca1a38c1a89c97aecfa081
+Index tree: 37edff85047e01f79ee8361189e2c7275b81792e
+Command: bash -c source\ docker/qemu/lib/qemu-host-lock.sh\;\ qemu_host_lock_acquire\;\ RAW_BOOT_SECONDS=40\ python3\ .tmp/record-merged.py\ merged-tip-2/fixture-bootstrap-final
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap-final
+EXIT: 0

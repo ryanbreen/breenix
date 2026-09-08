@@ -1,0 +1,18 @@
+== compiling terminal_edge_capture_structure ==
+== running terminal_edge_capture_structure  ==
+
+running 11 tests
+test the_aarch64_fatal_postmortem_captures_in_section_seven_and_nowhere_else ... ok
+test the_library_panic_handler_is_uncompiled_because_the_lib_disables_its_test_target ... ok
+test the_panic_oracle_lives_outside_the_capture_directory ... ok
+test replacing_the_wide_ring_dump_with_the_capture_would_be_caught - should panic ... ok
+test deleting_the_postmortems_capture_would_be_caught - should panic ... ok
+test the_panic_oracle_is_feature_gated_and_no_gate_builds_it ... ok
+test the_capture_is_emitted_before_whatever_ends_the_panic_handler ... ok
+test moving_the_capture_after_exit_qemu_would_be_caught - should panic ... ok
+test reducing_a_live_panic_handler_to_a_stub_would_be_caught - should panic ... ok
+test every_live_panic_handler_in_the_kernel_emits_a_capture ... ok
+test deleting_one_panic_handlers_emit_call_would_be_caught - should panic ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+

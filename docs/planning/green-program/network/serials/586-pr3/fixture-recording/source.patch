@@ -1,0 +1,725 @@
+diff --git a/kernel/src/test_framework/registry.rs b/kernel/src/test_framework/registry.rs
+index aa7000a7..7a345fca 100644
+--- a/kernel/src/test_framework/registry.rs
++++ b/kernel/src/test_framework/registry.rs
+@@ -1884,7 +1884,9 @@ fn test_ring_span_unfiltered_report() -> TestResult {
+     use crate::tracing::providers::irq::unfiltered_ring_span_self_check;
+ 
+     if !wait_for_ring_span_unfiltered_ready(RING_SPAN_UNFILTERED_READY_TIMEOUT_MS) {
+-        return TestResult::Fail("unfiltered ring-span self-check did not publish before its deadline");
++        return TestResult::Fail(
++            "unfiltered ring-span self-check did not publish before its deadline",
++        );
+     }
+ 
+     if let Some(report) = unfiltered_ring_span_self_check::claim() {
+@@ -1945,9 +1947,9 @@ pub fn run_x86_tracing_provider_gate() {
+     crate::serial_println!("[TEST:process:deferred_fault_ring_overflow_injection:START]");
+     let result = crate::tracing::providers::teardown::deferred_fault_ring_overflow_test();
+     match result {
+-        TestResult::Pass => crate::serial_println!(
+-            "[TEST:process:deferred_fault_ring_overflow_injection:PASS]"
+-        ),
++        TestResult::Pass => {
++            crate::serial_println!("[TEST:process:deferred_fault_ring_overflow_injection:PASS]")
++        }
+         _ => crate::serial_println!(
+             "[TEST:process:deferred_fault_ring_overflow_injection:FAIL:{}]",
+             result.failure_message().unwrap_or("test failed")
+@@ -2608,6 +2610,24 @@ const LOOPBACK_BACKSTOP_MS: u64 = 1_000 * crate::time::timer::MS_PER_TICK;
+ /// The wake budget the loopback recv-wake tests give the reader, in ms.
+ const LOOPBACK_WAKE_BUDGET_MS: u64 = 200;
+ 
++// Each grant buys one more independently measured window, with a finite count.
++const LOOPBACK_WAKE_MAX_EXTENSIONS: u64 = 4;
++
++fn loopback_window_starved(tick_ms: u64, ctr_ms: u64, ctx_delta: u64) -> bool {
++    ctx_delta < LOOPBACK_WAKE_CTX_FLOOR
++        || ctr_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_DEN)
++            > tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM)
++}
++
++fn loopback_extension_eligible(
++    pending: bool,
++    runnable: bool,
++    starved: bool,
++    extensions: u64,
++) -> bool {
++    pending && runnable && starved && extensions < LOOPBACK_WAKE_MAX_EXTENSIONS
++}
++
+ /// The fewest context switches a budget window must buy before the guest is
+ /// credited with having executed.
+ ///
+@@ -2969,30 +2989,8 @@ fn run_loopback_recv_wake_test_inner(
+         return TestResult::Fail("tcp_send failed in loopback wake test");
+     }
+ 
+-    // #586 PR 2: bracket the budget with three clocks, so a boot that misses
+-    // the wake can say where the time went instead of leaving the reader's
+-    // state to carry the whole argument.
+-    //
+-    // `get_monotonic_time()` is the TICK clock -- `TICKS * MS_PER_TICK`, and
+-    // `TICKS` only advances when this guest takes a timer interrupt.
+-    // `monotonic_now_ns()` is the COUNTER clock -- CNTVCT_EL0 on aarch64, the
+-    // TSC on x86_64 -- which advances with the host whether or not this guest
+-    // is scheduled. `CTX_SWITCH_TOTAL.aggregate()` counts the context switches
+-    // the guest actually performed across the window. A window in which the
+-    // counter ran far ahead of the ticks, or in which the guest performed no
+-    // switches, is the guest's own measurement of time it did not get.
+-    //
+-    // All three are reads of state that already exists. Nothing here writes to
+-    // a dispatch, interrupt or syscall path, and no Tier-1 or Tier-2 file is
+-    // touched.
+-    // claim-lint:ok: "all three" is the 3 stamps taken below; the Tier
+-    // statement is the 2-file diff of this branch -- this file and
+-    // kernel/src/task/scheduler.rs, neither of which is in CLAUDE.md's Tier-1
+-    // or Tier-2 tables. See #586 and
+-    // docs/planning/green-program/network/586-PR2-2026-09-07.md.
+-    let tick_before_ms = crate::time::get_monotonic_time();
+-    let ctr_before_ns = monotonic_now_ns();
+-    let ctx_before = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
++    // Measure each spent window independently using guest ticks, counter time,
++    // and the existing context-switch counter. No hot-path instrumentation.
+     // Two point samples of the per-CPU idle flags, unioned below. This is not
+     // a continuous observation of the window: it says a CPU was idle at one of
+     // the two instants, never that one was idle throughout.
+@@ -3010,18 +3008,41 @@ fn run_loopback_recv_wake_test_inner(
+     let idle_before_sampled = idle_before_facts.is_some();
+     let idle_before = idle_before_facts.map_or(0u32, |facts| facts.idle_cpu_bitmap);
+ 
+-    sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS);
+-
+-    let tick_after_ms = crate::time::get_monotonic_time();
+-    let ctr_after_ns = monotonic_now_ns();
+-    let ctx_after = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
++    let mut extensions = 0u64;
++    let (elapsed_tick_ms, elapsed_ctr_ms, ctx_delta, wake_ms, reader_state) = loop {
++        let tick_before_ms = crate::time::get_monotonic_time();
++        let ctr_before_ns = monotonic_now_ns();
++        let ctx_before = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
++        sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS);
++        let tick_after_ms = crate::time::get_monotonic_time();
++        let ctr_after_ns = monotonic_now_ns();
++        let ctx_after = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
++        let tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
++        let ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
++        let switches = ctx_after.wrapping_sub(ctx_before);
++        let starved = loopback_window_starved(tick_ms, ctr_ms, switches);
++        let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
++        let pending = wake_ms == 0;
++        let reader_state = scheduler::with_scheduler(|sched| {
++            sched.get_thread(reader_tid).map(|thread| thread.state)
++        });
++        let runnable = matches!(
++            reader_state,
++            Some(Some(
++                crate::task::thread::ThreadState::Ready | crate::task::thread::ThreadState::Running
++            ))
++        );
++        if loopback_extension_eligible(pending, runnable, starved, extensions) {
++            extensions += 1;
++            continue;
++        }
++        break (tick_ms, ctr_ms, switches, wake_ms, reader_state);
++    };
+ 
+-    let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
++    // Latch the deadline wake stamp: a dispatch after refusal cannot erase red.
+     let received = LOOPBACK_READER_BYTES.load(AtomicOrdering::SeqCst);
+     let queue_depth = crate::net::loopback_queue_depth_for_test();
+     let client_has_data = tcp::tcp_has_data(&client);
+-    let reader_state =
+-        scheduler::with_scheduler(|sched| sched.get_thread(reader_tid).map(|thread| thread.state));
+     let placement = scheduler::thread_placement_facts(reader_tid);
+     // State, placement, and the accessor's unlocked idle flags are separate
+     // observations. This census is another snapshot, after the clock stamps.
+@@ -3032,10 +3053,7 @@ fn run_loopback_recv_wake_test_inner(
+         state: crate::task::thread::ThreadState::Running,
+     }; scheduler::STRAND_CENSUS_CAPACITY];
+     let mut census_nonprogress = [0u64; scheduler::STRAND_CENSUS_CAPACITY];
+-    let census = scheduler::collect_strand_census(
+-        &mut census_candidates,
+-        &mut census_nonprogress,
+-    );
++    let census = scheduler::collect_strand_census(&mut census_candidates, &mut census_nonprogress);
+     let _ = kthread::kthread_stop(&reader);
+     let _ = kthread::kthread_join(&reader);
+     if let Some(handle) = &load {
+@@ -3122,9 +3140,6 @@ fn run_loopback_recv_wake_test_inner(
+     // the two late failure paths.
+     // The strand-census fields below use a separate post-window snapshot;
+     // no stack-risk measurement justifies omitting this existing kthread API.
+-    let elapsed_tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
+-    let elapsed_ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
+-    let ctx_delta = ctx_after.wrapping_sub(ctx_before);
+     // Same collapse as `idle_before` above, on the deadline-side sample: a
+     // `None` here means "unavailable", not "idle_cpu_bitmap of 0". A set bit
+     // in the union can only be written by a sample that succeeded, so the
+@@ -3140,15 +3155,17 @@ fn run_loopback_recv_wake_test_inner(
+     // The guest is credited with having executed across the window when it
+     // both performed context switches and kept its tick clock inside the
+     // divergence ceiling of its counter clock.
+-    let guest_executed = ctx_delta >= LOOPBACK_WAKE_CTX_FLOOR
+-        && elapsed_ctr_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_DEN)
+-            <= elapsed_tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM);
++    let guest_executed = !loopback_window_starved(elapsed_tick_ms, elapsed_ctr_ms, ctx_delta);
+ 
+     // `verdict` names the BUDGET's outcome, not the test's. A boot that woke
+     // inside the budget and then received the wrong byte count fails below
+     // and still reads `verdict=ok`, because the budget was in fact met.
+     let verdict = if wake_ms != 0 {
+-        "ok"
++        if extensions > 0 && received == 3 {
++            "starved"
++        } else {
++            "ok"
++        }
+     } else if matches!(reader_fact, ReaderFact::StillBlocked) {
+         "wake"
+     } else if !guest_executed {
+@@ -3233,15 +3250,6 @@ fn run_loopback_recv_wake_test_inner(
+         }
+     }
+ 
+-    // `extensions` is 0 on every line this PR can print: the budget is still
+-    // one fixed window and nothing extends it. The field is here so PR 3's
+-    // extension arithmetic lands in a grammar the green population already
+-    // carries, and so a reader of these logs is never left guessing whether
+-    // an absent field meant zero.
+-    // claim-lint:ok: `extensions` is the literal 0 at the 1 of 1 call site of
+-    // this format string, and 20 of 20 lines in the measured population read
+-    // extensions=0 -- see
+-    // docs/planning/green-program/network/586-PR2-2026-09-07.md and #586.
+     struct CensusSlot(Option<u64>);
+     impl core::fmt::Display for CensusSlot {
+         fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+@@ -3253,14 +3261,17 @@ fn run_loopback_recv_wake_test_inner(
+     }
+     let emit_wake_budget = || {
+         crate::serial_println!(
+-            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
++            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:max_extensions={}:extension_ms={}:extension_bound_ms={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
+             arch_token,
+             test_token,
+             LOOPBACK_WAKE_BUDGET_MS,
+             elapsed_tick_ms,
+             elapsed_ctr_ms,
+             ctx_delta,
+-            0u64,
++            extensions,
++            LOOPBACK_WAKE_MAX_EXTENSIONS,
++            extensions * LOOPBACK_WAKE_BUDGET_MS,
++            (1 + LOOPBACK_WAKE_MAX_EXTENSIONS) * LOOPBACK_WAKE_BUDGET_MS,
+             reader_state_token,
+             PlacementSlot::of(placement, |facts| facts.queued_cpu),
+             PlacementSlot::of(placement, |facts| facts.queued_index),
+@@ -3366,9 +3377,7 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
+         }
+     }
+     if !loopback_quiescent {
+-        return TestResult::Fail(
+-            "loopback queue did not quiesce before the final-ACK race oracle",
+-        );
++        return TestResult::Fail("loopback queue did not quiesce before the final-ACK race oracle");
+     }
+ 
+     if tcp::tcp_listen(LISTEN_PORT, 4, ProcessId::new(0)).is_err() {
+@@ -3390,12 +3399,8 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
+             65_535,
+             &[],
+         );
+-        let syn_packet = ipv4::Ipv4Packet::build(
+-            client_ip,
+-            server_ip,
+-            ipv4::PROTOCOL_TCP,
+-            &syn_segment,
+-        );
++        let syn_packet =
++            ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &syn_segment);
+         let Some(syn_ip) = ipv4::Ipv4Packet::parse(&syn_packet) else {
+             return TestResult::Fail("failed to parse synthetic SYN IPv4 packet");
+         };
+@@ -3416,7 +3421,9 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
+         }
+ 
+         let Some(server_ack) = tcp::with_tcp_connections(|connections| {
+-            connections.get(&server).map(|connection| connection.send_next)
++            connections
++                .get(&server)
++                .map(|connection| connection.send_next)
+         }) else {
+             return TestResult::Fail("accepted child was not published");
+         };
+@@ -3434,12 +3441,8 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
+             65_535,
+             &[],
+         );
+-        let ack_packet = ipv4::Ipv4Packet::build(
+-            client_ip,
+-            server_ip,
+-            ipv4::PROTOCOL_TCP,
+-            &ack_segment,
+-        );
++        let ack_packet =
++            ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &ack_segment);
+         let Some(ack_ip) = ipv4::Ipv4Packet::parse(&ack_packet) else {
+             tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
+             return TestResult::Fail("failed to parse synthetic ACK IPv4 packet");
+@@ -4362,9 +4365,7 @@ fn test_timer_interrupt_running() -> TestResult {
+                 samples = samples.saturating_add(1);
+                 let gap = timer::elapsed_ticks(sample, previous_sample);
+                 max_gap_ticks = max_gap_ticks.max(gap);
+-                if screened
+-                    && counters_unchanged(previous_counters_after, counters_before)
+-                {
++                if screened && counters_unchanged(previous_counters_after, counters_before) {
+                     host_stall_ticks =
+                         host_stall_ticks.saturating_add(gap.saturating_sub(stall_sample_ticks));
+                 }
+@@ -4463,9 +4464,8 @@ fn test_timer_interrupt_running() -> TestResult {
+             if attempt >= max_attempts
+                 || timer::elapsed_ticks(timer::rdtsc_serialized(), budget_start) >= budget_ticks
+             {
+-                let mut record = last_record.unwrap_or_else(|| {
+-                    bare_liveness_record("starvation-attempts-exhausted")
+-                });
++                let mut record = last_record
++                    .unwrap_or_else(|| bare_liveness_record("starvation-attempts-exhausted"));
+                 record.reason = "starvation-attempts-exhausted";
+                 emit_record(FAILURE_MARKER, &record);
+                 return TestResult::Fail(
+@@ -4624,111 +4624,112 @@ static CENSUS_WIDEN_PROBE_RUNS: AtomicU64 = AtomicU64::new(0);
+ pub fn run_census_widen_oracle() -> bool {
+     #[cfg(target_arch = "aarch64")]
+     {
+-    use crate::task::kthread::{
+-        kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
+-    };
+-    use crate::task::scheduler::{
+-        collect_strand_census, release_cpu_affine_thread_for_test, stale_peer_cpu_for_test,
+-        StrandCandidate, StrandShape, STRAND_CENSUS_CAPACITY,
+-    };
+-    use crate::task::thread::{ThreadPrivilege, ThreadState};
+-
+-    if let Some(arm_target) = stale_peer_cpu_for_test() {
+-        let mut candidates = [StrandCandidate {
+-            tid: 0,
+-            shape: StrandShape::Running,
+-            privilege: ThreadPrivilege::Kernel,
+-            state: ThreadState::Running,
+-        }; STRAND_CENSUS_CAPACITY];
+-        let mut baseline_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
+-        let baseline = collect_strand_census(&mut candidates, &mut baseline_nonprogress);
++        use crate::task::kthread::{
++            kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
++        };
++        use crate::task::scheduler::{
++            collect_strand_census, release_cpu_affine_thread_for_test, stale_peer_cpu_for_test,
++            StrandCandidate, StrandShape, STRAND_CENSUS_CAPACITY,
++        };
++        use crate::task::thread::{ThreadPrivilege, ThreadState};
+ 
+-        CENSUS_WIDEN_PROBE_RUNS.store(0, AtomicOrdering::Release);
+-        let slot_returns_before =
+-            crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed;
+-        let handle = kthread_run_on_cpu_for_test(
+-            || {
+-                CENSUS_WIDEN_PROBE_RUNS.fetch_add(1, AtomicOrdering::AcqRel);
+-            },
+-            "census-widen-probe",
+-            arm_target,
+-        );
++        if let Some(arm_target) = stale_peer_cpu_for_test() {
++            let mut candidates = [StrandCandidate {
++                tid: 0,
++                shape: StrandShape::Running,
++                privilege: ThreadPrivilege::Kernel,
++                state: ThreadState::Running,
++            }; STRAND_CENSUS_CAPACITY];
++            let mut baseline_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
++            let baseline = collect_strand_census(&mut candidates, &mut baseline_nonprogress);
++
++            CENSUS_WIDEN_PROBE_RUNS.store(0, AtomicOrdering::Release);
++            let slot_returns_before =
++                crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed;
++            let handle = kthread_run_on_cpu_for_test(
++                || {
++                    CENSUS_WIDEN_PROBE_RUNS.fetch_add(1, AtomicOrdering::AcqRel);
++                },
++                "census-widen-probe",
++                arm_target,
++            );
+ 
+-        let mut tid = 0u64;
+-        let mut baseline_reported = true;
+-        let mut armed_reported = false;
+-        let mut queued_nondispatching = 0u64;
+-        let mut queued_nondispatch_ms = 0u64;
+-        let mut cpu_silence_ms = 0u64;
+-        let mut joined = false;
+-        let mut retired = false;
+-
+-        if let Ok(handle) = handle {
+-            tid = handle.tid();
+-            baseline_reported = baseline.is_none_or(|baseline| {
+-                baseline.checked == 0
+-                    || baseline.queued_on_nondispatching_cpu != 0
+-                    || baseline.worst_queued_nondispatch_ms != 0
+-                    || baseline_nonprogress[..baseline.nonprogress].contains(&tid)
+-            });
++            let mut tid = 0u64;
++            let mut baseline_reported = true;
++            let mut armed_reported = false;
++            let mut queued_nondispatching = 0u64;
++            let mut queued_nondispatch_ms = 0u64;
++            let mut cpu_silence_ms = 0u64;
++            let mut joined = false;
++            let mut retired = false;
++
++            if let Ok(handle) = handle {
++                tid = handle.tid();
++                baseline_reported = baseline.is_none_or(|baseline| {
++                    baseline.checked == 0
++                        || baseline.queued_on_nondispatching_cpu != 0
++                        || baseline.worst_queued_nondispatch_ms != 0
++                        || baseline_nonprogress[..baseline.nonprogress].contains(&tid)
++                });
+ 
+-            let dwell_start = crate::time::get_ticks();
+-            while !kthread_has_exited_for_test(&handle)
+-                && crate::time::get_ticks().wrapping_sub(dwell_start) < CENSUS_WIDEN_DWELL_MS
+-            {
+-                crate::arch_halt();
+-            }
++                let dwell_start = crate::time::get_ticks();
++                while !kthread_has_exited_for_test(&handle)
++                    && crate::time::get_ticks().wrapping_sub(dwell_start) < CENSUS_WIDEN_DWELL_MS
++                {
++                    crate::arch_halt();
++                }
+ 
+-            let mut armed_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
+-            let armed = collect_strand_census(&mut candidates, &mut armed_nonprogress);
+-            if let Some(armed) = armed {
+-                armed_reported = armed_nonprogress[..armed.nonprogress].contains(&tid);
+-                queued_nondispatching = armed.queued_on_nondispatching_cpu;
+-                queued_nondispatch_ms = armed.worst_queued_nondispatch_ms;
+-                cpu_silence_ms = armed.worst_cpu_scheduler_silence_ms;
+-            }
++                let mut armed_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
++                let armed = collect_strand_census(&mut candidates, &mut armed_nonprogress);
++                if let Some(armed) = armed {
++                    armed_reported = armed_nonprogress[..armed.nonprogress].contains(&tid);
++                    queued_nondispatching = armed.queued_on_nondispatching_cpu;
++                    queued_nondispatch_ms = armed.worst_queued_nondispatch_ms;
++                    cpu_silence_ms = armed.worst_cpu_scheduler_silence_ms;
++                }
+ 
+-            if release_cpu_affine_thread_for_test(tid) {
+-                let join_start = crate::time::get_ticks();
+-                loop {
+-                    if kthread_has_exited_for_test(&handle) {
+-                        joined = kthread_join(&handle).is_ok();
+-                        break;
++                if release_cpu_affine_thread_for_test(tid) {
++                    let join_start = crate::time::get_ticks();
++                    loop {
++                        if kthread_has_exited_for_test(&handle) {
++                            joined = kthread_join(&handle).is_ok();
++                            break;
++                        }
++                        if crate::time::get_ticks().wrapping_sub(join_start) >= CENSUS_WIDEN_JOIN_MS
++                        {
++                            break;
++                        }
++                        crate::arch_halt();
+                     }
+-                    if crate::time::get_ticks().wrapping_sub(join_start) >= CENSUS_WIDEN_JOIN_MS {
++                }
++
++                // Seed the all-CPU retirement grace, then let scheduler boundaries
++                // advance around each halt before trying reclamation again. Keep this
++                // bounded attempt so `retired` remains useful evidence, but do not gate
++                // the verdict on it: retirement is asynchronous bookkeeping that needs
++                // online CPUs to cross scheduler boundaries, which this oracle
++                // cannot force. Registration ordering makes the probe non-interfering.
++                crate::task::scheduler::reclaim_terminated_threads();
++                for _ in 0..CENSUS_WIDEN_RETIRE_ROUNDS {
++                    if crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed
++                        > slot_returns_before
++                    {
++                        retired = true;
+                         break;
+                     }
++                    crate::task::scheduler::nudge_retirement_grace_for_test();
+                     crate::arch_halt();
++                    crate::task::scheduler::reclaim_terminated_threads();
+                 }
+             }
+ 
+-            // Seed the all-CPU retirement grace, then let scheduler boundaries
+-            // advance around each halt before trying reclamation again. Keep this
+-            // bounded attempt so `retired` remains useful evidence, but do not gate
+-            // the verdict on it: retirement is asynchronous bookkeeping that needs
+-            // every online CPU to cross a scheduler boundary, which this oracle
+-            // cannot force. Registration ordering makes the probe non-interfering.
+-            crate::task::scheduler::reclaim_terminated_threads();
+-            for _ in 0..CENSUS_WIDEN_RETIRE_ROUNDS {
+-                if crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed
+-                    > slot_returns_before
+-                {
+-                    retired = true;
+-                    break;
+-                }
+-                crate::task::scheduler::nudge_retirement_grace_for_test();
+-                crate::arch_halt();
+-                crate::task::scheduler::reclaim_terminated_threads();
+-            }
+-        }
+-
+-        let passed = !baseline_reported
+-            && armed_reported
+-            && queued_nondispatching >= 1
+-            && queued_nondispatch_ms >= 1
+-            && cpu_silence_ms >= 1
+-            && joined;
+-        crate::serial_println!(
++            let passed = !baseline_reported
++                && armed_reported
++                && queued_nondispatching >= 1
++                && queued_nondispatch_ms >= 1
++                && cpu_silence_ms >= 1
++                && joined;
++            crate::serial_println!(
+             "[CENSUS_WIDEN_ORACLE:{}:arm_target={}:baseline_reported={}:armed_reported={}:tid={}:shape=ready_queued_nondispatching:queued_nondispatching={}:queued_nondispatch_ms={}:cpu_silence_ms={}:joined={}:retired={}:{}]",
+             "aarch64",
+             arm_target,
+@@ -4742,13 +4743,13 @@ pub fn run_census_widen_oracle() -> bool {
+             u64::from(retired),
+             if passed { "PASS" } else { "FAIL" },
+         );
+-        return passed;
+-    }
++            return passed;
++        }
+ 
+-    crate::serial_println!(
++        crate::serial_println!(
+         "[CENSUS_WIDEN_ORACLE:aarch64:arm_target=none:baseline_reported=1:armed_reported=0:tid=0:shape=ready_queued_nondispatching:queued_nondispatching=0:queued_nondispatch_ms=0:cpu_silence_ms=0:joined=0:retired=0:FAIL]",
+     );
+-    false
++        false
+     }
+ 
+     #[cfg(not(target_arch = "aarch64"))]
+@@ -5377,7 +5378,9 @@ pub fn run_fcntl_pm_contention_oracle() -> TestResult {
+             "[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus={}:SKIP]",
+             crate::task::scheduler::online_cpu_count_snapshot(),
+         );
+-        TestResult::Fail("fcntl process-manager contention oracle has no arm on a uniprocessor boot")
++        TestResult::Fail(
++            "fcntl process-manager contention oracle has no arm on a uniprocessor boot",
++        )
+     }
+ }
+ 
+@@ -5510,10 +5513,8 @@ struct UdpLockSocket {
+ fn udp_lock_open_socket() -> Option<UdpLockSocket> {
+     use crate::ipc::fd::{FdKind, FileDescriptor};
+ 
+-    let pid = crate::process::with_process_manager(|manager| {
+-        manager.all_pids().first().copied()
+-    })
+-    .flatten()?;
++    let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
++        .flatten()?;
+ 
+     let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
+     socket
+@@ -5595,8 +5596,7 @@ fn udp_lock_holder_body(
+         UDP_LOCK_ACTIVE.store(true, AtomicOrdering::Release);
+ 
+         let mut sends = 0u64;
+-        if crate::net::send_ipv4([127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet).is_ok()
+-        {
++        if crate::net::send_ipv4([127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet).is_ok() {
+             sends += 1;
+         }
+         UDP_LOCK_SENDS.store(sends, AtomicOrdering::Relaxed);
+@@ -5610,12 +5610,8 @@ fn udp_lock_holder_body(
+             }
+             if elapsed >= next_send_us {
+                 next_send_us = elapsed.saturating_add(UDP_LOCK_SEND_INTERVAL_US);
+-                if crate::net::send_ipv4(
+-                    [127, 0, 0, 1],
+-                    crate::net::ipv4::PROTOCOL_UDP,
+-                    &packet,
+-                )
+-                .is_ok()
++                if crate::net::send_ipv4([127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet)
++                    .is_ok()
+                 {
+                     sends += 1;
+                     UDP_LOCK_SENDS.store(sends, AtomicOrdering::Relaxed);
+@@ -5661,11 +5657,8 @@ pub fn run_udp_lock_oracle() -> bool {
+             other => other,
+         };
+ 
+-        let packet = crate::net::udp::build_udp_packet(
+-            UDP_LOCK_SRC_PORT,
+-            UDP_LOCK_PORT,
+-            UDP_LOCK_PAYLOAD,
+-        );
++        let packet =
++            crate::net::udp::build_udp_packet(UDP_LOCK_SRC_PORT, UDP_LOCK_PORT, UDP_LOCK_PAYLOAD);
+ 
+         let mut attempts = 0u64;
+         let mut armed = 0u64;
+@@ -5877,10 +5870,8 @@ struct UdpPortsLockSocket {
+ fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
+     use crate::ipc::fd::{FdKind, FileDescriptor};
+ 
+-    let pid = crate::process::with_process_manager(|manager| {
+-        manager.all_pids().first().copied()
+-    })
+-    .flatten()?;
++    let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
++        .flatten()?;
+ 
+     let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
+     socket
+@@ -5934,7 +5925,8 @@ fn udp_ports_lock_received(open: &UdpPortsLockSocket) -> u64 {
+ #[cfg(target_arch = "aarch64")]
+ fn udp_ports_lock_holder_body() {
+     UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.store(
+-        u64::from(crate::arch_interrupts_enabled()), AtomicOrdering::Release,
++        u64::from(crate::arch_interrupts_enabled()),
++        AtomicOrdering::Release,
+     );
+     crate::per_cpu::preempt_disable();
+     crate::socket::SOCKET_REGISTRY.with_udp_ports_masked(|_ports| {
+@@ -5943,7 +5935,8 @@ fn udp_ports_lock_holder_body() {
+             AtomicOrdering::Relaxed,
+         );
+         UDP_PORTS_LOCK_MASKED_IN_HOLD.store(
+-            u64::from(!crate::arch_interrupts_enabled()), AtomicOrdering::Relaxed,
++            u64::from(!crate::arch_interrupts_enabled()),
++            AtomicOrdering::Relaxed,
+         );
+         let held_from = crate::tracing::trace_timestamp();
+         UDP_PORTS_LOCK_ACTIVE.store(true, AtomicOrdering::Release);
+@@ -6026,11 +6019,9 @@ pub fn run_udp_ports_lock_oracle() -> bool {
+                     socket.rx_queue.lock().clear();
+                 });
+                 let refused_before = crate::socket::udp_ports_lookup_refused();
+-                let Ok(handle) = kthread_run_on_cpu_for_test(
+-                    udp_ports_lock_holder_body,
+-                    "udp-ports-908",
+-                    peer,
+-                ) else {
++                let Ok(handle) =
++                    kthread_run_on_cpu_for_test(udp_ports_lock_holder_body, "udp-ports-908", peer)
++                else {
+                     continue;
+                 };
+ 
+@@ -6074,8 +6065,12 @@ pub fn run_udp_ports_lock_oracle() -> bool {
+                         crate::per_cpu::preempt_enable();
+                         next_send_us = elapsed.saturating_add(UDP_PORTS_LOCK_SEND_INTERVAL_US);
+                         if crate::net::send_ipv4(
+-                            [127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet,
+-                        ).is_ok() {
++                            [127, 0, 0, 1],
++                            crate::net::ipv4::PROTOCOL_UDP,
++                            &packet,
++                        )
++                        .is_ok()
++                        {
+                             sends += 1;
+                         }
+                     }
+@@ -6098,7 +6093,8 @@ pub fn run_udp_ports_lock_oracle() -> bool {
+                 }
+ 
+                 holder_cpu = UDP_PORTS_LOCK_CPU.load(AtomicOrdering::Relaxed);
+-                irqs_enabled_before = UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.load(AtomicOrdering::Acquire);
++                irqs_enabled_before =
++                    UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.load(AtomicOrdering::Acquire);
+                 masked_in_hold = UDP_PORTS_LOCK_MASKED_IN_HOLD.load(AtomicOrdering::Relaxed);
+                 hold_us = UDP_PORTS_LOCK_MEASURED_US.load(AtomicOrdering::Relaxed);
+                 refused = crate::socket::udp_ports_lookup_refused().wrapping_sub(refused_before);
+@@ -6319,10 +6315,8 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
+ 
+     // deliver_to_socket resolves the port to a pid and then scans that
+     // process's fd table, so the socket has to live in a real row.
+-    let pid = crate::process::with_process_manager(|manager| {
+-        manager.all_pids().first().copied()
+-    })
+-    .flatten()?;
++    let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
++        .flatten()?;
+ 
+     let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
+     socket
+@@ -6383,11 +6377,8 @@ pub fn run_irq_hold_oracle() -> bool {
+             release_cpu_affine_thread_for_test,
+         };
+ 
+-        let packet = crate::net::udp::build_udp_packet(
+-            IRQ_HOLD_SRC_PORT,
+-            IRQ_HOLD_PORT,
+-            IRQ_HOLD_PAYLOAD,
+-        );
++        let packet =
++            crate::net::udp::build_udp_packet(IRQ_HOLD_SRC_PORT, IRQ_HOLD_PORT, IRQ_HOLD_PAYLOAD);
+ 
+         let mut attempts = 0u64;
+         let mut armed = 0u64;
+@@ -6583,7 +6574,6 @@ fn test_irq_hold_oracle() -> TestResult {
+     }
+ }
+ 
+-
+ // ===========================================================================
+ // #821 -- the TTY input IRQ entry takes no blocking PROCESS_MANAGER acquisition
+ // ===========================================================================
+@@ -6674,8 +6664,7 @@ fn tty_irq_pm_now_us() -> u64 {
+     #[cfg(not(target_arch = "aarch64"))]
+     {
+         let (secs, nanos) = crate::time::timer::get_monotonic_time_ns();
+-        secs.saturating_mul(1_000_000)
+-            .saturating_add(nanos / 1_000)
++        secs.saturating_mul(1_000_000).saturating_add(nanos / 1_000)
+     }
+ }
+ 
+@@ -6740,8 +6729,7 @@ fn tty_irq_pm_return_console(
+     tty.flush_input();
+     tty.set_termios(&save.termios);
+     tty.set_foreground_pgrp_raw_for_test(save.pgrp);
+-    tty.get_foreground_pgrp() == save.pgrp
+-        && tty.get_termios().c_lflag == save.termios.c_lflag
++    tty.get_foreground_pgrp() == save.pgrp && tty.get_termios().c_lflag == save.termios.c_lflag
+ }
+ 
+ /// Drive one byte through the input IRQ entry with preemption disabled, and
+@@ -7175,7 +7163,9 @@ fn tty_irq_fg_inject(byte: u8) -> (u64, u64, u64, u64, u64, u64) {
+ fn tty_irq_fg_pid_absent(pid: u64) -> bool {
+     match crate::process::try_manager() {
+         Some(manager) => match *manager {
+-            Some(ref pm) => pm.get_process(crate::process::ProcessId::new(pid)).is_none(),
++            Some(ref pm) => pm
++                .get_process(crate::process::ProcessId::new(pid))
++                .is_none(),
+             None => true,
+         },
+         None => false,
+@@ -10658,7 +10648,6 @@ static SYSCALL_TESTS: &[TestDef] = &[
+         timeout_ms: 20000,
+         stage: TestStage::ProcessContext,
+     },
+-
+ ];
+ 
+ /// Scheduler subsystem tests (Phase 4i)

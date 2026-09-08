@@ -1,0 +1,5 @@
+Revision: 240e0e85b08a116a417c046ac71f727c18194319
+Index tree: 1cedce12013a69260f87dc7987bfe39817c5f337
+Command: env BREENIX_STRICT_SCORE_ONLY=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/.gate-tmp/breenix_aarch64_strict_1/serial.txt bash docker/qemu/run-aarch64-boot-test-strict.sh
+SCORE: PASS - /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/.gate-tmp/breenix_aarch64_strict_1/serial.txt
+EXIT: 0

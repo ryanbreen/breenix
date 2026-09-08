@@ -1,0 +1,10 @@
+{
+  "userspace/programs/aarch64/futex_handoff_oracle.elf": {
+    "sha256": "cc15be4c2282edc45244e4fb7bd40f8a3182ea133b8d94dcc2b0f0941ab3bb55",
+    "contains_input_control_marker": false
+  },
+  "target/ext2-aarch64.img": {
+    "sha256": "c7bcf249df3fe86992cc42fea200644294fd680d864023524ae6eab65c548ea7",
+    "contains_input_control_marker": false
+  }
+}

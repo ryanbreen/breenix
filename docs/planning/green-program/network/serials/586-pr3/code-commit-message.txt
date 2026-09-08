@@ -1,0 +1,12 @@
+net(586 PR 3): require measured starvation for bounded wake extensions
+
+Measure each spent window independently, refuse initial dispatch and wake
+failures, and preserve terminal classification. Count finite grants on the
+budget marker and require its fields in the strict scorer. Add production
+policy ratchets and a host-contention loop. Re-record the strict fixture
+from the corrected worktree's direct recording boot.
+
+Guest acceptance proofs remain outstanding at this commit.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

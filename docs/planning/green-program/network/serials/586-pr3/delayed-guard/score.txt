@@ -1,0 +1,3 @@
+df9b819e973030a5587300f4ee5f9000b4abda65
+SCORE: FAIL - Boot test failure: [TEST:network:loopback_recv_wake_when_idle:FAIL:delivery landed and the recv waiter was still blocked] (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/docs/planning/green-program/network/serials/586-pr3/delayed-guard/serial.txt)
+score_exit=1

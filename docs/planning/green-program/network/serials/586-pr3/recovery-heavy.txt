@@ -1,0 +1,6 @@
+290152b19545388a099056988714d132cbea4ff7
+additional recovery attempt: 64 hogs on 18 logical CPUs; production held until this attempt finishes
+revision=290152b19545388a099056988714d132cbea4ff7 cycles=1 hogs=64
+[STARVED_LOOP_FACTS:revision=290152b19545388a099056988714d132cbea4ff7:cycle=1:hogs=64:gate_exit=1:recovered=0]
+[STARVED_LOOP_RESULT:cycles=1:failed=1:recovered=0]
+exit=1

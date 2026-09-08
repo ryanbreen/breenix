@@ -1,0 +1,5 @@
+81379ef979928659d2b7ca2efe1ea798efe4d1c2
+[GATE_PREFLIGHT:structure_suites=62/64:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (2 of 64 structure suite(s) red: strand_handoff_structure tracing_provider_gate_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/.gate-tmp/breenix_gate_structure_preflight.uKIQyn)
+GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
+exit=1

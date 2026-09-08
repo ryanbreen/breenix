@@ -1,0 +1,6 @@
+debugfs 1.47.4 (6-Mar-2025)
+
+debugfs 1.47.4 (6-Mar-2025)
+Allocated inode: 19867
+debugfs 1.47.4 (6-Mar-2025)
+debugfs 1.47.4 (6-Mar-2025)

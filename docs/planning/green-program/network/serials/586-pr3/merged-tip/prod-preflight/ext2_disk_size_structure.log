@@ -1,0 +1,10 @@
+== compiling ext2_disk_size_structure ==
+== running ext2_disk_size_structure  ==
+
+running 3 tests
+test payload_guard_structure_is_present_and_load_bearing ... ok
+test invocation_predicate_is_not_vacuous ... ok
+test no_caller_passes_a_size_flag ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

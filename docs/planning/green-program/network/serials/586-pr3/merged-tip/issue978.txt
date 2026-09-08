@@ -1,0 +1,15 @@
+At a3786feb71b8e1b193a4a4919654f62552a78982, the live ARM64 production gate printed `FAIL: INPUT_INJECT production rejection: []` but exited 0 and emitted `ended_by=scored_pass`. Score-only replay of the same serial exited 1. The marker was missing from the copied userspace input; that explains the scorer rejection, but does not justify returning success.
+
+`docker/qemu/lib/qemu-host-lock.sh:221` chains `_qhl_kill_tracked_pids` before the caller's existing EXIT trap. That helper changes `$?`, so the production gate's `cleanup $?` receives 0.
+
+Minimal reproduction without launching QEMU:
+
+```sh
+bash -c 'source docker/qemu/lib/qemu-host-lock.sh; cleanup() { printf "cleanup received status=%s\n" "$1"; exit "$1"; }; trap '\''cleanup $?'\'' EXIT; _qhl_chain_exit_trap; exit 1'
+```
+
+Observed: `cleanup received status=0`, shell exit 0. Expected: preserve exit 1 through cleanup, final verdict, and import metadata.
+
+Receipts for the PR 956 continuation are in `docs/planning/green-program/network/serials/586-pr3/merged-tip/prod.txt`, `docs/planning/green-program/network/serials/586-pr3/merged-tip/prod-score-only.txt`, and `docs/planning/green-program/network/serials/586-pr3/merged-tip/exit-trap-reproduction.txt`. The round document retains the failed live run rather than treating its exit code as a passing gate.
+
+Follow-up: preserve the original status across chained EXIT cleanup and add a real production-tail status ratchet covering a scorer failure after QEMU launch. No kernel change is indicated by this reproduction.

@@ -1,0 +1,4 @@
+Merged revision: e91d71eba91077dbff7aaec9bfea4b75dd697a79
+Kernel diff from pre-build 88caad32: empty
+The aarch64 build started before index staging completed; initial-provenance.json records the subsequent index tree. Kernel source was unchanged by that fixture-only staging.
+The x86 build transcript records the same bootstrap index tree, 37edff85047e01f79ee8361189e2c7275b81792e.

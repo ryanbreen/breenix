@@ -1,0 +1,22 @@
+{
+  "rustc": "rustc 1.90.0-nightly (706f244db 2025-06-23)\nbinary: rustc\ncommit-hash: 706f244db581212cabf2e619e0113d70999b2bbe\ncommit-date: 2025-06-23\nhost: aarch64-apple-darwin\nrelease: 1.90.0-nightly\nLLVM version: 20.1.7\n",
+  "patch_sha256": "5d20e452c52c9227c6629ffeee3e1be5f293c7037fb23d37d44c094999bc3cce",
+  "files": {
+    "stdarch/crates/core_arch/src/aarch64/mod.rs": {
+      "original_sha256": "ed7826f76a187c2efb54c6ae6d5eb4725791004917e9f791d06c0d4781c1b76e",
+      "patched_sha256": "fe7dcbb101fdc739fc81092e7ec1aad2374bf604305940be100dd31579ff0984"
+    },
+    "stdarch/crates/core_arch/src/arm_shared/mod.rs": {
+      "original_sha256": "9fb69d515c73f97f81b6f50038ac4cb0741764e5cf93d39060786f7678f4af66",
+      "patched_sha256": "af6fdc3e2cb6aa85c4753864510fd74a3d19213946629c66a96208754bac3872"
+    },
+    "portable-simd/crates/core_simd/src/vendor.rs": {
+      "original_sha256": "f9fbf96e36f2b2ac2e849a729fb8bed1fc80af6537c8e60d4b349c5b8a94d288",
+      "patched_sha256": "e892a9bc14d153b265fdff0d612841978ed4aada6467536ae25985abbf7a896e"
+    },
+    "portable-simd/crates/core_simd/src/swizzle_dyn.rs": {
+      "original_sha256": "3859eeee37b4e58bf2f1d0d18036a0a220e06bf8a1962cc023fc1a11271e3d44",
+      "patched_sha256": "392ea53a7317e004c8bb32c7de104d0673bb53aa4df9a9fc0ad93e9aa4c0d268"
+    }
+  }
+}

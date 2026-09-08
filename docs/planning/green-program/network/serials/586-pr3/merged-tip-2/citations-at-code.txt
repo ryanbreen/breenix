@@ -1,0 +1,7 @@
+Revision: 240e0e85b08a116a417c046ac71f727c18194319
+2616:fn loopback_window_starved(tick_ms: u64, ctr_ms: u64, ctx_delta: u64) -> bool {
+2622:fn loopback_extension_eligible(
+3264:            "[LOOPBACK_WAKE_BUDGET:arch={}:test={}:budget_ms={}:elapsed_tick_ms={}:elapsed_ctr_ms={}:ctx_delta={}:extensions={}:max_extensions={}:extension_ms={}:extension_bound_ms={}:reader_state={}:queued_cpu={}:queued_idx={}:idle_cpus={}:cpu_silence_ms={}:silence_cpu={}:woke_ms={}:verdict={}]",
+4970:fn loopback_guest_budget_guard_and_always_extend_mutation() {
+4979:fn loopback_guest_budget_production_policy_cases() {
+557:        if ! grep -qE "\[LOOPBACK_WAKE_BUDGET:arch=aarch64:test=$wake_test:budget_ms=200:elapsed_tick_ms=[0-9]+:elapsed_ctr_ms=[0-9]+:ctx_delta=[0-9]+:extensions=[0-4]:max_extensions=4:extension_ms=[0-9]+:extension_bound_ms=1000:.*:verdict=(ok|starved)\]" "$serial_file"; then

@@ -1,0 +1,6 @@
+Revision: 88caad32080578784eca1a38c1a89c97aecfa081
+Index tree: 37edff85047e01f79ee8361189e2c7275b81792e
+Command: env BREENIX_STRICT_SCORE_ONLY=/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap/serial.txt bash docker/qemu/run-aarch64-boot-test-strict.sh
+SCORE: FAIL - T3T4T5T6T7T8T9[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=5956992:dispatches=5:iterations=25:verdict=ok]
+Poll TCP oracle reported failure ([POLL_TCP_ORACLE:FAIL) (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/docs/planning/green-program/network/serials/586-pr3/merged-tip-2/fixture-bootstrap/serial.txt)
+EXIT: 1

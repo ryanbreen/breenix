@@ -1,0 +1,16 @@
+[
+  {
+    "fixture": "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
+    "source": "docs/planning/green-program/network/serials/586-pr3/strict/boot-1-serial.txt",
+    "revision": "290152b19545388a099056988714d132cbea4ff7",
+    "sha256": "b9681c546db843e3c5b213056fc1c45086482a0cdd86badb0858250f01ee7480",
+    "byte_equal": true
+  },
+  {
+    "fixture": "docs/planning/green-program/aarch64-testing/serials/slice3e/02-prod-boot1-serial.txt",
+    "source": "docs/planning/green-program/network/serials/586-pr3/prod/serial.txt",
+    "revision": "290152b19545388a099056988714d132cbea4ff7",
+    "sha256": "29f07baa56affcdaa67c6074af01a2914f12a2e76a4108f3d0901d4f1b409232",
+    "byte_equal": true
+  }
+]

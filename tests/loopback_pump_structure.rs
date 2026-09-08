@@ -4941,3 +4941,71 @@ fn loopback_wake_budget_emitter_validator_rejects_the_unavailable_collapse() {
         "reintroducing an idle_cpus print with no availability flag must redden the validator"
     );
 }
+
+fn validate_measured_extension_guard(source: &str) -> Result<(), String> {
+    let body = function_body(source, "loopback_extension_eligible")
+        .ok_or("missing extension policy")?;
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.trim_start_matches('{').trim_end_matches('}') != "pending&&runnable&&starved&&extensions<LOOPBACK_WAKE_MAX_EXTENSIONS" {
+        return Err("extension must require measured starvation and finite capacity".into());
+    }
+    let caller = function_body(source, "run_loopback_recv_wake_test_inner").unwrap();
+    for required in [
+        "loopback_window_starved(tick_ms, ctr_ms, switches)",
+        "if loopback_extension_eligible(pending, runnable, starved, extensions)",
+        "extensions += 1;",
+        "if extensions > 0 && received == 3",
+        "break (tick_ms, ctr_ms, switches, wake_ms, reader_state)",
+    ] {
+        if !caller.contains(required) { return Err(format!("missing production wiring: {required}")); }
+    }
+    let verdict = &caller[caller.find("let verdict =").unwrap()..];
+    if !verdict.starts_with("let verdict = if wake_ms != 0 {") {
+        return Err("remembered starvation must be confined to completed reads".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn loopback_guest_budget_guard_and_always_extend_mutation() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_measured_extension_guard(&source).unwrap();
+    let mutant = source.replacen("pending && runnable && starved &&", "pending && runnable &&", 1);
+    assert_ne!(source, mutant);
+    assert!(validate_measured_extension_guard(&mutant).is_err());
+}
+
+#[test]
+fn loopback_guest_budget_production_policy_cases() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    let mut program = String::new();
+    for name in ["LOOPBACK_WAKE_MAX_EXTENSIONS", "LOOPBACK_WAKE_CTX_FLOOR", "LOOPBACK_WAKE_DIVERGENCE_NUM", "LOOPBACK_WAKE_DIVERGENCE_DEN"] {
+        let start = source.find(&format!("const {name}:")).unwrap();
+        let end = start + source[start..].find(';').unwrap() + 1;
+        program.push_str(&source[start..end]);
+    }
+    program.push_str("fn starved(tick_ms:u64,ctr_ms:u64,ctx_delta:u64)->bool {");
+    program.push_str(function_body(&source, "loopback_window_starved").unwrap());
+    program.push_str("} fn eligible(pending:bool,runnable:bool,starved:bool,extensions:u64)->bool {");
+    program.push_str(function_body(&source, "loopback_extension_eligible").unwrap());
+    program.push_str(r#"}
+fn main() {
+    assert!(!starved(200,200,30));
+    assert!(!eligible(true,true,starved(200,200,30),0));
+    assert!(eligible(true,true,starved(200,200,29),0));
+    assert!(eligible(true,true,starved(20,201,90),0));
+    assert!(!eligible(true,false,true,0));
+    assert!(!eligible(false,true,true,0));
+    for count in 0..LOOPBACK_WAKE_MAX_EXTENSIONS { assert!(eligible(true,true,true,count)); }
+    assert!(!eligible(true,true,true,LOOPBACK_WAKE_MAX_EXTENSIONS));
+    assert!(!eligible(true,true,true,u64::MAX));
+}
+"#);
+    let dir = std::env::temp_dir().join(format!("loopback-policy-{}",std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("policy.rs"); let bin = dir.join("policy");
+    std::fs::write(&src, program).unwrap();
+    assert!(std::process::Command::new("rustc").arg("--edition=2021").arg("-Dwarnings").arg(&src).arg("-o").arg(&bin).status().unwrap().success());
+    assert!(std::process::Command::new(&bin).status().unwrap().success());
+    std::fs::remove_dir_all(dir).unwrap();
+}

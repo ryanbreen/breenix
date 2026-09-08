@@ -1,0 +1,18 @@
+== compiling xhci_wait_irq_order_structure ==
+== running xhci_wait_irq_order_structure  ==
+
+running 11 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test the_synchronous_and_async_censuses_agree ... ok
+test wait_for_prepared_transfer_does_no_gic_arming_of_its_own ... ok
+test activation_arms_the_spi_before_queueing_its_probe ... ok
+test prepare_transfer_wait_arms_after_software_prep_and_returns_the_flag ... ok
+test control_transfer_arms_before_it_publishes_any_ep0_trb ... ok
+test submit_command_and_wait_arms_before_it_publishes ... ok
+test the_doorbell_mmio_write_is_pinned_to_ring_doorbell ... ok
+test every_direct_doorbell_caller_is_classified ... ok
+test hid_transfer_and_msi_probe_stay_asynchronous ... ok
+test deliberately_broken_copies_redden_the_rules ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+

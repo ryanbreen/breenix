@@ -1,0 +1,12 @@
+== compiling bssh_auth_close_structure ==
+== running bssh_auth_close_structure  ==
+
+running 5 tests
+test wrong_signer_reaches_signature_verification ... ok
+test oracle_requires_auth_refusal_and_strict_scorer_pins_it ... ok
+test termination_waits_for_peer_and_preserves_shell_status ... ok
+test close_recipient_validation_precedes_completion ... ok
+test scorer_rejects_missing_failed_and_duplicate_auth_evidence ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.84s
+

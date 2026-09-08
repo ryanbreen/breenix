@@ -1,0 +1,32 @@
+== compiling tty_irq_pm_structure ==
+== running tty_irq_pm_structure  ==
+
+running 12 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test each_blocking_process_manager_accessor_counts_itself ... ok
+test both_boot_test_gates_pin_the_oracle_and_both_production_gates_pin_its_absence ... ok
+test the_line_discipline_names_no_process_manager ... ok
+test the_tty_input_irq_entry_takes_no_blocking_process_manager_acquisition ... ok
+test the_entry_defers_the_adoption_it_used_to_resolve_in_the_interrupt ... ok
+test the_stdin_reader_takes_the_deferred_adoption ... ok
+test peer_hold_rendezvous_covers_both_lock_probes ... ok
+test the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it ... FAILED
+test every_tty_input_irq_handler_is_free_of_a_blocking_acquisition ... ok
+test peer_hold_rendezvous_rejects_time_only_and_unmasked_mutations ... ok
+test deliberately_broken_copies_redden_the_rules ... ok
+
+failures:
+
+---- the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it stdout ----
+
+thread 'the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/tests/tty_irq_pm_structure.rs:994:5:
+docker/qemu/run-aarch64-boot-test-strict.sh has to pass the serial it was recorded green on, or the failing legs below say nothing: SCORE: FAIL - Loopback wake budget marker missing or failed: when_idle (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n956/wt/.gate-tmp/breenix_gate_structure_preflight.0AXldR/breenix-821-gate-legs-28128/green.txt)
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+

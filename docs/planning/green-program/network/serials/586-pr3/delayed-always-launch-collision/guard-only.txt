@@ -1,0 +1,19 @@
+df9b819e973030a5587300f4ee5f9000b4abda65
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure loopback_guest_budget_guard_and_always_extend_mutation ==
+
+running 1 test
+
+thread 'loopback_guest_budget_guard_and_always_extend_mutation' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/tests/loopback_pump_structure.rs:4873:48:
+called `Result::unwrap()` on an `Err` value: "extension must require measured starvation and finite capacity"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test loopback_guest_budget_guard_and_always_extend_mutation ... FAILED
+
+failures:
+
+failures:
+    loopback_guest_budget_guard_and_always_extend_mutation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 131 filtered out; finished in 0.01s
+
+exit=101

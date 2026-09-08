@@ -1,0 +1,59 @@
+0776f442415dc4b6d4dc69e29657213ce34af308
+diff --git a/kernel/src/test_framework/registry.rs b/kernel/src/test_framework/registry.rs
+index 7a345fca..fd1a8e78 100644
+--- a/kernel/src/test_framework/registry.rs
++++ b/kernel/src/test_framework/registry.rs
+@@ -2619,14 +2619,7 @@ fn loopback_window_starved(tick_ms: u64, ctr_ms: u64, ctx_delta: u64) -> bool {
+             > tick_ms.saturating_mul(LOOPBACK_WAKE_DIVERGENCE_NUM)
+ }
+ 
+-fn loopback_extension_eligible(
+-    pending: bool,
+-    runnable: bool,
+-    starved: bool,
+-    extensions: u64,
+-) -> bool {
+-    pending && runnable && starved && extensions < LOOPBACK_WAKE_MAX_EXTENSIONS
+-}
++
+ 
+ /// The fewest context switches a budget window must buy before the guest is
+ /// credited with having executed.
+@@ -3008,8 +3001,8 @@ fn run_loopback_recv_wake_test_inner(
+     let idle_before_sampled = idle_before_facts.is_some();
+     let idle_before = idle_before_facts.map_or(0u32, |facts| facts.idle_cpu_bitmap);
+ 
+-    let mut extensions = 0u64;
+-    let (elapsed_tick_ms, elapsed_ctr_ms, ctx_delta, wake_ms, reader_state) = loop {
++    let extensions = 0u64;
++    let (elapsed_tick_ms, elapsed_ctr_ms, ctx_delta, wake_ms, reader_state) = {
+         let tick_before_ms = crate::time::get_monotonic_time();
+         let ctr_before_ns = monotonic_now_ns();
+         let ctx_before = crate::tracing::providers::counters::CTX_SWITCH_TOTAL.aggregate();
+@@ -3020,23 +3013,11 @@ fn run_loopback_recv_wake_test_inner(
+         let tick_ms = tick_after_ms.saturating_sub(tick_before_ms);
+         let ctr_ms = ctr_after_ns.saturating_sub(ctr_before_ns) / 1_000_000;
+         let switches = ctx_after.wrapping_sub(ctx_before);
+-        let starved = loopback_window_starved(tick_ms, ctr_ms, switches);
+         let wake_ms = LOOPBACK_READER_WAKE_MS.load(AtomicOrdering::SeqCst);
+-        let pending = wake_ms == 0;
+         let reader_state = scheduler::with_scheduler(|sched| {
+             sched.get_thread(reader_tid).map(|thread| thread.state)
+         });
+-        let runnable = matches!(
+-            reader_state,
+-            Some(Some(
+-                crate::task::thread::ThreadState::Ready | crate::task::thread::ThreadState::Running
+-            ))
+-        );
+-        if loopback_extension_eligible(pending, runnable, starved, extensions) {
+-            extensions += 1;
+-            continue;
+-        }
+-        break (tick_ms, ctr_ms, switches, wake_ms, reader_state);
++        (tick_ms, ctr_ms, switches, wake_ms, reader_state)
+     };
+ 
+     // Latch the deadline wake stamp: a dispatch after refusal cannot erase red.
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p3/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 7.69s
