@@ -1,0 +1,3 @@
+revision=87cf3de694cea98806e66d9352d1cb56329b81b1
+files=['kernel/src/fs/devfs/mod.rs', 'kernel/src/ipc/poll.rs', 'kernel/src/ipc/stdin.rs', 'kernel/src/main.rs', 'kernel/src/syscall/blocking_io.rs', 'kernel/src/syscall/blocking_io_oracle.rs', 'kernel/src/syscall/fs.rs', 'kernel/src/syscall/handlers.rs', 'kernel/src/syscall/ioctl.rs', 'kernel/src/task/timer_wake_oracle.rs']
+exit=0

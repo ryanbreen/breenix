@@ -1,0 +1,165 @@
+{
+  "revision": "87cf3de694cea98806e66d9352d1cb56329b81b1",
+  "rows": [
+    {
+      "file": "kernel/src/syscall/handlers.rs",
+      "line": 1252,
+      "text": "        FdKind::Device(device_type) => {"
+    },
+    {
+      "file": "kernel/src/syscall/blocking_io.rs",
+      "line": 16,
+      "text": "pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> Result<(), i32> {"
+    },
+    {
+      "file": "kernel/src/syscall/blocking_io.rs",
+      "line": 114,
+      "text": "pub(crate) fn read_console(buf: &mut [u8], is_nonblocking: bool) -> Result<usize, i32> {"
+    },
+    {
+      "file": "kernel/src/ipc/stdin.rs",
+      "line": 298,
+      "text": "pub(crate) fn read_or_prepare("
+    },
+    {
+      "file": "kernel/src/task/waitqueue.rs",
+      "line": 96,
+      "text": "    pub(crate) fn prepare_to_wait_checked<F: FnOnce() -> bool>("
+    },
+    {
+      "file": "kernel/src/task/waitqueue.rs",
+      "line": 146,
+      "text": "    pub(crate) fn finish_wait_for(&self, tid: u64) {"
+    },
+    {
+      "file": "kernel/src/task/scheduler.rs",
+      "line": 4093,
+      "text": "    fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {"
+    },
+    {
+      "file": "kernel/src/task/scheduler.rs",
+      "line": 4165,
+      "text": "    pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) -> bool {"
+    },
+    {
+      "file": "kernel/src/ipc/stdin.rs",
+      "line": 50,
+      "text": "    fn push_byte(&mut self, byte: u8) -> bool {"
+    },
+    {
+      "file": "kernel/src/task/waitqueue.rs",
+      "line": 182,
+      "text": "    pub fn wake_up_deferred(&self) {"
+    },
+    {
+      "file": "kernel/src/ipc/stdin.rs",
+      "line": 120,
+      "text": "pub fn push_byte_from_irq(byte: u8) -> bool {"
+    },
+    {
+      "file": "kernel/src/tty/driver.rs",
+      "line": 279,
+      "text": "                            crate::ipc::stdin::push_byte_from_irq(byte);"
+    },
+    {
+      "file": "kernel/src/tty/driver.rs",
+      "line": 353,
+      "text": "                            crate::ipc::stdin::push_byte_from_irq(byte);"
+    },
+    {
+      "file": "kernel/src/tty/driver.rs",
+      "line": 395,
+      "text": "    pub fn read(&self, buf: &mut [u8]) -> Result<usize, i32> {"
+    },
+    {
+      "file": "kernel/src/fs/devfs/mod.rs",
+      "line": 188,
+      "text": "pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {"
+    },
+    {
+      "file": "kernel/src/syscall/fs.rs",
+      "line": 2561,
+      "text": "        let fd_kind = FileDescriptor::with_flags("
+    },
+    {
+      "file": "kernel/src/syscall/fs.rs",
+      "line": 2580,
+      "text": "    let fd_kind = FileDescriptor::with_flags("
+    },
+    {
+      "file": "kernel/src/syscall/fs.rs",
+      "line": 2450,
+      "text": "    // For /dev/tty, redirect to the controlling PTY if one exists."
+    },
+    {
+      "file": "kernel/src/ipc/poll.rs",
+      "line": 162,
+      "text": "                DeviceType::Console | DeviceType::Tty => {"
+    },
+    {
+      "file": "kernel/src/ipc/stdin.rs",
+      "line": 204,
+      "text": "pub fn has_data() -> bool {"
+    },
+    {
+      "file": "kernel/src/syscall/handlers.rs",
+      "line": 675,
+      "text": "    // Validate buffer pointer and count"
+    },
+    {
+      "file": "kernel/src/syscall/mod.rs",
+      "line": 32,
+      "text": "pub mod blocking_io_oracle;"
+    },
+    {
+      "file": "kernel/src/syscall/ioctl.rs",
+      "line": 55,
+      "text": "    if request == super::blocking_io_oracle::QUERY"
+    },
+    {
+      "file": "kernel/src/syscall/blocking_io_oracle.rs",
+      "line": 148,
+      "text": "fn console(fd: u64, request: u64, arg: u64) -> Result<(), u64> {"
+    },
+    {
+      "file": "userspace/programs/src/console_read_oracle.rs",
+      "line": 63,
+      "text": "fn parked(fd: Fd, tid: u64) -> TestResult<()> {"
+    },
+    {
+      "file": "userspace/programs/src/console_read_oracle.rs",
+      "line": 147,
+      "text": "fn arm(path: &str, name: &str) -> TestResult<usize> {"
+    },
+    {
+      "file": "userspace/programs/src/console_read_oracle.rs",
+      "line": 219,
+      "text": "pub fn run(arch: &str) -> bool {"
+    },
+    {
+      "file": "kernel/src/ipc/stdin.rs",
+      "line": 212,
+      "text": "pub fn register_blocked_reader(thread_id: u64) {"
+    },
+    {
+      "file": "kernel/src/ipc/stdin.rs",
+      "line": 221,
+      "text": "pub fn unregister_blocked_reader(thread_id: u64) {"
+    },
+    {
+      "file": "kernel/src/syscall/handlers.rs",
+      "line": 919,
+      "text": "                        // Check if data arrived during setup (race condition fix)"
+    },
+    {
+      "file": "kernel/src/task/scheduler.rs",
+      "line": 3426,
+      "text": "    pub fn block_current_in_syscall(&mut self) {"
+    },
+    {
+      "file": "kernel/src/syscall/fifo.rs",
+      "line": 86,
+      "text": "#[cfg(not(target_arch = \"x86_64\"))]"
+    }
+  ]
+}
