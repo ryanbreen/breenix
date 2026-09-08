@@ -60,7 +60,12 @@ mkdir -p "${OUT_DIR}"
 BINARY="${OUT_DIR}/${STEM}"
 
 echo "== compiling ${STEM} =="
-CARGO_MANIFEST_DIR="${REPO_ROOT}" rustc --edition=2021 --test "${SOURCE}" -o "${BINARY}"
+# A restricted system PATH can omit rustup even when the toolchain is installed.
+RUSTC_BIN="$(command -v rustc || true)"
+if [[ -z "$RUSTC_BIN" ]]; then
+    RUSTC_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/rustc"
+fi
+CARGO_MANIFEST_DIR="${REPO_ROOT}" "$RUSTC_BIN" --edition=2021 --test "${SOURCE}" -o "${BINARY}"
 
 echo "== running ${STEM} ${FILTER} =="
 if [[ -n "${FILTER}" ]]; then

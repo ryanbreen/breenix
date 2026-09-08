@@ -60,6 +60,10 @@
 //!   a real rendered-desktop fixture
 //!   (`f24_render_verdict_still_passes_a_real_capture`).
 
+#[path = "support/python_with_pil.rs"]
+mod python_with_pil;
+use python_with_pil::python_with_pil;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -272,7 +276,7 @@ fn f24_render_verdict_rejects_solid_black_capture() {
     std::fs::create_dir_all(&dir).expect("create temp fixture dir");
     let png = dir.join("solid-black.png");
 
-    let make = Command::new("python3")
+    let make = Command::new(python_with_pil())
         .arg("-c")
         .arg(format!(
             "from PIL import Image; Image.new('RGB', (1280, 960), (0, 0, 0)).save({:?})",
@@ -337,7 +341,7 @@ fn f24_render_verdict_still_passes_a_real_capture() {
          img.save({:?})\n",
         png.to_string_lossy()
     );
-    let make = Command::new("python3")
+    let make = Command::new(python_with_pil())
         .arg("-c")
         .arg(&script)
         .output()
@@ -403,7 +407,7 @@ def CGWindowListCopyWindowInfo(*args):
              kCGWindowBounds=dict(Width=1200, Height=900)),
     ]
 "#).unwrap();
-            let make = Command::new("python3").arg("-c").arg(
+            let make = Command::new(python_with_pil()).arg("-c").arg(
                 "from PIL import Image, ImageDraw; import sys; im=Image.new('RGB',(818,801),(40,80,120)); ImageDraw.Draw(im).rectangle((40,40,400,400),fill=(180,140,60)); im.save(sys.argv[1])"
             ).arg(fixture.dir.join("frame.png")).output().unwrap();
             assert!(make.status.success(), "{}", String::from_utf8_lossy(&make.stderr));
@@ -552,5 +556,62 @@ exit 1"#);
         let mutated = text.replace(EXIT_GATE, "");
         assert_ne!(text, mutated);
         assert!(!run_sh_exits_nonzero_on_capture_failure(&mutated));
+    }
+}
+
+#[test]
+fn pil_resolver_rejects_an_unusable_override() {
+    let out = Command::new("bash")
+        .args(["-c", "source \"$1\" && \"$BREENIX_PYTHON\" -c 'from PIL import Image'", "pil-probe"])
+        .arg(repo_root().join("scripts/lib/python-with-pil.sh"))
+        .env("BREENIX_PYTHON", "/usr/bin/false")
+        .output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[test]
+fn pil_resolver_preserves_a_working_override_with_spaces() {
+    use std::os::unix::fs::symlink;
+    let dir = std::env::temp_dir().join(format!("pil override {}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let interpreter = dir.join("python with pillow");
+    symlink(python_with_pil(), &interpreter).unwrap();
+    let out = Command::new("bash")
+        .args(["-c", "source \"$1\" && printf '%s' \"$BREENIX_PYTHON\"", "pil-probe"])
+        .arg(repo_root().join("scripts/lib/python-with-pil.sh"))
+        .env("BREENIX_PYTHON", &interpreter)
+        .output().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), interpreter.to_str().unwrap());
+}
+
+#[test]
+fn pil_consumers_use_shared_resolution() {
+    fn visit(dir: &std::path::Path, consumers: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(&path, consumers);
+            } else if path.extension().is_some_and(|ext| ext == "sh") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                if (text.contains("from PIL") || text.contains("import PIL"))
+                    && path.file_name().unwrap() != "python-with-pil.sh"
+                {
+                    consumers.push(path);
+                }
+            }
+        }
+    }
+    let mut consumers = Vec::new();
+    visit(&repo_root().join("scripts"), &mut consumers);
+    visit(&repo_root().join("docker/qemu"), &mut consumers);
+    assert!(!consumers.is_empty());
+    for path in consumers {
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("/lib/python-with-pil.sh\""), "{} missing resolver", path.display());
+        assert!(!text.lines().any(|line| line.trim_start().starts_with("python3 -") || line.contains("$(python3 -")),
+            "{} invokes unresolved Python", path.display());
+        assert!(text.contains("\"$BREENIX_PYTHON\" -"), "{} missing selected interpreter", path.display());
     }
 }
