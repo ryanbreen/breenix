@@ -1,0 +1,2 @@
+ 06:04:49 up 26 days, 12:20,  0 user,  load average: 1.02, 1.63, 3.57
+launch_load_1m=1.02

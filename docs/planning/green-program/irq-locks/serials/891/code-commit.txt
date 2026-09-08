@@ -1,0 +1,13 @@
+Fix CPU-local softirq deferral and measure daemon service for issues 891 and 562
+
+Pin a daemon to each online CPU, publish handles for lock-free IRQ reads,
+and serialize park intent with wake publication. Keep the test work pending
+until a daemon callback is measured. Bound failure by local delivered timer
+ticks and report host starvation separately without a boot panic.
+
+Require the deferral oracle in the aarch64 strict and x86 scorers. Include
+ownership, wake, tick-budget and scorer ratchets with synthetic fixture
+updates for the new required marker.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>
