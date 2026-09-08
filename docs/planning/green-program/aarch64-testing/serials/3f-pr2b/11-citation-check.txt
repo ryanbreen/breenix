@@ -1,0 +1,26 @@
+Citation validation at cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+kernel/src/task/scheduler.rs:453: static PINNED_HOLDS_OUTSTANDING: [core::sync::atomic::AtomicU64; MAX_CPUS] =
+kernel/src/task/scheduler.rs:499: pub static PINNED_WAKES_DELIVERED: core::sync::atomic::AtomicU64 =
+kernel/src/task/scheduler.rs:578: pub fn emit_pinned_placement_census() {
+kernel/src/task/scheduler.rs:580: "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}:hold_pen_migrated={}:delivered={}:migration_refused={}:stack_home_conflict={}]\n[PINNED_HOLDS_OUTSTANDING:count={}]",
+kernel/src/task/scheduler.rs:2358: self.deliver_pinned_wakes_for_this_cpu();
+kernel/src/task/scheduler.rs:2889: self.deliver_pinned_wakes_for_this_cpu();
+kernel/src/task/scheduler.rs:4757: fn hold_pinned_wake_for_home(&self, thread_id: u64) {
+kernel/src/task/scheduler.rs:4770: let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
+kernel/src/task/scheduler.rs:4800: fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool {
+kernel/src/task/scheduler.rs:4843: fn deliver_pinned_wakes_for_this_cpu(&mut self) {
+kernel/src/task/scheduler.rs:4845: if PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) == 0 {
+kernel/src/task/scheduler.rs:4856: PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:4857: let _ = PINNED_HOLDS_OUTSTANDING[cpu].fetch_update(
+kernel/src/task/scheduler.rs:4867: let discarded = PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed);
+kernel/src/task/scheduler.rs:5572: pub fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
+kernel/src/main_aarch64.rs:1446: kernel::task::scheduler::emit_pinned_placement_census();
+kernel/src/task/strand_oracle.rs:3: #![cfg(feature = "boot_tests")]
+kernel/src/task/strand_oracle.rs:478: crate::task::scheduler::emit_pinned_placement_census();
+kernel/src/task/kthread.rs:70: pub fn kthread_run_on_cpu<F>(
+kernel/src/task/kthread.rs:79: scheduler::spawn_on_cpu(thread, cpu)
+kernel/src/task/thread.rs:627: /// * `per_cpu_worker` -- the thread services state that lives in that CPU's
+kernel/src/task/thread.rs:667: pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
+tests/loopback_pump_structure.rs:4307: fn forced_retention_probe(offline: bool) {
+tests/loopback_pump_structure.rs:4850: fn validate_pinned_scan_bound(source: &str) -> Result<(), String> {
+tests/loopback_pump_structure.rs:4918: fn forced_pinned_scan_probe(baseline: bool) {

@@ -1,0 +1,46 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+453:static PINNED_HOLDS_OUTSTANDING: [core::sync::atomic::AtomicU64; MAX_CPUS] =
+499:pub static PINNED_WAKES_DELIVERED: core::sync::atomic::AtomicU64 =
+578:pub fn emit_pinned_placement_census() {
+580:        "[PINNED_HOME_CPU_UNAVAILABLE:count={}:publish_discarded={}:hold_pen_migrated={}:delivered={}:migration_refused={}:stack_home_conflict={}]\n[PINNED_HOLDS_OUTSTANDING:count={}]",
+584:        PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+587:        PINNED_HOLDS_OUTSTANDING
+2358:        self.deliver_pinned_wakes_for_this_cpu();
+2882:    pub fn schedule_deferred_requeue(&mut self) -> Option<(u64, u64, bool)> {
+2889:        self.deliver_pinned_wakes_for_this_cpu();
+3642:                        self.hold_pinned_wake_for_home(thread_id);
+3915:                        self.hold_pinned_wake_for_home(thread_id);
+4028:                        self.hold_pinned_wake_for_home(thread_id);
+4317:                        self.hold_pinned_wake_for_home(tid);
+4527:                        self.hold_pinned_wake_for_home(tid);
+4757:    fn hold_pinned_wake_for_home(&self, thread_id: u64) {
+4764:            let _ = PINNED_HOLDS_OUTSTANDING[home].fetch_update(
+4770:        let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
+4800:    fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool {
+4843:    fn deliver_pinned_wakes_for_this_cpu(&mut self) {
+4845:        if PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) == 0 {
+4856:            PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
+4857:            let _ = PINNED_HOLDS_OUTSTANDING[cpu].fetch_update(
+4867:        let discarded = PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed);
+4868:        let _ = PINNED_HOLDS_OUTSTANDING[cpu].fetch_update(
+5017:            self.hold_pinned_wake_for_home(thread_id);
+5096:            PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+5126:            PINNED_WAKES_DELIVERED.load(Ordering::Relaxed),
+kernel/src/task/strand_oracle.rs:478:    crate::task::scheduler::emit_pinned_placement_census();
+kernel/src/main.rs:762:    kernel::task::scheduler::emit_pin_guard_oracle();
+kernel/src/main_aarch64.rs:1445:    kernel::task::scheduler::emit_pin_guard_oracle();
+kernel/src/main_aarch64.rs:1446:    kernel::task::scheduler::emit_pinned_placement_census();
+kernel/src/task/kthread.rs:67:/// change. It is the production counterpart of `kthread_run_on_cpu_for_test`,
+kernel/src/task/kthread.rs:70:pub fn kthread_run_on_cpu<F>(
+kernel/src/task/kthread.rs:107:pub(crate) fn kthread_run_on_cpu_for_test<F>(
+kernel/src/task/thread.rs:600:    /// `kthread_run_on_cpu` that wraps it. 14 of 15 sites that build a
+kernel/src/task/thread.rs:617:    // (`kthread::kthread_run_on_cpu`) which itself has 0 -- all counted by grep
+kernel/src/task/thread.rs:627:/// * `per_cpu_worker` -- the thread services state that lives in that CPU's
+kernel/src/task/thread.rs:646:    pub per_cpu_worker: bool,
+kernel/src/task/thread.rs:667:pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
+kernel/src/task/thread.rs:671:    pub fn per_cpu_worker(cpu: usize) -> Self {
+kernel/src/task/thread.rs:672:        CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/thread.rs:675:            per_cpu_worker: true,
+kernel/src/task/thread.rs:686:    pub fn hold_pen(cpu: usize) -> Self {
+kernel/src/task/thread.rs:687:        CPU_PINS_STAMPED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/thread.rs:690:            per_cpu_worker: false,

@@ -1,0 +1,10 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+clone=/root/breenix-s3f2b
+command=bash docker/qemu/run-x86-boot-tests.sh
+first_attempt=preflight timeout; stopped before kernel build or boot
+retry=BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS=900, exit=1
+retry_failure=gate_qmp_backstop_structure: hang must reach dump
+classification=UNATTRIBUTED; issue=963
+x86_kernel_build=NOT REACHED
+x86_kernel_boot=NOT REACHED
+owned_qemu_processes_after_gate=0

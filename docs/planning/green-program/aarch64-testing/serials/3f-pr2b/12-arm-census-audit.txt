@@ -1,0 +1,8 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+strict-boot1-serial.txt: outstanding_samples=4 values=['0'] pin_guard_pass=1 first_hold=0
+strict-boot2-serial.txt: outstanding_samples=4 values=['0'] pin_guard_pass=1 first_hold=0
+strict-boot3-serial.txt: outstanding_samples=4 values=['0'] pin_guard_pass=1 first_hold=0
+service/cortex-a72/serial-1.txt: outstanding_samples=6 values=['0'] pin_guard_pass=1 first_hold=0
+service/cortex-a72/serial-2.txt: outstanding_samples=6 values=['0'] pin_guard_pass=1 first_hold=0
+service/max/serial-1.txt: outstanding_samples=6 values=['0'] pin_guard_pass=1 first_hold=0
+service/max/serial-2.txt: outstanding_samples=6 values=['0'] pin_guard_pass=1 first_hold=0

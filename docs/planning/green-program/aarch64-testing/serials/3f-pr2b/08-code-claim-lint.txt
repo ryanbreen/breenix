@@ -1,0 +1,7 @@
+revision=58af1a7f + source committed as cab966e7
+claim-lint: clean (6 file(s) checked, changed hunks vs 58af1a7fb63e).
+claim-lint: 86 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: clean commit message (.tmp/code-commit.txt).
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/code-commit.txt -> exit 0

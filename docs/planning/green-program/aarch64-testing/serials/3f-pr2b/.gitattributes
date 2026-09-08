@@ -1,0 +1,2 @@
+# Preserve captured serial and transcript bytes in Git.
+*.txt -text

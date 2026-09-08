@@ -1,0 +1,8 @@
+Document PR 2b pinned wake scan evidence
+
+Record refreshed source citations, the forced scan delta and mutation
+results, architecture gate transcripts, the Beast preflight timeout,
+and the bounded scope of the scan accounting change.
+
+Co-authored-by: Ryan Breen <ryan@breen.io>
+Co-authored-by: Claude Code <noreply@anthropic.com>

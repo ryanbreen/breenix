@@ -1,0 +1,28 @@
+revision=58af1a7fb63e144586b6eef06e47be178eb175d5 + working PR2b changes; exit=0; pre-commit candidate, emitter-only correction followed
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure pinned_scan ==
+
+running 4 tests
+test pinned_scan_bound ... ok
+pinned-scan mutation: delete guard -> RED
+pinned-scan mutation: global guard -> RED
+pinned-scan mutation: drop decrement -> RED
+pinned-scan mutation: non-saturating decrement -> RED
+pinned-scan mutation: delete increment -> RED
+[PINNED_HOME_CPU_UNAVAILABLE:first:tid=7:home=1:cpu=0:count=1]
+PINNED_SCAN_ORACLE baseline=false held_delta=1 delivered_delta=1 outstanding_home=0 peer_entries=128 peer_walk_delta=0 after_entries=128 after_walk_delta=0 verdict=PASS
+discard dispositions=5 outstanding_home=0 PASS
+
+test forced_pinned_scan_after ... ok
+[PINNED_HOME_CPU_UNAVAILABLE:first:tid=7:home=1:cpu=0:count=1]
+PINNED_SCAN_ORACLE baseline=true held_delta=1 delivered_delta=1 outstanding_home=0 peer_entries=128 peer_walk_delta=128 after_entries=128 after_walk_delta=128 verdict=RED
+discard dispositions=5 outstanding_home=0 PASS
+
+test forced_pinned_scan_before ... ok
+pinned-scan mutation: drop discard -> RED
+pinned-scan mutation: unconditional decrement -> RED
+pinned-scan mutation: delete decrement statement -> RED
+test pinned_scan_bound_mutations ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 130 filtered out; finished in 0.18s
+

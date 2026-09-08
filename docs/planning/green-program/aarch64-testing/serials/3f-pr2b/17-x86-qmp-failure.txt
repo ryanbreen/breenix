@@ -1,0 +1,37 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+command=x86 gate preflight, BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS=900
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure  ==
+
+running 15 tests
+test a_socket_path_under_a_worktree_scoped_output_dir_is_the_reproduced_defect ... ok
+test gqb_alloc_socket_returns_a_path_a_real_af_unix_bind_accepts ... ok
+test gqb_free_socket_refuses_to_remove_paths_outside_its_namespace ... ok
+test moving_the_qmp_decision_after_its_kill_reddens_the_check ... ok
+test census_wiring_calls_both_outcomes ... ok
+test service_loop_routes_every_verdict_kill_through_ordered_helper ... ok
+test strict_kill_follows_qmp_decision ... ok
+test gqb_alloc_socket_pairs_with_a_reachable_free_call_in_every_converted_gate ... ok
+test swapping_helper_kill_and_dump_reddens_the_check ... ok
+test gqb_free_socket_removes_only_its_own_namespace_directory ... ok
+test neither_converted_gate_builds_qmp_sock_under_its_own_output_dir ... ok
+test pass_emits_exact_contract_without_any_qmp_traffic ... ok
+test core_extraction_uses_physical_load_ranges_and_rejects_missing_or_truncated_bytes ... ok
+test missing_socket_and_hung_dump_are_partial_and_bounded ... FAILED
+test fake_qmp_dump_precedes_sigterm_even_when_decode_fails ... ok
+
+failures:
+
+---- missing_socket_and_hung_dump_are_partial_and_bounded stdout ----
+missing_socket_and_hung_dump_are_partial_and_bounded: socat present; asserting QMP timeout after dump command
+
+thread 'missing_socket_and_hung_dump_are_partial_and_bounded' panicked at /root/breenix-s3f2b/tests/gate_qmp_backstop_structure.rs:474:5:
+hang must reach dump
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    missing_socket_and_hung_dump_are_partial_and_bounded
+
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.12s
+

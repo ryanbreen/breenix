@@ -1,0 +1,6 @@
+revision=cab966e76c46d9a6eae343ba8bb5bf564d1ee24b
+command=bash docker/qemu/run-aarch64-prod-profile-boot-test.sh
+exit=0
+outstanding_samples=1 values=[0]
+pin_guard_oracle_lines=0
+first_hold_lines=0
