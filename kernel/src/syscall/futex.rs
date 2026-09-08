@@ -467,7 +467,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
             );
 
             #[cfg(feature = "boot_tests")]
-            crate::syscall::futex_oracle::disposition_report(_val3, disposition_armed, &result);
+            crate::syscall::futex_oracle::disposition_record(_val3, disposition_armed, &result);
 
             result
         }

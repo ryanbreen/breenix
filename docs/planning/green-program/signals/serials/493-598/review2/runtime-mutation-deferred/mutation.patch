@@ -1,0 +1,827 @@
+diff --git a/kernel/src/signal/delivery.rs b/kernel/src/signal/delivery.rs
+index 529f9da4..739e30e3 100644
+--- a/kernel/src/signal/delivery.rs
++++ b/kernel/src/signal/delivery.rs
+@@ -72,14 +72,6 @@ pub fn deliver_pending_signals(
+         // Get the handler for this signal
+         let action = *process.signals.get_handler(sig);
+ 
+-        log::debug!(
+-            "Delivering signal {} ({}) to process {}, handler={:#x}",
+-            sig,
+-            signal_name(sig),
+-            process.id.as_u64(),
+-            action.handler
+-        );
+-
+         match action.handler {
+             SIG_DFL => {
+                 // Default action may terminate/stop the process
+@@ -94,7 +86,7 @@ pub fn deliver_pending_signals(
+                 }
+             }
+             SIG_IGN => {
+-                log::debug!("Signal {} ignored by process {}", sig, process.id.as_u64());
++
+                 // Signal ignored - continue loop to check for more signals
+             }
+             handler_addr => {
+@@ -154,14 +146,6 @@ pub fn deliver_pending_signals(
+         // Get the handler for this signal
+         let action = *process.signals.get_handler(sig);
+ 
+-        log::debug!(
+-            "Delivering signal {} ({}) to process {}, handler={:#x}",
+-            sig,
+-            signal_name(sig),
+-            process.id.as_u64(),
+-            action.handler
+-        );
+-
+         match action.handler {
+             SIG_DFL => {
+                 // Default action may terminate/stop the process
+@@ -176,7 +160,7 @@ pub fn deliver_pending_signals(
+                 }
+             }
+             SIG_IGN => {
+-                log::debug!("Signal {} ignored by process {}", sig, process.id.as_u64());
++
+                 // Signal ignored - continue loop to check for more signals
+             }
+             handler_addr => {
+@@ -217,13 +201,6 @@ pub enum DeliverResult {
+ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+     match default_action(sig) {
+         SignalDefaultAction::Terminate => {
+-            crate::serial_println!(
+-                "[signal] Process {} ({}) terminated by signal {} ({})",
+-                process.id.as_u64(),
+-                process.name,
+-                sig,
+-                signal_name(sig)
+-            );
+             // Exit code for signal termination is typically 128 + signal number
+             // But we use negative signal number to indicate signal death
+             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+@@ -237,10 +214,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+                 let thread_id = thread.id();
+                 crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                     sched_thread.set_terminated();
+-                    log::info!(
+-                        "Signal delivery: marked scheduler thread {} as Terminated",
+-                        thread_id
+-                    );
+                 });
+             }
+ 
+@@ -252,13 +225,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+             }
+         }
+         SignalDefaultAction::CoreDump => {
+-            crate::serial_println!(
+-                "[signal] Process {} ({}) killed (core dump) by signal {} ({})",
+-                process.id.as_u64(),
+-                process.name,
+-                sig,
+-                signal_name(sig)
+-            );
+             // Core dump not implemented, just terminate
+             // The 0x80 flag indicates core dump
+             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+@@ -269,10 +235,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+                 let thread_id = thread.id();
+                 crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                     sched_thread.set_terminated();
+-                    log::info!(
+-                        "Signal delivery: marked scheduler thread {} as Terminated (core dump)",
+-                        thread_id
+-                    );
+                 });
+             }
+ 
+@@ -284,22 +246,10 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+             }
+         }
+         SignalDefaultAction::Stop => {
+-            log::info!(
+-                "Process {} stopped by signal {} ({})",
+-                process.id.as_u64(),
+-                sig,
+-                signal_name(sig)
+-            );
+             process.set_blocked();
+             DeliverResult::Delivered
+         }
+         SignalDefaultAction::Continue => {
+-            log::info!(
+-                "Process {} continued by signal {} ({})",
+-                process.id.as_u64(),
+-                sig,
+-                signal_name(sig)
+-            );
+             // Only change state if process was stopped
+             if matches!(process.state, ProcessState::Blocked) {
+                 process.set_ready();
+@@ -308,15 +258,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
+                 DeliverResult::Ignored
+             }
+         }
+-        SignalDefaultAction::Ignore => {
+-            log::debug!(
+-                "Signal {} ({}) ignored (default) by process {}",
+-                sig,
+-                signal_name(sig),
+-                process.id.as_u64()
+-            );
+-            DeliverResult::Ignored
+-        }
++        SignalDefaultAction::Ignore => DeliverResult::Ignored,
+     }
+ }
+ 
+@@ -351,12 +293,7 @@ fn deliver_to_user_handler_x86_64(
+     let user_rsp = if use_alt_stack {
+         // Use alternate stack - stack grows down, so start at top (base + size)
+         let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
+-        log::debug!(
+-            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
+-            process.signals.alt_stack.base,
+-            process.signals.alt_stack.size,
+-            alt_top
+-        );
++
+         // Mark that we're now on the alternate stack
+         process.signals.alt_stack.on_stack = true;
+         alt_top
+@@ -377,7 +314,7 @@ fn deliver_to_user_handler_x86_64(
+         // Use the restorer function provided by the application/libc
+         // Only allocate space for the signal frame (no trampoline needed)
+         let frame_rsp = (user_rsp - frame_size) & !0xF; // 16-byte align
+-        log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
++
+         (frame_rsp, action.restorer)
+     } else {
+         // Fall back to writing trampoline on the stack
+@@ -462,24 +399,12 @@ fn deliver_to_user_handler_x86_64(
+     let handler_vaddr = match x86_64::VirtAddr::try_new(handler_addr) {
+         Ok(addr) => addr,
+         Err(_) => {
+-            log::warn!(
+-                "Signal {}: non-canonical handler address {:#x} for process {}",
+-                sig,
+-                handler_addr,
+-                process.id.as_u64()
+-            );
+             return false;
+         }
+     };
+     let frame_vaddr = match x86_64::VirtAddr::try_new(frame_rsp) {
+         Ok(addr) => addr,
+         Err(_) => {
+-            log::warn!(
+-                "Signal {}: non-canonical stack address {:#x} for process {}",
+-                sig,
+-                frame_rsp,
+-                process.id.as_u64()
+-            );
+             return false;
+         }
+     };
+@@ -498,26 +423,6 @@ fn deliver_to_user_handler_x86_64(
+     saved_regs.rsi = 0; // Second argument: siginfo_t* (not implemented)
+     saved_regs.rdx = 0; // Third argument: ucontext_t* (not implemented)
+ 
+-    if use_alt_stack {
+-        log::info!(
+-            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, RSP={:#x}->{:#x}, return={:#x}",
+-            sig,
+-            handler_addr,
+-            user_rsp,
+-            frame_rsp,
+-            return_addr
+-        );
+-    } else {
+-        log::info!(
+-            "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, return={:#x}",
+-            sig,
+-            handler_addr,
+-            user_rsp,
+-            frame_rsp,
+-            return_addr
+-        );
+-    }
+-
+     true
+ }
+ 
+@@ -559,12 +464,7 @@ fn deliver_to_user_handler_aarch64(
+     let user_sp = if use_alt_stack {
+         // Use alternate stack - stack grows down, so start at top (base + size)
+         let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
+-        log::debug!(
+-            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
+-            process.signals.alt_stack.base,
+-            process.signals.alt_stack.size,
+-            alt_top
+-        );
++
+         // Mark that we're now on the alternate stack
+         process.signals.alt_stack.on_stack = true;
+         alt_top
+@@ -583,7 +483,7 @@ fn deliver_to_user_handler_aarch64(
+         // Use the restorer function provided by the application/libc
+         // Only allocate space for the signal frame (no trampoline needed)
+         let frame_sp = (user_sp - frame_size) & !0xF; // 16-byte align
+-        log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
++
+         (frame_sp, action.restorer)
+     } else {
+         // Fall back to writing trampoline on the stack
+@@ -705,26 +605,6 @@ fn deliver_to_user_handler_aarch64(
+     saved_regs.x1 = 0;
+     saved_regs.x2 = 0;
+ 
+-    if use_alt_stack {
+-        log::info!(
+-            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, SP={:#x}->{:#x}, return={:#x}",
+-            sig,
+-            handler_addr,
+-            user_sp,
+-            frame_sp,
+-            return_addr
+-        );
+-    } else {
+-        log::info!(
+-            "Signal {} delivered to handler at {:#x}, SP={:#x}->{:#x}, return={:#x}",
+-            sig,
+-            handler_addr,
+-            user_sp,
+-            frame_sp,
+-            return_addr
+-        );
+-    }
+-
+     true
+ }
+ 
+@@ -754,20 +634,12 @@ pub struct ParentNotification {
+ /// will cause a deadlock.
+ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) {
+     let parent_pid = notification.parent_pid;
+-    let child_pid = notification.child_pid;
+-
+-    log::info!(
+-        "notify_parent_of_termination_deferred: notifying parent {} about child {} termination",
+-        parent_pid.as_u64(),
+-        child_pid.as_u64()
+-    );
+ 
+     // Get process manager to find and update parent
+     // This is safe because we're called after the caller released their lock
+     let parent_thread_id = {
+         let mut manager_guard = crate::process::manager();
+         let Some(ref mut manager) = *manager_guard else {
+-            log::warn!("notify_parent_of_termination_deferred: no process manager");
+             return;
+         };
+ 
+@@ -775,20 +647,10 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification)
+         if let Some(parent_process) = manager.get_process_mut(parent_pid) {
+             // Send SIGCHLD to parent
+             parent_process.signals.set_pending(SIGCHLD);
+-            log::debug!(
+-                "notify_parent_of_termination_deferred: sent SIGCHLD to parent {} for child {} termination",
+-                parent_pid.as_u64(),
+-                child_pid.as_u64()
+-            );
+ 
+             // Get parent's main thread ID for unblocking
+             parent_process.main_thread.as_ref().map(|t| t.id)
+         } else {
+-            log::warn!(
+-                "notify_parent_of_termination_deferred: parent process {} not found for child {}",
+-                parent_pid.as_u64(),
+-                child_pid.as_u64()
+-            );
+             None
+         }
+         // manager_guard is dropped here
+@@ -803,11 +665,6 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification)
+             // so SIGCHLD can be delivered
+             sched.unblock_for_signal(parent_tid);
+         });
+-        log::info!(
+-            "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",
+-            parent_tid,
+-            child_pid.as_u64()
+-        );
+     }
+ }
+ 
+@@ -816,12 +673,6 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification)
+ fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification> {
+     let parent_pid = process.parent?;
+ 
+-    log::debug!(
+-        "notify_parent_of_termination: process {} has parent {}, notification queued",
+-        process.id.as_u64(),
+-        parent_pid.as_u64()
+-    );
+-
+     Some(ParentNotification {
+         parent_pid,
+         child_pid: process.id,
+@@ -845,11 +696,7 @@ pub fn check_and_fire_itimer_real(process: &mut Process, elapsed_usec: u64) -> b
+         if process.itimers.real.tick(elapsed_usec) {
+             // Timer expired - queue SIGALRM
+             process.signals.set_pending(SIGALRM);
+-            log::debug!(
+-                "ITIMER_REAL fired for process {} (elapsed {} usec)",
+-                process.id.as_u64(),
+-                elapsed_usec
+-            );
++
+             return true;
+         }
+     }
+@@ -870,11 +717,7 @@ pub fn check_and_fire_alarm(process: &mut Process) -> bool {
+             // Alarm expired - clear it and queue SIGALRM
+             process.alarm_deadline = None;
+             process.signals.set_pending(SIGALRM);
+-            log::debug!(
+-                "Alarm fired for process {} at tick {}",
+-                process.id.as_u64(),
+-                current_ticks
+-            );
++
+             return true;
+         }
+     }
+diff --git a/kernel/src/signal/types.rs b/kernel/src/signal/types.rs
+index 207c07e3..ecb876b5 100644
+--- a/kernel/src/signal/types.rs
++++ b/kernel/src/signal/types.rs
+@@ -195,7 +195,7 @@ impl SignalState {
+     /// The cached mask makes this O(1), including on syscall/interrupt return.
+     #[inline]
+     pub fn has_deliverable_signals(&self) -> bool {
+-        (self.pending & !self.blocked & !self.ignored) != 0
++        (self.pending & !self.blocked) != 0
+     }
+ 
+     /// Interruptible waits use the same disposition decision as delivery.
+@@ -208,7 +208,7 @@ impl SignalState {
+     ///
+     /// Returns None if no signals are pending and unblocked
+     pub fn next_deliverable_signal(&self) -> Option<u32> {
+-        let deliverable = self.pending & !self.blocked & !self.ignored;
++        let deliverable = self.pending & !self.blocked;
+         if deliverable == 0 {
+             return None;
+         }
+diff --git a/kernel/src/syscall/futex.rs b/kernel/src/syscall/futex.rs
+index 3e5bb716..7cc005a5 100644
+--- a/kernel/src/syscall/futex.rs
++++ b/kernel/src/syscall/futex.rs
+@@ -467,7 +467,7 @@ fn futex_wait(uaddr: u64, expected_val: u32, timeout_ptr: u64, _val3: u32) -> Sy
+             );
+ 
+             #[cfg(feature = "boot_tests")]
+-            crate::syscall::futex_oracle::disposition_report(_val3, disposition_armed, &result);
++            crate::syscall::futex_oracle::disposition_record(_val3, disposition_armed, &result);
+ 
+             result
+         }
+diff --git a/kernel/src/syscall/futex_oracle.rs b/kernel/src/syscall/futex_oracle.rs
+index e7a4c3dd..056777b2 100644
+--- a/kernel/src/syscall/futex_oracle.rs
++++ b/kernel/src/syscall/futex_oracle.rs
+@@ -349,7 +349,7 @@ pub fn disposition_inject(tag: u32, thread_id: u64) -> bool {
+     false
+ }
+ 
+-pub fn disposition_report(tag: u32, armed: bool, result: &super::SyscallResult) {
++pub fn disposition_record(tag: u32, armed: bool, result: &super::SyscallResult) {
+     if tag != 0x5344_0001 && tag != 0x5344_0002 {
+         return;
+     }
+@@ -369,22 +369,46 @@ pub fn disposition_report(tag: u32, armed: bool, result: &super::SyscallResult)
+         super::SyscallResult::Err(errno) => *errno,
+         super::SyscallResult::Ok(_) => 0,
+     };
+-    let (arm, expected) = if tag == 0x5344_0001 {
+-        ("default", super::errno::ETIMEDOUT as u64)
++    let record = 1 | ((armed as u64) << 1) | (errno << 2);
++    let slot = if tag == 0x5344_0001 {
++        &DISPOSITION_DEFAULT
+     } else {
+-        ("handler", super::errno::EINTR as u64)
++        &DISPOSITION_HANDLER
+     };
+-    let verdict = if armed && errno == expected {
+-        "PASS"
+-    } else {
+-        "FAIL"
+-    };
+-    crate::serial_println!(
+-        "[SIGNAL_DISPOSITION_ORACLE:arm={}:blocked={}:pending={}:errno={}:{}]",
+-        arm,
+-        armed as u8,
+-        armed as u8,
+-        errno,
+-        verdict
+-    );
++    slot.store(record, Ordering::Release);
++}
++
++static DISPOSITION_DEFAULT: AtomicU64 = AtomicU64::new(0);
++static DISPOSITION_HANDLER: AtomicU64 = AtomicU64::new(0);
++
++/// Drain completed measurements from the sampling kernel thread, off the syscall path.
++pub fn disposition_report() {
++    for (slot, arm, expected) in [
++        (
++            &DISPOSITION_DEFAULT,
++            "default",
++            super::errno::ETIMEDOUT as u64,
++        ),
++        (&DISPOSITION_HANDLER, "handler", super::errno::EINTR as u64),
++    ] {
++        let record = slot.swap(0, Ordering::AcqRel);
++        if record == 0 {
++            continue;
++        }
++        let armed = (record >> 1) & 1;
++        let errno = record >> 2;
++        let verdict = if armed == 1 && errno == expected {
++            "PASS"
++        } else {
++            "FAIL"
++        };
++        crate::serial_println!(
++            "[SIGNAL_DISPOSITION_ORACLE:arm={}:blocked={}:pending={}:errno={}:{}]",
++            arm,
++            armed,
++            armed,
++            errno,
++            verdict
++        );
++    }
+ }
+diff --git a/kernel/src/task/strand_oracle.rs b/kernel/src/task/strand_oracle.rs
+index bcf81155..c93e7b20 100644
+--- a/kernel/src/task/strand_oracle.rs
++++ b/kernel/src/task/strand_oracle.rs
+@@ -24,10 +24,7 @@ pub static RESOLVED_EXERCISED: AtomicU64 = AtomicU64::new(0);
+ 
+ // The pending-next mutation deliberately compiles out the only honest caller:
+ // a lost handoff was not resolved, so notifying this oracle would be a lie.
+-#[cfg(all(
+-    target_arch = "aarch64",
+-    not(feature = "coreproof_mut_pending_next")
+-))]
++#[cfg(all(target_arch = "aarch64", not(feature = "coreproof_mut_pending_next")))]
+ pub(crate) fn note_pending_next_resolved(tid: u64) {
+     if tid == VICTIM_TID.load(Ordering::Acquire) {
+         RESOLVED_EXERCISED.fetch_add(1, Ordering::Relaxed);
+@@ -226,8 +223,7 @@ fn update_dwell(
+     running_shape: &mut u64,
+     ready_shape: &mut u64,
+     worst_dwell_ms: &mut u64,
+-    #[cfg(target_arch = "aarch64")]
+-    first_strand: &mut Option<FirstStrand>,
++    #[cfg(target_arch = "aarch64")] first_strand: &mut Option<FirstStrand>,
+ ) {
+     let mut seen = [false; STRAND_CENSUS_CAPACITY];
+ 
+@@ -461,6 +457,8 @@ fn report_strand(
+     // where a real workload's tombstone census becomes visible: nonzero while
+     // children are being reaped, back to zero once the drain has retired them.
+     // Same context as the line above — a sampling kthread, never a hot path.
++    #[cfg(feature = "boot_tests")]
++    crate::syscall::futex_oracle::disposition_report();
+     crate::tracing::providers::teardown::emit_tombstone_census();
+     // #786 follow-on. The strict gate's profile kills QEMU shortly after exec
+     // smoke, before the userspace heartbeat's procfs read has necessarily
+diff --git a/tests/signal_eintr_predicate_structure.rs b/tests/signal_eintr_predicate_structure.rs
+index 84000e8f..934950f5 100644
+--- a/tests/signal_eintr_predicate_structure.rs
++++ b/tests/signal_eintr_predicate_structure.rs
+@@ -226,9 +226,17 @@ fn validate_interrupting_predicate(source: &str) -> Result<(), &'static str> {
+         return Err("delivery must filter the cached ignored disposition mask");
+     }
+     let install = function_body(source, "set_handler").unwrap();
+-    for required in ["action.is_ignore()", "action.is_default()", "DEFAULT_IGNORED_SIGNALS",
+-                     "self.ignored |= bit", "self.ignored &= !bit", "self.pending &= !bit"] {
+-        if !install.contains(required) { return Err("disposition cache maintenance missing"); }
++    for required in [
++        "action.is_ignore()",
++        "action.is_default()",
++        "DEFAULT_IGNORED_SIGNALS",
++        "self.ignored |= bit",
++        "self.ignored &= !bit",
++        "self.pending &= !bit",
++    ] {
++        if !install.contains(required) {
++            return Err("disposition cache maintenance missing");
++        }
+     }
+     Ok(())
+ }
+@@ -299,18 +307,230 @@ fn code_mask_raw_string_close_preserves_next_byte() {
+ #[test]
+ fn disposition_mutation_is_rejected() {
+     let source = repo_text("kernel/src/signal/types.rs");
+-    let mutant = source.replace("self.pending & !self.blocked & !self.ignored",
+-                                "self.pending & !self.blocked");
++    let mutant = source.replace(
++        "self.pending & !self.blocked & !self.ignored",
++        "self.pending & !self.blocked",
++    );
+     assert!(validate_interrupting_predicate(&mutant).is_err());
+ }
+ 
++fn live_code(source: &str) -> String {
++    source
++        .bytes()
++        .zip(code_mask(source))
++        .filter_map(|(b, live)| (live && !b.is_ascii_whitespace()).then_some(b as char))
++        .collect()
++}
++
++fn depth_at(source: &str, end: usize) -> i32 {
++    source[..end].bytes().fold(0, |depth, byte| match byte {
++        b'{' => depth + 1,
++        b'}' => depth - 1,
++        _ => depth,
++    })
++}
++
++fn validate_child_barrier(source: &str) -> Result<(), &'static str> {
++    let race = live_code(function_body(source, "run_race").ok_or("missing run_race")?);
++    // Conservative grammar: this exact control-flow tail must be at function
++    // scope. Strings/comments are masked on both sides. Only a successful reap
++    // of this child can break the loop; status/errors/deadline cannot fall through.
++    let tail = live_code(
++        r#"
++        let deadline = monotonic_ms().saturating_add(PROBE_DEADLINE_MS);
++        loop {
++            let mut status = 0;
++            match process::waitpid(child.raw() as i32, &mut status, process::WNOHANG) {
++                Ok(pid) if pid == child => {
++                    if !process::wifexited(status) || process::wexitstatus(status) != 0 {
++                        return Err(fail("child_status", format!("{}", status)));
++                    }
++                    break;
++                }
++                Ok(_) => {}
++                Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINTR)) => {}
++                Err(e) => return Err(fail("child_wait", format!("{}", e))),
++            }
++            if monotonic_ms() >= deadline {
++                return Err(fail("child_wait_timeout", "not_reaped".to_string()));
++            }
++            let _ = process::yield_now();
++        }
++        Ok(())
++    }"#,
++    );
++    let offset = race.find(&tail).ok_or("missing mandatory reap tail")?;
++    if depth_at(&race, offset) != 1 || !race.ends_with(&tail) || race[..offset].contains("Ok(())") {
++        return Err("reap is bypassable");
++    }
++    let run = live_code(function_body(source, "run").ok_or("missing run")?);
++    let calls: Vec<_> = run.match_indices("run_race(").collect();
++    if calls.len() != 2 {
++        return Err("must synchronize both stages");
++    }
++    let mut ends = Vec::new();
++    for (start, _) in &calls {
++        if depth_at(&run, *start) != 1 {
++            return Err("race call is conditional");
++        }
++        let mut depth = 1;
++        let open = *start + "run_race(".len();
++        let end = run
++            .bytes()
++            .enumerate()
++            .skip(open)
++            .find_map(|(i, b)| {
++                if b == b'(' {
++                    depth += 1;
++                }
++                if b == b')' {
++                    depth -= 1;
++                }
++                (depth == 0).then_some(i + 1)
++            })
++            .ok_or("unfinished call")?;
++        if !run[end..].starts_with("?;") {
++            return Err("reap errors are discarded");
++        }
++        ends.push(end + 2);
++    }
++    let install = run
++        .find("letaction=Sigaction::new(sigchld_handler);")
++        .ok_or("missing install")?;
++    let reset = run
++        .find("SIGCHLD_HANDLED.store(false,Ordering::SeqCst);")
++        .ok_or("missing reset")?;
++    let assertion = live_code(
++        r#"if !SIGCHLD_HANDLED.load(Ordering::SeqCst) {
++        return Err(fail("sig_handler_never_ran", "flag=0".to_string()));
++    } Ok(()) }"#,
++    );
++    if !(ends[0] <= install && install < reset && reset < calls[1].0)
++        || run[ends[1]..] != assertion
++        || run[..ends[1]].contains("Ok(())")
++        || run[..ends[1]].contains("SIGCHLD_HANDLED.load")
++    {
++        return Err("handler assertion must follow propagated second reap");
++    }
++    Ok(())
++}
++
+ #[test]
+ fn child_barrier_precedes_handler_assertion() {
++    assert_eq!(
++        validate_child_barrier(&repo_text("userspace/programs/src/block_eintr_oracle.rs")),
++        Ok(())
++    );
++}
++
++#[test]
++fn barrier_mutations_are_rejected() {
+     let source = repo_text("userspace/programs/src/block_eintr_oracle.rs");
++    for (old, new) in [
++        ("pid == child", "pid != child"),
++        ("Ok(_) => {}", "Ok(_) => { break; }"),
++        (
++            "let deadline = monotonic_ms()",
++            "return Ok(()); let deadline = monotonic_ms()",
++        ),
++        (
++            "loop {\n        let mut status",
++            "if false { loop {\n        let mut status",
++        ),
++        ("})?;", "});"),
++        (
++            "if !SIGCHLD_HANDLED.load",
++            "if false {} if !SIGCHLD_HANDLED.load",
++        ),
++        (
++            "return Err(fail(\"child_wait_timeout\", \"not_reaped\".to_string()));",
++            "break;",
++        ),
++        ("process::WNOHANG", "0"),
++    ] {
++        assert!(source.contains(old), "mutation anchor missing: {old}");
++        assert!(
++            validate_child_barrier(&source.replace(old, new)).is_err(),
++            "accepted {new}"
++        );
++    }
+     let race = function_body(&source, "run_race").unwrap();
+-    assert!(calls_identifier(race, "waitpid"));
+-    assert!(race.contains("pid == child"));
+-    assert!(race.contains("child_wait_timeout"));
++    let spoof = source.replace(
++        race,
++        r#"{
++        if false { process::waitpid(0, 0, 0); }
++        let evidence = "pid == child child_wait_timeout";
++        Ok(())
++    }"#,
++    );
++    assert!(validate_child_barrier(&spoof).is_err());
++    let run = function_body(&source, "run").unwrap();
++    let assertion = "if !SIGCHLD_HANDLED.load(Ordering::SeqCst)";
++    let moved = source.replace(
++        run,
++        &run.replacen(
++            "    // Stage 1",
++            &format!(
++                "    {assertion} {{ return Err(fail(\"early\", String::new())); }}\n    // Stage 1"
++            ),
++            1,
++        ),
++    );
++    // Any early load is prohibited as well as requiring the final assertion.
++    assert!(validate_child_barrier(&moved).is_err());
++}
++
++fn has_output(source: &str) -> bool {
++    let code = live_code(source);
++    ["log::", "serial_print", "println!", "print!", "format!"]
++        .iter()
++        .any(|s| code.contains(s))
++}
++
++#[test]
++fn disposition_capture_is_silent_and_reporter_is_off_syscall_path() {
++    let oracle = repo_text("kernel/src/syscall/futex_oracle.rs");
++    for name in ["disposition_inject", "disposition_record"] {
++        let body = function_body(&oracle, name).unwrap();
++        assert!(!has_output(body), "output in {name}");
++        assert!(has_output(&body.replacen(
++            '{',
++            "{ crate::serial_println!(\"mutant\");",
++            1
++        )));
++    }
++    let futex = repo_text("kernel/src/syscall/futex.rs");
++    assert!(!calls_identifier(&futex, "disposition_report"));
++    assert!(calls_identifier(&futex, "disposition_record"));
++    let sampler = repo_text("kernel/src/task/strand_oracle.rs");
++    assert!(calls_identifier(
++        function_body(&sampler, "report_strand").unwrap(),
++        "disposition_report"
++    ));
++    assert!(
++        live_code(function_body(&oracle, "disposition_record").unwrap())
++            .contains("slot.store(record,Ordering::Release)")
++    );
++    assert!(
++        live_code(function_body(&oracle, "disposition_report").unwrap())
++            .contains("slot.swap(0,Ordering::AcqRel)")
++    );
++}
++
++#[test]
++fn signal_delivery_and_local_helpers_are_silent() {
++    let source = repo_text("kernel/src/signal/delivery.rs");
++    assert!(!has_output(&source));
++    for injected in [
++        "log::debug!(\"mutant\");",
++        "crate::serial_println!(\"mutant\");",
++    ] {
++        let body = function_body(&source, "deliver_pending_signals").unwrap();
++        assert!(has_output(&source.replace(
++            body,
++            &body.replacen('{', &format!("{{{injected}"), 1)
++        )));
++    }
+ }
+ 
+ #[test]
+@@ -318,15 +538,19 @@ fn disposition_oracle_drives_real_wait_and_strict_scorer_requires_both_arms() {
+     let futex = repo_text("kernel/src/syscall/futex.rs");
+     let queued = futex.rfind("PrepareOutcome::Queued =>").unwrap();
+     let inject = futex.find("disposition_inject(_val3, thread_id)").unwrap();
+-    let check = futex.find("crate::syscall::check_signals_for_eintr()").unwrap();
++    let check = futex
++        .find("crate::syscall::check_signals_for_eintr()")
++        .unwrap();
+     assert!(queued < inject && inject < check);
+-    assert!(futex.contains("disposition_report(_val3, disposition_armed, &result)"));
++    assert!(futex.contains("disposition_record(_val3, disposition_armed, &result)"));
+     let oracle = repo_text("kernel/src/syscall/futex_oracle.rs");
+     assert!(oracle.contains("thread.state == crate::task::thread::ThreadState::BlockedOnIO"));
+     assert!(oracle.contains("process.signals.pending |= sig_mask(SIGCHLD)"));
+     let scorer = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
+-    for arm in ["default:blocked=1:pending=1:errno=110:PASS]",
+-                "handler:blocked=1:pending=1:errno=4:PASS]"] {
++    for arm in [
++        "default:blocked=1:pending=1:errno=110:PASS]",
++        "handler:blocked=1:pending=1:errno=4:PASS]",
++    ] {
+         assert!(scorer.contains(arm));
+     }
+     assert!(scorer.contains("Signal disposition oracle failed"));
+@@ -345,16 +569,31 @@ fn strict_disposition_scoring_rejects_missing_and_failed_arms() {
+         (fixture.clone(), true),
+         (fixture.replace(arms[0], ""), false),
+         (fixture.replace(arms[1], ""), false),
+-        (format!("{}\n[SIGNAL_DISPOSITION_ORACLE:arm=default:blocked=1:pending=1:errno=4:FAIL]\n", fixture), false),
+-    ].into_iter().enumerate() {
++        (
++            format!(
++                "{}\n[SIGNAL_DISPOSITION_ORACLE:arm=default:blocked=1:pending=1:errno=4:FAIL]\n",
++                fixture
++            ),
++            false,
++        ),
++    ]
++    .into_iter()
++    .enumerate()
++    {
+         let path = scratch.join(format!("{index}.txt"));
+         std::fs::write(&path, serial).unwrap();
+         let output = std::process::Command::new("bash")
+             .arg("docker/qemu/run-aarch64-boot-test-strict.sh")
+             .env("BREENIX_STRICT_SCORE_ONLY", &path)
+             .current_dir(env!("CARGO_MANIFEST_DIR"))
+-            .output().unwrap();
+-        assert_eq!(output.status.success(), expected, "{}", String::from_utf8_lossy(&output.stdout));
++            .output()
++            .unwrap();
++        assert_eq!(
++            output.status.success(),
++            expected,
++            "{}",
++            String::from_utf8_lossy(&output.stdout)
++        );
+     }
+     std::fs::remove_dir_all(scratch).unwrap();
+ }

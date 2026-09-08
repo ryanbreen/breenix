@@ -72,14 +72,6 @@ pub fn deliver_pending_signals(
         // Get the handler for this signal
         let action = *process.signals.get_handler(sig);
 
-        log::debug!(
-            "Delivering signal {} ({}) to process {}, handler={:#x}",
-            sig,
-            signal_name(sig),
-            process.id.as_u64(),
-            action.handler
-        );
-
         match action.handler {
             SIG_DFL => {
                 // Default action may terminate/stop the process
@@ -94,7 +86,7 @@ pub fn deliver_pending_signals(
                 }
             }
             SIG_IGN => {
-                log::debug!("Signal {} ignored by process {}", sig, process.id.as_u64());
+
                 // Signal ignored - continue loop to check for more signals
             }
             handler_addr => {
@@ -154,14 +146,6 @@ pub fn deliver_pending_signals(
         // Get the handler for this signal
         let action = *process.signals.get_handler(sig);
 
-        log::debug!(
-            "Delivering signal {} ({}) to process {}, handler={:#x}",
-            sig,
-            signal_name(sig),
-            process.id.as_u64(),
-            action.handler
-        );
-
         match action.handler {
             SIG_DFL => {
                 // Default action may terminate/stop the process
@@ -176,7 +160,7 @@ pub fn deliver_pending_signals(
                 }
             }
             SIG_IGN => {
-                log::debug!("Signal {} ignored by process {}", sig, process.id.as_u64());
+
                 // Signal ignored - continue loop to check for more signals
             }
             handler_addr => {
@@ -217,13 +201,6 @@ pub enum DeliverResult {
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
     match default_action(sig) {
         SignalDefaultAction::Terminate => {
-            crate::serial_println!(
-                "[signal] Process {} ({}) terminated by signal {} ({})",
-                process.id.as_u64(),
-                process.name,
-                sig,
-                signal_name(sig)
-            );
             // Exit code for signal termination is typically 128 + signal number
             // But we use negative signal number to indicate signal death
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
@@ -237,10 +214,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                 let thread_id = thread.id();
                 crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
                     sched_thread.set_terminated();
-                    log::info!(
-                        "Signal delivery: marked scheduler thread {} as Terminated",
-                        thread_id
-                    );
                 });
             }
 
@@ -252,13 +225,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             }
         }
         SignalDefaultAction::CoreDump => {
-            crate::serial_println!(
-                "[signal] Process {} ({}) killed (core dump) by signal {} ({})",
-                process.id.as_u64(),
-                process.name,
-                sig,
-                signal_name(sig)
-            );
             // Core dump not implemented, just terminate
             // The 0x80 flag indicates core dump
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
@@ -269,10 +235,6 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                 let thread_id = thread.id();
                 crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
                     sched_thread.set_terminated();
-                    log::info!(
-                        "Signal delivery: marked scheduler thread {} as Terminated (core dump)",
-                        thread_id
-                    );
                 });
             }
 
@@ -284,22 +246,10 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             }
         }
         SignalDefaultAction::Stop => {
-            log::info!(
-                "Process {} stopped by signal {} ({})",
-                process.id.as_u64(),
-                sig,
-                signal_name(sig)
-            );
             process.set_blocked();
             DeliverResult::Delivered
         }
         SignalDefaultAction::Continue => {
-            log::info!(
-                "Process {} continued by signal {} ({})",
-                process.id.as_u64(),
-                sig,
-                signal_name(sig)
-            );
             // Only change state if process was stopped
             if matches!(process.state, ProcessState::Blocked) {
                 process.set_ready();
@@ -308,15 +258,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
                 DeliverResult::Ignored
             }
         }
-        SignalDefaultAction::Ignore => {
-            log::debug!(
-                "Signal {} ({}) ignored (default) by process {}",
-                sig,
-                signal_name(sig),
-                process.id.as_u64()
-            );
-            DeliverResult::Ignored
-        }
+        SignalDefaultAction::Ignore => DeliverResult::Ignored,
     }
 }
 
@@ -351,12 +293,7 @@ fn deliver_to_user_handler_x86_64(
     let user_rsp = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
         let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
-        log::debug!(
-            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
-            process.signals.alt_stack.base,
-            process.signals.alt_stack.size,
-            alt_top
-        );
+
         // Mark that we're now on the alternate stack
         process.signals.alt_stack.on_stack = true;
         alt_top
@@ -377,7 +314,7 @@ fn deliver_to_user_handler_x86_64(
         // Use the restorer function provided by the application/libc
         // Only allocate space for the signal frame (no trampoline needed)
         let frame_rsp = (user_rsp - frame_size) & !0xF; // 16-byte align
-        log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
+
         (frame_rsp, action.restorer)
     } else {
         // Fall back to writing trampoline on the stack
@@ -462,24 +399,12 @@ fn deliver_to_user_handler_x86_64(
     let handler_vaddr = match x86_64::VirtAddr::try_new(handler_addr) {
         Ok(addr) => addr,
         Err(_) => {
-            log::warn!(
-                "Signal {}: non-canonical handler address {:#x} for process {}",
-                sig,
-                handler_addr,
-                process.id.as_u64()
-            );
             return false;
         }
     };
     let frame_vaddr = match x86_64::VirtAddr::try_new(frame_rsp) {
         Ok(addr) => addr,
         Err(_) => {
-            log::warn!(
-                "Signal {}: non-canonical stack address {:#x} for process {}",
-                sig,
-                frame_rsp,
-                process.id.as_u64()
-            );
             return false;
         }
     };
@@ -497,26 +422,6 @@ fn deliver_to_user_handler_x86_64(
     saved_regs.rdi = sig as u64; // First argument: signal number
     saved_regs.rsi = 0; // Second argument: siginfo_t* (not implemented)
     saved_regs.rdx = 0; // Third argument: ucontext_t* (not implemented)
-
-    if use_alt_stack {
-        log::info!(
-            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, RSP={:#x}->{:#x}, return={:#x}",
-            sig,
-            handler_addr,
-            user_rsp,
-            frame_rsp,
-            return_addr
-        );
-    } else {
-        log::info!(
-            "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, return={:#x}",
-            sig,
-            handler_addr,
-            user_rsp,
-            frame_rsp,
-            return_addr
-        );
-    }
 
     true
 }
@@ -559,12 +464,7 @@ fn deliver_to_user_handler_aarch64(
     let user_sp = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
         let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
-        log::debug!(
-            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
-            process.signals.alt_stack.base,
-            process.signals.alt_stack.size,
-            alt_top
-        );
+
         // Mark that we're now on the alternate stack
         process.signals.alt_stack.on_stack = true;
         alt_top
@@ -583,7 +483,7 @@ fn deliver_to_user_handler_aarch64(
         // Use the restorer function provided by the application/libc
         // Only allocate space for the signal frame (no trampoline needed)
         let frame_sp = (user_sp - frame_size) & !0xF; // 16-byte align
-        log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
+
         (frame_sp, action.restorer)
     } else {
         // Fall back to writing trampoline on the stack
@@ -705,26 +605,6 @@ fn deliver_to_user_handler_aarch64(
     saved_regs.x1 = 0;
     saved_regs.x2 = 0;
 
-    if use_alt_stack {
-        log::info!(
-            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, SP={:#x}->{:#x}, return={:#x}",
-            sig,
-            handler_addr,
-            user_sp,
-            frame_sp,
-            return_addr
-        );
-    } else {
-        log::info!(
-            "Signal {} delivered to handler at {:#x}, SP={:#x}->{:#x}, return={:#x}",
-            sig,
-            handler_addr,
-            user_sp,
-            frame_sp,
-            return_addr
-        );
-    }
-
     true
 }
 
@@ -754,20 +634,12 @@ pub struct ParentNotification {
 /// will cause a deadlock.
 pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) {
     let parent_pid = notification.parent_pid;
-    let child_pid = notification.child_pid;
-
-    log::info!(
-        "notify_parent_of_termination_deferred: notifying parent {} about child {} termination",
-        parent_pid.as_u64(),
-        child_pid.as_u64()
-    );
 
     // Get process manager to find and update parent
     // This is safe because we're called after the caller released their lock
     let parent_thread_id = {
         let mut manager_guard = crate::process::manager();
         let Some(ref mut manager) = *manager_guard else {
-            log::warn!("notify_parent_of_termination_deferred: no process manager");
             return;
         };
 
@@ -775,20 +647,10 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
         if let Some(parent_process) = manager.get_process_mut(parent_pid) {
             // Send SIGCHLD to parent
             parent_process.signals.set_pending(SIGCHLD);
-            log::debug!(
-                "notify_parent_of_termination_deferred: sent SIGCHLD to parent {} for child {} termination",
-                parent_pid.as_u64(),
-                child_pid.as_u64()
-            );
 
             // Get parent's main thread ID for unblocking
             parent_process.main_thread.as_ref().map(|t| t.id)
         } else {
-            log::warn!(
-                "notify_parent_of_termination_deferred: parent process {} not found for child {}",
-                parent_pid.as_u64(),
-                child_pid.as_u64()
-            );
             None
         }
         // manager_guard is dropped here
@@ -803,11 +665,6 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
             // so SIGCHLD can be delivered
             sched.unblock_for_signal(parent_tid);
         });
-        log::info!(
-            "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",
-            parent_tid,
-            child_pid.as_u64()
-        );
     }
 }
 
@@ -815,12 +672,6 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
 /// Returns parent notification info if parent should be notified (does NOT acquire lock)
 fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification> {
     let parent_pid = process.parent?;
-
-    log::debug!(
-        "notify_parent_of_termination: process {} has parent {}, notification queued",
-        process.id.as_u64(),
-        parent_pid.as_u64()
-    );
 
     Some(ParentNotification {
         parent_pid,
@@ -845,11 +696,7 @@ pub fn check_and_fire_itimer_real(process: &mut Process, elapsed_usec: u64) -> b
         if process.itimers.real.tick(elapsed_usec) {
             // Timer expired - queue SIGALRM
             process.signals.set_pending(SIGALRM);
-            log::debug!(
-                "ITIMER_REAL fired for process {} (elapsed {} usec)",
-                process.id.as_u64(),
-                elapsed_usec
-            );
+
             return true;
         }
     }
@@ -870,11 +717,7 @@ pub fn check_and_fire_alarm(process: &mut Process) -> bool {
             // Alarm expired - clear it and queue SIGALRM
             process.alarm_deadline = None;
             process.signals.set_pending(SIGALRM);
-            log::debug!(
-                "Alarm fired for process {} at tick {}",
-                process.id.as_u64(),
-                current_ticks
-            );
+
             return true;
         }
     }

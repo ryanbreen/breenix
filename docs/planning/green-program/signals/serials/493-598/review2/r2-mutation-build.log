@@ -1,0 +1,5 @@
+Base revision: 17049b6ba3902fe8dd770982233e858a4f18a8cc + review2 changes
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/sig2/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 8.45s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

@@ -349,7 +349,7 @@ pub fn disposition_inject(tag: u32, thread_id: u64) -> bool {
     false
 }
 
-pub fn disposition_report(tag: u32, armed: bool, result: &super::SyscallResult) {
+pub fn disposition_record(tag: u32, armed: bool, result: &super::SyscallResult) {
     if tag != 0x5344_0001 && tag != 0x5344_0002 {
         return;
     }
@@ -369,22 +369,46 @@ pub fn disposition_report(tag: u32, armed: bool, result: &super::SyscallResult) 
         super::SyscallResult::Err(errno) => *errno,
         super::SyscallResult::Ok(_) => 0,
     };
-    let (arm, expected) = if tag == 0x5344_0001 {
-        ("default", super::errno::ETIMEDOUT as u64)
+    let record = 1 | ((armed as u64) << 1) | (errno << 2);
+    let slot = if tag == 0x5344_0001 {
+        &DISPOSITION_DEFAULT
     } else {
-        ("handler", super::errno::EINTR as u64)
+        &DISPOSITION_HANDLER
     };
-    let verdict = if armed && errno == expected {
-        "PASS"
-    } else {
-        "FAIL"
-    };
-    crate::serial_println!(
-        "[SIGNAL_DISPOSITION_ORACLE:arm={}:blocked={}:pending={}:errno={}:{}]",
-        arm,
-        armed as u8,
-        armed as u8,
-        errno,
-        verdict
-    );
+    slot.store(record, Ordering::Release);
+}
+
+static DISPOSITION_DEFAULT: AtomicU64 = AtomicU64::new(0);
+static DISPOSITION_HANDLER: AtomicU64 = AtomicU64::new(0);
+
+/// Drain completed measurements from the sampling kernel thread, off the syscall path.
+pub fn disposition_report() {
+    for (slot, arm, expected) in [
+        (
+            &DISPOSITION_DEFAULT,
+            "default",
+            super::errno::ETIMEDOUT as u64,
+        ),
+        (&DISPOSITION_HANDLER, "handler", super::errno::EINTR as u64),
+    ] {
+        let record = slot.swap(0, Ordering::AcqRel);
+        if record == 0 {
+            continue;
+        }
+        let armed = (record >> 1) & 1;
+        let errno = record >> 2;
+        let verdict = if armed == 1 && errno == expected {
+            "PASS"
+        } else {
+            "FAIL"
+        };
+        crate::serial_println!(
+            "[SIGNAL_DISPOSITION_ORACLE:arm={}:blocked={}:pending={}:errno={}:{}]",
+            arm,
+            armed,
+            armed,
+            errno,
+            verdict
+        );
+    }
 }
