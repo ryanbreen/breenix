@@ -288,8 +288,9 @@ try:
             result = child.wait(timeout=budget)
         except subprocess.TimeoutExpired:
             result = 124
-        assert result == 124, 'hung dump unexpectedly completed'
-        pathlib.Path('bounded').write_text(str(budget))
+            pathlib.Path('bounded').write_text(str(budget))
+        else:
+            raise AssertionError('hung dump unexpectedly completed')
     else:
         result = child.wait()
 finally:
@@ -300,6 +301,93 @@ finally:
     child.wait()
 sys.exit(result)
 "#;
+
+// Validate the complete partial-report wire format, including elapsed milliseconds.
+fn partial_report(out: &str, reason: &str) -> bool {
+    let prefix =
+        format!("[QMP_DUMP:capture=partial:reason={reason}:core=-:decoded_events=-:dump_ms=");
+    out.strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix("]\n"))
+        .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn rejects_malformed_partial_reports(reason: &str) {
+    let valid =
+        format!("[QMP_DUMP:capture=partial:reason={reason}:core=-:decoded_events=-:dump_ms=12]\n");
+    assert!(partial_report(&valid, reason));
+    for malformed in [
+        format!("capture=partial:reason={reason}:\n"),
+        valid.replace("[QMP_DUMP:", ""),
+        valid.replace("]", ""),
+        valid.replace("core=-:", ""),
+        valid.replace("decoded_events=-:", ""),
+        valid.replace("dump_ms=12", "dump_ms="),
+        valid.replace("dump_ms=12", "dump_ms=oops"),
+        valid.replace("dump_ms=12", "dump_ms=-1"),
+        valid.replace(reason, "wrong_reason"),
+        format!("{valid}{valid}"),
+        format!("noise{valid}"),
+        format!("{valid}noise"),
+    ] {
+        assert!(
+            !partial_report(&malformed, reason),
+            "accepted: {malformed:?}"
+        );
+    }
+}
+
+#[test]
+fn missing_socket_report_rejects_malformed_lines() {
+    rejects_malformed_partial_reports("qmp_socket_missing");
+}
+
+#[test]
+fn hung_dump_report_rejects_malformed_lines() {
+    rejects_malformed_partial_reports("qmp_timeout");
+}
+
+#[test]
+fn timeout_marker_requires_expiry_not_early_exit_124() {
+    for (name, command, expected_code, expected_marker) in [
+        (
+            "early-124",
+            "touch dump-received; sleep 0.1; exit 124",
+            1,
+            false,
+        ),
+        ("expired", "touch dump-received; exec sleep 60", 124, true),
+    ] {
+        let fixture = Fixture::new(None);
+        fs::write(fixture.dir.join("mode"), "hang").unwrap();
+        let start = std::time::Instant::now();
+        let output = Command::new("python3")
+            .current_dir(&fixture.dir)
+            .args(["timeout.py", "--kill-after=1", "3", "bash", "-c", command])
+            .output()
+            .unwrap();
+        let elapsed = start.elapsed();
+        let marker = fixture.dir.join("bounded");
+        eprintln!(
+            "{name}: status={:?} elapsed={elapsed:?} bounded={}",
+            output.status.code(),
+            marker.exists()
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(expected_code),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(marker.exists(), expected_marker, "{name}");
+        if expected_marker {
+            assert_eq!(fs::read_to_string(marker).unwrap(), "3");
+            assert!(elapsed >= std::time::Duration::from_secs(3));
+        } else {
+            assert!(String::from_utf8_lossy(&output.stderr)
+                .contains("hung dump unexpectedly completed"));
+        }
+    }
+}
 
 static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -474,10 +562,7 @@ fn pass_emits_exact_contract_without_any_qmp_traffic() {
 fn missing_socket_and_hung_dump_are_partial_and_bounded() {
     let missing = Fixture::new(None);
     let (out, elapsed) = missing.run(false, 3);
-    assert!(
-        out.contains("capture=partial:reason=qmp_socket_missing:"),
-        "{out}"
-    );
+    assert!(partial_report(&out, "qmp_socket_missing"), "{out}");
     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
     assert_eq!(out.lines().count(), 1);
     let (invalid, elapsed) = missing.run(false, 0);
@@ -487,18 +572,13 @@ fn missing_socket_and_hung_dump_are_partial_and_bounded() {
     let (out, elapsed) = hanging.run(false, 3);
     if !qmp_tool_available() {
         eprintln!("missing_socket_and_hung_dump_are_partial_and_bounded: socat missing; asserting qmp_tool_missing for hang");
-        assert!(
-            out.contains(
-                "capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms="
-            ),
-            "{out}"
-        );
+        assert!(partial_report(&out, "qmp_tool_missing"), "{out}");
         eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
         assert_eq!(hanging.log(), "", "missing tool sent QMP commands");
         return;
     }
     eprintln!("missing_socket_and_hung_dump_are_partial_and_bounded: socat present; asserting QMP timeout after dump command");
-    assert!(out.contains("capture=partial:reason=qmp_timeout:"), "{out}");
+    assert!(partial_report(&out, "qmp_timeout"), "{out}");
     assert_eq!(out.lines().count(), 1);
     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
     assert_eq!(
