@@ -311,6 +311,58 @@ fn partial_report(out: &str, reason: &str) -> bool {
         .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+// Validate the entire successful-report wire format.
+fn complete_report(out: &str) -> bool {
+    let Some(fields) = out
+        .strip_prefix("[QMP_DUMP:capture=complete:reason=-:core=")
+        .and_then(|rest| rest.strip_suffix("]\n"))
+    else {
+        return false;
+    };
+    let Some((core, fields)) = fields.split_once(":decoded_events=") else {
+        return false;
+    };
+    let Some((decoded_events, ms)) = fields.split_once(":dump_ms=") else {
+        return false;
+    };
+    let decimal =
+        |field: &str| !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit());
+    !core.is_empty() && (decoded_events == "-" || decimal(decoded_events)) && decimal(ms)
+}
+
+#[test]
+fn rejects_malformed_complete_reports() {
+    let valid = "[QMP_DUMP:capture=complete:reason=-:core=/tmp/core:decoded_events=-:dump_ms=12]\n";
+    assert!(complete_report(valid));
+    assert!(complete_report(
+        &valid.replace("decoded_events=-", "decoded_events=0")
+    ));
+    assert!(complete_report(
+        &valid.replace("decoded_events=-", "decoded_events=123")
+    ));
+    assert!(complete_report(&valid.replace("dump_ms=12", "dump_ms=0")));
+    for malformed in [
+        valid.replace("[QMP_DUMP:", ""),
+        valid.replace("]", ""),
+        valid.replace("\n", ""),
+        valid.replace("reason=-:", ""),
+        valid.replace("reason=-", "reason=wrong"),
+        valid.replace("core=/tmp/core", "core="),
+        valid.replace(":decoded_events=-", ""),
+        valid.replace("decoded_events=-", "decoded_events="),
+        valid.replace("decoded_events=-", "decoded_events=oops"),
+        valid.replace("decoded_events=-", "decoded_events=-1"),
+        valid.replace("dump_ms=12", "dump_ms="),
+        valid.replace("dump_ms=12", "dump_ms=oops"),
+        valid.replace("dump_ms=12", "dump_ms=-1"),
+        format!("{valid}{valid}"),
+        format!("noise{valid}"),
+        format!("{valid}noise"),
+    ] {
+        assert!(!complete_report(&malformed), "accepted: {malformed:?}");
+    }
+}
+
 fn rejects_malformed_partial_reports(reason: &str) {
     let valid =
         format!("[QMP_DUMP:capture=partial:reason={reason}:core=-:decoded_events=-:dump_ms=12]\n");
@@ -532,12 +584,7 @@ fn fake_qmp_dump_precedes_sigterm_even_when_decode_fails() {
         return;
     }
     eprintln!("fake_qmp_dump_precedes_sigterm_even_when_decode_fails: socat present; asserting capture and SIGTERM ordering");
-    assert!(out.starts_with("[QMP_DUMP:capture=complete:"), "{out}");
-    assert!(
-        out.contains(":decoded_events=-:"),
-        "fake bytes must not pretend to decode"
-    );
-    assert_eq!(out.lines().count(), 1);
+    assert!(complete_report(&out), "{out}");
     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
     let log = fixture.log();
     let position = |prefix: &str| log.lines().position(|l| l.starts_with(prefix)).unwrap();
