@@ -1,0 +1,20 @@
+revision=69a2bfae8d7e7b994dde43607ba58dd3285aba68
+mutation=delete UART ownership Release store
+== compiling serial_line_atomicity_structure ==
+== running serial_line_atomicity_structure uart_ownership_contract ==
+
+running 1 test
+
+thread 'uart_ownership_contract_and_delete_mutation' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t847/wt/tests/serial_line_atomicity_structure.rs:1396:5:
+assertion failed: validate_uart_ownership(&source)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test uart_ownership_contract_and_delete_mutation ... FAILED
+
+failures:
+
+failures:
+    uart_ownership_contract_and_delete_mutation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+ratchet_exit=101

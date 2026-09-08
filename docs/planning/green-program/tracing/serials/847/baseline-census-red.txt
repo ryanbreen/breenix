@@ -1,0 +1,319 @@
+revision: 4394409fca3932296f3468914b5be325ce0d48a6 plus new census ratchet, before writer conversion
+== compiling serial_line_atomicity_structure ==
+== running serial_line_atomicity_structure aarch64_raw_writers ==
+
+running 1 test
+
+thread 'aarch64_raw_writers_must_be_inside_serialized_emitter' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t847/wt/tests/serial_line_atomicity_structure.rs:1639:5:
+aarch64 raw writers outside line emitter: {
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn check_inline_eret_resume_pc -> raw_uart_str",
+    ): 5,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn check_inline_save_resume_point -> raw_uart_str",
+    ): 7,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn check_need_resched_and_switch_arm64 -> raw_uart_str",
+    ): 4,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dispatch_thread_locked -> raw_uart_str",
+    ): 13,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_dispatch_mismatch_snapshots -> raw_uart_str",
+    ): 7,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_eret_frame_anomaly_snapshots -> raw_uart_str",
+    ): 9,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_eret_guard_records -> raw_uart_str",
+    ): 9,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_idle_redirect_histories -> raw_uart_str",
+    ): 13,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_inline_save_skew_snapshots -> raw_uart_str",
+    ): 7,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_last_dispatched_tids -> raw_uart_str",
+    ): 4,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_all_save_skew_snapshots -> raw_uart_str",
+    ): 11,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_dispatch_trace -> raw_uart_char",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_dispatch_trace -> raw_uart_str",
+    ): 11,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn dump_stack_pivot_alias_history -> raw_uart_str",
+    ): 9,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn emit_el0_entry_marker -> raw_uart_str",
+    ): 2,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn emit_resume_pc_census -> raw_uart_str",
+    ): 9,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn emit_schedule_boot_marker -> raw_uart_str",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn log_bad_thread_sp -> raw_uart_str",
+    ): 11,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn log_idle_thread_context -> raw_uart_str",
+    ): 11,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn log_last_defer_requeue_snapshot -> raw_uart_str",
+    ): 9,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn raw_uart_dec -> raw_uart_char",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn raw_uart_hex -> raw_uart_char",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn raw_uart_hex -> raw_uart_str",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn raw_uart_str -> raw_uart_char",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn record_inline_elr_divergence -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn record_resume_pc_refusal -> raw_uart_str",
+    ): 11,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn record_ret_stage_refusal -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn restore_kernel_context_inline -> raw_uart_str",
+    ): 13,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn save_kernel_context_inline -> raw_uart_str",
+    ): 22,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn save_userspace_context_inline -> raw_uart_str",
+    ): 11,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn set_next_ttbr0_for_thread -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn set_saved_lr -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/arch_impl/aarch64/context_switch.rs",
+        "fn take_inline_ret_dispatch_info -> raw_uart_str",
+    ): 10,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn defer_current_user_thread_sigsegv_exit -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_el1_fatal_frame_and_dispatch_trace -> raw_uart_str",
+    ): 13,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_el1_first_fault -> raw_uart_str",
+    ): 23,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_fatal_postmortem_once -> raw_uart_str",
+    ): 18,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_fatal_postmortem_section -> raw_uart_str",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn dump_stack_classification -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn handle_sync_exception -> raw_uart_str",
+    ): 196,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn raw_uart_hex_u32 -> raw_uart_char",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/exception.rs",
+        "fn raw_uart_hex_u32 -> raw_uart_str",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/percpu.rs",
+        "fn record_cpu_identity_split -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/arch_impl/aarch64/percpu.rs",
+        "fn record_percpu_stack_alien -> raw_uart_str",
+    ): 9,
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn dump_lockup_state -> raw_serial_str",
+    ): 5,
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn print_hex_u64 -> raw_serial_char",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn print_timer_count_decimal -> raw_serial_char",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn raw_serial_str -> raw_serial_str",
+    ): 1,
+    (
+        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+        "fn timer_interrupt_handler -> raw_serial_str",
+    ): 6,
+    (
+        "kernel/src/syscall/futex_timeout_record.rs",
+        "fn record -> raw_serial_str",
+    ): 12,
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle),not(feature=resume_pc_el0_frame_oracle)))] fn inject_el0_resume_pc_if_armed -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,any(feature=resume_pc_el1_oracle,feature=eret_zero_pc_oracle,all(feature=resume_pc_el0_frame_oracle,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle)))))] fn inject_el1_frame_resume_pc_if_armed -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=lr_poison_oracle))] fn inject_saved_lr_if_armed -> raw_uart_str",
+    ): 3,
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=resume_pc_el0_frame_oracle,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle)))] fn inject_el0_frame_resume_pc_if_armed -> raw_uart_str",
+    ): 6,
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_floor_oracle))] fn inject_ret_floor_if_armed -> raw_uart_str",
+    ): 3,
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_stack_pc_oracle))] fn inject_ret_stack_pc_if_armed -> raw_uart_str",
+    ): 4,
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle))] fn inject_ret_zero_pc_if_armed -> raw_uart_str",
+    ): 3,
+    (
+        "kernel/src/task/ret_zero_pc_oracle.rs",
+        "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle_exec))] fn inject_exec_commit_if_armed -> raw_uart_str",
+    ): 2,
+    (
+        "kernel/src/task/scheduler.rs",
+        "#[cfg(target_arch=aarch64)] fn dump_cpu_state_history -> raw_uart_str",
+    ): 9,
+    (
+        "kernel/src/task/scheduler.rs",
+        "impl Scheduler::fn hold_pinned_wake_for_home -> raw_serial_str",
+    ): 5,
+    (
+        "kernel/src/test_framework/registry.rs",
+        "fn test_serial_output -> raw_serial_str",
+    ): 1,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn dump_all_buffers -> raw_serial_str",
+    ): 6,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn dump_buffer -> raw_serial_str",
+    ): 7,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn dump_counters -> raw_serial_char",
+    ): 2,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn dump_counters -> raw_serial_str",
+    ): 9,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn dump_event_summary -> raw_serial_str",
+    ): 6,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn dump_latest_events -> raw_serial_str",
+    ): 3,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn dump_providers -> raw_serial_str",
+    ): 7,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn format_event_to_serial -> raw_serial_str",
+    ): 7,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn raw_serial_dec -> raw_serial_char",
+    ): 1,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn raw_serial_hex -> raw_serial_char",
+    ): 1,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn raw_serial_hex -> raw_serial_str",
+    ): 1,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn raw_serial_hex16 -> raw_serial_str",
+    ): 1,
+    (
+        "kernel/src/tracing/output.rs",
+        "fn raw_serial_str -> raw_serial_char",
+    ): 1,
+    (
+        "kernel/src/tty/driver.rs",
+        "impl TtyDevice::fn send_signal_to_process_nonblock -> raw_serial_str",
+    ): 2,
+}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test aarch64_raw_writers_must_be_inside_serialized_emitter ... FAILED
+
+failures:
+
+failures:
+    aarch64_raw_writers_must_be_inside_serialized_emitter
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.28s
+

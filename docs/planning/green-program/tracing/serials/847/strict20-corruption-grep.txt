@@ -1,0 +1,21 @@
+revision: 69a2bfae8d7e7b994dde43607ba58dd3285aba68
+strict-01.txt: corrupted_lines=0 grep_exit=1
+strict-02.txt: corrupted_lines=0 grep_exit=1
+strict-03.txt: corrupted_lines=0 grep_exit=1
+strict-04.txt: corrupted_lines=0 grep_exit=1
+strict-05.txt: corrupted_lines=0 grep_exit=1
+strict-06.txt: corrupted_lines=0 grep_exit=1
+strict-07.txt: corrupted_lines=0 grep_exit=1
+strict-08.txt: corrupted_lines=0 grep_exit=1
+strict-09.txt: corrupted_lines=0 grep_exit=1
+strict-10.txt: corrupted_lines=0 grep_exit=1
+strict-11.txt: corrupted_lines=0 grep_exit=1
+strict-12.txt: corrupted_lines=0 grep_exit=1
+strict-13.txt: corrupted_lines=0 grep_exit=1
+strict-14.txt: corrupted_lines=0 grep_exit=1
+strict-15.txt: corrupted_lines=0 grep_exit=1
+strict-16.txt: corrupted_lines=0 grep_exit=1
+strict-17.txt: corrupted_lines=0 grep_exit=1
+strict-18.txt: corrupted_lines=0 grep_exit=1
+strict-19.txt: corrupted_lines=0 grep_exit=1
+strict-20.txt: corrupted_lines=0 grep_exit=1

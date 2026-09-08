@@ -1,0 +1,21 @@
+revision: 69a2bfae8d7e7b994dde43607ba58dd3285aba68
+strict-01.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-02.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-03.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-04.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-05.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-06.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-07.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-08.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-09.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-10.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-11.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-12.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-13.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-14.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-15.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-16.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-17.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-18.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-19.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0
+strict-20.txt: SERIAL_INTERLEAVE: records=400 corrupted=0 verdict=PASS exit=0

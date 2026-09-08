@@ -1,0 +1,4 @@
+revision=69a2bfae8d7e7b994dde43607ba58dd3285aba68
+command=python3 scripts/score-serial-interleave.py bypass-serial.txt
+SERIAL_INTERLEAVE: records=2 corrupted=324 verdict=FAIL
+exit=1

@@ -1,0 +1,7 @@
+revision=69a2bfae8d7e7b994dde43607ba58dd3285aba68
+mutation=Ticket::acquire returns Some without CAS; source restored before this capture
+c53d76fd9297f44076eabf6b37ae4aeab34cb91d421c474e08d46d99c3ac1b36  .tmp/kernel-aarch64-847-no-ticket
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+qemu-system-aarch64: terminating on signal 15 from pid 62328 (<unknown process>)
+SERIAL_INTERLEAVE: records=2 corrupted=324 verdict=FAIL
+qemu_exit=124 score_exit=1
