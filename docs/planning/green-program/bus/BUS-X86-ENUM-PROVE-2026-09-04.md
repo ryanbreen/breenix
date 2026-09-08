@@ -17,10 +17,10 @@ pre-existing beast-boot flakes.
 Fresh clone, not a reuse of the round-3 correction's working directory:
 
 ```
-ssh beast 'sudo -n incus exec breenix-x86 -- <cmd>'   # container: breenix-x86
-REPO_DIR=/root/breenix-busgate-prove
+ssh beast 'sudo -n incus exec <x86-build-environment> -- <cmd>'   # container: <x86-build-environment>
+REPO_DIR=<isolated-checkout-54>
 git clone --branch green/bus-x86-enum-gate https://github.com/ryanbreen/breenix.git "$REPO_DIR"
-ln -s /root/breenix/rust-fork-real "$REPO_DIR/rust-fork"
+ln -s <rust-fork-checkout> "$REPO_DIR/rust-fork"
 ```
 
 ```
@@ -74,7 +74,7 @@ not sharing the target directory concurrently.
 Separately, and unprompted by anything this round did: `docker/qemu/
 run-x86-prod-profile-boot-test.sh`'s `OUTPUT_DIR` is a single fixed path
 (`/tmp/breenix_x86_prod_profile`), not scoped per-invocation, and an unrelated
-concurrent lane on the same beast host (`/root/breenix-775`) was observed
+concurrent lane on the same beast host (`<isolated-checkout-53>`) was observed
 running the identical script against the identical path during part of this
 window (`pgrep -af qemu-system-x86_64` showed both PIDs, distinct
 command lines, same `-chardev socket ... path=/tmp/breenix_x86_prod_profile/

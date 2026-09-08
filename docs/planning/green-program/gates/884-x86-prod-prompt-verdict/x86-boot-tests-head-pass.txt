@@ -1,10 +1,10 @@
 [GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
   RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
-   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling kernel v0.1.0 (<isolated-checkout-71>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-72>)
     Finished `release` profile [optimized] target(s) in 15.68s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-884/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  ELF:      <isolated-checkout-71>/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
   sha256:   54f5002fb4d4614624a328e819a2735b967d4c02cb7888439fdf1c46150c573c
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -12,11 +12,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 19
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling kernel v0.1.0 (<isolated-checkout-71>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-72>)
     Finished `release` profile [optimized] target(s) in 15.78s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-884/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-71>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (7405568 bytes)
    Compiling proc-macro2 v1.0.107
    Compiling quote v1.0.47
    Compiling unicode-ident v1.0.24
@@ -43,7 +43,7 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
    Compiling serde_derive v1.0.229
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
-   Compiling xtask v0.1.0 (/root/breenix-884/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-71>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.91s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -206,7 +206,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60481 sectors (29.53 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-884/target/ext2.img
+  Output: <isolated-checkout-71>/target/ext2.img
   Size: 256MB
   Payload: 45MB (userspace binaries + fonts)
   Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
@@ -429,8 +429,8 @@ drwxr-xr-x 3 root root   4096 Sep  6 19:29 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-884/target/ext2.img
-  /root/breenix-884/testdata/ext2.img
+  <isolated-checkout-71>/target/ext2.img
+  <isolated-checkout-71>/testdata/ext2.img
   Size: 256M
 
 Contents:

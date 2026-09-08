@@ -1,6 +1,6 @@
 REVISION=ba5a3377ccaeca6ef1ff38f15d8871454ac648e7
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
-   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-927a)
+   Compiling kernel v0.1.0 (<isolated-checkout-166>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-173>)
     Finished `release` profile [optimized] target(s) in 14.98s
 PRECOMMIT_BUILD_PASS

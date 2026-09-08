@@ -1,4 +1,4 @@
-=== #766 re-arm leg: the three x86 runs it got, beast breenix-x86 (TCG), 2026-09-06 ===
+=== #766 re-arm leg: the three x86 runs it got, beast <x86-build-environment> (TCG), 2026-09-06 ===
 The leg's marker is emitted on COM1 (serial_user.txt), NOT COM2 (serial_kernel.txt).
 Both files are in the gate's output dir and the gate greps serial_*.txt, so the gate
 reads it either way; a hand check that looks only at serial_kernel.txt does not.

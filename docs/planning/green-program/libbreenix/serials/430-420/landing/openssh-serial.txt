@@ -1,0 +1,995 @@
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a9ff0672db1
+========================================
+
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 1000000000 Hz (1000 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 7718000
+[boot] Initializing GIC...
+[gic] GICR probe 0x080a0000: WAKER=0x00000006 <<< VALID
+[gic] GICR base mismatch: loader=0x00000000, using=0x080a0000
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 524288 sectors (256 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x4126d
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1
+[virtio-net] MAC address: 52:54:00:12:34:56
+[virtio-net] RX queue max size: 1024
+[virtio-net] TX queue max size: 1024
+[virtio-net] Network device initialized successfully
+[virtio-net] Network device IRQ 75 (will enable after net init)
+[drivers] VirtIO network driver initialized
+[virtio-net] Device test - MAC: 52:54:00:12:34:56
+[virtio-net] Test passed!
+[virtio-gpu] Searching for GPU device...
+[virtio-gpu] Found GPU device at 0xa003e00
+[virtio-gpu] Device version: 1
+[virtio-gpu] Control queue max size: 1024
+[virtio-gpu] Display: 1280x800
+[virtio-gpu] GPU device initialized successfully
+[drivers] VirtIO GPU driver initialized
+[virtio-gpu] Device test - Display: 1280x800
+[virtio-gpu] Test passed!
+[virtio-sound] Searching for sound device...
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...
+[virtio-blk] Sector 0 data: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+[virtio-blk] Read test passed!
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] MAC address: 52:54:00:12:34:56
+NET: IP address: 10.0.2.15
+NET: Gateway: 10.0.2.2
+Network stack initialized
+NET: Sending ARP request for gateway 10.0.2.2
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.0.2.2
+NET: ARP cache miss for 10.0.2.2, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net] Enabling IRQ 75 for network device
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+[boot] Initializing filesystem...
+[ext2] Using VirtIO block device (524288 sectors)
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: Unknown Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[virtio-gpu] GPU device already initialized
+[arm64-fb] Shell framebuffer initialized: 1280x800
+[graphics] Framebuffer: 1280x800
+[graphics] Particle system initialized
+[render_queue] Initialized (64KB buffer)
+[graphics] Split-screen terminal UI initialized
+[boot] Initializing VirtIO keyboard...
+[virtio-input] Searching for input devices (ID=18)...
+[virtio-input] Slot 27 at 0xa003600: device_id=1
+[virtio-input] Slot 28 at 0xa003800: device_id=2
+[virtio-input] Slot 29 at 0xa003a00: device_id=18
+[virtio-input] Found tablet at 0xa003a00 (slot 29, supports EV_ABS)
+[virtio-input] Tablet device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 77 for tablet
+[virtio-input] Tablet initialized (16 buffers)
+[virtio-input] Slot 30 at 0xa003c00: device_id=18
+[virtio-input] Found keyboard at 0xa003c00 (slot 30, no EV_ABS)
+[virtio-input] Keyboard device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 78 for keyboard
+[virtio-input] Keyboard initialized (64 buffers)
+[virtio-input] Slot 31 at 0xa003e00: device_id=16
+[boot] VirtIO keyboard initialized
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread spawned (tid=3)
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[net] ICMP echo reply received from 10.0.2.2 seq=1
+[boot] Init binary pre-loaded: 303144 bytes
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=false
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (1000000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] Probing secondary CPUs via PSCI...
+[1@s1mp]A CPU 1: PSCI CPU_ON success (Braw_Cstatus=D0)
+Ee[smFp] CGPU 21: PSCI 2@1ACPU_ONBCDEeFG success (raw_status=0)
+[23smp] CPU@1A 3: PSCBCI CPU_ONDEeFG3 success (raw_status=0)
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[gic] EOImode=1 (split EOI/DIR) - non-VMware path
+[smp] CPU 4 attempt 1/4: HVC64 failed (ret=-2), trying HVC32...
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+T[g1ic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x8c00 -> 0x8c02 (EOImode=1)
+[smp] PSCI CPU_ON failed for CPU 4 after 1 attempts: ret=-2 (MPIDR=0x4 entry=0x400802b8)
+[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+[smp] 4 CPUs online
+T2T3[PT_ROOT_CUSTODY:no_proof=0:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=0]
+T4[TOMBSTONE_CENSUS:resident=0:removed=0:reap_second=0:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=0:kernel=0:cleared=0]
+[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=303144, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f6f4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[INIT_DESIGNATION:aarch64:designated_pid=1:reserved_collisions=0]
+[boot] Reset 4 idle thread contexts (CPUs online: 4)
+T5T6EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+T7T8T9[init] Breenix init starting (PID 1)
+[spawn] path='/bin/heartbeat'
+T0manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=303584, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 2
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f85c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 2
+[spawn] Created child PID 2 for parent PID 1
+[spawn] Success: child PID 2 scheduled
+[init] heartbeat started (PID 2)
+[INIT_GROUP_REFUSAL:aarch64:phase=early:probe1=-22:probe2=-22:expected=-22]
+[spawn] path='/bin/block_eintr_oracle'
+[heartbeat] tid=12 uptime_ms=277 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='block_eintr_oracle', elf_size=304720, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 3
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f938
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 3
+[spawn] Created child PID 3 for parent PID 1
+[spawn] Success: child PID 3 scheduled
+F123456789SC[syscall] exit(0) pid=4 name=block_eintr_oracle_child_4
+[TTBR0_ASID_CENSUS:untagged=0:tagged=2468:kernel=2642:cleared=5081]
+F123456789SC[heartbeat] tid=12 uptime_ms=1283 kbd_nonzero=0
+[syscall] exit(0) pid=5 name=block_eintr_oracle_child_5
+[TTBR0_ASID_CENSUS:untagged=0:tagged=6443:kernel=7048:cleared=13410]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[BLOCK_EINTR_ORACLE:PASS:stages=2:reads=4:short=0:eintr=0:handled=1]
+[syscall] exit(0) pid=3 name=block_eintr_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=10004:kernel=10946:cleared=20837]
+[init] block_eintr_oracle exited pid=3 code=0
+[spawn] path='/bin/futex_handoff_oracle'
+manager.create_process_with_argv [ARM64]: ENTRY - name='futex_handoff_oracle', elf_size=297168, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 6
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f28c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 6
+[spawn] Created child PID 6 for parent PID 1
+[spawn] Success: child PID 6 scheduled
+[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]
+[heartbeat] tid=12 uptime_ms=2287 kbd_nonzero=0
+[INPUT_INJECT_NEGATIVE_CONTROL:request=0xb8130004:probe=-25:verdict=PASS]
+[syscall] exit(0) pid=6 name=futex_handoff_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=10870:kernel=11897:cleared=22640]
+[init] futex_handoff_oracle exited pid=6 code=0
+[spawn] path='/bin/poll_tcp_oracle'
+manager.create_process_with_argv [ARM64]: ENTRY - name='poll_tcp_oracle', elf_size=324864, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 7
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40011890
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 7
+[spawn] Created child PID 7 for parent PID 1
+[spawn] Success: child PID 7 scheduled
+[POLL_TCP_TIMEOUT] fd=4 timeout_ms=120 publish=none_in_window rx_len=0 revents=0x0000
+F123456789SC[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 anchor=2632 token_ms=2633 write_ms=2713 delay_ms=80]
+[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 anchor=2632 token_ms=2633 write_ms=2713 delay_ms=80]
+[syscall] exit(0) pid=8 name=poll_tcp_oracle_child_8
+[TTBR0_ASID_CENSUS:untagged=0:tagged=12149:kernel=13230:cleared=25219]
+F123456789SC[POLL_TCP_TIMEOUT] fd=4 timeout_ms=150 publish=none_in_window rx_len=0 revents=0x0000
+[POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms=2872 rescan_ready=0 rescan_revents=0x0000 nbread_err=EAGAIN]
+[POLL_TCP_ORACLE:LOSTWAKE_PROBE:probe_ms=2872 rescan_ready=0 rescan_revents=0x0000 nbread_err=EAGAIN]
+[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 anchor=2721 token_ms=2722 write_ms=3221 delay_ms=500]
+[POLL_TCP_ORACLE:PEER:branch=sent:n=23 want=23 anchor=2721 token_ms=2722 write_ms=3221 delay_ms=500]
+[syscall] exit(0) pid=9 name=poll_tcp_oracle_child_9
+[TTBR0_ASID_CENSUS:untagged=0:tagged=12321:kernel=13512:cleared=25658]
+[POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=2721 entry=2721 deadline=2871 returned=2872 write_ms=3221 late_by_ms=350 delay_ms=500 timeout=150]
+[POLL_TCP_ORACLE:LATE_PUBLISH:stage=forced decided=published_after_deadline anchor=2721 entry=2721 deadline=2871 returned=2872 write_ms=3221 late_by_ms=350 delay_ms=500 timeout=150]
+[POLL_TCP_ORACLE:PASS:stages=4:idle_ms=121:late_ms=83:park_ms=80:forced_ms=151:forced_late_by_ms=350]
+[POLL_TCP_ORACLE:PASS:stages=4:idle_ms=121:late_ms=83:park_ms=80:forced_ms=151:forced_late_by_ms=350]
+[syscall] exit(0) pid=7 name=poll_tcp_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=12344:kernel=13544:cleared=25708]
+[init] poll_tcp_oracle exited pid=7 code=0
+[spawn] path='/bin/tty_oracle'
+[heartbeat] tid=12 uptime_ms=3293 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='tty_oracle', elf_size=337168, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 10
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40012c44
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 10
+[spawn] Created child PID 10 for parent PID 1
+[spawn] Success: child PID 10 scheduled
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=3 (pty 0)
+[pty] Unlocked PTY 0 (fd 3)
+[TTY_ORACLE:openpt:verdict=PASS:slave=/dev/pts/0:locked_open_refused=1]
+[TTY_ORACLE:openpt:verdict=PASS:slave=/dev/pts/0:locked_open_refused=1]
+[TTY_ORACLE:nonblock_open:verdict=PASS:master_fl=0x800:slave_fl=0x800:both_eagain=1]
+[TTY_ORACLE:nonblock_open:verdict=PASS:master_fl=0x800:slave_fl=0x800:both_eagain=1]
+[TTY_ORACLE:isatty:verdict=PASS:master=1:slave=1:regular_file=0]
+[TTY_ORACLE:isatty:verdict=PASS:master=1:slave=1:regular_file=0]
+[TTY_ORACLE:termios_roundtrip:verdict=PASS:default_lflag=0x803b:modified_lflag=0x8023:restored=1]
+[TTY_ORACLE:termios_roundtrip:verdict=PASS:default_lflag=0x803b:modified_lflag=0x8023:restored=1]
+[TTY_ORACLE:canonical_line:verdict=PASS:withheld_unterminated=1:delivered_on_newline=6]
+[TTY_ORACLE:canonical_line:verdict=PASS:withheld_unterminated=1:delivered_on_newline=6]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:icrnl:verdict=PASS:cr_to_nl=1:cleared_icrnl_holds=1]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+[TTY_ORACLE:raw_passthrough:verdict=PASS:unterminated_delivered=2]
+[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:echo:verdict=PASS:echo_on_bytes=3:echo_off_bytes=0]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:onlcr:verdict=PASS:onlcr_expanded=3:opost_off_passthrough=2]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:winsize:verdict=PASS:default=24x80:set=41x133:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=10:crossed_ends=1]
+[TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=10:crossed_ends=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[TTY_ORACLE:ctty:verdict=PASS:dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1]
+[pty] sys_posix_openpt(flags=0x902)
+[pty] Created master fd=4 (pty 1)
+[pty] Unlocked PTY 1 (fd 4)
+F123456789SC[EXEC_LOCK_ORDER:FIRST_COMMIT]
+[syscall] exit(0) pid=11 name=/bin/tty_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=14776:kernel=16194:cleared=30740]
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:cloexec_exec:verdict=PASS:cloexec_survived_fork=1:eof_after_parent_close=1]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[TTY_ORACLE:COMPLETE:pass=14:fail=0]
+[syscall] exit(0) pid=10 name=tty_oracle
+[TTBR0_ASID_CENSUS:untagged=0:tagged=14791:kernel=16202:cleared=30759]
+[init] tty_oracle exited pid=10 code=0
+[spawn] path='/bin/exec_smoke'
+manager.create_process_with_argv [ARM64]: ENTRY - name='exec_smoke', elf_size=290896, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 12
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000eb40
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 12
+[spawn] Created child PID 12 for parent PID 1
+[spawn] Success: child PID 12 scheduled
+[EXEC_SMOKE:LAUNCH]
+[EXEC_SMOKE:TARGET_ENTER argc=2]
+[EXEC_SMOKE:TARGET_OK]
+[syscall] exit(0) pid=12 name=/bin/exec_smoke_target
+[TTBR0_ASID_CENSUS:untagged=0:tagged=16406:kernel=17990:cleared=34138]
+[EXEC_SMOKE:LAUNCHER_EXIT code=0]
+[spawn] path='/usr/local/test/bin/clonevm_exec_test'
+[heartbeat] tid=12 uptime_ms=4295 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='clonevm_exec_test', elf_size=289648, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 13
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f63c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffec0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 13
+[spawn] Created child PID 13 for parent PID 1
+[spawn] Success: child PID 13 scheduled
+CLONEVM_EXEC_TEST: start
+CLONEVM_EXEC_TEST: child live
+CLONEVM_EXEC_TEST: live sibling refused exec
+[syscall] exit(0) pid=14 name=thread-14
+CLONEVM_EXEC_TEST: child exited
+[TTBR0_ASID_CENSUS:untagged=0:tagged=18988:kernel=20256:cleared=38630]
+CLONEVM_EXEC_TEST: second stage
+[syscall] exit(0) pid=15 name=thread-15
+[TTBR0_ASID_CENSUS:untagged=0:tagged=19909:kernel=21215:cleared=40460]
+CLONEVM_EXEC_TEST: post-exec rendezvous complete
+CLONEVM_EXEC_TEST: post-exec futex keys derived
+CLONEVM_EXEC_TEST: PASS
+[syscall] exit(0) pid=13 name=/usr/local/test/bin/clonevm_exec_test
+[TTBR0_ASID_CENSUS:untagged=0:tagged=19911:kernel=21218:cleared=40467]
+[init] clonevm_exec_test exited pid=13 code=0
+[spawn] path='/bin/bsshd'
+manager.create_process_with_argv [ARM64]: ENTRY - name='bsshd', elf_size=458128, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 16
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001e0b4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 16
+[spawn] Created child PID 16 for parent PID 1
+[spawn] Success: child PID 16 scheduled
+[init] bsshd started (PID 16)
+bsshd: starting on port 2222
+[spawn] path='/bin/bssh'
+bsshd: listening on 0.0.0.0:2222
+[heartbeat] tid=12 uptime_ms=5296 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='bssh', elf_size=469408, argc=6
+manager.create_process_with_argv [ARM64]: Generated PID 17
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001e6d8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffe90
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 17
+[spawn] Created child PID 17 for parent PID 1
+[spawn] Success: child PID 17 scheduled
+bssh: connecting to 127.0.0.1:2222
+bsshd: connection from 10.0.2.15:49153
+F123456789SCbsshd: client version: 'SSH-2.0-bssh_1.0'
+bsshd: server version sent
+bsshd: KEX curve25519-sha256
+[heartbeat] tid=12 uptime_ms=6301 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=7302 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=8304 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=9308 kbd_nonzero=0
+bssh: pinned host key [127.0.0.1]:2222 algorithm=rsa-sha2-256 fingerprint=SHA256:87d2e842d6e8ca62a4f93d8ec5f3e6341a7493396a649de7cee70c7b689b84c0
+bssh: userauth request method=publickey user='root' algo=rsa-sha2-256 has_signature=false key_blob_len=279
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=false
+bsshd: key MATCHES authorized_keys!
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=4357:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=1731:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=2:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=14847:kstack=0:uva=1658:smallint=88:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=14862:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=4444:kstack=0:uva=15:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=4342:kstack=0:uva=15:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=1663:smallint=82:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=1644:smallint=88:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=2424:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=1558:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=4183:kstack=0:uva=1408:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=4198:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=2324:kstack=0:uva=19:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=2409:kstack=0:uva=15:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=1362:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=1393:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=2584:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=1522:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=4634:kstack=0:uva=1371:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=4650:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=2535:kstack=0:uva=15:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=2568:kstack=0:uva=16:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=1346:smallint=164:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=1355:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=2796:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=1298:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=5082:kstack=0:uva=1173:smallint=143:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=5100:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=2797:kstack=0:uva=15:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=2778:kstack=0:uva=18:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=1154:smallint=143:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=1155:smallint=143:other=0]
+[heartbeat] tid=12 uptime_ms=10311 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=11313 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=12315 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=13316 kbd_nonzero=0
+bssh: userauth request method=publickey user='root' algo=rsa-sha2-256 has_signature=true signature_len=276
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=true
+bsshd: key MATCHES authorized_keys!
+bssh: authenticated as 'root'
+bssh: smoke success
+bsshd: authenticated user 'root'
+[syscall] exit(0) pid=17 name=bssh
+[TTBR0_ASID_CENSUS:untagged=0:tagged=41565:kernel=38932:cleared=71808]
+[spawn] path='/bin/bssh'
+bsshd: channel setup failed: Io
+[syscall] exit(0) pid=18 name=bsshd_child_18
+[TTBR0_ASID_CENSUS:untagged=0:tagged=41575:kernel=38944:cleared=71830]
+manager.create_process_with_argv [ARM64]: ENTRY - name='bssh', elf_size=469408, argc=6
+manager.create_process_with_argv [ARM64]: Generated PID 19
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001e6d8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffe80
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 19
+[spawn] Created child PID 19 for parent PID 1
+[spawn] Success: child PID 19 scheduled
+bssh: connecting to 127.0.0.1:2222
+bsshd: connection from 10.0.2.15:49154
+F123456789SCbsshd: client version: 'SSH-2.0-bssh_1.0'
+bsshd: server version sent
+bsshd: KEX curve25519-sha256
+[heartbeat] tid=12 uptime_ms=14320 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=15322 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=16323 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=17325 kbd_nonzero=0
+bssh: userauth request method=publickey user='root' algo=rsa-sha2-256 has_signature=false key_blob_len=279
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=false
+bsshd: key MATCHES authorized_keys!
+[heartbeat] tid=12 uptime_ms=18326 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=19331 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=5794:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=5619:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=17270:kstack=0:uva=5575:smallint=88:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=17314:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=5851:kstack=0:uva=41:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=5750:kstack=0:uva=44:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=5555:smallint=83:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=5531:smallint=88:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=3721:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=4247:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=5671:kstack=0:uva=4120:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=5709:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=3601:kstack=0:uva=47:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=3683:kstack=0:uva=38:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=4045:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=4084:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=4149:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=3893:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=6364:kstack=0:uva=3773:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=6411:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=4066:kstack=0:uva=49:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=4102:kstack=0:uva=47:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=3709:smallint=164:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=3726:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=4335:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=3672:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=1:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=6772:kstack=0:uva=3592:smallint=144:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=6836:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=4291:kstack=0:uva=56:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=4271:kstack=0:uva=64:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=3529:smallint=143:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=3528:smallint=144:other=0]
+[heartbeat] tid=12 uptime_ms=20332 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=13:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
+[TOMBSTONE_CENSUS:resident=0:removed=11:reap_second=11:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=58059:kernel=51889:cleared=94611]
+[net-rx-counters] sample=1 begin
+[net-rx-counters] sample=1 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_FRAME_TOTAL: 3 (cpu0=3)
+[net-rx-counters] sample=1 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=1 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_SOFTIRQ_ENTRY_TOTAL: 56 (cpu0=17, cpu1=17, cpu2=8, cpu3=14)
+[net-rx-counters] sample=1 NET_RX_SOFTIRQ_EXIT_TOTAL: 56 (cpu0=17, cpu1=17, cpu2=8, cpu3=14)
+[net-rx-counters] sample=1 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_GUARD_RELEASE_TOTAL: 56 (cpu0=17, cpu1=17, cpu2=8, cpu3=14)
+[net-rx-counters] sample=1 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=1 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=1 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=1 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=1 end
+bssh: userauth request method=publickey user='root' algo=rsa-sha2-256 has_signature=true signature_len=276
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=true
+bsshd: key MATCHES authorized_keys!
+bssh: userauth failure methods='publickey,password' partial=false
+bssh: authentication failed
+[syscall] exit(77) pid=19 name=bssh
+[TTBR0_ASID_CENSUS:untagged=0:tagged=59922:kernel=53248:cleared=96977]
+[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]
+[spawn] path='/bin/xhci_counters'
+bsshd: handshake failed: Io
+[syscall] exit(0) pid=20 name=bsshd_child_20
+[TTBR0_ASID_CENSUS:untagged=0:tagged=59939:kernel=53264:cleared=97006]
+manager.create_process_with_argv [ARM64]: ENTRY - name='xhci_counters', elf_size=292232, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 21
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f140
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 21
+[spawn] Created child PID 21 for parent PID 1
+[spawn] Success: child PID 21 scheduled
+[spawn] path='/bin/bwm'
+[xhci-counters] XHCI_MSI_EVENT_TOTAL=0
+[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=0
+[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=0
+[xhci-counters] KBD_NONZERO_TOTAL=0
+[syscall] exit(0) pid=21 name=xhci_counters
+[TTBR0_ASID_CENSUS:untagged=0:tagged=60800:kernel=54211:cleared=98804]
+[heartbeat] tid=12 uptime_ms=21347 kbd_nonzero=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='bwm', elf_size=431472, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 22
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x40018bc8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 22
+[spawn] Created child PID 22 for parent PID 1
+[spawn] Success: child PID 22 scheduled
+[spawn] path='/sbin/telnetd'
+[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+
+[CTX596_ELR_DIVERGENCE] tid=10 cpu=1 prev_elr=0xffff000040536818 x30=0xffff000040525ac8 ctx_elr=0xffff000040525ac8
+manager.create_process_with_argv [ARM64]: ENTRY - name='telnetd', elf_size=298072, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 23
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000fb28
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 23
+[spawn] Created child PID 23 for parent PID 1
+[spawn] Success: child PID 23 scheduled
+TELNETD_STARTING
+TELNETD_LISTENING
+[init] Boot script completed
+[spawn] path='/bin/bounce'
+manager.create_process_with_argv [ARM64]: ENTRY - name='bounce', elf_size=387984, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 24
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x400188e0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 24
+[spawn] Created child PID 24 for parent PID 1
+[spawn] Success: child PID 24 scheduled
+[init] bounce started (PID 24)
+[INIT_GROUP_REFUSAL:aarch64:phase=quiesce:probe1=-22:probe2=-22:expected=-22]
+[init] Process 4 exited (code 0)
+[init] Process 5 exited (code 0)
+[init] Process 14 exited (code 0)
+[init] Process 15 exited (code 0)
+[init] Process 21 exited (code 0)
+Bounce spheres demo starting (for Gus!) [boot_id=000000051c298e90]
+[window] create_window_buffer: 400x300 (480000 bytes, 118 pages)
+[window] Created buffer id=1 for pid=24: 400x300 at virt=0x7ffffdf86000 phys=0x44337000
+[bounce] Window mode: id=1 400x300 [boot_id=000000051c298e90]
+[heartbeat] tid=12 uptime_ms=22350 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=23354 kbd_nonzero=0
+[bwm] ERROR: GPU compositing required
+[syscall] exit(1) pid=22 name=bwm
+[TTBR0_ASID_CENSUS:untagged=0:tagged=64769:kernel=58743:cleared=107258]
+[init] Process 22 exited (code 1)
+[heartbeat] tid=12 uptime_ms=24356 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=25358 kbd_nonzero=0
+bsshd: connection from 10.0.2.2:52228
+F123456789SCbsshd: client version: 'SSH-2.0-OpenSSH_10.3'
+bsshd: server version sent
+bsshd: KEX mlkem768x25519-sha256 (post-quantum)
+bsshd: [hybrid-hash] V_C=20 V_S=16 I_C=1656 I_S=186 K_S=279 C_INIT=1216 S_REPLY=1120 K=32
+bsshd: [hybrid-hash] K=6bc9a0ec...71483126
+bsshd: [H] total=4557 V_C@0=20 V_S@24=16 I_C@44=1656 I_S@1704=186
+bsshd: [H] K@4521: 00000020 6bc9a0ec...
+[heartbeat] tid=12 uptime_ms=26359 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=27361 kbd_nonzero=0
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=true
+bsshd: key MATCHES authorized_keys!
+bsshd: authenticated user 'root'
+bsshd: exec request 'true'
+F123456789SC[syscall] exit(0) pid=26 name=/sbin/true
+[TTBR0_ASID_CENSUS:untagged=0:tagged=66341:kernel=61046:cleared=111013]
+[syscall] exit(0) pid=25 name=bsshd_child_25
+[TTBR0_ASID_CENSUS:untagged=0:tagged=66345:kernel=61047:cleared=111019]
+bsshd: connection from 10.0.2.2:52238
+F123456789SCbsshd: client version: 'SSH-2.0-OpenSSH_10.3'
+bsshd: server version sent
+bsshd: KEX mlkem768x25519-sha256 (post-quantum)
+bsshd: [hybrid-hash] V_C=20 V_S=16 I_C=1656 I_S=186 K_S=279 C_INIT=1216 S_REPLY=1120 K=32
+bsshd: [hybrid-hash] K=b79ebafb...07cdad3a
+bsshd: [H] total=4557 V_C@0=20 V_S@24=16 I_C@44=1656 I_S@1704=186
+bsshd: [H] K@4521: 00000020 b79ebafb...
+[heartbeat] tid=12 uptime_ms=28363 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=29365 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=7041:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=6230:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=22084:kstack=0:uva=6207:smallint=88:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=22149:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=7088:kstack=0:uva=58:smallint=0:other=0]
+[heartbeat] tid=12 uptime_ms=30367 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=19:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=4]
+[TOMBSTONE_CENSUS:resident=0:removed=21:reap_second=21:retire_second=0:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=66818:kernel=61746:cleared=112104]
+[net-rx-counters] sample=2 begin
+[net-rx-counters] sample=2 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_FRAME_TOTAL: 46 (cpu0=46)
+[net-rx-counters] sample=2 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=2 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_SOFTIRQ_ENTRY_TOTAL: 102 (cpu0=57, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=2 NET_RX_SOFTIRQ_EXIT_TOTAL: 102 (cpu0=57, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=2 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_GUARD_RELEASE_TOTAL: 102 (cpu0=57, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=2 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=2 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=2 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=2 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=2 end
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=true
+bsshd: key MATCHES authorized_keys!
+bsshd: authenticated user 'root'
+bsshd: exec request 'true'
+F123456789SC[syscall] exit(0) pid=28 name=/sbin/true
+[TTBR0_ASID_CENSUS:untagged=0:tagged=67818:kernel=62809:cleared=114152]
+[syscall] exit(0) pid=27 name=bsshd_child_27
+[TTBR0_ASID_CENSUS:untagged=0:tagged=67825:kernel=62813:cleared=114163]
+bsshd: connection from 10.0.2.2:52247
+F123456789SCbsshd: client version: 'SSH-2.0-OpenSSH_10.3'
+bsshd: server version sent
+bsshd: KEX mlkem768x25519-sha256 (post-quantum)
+bsshd: [hybrid-hash] V_C=20 V_S=16 I_C=1656 I_S=186 K_S=279 C_INIT=1216 S_REPLY=1120 K=32
+bsshd: [hybrid-hash] K=71edd277...b941024e
+bsshd: [H] total=4557 V_C@0=20 V_S@24=16 I_C@44=1656 I_S@1704=186
+bsshd: [H] K@4521: 00000020 71edd277...
+[heartbeat] tid=12 uptime_ms=31377 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=32378 kbd_nonzero=0
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=true
+bsshd: key MATCHES authorized_keys!
+bsshd: authenticated user 'root'
+bsshd: exec request 'echo hi'
+F123456789SC[heartbeat] tid=12 uptime_ms=33380 kbd_nonzero=0
+[syscall] exit(0) pid=30 name=/bin/echo
+[TTBR0_ASID_CENSUS:untagged=0:tagged=69463:kernel=64780:cleared=117640]
+[syscall] exit(0) pid=29 name=bsshd_child_29
+[TTBR0_ASID_CENSUS:untagged=0:tagged=69473:kernel=64790:cleared=117659]
+bsshd: connection from 10.0.2.2:52250
+F123456789SCbsshd: client version: 'SSH-2.0-OpenSSH_10.3'
+bsshd: server version sent
+bsshd: KEX mlkem768x25519-sha256 (post-quantum)
+bsshd: [hybrid-hash] V_C=20 V_S=16 I_C=1656 I_S=186 K_S=279 C_INIT=1216 S_REPLY=1120 K=32
+bsshd: [hybrid-hash] K=ae3bf366...b87b7bdb
+bsshd: [H] total=4557 V_C@0=20 V_S@24=16 I_C@44=1656 I_S@1704=186
+bsshd: [H] K@4521: 00000020 ae3bf366...
+[heartbeat] tid=12 uptime_ms=34382 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=35387 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=36388 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=37401 kbd_nonzero=0
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=true
+bsshd: key MATCHES authorized_keys!
+bsshd: authenticated user 'root'
+bsshd: exec request 'false'
+F123456789SC[syscall] exit(1) pid=32 name=/sbin/false
+[TTBR0_ASID_CENSUS:untagged=0:tagged=71351:kernel=67025:cleared=121571]
+[syscall] exit(0) pid=31 name=bsshd_child_31
+[TTBR0_ASID_CENSUS:untagged=0:tagged=71356:kernel=67028:cleared=121580]
+bsshd: connection from 10.0.2.2:52261
+F123456789SCbsshd: client version: 'SSH-2.0-OpenSSH_10.3'
+bsshd: server version sent
+bsshd: KEX mlkem768x25519-sha256 (post-quantum)
+bsshd: [hybrid-hash] V_C=20 V_S=16 I_C=1656 I_S=186 K_S=279 C_INIT=1216 S_REPLY=1120 K=32
+bsshd: [hybrid-hash] K=b539fb6e...2d702563
+bsshd: [H] total=4557 V_C@0=20 V_S@24=16 I_C@44=1656 I_S@1704=186
+bsshd: [H] K@4521: 00000020 b539fb6e...
+[heartbeat] tid=12 uptime_ms=38406 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=39413 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=7793:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=6542:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=24842:kstack=0:uva=6540:smallint=93:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=24933:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=7825:kstack=0:uva=85:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=7702:kstack=0:uva=91:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=6483:smallint=88:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=6449:smallint=93:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=5040:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=5115:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=7438:kstack=0:uva=5036:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=7524:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=4854:kstack=0:uva=94:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=4954:kstack=0:uva=86:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=4900:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=4950:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=5495:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=4786:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=8108:kstack=0:uva=4720:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=8209:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=5345:kstack=0:uva=106:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=5394:kstack=0:uva=101:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=4596:smallint=164:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=4620:smallint=167:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=5756:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=4429:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=8861:kstack=0:uva=4382:smallint=145:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=8959:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=5685:kstack=0:uva=91:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=5658:kstack=0:uva=98:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=4281:smallint=144:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=4284:smallint=145:other=0]
+[heartbeat] tid=12 uptime_ms=40416 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=24:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=8]
+[TOMBSTONE_CENSUS:resident=0:removed=27:reap_second=26:retire_second=1:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=71881:kernel=67667:cleared=122598]
+[net-rx-counters] sample=3 begin
+[net-rx-counters] sample=3 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_FRAME_TOTAL: 160 (cpu0=160)
+[net-rx-counters] sample=3 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=3 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_SOFTIRQ_ENTRY_TOTAL: 202 (cpu0=157, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=3 NET_RX_SOFTIRQ_EXIT_TOTAL: 202 (cpu0=157, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=3 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_GUARD_RELEASE_TOTAL: 202 (cpu0=157, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=3 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=3 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=3 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=3 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=3 end
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=true
+bsshd: key MATCHES authorized_keys!
+bsshd: authenticated user 'root'
+[pty] sys_posix_openpt(flags=0x102)
+[pty] Created master fd=3 (pty 0)
+[pty] Unlocked PTY 0 (fd 3)
+F123456789SCbsshd: shell started (pid 34) for user 'root'
+[heartbeat] tid=12 uptime_ms=41428 kbd_nonzero=0
+F123456789SC
+[CTX596_ELR_DIVERGENCE] tid=62 cpu=1 prev_elr=0x40015efc x30=0xffff000040525ac8 ctx_elr=0xffff000040525ac8
+
+[INLINE_SAVE_OVERWRITE] tid=62 sp=0xffff0000542fd290 old_sp=0xffff0000542fd290 saved_sp=0xffff0000542fd290 delta=0x0 saved_lr=0xffff000040536b38 saved_slot20=0xffff000040536b38 slot20=0xffff000040536b38 elr=0xffff000040525ac8 x30=0xffff000040525ac8
+[syscall] exit(0) pid=35 name=/bin/echo
+[TTBR0_ASID_CENSUS:untagged=0:tagged=79408:kernel=73981:cleared=135555]
+[syscall] exit(7) pid=34 name=/bin/bsh
+[TTBR0_ASID_CENSUS:untagged=0:tagged=79447:kernel=73998:cleared=135601]
+bsshd: session ended for user 'root'
+[syscall] exit(0) pid=33 name=bsshd_child_33
+[TTBR0_ASID_CENSUS:untagged=0:tagged=79455:kernel=74003:cleared=135614]
+bsshd: connection from 10.0.2.2:52274
+F123456789SCbsshd: client version: 'SSH-2.0-OpenSSH_10.3'
+bsshd: server version sent
+bsshd: KEX mlkem768x25519-sha256 (post-quantum)
+bsshd: [hybrid-hash] V_C=20 V_S=16 I_C=1656 I_S=186 K_S=279 C_INIT=1216 S_REPLY=1120 K=32
+bsshd: [hybrid-hash] K=f915e22c...4efd7367
+bsshd: [H] total=4557 V_C@0=20 V_S@24=16 I_C@44=1656 I_S@1704=186
+bsshd: [H] K@4521: 00000020 f915e22c...
+[heartbeat] tid=12 uptime_ms=42430 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=43431 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=44433 kbd_nonzero=0
+bsshd: pubkey auth: algo=rsa-sha2-256 blob_len=279 has_sig=true
+bsshd: key MATCHES authorized_keys!
+bsshd: authenticated user 'root'
+F123456789SCbsshd: shell started (pid 37) for user 'root'
+[heartbeat] tid=12 uptime_ms=45434 kbd_nonzero=0
+F123456789SC[heartbeat] tid=12 uptime_ms=46435 kbd_nonzero=0
+[syscall] exit(0) pid=38 name=/bin/echo
+[TTBR0_ASID_CENSUS:untagged=0:tagged=88248:kernel=81320:cleared=150437]
+[syscall] exit(3) pid=37 name=/bin/bsh
+[TTBR0_ASID_CENSUS:untagged=0:tagged=88286:kernel=81342:cleared=150489]
+bsshd: session ended for user 'root'
+[syscall] exit(0) pid=36 name=bsshd_child_36
+[TTBR0_ASID_CENSUS:untagged=0:tagged=88293:kernel=81354:cleared=150510]
+[heartbeat] tid=12 uptime_ms=47442 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=48443 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=49444 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=10267:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=6717:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=33767:kstack=0:uva=6725:smallint=96:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=33871:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=10337:kstack=0:uva=96:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=10163:kstack=0:uva=104:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=6661:smallint=93:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=6621:smallint=96:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=6388:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=5368:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=9334:kstack=0:uva=5299:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=9430:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=6194:kstack=0:uva=104:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=6292:kstack=0:uva=96:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=5150:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=5203:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=6968:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=5029:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=10036:kstack=0:uva=4981:smallint=168:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=10156:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=6769:kstack=0:uva=125:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=6848:kstack=0:uva=120:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=4835:smallint=164:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=4861:smallint=168:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=7125:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=4650:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=10746:kstack=0:uva=4611:smallint=146:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=10853:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=7021:kstack=0:uva=102:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=7018:kstack=0:uva=107:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=4493:smallint=144:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=4504:smallint=146:other=0]
+[heartbeat] tid=12 uptime_ms=50446 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=30:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=12]
+[TOMBSTONE_CENSUS:resident=0:removed=32:reap_second=31:retire_second=1:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=88306:kernel=82047:cleared=151212]
+[net-rx-counters] sample=4 begin
+[net-rx-counters] sample=4 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_FRAME_TOTAL: 255 (cpu0=255)
+[net-rx-counters] sample=4 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=4 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_SOFTIRQ_ENTRY_TOTAL: 282 (cpu0=237, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=4 NET_RX_SOFTIRQ_EXIT_TOTAL: 282 (cpu0=237, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=4 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_GUARD_RELEASE_TOTAL: 282 (cpu0=237, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=4 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=4 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=4 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=4 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=4 end
+[heartbeat] tid=12 uptime_ms=51452 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=52453 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=53454 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=54455 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=55457 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=56458 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=57459 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=58461 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=59463 kbd_nonzero=0
+[RESUME_PC_CENSUS:cpu=0:source=el1-restore-frame-elr:text=10755:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-restore-frame-elr:text=0:kstack=0:uva=6717:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-x30:text=34255:kstack=0:uva=6725:smallint=96:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=ctx-elr-el1:text=34359:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el1:text=10825:kstack=0:uva=96:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el1:text=10651:kstack=0:uva=104:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-save-el0:text=0:kstack=0:uva=6661:smallint=93:other=0]
+[RESUME_PC_CENSUS:cpu=0:source=lr-restore-el0:text=0:kstack=0:uva=6621:smallint=96:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el1-restore-frame-elr:text=6803:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-restore-frame-elr:text=0:kstack=0:uva=5368:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-x30:text=9749:kstack=0:uva=5299:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=ctx-elr-el1:text=9845:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el1:text=6610:kstack=0:uva=104:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el1:text=6707:kstack=0:uva=96:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-save-el0:text=0:kstack=0:uva=5150:smallint=166:other=0]
+[RESUME_PC_CENSUS:cpu=1:source=lr-restore-el0:text=0:kstack=0:uva=5203:smallint=165:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el1-restore-frame-elr:text=7406:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-restore-frame-elr:text=0:kstack=0:uva=5029:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=4:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-x30:text=10474:kstack=0:uva=4981:smallint=168:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=ctx-elr-el1:text=10594:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el1:text=7206:kstack=0:uva=125:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el1:text=7286:kstack=0:uva=120:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-save-el0:text=0:kstack=0:uva=4835:smallint=164:other=0]
+[RESUME_PC_CENSUS:cpu=2:source=lr-restore-el0:text=0:kstack=0:uva=4861:smallint=168:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el1-restore-frame-elr:text=7583:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-restore-frame-elr:text=0:kstack=0:uva=4650:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=el0-first-entry-frame-elr:text=0:kstack=0:uva=3:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-x30:text=11204:kstack=0:uva=4611:smallint=146:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=ctx-elr-el1:text=11311:kstack=0:uva=0:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el1:text=7479:kstack=0:uva=102:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el1:text=7476:kstack=0:uva=107:smallint=0:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-save-el0:text=0:kstack=0:uva=4493:smallint=144:other=0]
+[RESUME_PC_CENSUS:cpu=3:source=lr-restore-el0:text=0:kstack=0:uva=4504:smallint=146:other=0]
+[heartbeat] tid=12 uptime_ms=60464 kbd_nonzero=0
+[PT_ROOT_CUSTODY:no_proof=30:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=12]
+[TOMBSTONE_CENSUS:resident=0:removed=32:reap_second=31:retire_second=1:abandoned_unqueued=0]
+[TTBR0_ASID_CENSUS:untagged=0:tagged=88326:kernel=83836:cleared=153021]
+[net-rx-counters] sample=5 begin
+[net-rx-counters] sample=5 NET_RX_MSI_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_RING_DRAIN_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_FRAME_TOTAL: 255 (cpu0=255)
+[net-rx-counters] sample=5 NET_RX_ARP_TOTAL: 2 (cpu0=2)
+[net-rx-counters] sample=5 NET_RX_ETHERTYPE_OTHER_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_SOFTIRQ_ENTRY_TOTAL: 282 (cpu0=237, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=5 NET_RX_SOFTIRQ_EXIT_TOTAL: 282 (cpu0=237, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=5 NET_RX_REENTRANT_SKIP_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_GUARD_RELEASE_TOTAL: 282 (cpu0=237, cpu1=19, cpu2=8, cpu3=18)
+[net-rx-counters] sample=5 NET_RX_REARM_CHECK_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_REARM_RACE_TOTAL: 0
+[net-rx-counters] sample=5 NET_RX_REARM_ARMED_TOTAL: 0
+[net-rx-counters] sample=5 NET_PCI_IRQ_RAISED_NETRX: 0
+[net-rx-counters] sample=5 GIC_SPI55_ACK_TOTAL: 0
+[net-rx-counters] sample=5 end
+[heartbeat] tid=12 uptime_ms=61470 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=62471 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=63472 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=64474 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=65476 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=66476 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=67478 kbd_nonzero=0
+[heartbeat] tid=12 uptime_ms=68479 kbd_nonzero=0

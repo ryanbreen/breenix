@@ -1,7 +1,7 @@
 REVISION=800b2ba159beb211655324b709c239c2dbbf7615
 COMMAND=bash docker/qemu/run-x86-boot-tests-only.sh
 REVISION=800b2ba159beb211655324b709c239c2dbbf7615
-Artifacts: /root/breenix-x927b-tmp/breenix_x86_boot_tests_only.LMopbd
+Artifacts: <isolated-checkout-170>/breenix_x86_boot_tests_only.LMopbd
 [GATE_PREFLIGHT:structure_suites=65/65:critical_path_lines=260:pinned=120]
     Updating git repository `https://github.com/rust-osdev/bootloader.git`
     Updating crates.io index
@@ -71,7 +71,7 @@ Artifacts: /root/breenix-x927b-tmp/breenix_x86_boot_tests_only.LMopbd
    Compiling crc-catalog v2.5.0
    Compiling serde_json v1.0.151
    Compiling micromath v2.1.0
-   Compiling kernel v0.1.0 (/root/breenix-x927b/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-169>/kernel)
    Compiling llvm-tools v0.1.1
    Compiling pin-project-lite v0.2.17
    Compiling usize_conversions v0.2.0
@@ -119,7 +119,7 @@ Artifacts: /root/breenix-x927b-tmp/breenix_x86_boot_tests_only.LMopbd
    Compiling percent-encoding v2.3.2
    Compiling lzma-rs v0.3.0
    Compiling sha2 v0.11.0
-   Compiling breenix v0.1.0 (/root/breenix-x927b)
+   Compiling breenix v0.1.0 (<isolated-checkout-174>)
    Compiling tar v0.4.46
    Compiling base16ct v1.0.0
    Compiling rustls-webpki v0.103.15

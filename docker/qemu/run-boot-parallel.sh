@@ -31,7 +31,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # still reaches each runner instead of orphaning them with the lock held.
 # shellcheck source=lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
-# #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
+# #797: concurrent lanes sharing one host (e.g. the beast build environment) each
 # invoking this script hardcode the identical /tmp/breenix_boot_$i path, so one
 # lane's rm -rf/mkdir can clobber another lane's in-flight run. Defaulting to
 # /tmp keeps every existing caller byte-identical; a concurrent-lane launcher

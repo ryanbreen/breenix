@@ -1,0 +1,1 @@
+{"mergeCommit":{"oid":"58af1a7fb63e144586b6eef06e47be178eb175d5"},"mergedAt":"2026-09-08T02:07:23Z","title":"testfw(957): the capture-drain race test no longer depends on a 150 ms wall-clock window; every gate preflight survives host load; PIL-dependent structure tests resolve their interpreter"}

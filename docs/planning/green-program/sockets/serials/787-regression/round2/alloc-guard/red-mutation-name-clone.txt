@@ -1,5 +1,5 @@
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-787mut/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
+  ELF:      <isolated-checkout-204>/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
   sha256:   a49297561ec8840f5c93019bef87026ae1941615bcbbaa94fe5295814bcb14eb
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf

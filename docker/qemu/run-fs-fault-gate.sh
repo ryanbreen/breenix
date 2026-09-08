@@ -64,7 +64,7 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
-# #797: concurrent lanes sharing one host (e.g. the beast Incus container,
+# #797: concurrent lanes sharing one host (e.g. the beast build environment,
 # reached here via --x86) each invoking this script hardcode the identical
 # /tmp/breenix_fs_fault_gate* path, so one lane's rm -rf/mkdir can clobber
 # another lane's in-flight run. Defaulting to /tmp keeps every existing

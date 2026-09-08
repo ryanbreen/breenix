@@ -1,6 +1,6 @@
 #739/#737 review finding M2: binary-identity re-verification (sweep-3 fix round)
 
-Setup on beast (breenix-x86 Incus VM):
+Setup on beast (the x86 build environment):
 
 $ rm -rf /root/m2-scratch
 $ git clone --no-checkout https://github.com/ryanbreen/breenix.git /root/m2-scratch
@@ -8,7 +8,7 @@ $ cd /root/m2-scratch && git checkout 8b02ea2905020d5af19d0b5794afe082143d3254
 HEAD is now at 8b02ea29 Merge pull request #733 from ryanbreen/docs/tty-blended-amendment
 $ git status --short
 (clean -- no output)
-$ ln -sfn /root/breenix/rust-fork-real /root/m2-scratch/rust-fork
+$ ln -sfn <rust-fork-checkout> <host-artifact-dir-163>/rust-fork
 
 Build (identical command used for the original 150-boot run per
 docs/planning/green-program/nic-bus/serials/702-rca/RCA-2026-08-31.md:35):

@@ -4,13 +4,13 @@ Branch `fix/728-ext2-lock-discipline`, evidence gathered against
 `1744d98e` (code bytes identical to `85d08733`; `1744d98e` only adds the
 prior round's docs). This round's premise, from the dispatching task:
 the beast host had been crippled for days by an orphaned `ugrep` pinning
-~10 cores; the coordinator killed it before this round started, and the
+~host concurrency; the coordinator killed it before this round started, and the
 task was to re-run the x86 capture on the now-quieter host.
 
 ## 1 of 1 host-quiet confirmation performed, with an honest caveat
 
 `uptime` sampled repeatedly across the ~30-minute capture window on the
-physical beast host (40 cores):
+physical beast host :
 
 | time (UTC) | load avg (1m, 5m, 15m) |
 |---|---|
@@ -36,13 +36,7 @@ is bursty on shared infrastructure; this round's host was quiet on
 average and did not have the crippling week-long process, but it was
 not silent the entire window.
 
-The `breenix-x86` Incus VM's own internal load stayed at or near zero
-throughout (0.15–0.28); the previous round's own committed evidence
-reports the same shape for the guest
-(`docs/planning/green-program/nic-bus/serials/728-prove-round2/README.md:69,72`:
-"physical host load average 16-25 throughout both attempts ... [a]
-single non-breenix tenant process ... ~870-960% CPU") — the contention
-when present is at the physical host, not the guest.
+The recorded observations suggested host contention outside the test guest. Deployment-specific diagnostics remain private; these observations do not establish the cause of the gate delay.
 
 ## Leg A (RED) and Leg B (GREEN) — still NOT captured, and now better explained
 
@@ -109,8 +103,7 @@ host, not inferred from a single before/after delta:
 | 22:12:13 (final, at kill) | 14759 | 14749 | — | — | — |
 
 The rate is **flat at ~12–13.5s/line across the whole window**,
-including through the 22:11:00 load spike to 24.21 and the
-subsequent drop back to near-zero — the line-advance pace did not
+including through changes in host contention — the line-advance pace did not
 visibly track the host load fluctuation either direction. Total
 post-spawn advance in ~26–27 minutes of continuous observation: 89
 lines (GREEN), 75 lines (RED). This is compatible with the previous
@@ -119,7 +112,7 @@ contention) rather than materially faster — **the pace does not appear
 to be dominantly host-contention-driven**, contradicting the leading
 hypothesis carried by the last two rounds. A plausible alternative
 (not chased further — out of this round's scope): double-nested
-virtualization (physical host → Incus/QEMU VM `breenix-x86` →
+virtualization (physical host → remote-environment/QEMU VM `<x86-build-environment>` →
 this round's own TCG-emulated `-smp 1` test QEMU) may not deliver the
 guest's own timer interrupts at real-wall-clock cadence regardless of
 how busy the host is, which would make the leg's internal multi-second
@@ -143,7 +136,7 @@ in-kernel oracle harness (Legs A/B) remains the open gap.
 
 ## Leg C — historical repro config, `run-boot-parallel.sh`, `-smp 1`
 
-Dedicated clone `/root/breenix-728-prove-hist` on `breenix-x86`, clean
+Dedicated clone `<isolated-checkout-159>` on `<x86-build-environment>`, clean
 `testing,external_test_bins` profile (no `ext2_lock_race` feature — the
 same construction as the preserved `728-live-repro`), landed fix bytes
 (`85d08733`). Two batches of 5 (the same batching the last round used),
@@ -171,11 +164,11 @@ at all, within the limits of a 10-boot sample.
 
 ### Disclosed: a self-inflicted contention artifact, not a #728 defect
 
-My first Leg C attempt ran all 10 boots concurrently in one
+My first Leg C attempt ran 10 boots concurrently in one
 `run-boot-parallel.sh 10` invocation (misreading the script as
 accepting a `--no-build` second argument — it doesn't parse one, so it
 was silently ignored and harmless, but the concurrency was real). On
-the 8-vCPU `breenix-x86` guest, this produced a **false FAIL** on boot
+the x86 build environment, this produced a **false FAIL** on boot
 1: `x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot
 did not finish`. Investigated rather than discarded, per this repo's
 "any failure you find is your problem" discipline:
@@ -207,7 +200,7 @@ summary) and the boot-1 serial above.
 ## Stale state found and cleared
 
 On arrival, two QEMU processes from a **previous round** were already
-running inside `breenix-x86` (started 20:47 UTC, i.e. before this
+running inside `<x86-build-environment>` (started 20:47 UTC, i.e. before this
 round's host-quiet check; the previous round's own committed evidence
 records leaving that same attempt-2 GREEN/RED run "running in the
 background past this snapshot" — `728-prove-round2/README.md:64`).

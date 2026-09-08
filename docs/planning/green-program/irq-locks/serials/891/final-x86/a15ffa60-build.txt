@@ -1,4 +1,4 @@
-   Compiling kernel v0.1.0 (/root/breenix-s891/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-s891)
+   Compiling kernel v0.1.0 (<isolated-checkout-133>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-145>)
     Finished `release` profile [optimized] target(s) in 19.20s
 BUILD_EXIT=0

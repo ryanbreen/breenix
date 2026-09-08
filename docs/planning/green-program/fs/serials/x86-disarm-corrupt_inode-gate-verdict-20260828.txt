@@ -5,11 +5,11 @@ ext2/VFS fault-injection gate
   mode:     anti-vacuity (disarm corrupt_inode)
 =========================================
 [gate] building x86_64 kernel...
-   Compiling kernel v0.1.0 (/root/breenix/kernel)
-   Compiling breenix v0.1.0 (/root/breenix)
+   Compiling kernel v0.1.0 (<canonical-checkout>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-31>)
     Finished `release` profile [optimized] target(s) in 17.25s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-2bdd43d8d7482fad/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <canonical-checkout>/target/release/build/breenix-2bdd43d8d7482fad/out/breenix-uefi.img (7405568 bytes)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
      Running `target/debug/xtask create-test-disk`
 [gate] [FSFAULT:x86:COMPLETE:pass=6:fail=2]

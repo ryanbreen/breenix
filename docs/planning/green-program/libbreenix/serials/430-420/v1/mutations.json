@@ -1,0 +1,135 @@
+[
+  {
+    "name": "finish-api",
+    "path": "libs/libbreenix/src/ssh/transport.rs",
+    "old": "pub fn finish(&mut self, status: i32)",
+    "new": "pub fn finish_disabled(&mut self, status: i32)",
+    "exit": 101
+  },
+  {
+    "name": "close-sent",
+    "path": "libs/libbreenix/src/ssh/channel.rs",
+    "old": "if channel.close_sent {",
+    "new": "if false {",
+    "exit": 101
+  },
+  {
+    "name": "close-state",
+    "path": "libs/libbreenix/src/ssh/transport.rs",
+    "old": "ch.closed = true;",
+    "new": "ch.closed = false;",
+    "exit": 101
+  },
+  {
+    "name": "bitflip-negative",
+    "path": "libs/libbreenix/src/ssh/auth.rs",
+    "old": "wrong_identity.sign(data)",
+    "new": "{ let mut signature = wrong_identity.sign(data)?; if let Some(last) = signature.last_mut() { *last ^= 0x01; } Ok(signature) }",
+    "exit": 101
+  },
+  {
+    "name": "exec-finish",
+    "path": "userspace/programs/src/bsshd.rs",
+    "old": "session.finish(status)",
+    "new": "session.close()",
+    "exit": 101
+  },
+  {
+    "name": "shell-finish",
+    "path": "userspace/programs/src/bsshd.rs",
+    "old": "session.finish(shell_status)",
+    "new": "session.close()",
+    "exit": 101
+  },
+  {
+    "name": "wrong-signer",
+    "path": "libs/libbreenix/src/ssh/auth.rs",
+    "old": "wrong_identity.sign(data)",
+    "new": "keys::sign_with_embedded_client_key(data)",
+    "exit": 101
+  },
+  {
+    "name": "signature-verification",
+    "path": "libs/libbreenix/src/ssh/auth.rs",
+    "old": "keys::verify_rsa_signature(key_blob, signature, &signed_data)",
+    "new": "true",
+    "exit": 101
+  },
+  {
+    "name": "signature-algorithm",
+    "path": "libs/libbreenix/src/ssh/auth.rs",
+    "old": "signature_algo == Some(algo)",
+    "new": "true",
+    "exit": 101
+  },
+  {
+    "name": "refusal-exit",
+    "path": "userspace/programs/src/bssh.rs",
+    "old": "std::process::exit(77)",
+    "new": "std::process::exit(0)",
+    "exit": 101
+  },
+  {
+    "name": "oracle-status",
+    "path": "userspace/programs/src/init.rs",
+    "old": "right == 0 && wrong == 77",
+    "new": "right == 0 && wrong == 0",
+    "exit": 101
+  },
+  {
+    "name": "oracle-marker",
+    "path": "userspace/programs/src/init.rs",
+    "old": "[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]",
+    "new": "[BSSH_PUBKEY_ORACLE:disabled]",
+    "exit": 101
+  },
+  {
+    "name": "scorer-pass",
+    "path": "docker/qemu/run-aarch64-boot-test-strict.sh",
+    "old": "[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]",
+    "new": "[BSSH_PUBKEY_ORACLE:disabled]",
+    "exit": 101
+  },
+  {
+    "name": "scorer-fail",
+    "path": "docker/qemu/run-aarch64-boot-test-strict.sh",
+    "old": "[BSSH_PUBKEY_ORACLE:FAIL",
+    "new": "[BSSH_PUBKEY_ORACLE:disabled",
+    "exit": 101
+  },
+  {
+    "name": "recipient-check",
+    "path": "libs/libbreenix/src/ssh/transport.rs",
+    "old": "if recipient != ch.local_id {",
+    "new": "if recipient != ch.local_id && false {",
+    "exit": 101
+  },
+  {
+    "name": "recipient-remote",
+    "path": "libs/libbreenix/src/ssh/transport.rs",
+    "old": "if recipient != ch.local_id {",
+    "new": "if recipient != ch.remote_id {",
+    "exit": 101
+  },
+  {
+    "name": "close-length",
+    "path": "libs/libbreenix/src/ssh/transport.rs",
+    "old": "if pos != msg.len() {",
+    "new": "if pos != msg.len() && false {",
+    "exit": 101
+  },
+  {
+    "name": "truncated-default",
+    "path": "libs/libbreenix/src/ssh/transport.rs",
+    "old": ".ok_or(SshError::Protocol(\"bad channel close\"))?;",
+    "new": ".unwrap_or(0x01020304);",
+    "exit": 101
+  },
+  {
+    "name": "early-closed",
+    "path": "libs/libbreenix/src/ssh/transport.rs",
+    "old": "let mut pos = 1;\n                let recipient =",
+    "new": "self.channel.as_mut().unwrap().closed = true;\n                let mut pos = 1;\n                let recipient =",
+    "exit": 101
+  }
+]

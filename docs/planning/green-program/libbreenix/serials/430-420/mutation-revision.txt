@@ -1,0 +1,3 @@
+revision=aba3617a87f45ebda16c7ca460a9a72c1f3ca902 plus working tree SSH changes
+mutation: auth.rs verification condition changed to (true || keys::verify_rsa_signature(key_blob, signature, &signed_data))
+restored: original signature verification condition restored before structure or boot gates

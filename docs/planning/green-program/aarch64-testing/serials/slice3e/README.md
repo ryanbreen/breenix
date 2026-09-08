@@ -62,9 +62,9 @@ softirqs`), which this slice does not move and which section 3f of
 `SLICE3-PLAN-2026-09-05.md` is what removes. Reported, not scored against this
 branch.
 
-**x86, on beast.** `08` through `12` are from the `breenix-x86` Incus container,
-in this round's own clone `/root/breenix-slice3e` with
-`BREENIX_GATE_TMP=/root/breenix-slice3e-tmp`, at the branch head. `10`, `11` and
+**x86, on beast.** `08` through `12` are from the x86 build environment,
+in this round's own clone `<isolated-checkout-39>` with
+`BREENIX_GATE_TMP=<isolated-checkout-38>`, at the branch head. `10`, `11` and
 `12` are the three build profiles' tails; the boot-tests build of the first pass
 carried 1 warning on 2 of 2 kernel-lib compilations -- the oracle's queue
 sentinel had 0 readers on that architecture -- which commit `fc302093` fixed by
@@ -95,8 +95,8 @@ scoping the constant to aarch64, and `10` is the re-run at that head.
 | `20-r2-x86-build-boot-tests.txt` | round 2's x86 boot-tests build tail: exit 0, 0 warning/error lines |
 
 **Round 2, `9136c85e`.** `15`, `16` and `17` are from this Mac; `18`, `19` and
-`20` are from the `breenix-x86` container on beast, in round 2's own clone
-`/root/breenix-slice3e` with `BREENIX_GATE_TMP=/root/breenix-slice3e-tmp`. `17`
+`20` are from the x86 build environment on beast, in round 2's own clone
+`<isolated-checkout-39>` with `BREENIX_GATE_TMP=<isolated-checkout-38>`. `17`
 carries `BUILD_ID` `006a9ca4e213dd` and `16`'s boot carries `006a9ca4fe0397`;
 neither replaces `01` or `02`, which stay the fixtures the 3 replay tests score,
 because this round changed 0 fields of the census line those tests compare.

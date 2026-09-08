@@ -1,5 +1,5 @@
 revision=bb5d3114adb9d5a1cb2e0f392f144a5ccede0062
 Mac ps -axo pid,comm,args: lane-owned QEMU matches=[]
-Beast ps -eo pid,comm,args: /root/breenix-3f2/ QEMU matches=[]
+Beast ps -eo pid,comm,args: <isolated-checkout-32>/ QEMU matches=[]
 No PID termination required. No kill-by-name command used.
 Beast git HEAD=bb5d3114adb9d5a1cb2e0f392f144a5ccede0062; git status --short produced no lines before ps header.

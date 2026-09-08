@@ -69,7 +69,7 @@ Building the shipped x86_64 production kernel profile...
    Compiling usize_conversions v0.2.0
    Compiling futures-task v0.3.34
    Compiling slab v0.4.12
-   Compiling kernel v0.1.0 (/root/breenix-775-prod/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-198>/kernel)
    Compiling log v0.4.34
    Compiling micromath v2.1.0
    Compiling anyhow v1.0.104
@@ -115,21 +115,21 @@ Building the shipped x86_64 production kernel profile...
    Compiling utf8-zero v0.8.1
    Compiling sha2 v0.11.0
    Compiling lzma-rs v0.3.0
-   Compiling breenix v0.1.0 (/root/breenix-775-prod)
+   Compiling breenix v0.1.0 (<isolated-checkout-199>)
    Compiling rustls-webpki v0.103.15
    Compiling tar v0.4.46
    Compiling base16ct v1.0.0
    Compiling ureq v3.4.0
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 32.57s
-   Compiling kernel v0.1.0 (/root/breenix-775-prod/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775-prod)
+   Compiling kernel v0.1.0 (<isolated-checkout-198>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-199>)
     Finished `release` profile [optimized] target(s) in 14.26s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-775-prod/target/release/build/breenix-46df1f31c7b7aa67/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-198>/target/release/build/breenix-46df1f31c7b7aa67/out/breenix-uefi.img (7405568 bytes)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-775-prod/target/ext2.img
+  Output: <isolated-checkout-198>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -349,8 +349,8 @@ drwxr-xr-x 3 root root   4096 Sep  4 17:46 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-775-prod/target/ext2.img
-  /root/breenix-775-prod/testdata/ext2.img
+  <isolated-checkout-198>/target/ext2.img
+  <isolated-checkout-198>/testdata/ext2.img
   Size: 256M
 
 Contents:

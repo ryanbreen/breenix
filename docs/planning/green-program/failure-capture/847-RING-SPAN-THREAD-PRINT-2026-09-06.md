@@ -392,7 +392,7 @@ scripts/check-kernel-no-neon.sh
 -> PASS: 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0)
 ```
 
-x86 build, on beast (`/root/breenix-p847`, `BREENIX_GATE_TMP=/root/breenix-p847-tmp`):
+x86 build, on beast (`<isolated-checkout-57>`, `BREENIX_GATE_TMP=<isolated-checkout-58>`):
 
 ```
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
@@ -523,7 +523,7 @@ ceiling under host load). That serial was not preserved past this doc, since
 the immediately following full re-smoke at the merged head, run for the reason
 above, is the one this landing certifies against; it scored 20/20.)
 
-Beast (`/root/breenix-p847`, `BREENIX_GATE_TMP=/root/breenix-p847-tmp`), same
+Beast (`<isolated-checkout-57>`, `BREENIX_GATE_TMP=<isolated-checkout-58>`), same
 merged commit `d692bb92`:
 
 ```
@@ -618,8 +618,8 @@ and 0 crash markers.
 `./docker/qemu/run-aarch64-prod-profile-boot-test.sh` -> **PASS**, exit 0; 0
 `RING_SPAN` lines, 0 `edge=SELFTEST` (BXCAP self-test) lines observed.
 
-Beast (`/root/breenix-p847` reset to `76062c69`,
-`BREENIX_GATE_TMP=/root/breenix-p847-tmp`):
+Beast (`<isolated-checkout-57>` reset to `76062c69`,
+`BREENIX_GATE_TMP=<isolated-checkout-58>`):
 
 ```
 cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi

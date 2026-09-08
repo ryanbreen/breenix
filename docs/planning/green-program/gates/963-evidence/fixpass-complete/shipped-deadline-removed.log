@@ -1,0 +1,20 @@
+Revision: 76da053aa050e75e4c97b3e935ae5447baf357c5; working fixture patch plus named mutation shipped-deadline-removed
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure shipped_capture_deadline_and_mutations ==
+
+running 1 test
+
+thread 'shipped_capture_deadline_and_mutations' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t963b/wt/tests/gate_qmp_backstop_structure.rs:888:5:
+assertion failed: has_capture_deadline(&source)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test shipped_capture_deadline_and_mutations ... FAILED
+
+failures:
+
+failures:
+    shipped_capture_deadline_and_mutations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+
+exit=101

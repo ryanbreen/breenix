@@ -2,7 +2,7 @@
  07:37:14 up 26 days, 13:52,  0 user,  load average: 5.35, 4.56, 3.65
 R238 launch load=5.35
 Running 5 parallel full boot tests (runner: native)...
-Image: /root/breenix-s891/target/release/build/breenix-5ac7b276747c983c/out/breenix-uefi.img
+Image: <isolated-checkout-133>/target/release/build/breenix-5ac7b276747c983c/out/breenix-uefi.img
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
   Started test 1
   Started test 2

@@ -406,3 +406,14 @@ claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/sc
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-prose-message.txt -> exit 0
+
+The merge of origin/main e664e4bc9fc83ba27f2a62cda987d7a170b282b3 into
+4e3d58da completed without conflicts. The incoming strict aarch64 scorer adds
+one BSSH_PUBKEY_ORACLE requirement. R182 therefore requires a fresh strict
+serial fixture from the merged kernel; the incoming fixture contains an
+appended marker and is not treated here as a new runtime capture. The
+production scorer has no incoming requirement change.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-merge-message.txt -> exit 0

@@ -1,0 +1,27 @@
+Revision: 86a72af2874b8153351d1defc42ef3040e69e695 + V-1 working tree; see revision.json and mutations.json for mutation cases
+== compiling bssh_auth_close_structure ==
+== running bssh_auth_close_structure  ==
+
+running 5 tests
+test wrong_signer_reaches_signature_verification ... ok
+test termination_waits_for_peer_and_preserves_shell_status ... ok
+test oracle_requires_auth_refusal_and_strict_scorer_pins_it ... FAILED
+test close_recipient_validation_precedes_completion ... ok
+test scorer_rejects_missing_failed_and_duplicate_auth_evidence ... ok
+
+failures:
+
+---- oracle_requires_auth_refusal_and_strict_scorer_pins_it stdout ----
+
+thread 'oracle_requires_auth_refusal_and_strict_scorer_pins_it' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/tests/bssh_auth_close_structure.rs:30:5:
+assertion failed: init.contains("right == 0 && wrong == 77")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    oracle_requires_auth_refusal_and_strict_scorer_pins_it
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+
+exit: 101

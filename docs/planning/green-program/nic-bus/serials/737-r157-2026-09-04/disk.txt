@@ -161,7 +161,7 @@ Test disk created: target/test_binaries.img
 create-test-disk exit=0
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-737-oracle/target/ext2.img
+  Output: <isolated-checkout-153>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -382,8 +382,8 @@ drwxr-xr-x 3 root root   4096 Sep  5 03:16 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-737-oracle/target/ext2.img
-  /root/breenix-737-oracle/testdata/ext2.img
+  <isolated-checkout-153>/target/ext2.img
+  <isolated-checkout-153>/testdata/ext2.img
   Size: 256M
 
 Contents:

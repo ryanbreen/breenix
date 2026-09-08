@@ -301,7 +301,7 @@ where it reaches 0.
 
 ## 6. Gates
 
-### 6.1 x86, on beast (`breenix-x86`, clone `/root/breenix-chk1`, `BREENIX_GATE_TMP=/root/breenix-chk1-tmp`)
+### 6.1 x86, on beast (`<x86-build-environment>`, clone `<isolated-checkout-83>`, `BREENIX_GATE_TMP=<isolated-checkout-84>`)
 
 | Gate | Command | Result |
 |---|---|---|
@@ -328,7 +328,7 @@ in question; no boot of the branch's own testing kernel failed.
 
 ### 6.2 The forced legs, on live bytes
 
-From `/root/breenix-chk1-tmp/breenix_x86_boot_tests_1/`. The two forced
+From `<isolated-checkout-84>/breenix_x86_boot_tests_1/`. The two forced
 snapshots are lines 700 and 701 of `serial_kernel.txt` — adjacent, 3 ms apart,
 with the ten legs between them:
 
@@ -443,10 +443,10 @@ blocking UART writes removed from an interrupt-return path -- so "unchanged
 code" is not on its own an argument that the reading is unchanged. It was
 measured instead.
 
-A second clone of this container's `/root/breenix` was checked out at
+A second clone of this container's `<canonical-checkout>` was checked out at
 `a0ec6cf8` (this branch's base, `origin/main`) and run through the same
 `./docker/qemu/run-x86-prod-profile-boot-test.sh`, under
-`BREENIX_GATE_TMP=/root/breenix-chk1-base-tmp`:
+`BREENIX_GATE_TMP=<isolated-checkout-85>`:
 
 ```
 a0ec6cf84 Merge pull request #887 from ryanbreen/docs-822-true-main-verify
@@ -560,7 +560,7 @@ The aarch64 diff is empty. The gates were run anyway:
   was also running another lane's gate. R157 bounds what a single PR has to
   demonstrate; a soak is not part of this slice.
   claim-lint:ok: the 5 of 5 verdicts are quoted in §6.1 from
-  `/root/breenix-chk1-tmp/parallel5b.log`.
+  `<isolated-checkout-84>/parallel5b.log`.
 * **The oracle perturbs the census for the rest of the boot.** Each census line
   after it carries the oracle's own 1 in each of the ten fields. §6.3's reading
   of `sig_deliverable_user=4` as "3 natural" depends on that offset being
@@ -601,7 +601,7 @@ changed in a merge that added 0 commits. The pushed head is therefore still
 | `bash scripts/check-critical-path-violations.sh` | exit 1, **259** stdout lines, **9** `VIOLATION` headers -- identical to §5.6/§6.1's reading |
 | `python3 scripts/claim-lint.py` | exit 0 -- `clean (11 file(s) checked, changed hunks vs a0ec6cf8473d)` |
 
-### 9.2 x86, on beast (`breenix-x86`, clone `/root/breenix-chk1`, `BREENIX_GATE_TMP=/root/breenix-chk1-tmp`)
+### 9.2 x86, on beast (`<x86-build-environment>`, clone `<isolated-checkout-83>`, `BREENIX_GATE_TMP=<isolated-checkout-84>`)
 
 Confirmed at `e99ab48ed293e9b58ab92b1366796f1eb4069a92`, clean working tree.
 

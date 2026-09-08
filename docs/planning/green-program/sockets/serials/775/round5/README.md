@@ -112,7 +112,7 @@ were overwritten on the beast host before they could be recovered, exactly as
 `../round3/case-d-broad-removal/` discloses for its own 18 rows.
 
 So round 5 re-ran the control instead of arguing about it: same head
-`3495c3f3`, same container `/root/breenix-775` on beast `breenix-x86`, same
+`3495c3f3`, same container `<isolated-checkout-53>` on beast `<x86-build-environment>`, same
 command `docker/qemu/run-x86-gate.sh 1 full`, twice, one QEMU at a time. Both
 boots are committed in full.
 
@@ -151,8 +151,8 @@ identical to the head's.
 
 | command | where | result |
 |---|---|---|
-| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | beast `breenix-x86`, at `7f319a1c` | `Finished ... in 16.32s`, exit 0, 0 lines matching `^(warning\|error)` |
-| `cargo build --release --bin qemu-uefi` | beast `breenix-x86`, at `7f319a1c` | `Finished ... in 16.07s`, exit 0, 0 such lines |
+| `cargo build --release --features testing,external_test_bins --bin qemu-uefi` | beast `<x86-build-environment>`, at `7f319a1c` | `Finished ... in 16.32s`, exit 0, 0 lines matching `^(warning\|error)` |
+| `cargo build --release --bin qemu-uefi` | beast `<x86-build-environment>`, at `7f319a1c` | `Finished ... in 16.07s`, exit 0, 0 such lines |
 | `cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64` | ARM Mac | `Finished ... in 6.78s`, exit 0, 1 such line |
 | `cargo build --release --features boot_tests --target aarch64-breenix-kernel.json ...` | ARM Mac | `Finished ... in 7.58s`, exit 0, 1 such line |
 

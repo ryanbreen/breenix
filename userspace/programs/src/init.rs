@@ -129,6 +129,7 @@ fn main() {
     #[cfg(target_arch = "x86_64")]
     run_fork_smoke();
     start_bsshd();
+    run_bssh_pubkey_oracle();
     run_boot_script();
     #[cfg(target_arch = "aarch64")]
     start_bounce();
@@ -619,6 +620,43 @@ fn run_fork_smoke() {
         Err(error) => {
             print!("[FORK_SMOKE:SPAWN_FAILED {}]\n", error);
         }
+    }
+}
+
+// Run the actual CLI arms and require a dedicated USERAUTH_FAILURE status.
+fn run_bssh_pubkey_oracle() {
+    let _ = libbreenix::time::sleep_ms(1000);
+    fn arm(auth: &[u8]) -> i32 {
+        let argv = [
+            b"bssh\0".as_ptr(),
+            b"127.0.0.1\0".as_ptr(),
+            b"2222\0".as_ptr(),
+            b"root\0".as_ptr(),
+            auth.as_ptr(),
+            b"--smoke\0".as_ptr(),
+            core::ptr::null(),
+        ];
+        let pid = match spawnv(b"/bin/bssh\0", argv.as_ptr()) {
+            Ok(pid) => pid,
+            Err(_) => return -1,
+        };
+        let mut status = 0;
+        match waitpid(pid.raw() as i32, &mut status, 0) {
+            Ok(_) if libbreenix::process::wifexited(status) => {
+                libbreenix::process::wexitstatus(status)
+            }
+            _ => -1,
+        }
+    }
+    let right = arm(b"--publickey\0");
+    let wrong = arm(b"--publickey-wrong\0");
+    if right == 0 && wrong == 77 {
+        print!("[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]\n");
+    } else {
+        print!(
+            "[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]\n",
+            right, wrong
+        );
     }
 }
 

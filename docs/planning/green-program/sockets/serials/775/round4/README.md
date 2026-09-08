@@ -1,7 +1,7 @@
 # Round 4 — `kstrandd`, the lost wake it found, and the asserted age
 
-The 15 captures here were produced on the beast `breenix-x86` container in
-`/root/breenix-775`, one QEMU at a time. The production boots are
+The 15 captures here were produced on the x86 build environment on beast in
+`<isolated-checkout-53>`, one QEMU at a time. The production boots are
 `docker/qemu/run-x86-prod-profile-boot-test.sh`, which builds with no
 `--features` flag; the gate boots are `docker/qemu/run-x86-gate.sh 1 full`
 (150 s each).

@@ -1,5 +1,5 @@
 8ff71840e8c8577220132ae6d1256351169a6296
-Artifacts: /root/breenix-i813pc-tmp/breenix_813_x86_64.7wmwvP
+Artifacts: <isolated-checkout-123>/breenix_813_x86_64.7wmwvP
 8ff71840e8c8577220132ae6d1256351169a6296
 [GATE_PREFLIGHT:structure_suites=67/67:critical_path_lines=260:pinned=120]
 ========================================
@@ -10,42 +10,42 @@ Artifacts: /root/breenix-i813pc-tmp/breenix_813_x86_64.7wmwvP
 [1/3] Building libbreenix-libc (x86_64)...
   Compiling compiler_builtins v0.1.160 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
   Compiling core v0.0.0 (/root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
-  Compiling libbreenix v0.1.0 (/root/breenix-i813pc/libs/libbreenix)
-  Compiling libbreenix-libc v0.1.0 (/root/breenix-i813pc/libs/libbreenix-libc)
+  Compiling libbreenix v0.1.0 (<isolated-checkout-121>/libs/libbreenix)
+  Compiling libbreenix-libc v0.1.0 (<isolated-checkout-121>/libs/libbreenix-libc)
   Finished `release` profile [optimized] target(s) in 25.07s
   libbreenix-libc built successfully
 
 [2/3] Building userspace (x86_64)...
   Updating crates.io index
   Locking 10 packages to latest compatible versions
-  Compiling compiler_builtins v0.1.160 (/root/breenix-i813pc/rust-fork/library/compiler-builtins/compiler-builtins)
-  Compiling core v0.0.0 (/root/breenix-i813pc/rust-fork/library/core)
-  Compiling libc v0.2.174 (/root/breenix-i813pc/libs/libc)
-  Compiling std v0.0.0 (/root/breenix-i813pc/rust-fork/library/std)
-  Compiling rustc-std-workspace-core v1.99.0 (/root/breenix-i813pc/rust-fork/library/rustc-std-workspace-core)
-  Compiling alloc v0.0.0 (/root/breenix-i813pc/rust-fork/library/alloc)
-  Compiling panic_abort v0.0.0 (/root/breenix-i813pc/rust-fork/library/panic_abort)
+  Compiling compiler_builtins v0.1.160 (<isolated-checkout-121>/rust-fork/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (<isolated-checkout-121>/rust-fork/library/core)
+  Compiling libc v0.2.174 (<isolated-checkout-121>/libs/libc)
+  Compiling std v0.0.0 (<isolated-checkout-121>/rust-fork/library/std)
+  Compiling rustc-std-workspace-core v1.99.0 (<isolated-checkout-121>/rust-fork/library/rustc-std-workspace-core)
+  Compiling alloc v0.0.0 (<isolated-checkout-121>/rust-fork/library/alloc)
+  Compiling panic_abort v0.0.0 (<isolated-checkout-121>/rust-fork/library/panic_abort)
   Compiling cfg-if v1.0.1
   Compiling rustc-demangle v0.1.25
-  Compiling unwind v0.0.0 (/root/breenix-i813pc/rust-fork/library/unwind)
-  Compiling rustc-std-workspace-alloc v1.99.0 (/root/breenix-i813pc/rust-fork/library/rustc-std-workspace-alloc)
-  Compiling panic_unwind v0.0.0 (/root/breenix-i813pc/rust-fork/library/panic_unwind)
-  Compiling std_detect v0.1.5 (/root/breenix-i813pc/rust-fork/library/stdarch/crates/std_detect)
+  Compiling unwind v0.0.0 (<isolated-checkout-121>/rust-fork/library/unwind)
+  Compiling rustc-std-workspace-alloc v1.99.0 (<isolated-checkout-121>/rust-fork/library/rustc-std-workspace-alloc)
+  Compiling panic_unwind v0.0.0 (<isolated-checkout-121>/rust-fork/library/panic_unwind)
+  Compiling std_detect v0.1.5 (<isolated-checkout-121>/rust-fork/library/stdarch/crates/std_detect)
   Compiling hashbrown v0.15.4
-  Compiling rustc-std-workspace-std v1.99.0 (/root/breenix-i813pc/rust-fork/library/rustc-std-workspace-std)
+  Compiling rustc-std-workspace-std v1.99.0 (<isolated-checkout-121>/rust-fork/library/rustc-std-workspace-std)
   Compiling rustc-literal-escaper v0.0.2
-  Compiling proc_macro v0.0.0 (/root/breenix-i813pc/rust-fork/library/proc_macro)
+  Compiling proc_macro v0.0.0 (<isolated-checkout-121>/rust-fork/library/proc_macro)
   Compiling noto-sans-mono-bitmap v0.3.2
-  Compiling libfont v0.1.0 (/root/breenix-i813pc/libs/libfont)
-  Compiling libbreenix v0.1.0 (/root/breenix-i813pc/libs/libbreenix)
-  Compiling breenish-js v0.1.0 (/root/breenix-i813pc/libs/breenish-js)
-  Compiling libimg v0.1.0 (/root/breenix-i813pc/libs/libimg)
-  Compiling libgfx v0.1.0 (/root/breenix-i813pc/libs/libgfx)
-  Compiling libbui v0.1.0 (/root/breenix-i813pc/libs/libbui)
-  Compiling libicon v0.1.0 (/root/breenix-i813pc/libs/libicon)
-  Compiling libcollab v0.1.0 (/root/breenix-i813pc/libs/libcollab)
-  Compiling breengel v0.1.0 (/root/breenix-i813pc/libs/breengel)
-  Compiling userspace-programs v0.1.0 (/root/breenix-i813pc/userspace/programs)
+  Compiling libfont v0.1.0 (<isolated-checkout-121>/libs/libfont)
+  Compiling libbreenix v0.1.0 (<isolated-checkout-121>/libs/libbreenix)
+  Compiling breenish-js v0.1.0 (<isolated-checkout-121>/libs/breenish-js)
+  Compiling libimg v0.1.0 (<isolated-checkout-121>/libs/libimg)
+  Compiling libgfx v0.1.0 (<isolated-checkout-121>/libs/libgfx)
+  Compiling libbui v0.1.0 (<isolated-checkout-121>/libs/libbui)
+  Compiling libicon v0.1.0 (<isolated-checkout-121>/libs/libicon)
+  Compiling libcollab v0.1.0 (<isolated-checkout-121>/libs/libcollab)
+  Compiling breengel v0.1.0 (<isolated-checkout-121>/libs/breengel)
+  Compiling userspace-programs v0.1.0 (<isolated-checkout-121>/userspace/programs)
   Finished `release` profile [optimized] target(s) in 1m 39s
   Userspace build successful
 
@@ -274,7 +274,7 @@ Artifacts: /root/breenix-i813pc-tmp/breenix_813_x86_64.7wmwvP
    Compiling futures-core v0.3.34
    Compiling log v0.4.34
    Compiling crc-catalog v2.5.0
-   Compiling kernel v0.1.0 (/root/breenix-i813pc/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-121>/kernel)
    Compiling httparse v1.10.1
    Compiling linux-raw-sys v0.12.1
    Compiling micromath v2.1.0
@@ -322,21 +322,21 @@ Artifacts: /root/breenix-i813pc-tmp/breenix_813_x86_64.7wmwvP
    Compiling percent-encoding v2.3.2
    Compiling sha2 v0.11.0
    Compiling lzma-rs v0.3.0
-   Compiling breenix v0.1.0 (/root/breenix-i813pc)
+   Compiling breenix v0.1.0 (<isolated-checkout-122>)
    Compiling tar v0.4.46
    Compiling base16ct v1.0.0
    Compiling rustls-webpki v0.103.15
    Compiling ureq v3.4.1
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 36.34s
-   Compiling kernel v0.1.0 (/root/breenix-i813pc/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813pc)
+   Compiling kernel v0.1.0 (<isolated-checkout-121>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-122>)
     Finished `release` profile [optimized] target(s) in 16.80s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-i813pc/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-121>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-i813pc/target/ext2.img
+  Output: <isolated-checkout-121>/target/ext2.img
   Size: 256MB
   Payload: 46MB (userspace binaries + fonts)
   Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
@@ -514,55 +514,55 @@ drwxr-xr-x 3 root root   4096 Sep  7 22:13 ..
 -rwxr-xr-x 1 root root 183672 Sep  7 22:13 wc_test
 -rwxr-xr-x 1 root root 183000 Sep  7 22:13 which_test
 -rwxr-xr-x 1 root root 182584 Sep  7 22:13 wnohang_timing_test
--rw-r--r-- 1 root root 0 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/empty.txt
--rw-r--r-- 1 root root 20 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/test/nested.txt
--rw-r--r-- 1 root root 111 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/lines.txt
--rw-r--r-- 1 root root 19 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/trunctest.txt
--rwxr-xr-x 1 root root 182008 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/sbin/blogd
--rwxr-xr-x 1 root root 187536 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/sbin/init
--rwxr-xr-x 1 root root 184120 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/sbin/telnetd
--rw-r--r-- 1 root root 17 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/hello.txt
--rw-r--r-- 1 root root 679 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/etc/init.js
--rw-r--r-- 1 root root 26 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/etc/group
--rw-r--r-- 1 root root 83 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/etc/passwd
--rw-r--r-- 1 root root 349 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/etc/hotkeys.conf
--rw-r--r-- 1 root root 367 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/etc/bshrc
--rw-r--r-- 1 root root 445 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/etc/fonts.conf
--rw-r--r-- 1 root root 1887192 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/NotoSerif-Regular.ttf
--rw-r--r-- 1 root root 532636 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/OpenSans-Regular.ttf
--rw-r--r-- 1 root root 309408 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Hack-Regular.ttf
--rw-r--r-- 1 root root 876576 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Inter-Regular.ttf
--rw-r--r-- 1 root root 300724 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/PlayfairDisplay-Regular.ttf
--rw-r--r-- 1 root root 276932 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Nunito-Regular.ttf
--rw-r--r-- 1 root root 598060 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/CascadiaCode-Regular.ttf
--rw-r--r-- 1 root root 108684 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Inconsolata-Regular.ttf
--rw-r--r-- 1 root root 359048 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/PTSerif-Regular.ttf
--rw-r--r-- 1 root root 488584 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Roboto-Regular.ttf
--rw-r--r-- 1 root root 340712 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/DejaVuSansMono.ttf
--rw-r--r-- 1 root root 744936 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Montserrat-Regular.ttf
--rw-r--r-- 1 root root 351884 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Ubuntu-Regular.ttf
--rw-r--r-- 1 root root 282844 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Merriweather-Regular.ttf
--rw-r--r-- 1 root root 212196 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Lora-Regular.ttf
--rw-r--r-- 1 root root 273900 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/JetBrainsMono-Regular.ttf
--rw-r--r-- 1 root root 135580 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/IBMPlexMono-Regular.ttf
--rw-r--r-- 1 root root 1209508 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/SourceSerif4-Regular.ttf
--rw-r--r-- 1 root root 1708408 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/NotoSansMono-Regular.ttf
--rw-r--r-- 1 root root 160316 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Poppins-Regular.ttf
--rw-r--r-- 1 root root 212340 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/SourceCodePro-Regular.ttf
--rw-r--r-- 1 root root 312352 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Raleway-Regular.ttf
--rw-r--r-- 1 root root 757076 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/DejaVuSans.ttf
--rw-r--r-- 1 root root 2049096 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/NotoSans-Regular.ttf
--rw-r--r-- 1 root root 656568 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/Lato-Regular.ttf
--rw-r--r-- 1 root root 646340 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/SourceSans3-Regular.ttf
--rw-r--r-- 1 root root 260364 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/FiraCode-Regular.ttf
--rw-r--r-- 1 root root 183700 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/RobotoMono-Regular.ttf
--rw-r--r-- 1 root root 205748 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/usr/share/fonts/UbuntuMono-Regular.ttf
--rw-r--r-- 1 root root 20 Sep  7 22:13 /root/breenix-i813pc-tmp/tmp.Ctd9jyNbtO/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 0 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/empty.txt
+-rw-r--r-- 1 root root 20 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/test/nested.txt
+-rw-r--r-- 1 root root 111 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/lines.txt
+-rw-r--r-- 1 root root 19 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/trunctest.txt
+-rwxr-xr-x 1 root root 182008 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/sbin/blogd
+-rwxr-xr-x 1 root root 187536 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/sbin/init
+-rwxr-xr-x 1 root root 184120 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/sbin/telnetd
+-rw-r--r-- 1 root root 17 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/hello.txt
+-rw-r--r-- 1 root root 679 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/etc/init.js
+-rw-r--r-- 1 root root 26 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/etc/group
+-rw-r--r-- 1 root root 83 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/etc/passwd
+-rw-r--r-- 1 root root 349 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/etc/hotkeys.conf
+-rw-r--r-- 1 root root 367 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/etc/bshrc
+-rw-r--r-- 1 root root 445 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/etc/fonts.conf
+-rw-r--r-- 1 root root 1887192 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 488584 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 744936 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 2049096 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 260364 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 20 Sep  7 22:13 <isolated-checkout-123>/tmp.Ctd9jyNbtO/deep/path/to/file/data.txt
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-i813pc/target/ext2.img
-  /root/breenix-i813pc/testdata/ext2.img
+  <isolated-checkout-121>/target/ext2.img
+  <isolated-checkout-121>/testdata/ext2.img
   Size: 256M
 
 Contents:
@@ -587,5 +587,5 @@ QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (180s elapsed, ho
 QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (210s elapsed, host qemu-system-x86_64 count=0)...
 PASS: x86_64, 30 arms, exact byte tallies and worker reaped
 PASS: x86_64, 12 console/tty arms
-PASS: blocking I/O oracle x86_64 boots=1; serials=/root/breenix-i813pc-tmp/breenix_813_x86_64.7wmwvP/boot_*/serial.txt
+PASS: blocking I/O oracle x86_64 boots=1; serials=<isolated-checkout-123>/breenix_813_x86_64.7wmwvP/boot_*/serial.txt
 exit=0

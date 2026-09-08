@@ -1,0 +1,35 @@
+{
+  "code_revision": "ece990b5137bcb47d6a1af6913bb8cc1fedeae1d",
+  "strict_serials": [
+    {
+      "file": "strict-boot1-serial.txt",
+      "sha256": "481195092b352eea707c936e01f2ca33af6e557f7738a08d39b49979f729f79b",
+      "pubkey_oracle_count": 1,
+      "failure_oracle_count": 0
+    },
+    {
+      "file": "strict-boot2-serial.txt",
+      "sha256": "f0474a03d98f07dc0d7314090d0ae998966efb6c0046cd6387205bcb27ed58b8",
+      "pubkey_oracle_count": 1,
+      "failure_oracle_count": 0
+    },
+    {
+      "file": "strict-boot3-serial.txt",
+      "sha256": "11019e6fa6ec2162979075c6ab2ce8a3cd7ee9c293549c5bbd5b2bbc40cda351",
+      "pubkey_oracle_count": 1,
+      "failure_oracle_count": 0
+    },
+    {
+      "file": "strict-boot4-serial.txt",
+      "sha256": "0a2b40d5800bd43b679c87bdd5686206909c8be39d999f034966ec43e6740a37",
+      "pubkey_oracle_count": 1,
+      "failure_oracle_count": 0
+    },
+    {
+      "file": "strict-boot5-serial.txt",
+      "sha256": "3c1e54df78847bba3d8a65a5240e5982d56db0d7b2cb3485325ec88a3eac33f4",
+      "pubkey_oracle_count": 1,
+      "failure_oracle_count": 0
+    }
+  ]
+}

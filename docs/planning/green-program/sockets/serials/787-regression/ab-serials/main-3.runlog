@@ -1,4 +1,4 @@
-=== AB RUN: main-3  repo=/root/breenix-ab-main ===
+=== AB RUN: main-3  repo=<isolated-checkout-181> ===
 start_wall=2026-09-04T22:00:11Z
 tenants_qemu_before=2
 load_before=0.89 1.80 1.96 3/213 2655523
@@ -8,8 +8,8 @@ runner_exited elapsed_s=995
 end_wall=2026-09-04T22:16:46Z
 tenants_qemu_after=2
 load_after=2.56 2.29 2.19 1/210 2674353
-last_TEST_marker=/root/breenix-ab-main/ab-serials/main-3/serial_user.txt:[TEST:process:x86_retire_cohort:START]
-last_TEST_line=/root/breenix-ab-main/ab-serials/main-3/serial_user.txt:[TEST:process:x86_retire_cohort:START]
+last_TEST_marker=<isolated-checkout-181>/ab-serials/main-3/serial_user.txt:[TEST:process:x86_retire_cohort:START]
+last_TEST_line=<isolated-checkout-181>/ab-serials/main-3/serial_user.txt:[TEST:process:x86_retire_cohort:START]
 kstack_owner_or_creation_rows_lines:
 final_kernel_serial_size=184332
 final_user_serial_size=3820

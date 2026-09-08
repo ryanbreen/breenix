@@ -65,7 +65,7 @@ Building the shipped x86_64 production kernel profile...
    Compiling log v0.4.34
    Compiling llvm-tools v0.1.1
    Compiling anyhow v1.0.104
-   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-71>/kernel)
    Compiling micromath v2.1.0
    Compiling noto-sans-mono-bitmap v0.2.0
    Compiling futures-core v0.3.34
@@ -115,7 +115,7 @@ Building the shipped x86_64 production kernel profile...
    Compiling cpufeatures v0.3.1
    Compiling percent-encoding v2.3.2
    Compiling lzma-rs v0.3.0
-   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling breenix v0.1.0 (<isolated-checkout-72>)
    Compiling sha2 v0.11.0
    Compiling tar v0.4.46
    Compiling rustls-webpki v0.103.15
@@ -123,14 +123,14 @@ Building the shipped x86_64 production kernel profile...
    Compiling ureq v3.4.1
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 2m 31s
-   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling kernel v0.1.0 (<isolated-checkout-71>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-72>)
     Finished `release` profile [optimized] target(s) in 14.16s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-884/target/release/build/breenix-03b3b4f3cd901e39/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-71>/target/release/build/breenix-03b3b4f3cd901e39/out/breenix-uefi.img (7405568 bytes)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-884/target/ext2.img
+  Output: <isolated-checkout-71>/target/ext2.img
   Size: 256MB
   Payload: 45MB (userspace binaries + fonts)
   Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
@@ -353,8 +353,8 @@ drwxr-xr-x 3 root root   4096 Sep  6 18:54 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-884/target/ext2.img
-  /root/breenix-884/testdata/ext2.img
+  <isolated-checkout-71>/target/ext2.img
+  <isolated-checkout-71>/testdata/ext2.img
   Size: 256M
 
 Contents:
@@ -392,7 +392,7 @@ x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-prof
   failing command: false
 [CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=0]
 [CAPTURE_DRAIN_EVENTS:last_events=none]
-  preserved failing serial: /root/breenix-884-tmp/breenix_x86_prod_profile_failures/20260906T190240Z_2775915
+  preserved failing serial: <isolated-checkout-73>/breenix_x86_prod_profile_failures/20260906T190240Z_2775915
 --- observed values ---
   ext2 root mounted:            1
   PCI_FN blk/e1000/total lines: 3/1/9
@@ -488,7 +488,7 @@ x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-prof
 [TIMER_SCALE_ORACLE:x86:ms_per_tick=5:ticks_before=52:ms=260:ticks_after=52:ticks_nonzero=1:in_range=1:PASS]
 [INIT_DESIGNATION:x86_64:designated_pid=1:reserved_collisions=0]
 --- serial tail (last 60 lines per file) ---
-==> /root/breenix-884-tmp/breenix_x86_prod_profile/serial_kernel.txt <==
+==> <isolated-checkout-73>/breenix_x86_prod_profile/serial_kernel.txt <==
 [DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfb2010, count=4096
 [DEBUG] kernel::syscall::handlers: sys_read: fd=3, buf_ptr=0x7ffffdfb2d78, count=664
 [DISPATCH_STRAND_CENSUS:seq=49:tick=10661:ms=57309:saved=13:stranded=6:tids=5,15,17,19,20,22:tid_overflow=0:ledger_overflow=0]
@@ -550,7 +550,7 @@ x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-prof
 [DEBUG] kernel::syscall::fs: sys_open: raw_path="/usr/share/fonts/DejaVuSansMono.ttf", flags=0x80000, mode=0o666
 [DEBUG] kernel::syscall::fs: sys_open: resolved path="/usr/share/fonts/DejaVuSansMono.ttf"
 
-==> /root/breenix-884-tmp/breenix_x86_prod_profile/serial_user.txt <==
+==> <isolated-checkout-73>/breenix_x86_prod_profile/serial_user.txt <==
 [TTY_ORACLE:foreground_pgrp:verdict=PASS:pgrp=3:crossed_ends=1]
 [TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]
 [TTY_ORACLE:hangup:verdict=PASS:eagain_while_open=1:eof_after_close=1]

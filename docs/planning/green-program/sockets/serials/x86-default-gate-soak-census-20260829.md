@@ -1,6 +1,6 @@
 # x86 default-gate soak, 30 boots at the round-3 merge-candidate bytes
 
-docker/qemu/run-x86-boot-tests.sh, beast breenix-x86 (Incus VM), TCG.
+docker/qemu/run-x86-boot-tests.sh, beast <x86-build-environment> (build environment), TCG.
 Gate result: FAIL 30/30. Every failure is the tombstone-census reconciliation,
 and the cause is poll_tcp_oracle's per-attempt fork(), not the kernel:
 

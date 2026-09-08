@@ -1,0 +1,4 @@
+revision=45ff0a90b76e71671d9499542f6a2165181ee344
+rustfmt --check tests/gate_qmp_backstop_structure.rs -> exit 0
+git diff --check -> exit 0
+Earlier round text equals the starting revision prefix byte-for-byte.

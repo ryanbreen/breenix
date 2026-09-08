@@ -39,7 +39,7 @@
 # gates' four separate invocations of this function. Standalone (this
 # function alone, outside any boot loop), freshly measured on two hosts:
 # ~127s wall-clock on an Apple Silicon Mac (macOS, native rustc), and
-# ~331s (5m31s) wall-clock in the beast x86 Incus container (Linux, the
+# ~331s (5m31s) wall-clock in the beast x86 build environment (Linux, the
 # actual host run-x86-boot-tests.sh and run-x86-prod-profile-boot-test.sh
 # execute in for merge-gating) -- see the "Isolated preflight time cost"
 # section of docs/planning/green-program/gates/

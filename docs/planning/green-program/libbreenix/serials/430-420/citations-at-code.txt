@@ -1,0 +1,24 @@
+revision=ece990b5137bcb47d6a1af6913bb8cc1fedeae1d
+userspace/programs/src/bsshd.rs:114: if let Err(e) = session.finish(status) {
+userspace/programs/src/bsshd.rs:223: if let Err(e) = session.finish(shell_status) {
+userspace/programs/src/bsshd.rs:262: fn run_single_exec_command(session: &mut ServerSession, command: &str) -> i32 {
+libs/libbreenix/src/ssh/transport.rs:352: pub fn finish(&mut self, status: i32) -> Result<(), SshError> {
+libs/libbreenix/src/ssh/transport.rs:320: ch.eof_received = true;
+libs/libbreenix/src/ssh/transport.rs:327: ch.closed = true;
+libs/libbreenix/src/ssh/channel.rs:222: pub fn send_channel_eof(io: &mut PacketIo, channel: &mut Channel) -> Result<(), SshError> {
+libs/libbreenix/src/ssh/channel.rs:235: pub fn send_channel_close(io: &mut PacketIo, channel: &mut Channel) -> Result<(), SshError> {
+userspace/programs/src/bsshd.rs:369: fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pty: bool) -> bool {
+libs/libbreenix/src/ssh/transport.rs:605: ch.closed = true;
+libs/libbreenix/src/ssh/packet.rs:72: let mut offset = 0;
+libs/libbreenix/src/ssh/auth.rs:141: let mut signed_data = Vec::with_capacity(256);
+libs/libbreenix/src/ssh/auth.rs:153: if pos == msg.len()
+libs/libbreenix/src/ssh/auth.rs:155: && keys::verify_rsa_signature(key_blob, signature, &signed_data)
+libs/libbreenix/src/ssh/auth.rs:163: send_auth_failure(io, false)?;
+libs/libbreenix/src/ssh/auth.rs:331: wrong_identity.sign(data)
+libs/libbreenix/src/ssh/keys.rs:487: pub fn verify_rsa_signature(pubkey_blob: &[u8], signature_blob: &[u8], data: &[u8]) -> bool {
+userspace/programs/src/bssh.rs:106: std::process::exit(77);
+userspace/programs/src/init.rs:627: fn run_bssh_pubkey_oracle() {
+userspace/programs/src/init.rs:654: print!("[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]\n");
+userspace/programs/src/init.rs:657: "[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]\n",
+docker/qemu/run-aarch64-boot-test-strict.sh:839: if [ "$(tr -d '\r' < "$serial_file" | grep -Fxc '[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]')" -ne 1 ] ||
+userspace/programs/src/bsh.rs:1569: let _ = libbreenix::termios::tcsetattr(

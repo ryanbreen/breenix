@@ -15,9 +15,9 @@ full battery, both sides, every boot, pass or fail.
 ## What this is
 
 25 boots, `docker/qemu/run-x86-gate.sh N full` (features=`testing,external_test_bins`),
-beast `breenix-x86` (KVM, `-cpu host`), branch `fix/707-cloexec-tcp-test` @
-`c1ada97f`, isolated clone `/root/breenix-707-r2-b4` (a `cp -a` of round 1's
-`/root/breenix-707-prove` reset with `git fetch` + `git reset --hard
+beast `<x86-build-environment>` (KVM, `-cpu host`), branch `fix/707-cloexec-tcp-test` @
+`c1ada97f`, isolated clone `<isolated-checkout-189>` (a `cp -a` of round 1's
+`<isolated-checkout-187>` reset with `git fetch` + `git reset --hard
 c1ada97f`, confirmed clean via `git status --porcelain` before the battery
 started). `docker/qemu/run-x86-gate.sh` caps concurrency at 4 boots per
 invocation (`MAX_CONCURRENCY=4`), so the 25 boots are 7 script invocations

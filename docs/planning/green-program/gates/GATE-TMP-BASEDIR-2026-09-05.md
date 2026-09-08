@@ -6,7 +6,7 @@ Quoting the issue directly:
 
 > On 2026-09-04, an x86 gate lane building the `#737` DF-preempt-oracle fix
 > scored **another lane's serial as its own**, because both lanes ran on
-> `beast` -> Incus container `breenix-x86` and both invoked a gate script that
+> `beast` -> the x86 build environment and both invoked a gate script that
 > hardcodes an absolute `/tmp/breenix_*` output directory. ... the first
 > attempt of this slot scored **another lane's serial**: both scripts `rm
 > -rf`'d and recreated the same directory, and the surviving files were the
@@ -187,7 +187,7 @@ This removes the cd-order dependency (both scripts now resolve `OUTPUT_DIR`
 the same way regardless of cd order) rather than reordering the `cd` calls
 themselves, which would be a larger and unrelated change to each script's
 control flow. The default (`/tmp`) and the custom value this document boots
-with (`/root/gate-tmp-797`) both satisfy the guard by inspection — `case`
+with (`<host-artifact-dir-27>`) both satisfy the guard by inspection — `case`
 matching `/*` against either string — and the guard's actual rejection
 behavior on beast, against 8 of 8 scripts, is in the "R157 review round"
 subsection below (claim-lint:ok: #797 F6, see that subsection's per-script
@@ -221,7 +221,7 @@ already did.
 This was checked against the two values this document actually boots with
 (`printf '%s' "$path" | wc -c`, not asserted by eye): default
 `/tmp/breenix_x86_prod_profile/console.sock` is 42 characters and the custom
-value used in the (b) run above, `/root/gate-tmp-797/breenix_x86_prod_profile/
+value used in the (b) run above, `<host-artifact-dir-27>/breenix_x86_prod_profile/
 console.sock`, is 56 characters — both under the 107-char limit by a wide
 margin. Both guards were also exercised standalone on beast with a
 deliberately oversized `BREENIX_GATE_TMP` and rejected in well under a
@@ -245,8 +245,8 @@ beast evidence for the replacement, is in
 ## The evidence-capture driver at `docs/planning/713-x86-spawn/serials/run-leg1.sh` (review finding F4)
 
 This checked-in script is a historical record of a 12-boot evidence-capture
-run for issue `#713`: it hardcodes `cd /root/breenix` and
-`/root/p713-prove/leg1` because those name the exact clone and output
+run for issue `#713`: it hardcodes `cd <canonical-checkout>` and
+`<host-artifact-dir-30>/leg1` because those name the exact clone and output
 directory that run produced, and it ran before `BREENIX_GATE_TMP` existed, so
 its `cp -r /tmp/breenix_x86_prod_profile ...` line was correct for the run it
 recorded. Left as a plain `/tmp` literal with `2>/dev/null || true` swallowing
@@ -261,11 +261,11 @@ boot instead of swallowing it, without aborting the remaining boots in the
 loop (claim-lint:ok: #797 F4, `bash -n` clean; see the diff in this branch's
 own commit for the exact before/after).
 
-## Beast run (clone `/root/breenix-797`, HEAD `07c7b6be`)
+## Beast run (clone `<isolated-checkout-26>`, HEAD `07c7b6be`)
 
-Both runs used a distinct clone (`/root/breenix-797`, branched from
+Both runs used a distinct clone (`<isolated-checkout-26>`, branched from
 `origin/main` at `07c7b6be35b67a3001969a79279dd6bcefd83121`, the same commit
-this branch is based on) inside the shared `breenix-x86` Incus container, with
+this branch is based on) inside the shared x86 build environment, with
 the QEMU-concurrency gate (`pgrep -fl qemu-system-x86_64 | wc -l <= 1`)
 satisfied before each boot (1 other lane's QEMU process was running before
 each of the two runs below; this round added at most one more).
@@ -288,7 +288,7 @@ exactly where the pre-existing script wrote before this change, since
 Built UEFI image: `target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img`
 sha256 `002c53575bee9885cd601c4eb5535107c76640bcff521dd403d281af25d58b42`.
 
-### (b) Custom run — `BREENIX_GATE_TMP=/root/gate-tmp-797`
+### (b) Custom run — `BREENIX_GATE_TMP=<host-artifact-dir-27>`
 
 This run was done twice on the same clone. The first pass used a copy of
 `run-x86-boot-tests.sh` taken before this branch had been rebased onto
@@ -306,7 +306,7 @@ clone, matching this branch's actual committed content and read back with
 07c7b6be Merge pull request #799 from ryanbreen/fix/737-df-oracle-ratchet
 ```
 
-`BREENIX_GATE_TMP=/root/gate-tmp-797 ./docker/qemu/run-x86-boot-tests.sh 1`:
+`BREENIX_GATE_TMP=<host-artifact-dir-27> ./docker/qemu/run-x86-boot-tests.sh 1`:
 
 ```
 x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0
@@ -333,10 +333,10 @@ and after this custom run — the only thing that changed between the two
 snapshots was the shared `/tmp` parent directory's own mtime, from something
 else on the container writing elsewhere in `/tmp`, not from this run — so this
 run did not write to it. All of this run's own output landed at
-`/root/gate-tmp-797/breenix_x86_boot_tests_1/` instead:
+`<host-artifact-dir-27>/breenix_x86_boot_tests_1/` instead:
 
 ```
-=== AFTER: ls -la --time-style=full-iso /root/gate-tmp-797/breenix_x86_boot_tests_1 ===
+=== AFTER: ls -la --time-style=full-iso <host-artifact-dir-27>/breenix_x86_boot_tests_1 ===
 -rw-r--r-- 1 root root 3653632 2026-09-05 05:11:30 OVMF_CODE.fd
 -rw-r--r-- 1 root root  540672 2026-09-05 05:11:30 OVMF_VARS.fd
 -rw-r--r-- 1 root root     718 2026-09-05 05:18:54 qemu.log
@@ -365,7 +365,7 @@ touches.)
 
 ### (c) R157 review round — `run-x86-gate.sh`, one of the four F1 additions
 
-Re-run on the same clone (`/root/breenix-797`) after confirming
+Re-run on the same clone (`<isolated-checkout-26>`) after confirming
 `pgrep -fl qemu-system-x86_64 | wc -l` was `0` before each boot below. The
 eight changed scripts were pushed to the clone individually (`incus file
 push`, not a git fetch — this container's `origin` remote is a stale local
@@ -391,7 +391,7 @@ Output landed at `/tmp/breenix_gate_1/` (`serial_kernel.log`,
 before this change.
 
 Custom run, same clone, immediately after:
-`BREENIX_GATE_TMP=/root/gate-tmp-797-r157 ./docker/qemu/run-x86-gate.sh 1 kthread`:
+`BREENIX_GATE_TMP=<host-artifact-dir-28> ./docker/qemu/run-x86-gate.sh 1 kthread`:
 
 ```
 [gate] Build clean (0 warnings) in 13s
@@ -414,7 +414,7 @@ stdout.log          10404 2026-09-05 05:48:28.404182343 +0000  2026-09-05 05:48:
 3 of 3 files carry the identical mtime before and after (only the shared
 `/tmp` parent directory's own mtime moved, from something else on the
 container — the same pattern the original (a)/(b) run above observed). This
-run's own output landed at `/root/gate-tmp-797-r157/breenix_gate_1/` instead,
+run's own output landed at `<host-artifact-dir-28>/breenix_gate_1/` instead,
 with fresh timestamps (`serial_kernel.log`/`serial_user.log` at 05:50:55,
 `stdout.log` at 05:50:45) — confirming `BREENIX_GATE_TMP` redirects this
 newly-converted script's output the same way it already did for the original
@@ -436,7 +436,7 @@ is the real, unedited number):
 ```
 GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: relative/path)
 x86 production-profile gate: FAIL (console socket path exceeds the AF_UNIX
-sun_path limit of 107 chars: "/root/x/root/x/.../breenix_x86_prod_profile/
+sun_path limit of 107 chars: "<host-artifact-dir-86><host-artifact-dir-86>/.../breenix_x86_prod_profile/
 console.sock" is 878 chars -- shorten BREENIX_GATE_TMP)
 ```
 

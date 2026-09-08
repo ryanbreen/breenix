@@ -1,6 +1,6 @@
 #737 DF fix -- every byte booted or symbolized in this round (R17).
-Gate host: beast -> Incus container breenix-x86, clone /root/breenix-737-oracle,
-rust-fork -> /root/breenix/rust-fork-real. Every gate run executed under
+Gate host: beast -> the x86 build environment, clone <isolated-checkout-153>,
+rust-fork -> <rust-fork-checkout>. Every gate run executed under
 `unshare -m` with /tmp bind-mounted to <clone>/gate-tmp/tmp (R18).
 
 --------------------------------------------------------------------------

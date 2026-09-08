@@ -1,0 +1,8 @@
+Revision: 76da053aa050e75e4c97b3e935ae5447baf357c5; working complete-report test patch
+Command: rustfmt --edition 2021 --check tests/gate_qmp_backstop_structure.rs
+exit=0
+Command: git diff --check
+exit=0
+Command: git diff --quiet -- kernel docker scripts
+exit=0
+Cleanup: this round launched no QEMU guests; no lane-owned QEMU process found. Other lanes left untouched.
