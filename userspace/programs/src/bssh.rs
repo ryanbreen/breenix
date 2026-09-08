@@ -101,6 +101,10 @@ fn main() {
     {
         if matches!(e, libbreenix::ssh::SshError::Auth) {
             eprintln!("bssh: authentication failed");
+            // Reserved for server USERAUTH_FAILURE in the Auth error arm.
+            if matches!(opts.auth_choice, AuthChoice::PublicKey { wrong_key: true }) {
+                std::process::exit(77);
+            }
         } else {
             eprintln!("bssh: handshake failed: {:?}", e);
         }
@@ -121,17 +125,17 @@ fn main() {
         std::process::exit(rc);
     }
 
+    if opts.smoke {
+        println!("bssh: smoke success");
+        std::process::exit(0);
+    }
+
     // Open channel + PTY + shell
     if let Err(e) = session.open_shell() {
         eprintln!("bssh: shell request failed: {:?}", e);
         std::process::exit(1);
     }
     println!("bssh: shell opened");
-    if opts.smoke {
-        println!("bssh: smoke success");
-        session.close();
-        std::process::exit(0);
-    }
 
     // Put local terminal in raw mode
     let mut old_termios: libbreenix::termios::Termios = unsafe { core::mem::zeroed() };
@@ -534,7 +538,7 @@ fn drain_exec_output(session: &mut ClientSession) -> i32 {
                 }
                 Ok(None) => {}
                 Err(libbreenix::ssh::SshError::Disconnected) => {
-                    return session.exit_status().unwrap_or(0);
+                    return session.exit_status().unwrap_or(255);
                 }
                 Err(e) => {
                     eprintln!("bssh: exec receive failed: {:?}", e);
@@ -544,7 +548,7 @@ fn drain_exec_output(session: &mut ClientSession) -> i32 {
         }
 
         if fds[0].revents & io::poll_events::POLLHUP != 0 {
-            return session.exit_status().unwrap_or(0);
+            return session.exit_status().unwrap_or(255);
         }
     }
 }

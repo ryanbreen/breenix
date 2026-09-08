@@ -17,7 +17,7 @@ index 78dcb3530..938ada4d0 100644
 424:=== leg -smp 2 ===
 425:  leg -smp 2: FAIL (no marker matching madt_cpus=2:enabled=2:...:online=1)
 426:    found: [X86_SMP_ENUM:madt_cpus=1:enabled=2:x2apic=0:bsp_apic_id=0:cpuid_logical=2:present=1:online=1:max_cpus=1:src=madt:reason=none]
-427:  leg -smp 2: serial at /root/breenix-smp1-tmp/breenix_x86_smp_enum_2
+427:  leg -smp 2: serial at <isolated-checkout-21>/breenix_x86_smp_enum_2
 428:x86 SMP enumeration gate: FAIL (1 of 2 leg(s) red)
 429:x86 SMP enumeration gate: FAIL (set -e abort at docker/qemu/run-x86-smp-enum-gate.sh:238, exit 1)
 430:  failing command: false

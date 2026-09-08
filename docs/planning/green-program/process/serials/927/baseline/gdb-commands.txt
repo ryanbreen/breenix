@@ -1,8 +1,8 @@
 set pagination off
 set confirm off
 set language c
-file /root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845
-add-symbol-file /root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845 -o 0x10000000000
+file <isolated-checkout-166>/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845
+add-symbol-file <isolated-checkout-166>/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845 -o 0x10000000000
 target remote 127.0.0.1:1927
 hbreak *0x100001c85d0
 continue

@@ -1,8 +1,8 @@
-docker/qemu/run-x86-gate.sh 1 full, beast (breenix-x86), a6679e7c + the M1
+docker/qemu/run-x86-gate.sh 1 full, beast (<x86-build-environment>), a6679e7c + the M1
 tcp_dup_listener_test wiring (userspace/programs/src/tcp_dup_listener_test.rs,
 Cargo.toml, build.sh, kernel/src/boot/test_list.rs, kernel/src/main.rs).
 
-[gate] repo: /root/breenix  head: a6679e7c
+[gate] repo: <canonical-checkout>  head: a6679e7c
 [gate] accel=kvm cpu=host
 [gate] === Building userspace ELFs ===
 [gate] === Repacking the userspace test disk and the ext2 image ===

@@ -1,6 +1,6 @@
-[gate] repo: /root/breenix-775  head: 365c20c2
+[gate] repo: <isolated-checkout-53>  head: 365c20c2
 [gate] accel=kvm cpu=host
-[gate] repointing rust-fork at /root/breenix/rust-fork-real (not committed)
+[gate] repointing rust-fork at <rust-fork-checkout> (not committed)
 [gate] === Building userspace ELFs ===
 [gate] === Repacking the userspace test disk and the ext2 image ===
 [gate] === Building (release, features=testing,external_test_bins) ===

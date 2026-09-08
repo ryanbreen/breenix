@@ -134,7 +134,7 @@ model rather than a red this branch is carrying.
 The single test named in #802 is inside that 83 and passes at this head; the
 82/1 split quoted at the top is `main` at `2a444455`.
 
-### Beast (`breenix-x86` Incus VM, clone `/root/breenix-health`)
+### Beast (the x86 build environment, clone `<isolated-checkout-17>`)
 
 Head `4b6b82d42462635a5296f54524144518db5fa6b6`; the gate script's sha256 in
 the clone, `131d1304db8a1a78b4d36db06022a311d6a007458c5ba72d192a953c29ba0764`,
@@ -146,7 +146,7 @@ matches this branch's working tree. Full transcript:
    `grep -E "^(warning|error)"` over its log printed no line (grep exit 1 =
    no match), per the driver transcript's STEP 1 block.
 
-2. **Default gate run**, `BREENIX_GATE_TMP=/root/gate-tmp-802`, 1 run: exit 0
+2. **Default gate run**, `BREENIX_GATE_TMP=<host-artifact-dir-24>`, 1 run: exit 0
    with the verdict line
 
    ```
@@ -165,7 +165,7 @@ matches this branch's working tree. Full transcript:
    characters:
 
    ```
-   x86 production-profile gate preflight: console socket path "/root/gate-tmp-802-ggg...ggg/breenix_x86_prod_profile/console.sock" is 147 chars, over the AF_UNIX sun_path limit of 107 -- shorten BREENIX_GATE_TMP
+   x86 production-profile gate preflight: console socket path "<host-artifact-dir-25>/breenix_x86_prod_profile/console.sock" is 147 chars, over the AF_UNIX sun_path limit of 107 -- shorten BREENIX_GATE_TMP
    x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-profile-boot-test.sh:830, exit 1)
      failing command: false
    ```

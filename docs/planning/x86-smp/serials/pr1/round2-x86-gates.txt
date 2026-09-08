@@ -1,4 +1,4 @@
-=== round-2 x86 gates, beast breenix-x86, clone /root/breenix-smp1, BREENIX_GATE_TMP=/root/breenix-smp1-tmp ===
+=== round-2 x86 gates, beast <x86-build-environment>, clone <isolated-checkout-20>, BREENIX_GATE_TMP=<isolated-checkout-21> ===
 head: 04c9a6ad22834d392555599a17a888bedfa51c56
 
 --- cargo build --release --features testing,external_test_bins --bin qemu-uefi ---

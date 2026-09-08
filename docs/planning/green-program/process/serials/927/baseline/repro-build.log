@@ -64,7 +64,7 @@ REVISION=19427ef42612d14bb4cc4474a7dd460cdc850a03
    Compiling log v0.4.34
    Compiling slab v0.4.12
    Compiling linux-raw-sys v0.12.1
-   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-166>/kernel)
    Compiling futures-task v0.3.34
    Compiling serde_json v1.0.151
    Compiling untrusted v0.9.0
@@ -116,14 +116,14 @@ REVISION=19427ef42612d14bb4cc4474a7dd460cdc850a03
    Compiling sha2 v0.11.0
    Compiling lzma-rs v0.3.0
    Compiling tar v0.4.46
-   Compiling breenix v0.1.0 (/root/breenix-927a)
+   Compiling breenix v0.1.0 (<isolated-checkout-173>)
    Compiling rustls-webpki v0.103.15
    Compiling base16ct v1.0.0
    Compiling ureq v3.4.1
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 4m 56s
-   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-927a)
+   Compiling kernel v0.1.0 (<isolated-checkout-166>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-173>)
     Finished `release` profile [optimized] target(s) in 24.23s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-927a/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-166>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)

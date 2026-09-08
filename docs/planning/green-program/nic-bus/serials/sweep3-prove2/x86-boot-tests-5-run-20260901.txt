@@ -22,8 +22,8 @@
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix/target/ext2.img
-  /root/breenix/testdata/ext2.img
+  <canonical-checkout>/target/ext2.img
+  <canonical-checkout>/testdata/ext2.img
   Size: 256M
 
 Contents:

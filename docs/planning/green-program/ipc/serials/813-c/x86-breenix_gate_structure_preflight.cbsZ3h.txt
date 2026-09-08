@@ -1,6 +1,6 @@
 revision=7cd13af22acf5076e86c103a0a7a44d1bc87dd1a
-directory=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/aarch64_testing_profile_structure.log exit=0
+directory=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/aarch64_testing_profile_structure.log exit=0
 == compiling aarch64_testing_profile_structure ==
 == running aarch64_testing_profile_structure  ==
 
@@ -11,7 +11,7 @@ test the_testing_profile_gate_scores_committed_serials_with_the_same_code ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/block_request_lifetime_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/block_request_lifetime_structure.log exit=0
 == compiling block_request_lifetime_structure ==
 == running block_request_lifetime_structure  ==
 
@@ -33,7 +33,7 @@ test every_wedged_driver_gate_refuses_inside_lock ... ok
 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/blocking_fd_eagain_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/blocking_fd_eagain_structure.log exit=0
 == compiling blocking_fd_eagain_structure ==
 == running blocking_fd_eagain_structure  ==
 
@@ -45,7 +45,7 @@ test repaired_families_have_no_blocking_eagain_exit ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/capture_bxcap_schema_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/capture_bxcap_schema_structure.log exit=0
 == compiling capture_bxcap_schema_structure ==
 == running capture_bxcap_schema_structure  ==
 
@@ -85,7 +85,7 @@ test every_committed_fixture_decodes ... ok
 test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/capture_path_lock_free_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/capture_path_lock_free_structure.log exit=0
 == compiling capture_path_lock_free_structure ==
 == running capture_path_lock_free_structure  ==
 
@@ -115,7 +115,7 @@ test an_allocation_behind_a_newly_named_local_helper_would_be_caught - should pa
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/check-critical-path-violations.log exit=not separately recorded for helper; see gate transcript
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/check-critical-path-violations.log exit=not separately recorded for helper; see gate transcript
 Checking critical path files for logging violations...
 
 586:    crate::serial_println!(
@@ -377,7 +377,7 @@ Allowed alternatives:
 
 See kernel/src/trace.rs for the lock-free tracing framework.
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/console_read_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/console_read_structure.log exit=0
 == compiling console_read_structure ==
 == running console_read_structure  ==
 
@@ -391,7 +391,7 @@ test device_modes_poll_and_non_sleeping_device_api ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/context_restore_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/context_restore_structure.log exit=0
 == compiling context_restore_structure ==
 == running context_restore_structure  ==
 
@@ -503,7 +503,7 @@ test fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site ... ok
 test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 228.12s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/coreproof_component_h_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/coreproof_component_h_structure.log exit=0
 == compiling coreproof_component_h_structure ==
 == running coreproof_component_h_structure  ==
 
@@ -517,7 +517,7 @@ test self_retraction_tags_the_fresh_identity_the_resulting_trampoline_reads ... 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/coreproof_coverage_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/coreproof_coverage_structure.log exit=0
 == compiling coreproof_coverage_structure ==
 == running coreproof_coverage_structure  ==
 
@@ -530,7 +530,7 @@ test every_coverage_placement_names_a_declared_site ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/coreproof_mutation_register_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/coreproof_mutation_register_structure.log exit=0
 == compiling coreproof_mutation_register_structure ==
 == running coreproof_mutation_register_structure  ==
 
@@ -544,7 +544,7 @@ test every_declared_mutation_perturbs_a_real_site ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/coreproof_sites_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/coreproof_sites_structure.log exit=0
 == compiling coreproof_sites_structure ==
 == running coreproof_sites_structure  ==
 
@@ -557,7 +557,7 @@ test every_placed_site_is_declared ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/critical_path_logging_census_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/critical_path_logging_census_structure.log exit=0
 == compiling critical_path_logging_census_structure ==
 == running critical_path_logging_census_structure  ==
 
@@ -578,7 +578,7 @@ test the_anchor_table_sums_to_the_ledger_total ... ok
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.41s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/ctx_diag_ring_sample_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/ctx_diag_ring_sample_structure.log exit=0
 == compiling ctx_diag_ring_sample_structure ==
 == running ctx_diag_ring_sample_structure  ==
 
@@ -603,7 +603,7 @@ test reverting_ctx_counter_to_one_shared_line_would_be_caught - should panic ...
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/degenerate_transfer_fd_validation_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/degenerate_transfer_fd_validation_structure.log exit=0
 == compiling degenerate_transfer_fd_validation_structure ==
 == running degenerate_transfer_fd_validation_structure  ==
 
@@ -617,7 +617,7 @@ test the_degenerate_transfer_census_is_not_vacuous ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/dispatch_fact_census_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/dispatch_fact_census_structure.log exit=0
 == compiling dispatch_fact_census_structure ==
 == running dispatch_fact_census_structure  ==
 
@@ -633,7 +633,7 @@ test every_deleted_site_still_publishes_its_fact ... ok
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/dispatch_path_lock_free_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/dispatch_path_lock_free_structure.log exit=0
 == compiling dispatch_path_lock_free_structure ==
 == running dispatch_path_lock_free_structure  ==
 
@@ -646,7 +646,7 @@ test master_kernel_pml4_is_read_without_a_lock ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/dispatch_strand_census_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/dispatch_strand_census_structure.log exit=0
 == compiling dispatch_strand_census_structure ==
 == running dispatch_strand_census_structure  ==
 
@@ -662,7 +662,7 @@ test the_staleness_bound_has_exactly_one_copy_in_the_repository ... ok
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/dma_and_log_sink_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/dma_and_log_sink_structure.log exit=0
 == compiling dma_and_log_sink_structure ==
 == running dma_and_log_sink_structure  ==
 
@@ -676,7 +676,7 @@ test framebuffer_log_sink_is_nonblocking_and_bounded ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/entry_point_df_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/entry_point_df_structure.log exit=0
 == compiling entry_point_df_structure ==
 == running entry_point_df_structure  ==
 
@@ -690,7 +690,7 @@ test every_hand_written_entry_clears_df_before_its_first_call_or_string_op ... o
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/exec_lock_order_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/exec_lock_order_structure.log exit=0
 == compiling exec_lock_order_structure ==
 == running exec_lock_order_structure  ==
 
@@ -745,7 +745,7 @@ test arm64_exec_bodies_never_touch_the_scheduler_lock ... ok
 test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.65s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/exit_tally_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/exit_tally_structure.log exit=0
 == compiling exit_tally_structure ==
 == running exit_tally_structure  ==
 
@@ -761,7 +761,7 @@ test record_exit_calls_exist_only_at_the_two_termination_transitions ... ok
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/ext2_disk_size_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/ext2_disk_size_structure.log exit=0
 == compiling ext2_disk_size_structure ==
 == running ext2_disk_size_structure  ==
 
@@ -773,7 +773,7 @@ test no_caller_passes_a_size_flag ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/ext2_lock_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/ext2_lock_structure.log exit=0
 == compiling ext2_lock_structure ==
 == running ext2_lock_structure  ==
 
@@ -819,7 +819,7 @@ test is_mounted_is_home_mounted_and_home_mount_id_route_through_the_accessor ...
 test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/fcntl_pm_contention_gate_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/fcntl_pm_contention_gate_structure.log exit=0
 == compiling fcntl_pm_contention_gate_structure ==
 == running fcntl_pm_contention_gate_structure  ==
 
@@ -837,7 +837,7 @@ test driver_pin_is_balanced_before_cleanup_and_reporting ... ok
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/fork_lock_order_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/fork_lock_order_structure.log exit=0
 == compiling fork_lock_order_structure ==
 == running fork_lock_order_structure  ==
 
@@ -857,7 +857,7 @@ test sys_fork_with_parent_context_has_the_required_lock_order ... ok
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/gate_boot_facts_pipefail_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/gate_boot_facts_pipefail_structure.log exit=0
 == compiling gate_boot_facts_pipefail_structure ==
 == running gate_boot_facts_pipefail_structure  ==
 
@@ -871,7 +871,7 @@ test gbf_helpers_survive_pipefail_with_a_nonexistent_pid_on_every_bash_here ... 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/gate_boot_facts_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/gate_boot_facts_structure.log exit=0
 == compiling gate_boot_facts_structure ==
 == running gate_boot_facts_structure  ==
 
@@ -885,7 +885,7 @@ test gate_boot_facts_predicates_are_not_vacuous ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/gate_capture_drain_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/gate_capture_drain_structure.log exit=0
 == compiling gate_capture_drain_structure ==
 == running gate_capture_drain_structure  ==
 
@@ -900,7 +900,7 @@ test drain_disabled_reads_partial_drain_enabled_reads_complete_same_race ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.55s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/gate_qmp_backstop_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/gate_qmp_backstop_structure.log exit=0
 == compiling gate_qmp_backstop_structure ==
 == running gate_qmp_backstop_structure  ==
 
@@ -924,7 +924,7 @@ test fake_qmp_dump_precedes_sigterm_even_when_decode_fails ... ok
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.07s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/gate_structure_preflight_wiring_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/gate_structure_preflight_wiring_structure.log exit=0
 == compiling gate_structure_preflight_wiring_structure ==
 == running gate_structure_preflight_wiring_structure  ==
 
@@ -940,7 +940,7 @@ test missing_wiring_validator_rejects_a_gate_with_the_call_site_removed ... ok
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/green_program_envelope_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/green_program_envelope_structure.log exit=0
 == compiling green_program_envelope_structure ==
 == running green_program_envelope_structure  ==
 
@@ -963,7 +963,7 @@ test x86_syscall_dispatch_enosys_stubs_are_exactly_gettime ... ok
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/launcher_smoke_xhci_evidence_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/launcher_smoke_xhci_evidence_structure.log exit=0
 == compiling launcher_smoke_xhci_evidence_structure ==
 == running launcher_smoke_xhci_evidence_structure  ==
 
@@ -974,7 +974,7 @@ test deliberately_broken_copy_reddens_the_rule ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/lockup_capture_guard_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/lockup_capture_guard_structure.log exit=0
 == compiling lockup_capture_guard_structure ==
 == running lockup_capture_guard_structure  ==
 
@@ -993,7 +993,7 @@ test the_guard_rejects_an_allocation_reached_by_a_tail_call ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/loopback_pump_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/loopback_pump_structure.log exit=0
 == compiling loopback_pump_structure ==
 == running loopback_pump_structure  ==
 
@@ -1132,7 +1132,7 @@ test rescue_retention_rejects_wrong_kick_architecture ... ok
 test result: ok. 130 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.10s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/masked_binary_load_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/masked_binary_load_structure.log exit=0
 == compiling masked_binary_load_structure ==
 == running masked_binary_load_structure  ==
 
@@ -1146,7 +1146,7 @@ test the_boot_path_still_loads_binaries_and_still_masks ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/mmap_floor_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/mmap_floor_structure.log exit=0
 == compiling mmap_floor_structure ==
 == running mmap_floor_structure  ==
 
@@ -1165,7 +1165,7 @@ test neither_census_is_empty ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/net_lock_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/net_lock_structure.log exit=0
 == compiling net_lock_structure ==
 == running net_lock_structure  ==
 
@@ -1194,7 +1194,7 @@ test every_cross_context_net_static_is_guarded_or_declared_thread_only ... ok
 test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.81s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/parallels_capture_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/parallels_capture_structure.log exit=0
 == compiling parallels_capture_structure ==
 == running parallels_capture_structure  ==
 
@@ -1218,7 +1218,7 @@ test f24_render_verdict_still_passes_a_real_capture ... ok
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.55s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/parallels_kill_by_name_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/parallels_kill_by_name_structure.log exit=0
 == compiling parallels_kill_by_name_structure ==
 == running parallels_kill_by_name_structure  ==
 
@@ -1231,7 +1231,7 @@ test census_reaches_the_known_unfixed_run_sh_instances ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/pipe_fifo_blocking_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/pipe_fifo_blocking_structure.log exit=0
 == compiling pipe_fifo_blocking_structure ==
 == running pipe_fifo_blocking_structure  ==
 
@@ -1257,7 +1257,7 @@ test every_removed_process_row_is_retained_past_the_callers_pm_guard ... ok
 test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.38s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/poll_tcp_gate_wiring_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/poll_tcp_gate_wiring_structure.log exit=0
 == compiling poll_tcp_gate_wiring_structure ==
 == running poll_tcp_gate_wiring_structure  ==
 
@@ -1269,7 +1269,7 @@ test every_oracle_fail_gate_also_requires_the_kernel_ready_lost_marker ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/preempt_bracket_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/preempt_bracket_structure.log exit=0
 == compiling preempt_bracket_structure ==
 == running preempt_bracket_structure  ==
 
@@ -1287,7 +1287,7 @@ test boot_path_preempt_brackets_are_cfg_symmetric ... ok
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/qemu_host_lock_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/qemu_host_lock_structure.log exit=0
 == compiling qemu_host_lock_structure ==
 == running qemu_host_lock_structure  ==
 
@@ -1299,7 +1299,7 @@ test every_x86_qemu_launch_script_sources_and_acquires_the_host_lock ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/qemu_kill_by_name_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/qemu_kill_by_name_structure.log exit=0
 == compiling qemu_kill_by_name_structure ==
 == running qemu_kill_by_name_structure  ==
 
@@ -1310,7 +1310,7 @@ test no_shell_script_kills_qemu_by_name_or_pattern ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/ring_span_report_site_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/ring_span_report_site_structure.log exit=0
 == compiling ring_span_report_site_structure ==
 == running ring_span_report_site_structure  ==
 
@@ -1325,7 +1325,7 @@ test the_registry_prints_the_marker_through_the_locked_writer ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/ring_span_unfiltered_report_site_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/ring_span_unfiltered_report_site_structure.log exit=0
 == compiling ring_span_unfiltered_report_site_structure ==
 == running ring_span_unfiltered_report_site_structure  ==
 
@@ -1348,7 +1348,7 @@ test the_registry_prints_the_marker_through_the_locked_writer ... ok
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/run_inspector_import_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/run_inspector_import_structure.log exit=0
 == compiling run_inspector_import_structure ==
 == running run_inspector_import_structure  ==
 
@@ -1358,7 +1358,7 @@ test six_gates_source_and_call_the_post_verdict_importer ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/serial_line_atomicity_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/serial_line_atomicity_structure.log exit=0
 == compiling serial_line_atomicity_structure ==
 == running serial_line_atomicity_structure  ==
 
@@ -1377,7 +1377,7 @@ test primitive_census_validator_rejects_a_differently_named_uart_writer ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.68s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/signal_eintr_predicate_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/signal_eintr_predicate_structure.log exit=0
 == compiling signal_eintr_predicate_structure ==
 == running signal_eintr_predicate_structure  ==
 
@@ -1389,7 +1389,7 @@ test code_mask_raw_string_close_preserves_next_byte ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/strand_handoff_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/strand_handoff_structure.log exit=0
 == compiling strand_handoff_structure ==
 == running strand_handoff_structure  ==
 
@@ -1437,7 +1437,7 @@ test aarch64_census_widen_oracle_has_real_disarmed_and_armed_legs ... ok
 test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.82s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/structure_preflight_parallel_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/structure_preflight_parallel_structure.log exit=0
 == compiling structure_preflight_parallel_structure ==
 == running structure_preflight_parallel_structure  ==
 
@@ -1451,7 +1451,7 @@ test mutation_is_green_red_green_with_default_and_one_job ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.46s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/syscall_return_register_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/syscall_return_register_structure.log exit=0
 == compiling syscall_return_register_structure ==
 == running syscall_return_register_structure  ==
 
@@ -1466,7 +1466,7 @@ test no_trap_names_its_return_register_as_input_only ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.79s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/teardown_rustfmt_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/teardown_rustfmt_structure.log exit=0
 == compiling teardown_rustfmt_structure ==
 == running teardown_rustfmt_structure  ==
 
@@ -1476,7 +1476,7 @@ test teardown_provider_is_rustfmt_clean ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.87s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/teardown_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/teardown_structure.log exit=0
 == compiling teardown_structure ==
 == running teardown_structure  ==
 
@@ -1591,7 +1591,7 @@ test deliberately_broken_variants_fail_the_ratchet ... ok
 test result: ok. 105 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.54s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/terminal_edge_capture_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/terminal_edge_capture_structure.log exit=0
 == compiling terminal_edge_capture_structure ==
 == running terminal_edge_capture_structure  ==
 
@@ -1611,7 +1611,7 @@ test the_capture_is_emitted_before_whatever_ends_the_panic_handler ... ok
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/timer_wake_dispatch_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/timer_wake_dispatch_structure.log exit=0
 == compiling timer_wake_dispatch_structure ==
 == running timer_wake_dispatch_structure  ==
 
@@ -1628,7 +1628,7 @@ test a_late_timer_wake_is_enqueued_at_the_head ... ok
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/trace_ring_depth_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/trace_ring_depth_structure.log exit=0
 == compiling trace_ring_depth_structure ==
 == running trace_ring_depth_structure  ==
 
@@ -1641,7 +1641,7 @@ test timer_tick_total_still_increments_unconditionally ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/tracing_provider_gate_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/tracing_provider_gate_structure.log exit=0
 == compiling tracing_provider_gate_structure ==
 == running tracing_provider_gate_structure  ==
 
@@ -1669,7 +1669,7 @@ test duplicate_pass_is_rejected ... ok
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/ttbr0_shadow_reconciliation_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/ttbr0_shadow_reconciliation_structure.log exit=0
 == compiling ttbr0_shadow_reconciliation_structure ==
 == running ttbr0_shadow_reconciliation_structure  ==
 
@@ -1711,7 +1711,7 @@ test every_shadow_publish_has_an_accounted_asid ... ok
 test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 70.16s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/tty_irq_fg_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/tty_irq_fg_structure.log exit=0
 == compiling tty_irq_fg_structure ==
 == running tty_irq_fg_structure  ==
 
@@ -1731,7 +1731,7 @@ test the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it ... ok
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.04s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/tty_irq_pm_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/tty_irq_pm_structure.log exit=0
 == compiling tty_irq_pm_structure ==
 == running tty_irq_pm_structure  ==
 
@@ -1750,7 +1750,7 @@ test the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.06s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/tty_oracle_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/tty_oracle_structure.log exit=0
 == compiling tty_oracle_structure ==
 == running tty_oracle_structure  ==
 
@@ -1773,7 +1773,7 @@ test the_x86_gate_measures_the_profile_that_ships ... ok
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/udp_ports_lock_irq_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/udp_ports_lock_irq_structure.log exit=0
 == compiling udp_ports_lock_irq_structure ==
 == running udp_ports_lock_irq_structure  ==
 
@@ -1801,7 +1801,7 @@ test with_udp_ports_masked_masks_the_whole_hold_rule_is_not_vacuous ... ok
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/udp_socket_lock_irq_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/udp_socket_lock_irq_structure.log exit=0
 == compiling udp_socket_lock_irq_structure ==
 == running udp_socket_lock_irq_structure  ==
 
@@ -1825,7 +1825,7 @@ test green_control_all_rules_hold_at_head ... ok
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/x86_boot_tests_profile_structure.log exit=1
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/x86_boot_tests_profile_structure.log exit=1
 == compiling x86_boot_tests_profile_structure ==
 == running x86_boot_tests_profile_structure  ==
 
@@ -1845,7 +1845,7 @@ failures:
 
 ---- oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms stdout ----
 
-thread 'oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms' panicked at /root/breenix-i813pc/tests/x86_boot_tests_profile_structure.rs:142:5:
+thread 'oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms' panicked at <isolated-checkout-121>/tests/x86_boot_tests_profile_structure.rs:142:5:
 Traceback (most recent call last):
   File "<string>", line 5, in <module>
 ValueError: '--console' is not in list
@@ -1859,7 +1859,7 @@ failures:
 test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/x86_smp_enum_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/x86_smp_enum_structure.log exit=0
 == compiling x86_smp_enum_structure ==
 == running x86_smp_enum_structure  ==
 
@@ -1874,7 +1874,7 @@ test the_enumeration_marker_has_exactly_one_emission_site ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
 
 
-source=/root/breenix-i813pc-tmp/breenix_gate_structure_preflight.cbsZ3h/xhci_wait_irq_order_structure.log exit=0
+source=<isolated-checkout-123>/breenix_gate_structure_preflight.cbsZ3h/xhci_wait_irq_order_structure.log exit=0
 == compiling xhci_wait_irq_order_structure ==
 == running xhci_wait_irq_order_structure  ==
 

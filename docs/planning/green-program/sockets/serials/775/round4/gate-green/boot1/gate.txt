@@ -1,4 +1,4 @@
-[gate] repo: /root/breenix-775  head: b0b38894
+[gate] repo: <isolated-checkout-53>  head: b0b38894
 [gate] accel=kvm cpu=host
 [gate] === Building userspace ELFs ===
 [gate] === Repacking the userspace test disk and the ext2 image ===

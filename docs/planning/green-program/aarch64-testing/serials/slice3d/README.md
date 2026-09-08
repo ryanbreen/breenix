@@ -153,7 +153,7 @@ replay tests (`both_aarch64_gates_fail_on_a_pinned_placement_refusal`,
 | `05-runtime-anti-vacuity-strict-gate.txt` | PR #824's anti-vacuity leg: the strict gate against a kernel with the pin-hold disposition mutated out — `FAIL: Only 0/1 boots succeeded` |
 | `05-runtime-anti-vacuity-strict-serial.txt` | that failing boot's serial |
 | `05b-anti-vacuity-discarded-host-load.txt` | a discarded strict-gate run from the same anti-vacuity leg, superseded by `05-runtime-anti-vacuity-strict-gate.txt` |
-| `06-x86-prod-gate.txt` | PR #824's x86 production-profile gate on beast (`/root/breenix-slice3d`): `PASS` |
+| `06-x86-prod-gate.txt` | PR #824's x86 production-profile gate on beast (`<isolated-checkout-36>`): `PASS` |
 | `07-x86-boot-tests-gate.txt` | PR #824's x86 boot-tests gate on beast: `PASS`, with the full oracle census printed |
 | `08-x86-build-testing.txt` | x86 build check, `--features testing,external_test_bins`: clean, 0 warnings/errors |
 | `09-x86-build-zero-feature.txt` | x86 build check, no features (the shipped profile): clean, 0 warnings/errors |

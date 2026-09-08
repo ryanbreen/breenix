@@ -1,0 +1,3 @@
+SCORE: FAIL - T2T3T4T5T6[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=4:wait_ns=4906000:dispatches=1:iterations=31:verdict=ok]
+BSSH publickey oracle missing, duplicated, or failed (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/bssh2/wt/docs/planning/green-program/libbreenix/serials/430-420/mutation-serial.txt)
+exit=1

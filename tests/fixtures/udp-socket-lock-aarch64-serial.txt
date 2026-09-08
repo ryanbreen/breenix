@@ -940,3 +940,5 @@ CLONEVM_EXEC_TEST: PASS
 [TTBR0_ASID_CENSUS:untagged=0:tagged=20560:kernel=26339:cleared=46103]
 [init] clonevm_exec_test exited pid=100 code=0
 [spawn] path='/bin/bsshd'
+
+[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]

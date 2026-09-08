@@ -1,8 +1,8 @@
 REVISION=800b2ba159beb211655324b709c239c2dbbf7615
 COMMAND=bash docker/qemu/run-blocking-io-oracle-gate.sh --arch x86_64
-Artifacts: /root/breenix-x927b-tmp/breenix_813_x86_64.B60Flb
+Artifacts: <isolated-checkout-170>/breenix_813_x86_64.B60Flb
 [GATE_PREFLIGHT:structure_suites=64/65:critical_path_lines=260:pinned=120]
-GATE_PREFLIGHT: FAIL (1 of 65 structure suite(s) red: gate_capture_drain_structure -- per-suite logs under /root/breenix-x927b-tmp/breenix_gate_structure_preflight.IpUn6r)
+GATE_PREFLIGHT: FAIL (1 of 65 structure suite(s) red: gate_capture_drain_structure -- per-suite logs under <isolated-checkout-170>/breenix_gate_structure_preflight.IpUn6r)
 blocking I/O oracle gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
 blocking I/O oracle gate: FAIL at docker/qemu/run-blocking-io-oracle-gate.sh:71: false (exit 1)
 COMMAND_EXIT=1

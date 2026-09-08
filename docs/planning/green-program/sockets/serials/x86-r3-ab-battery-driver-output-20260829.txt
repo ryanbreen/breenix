@@ -1,11 +1,11 @@
 [r3] head: efe08b1734b9d6513dcaa54f2a1aec080180b1f2
 [r3] CAND scheduler.rs diff vs branch head: 
 [r3] CAND build clean (0 warnings)
-[r3] CAND image: /root/breenix/target/release/build/breenix-ea07692c0c9fe24b/out/breenix-uefi.img
+[r3] CAND image: <canonical-checkout>/target/release/build/breenix-ea07692c0c9fe24b/out/breenix-uefi.img
 65d88b242b6fea9bd648b2bbd1a99683  /root/r3-out/bin/CAND/breenix-uefi.img
 [r3] OUT scheduler.rs diff vs branch head:  1 file changed, 3 insertions(+), 29 deletions(-)
 [r3] OUT build clean (0 warnings)
-[r3] OUT image: /root/breenix/target/release/build/breenix-ea07692c0c9fe24b/out/breenix-uefi.img
+[r3] OUT image: <canonical-checkout>/target/release/build/breenix-ea07692c0c9fe24b/out/breenix-uefi.img
 7dbeeb08684bd4b600086f7b8a88145b  /root/r3-out/bin/OUT/breenix-uefi.img
 [r3] source restored to head: 2 modified files
 [r3] images differ: YES

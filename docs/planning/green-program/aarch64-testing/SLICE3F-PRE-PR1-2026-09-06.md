@@ -195,17 +195,17 @@ this repository and is not produced by this change.
 |---|---|---|
 | aarch64 `boot_tests`, `aarch64-breenix-kernel.json` | this host | 0 |
 | aarch64 `testing`, `aarch64-breenix-kernel.json` | this host | 0 |
-| x86 `boot_tests,testing,external_test_bins` | beast `breenix-x86`, `/root/breenix-3fpre1` | 0, 0 warnings |
+| x86 `boot_tests,testing,external_test_bins` | beast `<x86-build-environment>`, `<isolated-checkout-42>` | 0, 0 warnings |
 | x86 `testing,external_test_bins` | same | 0, 0 warnings |
 | x86 no features | same | 0, 0 warnings |
 
 The beast clone was made from the pushed branch at
 `1c9f0f533fcef53d204e257dbdda764f5eb553b3`, with `rust-fork` symlinked to
-`/root/breenix/rust-fork-real` and the userspace ELFs and fonts copied from
-`/root/breenix`. On this host the aarch64 kernel build needs
+`<rust-fork-checkout>` and the userspace ELFs and fonts copied from
+`<canonical-checkout>`. On this host the aarch64 kernel build needs
 `userspace/programs/aarch64/*.elf` and `target/ext2-aarch64.img`, which a fresh
 worktree does not have; both were copied from the primary checkout at
-`/Users/wrb/fun/code/breenix`. Neither is tracked, and `git status --short`
+`<local-checkout>`. Neither is tracked, and `git status --short`
 after the copies showed only the two edited source files.
 
 Gates, 4 of 4 invocations run on this host behind the host-wide QEMU lock,
@@ -555,7 +555,7 @@ no-`boot_tests` profile, and `migration_refused=0` in the census. Full log:
 
 ### 9.4 x86, beast, `docker/qemu/run-x86-boot-tests.sh 1`
 
-One run on beast (`breenix-x86` container, clone `/root/breenix-3fpre1`,
+One run on beast (the x86 build environment, clone `<isolated-checkout-42>`,
 reset to this branch's merge commit `2653a3739`): exit 0, no `FAIL` marker
 anywhere in the log (`grep -c 'TEST:.*:FAIL\|^FAIL\|:FAIL\]'` returns 0).
 `[GATE_PREFLIGHT:structure_suites=51/51:critical_path_lines=260:pinned=120]`

@@ -2,7 +2,7 @@ The target architecture is set to "i386:x86-64".
 warning: No executable has been specified and target does not support
 determining executable automatically.  Try using the "file" command.
 0x00000100002cd492 in ?? ()
-add symbol table from file "/root/breenix-ab-main/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961" at
+add symbol table from file "<isolated-checkout-181>/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961" at
 	.text_addr = 0x100000be6f0
 	.rodata_addr = 0x1000007dc78
 	.data_addr = 0x10000421e00

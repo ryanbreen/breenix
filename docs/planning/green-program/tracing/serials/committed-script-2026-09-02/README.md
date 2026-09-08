@@ -14,7 +14,7 @@ either `main` or the fix branch. This directory holds output from the
 used the one `x86_64-unknown-none` testing build (`cargo build --release
 --features testing,external_test_bins --bin qemu-uefi`) plus `cargo run -p
 xtask -- create-test-disk`, built once in a scratch git worktree of
-`fix/tracing-symbol-base` at `e7d019c6` on beast (`breenix-x86` Incus
+`fix/tracing-symbol-base` at `e7d019c6` on beast (`<x86-build-environment>` remote-environment
 container). `BREENIX_RUST_FORK_LIBRARY` was pointed at the shared checkout's
 `rust-fork-real/library` (that directory is untracked — not a submodule in
 this repo — and had to be supplied out-of-band for a fresh worktree to build

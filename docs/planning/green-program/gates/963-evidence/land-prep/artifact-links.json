@@ -1,0 +1,369 @@
+{
+  "revision": "04fe4bc02861628c5a5a0eb5c8df2335e0a402b3",
+  "links": [
+    {
+      "target": "963-evidence/citation-audit.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/issue-963.json",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/pr-962.json",
+      "exists": true
+    },
+    {
+      "target": "957-DRAIN-RACE-2026-09-07.md",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-driver.py",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/normal.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-01.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-02.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-03.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-04.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-05.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-06.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-07.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-08.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-09.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-10.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-11.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-12.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-13.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-14.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-15.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-16.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-17.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-18.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-19.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/load-20.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/normal-after-load.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/mutation-red.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/restored.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/arm-build.log",
+      "exists": true
+    },
+    {
+      "target": "CRITICAL-PATH-DEBT-PR1-2026-09-06.md",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/arm-gate.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/arm-preflight-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/x86-userspace.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/x86-preflight-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/x86-gate.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/x86-serial-user.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/x86-serial-kernel.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/x86-status.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/cleanup.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/v1-red.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/fixture-green-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/v1-old-adapter.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/v2-old-missing_socket.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/v2-old-hung_dump.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/shipped-deadline-removed.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/fixture-green.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/fixture-green-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/structure-sweep.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/structure-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass/cleanup.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/structure.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/arm-gate.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/x86-gate.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/arm-build.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/structure-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/arm-preflight-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/x86-userspace.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/x86-preflight-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/x86-serial-user.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/x86-serial-kernel.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/beast-cleanup.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing/mac-cleanup.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/verify-966/structure.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/verify-966/qmp.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/verify-966/structure-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/verify-966/citations.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/fixture.diff",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/run-verification.py",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/invalid-budget-old-predicate-red.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/invalid-budget-restored-green.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/missing-tool-old-predicate-red.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/missing-tool-restored-green.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/qmp.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/structure.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/structure-details.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/checks.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/checks.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/checks.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/fixpass-v2-2026-09-08/cleanup.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/structure.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/arm-gate.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/x86-gate.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/arm-build.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/load-wait.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/x86-gate.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/x86-serial-user.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/x86-serial-kernel.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/capture-drain.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/mac-cleanup.log",
+      "exists": true
+    },
+    {
+      "target": "963-evidence/landing-retry/beast-cleanup.log",
+      "exists": true
+    }
+  ]
+}

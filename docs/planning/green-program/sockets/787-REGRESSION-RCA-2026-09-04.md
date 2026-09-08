@@ -199,7 +199,7 @@ Both captured by attaching GDB to a wedged QEMU (`-gdb tcp::PORT`, symbols
 anchored at the `virtual_address_offset: 0x10000000000` the bootloader printed).
 Raw logs are in `serials/787-regression/spec1/` and `spec2/`.
 
-Specimen 1 -- `d6b7a186` (main HEAD), fresh clone `/root/breenix-787`, wedged
+Specimen 1 -- `d6b7a186` (main HEAD), fresh clone `<isolated-checkout-3>`, wedged
 after `child_54`:
 
 ```
@@ -240,7 +240,7 @@ inside the accessor, which is consistent with the holder being one of the
 thread-context readers in step 4 rather than a thread stopped inside step 3.
 
 Specimen 2 -- `b257e69e` exactly, the pre-existing A/B clone
-`/root/breenix-ab-main`, wedged after `child_9`, same signature:
+`<isolated-checkout-181>`, wedged after `child_9`, same signature:
 
 ```
 rip      0x100002cd492  <core::sync::atomic::spin_loop_hint+2>
@@ -319,8 +319,8 @@ a mutation-proven one.
 Plus the ratchet mutation at the end of this section. Round 2's re-smoke at the
 merged head, including the aarch64 leg, is in its own section below.
 
-The runs are on beast, in the `breenix-x86` Incus container, sharing the machine
-with the `/root/breenix-737-oracle` tenant throughout. Gate stdout is committed
+The runs are on beast, in the x86 build environment, sharing the machine
+with the `<isolated-checkout-153>` tenant throughout. Gate stdout is committed
 under `docs/planning/green-program/sockets/serials/787-regression/prove/`.
 
 x86, `docker/qemu/run-x86-boot-tests.sh 1`, six sequential runs -- the gate that
@@ -342,8 +342,8 @@ leg's own 131-141 s". Both are withdrawn:
 - The band sentence was arithmetically false in any case: 127-133 does not sit
   inside 131-141, it sits below it at the low end. And the comparison was never
   like-for-like -- the pre leg ran at 1-min loads of 1.89 / 1.15 / 1.55 with the
-  `/root/breenix-737` tenant active, and the fix battery ran alongside
-  `/root/breenix-737-oracle`, on a host whose load moved run to run. On this
+  `<isolated-checkout-15>` tenant active, and the fix battery ran alongside
+  `<isolated-checkout-153>`, on a host whose load moved run to run. On this
   machine a cohort duration is a load reading as much as a code reading.
 
 What the committed stdouts do support is the verdict and the counts, which is
@@ -464,7 +464,7 @@ in the PR body.
 
 ### x86, at the merged head, on beast
 
-`/root/breenix-787fix` at `cd17ff25`, in the `breenix-x86` Incus container,
+`<isolated-checkout-182>` at `cd17ff25`, in the x86 build environment,
 sharing the machine with other tenants. `pgrep -fl qemu-system-x86_64 | wc -l`
 was recorded immediately before each boot: 0, 0, 0.
 

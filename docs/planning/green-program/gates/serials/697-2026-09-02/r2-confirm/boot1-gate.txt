@@ -71,7 +71,7 @@
    Compiling micromath v2.1.0
    Compiling futures-core v0.3.34
    Compiling slab v0.4.12
-   Compiling kernel v0.1.0 (/root/breenix-697-r2-confirm/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-97>/kernel)
    Compiling usize_conversions v0.2.0
    Compiling untrusted v0.9.0
    Compiling anyhow v1.0.104
@@ -116,17 +116,17 @@
    Compiling lzma-rs v0.3.0
    Compiling sha2 v0.11.0
    Compiling rustls-webpki v0.103.15
-   Compiling breenix v0.1.0 (/root/breenix-697-r2-confirm)
+   Compiling breenix v0.1.0 (<isolated-checkout-100>)
    Compiling tar v0.4.46
    Compiling base16ct v1.0.0
    Compiling ureq v3.4.0
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 28.63s
-   Compiling kernel v0.1.0 (/root/breenix-697-r2-confirm/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-697-r2-confirm)
+   Compiling kernel v0.1.0 (<isolated-checkout-97>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-100>)
     Finished `release` profile [optimized] target(s) in 15.09s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-697-r2-confirm/target/release/build/breenix-27744f238db676e7/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-97>/target/release/build/breenix-27744f238db676e7/out/breenix-uefi.img (7405568 bytes)
    Compiling version_check v0.9.5
    Compiling proc-macro2 v1.0.107
    Compiling unicode-ident v1.0.24
@@ -145,7 +145,7 @@
    Compiling heck v0.3.3
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
-   Compiling xtask v0.1.0 (/root/breenix-697-r2-confirm/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-97>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.77s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -307,7 +307,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60221 sectors (29.40 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-697-r2-confirm/target/ext2.img
+  Output: <isolated-checkout-97>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -527,8 +527,8 @@ drwxr-xr-x 3 root root   4096 Sep  3 04:12 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-697-r2-confirm/target/ext2.img
-  /root/breenix-697-r2-confirm/testdata/ext2.img
+  <isolated-checkout-97>/target/ext2.img
+  <isolated-checkout-97>/testdata/ext2.img
   Size: 256M
 
 Contents:

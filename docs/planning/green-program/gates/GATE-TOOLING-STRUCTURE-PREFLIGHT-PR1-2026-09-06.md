@@ -192,13 +192,13 @@ sys 10.45
 ```
 
 ```
-# beast, breenix-x86 Incus container (own clone at /root/breenix-gw,
+# beast, the x86 build environment (own clone at <isolated-checkout-88>,
 # checked out at this branch's own c147024f54f5b4a56c8541334534a77c318d2b5e;
 # 47/47 suites; this is the actual host run-x86-boot-tests.sh and
 # run-x86-prod-profile-boot-test.sh execute in for merge-gating)
 $ bash -c 'TIMEFORMAT="real %R user %U sys %S"; \
     source docker/qemu/lib/gate-structure-preflight.sh; \
-    time gate_structure_preflight /root/breenix-gw "$BREENIX_GATE_TMP"'
+    time gate_structure_preflight <isolated-checkout-88> "$BREENIX_GATE_TMP"'
 [GATE_PREFLIGHT:structure_suites=47/47:critical_path_lines=275:pinned=136]
 real 331.463 user 1140.895 sys 19.307
 ```
@@ -281,21 +281,21 @@ marker-count assertions already in `run-x86-boot-tests.sh` -- was edited
 here); `--whole-file` was used only to confirm that count during drafting,
 not as the gate this round pushes on.
 
-### Beast x86 (Incus container `breenix-x86`)
+### Beast x86 (the x86 build environment)
 
-`ssh beast` -> `sudo -n incus exec breenix-x86 -- ...`, own clone at
-`/root/breenix-gw` (fetched via `/root/breenix`, which itself fetched
+`ssh beast` -> `sudo -n incus exec <x86-build-environment> -- ...`, own clone at
+`<isolated-checkout-88>` (fetched via `<canonical-checkout>`, which itself fetched
 `gates/structure-suites-in-gates` from `origin` directly -- GitHub was
 reachable from inside the container this session), `rust-fork` symlinked
-to `/root/breenix/rust-fork-real` matching the persistent clone's own
+to `<rust-fork-checkout>` matching the persistent clone's own
 symlink, prebuilt `userspace/programs/*.elf` and `fonts/` copied in from
-`/root/breenix` (build artifacts, not tracked in git, needed by the
+`<canonical-checkout>` (build artifacts, not tracked in git, needed by the
 kernel's `include_bytes!` test registry regardless of which structure
-suites run). `BREENIX_GATE_TMP=/root/breenix-gw-tmp`.
+suites run). `BREENIX_GATE_TMP=<isolated-checkout-89>`.
 
 `rustc` resolves via `rustup`'s directory-based toolchain override, which
 needs the invocation's cwd to be inside a tree carrying `rust-toolchain.toml`
--- confirmed present and working (`cd /root/breenix-gw && rustc --version`
+-- confirmed present and working (`cd <isolated-checkout-88> && rustc --version`
 -> `1.90.0-nightly`). The preflight's `command -v rustc` check found it
 genuinely on `PATH`, and the printed `structure_suites=47/47` on both runs
 below is the real count from real suite runs on that container, not the
@@ -458,10 +458,10 @@ Observed crash marker count: 0
 
 ### beast x86: `run-x86-boot-tests.sh 1`
 
-Own clone `/root/breenix-gw` (fetched by exact SHA from the beast host's
-own `/root/breenix`, since the container reaches no outbound GitHub),
-`rust-fork` symlinked to `/root/breenix/rust-fork-real`,
-`BREENIX_GATE_TMP=/root/breenix-gw-tmp`. x86_64 userspace built first
+Own clone `<isolated-checkout-88>` (fetched by exact SHA from the beast host's
+own `<canonical-checkout>`, since the container reaches no outbound GitHub),
+`rust-fork` symlinked to `<rust-fork-checkout>`,
+`BREENIX_GATE_TMP=<isolated-checkout-89>`. x86_64 userspace built first
 (`userspace/programs/build.sh`, no `--arch` -- x86_64 is the default).
 ```
 [GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]

@@ -1,4 +1,4 @@
-add symbol table from file "/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845" with all sections offset by 0x10000000000
+add symbol table from file "<isolated-checkout-166>/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845" with all sections offset by 0x10000000000
 0x00000100002a3441 in kernel::logger::LogFrameBuffer::write_pixel ()
 rip            0x100002a3441       0x100002a3441 <kernel::logger::LogFrameBuffer::write_pixel+593>
 rsp            0xffffc900000fafc8  0xffffc900000fafc8

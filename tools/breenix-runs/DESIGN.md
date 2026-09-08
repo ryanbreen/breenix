@@ -948,20 +948,15 @@ The three arm profiles map to
 **Status: implemented in PR-5 (`RemoteCommand.swift`, `BeastLauncher.swift`), as
 the mechanism below — corrected against beast, live, on 2026-09-06, from the
 plan originally written here.** Two specifics in the original plan turned out
-to be wrong for the `breenix-x86` Incus container specifically, verified by SSH
+to be wrong for the x86 build environment specifically, verified by SSH
 before writing the PR-5 code:
 
-* **There is no `wrb` account in this container** (`id wrb` → "no such user").
-  The repo lives at `/root/breenix`, owned by `root`, and commands in the
-  container run as root: `sudo -n incus exec breenix-x86 -- bash -lc '<CMD>'`,
-  with no `-iu` anything. A `sudo -iu wrb bash -lc '<CMD>'` shape is the
-  pattern for a *different* beast container (`breeniac`, per global
-  CLAUDE.md) and does not apply here.
+* **Remote account and repository paths must be configured for the target environment.** Use the configured execution identity and canonical checkout; do not assume that login-user conventions from another environment apply. The prepare/run/pull/teardown operations must use the same remote filesystem namespace.
 * **`rsync -az beast:<clone>/...` cannot reach the evidence.** `<clone>` is a
-  path inside the Incus container's own filesystem namespace, not a path on
+  path inside the build environment's own filesystem namespace, not a path on
   the beast host's filesystem an `ssh beast` + `rsync` pair can see. The
-  working mechanism is a `tar` stream over the same ssh+incus-exec channel:
-  `sudo -n incus exec breenix-x86 -- tar -czf - -C <clone> gate-tmp`, its
+  working mechanism is a `tar` stream over the same ssh+remote-environment-exec channel:
+  `sudo -n incus exec <x86-build-environment> -- tar -czf - -C <clone> gate-tmp`, its
   stdout captured directly (kept separate from stderr, since it is raw gzip
   bytes) and extracted locally with `/usr/bin/tar -xzf`.
 
@@ -974,17 +969,17 @@ tree, so that step is its job.
 ```
 1. ssh -T -o BatchMode=yes -o ConnectTimeout=15 beast '<CMD>' for each step below
    -- non-interactive throughout; each invocation runs sudo -n incus exec
-   breenix-x86 -- ... as root, no login shell, no -iu anything
-2. prepare: bash -lc 'git -C /root/breenix fetch origin && rm -rf <clone> &&
-   git clone --shared /root/breenix <clone> && git -C <clone> checkout
+   <x86-build-environment> -- ... as root, no login shell, no -iu anything
+2. prepare: bash -lc 'git -C <canonical-checkout> fetch origin && rm -rf <clone> &&
+   git clone --shared <canonical-checkout> <clone> && git -C <clone> checkout
    --detach <sha>' -- verified live: no SECOND fetch is needed inside the
-   clone. `--shared`'s alternates file makes each of /root/breenix's objects
+   clone. `--shared`'s alternates file makes each of <canonical-checkout>'s objects
    (including one reachable only via refs/remotes/origin/* after step 1's
    fetch, not via any local branch) checkoutable in the new clone even
    though no ref in the new clone points at it yet.
-3. run: bash -lc 'mkdir -p <clone>/gate-tmp && source /root/.cargo/env &&
+3. run: bash -lc 'mkdir -p <clone>/gate-tmp && source <cargo-home>/env &&
    env BREENIX_GATE_TMP=<clone>/gate-tmp BREENIX_REPO_DIR=<clone>
-   BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=<n>
+   BREENIX_RUST_FORK=<rust-fork-checkout> BREENIX_GATE_TIMEOUT=<n>
    <clone>/docker/qemu/run-x86-gate.sh <boots> <full|kthread>' -- the mkdir
    runs before the gate script so a build failure that does not reach the
    per-boot loop still leaves gate-tmp/ present for step 4
@@ -1000,7 +995,7 @@ tree, so that step is its job.
    own exit code from step 3.
 ```
 
-`BREENIX_RUST_FORK=/root/breenix/rust-fork-real` matters because
+`BREENIX_RUST_FORK=<rust-fork-checkout>` matters because
 `rust-fork-real` is gitignored and untracked — a fresh clone has neither the
 `rust-fork` symlink nor its target, which is exactly why `run-x86-gate.sh` has
 its own repoint logic (`rm -f rust-fork; ln -s "$BREENIX_RUST_FORK" rust-fork`)
@@ -1011,7 +1006,7 @@ preferred: it is the `[[workflow-worktree-isolation]]` rule (R83), and #797 is t
 issue where concurrent lanes on this exact shared beast container clobbered each
 other's `/tmp/breenix_gate_$i`. Setting `BREENIX_GATE_TMP` inside the clone closes
 the other half. The clone path itself is a plain function of the run id
-(`/root/breenix-<id>`, a sibling of the canonical checkout, matching the
+(`<isolated-checkout-237>`, a sibling of the canonical checkout, matching the
 `breenix-<lane>` naming convention the other beast clones on this host
 already use) — not `mktemp`, which would make the launcher's plan-building
 step impure and untestable as a pure function of (sha, boots, mode, paths).
@@ -1022,7 +1017,7 @@ run x86` cannot leave a stray remote QEMU boot running or degrade into
 `pkill qemu-system-*` (`[[workflow-worktree-isolation]]` R84) — is not built in
 PR-5. A `Ctrl-C` during the multi-minute `runGate` step today leaves the remote
 gate (and its clone) running on beast; the operator cleans it up by hand
-(`ssh beast 'sudo -n incus exec breenix-x86 -- rm -rf <clone>'`) until this
+(`ssh beast 'sudo -n incus exec <x86-build-environment> -- rm -rf <clone>'`) until this
 lands. This is a real, disclosed gap, not a silently dropped requirement.
 
 ### 5.3 Host facts the launcher samples itself

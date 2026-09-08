@@ -33,6 +33,10 @@ pub struct Channel {
     pub eof_received: bool,
     /// Whether the channel has been closed.
     pub closed: bool,
+    /// Whether we already sent CLOSE.
+    pub close_sent: bool,
+    /// Whether we already sent EOF.
+    pub eof_sent: bool,
     /// PTY terminal type (if a PTY was requested).
     pub pty_term: Option<String>,
     /// PTY dimensions (cols, rows).
@@ -52,6 +56,8 @@ impl Channel {
             max_packet,
             eof_received: false,
             closed: false,
+            close_sent: false,
+            eof_sent: false,
             pty_term: None,
             pty_size: (80, 24),
             exec_command: None,
@@ -213,20 +219,28 @@ pub fn send_window_adjust(
 }
 
 /// Send channel EOF.
-pub fn send_channel_eof(io: &mut PacketIo, channel: &Channel) -> Result<(), SshError> {
+pub fn send_channel_eof(io: &mut PacketIo, channel: &mut Channel) -> Result<(), SshError> {
     let mut msg = Vec::with_capacity(5);
+    if channel.eof_sent || channel.close_sent {
+        return Ok(());
+    }
     msg.push(SSH_MSG_CHANNEL_EOF);
     SshBuf::put_u32(&mut msg, channel.remote_id);
     io.send_packet(&msg).map_err(|_| SshError::Io)?;
+    channel.eof_sent = true;
     Ok(())
 }
 
 /// Send channel close.
-pub fn send_channel_close(io: &mut PacketIo, channel: &Channel) -> Result<(), SshError> {
+pub fn send_channel_close(io: &mut PacketIo, channel: &mut Channel) -> Result<(), SshError> {
     let mut msg = Vec::with_capacity(5);
+    if channel.close_sent {
+        return Ok(());
+    }
     msg.push(SSH_MSG_CHANNEL_CLOSE);
     SshBuf::put_u32(&mut msg, channel.remote_id);
     io.send_packet(&msg).map_err(|_| SshError::Io)?;
+    channel.close_sent = true;
     Ok(())
 }
 

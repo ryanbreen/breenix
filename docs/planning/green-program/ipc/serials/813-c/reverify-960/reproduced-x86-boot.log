@@ -147,7 +147,7 @@ userspace_build_exit=0
    Compiling httparse v1.10.1
    Compiling futures-core v0.3.34
    Compiling micromath v2.1.0
-   Compiling kernel v0.1.0 (/root/breenix-i813pd/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-127>/kernel)
    Compiling embedded-graphics v0.8.2
    Compiling futures-util v0.3.34
    Compiling pic8259 v0.10.4
@@ -187,14 +187,14 @@ userspace_build_exit=0
    Compiling sha2 v0.11.0
    Compiling lzma-rs v0.3.0
    Compiling tar v0.4.46
-   Compiling breenix v0.1.0 (/root/breenix-i813pd)
+   Compiling breenix v0.1.0 (<isolated-checkout-129>)
    Compiling base16ct v1.0.0
    Compiling rustls-webpki v0.103.15
    Compiling ureq v3.4.1
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 33.49s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-i813pd/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  ELF:      <isolated-checkout-127>/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
   sha256:   163d9c30084f33b507d4d83ef21eb3e185f7889607b5f76be49da5cd93b85eee
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -202,11 +202,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 14
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-i813pd/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813pd)
+   Compiling kernel v0.1.0 (<isolated-checkout-127>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-129>)
     Finished `release` profile [optimized] target(s) in 16.35s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-i813pd/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-127>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
    Compiling proc-macro2 v1.0.107
    Compiling unicode-ident v1.0.24
    Compiling quote v1.0.47
@@ -233,7 +233,7 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
    Compiling serde_derive v1.0.229
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
-   Compiling xtask v0.1.0 (/root/breenix-i813pd/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-127>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.45s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -401,7 +401,7 @@ Test disk created: target/test_binaries.img
   Disk size: 62682 sectors (30.61 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-i813pd/target/ext2.img
+  Output: <isolated-checkout-127>/target/ext2.img
   Size: 256MB
   Payload: 46MB (userspace binaries + fonts)
   Minimum image size for this payload: 71MB (incl. ext2 overhead + headroom)
@@ -623,57 +623,57 @@ drwxr-xr-x 3 root root   4096 Sep  8 05:04 ..
 -rwxr-xr-x 1 root root 183640 Sep  8 05:04 wc_test
 -rwxr-xr-x 1 root root 182968 Sep  8 05:04 which_test
 -rwxr-xr-x 1 root root 182544 Sep  8 05:04 wnohang_timing_test
--rw-r--r-- 1 root root 19 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/trunctest.txt
--rw-r--r-- 1 root root 20 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/deep/path/to/file/data.txt
--rw-r--r-- 1 root root 17 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/hello.txt
--rw-r--r-- 1 root root 20 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/test/nested.txt
--rwxr-xr-x 1 root root 187496 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/sbin/init
--rwxr-xr-x 1 root root 181968 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/sbin/blogd
--rwxr-xr-x 1 root root 184080 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/sbin/telnetd
--rwxr-xr-x 51 root root 300712 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/sbin/true
--rwxr-xr-x 51 root root 300712 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/sbin/false
--rw-r--r-- 1 root root 488584 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Roboto-Regular.ttf
--rw-r--r-- 1 root root 757076 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/DejaVuSans.ttf
--rw-r--r-- 1 root root 2049096 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/NotoSans-Regular.ttf
--rw-r--r-- 1 root root 309408 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Hack-Regular.ttf
--rw-r--r-- 1 root root 135580 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/IBMPlexMono-Regular.ttf
--rw-r--r-- 1 root root 340712 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/DejaVuSansMono.ttf
--rw-r--r-- 1 root root 260364 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/FiraCode-Regular.ttf
--rw-r--r-- 1 root root 598060 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/CascadiaCode-Regular.ttf
--rw-r--r-- 1 root root 532636 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/OpenSans-Regular.ttf
--rw-r--r-- 1 root root 359048 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/PTSerif-Regular.ttf
--rw-r--r-- 1 root root 646340 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/SourceSans3-Regular.ttf
--rw-r--r-- 1 root root 312352 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Raleway-Regular.ttf
--rw-r--r-- 1 root root 1708408 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/NotoSansMono-Regular.ttf
--rw-r--r-- 1 root root 876576 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Inter-Regular.ttf
--rw-r--r-- 1 root root 212196 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Lora-Regular.ttf
--rw-r--r-- 1 root root 205748 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/UbuntuMono-Regular.ttf
--rw-r--r-- 1 root root 300724 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/PlayfairDisplay-Regular.ttf
--rw-r--r-- 1 root root 1887192 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/NotoSerif-Regular.ttf
--rw-r--r-- 1 root root 212340 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/SourceCodePro-Regular.ttf
--rw-r--r-- 1 root root 183700 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/RobotoMono-Regular.ttf
--rw-r--r-- 1 root root 273900 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/JetBrainsMono-Regular.ttf
--rw-r--r-- 1 root root 1209508 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/SourceSerif4-Regular.ttf
--rw-r--r-- 1 root root 282844 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Merriweather-Regular.ttf
--rw-r--r-- 1 root root 160316 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Poppins-Regular.ttf
--rw-r--r-- 1 root root 351884 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Ubuntu-Regular.ttf
--rw-r--r-- 1 root root 276932 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Nunito-Regular.ttf
--rw-r--r-- 1 root root 744936 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Montserrat-Regular.ttf
--rw-r--r-- 1 root root 656568 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Lato-Regular.ttf
--rw-r--r-- 1 root root 108684 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/usr/share/fonts/Inconsolata-Regular.ttf
--rw-r--r-- 1 root root 0 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/empty.txt
--rw-r--r-- 1 root root 111 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/lines.txt
--rw-r--r-- 1 root root 349 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/etc/hotkeys.conf
--rw-r--r-- 1 root root 83 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/etc/passwd
--rw-r--r-- 1 root root 26 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/etc/group
--rw-r--r-- 1 root root 367 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/etc/bshrc
--rw-r--r-- 1 root root 445 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/etc/fonts.conf
--rw-r--r-- 1 root root 679 Sep  8 05:04 /root/breenix-i813pd-tmp/tmp.8pQuXlCNxx/etc/init.js
+-rw-r--r-- 1 root root 19 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/trunctest.txt
+-rw-r--r-- 1 root root 20 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/deep/path/to/file/data.txt
+-rw-r--r-- 1 root root 17 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/hello.txt
+-rw-r--r-- 1 root root 20 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/test/nested.txt
+-rwxr-xr-x 1 root root 187496 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/sbin/init
+-rwxr-xr-x 1 root root 181968 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/sbin/blogd
+-rwxr-xr-x 1 root root 184080 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/sbin/telnetd
+-rwxr-xr-x 51 root root 300712 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/sbin/true
+-rwxr-xr-x 51 root root 300712 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/sbin/false
+-rw-r--r-- 1 root root 488584 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r-- 1 root root 757076 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r-- 1 root root 2049096 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r-- 1 root root 309408 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r-- 1 root root 135580 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r-- 1 root root 340712 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r-- 1 root root 260364 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r-- 1 root root 598060 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r-- 1 root root 532636 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r-- 1 root root 359048 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r-- 1 root root 646340 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r-- 1 root root 312352 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r-- 1 root root 1708408 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r-- 1 root root 876576 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r-- 1 root root 212196 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r-- 1 root root 205748 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r-- 1 root root 300724 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r-- 1 root root 1887192 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r-- 1 root root 212340 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r-- 1 root root 183700 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r-- 1 root root 273900 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r-- 1 root root 1209508 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r-- 1 root root 282844 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r-- 1 root root 160316 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r-- 1 root root 351884 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r-- 1 root root 276932 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r-- 1 root root 744936 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r-- 1 root root 656568 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r-- 1 root root 108684 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r-- 1 root root 0 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/empty.txt
+-rw-r--r-- 1 root root 111 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/lines.txt
+-rw-r--r-- 1 root root 349 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/etc/hotkeys.conf
+-rw-r--r-- 1 root root 83 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/etc/passwd
+-rw-r--r-- 1 root root 26 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/etc/group
+-rw-r--r-- 1 root root 367 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/etc/bshrc
+-rw-r--r-- 1 root root 445 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/etc/fonts.conf
+-rw-r--r-- 1 root root 679 Sep  8 05:04 <isolated-checkout-109>/tmp.8pQuXlCNxx/etc/init.js
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-i813pd/target/ext2.img
-  /root/breenix-i813pd/testdata/ext2.img
+  <isolated-checkout-127>/target/ext2.img
+  <isolated-checkout-127>/testdata/ext2.img
   Size: 256M
 
 Contents:
@@ -705,8 +705,8 @@ x86 frame-custody gate run 1: FAIL (set -e abort at docker/qemu/run-x86-boot-tes
   failing command: test "$passed" = true
 [CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=300]
 [CAPTURE_DRAIN_EVENTS:last_events=none]
---- serial tail (last 200 lines per file, /root/breenix-i813pd-tmp/breenix_x86_boot_tests_1) ---
-==> /root/breenix-i813pd-tmp/breenix_x86_boot_tests_1/serial_kernel.txt <==
+--- serial tail (last 200 lines per file, <isolated-checkout-109>/breenix_x86_boot_tests_1) ---
+==> <isolated-checkout-109>/breenix_x86_boot_tests_1/serial_kernel.txt <==
 [DISPATCH_STRAND_CENSUS:seq=663:tick=116734:ms=757934:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
 [DISPATCH_STRAND_CENSUS:seq=664:tick=116935:ms=758939:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
 [DISPATCH_STRAND_CENSUS:seq=665:tick=117136:ms=759944:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
@@ -908,7 +908,7 @@ Idle thread 1 is alone, continuing (no switch needed)
 [DISPATCH_STRAND_CENSUS:seq=847:tick=153508:ms=942767:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
 [DISPATCH_STRAND_CENSUS:seq=848:tick=153709:ms=943771:saved=11:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=4]
 
-==> /root/breenix-i813pd-tmp/breenix_x86_boot_tests_1/serial_user.txt <==
+==> <isolated-checkout-109>/breenix_x86_boot_tests_1/serial_user.txt <==
 HTTP_TEST: testing URL too long...
 HTTP_TEST: url_too_long OK
 HTTP_TEST: testing HTTPS URL parsing...
@@ -1108,5 +1108,5 @@ HTTP Test: All tests passed!
 <S>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[KSTACK_QUIESCE_LEAK:baseline_outstanding=5:outstanding=20:leaked=0]
 [TOMBSTONE_QUIESCE:resident=0:removed=7:reap_second=1:retire_second=6:abandoned_unqueued=1:pending=1:parked=0]
 [RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=3:injected=1:pend_epoch=0:pend_hw=0:pend_shadow=1:pend_selectable=0]
-[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>  preserved failing serial + capture reading: /root/breenix-i813pd-tmp/breenix_x86_boot_tests_failures/20260908T052101Z_1946097
+[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>[SW]<K>[SW]<I>  preserved failing serial + capture reading: <isolated-checkout-109>/breenix_x86_boot_tests_failures/20260908T052101Z_1946097
 GATE_EXIT=1

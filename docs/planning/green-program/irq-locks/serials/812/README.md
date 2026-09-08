@@ -19,9 +19,9 @@ touches only `docs/planning/green-program/irq-locks/`, which 0 of the 31
 `tests/*_structure.rs` suites read.
 
 Host: this Mac (aarch64, QEMU HVF), except rows 10-12, which ran in the
-`breenix-x86` Incus container on beast with
-`BREENIX_GATE_TMP=/root/breenix-p812-tmp` and a private clone at
-`/root/breenix-p812`.
+the x86 build environment on beast with
+`BREENIX_GATE_TMP=<isolated-checkout-131>` and a private clone at
+`<isolated-checkout-130>`.
 
 The two boot serials (01, 02) are byte-exact QEMU captures and carry no added
 header, because both are replayed through the strict gate's scoring-only mode

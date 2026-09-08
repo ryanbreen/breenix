@@ -1,5 +1,5 @@
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.34s
      Running tests/dispatch_strand_census_structure.rs (target/debug/deps/dispatch_strand_census_structure-341e99c2348b0d88)
 

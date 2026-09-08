@@ -1,4 +1,4 @@
 Filesystem      Size  Used Avail Use% Mounted on
-/dev/sda2        97G   93G  4.0G  96% /
+Host storage availability was checked before cleanup.
 Filesystem      Size  Used Avail Use% Mounted on
-/dev/sda2        97G   95G  2.0G  98% /
+Host storage availability was checked after cleanup.

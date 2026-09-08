@@ -1,5 +1,5 @@
-   Compiling kernel v0.1.0 (/root/breenix-775/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-775)
+   Compiling kernel v0.1.0 (<isolated-checkout-53>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-52>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.33s
      Running tests/x86_gate_verdict_test.rs (target/debug/deps/x86_gate_verdict_test-5f4dc2de8f8364ec)
 

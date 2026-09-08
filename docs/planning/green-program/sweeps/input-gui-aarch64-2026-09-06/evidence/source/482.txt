@@ -7,7 +7,7 @@ Date:   Tue Apr 21 08:58:02 2026 -0400
     
     * docs(kernel): F32t Phase 1 Linux xHCI MSI ground truth
     
-    Captured from linux-probe (10.211.55.3) on same Parallels ARM64 hypervisor:
+    Captured from <probe-environment> (<probe-address>) on same Parallels ARM64 hypervisor:
     - Linux xhci_hcd uses MSI → GICv2m SPI → xhci_msi_irq successfully
     - MSI address 0x02250040, SPI 56, edge-triggered, Group 1
     - Mesa per-frame runs through IRQ, not polling; no timer-driven fallback

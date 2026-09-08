@@ -1,0 +1,20 @@
+revision=58af1a7fb63e144586b6eef06e47be178eb175d5
+scope=working fixture; production timeout removed temporarily
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure shipped_capture_deadline ==
+
+running 1 test
+test shipped_capture_deadline_and_mutations ... FAILED
+
+failures:
+
+failures:
+    shipped_capture_deadline_and_mutations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+
+thread 'shipped_capture_deadline_and_mutations' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t963/wt/tests/gate_qmp_backstop_structure.rs:753:5:
+assertion failed: has_capture_deadline(&source)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit=101 wall=0.143

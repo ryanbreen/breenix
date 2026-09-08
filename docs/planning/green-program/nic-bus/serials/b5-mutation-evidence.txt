@@ -1,4 +1,4 @@
-[gate] repo: /root/breenix-gbus-prove  head: c799790b
+[gate] repo: <isolated-checkout-164>  head: c799790b
 [gate] accel=kvm cpu=host
 [gate] === Building userspace ELFs ===
 [gate] === Repacking the userspace test disk and the ext2 image ===

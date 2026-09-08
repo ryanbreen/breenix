@@ -63,7 +63,7 @@ This mutation tests the unsafe donation of boot's count during a busy-spin wait.
 
 The baseline launched at 1-minute load 0.36. Its structure preflight passed 69/69 suites and its x86 build had no project diagnostics. The repaired testing-profile build completed without project diagnostics. The local repaired structure run passed 70/70 suites through `scripts/run-structure-tests.sh`; rustfmt checks passed for the changed kernel files. A separate original-HEAD snapshot with the new ratchet produced 3 failures and 1 pass (exit 101), while the repaired snapshot passed 4/4; the transcripts are `serials/508/validation/ratchet-original-head.txt` and `serials/508/validation/ratchet-repaired.txt`.
 
-The repaired boot gate launched at load 5.85, initially recording the baseline revision plus the repair diff. Before its boot, the identical source was committed as the source revision above; the transcript records `SOURCE_REVISION`, and `git diff --exit-code` confirmed the match.
+The repaired boot gate launched at load 5.85. The retained `serials/508/repaired-boot/gate.log.gz` records `REVISION=4394409fca3932296f3468914b5be325ce0d48a6` at decoded line 3. It contains no `SOURCE_REVISION` record or repair commit identifier. That transcript therefore does not establish that the boot ran repair commit `b346196295db73f9fe4b44c8f080e75217f27693`; the earlier attribution is withdrawn (V-3).
 
 The first repaired parallel batch launched its gate wrapper at load 6.78 and then waited for the shared QEMU lock. The structure preflight passed 70/70 suites before boot. Its five boots each reached the final 64-call marker: 0 incomplete registration blocks. Boots 1, 2, 3, and 5 emitted accepted oracles. Boot 4 panicked later at `kernel/src/clock_gettime_test.rs:77`, with an elapsed reading of 1,992,843 ns, before the oracle-report site. Its missing oracle is rejected, not inferred as a pass. The full parallel gate exited 1 (0 passed, 5 failed). The retained evidence is under `serials/508/parallel-1-1/` through `serials/508/parallel-1-5/`; the first directory includes the complete batch transcript.
 
@@ -233,4 +233,41 @@ Evidence-commit checks:
 ```text
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-review-evidence-commit.txt -> exit 0
+```
+
+## Landing
+
+V-3: corrected the revision attribution inline in Validation records. The
+single-run transcript retains its original bytes; its missing revision record
+has not been backfilled.
+
+V-4: R245 lane success remains pending. Issue 508 was OPEN with closedAt=null
+when checked for this landing attempt. The historical 11/11 final-marker tally,
+9/11 accepted oracles, and 5/5 runtime mutation rejections are repair evidence,
+not issue closure or a completed atlas transition. No merged PR or completed
+atlas-cell update is claimed. The external scratchpad `atlas/atlas-data.json` block/storage x86 summary now
+records that pending condition inline; its partial/LOW status is retained.
+V-4 is corrected at the prose scope, not fulfilled at the lane-success scope.
+
+Deferred code findings supplied for this landing: [] (0 findings).
+
+
+Two explicit-file lint attempts exited 1 on pre-existing auto-close phrases in
+the external atlas. Those references now insert the word issue. Recheck records:
+
+Prose-correction checks:
+
+```text
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/block/508-BOOT-DISK-WAIT-2026-09-08.md ../../atlas/atlas-data.json -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-prose-commit.txt -> exit 0
+```
+
+
+Main integration: `git fetch origin` followed by `git merge --no-ff --no-commit origin/main`
+merged `e664e4bc` without conflicts. The merge commit also records the prose corrections.
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-merge-commit.txt -> exit 0
 ```

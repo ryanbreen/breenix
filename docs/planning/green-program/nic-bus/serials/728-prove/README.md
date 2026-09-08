@@ -20,8 +20,8 @@ kernel/src/fs/ext2/mod.rs` — zero-line diff). See `revert-diff.txt`.
   `[LOCKRACE:COMPLETE:pass=2:fail=0]`, both filesystems `verdict=PASS`,
   gate PASSES. Same harness, only the lock-discipline commit differs.
 - **x86 RED**: `x86-oracle/red-*` (see below; captured in the dedicated
-  clone `/root/breenix-728-prove` on beast, isolated from the shared
-  `/root/breenix` checkout other concurrent agents were using).
+  clone `<isolated-checkout-157>` on beast, isolated from the shared
+  `<canonical-checkout>` checkout other concurrent agents were using).
 - **x86 GREEN**: `x86-oracle/green-40min-serial_kernel.txt` — a 40-minute
   wall-clock capture (14853 lines) of the fixed build under active,
   deliberately-constructed contention: `lockrace_holder`/
@@ -88,11 +88,11 @@ this run's full logs.
 See `x86-oracle/` for the ext2-lock-race-specific RED/GREEN captures
 (leg 1's central claim). The `run-x86-gate.sh`/known-signature battery
 (#716/#700/#692/#702/900s-poll-ceiling) requested by the brief was not
-run separately this round: the beast x86 VM's shared `/root/breenix`
+run separately this round: the beast x86 VM's shared `<canonical-checkout>`
 checkout was actively used by at least two other concurrent
 agents/workflows during this round (observed: a branch switch to
 `aa5f0fd8` "fix(x86,#721)..." mid-run, and a concurrently-running
-`run-x86-boot-tests.sh` from another job) — see prove.md's "Beast
+`run-x86-boot-tests.sh` from another job) — see the round report's "Beast
 contention" section for the full disclosure. leg 2's `run-boot-parallel.sh`
 result (PASS, exited=107) and the ext2-lock-race gate's own x86
 `boot_tests` traversal (leg 1, which passes through the SAME x86 gate

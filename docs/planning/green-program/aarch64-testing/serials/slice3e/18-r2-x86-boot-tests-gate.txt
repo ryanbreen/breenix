@@ -1,9 +1,9 @@
   RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
-   Compiling kernel v0.1.0 (/root/breenix-slice3e/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-slice3e)
+   Compiling kernel v0.1.0 (<isolated-checkout-39>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-50>)
     Finished `release` profile [optimized] target(s) in 17.50s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-slice3e/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  ELF:      <isolated-checkout-39>/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
   sha256:   5743701115c5896f487d86b1e8796b6597cbc6f0f617266ca0dad3d33a96c108
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -13,11 +13,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
-   Compiling kernel v0.1.0 (/root/breenix-slice3e/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-slice3e)
+   Compiling kernel v0.1.0 (<isolated-checkout-39>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-50>)
     Finished `release` profile [optimized] target(s) in 17.75s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-slice3e/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-39>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (7405568 bytes)
    Compiling version_check v0.9.5
    Compiling proc-macro2 v1.0.107
    Compiling quote v1.0.47
@@ -36,7 +36,7 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
    Compiling heck v0.3.3
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
-   Compiling xtask v0.1.0 (/root/breenix-slice3e/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-39>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.52s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -199,7 +199,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60539 sectors (29.56 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-slice3e/target/ext2.img
+  Output: <isolated-checkout-39>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -420,8 +420,8 @@ drwxr-xr-x 3 root root   4096 Sep  5 23:30 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-slice3e/target/ext2.img
-  /root/breenix-slice3e/testdata/ext2.img
+  <isolated-checkout-39>/target/ext2.img
+  <isolated-checkout-39>/testdata/ext2.img
   Size: 256M
 
 Contents:

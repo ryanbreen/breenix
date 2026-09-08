@@ -15,8 +15,8 @@ serial_kernel.txt lines: 17571, serial_user.txt lines: 1072
 [ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x1000045cff8 limit=55
 
 --- marker occurrences across both serials ---
-/root/breenix-smp1-tmp/breenix_x86_smp_enum_1/serial_user.txt:0
-/root/breenix-smp1-tmp/breenix_x86_smp_enum_1/serial_kernel.txt:1
+<isolated-checkout-21>/breenix_x86_smp_enum_1/serial_user.txt:0
+<isolated-checkout-21>/breenix_x86_smp_enum_1/serial_kernel.txt:1
 
 --- the three existing boot_tests pass markers ---
 [TEST:process:frame_custody_refusal_gate:PASS]
@@ -34,8 +34,8 @@ serial_kernel.txt lines: 17605, serial_user.txt lines: 1076
 [ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x1000045cff8 limit=55
 
 --- marker occurrences across both serials ---
-/root/breenix-smp1-tmp/breenix_x86_smp_enum_2/serial_user.txt:0
-/root/breenix-smp1-tmp/breenix_x86_smp_enum_2/serial_kernel.txt:1
+<isolated-checkout-21>/breenix_x86_smp_enum_2/serial_user.txt:0
+<isolated-checkout-21>/breenix_x86_smp_enum_2/serial_kernel.txt:1
 
 --- the three existing boot_tests pass markers ---
 [TEST:process:frame_custody_refusal_gate:PASS]
@@ -53,8 +53,8 @@ serial_kernel.txt lines: 17605, serial_user.txt lines: 1072
 [ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x1000045cff8 limit=55
 
 --- marker occurrences across both serials ---
-/root/breenix-smp1-tmp/breenix_x86_smp_enum_4/serial_user.txt:0
-/root/breenix-smp1-tmp/breenix_x86_smp_enum_4/serial_kernel.txt:1
+<isolated-checkout-21>/breenix_x86_smp_enum_4/serial_user.txt:0
+<isolated-checkout-21>/breenix_x86_smp_enum_4/serial_kernel.txt:1
 
 --- the three existing boot_tests pass markers ---
 [TEST:process:frame_custody_refusal_gate:PASS]

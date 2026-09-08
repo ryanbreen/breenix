@@ -1,5 +1,5 @@
 Revision: dfe14edf6e7c90b1973464e31acee1fb6c014989
-Artifacts: /root/breenix-i813pd-tmp/breenix_813_x86_64.e1LVqI
+Artifacts: <isolated-checkout-109>/breenix_813_x86_64.e1LVqI
 dfe14edf6e7c90b1973464e31acee1fb6c014989
 Revision: dfe14edf6e7c90b1973464e31acee1fb6c014989
 [GATE_SUITE:stem=aarch64_testing_profile_structure:attempt=1:timeout_s=300:wall_s=0:exit=0]
@@ -243,18 +243,18 @@ Revision: dfe14edf6e7c90b1973464e31acee1fb6c014989
   STD BUILD COMPLETE (x86_64)
   Installed: 153 binaries
 ========================================
-   Compiling kernel v0.1.0 (/root/breenix-i813pd/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813pd)
+   Compiling kernel v0.1.0 (<isolated-checkout-127>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-129>)
     Finished `release` profile [optimized] target(s) in 19.05s
-   Compiling kernel v0.1.0 (/root/breenix-i813pd/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813pd)
+   Compiling kernel v0.1.0 (<isolated-checkout-127>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-129>)
     Finished `release` profile [optimized] target(s) in 16.57s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-i813pd/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-127>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
 QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (30s elapsed, host qemu-system-x86_64 count=0)...
 QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (60s elapsed, host qemu-system-x86_64 count=0)...
 PASS: x86_64, 30 arms, exact byte tallies and worker reaped
 PASS: x86_64, 12 console/tty arms
-PASS: blocking I/O oracle x86_64 boots=1; serials=/root/breenix-i813pd-tmp/breenix_813_x86_64.e1LVqI/boot_*/serial.txt
+PASS: blocking I/O oracle x86_64 boots=1; serials=<isolated-checkout-109>/breenix_813_x86_64.e1LVqI/boot_*/serial.txt
 GATE_EXIT=0

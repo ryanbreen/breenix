@@ -764,7 +764,7 @@ docker/qemu/run-aarch64-prod-profile-boot-test.sh:9: # Before building that prof
 docker/qemu/run-aarch64-prod-profile-boot-test.sh:10: # suite (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is
 docker/qemu/run-aarch64-prod-profile-boot-test.sh:11: # red. BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
 docker/qemu/run-aarch64-prod-profile-boot-test.sh:12: 
-docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `/root/breenix-p796`, `BREENIX_GATE_TMP=/root/breenix-p796-tmp`,
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `<isolated-checkout-124>`, `BREENIX_GATE_TMP=<isolated-checkout-125>`,
 docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:774: own clone per R20). Branch fetched from GitHub at this round's commit
 docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:775: `6bf0b6423430ff919dbe1b938db1f69c46102c7f`.
 docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:776: `pgrep -fl qemu-system-x86_64 | wc -l` read `0` before the run.

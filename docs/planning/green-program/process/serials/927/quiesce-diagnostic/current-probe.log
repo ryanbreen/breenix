@@ -1,5 +1,5 @@
 REVISION=5c35eba20aa61eb4f5acb4ddb334381dffa0961c
-add symbol table from file "/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845" with all sections offset by 0x10000000000
+add symbol table from file "<isolated-checkout-166>/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845" with all sections offset by 0x10000000000
 0x000000000000fff0 in ?? ()
 Hardware assisted breakpoint 1 at 0x1000025aa80
 

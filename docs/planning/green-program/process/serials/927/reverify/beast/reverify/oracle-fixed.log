@@ -1,6 +1,6 @@
 REVISION=62988b29cf6e5800e7ef5c56c1aad630649569fd
 COMMAND=bash docker/qemu/run-blocking-io-oracle-gate.sh --arch x86_64
-Artifacts: /root/breenix-x927b-tmp/breenix_813_x86_64.wdsXnx
+Artifacts: <isolated-checkout-170>/breenix_813_x86_64.wdsXnx
 [GATE_PREFLIGHT:structure_suites=65/65:critical_path_lines=260:pinned=120]
 ========================================
   STD USERSPACE BUILD (Rust std library)
@@ -172,15 +172,15 @@ Artifacts: /root/breenix-x927b-tmp/breenix_813_x86_64.wdsXnx
   STD BUILD COMPLETE (x86_64)
   Installed: 151 binaries
 ========================================
-   Compiling kernel v0.1.0 (/root/breenix-x927b/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-x927b)
+   Compiling kernel v0.1.0 (<isolated-checkout-169>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-174>)
     Finished `release` profile [optimized] target(s) in 14.80s
-   Compiling kernel v0.1.0 (/root/breenix-x927b/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-x927b)
+   Compiling kernel v0.1.0 (<isolated-checkout-169>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-174>)
     Finished `release` profile [optimized] target(s) in 15.11s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-x927b/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-169>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
 PASS: x86_64, 30 arms, exact byte tallies and worker reaped
-PASS: blocking I/O oracle x86_64 boots=1; serials=/root/breenix-x927b-tmp/breenix_813_x86_64.wdsXnx/boot_*/serial.txt
+PASS: blocking I/O oracle x86_64 boots=1; serials=<isolated-checkout-170>/breenix_813_x86_64.wdsXnx/boot_*/serial.txt
 COMMAND_EXIT=0

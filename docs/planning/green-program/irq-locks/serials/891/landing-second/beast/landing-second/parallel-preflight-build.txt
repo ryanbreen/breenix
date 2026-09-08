@@ -68,7 +68,7 @@
 [GATE_SUITE:stem=x86_smp_enum_structure:attempt=1:timeout_s=300:wall_s=1:exit=0]
 [GATE_SUITE:stem=xhci_wait_irq_order_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]
 [GATE_PREFLIGHT:structure_suites=68/68:critical_path_lines=260:pinned=120]
-   Compiling kernel v0.1.0 (/root/breenix-s891/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-s891)
+   Compiling kernel v0.1.0 (<isolated-checkout-133>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-145>)
     Finished `release` profile [optimized] target(s) in 19.12s
 EXIT=0

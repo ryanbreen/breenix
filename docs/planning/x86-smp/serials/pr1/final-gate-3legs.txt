@@ -1,14 +1,14 @@
-# x86 SMP enumeration gate, 3 legs, branch head e2717b88, beast /root/breenix-smp1
-# BREENIX_GATE_TMP=/root/breenix-smp1-tmp; command: docker/qemu/run-x86-smp-enum-gate.sh 1 2 4
+# x86 SMP enumeration gate, 3 legs, branch head e2717b88, beast <isolated-checkout-20>
+# BREENIX_GATE_TMP=<isolated-checkout-21>; command: docker/qemu/run-x86-smp-enum-gate.sh 1 2 4
 
-   Compiling kernel v0.1.0 (/root/breenix-smp1/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-smp1)
+   Compiling kernel v0.1.0 (<isolated-checkout-20>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-236>)
     Finished `release` profile [optimized] target(s) in 15.85s
-   Compiling kernel v0.1.0 (/root/breenix-smp1/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-smp1)
+   Compiling kernel v0.1.0 (<isolated-checkout-20>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-236>)
     Finished `release` profile [optimized] target(s) in 15.78s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-smp1/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-20>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (7405568 bytes)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -171,7 +171,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60519 sectors (29.55 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-smp1/target/ext2.img
+  Output: <isolated-checkout-20>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -392,8 +392,8 @@ drwxr-xr-x 3 root root   4096 Sep  6 01:43 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-smp1/target/ext2.img
-  /root/breenix-smp1/testdata/ext2.img
+  <isolated-checkout-20>/target/ext2.img
+  <isolated-checkout-20>/testdata/ext2.img
   Size: 256M
 
 Contents:

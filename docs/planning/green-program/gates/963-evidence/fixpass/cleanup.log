@@ -1,0 +1,4 @@
+No QEMU process launched by this fix pass. Fixture children killed/reaped by owned PID/group.
+QEMU process inventory (read only):
+none
+No name-based cleanup performed.

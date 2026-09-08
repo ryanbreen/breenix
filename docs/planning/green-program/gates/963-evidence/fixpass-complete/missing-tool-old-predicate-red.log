@@ -1,0 +1,22 @@
+Revision: 76da053aa050e75e4c97b3e935ae5447baf357c5
+Scope: working fixture patch with historical missing-tool predicate
+Command: bash scripts/run-structure-tests.sh gate_qmp_backstop_structure missing_tool_report_rejects_malformed_lines
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure missing_tool_report_rejects_malformed_lines ==
+
+running 1 test
+
+thread 'missing_tool_report_rejects_malformed_lines' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t963b/wt/tests/gate_qmp_backstop_structure.rs:385:9:
+accepted: "[QMP_DUMP:capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms=12\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test missing_tool_report_rejects_malformed_lines ... FAILED
+
+failures:
+
+failures:
+    missing_tool_report_rejects_malformed_lines
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+
+exit=101

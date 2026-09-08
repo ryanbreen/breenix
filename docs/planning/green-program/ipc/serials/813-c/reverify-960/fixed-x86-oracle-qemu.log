@@ -1,7 +1,7 @@
-WARNING: Image format was not specified for '/root/breenix-i813pd-tmp/breenix_813_x86_64.e1LVqI/OVMF_CODE.fd' and probing guessed raw.
+WARNING: Image format was not specified for '<isolated-checkout-109>/breenix_813_x86_64.e1LVqI/OVMF_CODE.fd' and probing guessed raw.
          Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.
          Specify the 'raw' format explicitly to remove the restrictions.
-WARNING: Image format was not specified for '/root/breenix-i813pd-tmp/breenix_813_x86_64.e1LVqI/boot_1/OVMF_VARS.fd' and probing guessed raw.
+WARNING: Image format was not specified for '<isolated-checkout-109>/breenix_813_x86_64.e1LVqI/boot_1/OVMF_VARS.fd' and probing guessed raw.
          Automatically detecting the format is dangerous for raw images, write operations on block 0 will be restricted.
          Specify the 'raw' format explicitly to remove the restrictions.
 qemu-system-x86_64: terminating on signal 15 from pid 2125275 (bash)

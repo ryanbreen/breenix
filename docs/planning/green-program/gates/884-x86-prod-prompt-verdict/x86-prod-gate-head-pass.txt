@@ -1,16 +1,16 @@
 [GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
 Building the shipped x86_64 production kernel profile...
-   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling kernel v0.1.0 (<isolated-checkout-71>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-72>)
     Finished `release` profile [optimized] target(s) in 14.10s
-   Compiling kernel v0.1.0 (/root/breenix-884/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-884)
+   Compiling kernel v0.1.0 (<isolated-checkout-71>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-72>)
     Finished `release` profile [optimized] target(s) in 14.42s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-884/target/release/build/breenix-03b3b4f3cd901e39/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-71>/target/release/build/breenix-03b3b4f3cd901e39/out/breenix-uefi.img (7405568 bytes)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-884/target/ext2.img
+  Output: <isolated-checkout-71>/target/ext2.img
   Size: 256MB
   Payload: 45MB (userspace binaries + fonts)
   Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
@@ -233,8 +233,8 @@ drwxr-xr-x 3 root root   4096 Sep  6 19:15 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-884/target/ext2.img
-  /root/breenix-884/testdata/ext2.img
+  <isolated-checkout-71>/target/ext2.img
+  <isolated-checkout-71>/testdata/ext2.img
   Size: 256M
 
 Contents:

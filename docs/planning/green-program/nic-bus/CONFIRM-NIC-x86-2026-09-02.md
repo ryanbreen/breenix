@@ -30,7 +30,7 @@ specimen boot, not re-derived independently in this document.
 
 ## 1. Setup
 
-Beast (`breenix-x86` Incus container) synced to `origin/main` before the
+Beast (the x86 build environment) synced to `origin/main` before the
 build:
 
 ```
@@ -86,7 +86,7 @@ the identical `boot_N_stdout.txt` / `boot_N/serial_kernel.txt` /
 `boot_N/serial_user.txt` naming, confirmed by the 75-file count cited in §4.
 
 ```
-export BREENIX_RUST_FORK=/root/breenix/rust-fork-real   # present, unused by
+export BREENIX_RUST_FORK=<rust-fork-checkout>   # present, unused by
                                                           # this script but
                                                           # harmless to export
 for i in $(seq 1 25); do

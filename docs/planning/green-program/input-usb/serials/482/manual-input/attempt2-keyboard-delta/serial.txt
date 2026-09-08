@@ -1277,8 +1277,8 @@ TELNETD_CONNECTED
 [pty] Created master fd=5 (pty 0)
 [pty] Unlocked PTY 0 (fd 5)
 F123456789SCTELNETD_SHELL_FORKED
-NET: ARP cache miss for 10.211.55.2, sending ARP request
-NET: ARP cache miss for 10.211.55.2, sending ARP request
+NET: ARP cache miss for <same-subnet-ssh-target>, sending ARP request
+NET: ARP cache miss for <same-subnet-ssh-target>, sending ARP request
 [heartbeat] tid=12 uptime_ms=60360 kbd_nonzero=0
 [PT_ROOT_CUSTODY:no_proof=12:no_arch=0:terminated=0:undecided=0:mid_retire=0:retired=3]
 [TOMBSTONE_CENSUS:resident=0:removed=14:reap_second=14:retire_second=0:abandoned_unqueued=0]
