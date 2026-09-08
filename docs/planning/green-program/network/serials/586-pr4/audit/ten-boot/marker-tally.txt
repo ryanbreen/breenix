@@ -1,0 +1,63 @@
+586 PR 4 continuation: ten-boot tally (two 5-boot parallel batches on Beast)
+Revision under test: 735bdf01225d372cdc42f0d3b5d2f148276380e9 (docs-only since
+code revision 96fa978116f7472b9ea0729f830e0b1711af3a9d; source blobs unchanged).
+Driver: docker/qemu/run-boot-parallel.sh 5, invoked twice.
+Batch 1 stdout tail: "Results: 2 passed, 3 failed out of 5" (batch1/gate-stdout.txt).
+Batch 2 stdout tail: "Results: 3 passed, 2 failed out of 5" (batch2/gate-stdout.txt).
+
+Per-boot loopback_recv_wake exercise and the two markers this round proves:
+
+batch1/boot-1: TEST:userspace:loopback_recv_wake did not start (boot ended by
+  a KERNEL PANIC at kernel/src/task/softirq_tests.rs:228 -- see below).
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch1/boot-2: START at serial_user.txt:912, PASS at serial_user.txt:1068.
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch1/boot-3: did not start (softirq_tests.rs:228 panic).
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch1/boot-4: did not start (softirq_tests.rs:228 panic).
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch1/boot-5: START at serial_user.txt:893, PASS at serial_user.txt:1068.
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch2/boot-1: START at serial_user.txt:900, PASS at serial_user.txt:1064.
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch2/boot-2: did not start (softirq_tests.rs:228 panic).
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch2/boot-3: did not start (softirq_tests.rs:228 panic).
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch2/boot-4: START at serial_user.txt:899, PASS at serial_user.txt:1068.
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+batch2/boot-5: START at serial_user.txt:894, PASS at serial_user.txt:1068.
+  reader_exit_15 occurrences=0. reader_eof_dispatch_probe occurrences=0.
+
+Totals across all 10 boots: [TEST:userspace:loopback_recv_wake:FAIL:reader_exit_15]
+occurs 0 times (grep -rc across all ten serial_user.txt files sums to 0). The
+new reader_eof_dispatch_probe print (userspace/programs/src/loopback_wake_test.rs:230)
+occurs 0 times -- the EOF bound (4000 ms) was not breached on any of the five
+boots that reached the arm-scoped test; there are no dispatch-gap lines to quote.
+
+Five of ten boots (batch1/boot-1, batch1/boot-3, batch1/boot-4, batch2/boot-2,
+batch2/boot-3) never reached TEST:userspace:loopback_recv_wake:START at all --
+each one panicked earlier at kernel/src/task/softirq_tests.rs:228
+("ksoftirqd should have processed deferred softirqs"), a pre-existing kernel
+scheduler self-test already tracked as open issue 891 (filed 2026-09-06,
+before this round), unrelated to the userspace EOF dispatch probe this PR
+adds. These five boots supply neither a pass nor a fail for the loopback
+grammar this PR touches -- they never ran it. Citations (kernel serial line
+of the panic):
+  batch1/boot-1/serial_kernel.txt:14001
+  batch1/boot-3/serial_kernel.txt:14000
+  batch1/boot-4/serial_kernel.txt:13994
+  batch2/boot-2/serial_kernel.txt:14082
+  batch2/boot-3/serial_kernel.txt:14100
+
+The five boots that did reach the test (batch1/boot-2, batch1/boot-5,
+batch2/boot-1, batch2/boot-4, batch2/boot-5) each printed
+TEST:userspace:loopback_recv_wake:PASS with 0 reader_exit_15 and 0
+reader_eof_dispatch_probe occurrences, consistent with the strict-pass boot
+below and with the audited strict-fail boot from the prior round.
+
+This tally does not claim ten independent exercises of the EOF-arm grammar;
+it claims what the ten raw captures show: 0/10 reader_exit_15 occurrences,
+0/10 dispatch-line occurrences, 5/10 boots that ran and passed the test, and
+5/10 boots that never reached it because of issue 891, filed separately and
+not touched by this PR.
