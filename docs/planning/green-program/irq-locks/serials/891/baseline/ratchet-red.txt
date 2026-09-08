@@ -1,0 +1,34 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure  ==
+
+running 3 tests
+test daemon_is_cpu_local_and_checks_pending_after_park_publication ... FAILED
+test oracle_requires_daemon_dispatch_and_guest_ticks ... FAILED
+test scorers_require_oracle ... FAILED
+
+failures:
+
+---- daemon_is_cpu_local_and_checks_pending_after_park_publication stdout ----
+
+thread 'daemon_is_cpu_local_and_checks_pending_after_park_publication' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:9:5:
+assertion failed: core.contains("kthread_run_on_cpu(ksoftirqd_fn")
+
+---- oracle_requires_daemon_dispatch_and_guest_ticks stdout ----
+
+thread 'oracle_requires_daemon_dispatch_and_guest_ticks' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:19:5:
+assertion failed: !source.contains("for _ in 0..100")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- scorers_require_oracle stdout ----
+
+thread 'scorers_require_oracle' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:31:9:
+docker/qemu/run-aarch64-boot-test-strict.sh
+
+
+failures:
+    daemon_is_cpu_local_and_checks_pending_after_park_publication
+    oracle_requires_daemon_dispatch_and_guest_ticks
+    scorers_require_oracle
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

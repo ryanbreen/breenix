@@ -109,3 +109,51 @@ fn progress_or_error(offset: usize, error: i32) -> SyscallResult {
         SyscallResult::Err(error as u64)
     }
 }
+
+/// Generic Console/Tty reads use the live input ring and descriptor status flags.
+pub(crate) fn read_console(buf: &mut [u8], is_nonblocking: bool) -> Result<usize, i32> {
+    loop {
+        let outcome = match crate::ipc::stdin::read_or_prepare(buf, is_nonblocking) {
+            Ok(n) => return Ok(n),
+            Err(outcome) => outcome,
+        };
+        if is_nonblocking {
+            return Err(errno::EAGAIN);
+        }
+        wait_prepared(&crate::ipc::stdin::INPUT_READERS, outcome)?;
+    }
+}
+
+/// Stream writes return a positive partial count immediately; 4096 is not an
+/// atomicity threshold. No guard survives entry to the prepared-wait helper.
+pub(crate) fn write_unix(
+    writer: crate::socket::unix::UnixWriter,
+    data: &[u8],
+    is_nonblocking: bool,
+) -> SyscallResult {
+    let queue = writer.queue();
+    loop {
+        let outcome = {
+            let mut state = writer.state();
+            if state.peer_closed() {
+                return SyscallResult::Err(errno::EPIPE as u64);
+            }
+            let count = state.copy(data);
+            if count > 0 || data.is_empty() {
+                drop(state);
+                writer.wake_readers();
+                // A later close cannot replace already copied progress with EPIPE.
+                return SyscallResult::Ok(count as u64);
+            }
+            if is_nonblocking {
+                return SyscallResult::Err(errno::EAGAIN as u64);
+            }
+            queue.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+                !state.peer_closed() && !state.has_write_space()
+            })
+        };
+        if let Err(error) = wait_prepared(&queue, outcome) {
+            return SyscallResult::Err(error as u64);
+        }
+    }
+}

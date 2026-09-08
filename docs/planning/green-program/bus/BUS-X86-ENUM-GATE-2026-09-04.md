@@ -516,8 +516,8 @@ identity.
 
 ## 4. Both profiles executing, at the pushed HEAD
 
-Both runs on beast, Incus container `breenix-x86`, clone
-`/root/breenix-busgate`, tree clean at commit `60fad834` (the N1 fix, the
+Both runs on beast, the x86 build environment, clone
+`<isolated-checkout-51>`, tree clean at commit `60fad834` (the N1 fix, the
 last commit before this doc's own rewrite began -- `608dcd97`, the ratchet
 widening, is a test-only file and does not affect either gate's runtime
 behavior). One QEMU at a time. Each quantity below that is per-run-volatile
@@ -768,14 +768,14 @@ boot prints -- and that is precisely the point: the floor fires on a
 healthy boot's own data because the derivation, not the hardware, is what
 broke.
 
-<!-- claim-lint:ok: this leg took four attempts on beast before it isolated cleanly; the first two runs of the unmodified attempt (before OUTPUT_DIR isolation) collided with a concurrent, unrelated lane (clone /root/breenix-775) also running the production gate against the same shared $OUTPUT_DIR path (/tmp/breenix_x86_prod_profile), corrupting both runs' console.sock and observed-values reads; a third clean-window attempt hit a second, unrelated flake at the liveness PROMPT_AFTER/PROMPT_BEFORE check. The evidence above is the fourth attempt, run against a scratch copy with OUTPUT_DIR overridden to a private path (/tmp/breenix_x86_prod_profile_r3busgate), which produced a clean, uncontaminated result matching the predicted line and assertion exactly. -->
+<!-- claim-lint:ok: this leg took four attempts on beast before it isolated cleanly; the first two runs of the unmodified attempt (before OUTPUT_DIR isolation) collided with a concurrent, unrelated lane (clone <isolated-checkout-52> also running the production gate against the same shared $OUTPUT_DIR path (/tmp/breenix_x86_prod_profile), corrupting both runs' console.sock and observed-values reads; a third clean-window attempt hit a second, unrelated flake at the liveness PROMPT_AFTER/PROMPT_BEFORE check. The evidence above is the fourth attempt, run against a scratch copy with OUTPUT_DIR overridden to a private path (/tmp/breenix_x86_prod_profile_r3busgate), which produced a clean, uncontaminated result matching the predicted line and assertion exactly. -->
 **A note on how this leg's evidence was obtained.** The production gate's
 `$OUTPUT_DIR` is a fixed path
 (`docker/qemu/run-x86-prod-profile-boot-test.sh:194`,
 `/tmp/breenix_x86_prod_profile`), not unique per invocation or per clone.
 Two earlier attempts at this specific leg collided with an unrelated,
 concurrently-running lane on the same shared beast container (clone
-`/root/breenix-775`) also exercising the production gate against that same
+`<isolated-checkout-53>`) also exercising the production gate against that same
 path -- both processes' `console.sock` and serial captures overlapped,
 producing corrupted `0/0/0` observed-value reads that had nothing to do
 with this mutation. A third attempt, in a confirmed-clear window, hit an
@@ -810,8 +810,8 @@ redden their respective mutations at HEAD (section 6c).
 
 ### 6a. Where the gate runs were made
 
-Each gate run in sections 4 and 5 ran on beast, Incus container
-`breenix-x86`, clone `/root/breenix-busgate`. Sections 4 and 5a-5d ran at
+Each gate run in sections 4 and 5 ran on beast, build environment
+`<x86-build-environment>`, clone `<isolated-checkout-51>`. Sections 4 and 5a-5d ran at
 commit `60fad834` (the N1/N2 fixes, before the ratchet widening or this
 document existed); section 6c's structure-family run ran at `608dcd97`
 (after the ratchet widening) to exercise the widened predicate. After each

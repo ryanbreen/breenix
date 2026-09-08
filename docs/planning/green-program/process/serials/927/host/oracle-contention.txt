@@ -2,9 +2,9 @@ REVISION=c5b5d0dc026044005e025e549fc121779e5b165f
 Mon Sep  7 17:06:14 UTC 2026
  17:06:14 up 25 days, 23:21,  0 user,  load average: 9.69, 14.69, 10.02
  564355       01:11 00:00:00 bash            /bin/bash -c                  stem="$1"                 if timeout "$GSP_TIMEOUT" bash "$GSP_RUNNER" "$stem" >"$GSP_LOG_DIR/$stem.log" 2>&1; then                     echo 0 >"$GSP_LOG_DIR/$stem.status"    
- 564356       01:11 00:00:00 timeout         timeout 300 bash /root/breenix-3f2/scripts/run-structure-tests.sh context_restore_structure
- 564357       01:11 00:00:00 bash            bash /root/breenix-3f2/scripts/run-structure-tests.sh context_restore_structure
- 564552       01:08 00:05:24 context_restore /root/breenix-3f2-tmp/breenix_gate_structure_preflight.3GNVmS/breenix-structure-tests/context_restore_structure
+ 564356       01:11 00:00:00 timeout         timeout 300 bash <isolated-checkout-32>/scripts/run-structure-tests.sh context_restore_structure
+ 564357       01:11 00:00:00 bash            bash <isolated-checkout-32>/scripts/run-structure-tests.sh context_restore_structure
+ 564552       01:08 00:05:24 context_restore <isolated-checkout-29>/breenix_gate_structure_preflight.3GNVmS/breenix-structure-tests/context_restore_structure
  570486       00:00 00:00:00 grep            grep -E context_restore|rustc|qemu-system
 test work_stealing_declines_a_thread_pinned_to_another_cpus_stack ... ok
 test clone_publication_lifecycle_is_closed ... ok

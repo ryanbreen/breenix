@@ -1,0 +1,11 @@
+3f29bc7bf0d166ef75e5b7c84a1049250d195c29
+BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS=900
+Artifacts: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813e/wt/.gate-tmp/breenix_813_aarch64.zvnrUR
+Revision: 3f29bc7bf0d166ef75e5b7c84a1049250d195c29
+ .../green-program/ipc/813-PR-B-2026-09-07.md       | 103 +++++++++++++++------
+ 1 file changed, 77 insertions(+), 26 deletions(-)
+[GATE_PREFLIGHT:structure_suites=66/67:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 67 structure suite(s) red: gate_capture_drain_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813e/wt/.gate-tmp/breenix_gate_structure_preflight.wUzDR3)
+blocking I/O oracle gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
+blocking I/O oracle gate: FAIL at docker/qemu/run-blocking-io-oracle-gate.sh:77: false (exit 1)
+EXIT=1

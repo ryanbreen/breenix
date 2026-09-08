@@ -1,0 +1,5 @@
+40e2925f32800702e3dfd42d31d0fe63760cf65c
+[GATE_PREFLIGHT:structure_suites=65/66:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 66 structure suite(s) red: gate_capture_drain_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813d/wt/.gate-tmp/breenix_gate_structure_preflight.vsAU3a)
+FAIL: structure-suite preflight failed -- see GATE_PREFLIGHT line above
+GATE_EXIT=1

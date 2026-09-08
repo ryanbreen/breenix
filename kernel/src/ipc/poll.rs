@@ -160,11 +160,13 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                     }
                 }
                 DeviceType::Console | DeviceType::Tty => {
-                    // Console/TTY: always writable, not readable (no input buffer yet)
+                    // Console/Tty readiness follows the same ring as read().
                     if (events & events::POLLOUT) != 0 {
                         revents |= events::POLLOUT;
                     }
-                    // TODO: Check input buffer for POLLIN when implemented
+                    if (events & events::POLLIN) != 0 && crate::ipc::stdin::has_data() {
+                        revents |= events::POLLIN;
+                    }
                 }
             }
         }
@@ -274,7 +276,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             }
             // Check for writable
             if (events & events::POLLOUT) != 0 {
-                if !socket.peer_closed() {
+                if socket.has_write_space() {
                     revents |= events::POLLOUT;
                 }
             }

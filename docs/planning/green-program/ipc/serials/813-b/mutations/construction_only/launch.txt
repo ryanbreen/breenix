@@ -1,0 +1,4 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+[UNIX_WRITE_START:aarch64:mode]
+[UNIX_WRITE_ORACLE:aarch64:mode:verdict=FAIL:read deadline]
+[UNIX_WRITE_RESULT:aarch64:status=1]

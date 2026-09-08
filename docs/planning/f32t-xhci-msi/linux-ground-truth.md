@@ -1,6 +1,6 @@
 # F32t Linux xHCI MSI Ground Truth
 
-Captured on 2026-04-20 from `wrb@10.211.55.3` (`Linux probe 6.8.0-107-generic #107-Ubuntu ... aarch64`) and audited against `/tmp/linux-v6.8`.
+Captured on 2026-04-20 from `wrb@<probe-address>` (`Linux probe 6.8.0-107-generic #107-Ubuntu ... aarch64`) and audited against `/tmp/linux-v6.8`.
 
 ## Live Linux Device State
 

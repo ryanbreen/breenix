@@ -1,0 +1,9 @@
+{
+  "revision": "341dd25d8cc49a82346c2dfec428ebce2f2cb6e0",
+  "command": "bash docker/qemu/run-aarch64-boot-test-strict.sh 1",
+  "inputs": {
+    "target/aarch64-breenix-kernel/release/kernel-aarch64": "9b7dc9813275f3d594494d489c7ad0f663b22df2502ae8517c9f099f848af170",
+    "target/ext2-aarch64.img": "c7bcf249df3fe86992cc42fea200644294fd680d864023524ae6eab65c548ea7"
+  },
+  "serial_sha256": "b9f7e8db214a202ec9eb90e64fe57b3603295cc3ffe15e38bd11b8a9ebed2daf"
+}

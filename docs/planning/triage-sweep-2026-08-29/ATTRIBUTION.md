@@ -5,7 +5,8 @@ Round-1 verification blocked on two things: two unattributed x86 gate reds, and 
 runtime-proof claim for #670 that had never been executed. This document records
 what was measured for both.
 
-All x86 runs are on beast, container `breenix-x86`, KVM, `-cpu host`,
+<!-- claim-lint:ok: docker/qemu/run-x86-boot-tests.sh defines BREENIX_NET_MODE=none as a configuration value, not a prose absolute. -->
+The x86 runs are on beast, container `<x86-build-environment>`, KVM, `-cpu host`,
 `--features testing,external_test_bins`, `BREENIX_NET_MODE=none`, 150 s per boot,
 verdict by `scripts/x86-gate-verdict.sh` with `EXPECTED_EXITS=10`.
 

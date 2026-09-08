@@ -1,0 +1,2 @@
+Collection revision: 3f29bc7bf0d166ef75e5b7c84a1049250d195c29
+Gate start revisions are retained in each gate transcript.

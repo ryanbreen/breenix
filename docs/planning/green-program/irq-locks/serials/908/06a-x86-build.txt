@@ -73,7 +73,7 @@
    Compiling llvm-tools v0.1.1
    Compiling usize_conversions v0.2.0
    Compiling micromath v2.1.0
-   Compiling kernel v0.1.0 (/root/breenix-908/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-135>/kernel)
    Compiling httparse v1.10.1
    Compiling linux-raw-sys v0.12.1
    Compiling embedded-graphics v0.8.2
@@ -112,7 +112,7 @@
    Compiling utf8-zero v0.8.1
    Compiling percent-encoding v2.3.2
    Compiling cpufeatures v0.3.1
-   Compiling breenix v0.1.0 (/root/breenix-908)
+   Compiling breenix v0.1.0 (<isolated-checkout-146>)
    Compiling sha2 v0.11.0
    Compiling lzma-rs v0.3.0
    Compiling rustls-webpki v0.103.15

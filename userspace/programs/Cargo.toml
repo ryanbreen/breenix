@@ -644,3 +644,11 @@ opt-level = "z"
 # Note: The libc patch is applied in rust-fork/library/Cargo.toml, not here.
 # That's because -Z build-std uses the library workspace's Cargo.toml for
 # dependency resolution, not the project's Cargo.toml.
+
+[[bin]]
+name = "unix_stream_blocking_oracle"
+path = "src/unix_stream_blocking_oracle.rs"
+
+[[bin]]
+name = "unix_stream_blocking_supervisor"
+path = "src/unix_stream_blocking_supervisor.rs"

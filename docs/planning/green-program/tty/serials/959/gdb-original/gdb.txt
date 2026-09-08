@@ -1,0 +1,33 @@
+source revision: c93ecf5297f42bf4127849f0b26961d74c25f85c
+0x0000000040080000 in _start ()
+Breakpoint 1 at 0xffff000040561a50
+[Switching to Thread 1.2]
+
+Thread 2 hit Breakpoint 1, 0xffff000040561a50 in kernel::test_framework::registry::run_tty_irq_pm_oracle ()
+DRIVER_BEFORE_BUSY_PROBE active=1 done=0 holder_cpu=2 hold_us=0
+driver_thread=2 cpsr=[ SP EL=1 BTYPE=0 N ]
+  Id   Target Id                    Frame 
+  1    Thread 1.1 (CPU#0 [running]) 0xffff0000404c1be8 in kernel::test_framework::executor::run_staged_tests ()
+* 2    Thread 1.2 (CPU#1 [running]) 0xffff000040561a50 in kernel::test_framework::registry::run_tty_irq_pm_oracle ()
+  3    Thread 1.3 (CPU#2 [running]) 0xffff000040561514 in kernel::test_framework::registry::tty_irq_pm_holder_body ()
+  4    Thread 1.4 (CPU#3 [halted ]) 0xffff00004046d8b0 in idle_loop_arm64 ()
+Breakpoint 2 at 0xffff000040561590
+[Switching to thread 3 (Thread 1.3)]
+#0  0xffff000040561514 in kernel::test_framework::registry::tty_irq_pm_holder_body ()
+
+Thread 3 hit Breakpoint 2, 0xffff000040561590 in kernel::test_framework::registry::tty_irq_pm_holder_body ()
+HOLDER_COMPLETED_WHILE_DRIVER_STOPPED active=1 done=1 holder_cpu=2 hold_us=20000
+Breakpoint 3 at 0xffff000040561d50
+
+Thread 2 hit Breakpoint 3, 0xffff000040561d50 in kernel::test_framework::registry::run_tty_irq_pm_oracle ()
+DRIVER_AFTER_BUSY_PROBE active=1 done=1 holder_cpu=2 hold_us=20000
+pc             0xffff000040561d50  0xffff000040561d50 <kernel::test_framework::registry::run_tty_irq_pm_oracle+1508>
+cpsr           0x80000005          [ SP EL=1 BTYPE=0 N ]
+Breakpoint 4 at 0xffff000040562674
+[Switching to Thread 1.3]
+
+Thread 3 hit Breakpoint 4, 0xffff000040562674 in kernel::test_framework::registry::tty_irq_fg_inject ()
+FG_INJECTION_ENTRY_CPSR=[ SP EL=1 BTYPE=0 C Z ]
+pc             0xffff000040562674  0xffff000040562674 <kernel::test_framework::registry::tty_irq_fg_inject>
+cpsr           0x60000005          [ SP EL=1 BTYPE=0 C Z ]
+[Inferior 1 (process 1) detached]

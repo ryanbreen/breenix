@@ -52,9 +52,9 @@ mechanisms. `29344251` still compiles the three records; the scratch commit
 runs this branch's code rather than an approximation of it.
 
 ```bash
-git show bfbb7575:scripts/x86-strand-census.sh > /root/775c/old-census.sh
+git show bfbb7575:scripts/x86-strand-census.sh > <host-artifact-dir-179>/old-census.sh
 ./docker/qemu/run-x86-gate.sh 3 full        # then 4 full
-/root/775c/old-census.sh boot/serial_user.txt boot/serial_kernel.txt
+<host-artifact-dir-179>/old-census.sh boot/serial_user.txt boot/serial_kernel.txt
 ./scripts/x86-strand-census.sh boot/serial_user.txt boot/serial_kernel.txt
 ```
 
@@ -477,7 +477,7 @@ been written.
 
 ### The zero-feature production profile, before and after
 
-Six boots each side, one QEMU at a time, on the beast `breenix-x86` container.
+Six boots each side, one QEMU at a time, on the x86 build environment on beast.
 Both sets are committed: `serials/775/round4/kstrandd-lost-wake/` is `kstrandd`
 present with the lost wake, `serials/775/round4/production/` is `kstrandd`
 working. Both arms are 6 of 6 `PASS: x86 production profile reached steady
@@ -1122,7 +1122,7 @@ records which commit each ran at and why the head's build inputs are the same
 bytes. Round-5 test totals: 26 structure targets, 505 passed, 0 failed, 0
 warning/error lines; `tests/x86_gate_verdict_test.rs` 20 passed, 0 failed.
 
-The two x86 builds ran on the beast `breenix-x86` container; the aarch64 builds
+The two x86 builds ran on the x86 build environment on beast; the aarch64 builds
 ran on the ARM Mac. In both rounds `tests/*_structure.rs` were run one target
 per invocation, 26 targets each time. Round 5:
 `round5/builds/structure-tests-targets.txt`, 26 exit 0, 505 passed, 0 failed,

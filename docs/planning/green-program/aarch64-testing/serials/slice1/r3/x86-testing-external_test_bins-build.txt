@@ -1,7 +1,7 @@
 profile: x86_64 testing,external_test_bins
-host: beast -> incus container breenix-x86, clone at /root/breenix-ttbr0
+host: beast -> the x86 build environment, clone at <isolated-checkout-44>
 commit: 0f2621b069b1ce5a389c5abb9ddcd55505049abd
-command: ssh beast 'sudo -n incus exec breenix-x86 -- bash -lc "source $HOME/.cargo/env; cd /root/breenix-ttbr0 && git fetch origin && git checkout fix/ttbr0-shadow-reconciliation && git reset --hard origin/fix/ttbr0-shadow-reconciliation && git rev-parse HEAD && cargo build --release --features testing,external_test_bins --bin qemu-uefi 2>&1 | grep -E \"^(warning|error)\"; echo BUILD_EXIT=${PIPESTATUS[0]}"'
+command: ssh beast 'sudo -n incus exec <x86-build-environment> -- bash -lc "source $HOME/.cargo/env; cd <isolated-checkout-44> && git fetch origin && git checkout fix/ttbr0-shadow-reconciliation && git reset --hard origin/fix/ttbr0-shadow-reconciliation && git rev-parse HEAD && cargo build --release --features testing,external_test_bins --bin qemu-uefi 2>&1 | grep -E \"^(warning|error)\"; echo BUILD_EXIT=${PIPESTATUS[0]}"'
 ---
 transcript, from the fetch line onwards:
 

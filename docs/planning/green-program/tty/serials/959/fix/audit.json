@@ -1,0 +1,187 @@
+{
+  "revision": "252b9d404195c2e6a7c62ea9c5cd7ce60ba2bfed",
+  "boots": 20,
+  "peerHoldFailBoots": 0,
+  "rows": [
+    {
+      "boot": 1,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20006:entry_us=0:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=174:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "c78e9f37d658d681f7f43754319c441df6750ce853535c0b0faec18b2799c93e"
+    },
+    {
+      "boot": 2,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=2:pm_busy_probe=1:hold_us=20000:entry_us=0:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=146:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "ee81bf99ef65ee1d74a46cc9c286b0bdee89397abac8b3ae799c2b0bd84a5c76"
+    },
+    {
+      "boot": 3,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=2:pm_busy_probe=1:hold_us=20000:entry_us=12:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=134:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "bbca8fa114733c1543f821606be295b26806ef2c530cb14782cef2eafb9ff65c"
+    },
+    {
+      "boot": 4,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20002:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=168:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "44f9e44e7763113939b7288236b7c7c031e2f858de4f7709a7d9b583917dd218"
+    },
+    {
+      "boot": 5,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=4:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=118:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "be20990df996f47c79f626beee7667cff1aea5a39603759edaf8c04c25e059fd"
+    },
+    {
+      "boot": 6,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=4:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=122:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "14e198a9598a42fab751663d1d9b5896b1f96c7c3fb75c9e8b1a6a02b30e5fd0"
+    },
+    {
+      "boot": 7,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=130:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "cf2850c5a76fae7eb80a9d3a3138d61df92a5f2e82538fc6251d3c9125f715e2"
+    },
+    {
+      "boot": 8,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=120:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "f78d436429cd53a1aa3ad23124e0535c66c908825af2bbc7f43763352a6c5f41"
+    },
+    {
+      "boot": 9,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=2:pm_busy_probe=1:hold_us=20000:entry_us=0:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=128:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "336befd2a105a13b8ef5b2ecc710d0c1079f4535a697bcfaacbac08715d83e95"
+    },
+    {
+      "boot": 10,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=124:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "41ae79a1680b9bc1c2874014d22190c57887601d006f2ed2125a058628ff8f05"
+    },
+    {
+      "boot": 11,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=0:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=124:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "e259d75841541e245c443421636ac171a9cf5e34abcca56f47d7a95f642cd10c"
+    },
+    {
+      "boot": 12,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=2:pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=118:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "e1008e72f589b34699dcb2904f365236725e5bf5f1c753e821efbe08a7173739"
+    },
+    {
+      "boot": 13,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=0:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=122:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "3718a831578b0b300ce99d0fe29031f18ce2da1638eb1894770bc431455d670d"
+    },
+    {
+      "boot": 14,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=118:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "26fc9ec9ee8d906404c435a13de91462dc6ba262c5485b6383849135bababbe2"
+    },
+    {
+      "boot": 15,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=0:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=136:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "494c961ced505bbaab4ee51194954ec2b3bfa7567b4649abbff1b421659c9c86"
+    },
+    {
+      "boot": 16,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=6:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=122:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "4217c5dddb87b84e5f71ddc1fe313c8d369d528b77e8c29f9ab795a75b2f5067"
+    },
+    {
+      "boot": 17,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=2:pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=118:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "fb86328f34aa5b086697e907198a9b2ba59b33935cded0efc1d4b51214fb7d71"
+    },
+    {
+      "boot": 18,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=4:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=2:fg_busy_probe=1:hold_us=20000:entry_us=120:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "cf97d4121709241c891220ccfc42a196e97d17ed66b89cd2b9215c9fa32a240f"
+    },
+    {
+      "boot": 19,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=2:pm_busy_probe=1:hold_us=20000:entry_us=0:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=122:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "0d6f2f68f9c03bc8ccd678fc8e7063bc22bee71e67833c85a3e7adae3698dd66"
+    },
+    {
+      "boot": 20,
+      "peerHoldFail": false,
+      "markers": [
+        "[TTY_IRQ_PM_ORACLE:aarch64:fg_unset_before=1:pm_blocking_acquires=0:deferred=2:pgrp_set_by_entry=0:processed=2:buffered=2:irqs_enabled_before=1:holder_cpu=1:pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:PASS:peer_hold]",
+        "[TTY_IRQ_FG_ORACLE:aarch64:fg_known=822:target_absent=1:fg_lock_touches=0:fg_blocking_acquires=0:snapshot_reads=3:processed=2:buffered=1:irqs_enabled_before=1:holder_cpu=1:fg_busy_probe=1:hold_us=20000:entry_us=120:joined=1:sig_calls=1:sig_pid=822:sig_num=2:snapshot_agrees=1:restored=1:PASS:peer_hold]"
+      ],
+      "sha256": "aa81f08baaa37062a53283d65e4dc92525d7ef6014c674f501ea75fc7f8dc50f"
+    }
+  ]
+}

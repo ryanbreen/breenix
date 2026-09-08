@@ -31,7 +31,9 @@ if [ ! -f "$PNG" ]; then
     exit 2
 fi
 
-python3 - "$PNG" <<'PY'
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/python-with-pil.sh"
+
+"$BREENIX_PYTHON" - "$PNG" <<'PY'
 import sys
 import warnings
 from collections import Counter

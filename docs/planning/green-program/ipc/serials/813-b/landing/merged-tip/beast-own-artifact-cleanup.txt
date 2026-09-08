@@ -1,0 +1,4 @@
+Filesystem      Size  Used Avail Use% Mounted on
+Host storage availability was checked before cleanup.
+Filesystem      Size  Used Avail Use% Mounted on
+Host storage availability was checked after cleanup.

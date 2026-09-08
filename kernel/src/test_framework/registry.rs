@@ -6636,6 +6636,10 @@ static TTY_IRQ_PM_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
 static TTY_IRQ_PM_HOLD_DONE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
+static TTY_IRQ_PM_HOLD_RELEASE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static TTY_IRQ_PM_HOLD_SAFETY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
 static TTY_IRQ_PM_HOLD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(target_arch = "aarch64")]
 static TTY_IRQ_PM_HOLD_MEASURED_US: AtomicU64 = AtomicU64::new(0);
@@ -6674,7 +6678,7 @@ struct TtyIrqPmConsoleSave {
     pgrp: Option<u64>,
 }
 
-/// aarch64 peer body: own PROCESS_MANAGER, masked, for a fixed window.
+/// aarch64 peer body: own PROCESS_MANAGER, masked, through the driver acknowledgement.
 ///
 /// `manager()` is used rather than `try_manager()` because the exposed shape
 /// under measurement is an ordinary blocking holder, and on aarch64 that
@@ -6694,7 +6698,14 @@ fn tty_irq_pm_holder_body() {
     let held_from = tty_irq_pm_now_us();
     loop {
         let elapsed = tty_irq_pm_now_us().wrapping_sub(held_from);
-        if elapsed >= TTY_IRQ_PM_HOLD_US {
+        if TTY_IRQ_PM_HOLD_RELEASE.load(AtomicOrdering::Acquire) && elapsed >= TTY_IRQ_PM_HOLD_US {
+            TTY_IRQ_PM_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
+            break;
+        }
+
+        // Bounded failure recovery; safety expiry rejects this hold witness.
+        if elapsed >= TTY_IRQ_PM_ARM_WAIT_US {
+            TTY_IRQ_PM_HOLD_SAFETY.store(true, AtomicOrdering::Release);
             TTY_IRQ_PM_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
             break;
         }
@@ -6805,6 +6816,10 @@ pub fn run_tty_irq_pm_oracle() -> bool {
     let mut hold_us = 0u64;
     #[cfg(target_arch = "aarch64")]
     let mut joined = 0u64;
+    #[cfg(target_arch = "aarch64")]
+    let mut peer_held_after = false;
+    #[cfg(target_arch = "aarch64")]
+    let mut peer_irqs_masked = false;
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -6816,22 +6831,31 @@ pub fn run_tty_irq_pm_oracle() -> bool {
             release_cpu_affine_thread_for_test,
         };
 
+        // Pin selection through injection: the selected peer must stay remote.
+        crate::per_cpu::preempt_disable();
         let peer = live_peer_cpu_for_test();
         let peer = match peer {
             Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
             other => other,
         };
-
-        if let Some(peer) = peer {
+        let handle = peer.and_then(|peer| {
             TTY_IRQ_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
             TTY_IRQ_PM_HOLD_DONE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_PM_HOLD_RELEASE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_PM_HOLD_SAFETY.store(false, AtomicOrdering::Release);
             TTY_IRQ_PM_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
             TTY_IRQ_PM_HOLD_MEASURED_US.store(0, AtomicOrdering::Relaxed);
-
-            if let Ok(handle) =
-                kthread_run_on_cpu_for_test(tty_irq_pm_holder_body, "tty-irq-pm-821", peer)
-            {
-                arm = TTY_IRQ_PM_ARM_PEER_HOLD;
+            kthread_run_on_cpu_for_test(tty_irq_pm_holder_body, "tty-irq-pm-821", peer).ok()
+        });
+        if handle.is_some() {
+            arm = TTY_IRQ_PM_ARM_PEER_HOLD;
+            irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+            // Issue 959: model the level-triggered keyboard IRQ's masked entry.
+            // A timer/softirq inside this thread-context call is not TTY work.
+            // Keep the rendezvous masked too: an IRQ must not wait on the PM
+            // holder while that holder waits for this driver's acknowledgement.
+            crate::arch_without_interrupts(|| {
+                peer_irqs_masked = !crate::arch_interrupts_enabled();
                 let arm_start = tty_irq_pm_now_us();
                 while !TTY_IRQ_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
                     && !TTY_IRQ_PM_HOLD_DONE.load(AtomicOrdering::Acquire)
@@ -6839,30 +6863,36 @@ pub fn run_tty_irq_pm_oracle() -> bool {
                 {
                     core::hint::spin_loop();
                 }
-
-                if TTY_IRQ_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
-                    irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+                if TTY_IRQ_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+                    && !TTY_IRQ_PM_HOLD_DONE.load(AtomicOrdering::Acquire)
+                {
                     pm_busy_probe = u64::from(crate::process::try_manager().is_none());
                     let injected = tty_irq_pm_inject(TTY_IRQ_PM_BYTE_B);
                     processed_b = injected.0;
                     entry_us = injected.1;
                     blocking_b = injected.2;
                     deferred_b = injected.3;
+                    peer_held_after = crate::process::try_manager().is_none()
+                        && !TTY_IRQ_PM_HOLD_DONE.load(AtomicOrdering::Acquire);
                 }
-
-                release_cpu_affine_thread_for_test(handle.tid());
-                let join_start = tty_irq_pm_now_us();
-                while !kthread_has_exited_for_test(&handle)
-                    && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_PM_JOIN_US
-                {
-                    crate::arch_halt();
-                }
-                if kthread_has_exited_for_test(&handle) {
-                    joined = u64::from(kthread_join(&handle).is_ok());
-                }
-                holder_cpu = TTY_IRQ_PM_HOLD_CPU.load(AtomicOrdering::Relaxed);
-                hold_us = TTY_IRQ_PM_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
+                // Release even after a failed arm; safety expiry is a failure.
+                TTY_IRQ_PM_HOLD_RELEASE.store(true, AtomicOrdering::Release);
+            });
+        }
+        crate::per_cpu::preempt_enable();
+        if let Some(handle) = handle {
+            release_cpu_affine_thread_for_test(handle.tid());
+            let join_start = tty_irq_pm_now_us();
+            while !kthread_has_exited_for_test(&handle)
+                && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_PM_JOIN_US
+            {
+                crate::arch_halt();
             }
+            if kthread_has_exited_for_test(&handle) {
+                joined = u64::from(kthread_join(&handle).is_ok());
+            }
+            holder_cpu = TTY_IRQ_PM_HOLD_CPU.load(AtomicOrdering::Relaxed);
+            hold_us = TTY_IRQ_PM_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
         }
     }
 
@@ -6919,6 +6949,9 @@ pub fn run_tty_irq_pm_oracle() -> bool {
     #[cfg(target_arch = "aarch64")]
     let passed = common_pass
         && arm == TTY_IRQ_PM_ARM_PEER_HOLD
+        && peer_held_after
+        && peer_irqs_masked
+        && !TTY_IRQ_PM_HOLD_SAFETY.load(AtomicOrdering::Acquire)
         && irqs_enabled_before == 1
         && pm_busy_probe == 1
         && holder_cpu != u64::MAX
@@ -7082,11 +7115,15 @@ static TTY_IRQ_FG_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
 static TTY_IRQ_FG_HOLD_DONE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
+static TTY_IRQ_FG_HOLD_RELEASE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static TTY_IRQ_FG_HOLD_SAFETY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
 static TTY_IRQ_FG_HOLD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(target_arch = "aarch64")]
 static TTY_IRQ_FG_HOLD_MEASURED_US: AtomicU64 = AtomicU64::new(0);
 
-/// aarch64 peer body: own `foreground_pgrp`, UNMASKED, for a fixed window.
+/// aarch64 peer body: own `foreground_pgrp`, UNMASKED, through the driver acknowledgement.
 ///
 /// Unmasked is the point. `tcsetpgrp` holds this lock with interrupts live, so
 /// that is the shape an input interrupt has to survive. Preemption is disabled
@@ -7109,7 +7146,16 @@ fn tty_irq_fg_holder_body() {
         let held_from = tty_irq_pm_now_us();
         loop {
             let elapsed = tty_irq_pm_now_us().wrapping_sub(held_from);
-            if elapsed >= TTY_IRQ_FG_HOLD_US {
+            if TTY_IRQ_FG_HOLD_RELEASE.load(AtomicOrdering::Acquire)
+                && elapsed >= TTY_IRQ_FG_HOLD_US
+            {
+                TTY_IRQ_FG_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
+                break;
+            }
+
+            // Bounded failure recovery; safety expiry rejects this hold witness.
+            if elapsed >= TTY_IRQ_FG_ARM_WAIT_US {
+                TTY_IRQ_FG_HOLD_SAFETY.store(true, AtomicOrdering::Release);
                 TTY_IRQ_FG_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
                 break;
             }
@@ -7250,6 +7296,10 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     let mut hold_us = 0u64;
     #[cfg(target_arch = "aarch64")]
     let mut joined = 0u64;
+    #[cfg(target_arch = "aarch64")]
+    let mut peer_held_after = false;
+    #[cfg(target_arch = "aarch64")]
+    let mut peer_irqs_masked = false;
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -7261,22 +7311,31 @@ pub fn run_tty_irq_fg_oracle() -> bool {
             release_cpu_affine_thread_for_test,
         };
 
+        // Pin selection through injection: the selected peer must stay remote.
+        crate::per_cpu::preempt_disable();
         let peer = live_peer_cpu_for_test();
         let peer = match peer {
             Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
             other => other,
         };
-
-        if let Some(peer) = peer {
+        let handle = peer.and_then(|peer| {
             TTY_IRQ_FG_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
             TTY_IRQ_FG_HOLD_DONE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_FG_HOLD_RELEASE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_FG_HOLD_SAFETY.store(false, AtomicOrdering::Release);
             TTY_IRQ_FG_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
             TTY_IRQ_FG_HOLD_MEASURED_US.store(0, AtomicOrdering::Relaxed);
-
-            if let Ok(handle) =
-                kthread_run_on_cpu_for_test(tty_irq_fg_holder_body, "tty-irq-fg-822", peer)
-            {
-                arm = TTY_IRQ_FG_ARM_PEER_HOLD;
+            kthread_run_on_cpu_for_test(tty_irq_fg_holder_body, "tty-irq-fg-822", peer).ok()
+        });
+        if handle.is_some() {
+            arm = TTY_IRQ_FG_ARM_PEER_HOLD;
+            irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+            // Issue 959: model the level-triggered keyboard IRQ's masked entry.
+            // A timer/softirq inside this thread-context call is not TTY work.
+            // Keep the rendezvous masked too: an IRQ must not wait on the PM
+            // holder while that holder waits for this driver's acknowledgement.
+            crate::arch_without_interrupts(|| {
+                peer_irqs_masked = !crate::arch_interrupts_enabled();
                 let arm_start = tty_irq_pm_now_us();
                 while !TTY_IRQ_FG_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
                     && !TTY_IRQ_FG_HOLD_DONE.load(AtomicOrdering::Acquire)
@@ -7284,9 +7343,9 @@ pub fn run_tty_irq_fg_oracle() -> bool {
                 {
                     core::hint::spin_loop();
                 }
-
-                if TTY_IRQ_FG_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
-                    irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+                if TTY_IRQ_FG_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+                    && !TTY_IRQ_FG_HOLD_DONE.load(AtomicOrdering::Acquire)
+                {
                     fg_busy_probe = u64::from(tty.foreground_pgrp_busy_for_test());
                     let injected = tty_irq_fg_inject(TTY_IRQ_FG_INTR_BYTE);
                     processed_b = injected.0;
@@ -7295,21 +7354,27 @@ pub fn run_tty_irq_fg_oracle() -> bool {
                     blocking_b = injected.3;
                     reads_b = injected.4;
                     calls_b = injected.5;
+                    peer_held_after = tty.foreground_pgrp_busy_for_test()
+                        && !TTY_IRQ_FG_HOLD_DONE.load(AtomicOrdering::Acquire);
                 }
-
-                release_cpu_affine_thread_for_test(handle.tid());
-                let join_start = tty_irq_pm_now_us();
-                while !kthread_has_exited_for_test(&handle)
-                    && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_FG_JOIN_US
-                {
-                    crate::arch_halt();
-                }
-                if kthread_has_exited_for_test(&handle) {
-                    joined = u64::from(kthread_join(&handle).is_ok());
-                }
-                holder_cpu = TTY_IRQ_FG_HOLD_CPU.load(AtomicOrdering::Relaxed);
-                hold_us = TTY_IRQ_FG_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
+                // Release even after a failed arm; safety expiry is a failure.
+                TTY_IRQ_FG_HOLD_RELEASE.store(true, AtomicOrdering::Release);
+            });
+        }
+        crate::per_cpu::preempt_enable();
+        if let Some(handle) = handle {
+            release_cpu_affine_thread_for_test(handle.tid());
+            let join_start = tty_irq_pm_now_us();
+            while !kthread_has_exited_for_test(&handle)
+                && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_FG_JOIN_US
+            {
+                crate::arch_halt();
             }
+            if kthread_has_exited_for_test(&handle) {
+                joined = u64::from(kthread_join(&handle).is_ok());
+            }
+            holder_cpu = TTY_IRQ_FG_HOLD_CPU.load(AtomicOrdering::Relaxed);
+            hold_us = TTY_IRQ_FG_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
         }
     }
 
@@ -7383,6 +7448,9 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     #[cfg(target_arch = "aarch64")]
     let passed = common_pass
         && arm == TTY_IRQ_FG_ARM_PEER_HOLD
+        && peer_held_after
+        && peer_irqs_masked
+        && !TTY_IRQ_FG_HOLD_SAFETY.load(AtomicOrdering::Acquire)
         && holder_cpu != u64::MAX
         && hold_us >= TTY_IRQ_FG_HOLD_US
         && entry_us < TTY_IRQ_FG_ENTRY_CEILING_US

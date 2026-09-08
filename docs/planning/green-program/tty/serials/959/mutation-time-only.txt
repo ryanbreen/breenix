@@ -1,0 +1,18 @@
+source revision: 252b9d40 source snapshot before commit; PM release-load replaced by true, restored afterwards
+== compiling tty_irq_pm_structure ==
+== running tty_irq_pm_structure peer_hold_rendezvous_covers ==
+
+running 1 test
+
+thread 'peer_hold_rendezvous_covers_both_lock_probes' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t959/wt/tests/tty_irq_pm_structure.rs:1170:10:
+issue 959 peer hold must cover the measured IRQ entry: "pm: holder lacks TTY_IRQ_PM_HOLD_RELEASE.load(AtomicOrdering::Acquire)"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test peer_hold_rendezvous_covers_both_lock_probes ... FAILED
+
+failures:
+
+failures:
+    peer_hold_rendezvous_covers_both_lock_probes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
+

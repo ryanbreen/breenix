@@ -1,9 +1,9 @@
 # #865 gbf_load_1m set -e/pipefail abort, first observed on beast
 
-Host: beast, Incus container breenix-x86 (Debian, Linux)
-Clone: /root/breenix-x86lock (gates/x86-host-qemu-lock @ b2a99c295)
-Command: BREENIX_GATE_TMP=/root/breenix-x86lock-tmp-a ./docker/qemu/run-x86-boot-tests.sh 1
-Log: /root/breenix-x86lock-tmp-a/run.log (tail, at the point of failure)
+Host: beast, the x86 build environment (Debian, Linux)
+Clone: <isolated-checkout-69> (gates/x86-host-qemu-lock @ b2a99c295)
+Command: BREENIX_GATE_TMP=<isolated-checkout-70> ./docker/qemu/run-x86-boot-tests.sh 1
+Log: <isolated-checkout-70>/run.log (tail, at the point of failure)
 
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
 x86 frame-custody gate run 1: FAIL (set -e abort at ./docker/qemu/run-x86-boot-tests.sh:507, exit 1)

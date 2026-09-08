@@ -1,5 +1,5 @@
-cargo test --test <target>, one target per invocation, in /root/breenix-775
-on the beast breenix-x86 VM, at the round-3 head of fix/775-dispatch-log-removal.
+cargo test --test <target>, one target per invocation, in <isolated-checkout-53>
+on the x86 build environment on beast, at the round-3 head of fix/775-dispatch-log-removal.
 
 26 tests/*_structure.rs targets, 505 passed, 0 failed.
 

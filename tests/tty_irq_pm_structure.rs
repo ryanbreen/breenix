@@ -54,8 +54,7 @@ const STRICT_GATE: &str = "docker/qemu/run-aarch64-boot-test-strict.sh";
 const PROD_GATE: &str = "docker/qemu/run-aarch64-prod-profile-boot-test.sh";
 const X86_BOOT_GATE: &str = "docker/qemu/run-x86-boot-tests.sh";
 const X86_PROD_GATE: &str = "docker/qemu/run-x86-prod-profile-boot-test.sh";
-const GREEN_SERIAL: &str =
-    "tests/fixtures/udp-socket-lock-aarch64-serial.txt";
+const GREEN_SERIAL: &str = "tests/fixtures/udp-socket-lock-aarch64-serial.txt";
 const PROD_SERIAL: &str =
     "docs/planning/green-program/irq-locks/serials/821/03-a64-prod-profile-serial.txt";
 const ORACLE_MARKER: &str = "[TTY_IRQ_PM_ORACLE:";
@@ -306,7 +305,6 @@ fn has_identifier(source: &str, identifier: &str) -> bool {
     !identifier_offsets(source, &code_mask(source), identifier).is_empty()
 }
 
-
 /// The Rust sources under `kernel/src`, as (repo-relative path, contents).
 fn kernel_sources() -> Vec<(String, String)> {
     fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
@@ -403,8 +401,9 @@ fn validate_irq_entry_takes_no_blocking_pm(driver: &str) -> Result<(), String> {
         ));
     }
     if !roots.contains(&"input_char_nonblock") {
-        return Err("driver.rs no longer declares input_char_nonblock, the entry #821 is about"
-            .to_string());
+        return Err(
+            "driver.rs no longer declares input_char_nonblock, the entry #821 is about".to_string(),
+        );
     }
 
     let mut queue: Vec<&str> = roots.clone();
@@ -527,7 +526,7 @@ fn validate_reader_takes_the_adoption(handlers: &str) -> Result<(), String> {
         })?;
     if !normalized_code(read).contains("adopt_foreground_pgrp_from_reader(reader_pid)") {
         return Err(
-            "sys_read does not hand the adoption the reading process's own pid".to_string()
+            "sys_read does not hand the adoption the reading process's own pid".to_string(),
         );
     }
     let released = identifier_offsets(read, &mask, "manager_guard")
@@ -537,7 +536,8 @@ fn validate_reader_takes_the_adoption(handlers: &str) -> Result<(), String> {
         .ok_or_else(|| "sys_read no longer drops its process-manager guard".to_string())?;
     if call < released {
         return Err(
-            "sys_read takes the adoption while it still holds the process-manager guard".to_string(),
+            "sys_read takes the adoption while it still holds the process-manager guard"
+                .to_string(),
         );
     }
     Ok(())
@@ -891,14 +891,19 @@ fn deliberately_broken_copies_redden_the_rules() {
         .find(|(path, text)| {
             path != DRIVER
                 && !path.starts_with("kernel/src/test_framework/")
-                && function_spans(text).into_iter().any(|span| {
-                    has_identifier(&text[span.open..=span.close], "push_char_nonblock")
-                })
+                && function_spans(text)
+                    .into_iter()
+                    .any(|span| has_identifier(&text[span.open..=span.close], "push_char_nonblock"))
         })
         .expect("at least one interrupt-side caller of push_char_nonblock");
     let handler_name = function_spans(&handler_file.1)
         .into_iter()
-        .find(|span| has_identifier(&handler_file.1[span.open..=span.close], "push_char_nonblock"))
+        .find(|span| {
+            has_identifier(
+                &handler_file.1[span.open..=span.close],
+                "push_char_nonblock",
+            )
+        })
         .expect("the caller's enclosing function")
         .name;
     let mut mutated_sources = sources.clone();
@@ -962,7 +967,8 @@ fn score_with_gate(gate: &str, variable: &str, serial: &Path) -> (bool, String) 
 
 #[test]
 fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
-    let scratch = std::env::temp_dir().join(format!("breenix-821-gate-legs-{}", std::process::id()));
+    let scratch =
+        std::env::temp_dir().join(format!("breenix-821-gate-legs-{}", std::process::id()));
     fs::create_dir_all(&scratch).expect("create the scratch directory for the gate legs");
     let write = |name: &str, body: &str| -> PathBuf {
         let path = scratch.join(format!("{name}.txt"));
@@ -980,7 +986,11 @@ fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
 
     // Leg A. Anti-vacuity for the 4 legs below: a gate that rejected each
     // serial handed to it would satisfy them without scoring a boot.
-    let (passed, output) = score_with_gate(STRICT_GATE, "BREENIX_STRICT_SCORE_ONLY", &write("green", &green));
+    let (passed, output) = score_with_gate(
+        STRICT_GATE,
+        "BREENIX_STRICT_SCORE_ONLY",
+        &write("green", &green),
+    );
     assert!(
         passed,
         "{STRICT_GATE} has to pass the serial it was recorded green on, or the failing legs below \
@@ -995,7 +1005,10 @@ fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
         "BREENIX_STRICT_SCORE_ONLY",
         &write("failed", &failed_verdict),
     );
-    assert!(!passed, "{STRICT_GATE} passed a serial whose #821 oracle failed: {output}");
+    assert!(
+        !passed,
+        "{STRICT_GATE} passed a serial whose #821 oracle failed: {output}"
+    );
     assert!(
         output.contains("TTY input IRQ process-manager oracle"),
         "{STRICT_GATE} failed the serial, but for some other reason: {output}"
@@ -1008,9 +1021,15 @@ fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
         .filter(|line| !line.contains(ORACLE_MARKER))
         .map(|line| format!("{line}\n"))
         .collect();
-    let (passed, output) =
-        score_with_gate(STRICT_GATE, "BREENIX_STRICT_SCORE_ONLY", &write("deleted", &deleted));
-    assert!(!passed, "{STRICT_GATE} passed a serial with no #821 oracle line at all: {output}");
+    let (passed, output) = score_with_gate(
+        STRICT_GATE,
+        "BREENIX_STRICT_SCORE_ONLY",
+        &write("deleted", &deleted),
+    );
+    assert!(
+        !passed,
+        "{STRICT_GATE} passed a serial with no #821 oracle line at all: {output}"
+    );
 
     // Leg D. The entry completed, but only after waiting out the whole remote
     // hold -- the unrepaired reading this branch actually recorded.
@@ -1030,8 +1049,11 @@ fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
         .expect("the baseline's #821 oracle line must carry an entry_us field");
     let waited = green.replace(&entry_us_field, ":entry_us=20022:");
     assert_ne!(waited, green, "leg D's mutation must apply");
-    let (passed, output) =
-        score_with_gate(STRICT_GATE, "BREENIX_STRICT_SCORE_ONLY", &write("waited", &waited));
+    let (passed, output) = score_with_gate(
+        STRICT_GATE,
+        "BREENIX_STRICT_SCORE_ONLY",
+        &write("waited", &waited),
+    );
     assert!(
         !passed,
         "{STRICT_GATE} passed a serial whose input IRQ entry waited 20 ms for the lock: {output}"
@@ -1040,8 +1062,11 @@ fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
     // Leg E. The property itself: a blocking acquisition inside the scope.
     let acquired = green.replace("pm_blocking_acquires=0", "pm_blocking_acquires=1");
     assert_ne!(acquired, green, "leg E's mutation must apply");
-    let (passed, output) =
-        score_with_gate(STRICT_GATE, "BREENIX_STRICT_SCORE_ONLY", &write("acquired", &acquired));
+    let (passed, output) = score_with_gate(
+        STRICT_GATE,
+        "BREENIX_STRICT_SCORE_ONLY",
+        &write("acquired", &acquired),
+    );
     assert!(
         !passed,
         "{STRICT_GATE} passed a serial reporting a blocking PROCESS_MANAGER acquisition inside \
@@ -1049,18 +1074,26 @@ fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
     );
 
     // --- the production gate, over the serial it was recorded green on ------
-    let prod = repo_text(PROD_SERIAL);
+    // Synthetic scorer fixture extension; no change to the historical serial
+    // and no claim of a guest boot for this fixture.
+    let prod = format!(
+        "{}\n[INPUT_INJECT_NEGATIVE_CONTROL:request=0xb8130004:probe=-25:verdict=PASS]\n",
+        repo_text(PROD_SERIAL)
+    );
     assert!(
         !prod.contains(ORACLE_MARKER),
         "{PROD_SERIAL} is a shipped-profile boot and must not carry a boot_tests-only marker"
     );
 
     // Leg F. Anti-vacuity, as leg A.
-    let (passed, output) =
-        score_with_gate(PROD_GATE, "BREENIX_PROD_SCORE_ONLY", &write("prod-green", &prod));
+    let (passed, output) = score_with_gate(
+        PROD_GATE,
+        "BREENIX_PROD_SCORE_ONLY",
+        &write("prod-green", &prod),
+    );
     assert!(
         passed,
-        "{PROD_GATE} has to pass the serial it was recorded green on: {output}"
+        "{PROD_GATE} has to pass the extended scorer fixture: {output}"
     );
 
     // Leg G. The boot_tests-only oracle appeared on the shipped profile.
@@ -1070,8 +1103,11 @@ fn the_aarch64_gates_score_the_821_oracle_rather_than_merely_naming_it() {
          pm_busy_probe=1:hold_us=20000:entry_us=2:joined=1:adopted=1:adopted_pgrp=821:restored=1:\
          PASS:peer_hold]\n"
     );
-    let (passed, output) =
-        score_with_gate(PROD_GATE, "BREENIX_PROD_SCORE_ONLY", &write("prod-leaked", &leaked));
+    let (passed, output) = score_with_gate(
+        PROD_GATE,
+        "BREENIX_PROD_SCORE_ONLY",
+        &write("prod-leaked", &leaked),
+    );
     assert!(
         !passed,
         "{PROD_GATE} passed a shipped-profile serial carrying the boot_tests-only #821 marker: \
@@ -1112,4 +1148,79 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         let offset = fixture.find("serial_println!").unwrap();
         assert!(mask[offset], "raw-string close swallowed the next byte");
     }
+}
+
+// Issue 959: a timed peer hold is not a rendezvous. Keep the busy probes and
+// measured entry in one masked driver window, and release only after both.
+fn validate_peer_hold_rendezvous(registry: &str) -> Result<(), String> {
+    for kind in ["pm", "fg"] {
+        let upper = kind.to_uppercase();
+        let prefix = format!("TTY_IRQ_{upper}");
+        let holder = normalized_code(function_body(registry, &format!("tty_irq_{kind}_holder_body"))
+            .ok_or("missing holder")?);
+        for required in [
+            format!("{prefix}_HOLD_RELEASE.load(AtomicOrdering::Acquire)"),
+            format!("{prefix}_HOLD_SAFETY.store(true, AtomicOrdering::Release)"),
+        ] {
+            if !holder.contains(&required) { return Err(format!("{kind}: holder lacks {required}")); }
+        }
+        let driver = function_body(registry, &format!("run_tty_irq_{kind}_oracle"))
+            .ok_or("missing driver")?;
+        let mask = code_mask(driver);
+        let at = driver.find("crate::arch_without_interrupts(|| {")
+            .ok_or_else(|| format!("{kind}: missing masked rendezvous"))?;
+        let open = at + driver[at..].find('{').unwrap();
+        let window = normalized_code(braced_block(driver, &mask, open).ok_or("missing window")?);
+        let probe = if kind == "pm" { "crate::process::try_manager().is_none()" }
+                    else { "tty.foreground_pgrp_busy_for_test()" };
+        let inject = format!("tty_irq_{kind}_inject(");
+        let release = format!("{prefix}_HOLD_RELEASE.store(true, AtomicOrdering::Release)");
+        let first = window.find(probe).ok_or("missing busy probe")?;
+        let injection = window.find(&inject).ok_or("missing masked injection")?;
+        let last = window.rfind(probe).ok_or("missing post-entry busy probe")?;
+        let released = window.find(&release).ok_or("missing release acknowledgement")?;
+        if !(first < injection && injection < last && last < released) {
+            return Err(format!("{kind}: probes/injection/release are not ordered"));
+        }
+        let driver = normalized_code(driver);
+        for required in [
+            "&& peer_held_after".to_string(),
+            "&& peer_irqs_masked".to_string(),
+            format!("&& !{prefix}_HOLD_SAFETY.load(AtomicOrdering::Acquire)"),
+            format!("{prefix}_HOLD_RELEASE.store(false, AtomicOrdering::Release)"),
+            format!("{prefix}_HOLD_SAFETY.store(false, AtomicOrdering::Release)"),
+            format!("&& entry_us < {prefix}_ENTRY_CEILING_US"),
+        ] {
+            if !driver.contains(&required) { return Err(format!("{kind}: driver lacks {required}")); }
+        }
+        if !normalized_code(registry).contains(&format!("const {prefix}_ENTRY_CEILING_US: u64 = 1_000;")) {
+            return Err(format!("{kind}: entry ceiling changed"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn peer_hold_rendezvous_covers_both_lock_probes() {
+    validate_peer_hold_rendezvous(&repo_text("kernel/src/test_framework/registry.rs"))
+        .expect("issue 959 peer hold must cover the measured IRQ entry");
+}
+
+#[test]
+fn peer_hold_rendezvous_rejects_time_only_and_unmasked_mutations() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_peer_hold_rendezvous(&source).expect("control");
+    for kind in ["PM", "FG"] {
+        for (from, to) in [
+            (format!("TTY_IRQ_{kind}_HOLD_RELEASE.load(AtomicOrdering::Acquire)"), "true".to_string()),
+            (format!("&& !TTY_IRQ_{kind}_HOLD_SAFETY.load(AtomicOrdering::Acquire)"), "".to_string()),
+        ] {
+            assert!(source.contains(&from));
+            assert!(validate_peer_hold_rendezvous(&source.replace(&from, &to)).is_err(), "{from}");
+        }
+    }
+    let unmasked = source.replace("crate::arch_without_interrupts(|| {", "unmasked(|| {");
+    assert!(validate_peer_hold_rendezvous(&unmasked).is_err());
+    let no_after = source.replace("&& peer_held_after", "");
+    assert!(validate_peer_hold_rendezvous(&no_after).is_err());
 }

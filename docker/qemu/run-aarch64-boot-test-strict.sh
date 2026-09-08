@@ -15,8 +15,9 @@
 # BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
 #
 # Exit codes:
-#   0 - All iterations passed
+#   0 - Requested iteration count passed
 #   1 - One or more iterations failed
+#   2 - Host starvation (no failed iterations, at least one inconclusive boot)
 
 set -e
 
@@ -466,6 +467,8 @@ fi
 # Track results
 SUCCESSES=0
 FAILURES=0
+STARVATIONS=0
+STARVED_ITERATIONS=""
 FAILED_ITERATIONS=""
 
 # Check serial output for crash markers. Prints the crash type and returns 0
@@ -511,8 +514,8 @@ check_crash_markers() {
 # that latched false as a boot failure. Everything the gate rejects is rejected
 # here, from the file, after QEMU is gone; nothing is loosened.
 #
-# Prints the failure reason and returns 1 when the boot is unacceptable; prints
-# nothing and returns 0 when it is acceptable.
+# Prints scorer evidence; returns 0 for success, 1 for a failed boot,
+# or 2 for an inconclusive host-starvation oracle.
 score_serial() {
     local serial_file="$1"
     local boot_test_fail_line
@@ -556,6 +559,7 @@ score_serial() {
             return 1
         fi
     done
+    python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$serial_file" || return $?
     if ! grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" \
         "$serial_file" 2>/dev/null; then
         echo "Userspace not detected"
@@ -868,8 +872,13 @@ if [ -n "$SCORE_ONLY_SERIAL" ]; then
         echo "SCORE: PASS - $SCORE_ONLY_SERIAL"
         exit 0
     else
-        echo "SCORE: FAIL - $SCORE_REASON ($SCORE_ONLY_SERIAL)"
-        exit 1
+        SCORE_STATUS=$?
+        if [ "$SCORE_STATUS" -eq 2 ]; then
+            echo "SCORE: INCONCLUSIVE - host starvation: $SCORE_REASON ($SCORE_ONLY_SERIAL)"
+        else
+            echo "SCORE: FAIL - $SCORE_REASON ($SCORE_ONLY_SERIAL)"
+        fi
+        exit "$SCORE_STATUS"
     fi
 fi
 
@@ -880,6 +889,7 @@ report_failure() {
     local facts_line="$4"
     local capture_lines="$5"
     local qmp_lines="$6"
+    local verdict="${7:-FAIL}"
     local failure_dir="$BREENIX_GATE_TMP/breenix_aarch64_strict_failures"
     local timestamp
     local preserved_serial
@@ -908,7 +918,7 @@ report_failure() {
         printf '%s\n' "$capture_lines"
         printf '%s\n' "$qmp_lines"
     } > "$failure_dir/${timestamp}-boot${iteration}.facts.txt"
-    echo "  [FAIL] Boot $iteration: $reason ($lines lines); serial: $preserved_serial"
+    echo "  [$verdict] Boot $iteration: $reason ($lines lines); serial: $preserved_serial"
     echo "  $facts_line"
     printf '%s\n' "$capture_lines" | sed 's/^/  /'
     printf '%s\n' "$qmp_lines" | sed 's/^/  /'
@@ -1106,8 +1116,11 @@ run_single_test() {
     # creation explains.
     local FAIL_DETAIL
     local SCORE_PASS=0
+    local SCORE_STATUS=0
     if FAIL_DETAIL=$(score_serial "$DEADLINE_SERIAL"); then
         SCORE_PASS=1
+    else
+        SCORE_STATUS=$?
     fi
 
     # review finding
@@ -1214,6 +1227,12 @@ run_single_test() {
         return 0
     fi
 
+    if [ "$SCORE_STATUS" -eq 2 ]; then
+        report_failure "$iteration" "host starvation: $FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE" "$CAPTURE_LINES" "$QMP_LINES" INCONCLUSIVE
+        breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 strict INCONCLUSIVE 2 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
+        return 2
+    fi
+
     report_failure "$iteration" "$FAIL_DETAIL" "$OUTPUT_DIR/serial.txt" "$FACTS_LINE" "$CAPTURE_LINES" "$QMP_LINES"
     breenix_runs_import_nonfatal "$OUTPUT_DIR" aarch64 strict FAIL 1 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
     return 1
@@ -1236,8 +1255,14 @@ for i in $(seq 1 $ITERATIONS); do
     if run_single_test $i; then
         SUCCESSES=$((SUCCESSES + 1))
     else
-        FAILURES=$((FAILURES + 1))
-        FAILED_ITERATIONS="$FAILED_ITERATIONS $i"
+        BOOT_STATUS=$?
+        if [ "$BOOT_STATUS" -eq 2 ]; then
+            STARVATIONS=$((STARVATIONS + 1))
+            STARVED_ITERATIONS="$STARVED_ITERATIONS $i"
+        else
+            FAILURES=$((FAILURES + 1))
+            FAILED_ITERATIONS="$FAILED_ITERATIONS $i"
+        fi
     fi
 done
 
@@ -1251,10 +1276,14 @@ echo "========================================="
 echo "Total iterations: $ITERATIONS"
 echo "Successes: $SUCCESSES"
 echo "Failures: $FAILURES"
+echo "Inconclusive (host starvation): $STARVATIONS"
 echo "Success rate: $(( (SUCCESSES * 100) / ITERATIONS ))%"
 echo "Duration: ${DURATION}s"
 
-if [ $FAILURES -eq 0 ]; then
+if [ "$FAILURES" -eq 0 ] && [ "$STARVATIONS" -gt 0 ]; then
+    echo "INCONCLUSIVE: Host starvation in iterations:$STARVED_ITERATIONS"
+    exit 2
+elif [ $FAILURES -eq 0 ]; then
     echo ""
     echo "========================================="
     echo "PASS: $SUCCESSES/$ITERATIONS boots succeeded"

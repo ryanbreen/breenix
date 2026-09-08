@@ -1,7 +1,7 @@
 # Round 3 — the census heartbeat on the idle loop x86 actually runs
 
-The 4 captures here were produced on the beast `breenix-x86` VM in
-`/root/breenix-775`, one QEMU at a time, at the round-3 head of
+The 4 captures here were produced on the x86 build environment on beast in
+`<isolated-checkout-53>`, one QEMU at a time, at the round-3 head of
 `fix/775-dispatch-log-removal`. The gate boots are
 `docker/qemu/run-x86-gate.sh 1 full` (150 s per boot); the production boots are
 `docker/qemu/run-x86-prod-profile-boot-test.sh`, which builds with no

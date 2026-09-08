@@ -1,0 +1,219 @@
+Historical populations; source revisions are recorded in their parent gate transcripts.
+[
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-2-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-2-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=6097452:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-3-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4409206:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-5-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-5-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=5869697:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-4-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=3331184:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-3-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-1-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4039229:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-1-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-1/boot-4-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-2-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-2-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4864925:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-3-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4408896:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-5-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-5-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=3:wait_ns=9190699:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-4-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=5066368:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-3-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-1-user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=15926611:dispatches=1:iterations=41:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-1-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/final-x86/parallel-2/boot-4-kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_5/serial_user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=3:wait_ns=8379217:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_5/serial_kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_2/serial_user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=3:wait_ns=8611789:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_2/serial_kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_3/serial_user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=12237928:dispatches=1:iterations=41:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_3/serial_kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_4/serial_user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=3407923:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_4/serial_kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_x86_boot_tests_1/serial_user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=12731531:dispatches=1:iterations=41:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_x86_boot_tests_1/serial_kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_1/serial_user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=5117182:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing/beast/breenix_boot_1/serial_kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-merged/beast/breenix_x86_boot_tests_1/serial_user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=6477108:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-merged/beast/breenix_x86_boot_tests_1/serial_kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-merged/beast/breenix_x86_boot_tests_failures/20260908T075602Z_2331344/serial_user.txt",
+    "panic_markers": [],
+    "deferral_oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=6477108:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-merged/beast/breenix_x86_boot_tests_failures/20260908T075602Z_2331344/serial_kernel.txt",
+    "panic_markers": [],
+    "deferral_oracles": []
+  }
+]

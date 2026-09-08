@@ -1,0 +1,17 @@
+== compiling lockup_capture_guard_structure ==
+== running lockup_capture_guard_structure  ==
+
+running 10 tests
+test the_aarch64_gates_run_the_guard_on_their_own_kernel ... ok
+test the_preserved_binary_evidence_is_a_red_and_a_green_on_real_kernels ... ok
+test the_guard_fails_on_an_indirect_transfer_it_cannot_resolve ... ok
+test the_guard_rejects_a_direct_allocation ... ok
+test the_guard_fails_when_the_root_symbol_is_absent ... ok
+test the_guard_rejects_an_allocation_behind_two_innocent_helpers ... ok
+test the_guard_passes_a_clean_nonallocating_helper_chain ... ok
+test the_guard_rejects_an_allocation_reached_through_a_data_pointer ... ok
+test the_guard_rejects_an_allocation_reached_by_a_tail_call ... ok
+test the_committed_fixtures_match_their_sources ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.92s
+

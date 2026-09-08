@@ -1,0 +1,794 @@
+revision=e1e42bd1a9a9742a5c0f2aaf450f250a32830e1d
+kernel/src/syscall/handlers.rs:445:             FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
+kernel/src/syscall/handlers.rs:446:             FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
+kernel/src/syscall/handlers.rs:447:             FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
+kernel/src/syscall/handlers.rs:448:                 pipe_buffer: pipe_buffer.clone(),
+kernel/src/syscall/handlers.rs:449:                 is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)
+kernel/src/syscall/handlers.rs:450:                     != 0,
+kernel/src/syscall/handlers.rs:451:             },
+kernel/src/syscall/handlers.rs:452:             FdKind::PipeRead(_) => WriteOperation::Ebadf,
+kernel/src/syscall/handlers.rs:453:             FdKind::FifoWrite(_path, pipe_buffer) => WriteOperation::Fifo {
+kernel/src/syscall/handlers.rs:454:                 pipe_buffer: pipe_buffer.clone(),
+kernel/src/syscall/handlers.rs:455:                 is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)
+kernel/src/syscall/handlers.rs:456:                     != 0,
+kernel/src/syscall/handlers.rs:457:             },
+kernel/src/syscall/handlers.rs:458:             FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
+kernel/src/syscall/handlers.rs:459:             FdKind::TcpSocket(_) => WriteOperation::Enotconn,
+kernel/src/syscall/handlers.rs:460:             FdKind::TcpListener(_) => WriteOperation::Enotconn,
+kernel/src/syscall/handlers.rs:510:         }
+kernel/src/syscall/handlers.rs:511:         WriteOperation::Pipe {
+kernel/src/syscall/handlers.rs:512:             pipe_buffer,
+kernel/src/syscall/handlers.rs:513:             is_nonblocking,
+kernel/src/syscall/handlers.rs:514:         }
+kernel/src/syscall/handlers.rs:515:         | WriteOperation::Fifo {
+kernel/src/syscall/handlers.rs:516:             pipe_buffer,
+kernel/src/syscall/handlers.rs:517:             is_nonblocking,
+kernel/src/syscall/handlers.rs:518:         } => super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking),
+kernel/src/syscall/handlers.rs:519:         WriteOperation::UnixStream { socket } => {
+kernel/src/syscall/handlers.rs:520:             let sock = socket.lock();
+kernel/src/syscall/handlers.rs:521:             match sock.write(&buffer) {
+kernel/src/syscall/handlers.rs:522:                 Ok(n) => {
+kernel/src/syscall/handlers.rs:523:                     log::debug!("sys_write: Wrote {} bytes to Unix socket", n);
+kernel/src/syscall/handlers.rs:524:                     SyscallResult::Ok(n as u64)
+kernel/src/syscall/handlers.rs:525:                 }
+kernel/src/syscall/handlers.rs:526:                 Err(e) => SyscallResult::Err(e as u64),
+kernel/src/syscall/handlers.rs:527:             }
+kernel/src/syscall/handlers.rs:528:         }
+kernel/src/syscall/handlers.rs:529:         WriteOperation::TcpConnection { conn_id } => {
+kernel/src/syscall/handlers.rs:530:             // Write to established TCP connection
+kernel/src/syscall/handlers.rs:531:             match crate::net::tcp::tcp_send(&conn_id, &buffer) {
+kernel/src/syscall/handlers.rs:532:                 Ok(n) => {
+kernel/src/syscall/handlers.rs:533:                     crate::net::drain_loopback_queue();
+kernel/src/syscall/handlers.rs:534:                     log::debug!("sys_write: Wrote {} bytes to TCP connection", n);
+kernel/src/syscall/handlers.rs:535:                     SyscallResult::Ok(n as u64)
+kernel/src/syscall/handlers.rs:536:                 }
+kernel/src/syscall/handlers.rs:537:                 Err(e) => {
+kernel/src/syscall/handlers.rs:538:                     log::warn!("sys_write: TCP write error: {}", e);
+kernel/src/syscall/handlers.rs:539:                     // Map error string to specific errno
+kernel/src/syscall/handlers.rs:540:                     if e.contains("shutdown") {
+kernel/src/syscall/handlers.rs:541:                         SyscallResult::Err(super::errno::EPIPE as u64)
+kernel/src/syscall/handlers.rs:542:                     } else if e.contains("not found") {
+kernel/src/syscall/handlers.rs:662: pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
+kernel/src/syscall/handlers.rs:663:     use crate::ipc::FdKind;
+kernel/src/syscall/handlers.rs:664: 
+kernel/src/syscall/handlers.rs:665:     // Use trace level for stdin reads to avoid log spam during interactive shell
+kernel/src/syscall/handlers.rs:666:     if fd != 0 {
+kernel/src/syscall/handlers.rs:667:         log::debug!(
+kernel/src/syscall/handlers.rs:668:             "sys_read: fd={}, buf_ptr={:#x}, count={}",
+kernel/src/syscall/handlers.rs:669:             fd,
+kernel/src/syscall/handlers.rs:670:             buf_ptr,
+kernel/src/syscall/handlers.rs:671:             count
+kernel/src/syscall/handlers.rs:672:         );
+kernel/src/syscall/handlers.rs:673:     }
+kernel/src/syscall/handlers.rs:674: 
+kernel/src/syscall/handlers.rs:675:     // Validate buffer pointer and count
+kernel/src/syscall/handlers.rs:676:     if buf_ptr == 0 || count == 0 {
+kernel/src/syscall/handlers.rs:677:         // Linux checks the descriptor before honouring a degenerate transfer
+kernel/src/syscall/handlers.rs:678:         // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
+kernel/src/syscall/handlers.rs:679:         if let Err(e) = validate_fd_for_degenerate_transfer(fd as i32) {
+kernel/src/syscall/handlers.rs:680:             return SyscallResult::Err(e);
+kernel/src/syscall/handlers.rs:681:         }
+kernel/src/syscall/handlers.rs:682:         return SyscallResult::Ok(0);
+kernel/src/syscall/handlers.rs:683:     }
+kernel/src/syscall/handlers.rs:684: 
+kernel/src/syscall/handlers.rs:685:     // Get current process to look up fd
+kernel/src/syscall/handlers.rs:686:     let thread_id = match crate::task::scheduler::current_thread_id() {
+kernel/src/syscall/handlers.rs:687:         Some(id) => id,
+kernel/src/syscall/handlers.rs:720:     match &fd_entry.kind {
+kernel/src/syscall/handlers.rs:721:         FdKind::StdIo(0) => {
+kernel/src/syscall/handlers.rs:722:             // stdin - read from stdin ring buffer
+kernel/src/syscall/handlers.rs:723:             //
+kernel/src/syscall/handlers.rs:724:             // Keyboard input goes to the stdin buffer via keyboard interrupt handler.
+kernel/src/syscall/handlers.rs:725:             // The TTY layer is used for terminal control (signals, echo) but not for
+kernel/src/syscall/handlers.rs:726:             // data transport. This allows character-at-a-time reads to work properly.
+kernel/src/syscall/handlers.rs:727:             //
+kernel/src/syscall/handlers.rs:728:             // Drop the process manager lock before potentially blocking
+kernel/src/syscall/handlers.rs:729:             drop(manager_guard);
+kernel/src/syscall/handlers.rs:730: 
+kernel/src/syscall/handlers.rs:731:             // #821: take any foreground-pgrp adoption the input IRQ entry
+kernel/src/syscall/handlers.rs:732:             // deferred. Deliberately after the guard is dropped, so this holds
+kernel/src/syscall/handlers.rs:733:             // no PROCESS_MANAGER while it touches the TTY's own locks.
+kernel/src/syscall/handlers.rs:734:             crate::tty::driver::adopt_foreground_pgrp_from_reader(reader_pid);
+kernel/src/syscall/handlers.rs:735: 
+kernel/src/syscall/handlers.rs:736:             let mut user_buf = alloc::vec![0u8; count as usize];
+kernel/src/syscall/handlers.rs:737: 
+kernel/src/syscall/handlers.rs:738:             // Blocking read loop: keep trying until we get data or an error
+kernel/src/syscall/handlers.rs:739:             // Similar to pause() implementation - block, HLT loop, check for data
+kernel/src/syscall/handlers.rs:740:             loop {
+kernel/src/syscall/handlers.rs:741:                 // Register as blocked reader FIRST to avoid race condition
+kernel/src/syscall/handlers.rs:742:                 // where data arrives between checking and blocking
+kernel/src/syscall/handlers.rs:743:                 crate::ipc::stdin::register_blocked_reader(thread_id);
+kernel/src/syscall/handlers.rs:744: 
+kernel/src/syscall/handlers.rs:745:                 // Read from stdin buffer
+kernel/src/syscall/handlers.rs:746:                 let read_result = crate::ipc::stdin::read_bytes(&mut user_buf);
+kernel/src/syscall/handlers.rs:747: 
+kernel/src/syscall/handlers.rs:748:                 match read_result {
+kernel/src/syscall/handlers.rs:749:                     Ok(n) => {
+kernel/src/syscall/handlers.rs:750:                         // Data was available - unregister from blocked readers
+kernel/src/syscall/handlers.rs:751:                         crate::ipc::stdin::unregister_blocked_reader(thread_id);
+kernel/src/syscall/handlers.rs:752: 
+kernel/src/syscall/handlers.rs:753:                         if n > 0 {
+kernel/src/syscall/handlers.rs:754:                             // Copy to userspace
+kernel/src/syscall/handlers.rs:755:                             if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+kernel/src/syscall/handlers.rs:756:                                 return SyscallResult::Err(14); // EFAULT
+kernel/src/syscall/handlers.rs:757:                             }
+kernel/src/syscall/handlers.rs:758:                             log::trace!("sys_read: Read {} bytes from stdin", n);
+kernel/src/syscall/handlers.rs:759:                         }
+kernel/src/syscall/handlers.rs:760:                         return SyscallResult::Ok(n as u64);
+kernel/src/syscall/handlers.rs:761:                     }
+kernel/src/syscall/handlers.rs:762:                     Err(11) => {
+kernel/src/syscall/handlers.rs:763:                         // EAGAIN - no data available, need to block and wait
+kernel/src/syscall/handlers.rs:764:                         // We're already registered as blocked reader
+kernel/src/syscall/handlers.rs:765: 
+kernel/src/syscall/handlers.rs:766:                         // Block the current thread AND set blocked_in_syscall flag.
+kernel/src/syscall/handlers.rs:767:                         // CRITICAL: Setting blocked_in_syscall is essential because:
+kernel/src/syscall/handlers.rs:768:                         // 1. The thread will enter a kernel-mode HLT loop below
+kernel/src/syscall/handlers.rs:769:                         // 2. If a context switch happens while in HLT, the scheduler sees
+kernel/src/syscall/handlers.rs:770:                         //    from_userspace=false (kernel mode) but blocked_in_syscall tells
+kernel/src/syscall/handlers.rs:906:                         );
+kernel/src/syscall/handlers.rs:907: 
+kernel/src/syscall/handlers.rs:908:                         // Register as waiter BEFORE setting blocked state (race condition fix)
+kernel/src/syscall/handlers.rs:909:                         {
+kernel/src/syscall/handlers.rs:910:                             let mut pipe = pipe_buffer_clone.lock();
+kernel/src/syscall/handlers.rs:911:                             pipe.add_read_waiter(thread_id);
+kernel/src/syscall/handlers.rs:912:                         }
+kernel/src/syscall/handlers.rs:913: 
+kernel/src/syscall/handlers.rs:914:                         // Block the thread
+kernel/src/syscall/handlers.rs:915:                         crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/syscall/handlers.rs:916:                             sched.block_current_in_syscall();
+kernel/src/syscall/handlers.rs:917:                         });
+kernel/src/syscall/handlers.rs:918: 
+kernel/src/syscall/handlers.rs:919:                         // Check if data arrived during setup (race condition fix)
+kernel/src/syscall/handlers.rs:920:                         let data_ready = {
+kernel/src/syscall/handlers.rs:921:                             let pipe = pipe_buffer_clone.lock();
+kernel/src/syscall/handlers.rs:922:                             pipe.has_data_or_eof()
+kernel/src/syscall/handlers.rs:923:                         };
+kernel/src/syscall/handlers.rs:924: 
+kernel/src/syscall/handlers.rs:925:                         if data_ready {
+kernel/src/syscall/handlers.rs:926:                             // Data arrived during setup - unblock and retry immediately
+kernel/src/syscall/handlers.rs:927:                             crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/syscall/handlers.rs:928:                                 if let Some(thread) = sched.current_thread_mut() {
+kernel/src/syscall/handlers.rs:929:                                     thread.blocked_in_syscall = false;
+kernel/src/syscall/handlers.rs:930:                                     thread.set_ready();
+kernel/src/syscall/handlers.rs:931:                                 }
+kernel/src/syscall/handlers.rs:932:                             });
+kernel/src/syscall/handlers.rs:933:                             continue; // Retry read
+kernel/src/syscall/handlers.rs:934:                         }
+kernel/src/syscall/handlers.rs:935: 
+kernel/src/syscall/handlers.rs:936:                         // Enable preemption for HLT loop
+kernel/src/syscall/handlers.rs:937:                         crate::per_cpu::preempt_enable();
+kernel/src/syscall/handlers.rs:938: 
+kernel/src/syscall/handlers.rs:939:                         // HLT loop - wait for data or EOF
+kernel/src/syscall/handlers.rs:940:                         loop {
+kernel/src/syscall/handlers.rs:941:                             // Check for pending signals that should interrupt this syscall
+kernel/src/syscall/handlers.rs:942:                             if let Some(e) = crate::syscall::check_signals_for_eintr() {
+kernel/src/syscall/handlers.rs:943:                                 // Signal pending - clean up and return EINTR
+kernel/src/syscall/handlers.rs:944:                                 {
+kernel/src/syscall/handlers.rs:945:                                     let mut pipe = pipe_buffer_clone.lock();
+kernel/src/syscall/handlers.rs:946:                                     pipe.remove_read_waiter(thread_id);
+kernel/src/syscall/handlers.rs:947:                                 }
+kernel/src/syscall/handlers.rs:948:                                 crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/syscall/handlers.rs:949:                                     if let Some(thread) = sched.current_thread_mut() {
+kernel/src/syscall/handlers.rs:950:                                         thread.blocked_in_syscall = false;
+kernel/src/syscall/handlers.rs:951:                                         thread.set_ready();
+kernel/src/syscall/handlers.rs:952:                                     }
+kernel/src/syscall/handlers.rs:953:                                 });
+kernel/src/syscall/handlers.rs:954:                                 crate::per_cpu::preempt_disable();
+kernel/src/syscall/handlers.rs:955:                                 log::debug!(
+kernel/src/syscall/handlers.rs:1252:         FdKind::Device(device_type) => {
+kernel/src/syscall/handlers.rs:1253:             // Read from devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
+kernel/src/syscall/handlers.rs:1254:             let device_type = *device_type;
+kernel/src/syscall/handlers.rs:1255:             let is_nonblocking =
+kernel/src/syscall/handlers.rs:1256:                 (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+kernel/src/syscall/handlers.rs:1257:             drop(manager_guard);
+kernel/src/syscall/handlers.rs:1258:             let mut user_buf = alloc::vec![0u8; count as usize];
+kernel/src/syscall/handlers.rs:1259:             let result = match device_type {
+kernel/src/syscall/handlers.rs:1260:                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
+kernel/src/syscall/handlers.rs:1261:                     super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
+kernel/src/syscall/handlers.rs:1262:                 }
+kernel/src/syscall/handlers.rs:1263:                 _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
+kernel/src/syscall/handlers.rs:1264:             };
+kernel/src/syscall/handlers.rs:1265:             match result {
+kernel/src/syscall/handlers.rs:1266:                 Ok(n) => {
+kernel/src/syscall/handlers.rs:1267:                     if n > 0 {
+kernel/src/syscall/handlers.rs:1268:                         // Copy to userspace
+kernel/src/syscall/handlers.rs:1269:                         if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+kernel/src/syscall/handlers.rs:1270:                             return SyscallResult::Err(14); // EFAULT
+kernel/src/syscall/handlers.rs:1271:                         }
+kernel/src/syscall/handlers.rs:1272:                     }
+kernel/src/syscall/handlers.rs:1273:                     log::debug!("sys_read: Read {} bytes from device {:?}", n, device_type);
+kernel/src/syscall/handlers.rs:1274:                     SyscallResult::Ok(n as u64)
+kernel/src/syscall/handlers.rs:1275:                 }
+kernel/src/syscall/handlers.rs:1276:                 Err(e) => {
+kernel/src/syscall/handlers.rs:1277:                     log::debug!("sys_read: Device read error: {}", e);
+kernel/src/syscall/handlers.rs:1278:                     SyscallResult::Err((-e) as u64)
+kernel/src/syscall/handlers.rs:1279:                 }
+kernel/src/syscall/handlers.rs:1280:             }
+kernel/src/syscall/handlers.rs:1281:         }
+kernel/src/syscall/handlers.rs:1282:         FdKind::DevfsDirectory { .. } => {
+kernel/src/syscall/handlers.rs:1283:             // Cannot read from directory with read() - must use getdents
+kernel/src/syscall/handlers.rs:1284:             log::debug!("sys_read: Cannot read from /dev directory, use getdents instead");
+kernel/src/syscall/handlers.rs:1285:             SyscallResult::Err(super::errno::EISDIR as u64)
+kernel/src/syscall/fs.rs:2450:     // For /dev/tty, redirect to the controlling PTY if one exists.
+kernel/src/syscall/fs.rs:2451:     // On Linux, /dev/tty is a magic device that refers to the calling process's
+kernel/src/syscall/fs.rs:2452:     // controlling terminal. The controlling terminal belongs to the SESSION,
+kernel/src/syscall/fs.rs:2453:     // not a single process. Any process in the session can open /dev/tty.
+kernel/src/syscall/fs.rs:2454:     if matches!(device.device_type, devfs::DeviceType::Tty) {
+kernel/src/syscall/fs.rs:2455:         let sid = process.sid.as_u64() as u32;
+kernel/src/syscall/fs.rs:2456:         // Drop manager lock before accessing PTY subsystem to avoid lock ordering issues
+kernel/src/syscall/fs.rs:2457:         drop(manager_guard);
+kernel/src/syscall/fs.rs:2458: 
+kernel/src/syscall/fs.rs:2459:         // Search active PTYs for one controlled by this session.
+kernel/src/syscall/fs.rs:2460:         // controlling_pid stores the session leader's PID (== SID).
+kernel/src/syscall/fs.rs:2461:         for pty_num in crate::tty::pty::list_active() {
+kernel/src/syscall/fs.rs:2462:             if let Some(pair) = crate::tty::pty::get(pty_num) {
+kernel/src/syscall/fs.rs:2463:                 if pair.controlling_pid.lock().map_or(false, |p| p == sid) {
+kernel/src/syscall/fs.rs:2464:                     // Found the controlling PTY — open as PtySlave
+kernel/src/syscall/fs.rs:2465:                     //
+kernel/src/syscall/fs.rs:2466:                     // NB6: these three lookups used to be `.unwrap()`-chained
+kernel/src/syscall/fs.rs:2467:                     // and would panic the kernel on a racing thread/process
+kernel/src/syscall/fs.rs:2468:                     // teardown. This arm runs on every production boot (the
+kernel/src/syscall/fs.rs:2469:                     // TTY oracle's `ctty` arm, arm 13, drives it), so a panic
+kernel/src/syscall/fs.rs:2470:                     // here is a live production risk, not a theoretical one.
+kernel/src/syscall/fs.rs:2471:                     // Graceful ESRCH returns, mirroring the pattern already
+kernel/src/syscall/fs.rs:2472:                     // used above in this same function.
+kernel/src/syscall/fs.rs:2473:                     let thread_id2 = match crate::task::scheduler::current_thread_id() {
+kernel/src/syscall/fs.rs:2474:                         Some(id) => id,
+kernel/src/syscall/fs.rs:2475:                         None => {
+kernel/src/syscall/fs.rs:2476:                             log::error!("handle_devfs_open: /dev/tty: no current thread");
+kernel/src/syscall/fs.rs:2477:                             return SyscallResult::Err(3); // ESRCH
+kernel/src/syscall/fs.rs:2478:                         }
+kernel/src/syscall/fs.rs:2479:                     };
+kernel/src/syscall/fs.rs:2480:                     let mut mg = crate::process::manager();
+kernel/src/syscall/fs.rs:2481:                     let proc2 = match mg
+kernel/src/syscall/fs.rs:2482:                         .as_mut()
+kernel/src/syscall/fs.rs:2483:                         .and_then(|manager| manager.find_process_by_thread_mut(thread_id2))
+kernel/src/syscall/fs.rs:2484:                     {
+kernel/src/syscall/fs.rs:2485:                         Some((_, p)) => p,
+kernel/src/syscall/fs.rs:2486:                         None => {
+kernel/src/syscall/fs.rs:2487:                             log::error!(
+kernel/src/syscall/fs.rs:2488:                                 "handle_devfs_open: /dev/tty: process not found for thread {}",
+kernel/src/syscall/fs.rs:2489:                                 thread_id2
+kernel/src/syscall/fs.rs:2490:                             );
+kernel/src/syscall/fs.rs:2491:                             return SyscallResult::Err(3); // ESRCH
+kernel/src/syscall/fs.rs:2492:                         }
+kernel/src/syscall/fs.rs:2493:                     };
+kernel/src/syscall/fs.rs:2494:                     // Same status-flag plumbing as handle_devpts_open: this is
+kernel/src/syscall/fs.rs:2495:                     // the third site that hands out a PtySlave fd, and a
+kernel/src/syscall/fs.rs:2496:                     // /dev/tty opened O_NONBLOCK must read non-blocking too.
+kernel/src/syscall/fs.rs:2497:                     // Exercised on every production boot by the TTY oracle's
+kernel/src/syscall/fs.rs:2498:                     // `ctty` arm (arm 13), which drives exactly this branch.
+kernel/src/syscall/fs.rs:2499:                     let entry = FileDescriptor::with_flags(
+kernel/src/syscall/fs.rs:2500:                         FdKind::PtySlave(pty_num),
+kernel/src/syscall/fs.rs:2501:                         if (flags & O_CLOEXEC) != 0 {
+kernel/src/syscall/fs.rs:2502:                             crate::ipc::fd::flags::FD_CLOEXEC
+kernel/src/syscall/fs.rs:2503:                         } else {
+kernel/src/syscall/fs.rs:2504:                             0
+kernel/src/syscall/fs.rs:2505:                         },
+kernel/src/syscall/fs.rs:2506:                         flags & crate::ipc::fd::status_flags::O_NONBLOCK,
+kernel/src/syscall/fs.rs:2507:                     );
+kernel/src/syscall/fs.rs:2508:                     return match proc2.fd_table.alloc_with_entry(entry) {
+kernel/src/syscall/fs.rs:2509:                         Ok(fd) => {
+kernel/src/syscall/fs.rs:2510:                             // #704 (found and fixed on feat/green-tty): this
+kernel/src/syscall/fs.rs:2511:                             // site handed out an FdKind::PtySlave fd without a
+kernel/src/syscall/fs.rs:2512:                             // matching slave_open(), while every retire path
+kernel/src/syscall/fs.rs:2513:                             // decrements on the assumption every handout path
+kernel/src/syscall/fs.rs:2514:                             // incremented. As of this round every retire path
+kernel/src/syscall/fs.rs:2515:                             // does its matching half -- including
+kernel/src/syscall/fs.rs:2516:                             // close_cloexec() (kernel/src/ipc/fd.rs), which
+kernel/src/syscall/fs.rs:2517:                             // was found to have the identical asymmetry (the
+kernel/src/syscall/fs.rs:2518:                             // exec-time close-on-exec path, unfiled, same
+kernel/src/syscall/fs.rs:2537:         // No controlling terminal found — fall through to generic device
+kernel/src/syscall/fs.rs:2538:         // Re-acquire manager lock for the generic path. Same NB6 shape as the
+kernel/src/syscall/fs.rs:2539:         // ctty-found arm above: graceful ESRCH returns instead of unwrap().
+kernel/src/syscall/fs.rs:2540:         let thread_id2 = match crate::task::scheduler::current_thread_id() {
+kernel/src/syscall/fs.rs:2541:             Some(id) => id,
+kernel/src/syscall/fs.rs:2542:             None => {
+kernel/src/syscall/fs.rs:2543:                 log::error!("handle_devfs_open: /dev/tty (no ctty): no current thread");
+kernel/src/syscall/fs.rs:2544:                 return SyscallResult::Err(3); // ESRCH
+kernel/src/syscall/fs.rs:2545:             }
+kernel/src/syscall/fs.rs:2546:         };
+kernel/src/syscall/fs.rs:2547:         let mut manager_guard = crate::process::manager();
+kernel/src/syscall/fs.rs:2548:         let process = match manager_guard
+kernel/src/syscall/fs.rs:2549:             .as_mut()
+kernel/src/syscall/fs.rs:2550:             .and_then(|manager| manager.find_process_by_thread_mut(thread_id2))
+kernel/src/syscall/fs.rs:2551:         {
+kernel/src/syscall/fs.rs:2552:             Some((_, p)) => p,
+kernel/src/syscall/fs.rs:2553:             None => {
+kernel/src/syscall/fs.rs:2554:                 log::error!(
+kernel/src/syscall/fs.rs:2555:                     "handle_devfs_open: /dev/tty (no ctty): process not found for thread {}",
+kernel/src/syscall/fs.rs:2556:                     thread_id2
+kernel/src/syscall/fs.rs:2557:                 );
+kernel/src/syscall/fs.rs:2558:                 return SyscallResult::Err(3); // ESRCH
+kernel/src/syscall/fs.rs:2559:             }
+kernel/src/syscall/fs.rs:2560:         };
+kernel/src/syscall/fs.rs:2561:         let fd_kind = FileDescriptor::with_flags(
+kernel/src/syscall/fs.rs:2562:             FdKind::Device(device.device_type),
+kernel/src/syscall/fs.rs:2563:             if flags & O_CLOEXEC != 0 {
+kernel/src/syscall/fs.rs:2564:                 crate::ipc::fd::flags::FD_CLOEXEC
+kernel/src/syscall/fs.rs:2565:             } else {
+kernel/src/syscall/fs.rs:2566:                 0
+kernel/src/syscall/fs.rs:2567:             },
+kernel/src/syscall/fs.rs:2568:             flags & crate::ipc::fd::status_flags::O_NONBLOCK,
+kernel/src/syscall/fs.rs:2569:         );
+kernel/src/syscall/fs.rs:2570:         return match process.fd_table.alloc_with_entry(fd_kind) {
+kernel/src/syscall/fs.rs:2571:             Ok(fd) => {
+kernel/src/syscall/fs.rs:2572:                 log::info!("handle_devfs_open: /dev/tty (no ctty) as fd {}", fd);
+kernel/src/syscall/fs.rs:2573:                 SyscallResult::Ok(fd as u64)
+kernel/src/syscall/fs.rs:2574:             }
+kernel/src/syscall/fs.rs:2575:             Err(_) => SyscallResult::Err(EMFILE as u64),
+kernel/src/syscall/fs.rs:2576:         };
+kernel/src/syscall/fs.rs:2577:     }
+kernel/src/syscall/fs.rs:2578: 
+kernel/src/syscall/fs.rs:2579:     // Allocate file descriptor with Device kind
+kernel/src/syscall/fs.rs:2580:     let fd_kind = FileDescriptor::with_flags(
+kernel/src/syscall/fs.rs:2581:         FdKind::Device(device.device_type),
+kernel/src/syscall/fs.rs:2582:         if flags & O_CLOEXEC != 0 {
+kernel/src/syscall/fs.rs:2583:             crate::ipc::fd::flags::FD_CLOEXEC
+kernel/src/syscall/fs.rs:2584:         } else {
+kernel/src/syscall/fs.rs:2585:             0
+kernel/src/syscall/fs.rs:2586:         },
+kernel/src/syscall/fs.rs:2587:         flags & crate::ipc::fd::status_flags::O_NONBLOCK,
+kernel/src/syscall/fs.rs:2588:     );
+kernel/src/syscall/fs.rs:2589:     match process.fd_table.alloc_with_entry(fd_kind) {
+kernel/src/syscall/fs.rs:2590:         Ok(fd) => {
+kernel/src/syscall/fs.rs:2591:             log::info!(
+kernel/src/syscall/fs.rs:2592:                 "handle_devfs_open: opened /dev/{} as fd {}",
+kernel/src/syscall/fs.rs:2593:                 device_name,
+kernel/src/syscall/fs.rs:2594:                 fd
+kernel/src/syscall/fs.rs:2595:             );
+kernel/src/syscall/fs.rs:2596:             SyscallResult::Ok(fd as u64)
+kernel/src/syscall/fs.rs:2597:         }
+kernel/src/syscall/fs.rs:2598:         Err(_) => {
+kernel/src/syscall/fs.rs:2599:             log::error!("handle_devfs_open: too many open files");
+kernel/src/syscall/fs.rs:2600:             SyscallResult::Err(EMFILE as u64)
+kernel/src/syscall/fs.rs:2601:         }
+kernel/src/syscall/fs.rs:2602:     }
+kernel/src/syscall/fs.rs:2603: }
+kernel/src/syscall/fs.rs:2604: 
+kernel/src/syscall/fs.rs:2605: /// Handle opening a PTY slave device from /dev/pts/*
+kernel/src/ipc/poll.rs:36: /// Returns the revents for this fd based on requested events
+kernel/src/ipc/poll.rs:37: pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
+kernel/src/ipc/poll.rs:38:     let mut revents: i16 = 0;
+kernel/src/ipc/poll.rs:39: 
+kernel/src/ipc/poll.rs:40:     match &fd_entry.kind {
+kernel/src/ipc/poll.rs:41:         FdKind::StdIo(n) => {
+kernel/src/ipc/poll.rs:42:             match *n {
+kernel/src/ipc/poll.rs:43:                 0 => {
+kernel/src/ipc/poll.rs:44:                     // stdin - check if data available
+kernel/src/ipc/poll.rs:45:                     if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:46:                         if super::stdin::has_data() {
+kernel/src/ipc/poll.rs:47:                             revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:48:                         }
+kernel/src/ipc/poll.rs:49:                     }
+kernel/src/ipc/poll.rs:50:                 }
+kernel/src/ipc/poll.rs:51:                 1 | 2 => {
+kernel/src/ipc/poll.rs:52:                     // stdout/stderr - always writable
+kernel/src/ipc/poll.rs:53:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:54:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:55:                     }
+kernel/src/ipc/poll.rs:56:                 }
+kernel/src/ipc/poll.rs:57:                 _ => {
+kernel/src/ipc/poll.rs:58:                     // Unknown stdio fd
+kernel/src/ipc/poll.rs:59:                 }
+kernel/src/ipc/poll.rs:140:         FdKind::Device(device_type) => {
+kernel/src/ipc/poll.rs:141:             // Device files have different poll behavior based on type
+kernel/src/ipc/poll.rs:142:             use crate::fs::devfs::DeviceType;
+kernel/src/ipc/poll.rs:143:             match device_type {
+kernel/src/ipc/poll.rs:144:                 DeviceType::Null => {
+kernel/src/ipc/poll.rs:145:                     // /dev/null: always readable (returns EOF), always writable
+kernel/src/ipc/poll.rs:146:                     if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:147:                         revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:148:                     }
+kernel/src/ipc/poll.rs:149:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:150:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:151:                     }
+kernel/src/ipc/poll.rs:152:                 }
+kernel/src/ipc/poll.rs:153:                 DeviceType::Zero => {
+kernel/src/ipc/poll.rs:154:                     // /dev/zero: always readable (infinite zeros), always writable
+kernel/src/ipc/poll.rs:155:                     if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:156:                         revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:157:                     }
+kernel/src/ipc/poll.rs:158:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:159:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:160:                     }
+kernel/src/ipc/poll.rs:161:                 }
+kernel/src/ipc/poll.rs:162:                 DeviceType::Console | DeviceType::Tty => {
+kernel/src/ipc/poll.rs:163:                     // Console/Tty readiness follows the same ring as read().
+kernel/src/ipc/poll.rs:164:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:165:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:166:                     }
+kernel/src/ipc/poll.rs:167:                     if (events & events::POLLIN) != 0 && crate::ipc::stdin::has_data() {
+kernel/src/ipc/poll.rs:168:                         revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:169:                     }
+kernel/src/ipc/poll.rs:170:                 }
+kernel/src/ipc/poll.rs:171:             }
+kernel/src/ipc/poll.rs:172:         }
+kernel/src/ipc/poll.rs:173:         FdKind::DevfsDirectory { .. } => {
+kernel/src/ipc/poll.rs:268:         }
+kernel/src/ipc/poll.rs:269:         FdKind::UnixStream(socket_ref) => {
+kernel/src/ipc/poll.rs:270:             let socket = socket_ref.lock();
+kernel/src/ipc/poll.rs:271:             // Check for readable data
+kernel/src/ipc/poll.rs:272:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:273:                 if socket.has_data() {
+kernel/src/ipc/poll.rs:274:                     revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:275:                 }
+kernel/src/ipc/poll.rs:276:             }
+kernel/src/ipc/poll.rs:277:             // Check for writable
+kernel/src/ipc/poll.rs:278:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:279:                 if !socket.peer_closed() {
+kernel/src/ipc/poll.rs:280:                     revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:281:                 }
+kernel/src/ipc/poll.rs:282:             }
+kernel/src/ipc/poll.rs:283:             // Check for peer closed
+kernel/src/ipc/poll.rs:284:             if socket.peer_closed() && !socket.has_data() {
+kernel/src/ipc/poll.rs:285:                 revents |= events::POLLHUP;
+kernel/src/ipc/poll.rs:286:             }
+kernel/src/ipc/poll.rs:287:         }
+kernel/src/ipc/poll.rs:288:         FdKind::UnixSocket(_) => {
+kernel/src/ipc/poll.rs:289:             // Unconnected Unix socket - always writable (for connect attempt)
+kernel/src/ipc/poll.rs:290:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:291:                 revents |= events::POLLOUT;
+kernel/src/tty/driver.rs:267: 
+kernel/src/tty/driver.rs:268:         // Transfer data from line discipline to stdin buffer when available
+kernel/src/tty/driver.rs:269:         // This bridges the TTY layer (which handles line editing, echo, signals)
+kernel/src/tty/driver.rs:270:         // with the stdin buffer (which userspace reads via read() syscall)
+kernel/src/tty/driver.rs:271:         if ldisc.has_data() {
+kernel/src/tty/driver.rs:272:             let mut buf = [0u8; 256];
+kernel/src/tty/driver.rs:273:             loop {
+kernel/src/tty/driver.rs:274:                 match ldisc.read(&mut buf) {
+kernel/src/tty/driver.rs:275:                     Ok(0) => break, // No more data
+kernel/src/tty/driver.rs:276:                     Ok(n) => {
+kernel/src/tty/driver.rs:277:                         // Push each byte to stdin (no echo - TTY already handled that)
+kernel/src/tty/driver.rs:278:                         for &byte in &buf[..n] {
+kernel/src/tty/driver.rs:279:                             crate::ipc::stdin::push_byte_from_irq(byte);
+kernel/src/tty/driver.rs:280:                         }
+kernel/src/tty/driver.rs:281:                     }
+kernel/src/tty/driver.rs:282:                     Err(super::line_discipline::EOF_MARKER) => {
+kernel/src/tty/driver.rs:283:                         // EOF on empty line - don't push anything, read() will return 0
+kernel/src/tty/driver.rs:284:                         break;
+kernel/src/tty/driver.rs:285:                     }
+kernel/src/tty/driver.rs:341:         // Transfer data from line discipline to stdin buffer when available
+kernel/src/tty/driver.rs:342:         // This bridges the TTY layer (which handles line editing, echo, signals)
+kernel/src/tty/driver.rs:343:         // with the stdin buffer (which userspace reads via read() syscall)
+kernel/src/tty/driver.rs:344:         let has_data = ldisc.has_data();
+kernel/src/tty/driver.rs:345:         if has_data {
+kernel/src/tty/driver.rs:346:             let mut buf = [0u8; 256];
+kernel/src/tty/driver.rs:347:             loop {
+kernel/src/tty/driver.rs:348:                 match ldisc.read(&mut buf) {
+kernel/src/tty/driver.rs:349:                     Ok(0) => break, // No more data
+kernel/src/tty/driver.rs:350:                     Ok(n) => {
+kernel/src/tty/driver.rs:351:                         // Push each byte to stdin (no echo - TTY already handled that)
+kernel/src/tty/driver.rs:352:                         for &byte in &buf[..n] {
+kernel/src/tty/driver.rs:353:                             crate::ipc::stdin::push_byte_from_irq(byte);
+kernel/src/tty/driver.rs:354:                         }
+kernel/src/tty/driver.rs:355:                     }
+kernel/src/tty/driver.rs:356:                     Err(super::line_discipline::EOF_MARKER) => {
+kernel/src/tty/driver.rs:357:                         // EOF on empty line - don't push anything, read() will return 0
+kernel/src/tty/driver.rs:358:                         break;
+kernel/src/tty/driver.rs:359:                     }
+kernel/src/tty/driver.rs:360:                     Err(_) => break, // Other error, stop reading
+kernel/src/tty/driver.rs:385:     /// Currently unused because keyboard input bypasses TTY (uses stdin directly).
+kernel/src/tty/driver.rs:386:     /// Will be used when termios ioctls are fully implemented and shell uses TTY raw mode.
+kernel/src/tty/driver.rs:387:     ///
+kernel/src/tty/driver.rs:388:     /// # Arguments
+kernel/src/tty/driver.rs:389:     /// * `buf` - Buffer to read data into
+kernel/src/tty/driver.rs:390:     ///
+kernel/src/tty/driver.rs:391:     /// # Returns
+kernel/src/tty/driver.rs:392:     /// * `Ok(n)` - Number of bytes read (0 indicates EOF in canonical mode)
+kernel/src/tty/driver.rs:393:     /// * `Err(EAGAIN)` - No data available (for non-blocking reads)
+kernel/src/tty/driver.rs:394:     #[allow(dead_code)]
+kernel/src/tty/driver.rs:395:     pub fn read(&self, buf: &mut [u8]) -> Result<usize, i32> {
+kernel/src/tty/driver.rs:396:         let mut ldisc = self.ldisc.lock();
+kernel/src/tty/driver.rs:397: 
+kernel/src/tty/driver.rs:398:         // Check if data is available
+kernel/src/tty/driver.rs:399:         if !ldisc.has_data() {
+kernel/src/tty/driver.rs:400:             return Err(EAGAIN);
+kernel/src/tty/driver.rs:401:         }
+kernel/src/tty/driver.rs:402: 
+kernel/src/tty/driver.rs:403:         // Read from the line discipline
+kernel/src/tty/driver.rs:404:         match ldisc.read(buf) {
+kernel/src/tty/driver.rs:405:             Ok(n) => Ok(n),
+kernel/src/tty/driver.rs:406:             Err(super::line_discipline::EOF_MARKER) => Ok(0), // EOF returns 0 bytes
+kernel/src/tty/driver.rs:407:             Err(e) => Err(e),
+kernel/src/tty/driver.rs:408:         }
+kernel/src/tty/driver.rs:409:     }
+kernel/src/tty/driver.rs:410: 
+kernel/src/tty/driver.rs:411:     /// Check if there is data available to read
+kernel/src/tty/driver.rs:412:     ///
+kernel/src/tty/driver.rs:413:     /// Used by poll/select syscalls to check for readable data.
+kernel/src/tty/driver.rs:414:     #[allow(dead_code)]
+kernel/src/tty/driver.rs:415:     pub fn has_data(&self) -> bool {
+kernel/src/tty/driver.rs:416:         self.ldisc.lock().has_data()
+kernel/src/tty/driver.rs:417:     }
+kernel/src/task/scheduler.rs:3420:     ///
+kernel/src/task/scheduler.rs:3421:     /// The syscall-context variant of `block_current()`: same publication and
+kernel/src/task/scheduler.rs:3422:     /// same departure, plus `blocked_in_syscall`, so the context-switch path
+kernel/src/task/scheduler.rs:3423:     /// saves and restores the kernel-side syscall context rather than stale
+kernel/src/task/scheduler.rs:3424:     /// userspace context. Every syscall-path caller of the generic primitive
+kernel/src/task/scheduler.rs:3425:     /// uses this variant, which is why none of them writes the flag itself.
+kernel/src/task/scheduler.rs:3426:     pub fn block_current_in_syscall(&mut self) {
+kernel/src/task/scheduler.rs:3427:         self.block_current_inner(true);
+kernel/src/task/scheduler.rs:3428:     }
+kernel/src/task/scheduler.rs:3429: 
+kernel/src/task/scheduler.rs:3430:     /// The generic block: charge, publish, depart — in that order, under the
+kernel/src/task/scheduler.rs:3431:     /// one scheduler-lock acquisition the caller already holds.
+kernel/src/task/scheduler.rs:3432:     fn block_current_inner(&mut self, in_syscall: bool) {
+kernel/src/task/scheduler.rs:3433:         #[cfg(feature = "coreproof_component_a")]
+kernel/src/task/scheduler.rs:3434:         crate::proof_point!(BlockEntry);
+kernel/src/task/scheduler.rs:3435:         let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread else {
+kernel/src/task/scheduler.rs:3436:             return;
+kernel/src/task/scheduler.rs:3437:         };
+kernel/src/task/scheduler.rs:3438: 
+kernel/src/task/scheduler.rs:3439:         if let Some(current) = self.get_thread_mut(current_id) {
+kernel/src/task/scheduler.rs:3440:             // Charge elapsed CPU ticks before blocking
+kernel/src/task/scheduler.rs:3441:             let now = crate::time::get_ticks();
+kernel/src/task/scheduler.rs:3442:             current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+kernel/src/task/scheduler.rs:3443:             current.run_start_ticks = now;
+kernel/src/task/scheduler.rs:3444: 
+kernel/src/task/scheduler.rs:3445:             current.state = ThreadState::Blocked;
+kernel/src/task/scheduler.rs:3446:             #[cfg(feature = "coreproof_component_a")]
+kernel/src/task/scheduler.rs:3447:             crate::proof_point!(BlockAfterStateStore);
+kernel/src/task/scheduler.rs:3448:             if in_syscall {
+kernel/src/task/scheduler.rs:3449:                 current.blocked_in_syscall = true;
+kernel/src/task/scheduler.rs:3450:             }
+kernel/src/task/scheduler.rs:3451:         }
+kernel/src/task/scheduler.rs:3452: 
+kernel/src/task/scheduler.rs:3453:         // The departure the family's other members already perform. The current
+kernel/src/task/scheduler.rs:3454:         // thread is not expected to name a ready queue at all, so this is the
+kernel/src/task/scheduler.rs:3455:         // same defence in depth they document — but it is now unconditional for
+kernel/src/task/scheduler.rs:3456:         // the generic block too, rather than a post-condition each caller had to
+kernel/src/task/scheduler.rs:3457:         // remember.
+kernel/src/task/scheduler.rs:3458:         #[cfg(feature = "coreproof_component_a")]
+kernel/src/task/scheduler.rs:3459:         crate::proof_point!(BlockBeforeDeparture);
+kernel/src/task/scheduler.rs:3460:         crate::proof_cover!(BlockDeparture);
+kernel/src/task/scheduler.rs:4093:     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
+kernel/src/task/scheduler.rs:4094:         let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
+kernel/src/task/scheduler.rs:4095:         let thread = self.get_thread_mut(current_id)?;
+kernel/src/task/scheduler.rs:4096: 
+kernel/src/task/scheduler.rs:4097:         // Charge elapsed CPU ticks before blocking
+kernel/src/task/scheduler.rs:4098:         let now = crate::time::get_ticks();
+kernel/src/task/scheduler.rs:4099:         thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+kernel/src/task/scheduler.rs:4100:         thread.run_start_ticks = now;
+kernel/src/task/scheduler.rs:4101: 
+kernel/src/task/scheduler.rs:4102:         thread.state = ThreadState::BlockedOnIO;
+kernel/src/task/scheduler.rs:4103:         thread.wake_time_ns = wake_time_ns;
+kernel/src/task/scheduler.rs:4104:         // The observation belongs to this wait, not to whatever the thread did
+kernel/src/task/scheduler.rs:4105:         // before it.
+kernel/src/task/scheduler.rs:4106:         thread.timer_pop_wake_time_set = None;
+kernel/src/task/scheduler.rs:4107:         // Mark blocked_in_syscall so the context switch path resumes
+kernel/src/task/scheduler.rs:4108:         // inside the syscall (wait_timeout loop) rather than restoring
+kernel/src/task/scheduler.rs:4109:         // stale userspace context.
+kernel/src/task/scheduler.rs:4110:         //
+kernel/src/task/scheduler.rs:4111:         // #775 round 4: only when there IS a syscall context to resume into.
+kernel/src/task/scheduler.rs:4112:         // The flag routes the x86 save through
+kernel/src/task/scheduler.rs:4113:         // `save_kernel_context_with_guard`, which writes into
+kernel/src/task/scheduler.rs:4114:         // `process.main_thread` and writes no register at all when the
+kernel/src/task/scheduler.rs:4115:         // thread has no process -- so on a process-less thread the flag
+kernel/src/task/scheduler.rs:4116:         // makes each later context save a silent no-op while the restore
+kernel/src/task/scheduler.rs:4117:         // keeps replaying the last one that landed. The boot thread is exactly such a thread and
+kernel/src/task/scheduler.rs:4118:         // it waits here: `Completion::wait_timeout_uninterruptible()` backs
+kernel/src/task/scheduler.rs:4119:         // the ext2 root read during init. Same predicate, same reason as
+kernel/src/task/scheduler.rs:4120:         // `block_current_for_timer` above.
+kernel/src/task/scheduler.rs:4121:         // claim-lint:ok: the replay and the page fault it ends in are the
+kernel/src/task/scheduler.rs:4122:         // 2 committed captures under
+kernel/src/task/scheduler.rs:4123:         // docs/planning/green-program/sockets/serials/775/round4/boot-replay/.
+kernel/src/task/scheduler.rs:4124:         thread.blocked_in_syscall = thread.owner_pid.is_some();
+kernel/src/task/scheduler.rs:4125: 
+kernel/src/task/scheduler.rs:4126:         // The departure belongs to the publication, not to the wrapper: this is
+kernel/src/task/scheduler.rs:4127:         // the only function in the family that published a blocked state
+kernel/src/task/scheduler.rs:4128:         // without departing the thread itself, which left the post-condition
+kernel/src/task/scheduler.rs:4129:         // resting on whichever caller remembered it.
+kernel/src/task/scheduler.rs:4130:         for q in self.per_cpu_queues.iter_mut() {
+kernel/src/task/scheduler.rs:4131:             q.retain(|&id| id != current_id);
+kernel/src/task/scheduler.rs:4132:         }
+kernel/src/task/scheduler.rs:4133: 
+kernel/src/task/scheduler.rs:4134:         // Linux set_current_state() is smp_store_mb(): publish the sleep
+kernel/src/task/scheduler.rs:4135:         // state before later condition checks or schedule entry observe
+kernel/src/task/scheduler.rs:4136:         // wakeups. On AArch64 Rust lowers SeqCst fence to a full DMB.
+kernel/src/task/scheduler.rs:4137:         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+kernel/src/task/scheduler.rs:4138:         Some(current_id)
+kernel/src/task/scheduler.rs:4139:     }
+kernel/src/task/scheduler.rs:4140: 
+kernel/src/task/scheduler.rs:4141:     /// Block the current thread for device I/O.
+kernel/src/task/scheduler.rs:4142:     ///
+kernel/src/task/scheduler.rs:4160:     /// Block the current thread for device I/O, optionally with a timeout.
+kernel/src/task/scheduler.rs:4161:     ///
+kernel/src/task/scheduler.rs:4162:     /// A timed BlockedOnIO wait is used by completions: the ISR wakes it via
+kernel/src/task/scheduler.rs:4163:     /// unblock_for_io(), while the timer path wakes it by observing
+kernel/src/task/scheduler.rs:4164:     /// wake_time_ns without clearing blocked_in_syscall prematurely.
+kernel/src/task/scheduler.rs:4165:     pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) -> bool {
+kernel/src/task/scheduler.rs:4166:         if let Some(current_id) = self.block_current_for_io_publish(wake_time_ns) {
+kernel/src/task/scheduler.rs:4167:             // Insert into timer heap if a timeout was specified
+kernel/src/task/scheduler.rs:4168:             if let Some(wt) = wake_time_ns {
+kernel/src/task/scheduler.rs:4169:                 self.timer_heap.push(Reverse((wt, current_id)));
+kernel/src/task/scheduler.rs:4170:             }
+kernel/src/task/scheduler.rs:4171:             true
+kernel/src/task/scheduler.rs:4172:         } else {
+kernel/src/task/scheduler.rs:4173:             false
+kernel/src/task/scheduler.rs:4174:         }
+kernel/src/task/scheduler.rs:4175:     }
+kernel/src/task/scheduler.rs:4176: 
+kernel/src/task/scheduler.rs:4177:     /// Unblock a thread that was blocked for device I/O.
+kernel/src/task/scheduler.rs:4178:     ///
+kernel/src/task/scheduler.rs:4179:     /// Sets state to Ready and adds to ready queue. Does NOT clear
+kernel/src/task/scheduler.rs:4180:     /// blocked_in_syscall — the wait_timeout caller clears it after resuming
+kernel/src/task/scheduler.rs:4181:     /// to prevent context save corruption (clearing it early would allow the
+kernel/src/task/scheduler.rs:4182:     /// context switch path to restore stale userspace context).
+kernel/src/task/scheduler.rs:4183:     ///
+kernel/src/task/scheduler.rs:4184:     /// Safe to call from ISR context via with_scheduler() because
+kernel/src/task/scheduler.rs:4185:     /// with_scheduler() disables interrupts before acquiring the lock, and
+kernel/src/socket/unix.rs:95:     pub fn write(&self, data: &[u8]) -> Result<usize, i32> {
+kernel/src/socket/unix.rs:96:         // Check if peer is closed
+kernel/src/socket/unix.rs:97:         let peer_closed = match self.endpoint {
+kernel/src/socket/unix.rs:98:             UnixEndpoint::A => *self.pair.closed_b.lock(),
+kernel/src/socket/unix.rs:99:             UnixEndpoint::B => *self.pair.closed_a.lock(),
+kernel/src/socket/unix.rs:100:         };
+kernel/src/socket/unix.rs:101: 
+kernel/src/socket/unix.rs:102:         if peer_closed {
+kernel/src/socket/unix.rs:103:             return Err(crate::syscall::errno::EPIPE);
+kernel/src/socket/unix.rs:104:         }
+kernel/src/socket/unix.rs:105: 
+kernel/src/socket/unix.rs:106:         // Get the buffer to write to (peer's read buffer)
+kernel/src/socket/unix.rs:107:         let buffer = match self.endpoint {
+kernel/src/socket/unix.rs:108:             UnixEndpoint::A => &self.pair.buffer_a_to_b,
+kernel/src/socket/unix.rs:109:             UnixEndpoint::B => &self.pair.buffer_b_to_a,
+kernel/src/socket/unix.rs:110:         };
+kernel/src/socket/unix.rs:111: 
+kernel/src/socket/unix.rs:112:         // Write data to buffer
+kernel/src/socket/unix.rs:113:         let mut buf = buffer.lock();
+kernel/src/socket/unix.rs:114: 
+kernel/src/socket/unix.rs:115:         // Check available space
+kernel/src/socket/unix.rs:116:         let available = UNIX_SOCKET_BUFFER_SIZE.saturating_sub(buf.len());
+kernel/src/socket/unix.rs:117:         if available == 0 {
+kernel/src/socket/unix.rs:118:             if self.nonblocking {
+kernel/src/socket/unix.rs:119:                 return Err(crate::syscall::errno::EAGAIN);
+kernel/src/socket/unix.rs:120:             }
+kernel/src/socket/unix.rs:121:             // For blocking mode, we'd need to block here
+kernel/src/socket/unix.rs:122:             // For now, just write nothing and return EAGAIN
+kernel/src/socket/unix.rs:123:             return Err(crate::syscall::errno::EAGAIN);
+kernel/src/socket/unix.rs:124:         }
+kernel/src/socket/unix.rs:125: 
+kernel/src/socket/unix.rs:126:         let to_write = data.len().min(available);
+kernel/src/socket/unix.rs:127:         for &byte in &data[..to_write] {
+kernel/src/socket/unix.rs:128:             buf.push_back(byte);
+kernel/src/socket/unix.rs:129:         }
+kernel/src/socket/unix.rs:130: 
+kernel/src/syscall/fifo.rs:85: 
+kernel/src/syscall/fifo.rs:86: #[cfg(not(target_arch = "x86_64"))]
+kernel/src/syscall/fifo.rs:87: pub fn sys_mkfifo(_pathname: u64, _mode: u32) -> SyscallResult {
+kernel/src/syscall/fifo.rs:88:     SyscallResult::Err(super::errno::ENOSYS as u64)
+kernel/src/syscall/fifo.rs:89: }
+kernel/src/syscall/fifo.rs:90: 
+kernel/src/syscall/fifo.rs:91: #[cfg(not(target_arch = "x86_64"))]
+kernel/src/syscall/fifo.rs:92: pub fn sys_mknod(_pathname: u64, _mode: u32, _dev: u64) -> SyscallResult {
+kernel/src/syscall/fifo.rs:93:     SyscallResult::Err(super::errno::ENOSYS as u64)
+kernel/src/syscall/fifo.rs:94: }
+kernel/src/syscall/mod.rs:20: // Syscall handler - the main dispatcher
+kernel/src/syscall/mod.rs:21: // x86_64: Full handler with signal delivery and process management
+kernel/src/syscall/mod.rs:22: // ARM64: Handler is in arch_impl/aarch64/syscall_entry.rs
+kernel/src/syscall/mod.rs:23: #[cfg(target_arch = "x86_64")]
+kernel/src/syscall/mod.rs:24: pub mod handler;
+kernel/src/syscall/mod.rs:25: 
+kernel/src/syscall/mod.rs:26: // Syscall implementations
+kernel/src/syscall/mod.rs:27: // - dispatcher is x86_64-only (ARM64 dispatch is in arch_impl/aarch64/syscall_entry.rs)
+kernel/src/syscall/mod.rs:28: // - handlers is shared across architectures (arch-specific parts are cfg-gated internally)
+kernel/src/syscall/mod.rs:29: pub mod audio;
+kernel/src/syscall/mod.rs:30: pub(crate) mod blocking_io;
+kernel/src/syscall/mod.rs:31: #[cfg(feature = "boot_tests")]
+kernel/src/syscall/mod.rs:32: pub mod blocking_io_oracle;
+kernel/src/syscall/mod.rs:33: pub mod clone;
+kernel/src/syscall/mod.rs:34: #[cfg(target_arch = "x86_64")]
+kernel/src/syscall/mod.rs:35: pub(crate) mod dispatcher;
+kernel/src/syscall/mod.rs:36: pub mod epoll;
+kernel/src/syscall/mod.rs:37: pub mod fifo;
+kernel/src/syscall/mod.rs:38: pub mod fs;
+kernel/src/syscall/mod.rs:39: pub mod futex;
+kernel/src/syscall/mod.rs:40: #[cfg(feature = "boot_tests")]
+kernel/src/syscall/mod.rs:41: pub mod futex_oracle;
+kernel/src/syscall/mod.rs:42: pub mod futex_timeout_record;
+kernel/src/syscall/mod.rs:43: pub mod graphics;
+CLAUDE.md:195: ### Code Quality - ZERO TOLERANCE FOR WARNINGS
+CLAUDE.md:196: 
+CLAUDE.md:197: **Every build must be completely clean.** Zero warnings, zero errors. This is non-negotiable.
+CLAUDE.md:198: 
+CLAUDE.md:199: When you run any build or test command and observe warnings or errors in the compile stage, you MUST fix them before proceeding. Do not continue with broken builds.
+CLAUDE.md:200: 
+CLAUDE.md:201: **Honest fixes only.** Do NOT suppress warnings dishonestly:
+CLAUDE.md:202: - `#[allow(dead_code)]` is NOT acceptable for code that should be removed or actually used
+CLAUDE.md:203: - `#[allow(unused_variables)]` is NOT acceptable for variables that indicate incomplete implementation
+CLAUDE.md:204: - Prefixing with `_` is NOT acceptable if the variable was meant to be used
+CLAUDE.md:205: - These annotations hide problems instead of fixing them
+CLAUDE.md:206: 
+CLAUDE.md:207: **When to use suppression attributes:**
+CLAUDE.md:208: - `#[allow(dead_code)]` ONLY for legitimate public API functions that are intentionally available but not yet called (e.g., `SpinLock::try_lock()` as part of a complete lock API)
+CLAUDE.md:209: - `#[cfg(never)]` for code intentionally disabled for debugging (must be in Cargo.toml check-cfg)
+CLAUDE.md:210: - Never use suppressions to hide incomplete work or actual bugs
+CLAUDE.md:211: 
+CLAUDE.md:212: **Proper fixes:**
+CLAUDE.md:213: - Unused variable? Either use it (complete the implementation) or remove it entirely
+CLAUDE.md:214: - Dead code? Either call it or delete it
+CLAUDE.md:215: - Unnecessary `mut`? Remove the `mut`
+CLAUDE.md:216: - Unnecessary `unsafe`? Remove the `unsafe` block
+CLAUDE.md:217: 
+CLAUDE.md:218: **Before every commit, verify:**
+CLAUDE.md:219: ```bash
+CLAUDE.md:220: # Build must complete with 0 warnings
+CLAUDE.md:221: cargo build --release --features testing,external_test_bins --bin qemu-uefi 2>&1 | grep -E "^(warning|error)"
+CLAUDE.md:222: # Should produce no output (no warnings/errors)
+CLAUDE.md:223: ```
+CLAUDE.md:224: 
+CLAUDE.md:225: ### Testing Integrity - CRITICAL
+docker/qemu/run-x86-boot-tests.sh:90: trap 'report_gate_failure "$LINENO" "$BASH_COMMAND"' ERR
+docker/qemu/run-x86-boot-tests.sh:91: 
+docker/qemu/run-x86-boot-tests.sh:92: COUNT="${1:-1}"
+docker/qemu/run-x86-boot-tests.sh:93: SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+docker/qemu/run-x86-boot-tests.sh:94: source "$SCRIPT_DIR/lib/run-inspector-import.sh" || :
+docker/qemu/run-x86-boot-tests.sh:95: BREENIX_RUNS_GATE_ARGV=("$0" "$@")
+docker/qemu/run-x86-boot-tests.sh:96: BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+docker/qemu/run-x86-boot-tests.sh:97: # failure-trace-capture PR-5: on a non-PASS outcome, drains the guest's
+docker/qemu/run-x86-boot-tests.sh:98: # BXCAP capture (if one is open) before this gate's own kill line runs, and
+docker/qemu/run-x86-boot-tests.sh:99: # reports what ended up on the wire. See that file's own header and
+docker/qemu/run-aarch64-boot-test-strict.sh:1: #!/bin/bash
+docker/qemu/run-aarch64-boot-test-strict.sh:2: # Strict ARM64 boot test - runs multiple iterations and requires ALL to pass
+docker/qemu/run-aarch64-boot-test-strict.sh:3: # Used for CI to catch regressions. Does NOT retry failed boots.
+docker/qemu/run-aarch64-boot-test-strict.sh:4: #
+docker/qemu/run-aarch64-boot-test-strict.sh:5: # Unlike run-aarch64-boot-test-native.sh which uses retries (masking failures),
+docker/qemu/run-aarch64-boot-test-strict.sh:6: # this test counts every boot attempt. A single failure means the test fails.
+docker/qemu/run-aarch64-boot-test-strict.sh:7: # A boot is accepted only after both userspace liveness and exec smoke completion.
+docker/qemu/run-aarch64-boot-test-strict.sh:8: # Serial output from every failed iteration is preserved in a never-cleared directory.
+docker/qemu/run-aarch64-boot-test-strict.sh:9: #
+docker/qemu/run-aarch64-boot-test-strict.sh:10: # Usage: ./run-aarch64-boot-test-strict.sh [iterations]
+docker/qemu/run-aarch64-boot-test-strict.sh:11: #        Default: 20 iterations
+docker/qemu/run-aarch64-boot-test-strict.sh:12: #
+docker/qemu/run-aarch64-boot-test-strict.sh:13: # Before booting anything, this gate runs each tests/*_structure.rs suite
+docker/qemu/run-aarch64-boot-test-strict.sh:14: # (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is red.
+docker/qemu/run-aarch64-boot-test-strict.sh:15: # BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
+docker/qemu/run-aarch64-boot-test-strict.sh:16: #
+docker/qemu/run-aarch64-boot-test-strict.sh:17: # Exit codes:
+docker/qemu/run-aarch64-boot-test-strict.sh:18: #   0 - All iterations passed
+docker/qemu/run-aarch64-boot-test-strict.sh:19: #   1 - One or more iterations failed
+docker/qemu/run-aarch64-boot-test-strict.sh:20: 
+docker/qemu/run-aarch64-boot-test-strict.sh:21: set -e
+docker/qemu/run-aarch64-boot-test-strict.sh:22: 
+docker/qemu/run-aarch64-boot-test-strict.sh:23: ITERATIONS=${1:-20}
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:1: #!/bin/bash
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:2: # ARM64 production-profile boot negative control for #584/B1.
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:3: #
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:4: # This proves the production aarch64 profile shipped by
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:5: # scripts/parallels/build-efi.sh is not wedged by boot_tests-only futex oracle
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:6: # plumbing: the unarmed driver must time out its probe, init must resume, and
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:7: # bsshd must start.
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:8: #
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:9: # Before building that profile, this gate runs each tests/*_structure.rs
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:10: # suite (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:11: # red. BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:12: 
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `<isolated-checkout-124>`, `BREENIX_GATE_TMP=<isolated-checkout-125>`,
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:774: own clone per R20). Branch fetched from GitHub at this round's commit
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:775: `6bf0b6423430ff919dbe1b938db1f69c46102c7f`.
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:776: `pgrep -fl qemu-system-x86_64 | wc -l` read `0` before the run.
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:777: 
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:778: | step | result |
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:779: |---|---|
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:780: | `cargo build --release --features testing,external_test_bins --bin qemu-uefi` piped through `grep -E "^(warning|error)"` | 0 lines |
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:781: | `docker/qemu/run-x86-boot-tests.sh 1` | **PASS**, exit 0; `x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0` |
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:782: | `docker/qemu/run-x86-prod-profile-boot-test.sh` | **PASS**, exit 0 |
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:837: * **The oracle does not witness a successful `F_SETFD` under contention.** Its
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:838:   driving thread has no process row, so its calls end at `EBADF` on a repaired
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:839:   kernel. It measures which arm the syscall takes when the lock is busy. The
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:840:   successful-`F_SETFD` witness is `tty_oracle`'s `cloexec_exec` arm on the
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:841:   production profile, which this branch leaves unchanged.
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:842: * **The x86 arm is not evidence about contention.** It is a disclosed SKIP:
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:843:   `-smp 1` does not produce two threads contending for this lock. The repair is
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:844:   arch-neutral, but 1 of the 2 rosters -- aarch64 -- tests it under real
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:845:   contention.
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:872: * **#813 is filed, not fixed.** Four sites return `EAGAIN` on **blocking** file
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:873:   descriptors — pipe `write` (`handlers.rs:521-526`), FIFO `write`
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:874:   (`:541-545`), unix-socket `write` (`socket/unix.rs:118-123`) and
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:875:   `/dev/console`|`/dev/tty` `read` (`fs/devfs/mod.rs:201-204`) — which is the
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:876:   same POSIX-illegality class as #796 by a different mechanism (unimplemented
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:877:   blocking rather than lock contention). 3 of the 4 are outside this census's
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:878:   declared scope and the 4th is in the same file as the repaired site; 0 of the 4
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:879:   are repaired here, and 0 tests in this branch drive them.
+PLAN-GREEN-CAMPAIGN.md and PLAN-LAYER-SWEEP.md: no exact tracked filename at HEAD. External plan anchors cannot be cited as current-tree evidence; no atlas promotion is claimed.

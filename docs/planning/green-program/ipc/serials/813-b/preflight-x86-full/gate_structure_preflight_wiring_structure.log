@@ -1,0 +1,11 @@
+== compiling gate_structure_preflight_wiring_structure ==
+== running gate_structure_preflight_wiring_structure  ==
+
+running 4 tests
+test shared_lib_defines_the_preflight_function_and_its_marker_line ... ok
+test missing_wiring_validator_rejects_a_gate_with_neither ... ok
+test missing_wiring_validator_rejects_a_gate_with_the_call_site_removed ... ok
+test every_target_gate_calls_the_structure_preflight ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

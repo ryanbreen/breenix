@@ -1,0 +1,20 @@
+Revision: 2d3eb32582c5a36a31ec771d9a50cc305c50bc2f; working fixture patch plus named mutation v2-old-hung_dump
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure hung_dump_report_rejects_malformed_lines ==
+
+running 1 test
+
+thread 'hung_dump_report_rejects_malformed_lines' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t963/wt/tests/gate_qmp_backstop_structure.rs:328:9:
+accepted: "capture=partial:reason=qmp_timeout:\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hung_dump_report_rejects_malformed_lines ... FAILED
+
+failures:
+
+failures:
+    hung_dump_report_rejects_malformed_lines
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+exit=101

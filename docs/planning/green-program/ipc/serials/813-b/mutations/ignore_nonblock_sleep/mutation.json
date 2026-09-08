@@ -1,0 +1,7 @@
+{
+  "name": "ignore_nonblock_sleep",
+  "arm": "mode",
+  "path": "kernel/src/syscall/blocking_io.rs",
+  "before": "if is_nonblocking {\n                return SyscallResult::Err(errno::EAGAIN as u64);",
+  "after": "if is_nonblocking && data.is_empty() {\n                return SyscallResult::Err(errno::EAGAIN as u64);"
+}

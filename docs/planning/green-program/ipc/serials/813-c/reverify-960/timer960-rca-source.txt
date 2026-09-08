@@ -1,0 +1,206 @@
+baseline_revision=09d03f2d02c74f050d299f5c4288df2e06805614
+kernel/src/main.rs:549:         current_rsp,
+kernel/src/main.rs:550:         (current_rsp >> 39) & 0x1FF
+kernel/src/main.rs:551:     );
+kernel/src/main.rs:552: 
+kernel/src/main.rs:553:     // Use the actual kernel stack top passed from kernel_main
+kernel/src/main.rs:554:     let idle_kernel_stack_top = VirtAddr::new(arg as u64);
+kernel/src/main.rs:555: 
+kernel/src/main.rs:556:     // Create init_task (PID 0) - represents the currently running boot thread
+kernel/src/main.rs:557:     // This is the Linux swapper/idle task pattern
+kernel/src/main.rs:558:     let tls_base = tls::current_tls_base();
+kernel/src/main.rs:559:     let mut init_task = Box::new(task::thread::Thread::new(
+kernel/src/main.rs:560:         "swapper/0".to_string(), // Linux convention: swapper/0 is the idle task
+kernel/src/main.rs:561:         idle_thread_fn,
+kernel/src/main.rs:562:         VirtAddr::new(0),      // Will be set to current RSP
+kernel/src/main.rs:563:         idle_kernel_stack_top, // Use the properly allocated kernel stack
+kernel/src/main.rs:564:         VirtAddr::new(tls_base),
+kernel/src/main.rs:565:         task::thread::ThreadPrivilege::Kernel,
+kernel/src/main.rs:566:     ));
+kernel/src/main.rs:567: 
+kernel/src/main.rs:568:     // Mark init_task as already running (boot CPU idle task). The id stays the
+kernel/src/main.rs:569:     // one `Thread::new` allocated: 0 is the no-thread sentinel and is never a
+kernel/src/main.rs:570:     // live thread id.
+kernel/src/main.rs:571:     init_task.state = task::thread::ThreadState::Running;
+kernel/src/main.rs:572: 
+kernel/src/main.rs:573:     // Store the kernel stack in the thread (important for context switching)
+kernel/src/main.rs:574:     init_task.kernel_stack_top = Some(idle_kernel_stack_top);
+kernel/src/main.rs:575: 
+kernel/src/main.rs:576:     // Set up per-CPU current thread and idle thread
+kernel/src/main.rs:577:     let init_task_ptr = &*init_task as *const _ as *mut task::thread::Thread;
+kernel/src/main.rs:578:     per_cpu::set_current_thread(init_task_ptr);
+kernel/src/main.rs:579:     per_cpu::set_idle_thread(init_task_ptr);
+kernel/src/main.rs:580: 
+kernel/src/main.rs:581:     // CRITICAL: Ensure TSS.RSP0 is set to the kernel stack
+kernel/src/main.rs:582:     // This was already done before the stack switch, but verify it
+kernel/src/main.rs:583:     per_cpu::set_kernel_stack_top(idle_kernel_stack_top.as_u64());
+kernel/src/main.rs:584:     per_cpu::update_tss_rsp0(idle_kernel_stack_top.as_u64());
+kernel/src/main.rs:885:     // #766's wake-to-dispatch latency leg. Placed HERE, and not in the IF=1
+kernel/src/main.rs:886:     // driver-self-test window above, for two reasons. First, it creates 9
+kernel/src/main.rs:887:     // kernel threads and lets them run, which moves the frame, page-table and
+kernel/src/main.rs:888:     // kernel-stack counts the gates in that window pin absolutely. Second,
+kernel/src/main.rs:889:     // #567 says a scheduling event in this x86 boot window can resume the boot
+kernel/src/main.rs:890:     // thread on a corrupted context; the placement that survives it today is
+kernel/src/main.rs:891:     // the one after the softirq self-test, which is where the kthread
+kernel/src/main.rs:892:     // lifecycle tests immediately above already spawn, dispatch and join
+kernel/src/main.rs:893:     // kernel threads. This leg needs preemption to measure anything at all, so
+kernel/src/main.rs:894:     // it goes where preemption is already exercised. It restores the interrupt
+kernel/src/main.rs:895:     // flag it finds, so the boot sequence below inherits the state it had.
+kernel/src/main.rs:896:     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+kernel/src/main.rs:897:     kernel::task::timer_wake_oracle::run();
+kernel/src/main.rs:898: 
+kernel/src/task/scheduler.rs:2411:         self.wake_expired_timers();
+kernel/src/task/scheduler.rs:2412: 
+kernel/src/task/scheduler.rs:2413:         // If current thread is still runnable, put it back in ready queue
+kernel/src/task/scheduler.rs:2414:         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+kernel/src/task/scheduler.rs:2415:             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
+kernel/src/task/scheduler.rs:2416:                 // Check the state and determine what to do
+kernel/src/task/scheduler.rs:2417:                 let (is_terminated, is_blocked, published_ready) =
+kernel/src/task/scheduler.rs:2418:                     if let Some(current) = self.get_thread_mut(current_id) {
+kernel/src/task/scheduler.rs:2419:                         let was_terminated = current.state == ThreadState::Terminated;
+kernel/src/task/scheduler.rs:2420:                         // Check for any blocked state
+kernel/src/task/scheduler.rs:2421:                         // ThreadState::is_blocked() (#673 review, m4).
+kernel/src/task/scheduler.rs:2422:                         let was_blocked = current.state.is_blocked();
+kernel/src/task/scheduler.rs:2423: 
+kernel/src/task/scheduler.rs:2424:                         // Charge elapsed CPU ticks to the outgoing thread, but ONLY
+kernel/src/task/scheduler.rs:2425:                         // if it was actually running. Blocked threads already had
+kernel/src/task/scheduler.rs:2426:                         // their ticks charged at block time — charging again here
+kernel/src/task/scheduler.rs:2427:                         // would count blocked/sleeping time as CPU usage.
+kernel/src/task/scheduler.rs:2428:                         let published_ready = if !was_blocked && !was_terminated {
+kernel/src/task/scheduler.rs:2429:                             let now = crate::time::get_ticks();
+kernel/src/task/scheduler.rs:2430:                             current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+kernel/src/task/scheduler.rs:2431:                             current.run_start_ticks = now;
+kernel/src/task/scheduler.rs:2432:                             current.set_ready();
+kernel/src/task/scheduler.rs:2433:                             WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:2434:                             record_ready_site(current_id, READY_SITE_SCHEDULE);
+kernel/src/task/scheduler.rs:2435:                             true
+kernel/src/task/scheduler.rs:2436:                         } else {
+kernel/src/task/scheduler.rs:2437:                             // Reset run_start_ticks so the next dispatch doesn't
+kernel/src/task/scheduler.rs:2438:                             // charge stale time from the blocked period.
+kernel/src/task/scheduler.rs:2439:                             current.run_start_ticks = crate::time::get_ticks();
+kernel/src/task/scheduler.rs:2440:                             false
+kernel/src/task/scheduler.rs:2441:                         };
+kernel/src/task/scheduler.rs:2442: 
+kernel/src/task/scheduler.rs:2443:                         (was_terminated, was_blocked, published_ready)
+kernel/src/task/scheduler.rs:2444:                     } else {
+kernel/src/task/scheduler.rs:2445:                         (true, false, false)
+kernel/src/task/scheduler.rs:2446:                     };
+kernel/src/task/scheduler.rs:2447: 
+kernel/src/task/scheduler.rs:2448:                 // Put non-terminated, non-blocked threads back in ready queue
+kernel/src/task/scheduler.rs:2449:                 // CRITICAL: Check for duplicates! If unblock() already added this thread
+kernel/src/task/scheduler.rs:2450:                 // (e.g., packet arrived during blocking recvfrom), don't add it again.
+kernel/src/task/scheduler.rs:2451:                 // Duplicates cause schedule() to spin when same thread keeps getting selected.
+kernel/src/task/scheduler.rs:2452:                 let in_queue = self.per_cpu_queues.iter().any(|q| q.contains(&current_id));
+kernel/src/task/scheduler.rs:2453:                 let will_add = !is_terminated && !is_blocked && !in_queue;
+kernel/src/task/scheduler.rs:2454: 
+kernel/src/task/scheduler.rs:2455:                 if will_add {
+kernel/src/task/scheduler.rs:2456:                     let cpu = Self::current_cpu_id();
+kernel/src/task/scheduler.rs:2490:                 if steal_cpu == current_cpu {
+kernel/src/task/scheduler.rs:2491:                     continue;
+kernel/src/task/scheduler.rs:2492:                 }
+kernel/src/task/scheduler.rs:2493:                 let steal_candidates = self.per_cpu_queues[steal_cpu].len();
+kernel/src/task/scheduler.rs:2494:                 for _ in 0..steal_candidates {
+kernel/src/task/scheduler.rs:2495:                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
+kernel/src/task/scheduler.rs:2496:                         break;
+kernel/src/task/scheduler.rs:2497:                     };
+kernel/src/task/scheduler.rs:2498:                     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+kernel/src/task/scheduler.rs:2499:                     if retain_cpu_affine_test_thread(
+kernel/src/task/scheduler.rs:2500:                         &mut self.per_cpu_queues[steal_cpu],
+kernel/src/task/scheduler.rs:2501:                         n,
+kernel/src/task/scheduler.rs:2502:                         current_cpu,
+kernel/src/task/scheduler.rs:2503:                     ) {
+kernel/src/task/scheduler.rs:2504:                         continue;
+kernel/src/task/scheduler.rs:2505:                     }
+kernel/src/task/scheduler.rs:2506:                     #[cfg(all(target_arch = "aarch64", feature = "ec0_fault_inject"))]
+kernel/src/task/scheduler.rs:2507:                     if retain_ec0_fault_inject_on_cpu0(
+kernel/src/task/scheduler.rs:2508:                         &mut self.per_cpu_queues[steal_cpu],
+kernel/src/task/scheduler.rs:2509:                         n,
+kernel/src/task/scheduler.rs:2510:                         current_cpu,
+kernel/src/task/scheduler.rs:2511:                     ) {
+kernel/src/task/scheduler.rs:2512:                         break;
+kernel/src/task/scheduler.rs:2513:                     }
+kernel/src/task/scheduler.rs:2514:                     #[cfg(target_arch = "aarch64")]
+kernel/src/task/scheduler.rs:2515:                     if let Some(home) = self.percpu_stack_home_cpu(n, current_cpu) {
+kernel/src/task/scheduler.rs:2516:                         PERCPU_STACK_SELECTION_ROUTED.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/scheduler.rs:2517:                         self.per_cpu_queues[home].push_back(n);
+kernel/src/task/scheduler.rs:2518:                         continue;
+kernel/src/task/scheduler.rs:2519:                     }
+kernel/src/task/scheduler.rs:2520:                     // Slice 3e: the steal is what moves a thread between CPUs
+kernel/src/task/scheduler.rs:2521:                     // here -- the pop above has already taken it off the peer's
+kernel/src/task/scheduler.rs:2522:                     // queue and this loop is about to run it on this one. The
+kernel/src/task/scheduler.rs:2523:                     // guard returns a per-CPU worker to the CPU its pin names
+kernel/src/task/scheduler.rs:2524:                     // before that can happen. It runs after the per-CPU stack
+kernel/src/task/scheduler.rs:2525:                     // re-route above because that route is a hardware fact
+kernel/src/task/scheduler.rs:2526:                     // about which CPU owns the stack under the thread's saved
+kernel/src/task/scheduler.rs:2527:                     // SP, and a software pin cannot overrule it.
+kernel/src/task/scheduler.rs:2528:                     if self.retain_pinned_worker_on_source_queue(steal_cpu, n) {
+kernel/src/task/scheduler.rs:2529:                         continue;
+kernel/src/task/scheduler.rs:2530:                     }
+kernel/src/task/scheduler.rs:2531:                     if self.retain_cpu_affine_thread(n, current_cpu) {
+kernel/src/task/scheduler.rs:2532:                         continue;
+kernel/src/task/scheduler.rs:2533:                     }
+kernel/src/task/scheduler.rs:2534:                     let (terminated, owner_pid) = self
+kernel/src/task/scheduler.rs:2535:                         .get_thread(n)
+kernel/src/task/scheduler.rs:2536:                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
+kernel/src/task/scheduler.rs:2537:                         .unwrap_or((false, None));
+kernel/src/task/scheduler.rs:2538:                     if terminated {
+kernel/src/task/scheduler.rs:2539:                         if owner_pid.is_some_and(|pid| !observe_exit_kick(pid)) {
+kernel/src/task/scheduler.rs:2540:                             self.per_cpu_queues[steal_cpu].push_back(n);
+kernel/src/task/scheduler.rs:2541:                         }
+kernel/src/task/scheduler.rs:2542:                         continue;
+kernel/src/task/scheduler.rs:2543:                     }
+kernel/src/task/scheduler.rs:2544:                     break 'outer n;
+kernel/src/task/scheduler.rs:2545:                 }
+kernel/src/task/scheduler.rs:2546:             }
+kernel/src/task/scheduler.rs:2547:             break self.cpu_state[current_cpu].idle_thread;
+kernel/src/task/scheduler.rs:2548:         };
+kernel/src/task/scheduler.rs:2549: 
+kernel/src/task/timer_wake_oracle.rs:335: 
+kernel/src/task/timer_wake_oracle.rs:336:     if sleeper.is_some() {
+kernel/src/task/timer_wake_oracle.rs:337:         // The peers have to have reached the barrier before it opens, so their
+kernel/src/task/timer_wake_oracle.rs:338:         // spin windows start at the same point.
+kernel/src/task/timer_wake_oracle.rs:339:         wait_until(
+kernel/src/task/timer_wake_oracle.rs:340:             || PEERS_STARTED.load(Ordering::Acquire) as usize >= PEERS,
+kernel/src/task/timer_wake_oracle.rs:341:             START_WAIT_BACKSTOP_MS,
+kernel/src/task/timer_wake_oracle.rs:342:         );
+kernel/src/task/timer_wake_oracle.rs:343:         let open = now_ns();
+kernel/src/task/timer_wake_oracle.rs:344:         OPEN_NS.store(open, Ordering::Release);
+kernel/src/task/timer_wake_oracle.rs:345:         SETUP_MS.store(open.saturating_sub(started_ns) / 1_000_000, Ordering::Release);
+kernel/src/task/timer_wake_oracle.rs:346:         MEASURE_OPEN.store(true, Ordering::Release);
+kernel/src/task/timer_wake_oracle.rs:347:         // Unpark in a retry loop: a peer that entered `kthread_park()` after a
+kernel/src/task/timer_wake_oracle.rs:348:         // single unpark would block with nobody left to wake it. Repeating the
+kernel/src/task/timer_wake_oracle.rs:349:         // unpark until the peer reports itself spinning closes that window
+kernel/src/task/timer_wake_oracle.rs:350:         // without needing the park and the unpark to be ordered.
+kernel/src/task/timer_wake_oracle.rs:351:         let deadline = now_ns().saturating_add(SPINNING_WAIT_BACKSTOP_MS * 1_000_000);
+kernel/src/task/timer_wake_oracle.rs:352:         loop {
+kernel/src/task/timer_wake_oracle.rs:353:             if PEERS_SPINNING.load(Ordering::Acquire) as usize >= PEERS {
+kernel/src/task/timer_wake_oracle.rs:354:                 break;
+kernel/src/task/timer_wake_oracle.rs:355:             }
+kernel/src/task/timer_wake_oracle.rs:356:             for handle in peers.iter() {
+kernel/src/task/timer_wake_oracle.rs:357:                 kthread_unpark(handle);
+kernel/src/task/timer_wake_oracle.rs:358:             }
+kernel/src/task/timer_wake_oracle.rs:359:             if now_ns() >= deadline {
+kernel/src/task/timer_wake_oracle.rs:360:                 BACKSTOPS.fetch_add(1, Ordering::Relaxed);
+kernel/src/task/timer_wake_oracle.rs:361:                 break;
+kernel/src/task/timer_wake_oracle.rs:362:             }
+kernel/src/task/timer_wake_oracle.rs:363:             arch_halt_with_interrupts();
+kernel/src/task/timer_wake_oracle.rs:364:         }
+kernel/src/task/timer_wake_oracle.rs:365:     }
+kernel/src/task/timer_wake_oracle.rs:366: 
+kernel/src/task/timer_wake_oracle.rs:367:     if let Some(handle) = sleeper.as_ref() {
+kernel/src/task/timer_wake_oracle.rs:368:         let _ = kthread_join(handle);
+kernel/src/task/timer_wake_oracle.rs:369:     }
+kernel/src/task/timer_wake_oracle.rs:370:     // Whatever happened above, the peers are told to stop and unparked before
+kernel/src/task/kthread.rs:266: /// Unpark a parked thread (wake)
+kernel/src/task/kthread.rs:267: pub fn kthread_unpark(handle: &KthreadHandle) {
+kernel/src/task/kthread.rs:268:     handle.inner.parked.store(false, Ordering::Release);
+kernel/src/task/kthread.rs:269:     scheduler::with_scheduler(|sched| {
+kernel/src/task/kthread.rs:270:         sched.unblock(handle.inner.tid);
+kernel/src/task/kthread.rs:271:     });
+kernel/src/task/kthread.rs:272:     // CRITICAL: Set need_resched to ensure a context switch happens soon.
+kernel/src/task/kthread.rs:273:     // Without this, the unparked thread won't run until the current thread's
+kernel/src/task/kthread.rs:274:     // quantum expires (up to 50ms). This matches spawn()'s behavior of setting
+kernel/src/task/kthread.rs:275:     // need_resched after adding a thread to ready_queue.
+kernel/src/task/kthread.rs:276:     scheduler::set_need_resched();
+kernel/src/task/kthread.rs:277: }
+kernel/src/task/kthread.rs:278: 

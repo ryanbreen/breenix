@@ -1,0 +1,27 @@
+436313ed58543e121bf7959563597d2734d45893
+working tree: PIL resolver + ratchets
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure  ==
+
+running 18 tests
+test capture_display_writes_output_exactly_once_and_only_on_a_verified_frame ... ok
+test capture_display_output_write_check_is_not_vacuous ... ok
+test run_sh_silent_fallback_check_is_not_vacuous ... ok
+test run_sh_has_no_silent_capture_fallback_and_calls_capture_display ... ok
+test round_two::run_sh_test_mode_exit_reflects_capture_outcome ... ok
+test round_two::run_sh_capture_exit_check_is_not_vacuous ... ok
+test f24_render_verdict_rejects_missing_capture ... ok
+test pil_consumers_use_shared_resolution ... ok
+test pil_resolver_rejects_an_unusable_override ... ok
+test pil_resolver_preserves_a_working_override_with_spaces ... ok
+test round_two::capture_display_clears_stale_output_before_a_failing_run ... ok
+test round_two::capture_window_requires_pid_match_not_any_parallels_window ... ok
+test round_two::capture_window_does_not_report_success_when_screencapture_fails ... ok
+test round_two::f24_render_verdict_rejects_corrupt_png ... ok
+test f24_render_verdict_rejects_solid_black_capture ... ok
+test round_two::capture_display_reports_success_when_baseline_write_fails_after_a_real_copy ... ok
+test round_two::find_vm_backend_pid_matches_exact_vm_name_not_a_prefix ... ok
+test f24_render_verdict_still_passes_a_real_capture ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+

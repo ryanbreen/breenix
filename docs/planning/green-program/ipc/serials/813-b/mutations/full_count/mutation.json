@@ -1,0 +1,7 @@
+{
+  "name": "full_count",
+  "arm": "backpressure",
+  "path": "kernel/src/syscall/blocking_io.rs",
+  "before": "return SyscallResult::Ok(count as u64);",
+  "after": "return SyscallResult::Ok(data.len() as u64);"
+}

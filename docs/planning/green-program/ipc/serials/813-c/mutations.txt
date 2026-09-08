@@ -1,0 +1,23 @@
+blocking-eagain: exit 101
+no-registration: exit 101
+delete-injection: exit 101
+delete-wake: exit 101
+no-copy: exit 101
+wrong-pty: exit 101
+drop-open-flags: exit 101
+ignore-status-flags: exit 101
+force-blocking: exit 101
+no-pollin: exit 101
+always-pollin: exit 101
+wrong-queue: exit 101
+omit-signal: exit 101
+leak-waiter: exit 101
+destructive-query: exit 101
+null-blocks: exit 101
+zero-routes-stdin: exit 101
+zero-count: exit 101
+wrong-partial-count: exit 101
+All mutations restored by finally; structural rejection only, not runtime mutation evidence.
+drop-generic-status-flags: exit 101
+leak-both-cleanups: exit 101
+Additional two single mutations restored; total 21 structural rejections.

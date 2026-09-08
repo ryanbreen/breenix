@@ -8,12 +8,12 @@
 > PR itself makes live in `README.md`, which is claim-lint clean. See
 > `docs/planning/green-program/claim-linting.md`.
 
-Repo `/Users/wrb/fun/code/breenix`, investigated STRICTLY READ-ONLY at
+Repo `<local-checkout>`, investigated STRICTLY READ-ONLY at
 `main` @ `71ffda8184d00a29e7535cae53db628766bc400c` (HEAD did not move during
 the investigation). x86 facts cross-checked live on `beast`
-(`incus exec breenix-x86`, checkout `c3c41657...`, confirmed
+(`incus exec <x86-build-environment>`, checkout `c3c41657...`, confirmed
 `git merge-base --is-ancestor` true against this sha, one merge commit
-behind) — every line-number citation in this spec that was grepped on beast
+behind) — the checked line-number citations in this spec that was grepped on beast
 matched the local tree exactly, including the issue's own three original
 citations (`manager.rs:2246`, `:2390`, `:3044`), which have **not drifted at
 all** since #745 was filed.
@@ -550,9 +550,9 @@ workflow.
 
 **Verification commands (beast, per CLAUDE.md):**
 ```
-ssh beast 'sudo -n incus exec breenix-x86 -- bash -lc "cd /root/breenix && cargo build --release --bin qemu-uefi 2>&1 | grep -E \"^(warning|error)\""'
-ssh beast 'sudo -n incus exec breenix-x86 -- bash -lc "cd /root/breenix && ./docker/qemu/run-x86-prod-profile-boot-test.sh"'
-ssh beast 'sudo -n incus exec breenix-x86 -- bash -lc "cd /root/breenix && cargo test --test teardown_structure --test context_restore_structure --test fork_lock_order_structure 2>&1 | tail -100"'
+ssh beast 'sudo -n incus exec <x86-build-environment> -- bash -lc "cd <canonical-checkout> && cargo build --release --bin qemu-uefi 2>&1 | grep -E \"^(warning|error)\""'
+ssh beast 'sudo -n incus exec <x86-build-environment> -- bash -lc "cd <canonical-checkout> && ./docker/qemu/run-x86-prod-profile-boot-test.sh"'
+ssh beast 'sudo -n incus exec <x86-build-environment> -- bash -lc "cd <canonical-checkout> && cargo test --test teardown_structure --test context_restore_structure --test fork_lock_order_structure 2>&1 | tail -100"'
 ```
 (zero-feature build for the gate — matches the production profile #713/
 #721/#673/#718's gates all measure; host-side `cargo test` runs need no

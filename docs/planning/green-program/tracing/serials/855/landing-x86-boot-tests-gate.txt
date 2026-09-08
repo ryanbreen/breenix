@@ -1,10 +1,10 @@
 [GATE_PREFLIGHT:structure_suites=59/59:critical_path_lines=260:pinned=120]
   RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
-   Compiling kernel v0.1.0 (/root/breenix-855/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-855)
+   Compiling kernel v0.1.0 (<isolated-checkout-137>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-225>)
     Finished `release` profile [optimized] target(s) in 16.38s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-855/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  ELF:      <isolated-checkout-137>/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
   sha256:   f072e9cf326c71c61771045db2046b9124ad30fb33ab7ded8539ddef48a7b5f6
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -12,11 +12,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 14
 PASS: 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-855/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-855)
+   Compiling kernel v0.1.0 (<isolated-checkout-137>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-225>)
     Finished `release` profile [optimized] target(s) in 16.67s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-855/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-137>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.73s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -179,7 +179,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60496 sectors (29.54 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-855/target/ext2.img
+  Output: <isolated-checkout-137>/target/ext2.img
   Size: 256MB
   Payload: 45MB (userspace binaries + fonts)
   Minimum image size for this payload: 70MB (incl. ext2 overhead + headroom)
@@ -402,8 +402,8 @@ drwxr-xr-x 3 root root   4096 Sep  7 04:49 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-855/target/ext2.img
-  /root/breenix-855/testdata/ext2.img
+  <isolated-checkout-137>/target/ext2.img
+  <isolated-checkout-137>/testdata/ext2.img
   Size: 256M
 
 Contents:

@@ -1,0 +1,26 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure  ==
+
+running 7 tests
+test limit_wakes_daemon_and_counter_is_at_callback ... ok
+test park_final_check_and_unpark_flag_share_scheduler_serialization ... ok
+test daemon_is_cpu_local_and_checks_pending_after_park_publication ... ok
+test oracle_requires_daemon_dispatch_and_guest_ticks ... ok
+test boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released ... FAILED
+test scorers_require_oracle ... ok
+test scorer_rejects_forged_ok_and_reports_starvation_separately ... ok
+
+failures:
+
+---- boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released stdout ----
+
+thread 'boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:76:5:
+assertion failed: core.contains("cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

@@ -1,7 +1,7 @@
 # Tracing KERNEL_BASE fix — evidence battery, 2026-09-02
 
 Branch: `fix/tracing-symbol-base` @ `8612e830` (not pushed, not merged), on top of
-`main` @ `3d601400`. Beast container: `breenix-x86`.
+`main` @ `3d601400`. Beast container: `<x86-build-environment>`.
 
 ## What this battery does and does not establish
 

@@ -1,0 +1,10 @@
+4eac269d9fe4fff53fdb3391200635bd4888bc87
+Placement ratchet on candidate bracket change; filtered test does not inspect the independent partial-count runtime mutation.
+== compiling unix_stream_blocking_structure ==
+== running unix_stream_blocking_structure close_notifications_leave_pm ==
+
+running 1 test
+test close_notifications_leave_pm_without_the_isr_buffer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+

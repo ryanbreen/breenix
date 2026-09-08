@@ -1,11 +1,11 @@
-   Compiling kernel v0.1.0 (/root/breenix-693-r2-prove-main/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-693-r2-prove-main)
+   Compiling kernel v0.1.0 (<isolated-checkout-184>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-186>)
     Finished `release` profile [optimized] target(s) in 15.58s
-   Compiling kernel v0.1.0 (/root/breenix-693-r2-prove-main/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-693-r2-prove-main)
+   Compiling kernel v0.1.0 (<isolated-checkout-184>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-186>)
     Finished `release` profile [optimized] target(s) in 14.98s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-693-r2-prove-main/target/release/build/breenix-288cd89cecb54111/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-184>/target/release/build/breenix-288cd89cecb54111/out/breenix-uefi.img (7405568 bytes)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -167,7 +167,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60293 sectors (29.44 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-693-r2-prove-main/target/ext2.img
+  Output: <isolated-checkout-184>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -387,8 +387,8 @@ drwxr-xr-x 3 root root   4096 Sep  2 21:56 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-693-r2-prove-main/target/ext2.img
-  /root/breenix-693-r2-prove-main/testdata/ext2.img
+  <isolated-checkout-184>/target/ext2.img
+  <isolated-checkout-184>/testdata/ext2.img
   Size: 256M
 
 Contents:

@@ -1,9 +1,9 @@
   RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
-   Compiling kernel v0.1.0 (/root/breenix-737-oracle/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-737-oracle)
+   Compiling kernel v0.1.0 (<isolated-checkout-153>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-162>)
     Finished `release` profile [optimized] target(s) in 16.92s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-737-oracle/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
+  ELF:      <isolated-checkout-153>/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
   sha256:   719742fe50c241bf6104b0bcf1a8669f23170b379f7e8851883cf599db55fee7
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -11,11 +11,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 19
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-737-oracle/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-737-oracle)
+   Compiling kernel v0.1.0 (<isolated-checkout-153>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-162>)
     Finished `release` profile [optimized] target(s) in 16.25s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-737-oracle/target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-153>/target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img (7405568 bytes)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -178,7 +178,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60570 sectors (29.58 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-737-oracle/target/ext2.img
+  Output: <isolated-checkout-153>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -399,8 +399,8 @@ drwxr-xr-x 3 root root   4096 Sep  5 04:08 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-737-oracle/target/ext2.img
-  /root/breenix-737-oracle/testdata/ext2.img
+  <isolated-checkout-153>/target/ext2.img
+  <isolated-checkout-153>/testdata/ext2.img
   Size: 256M
 
 Contents:

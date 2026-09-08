@@ -1,0 +1,7 @@
+Observed once on branch ipc/813-pr-b-unix-stream-write-waiters at 3f29bc7bf0d166ef75e5b7c84a1049250d195c29 after merging main 3a8a973b. Command: bash docker/qemu/run-aarch64-boot-test-strict.sh 1. Structure preflight passed 67/67; runtime failed 0/1. No runtime retry was used.
+
+The serial file docs/planning/green-program/ipc/serials/813-b/landing/merged-tip/mac-artifacts/breenix_aarch64_strict_1/serial.txt records TTY_IRQ_PM_ORACLE with pm_blocking_acquires=0, pm_busy_probe=0, hold_us=20000, entry_us=4, joined=1, and FAIL:peer_hold. The generic registry failure text says a blocking PROCESS_MANAGER acquisition occurred, but the detailed counter is zero; the peer-hold predicate requires pm_busy_probe=1 (kernel/src/test_framework/registry.rs:6935).
+
+The same serial also records TTY_IRQ_FG_ORACLE with fg_blocking_acquires=0, fg_busy_probe=1, hold_us=20598, entry_us=1440, joined=1, and FAIL:peer_hold. These readings do not establish the root cause. Host load at strict guest start was 15.02 and at end 10.47. Related contention-window work is tracked in 886; the original PM repair is closed in 821.
+
+Investigate the peer-hold witnesses and generic diagnostic, retaining the requirement to demonstrate contention. Do not weaken the oracle or treat zero blocking acquisitions alone as a passing contention test. This merge-resolution lane leaves main's fixture and kernel implementation intact.

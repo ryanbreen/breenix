@@ -1,0 +1,46 @@
+Revision: 04fe4bc02861628c5a5a0eb5c8df2335e0a402b3
+Current locations re-derived from source-citations.log; old text remains revision-scoped history.
+tests/gate_qmp_backstop_structure.rs:253 receipt marker
+tests/gate_qmp_backstop_structure.rs:281 receipt wait
+tests/gate_qmp_backstop_structure.rs:288 response deadline
+tests/gate_qmp_backstop_structure.rs:289 TimeoutExpired handler
+tests/gate_qmp_backstop_structure.rs:291 bounded marker written in that handler
+tests/gate_qmp_backstop_structure.rs:306 complete report validator
+tests/gate_qmp_backstop_structure.rs:340 missing-socket malformed-report regression
+tests/gate_qmp_backstop_structure.rs:345 hung-dump malformed-report regression
+tests/gate_qmp_backstop_structure.rs:350 invalid-budget malformed-report regression
+tests/gate_qmp_backstop_structure.rs:355 missing-tool malformed-report regression
+tests/gate_qmp_backstop_structure.rs:360 early-124 versus expiry regression
+tests/gate_qmp_backstop_structure.rs:440 readiness loop
+tests/gate_qmp_backstop_structure.rs:460 fixture run
+tests/gate_qmp_backstop_structure.rs:491 SIGTERM acknowledgement
+tests/gate_qmp_backstop_structure.rs:505 owned fixture cleanup
+tests/gate_qmp_backstop_structure.rs:529 missing-tool report assertion
+tests/gate_qmp_backstop_structure.rs:543 success ordering by log position
+tests/gate_qmp_backstop_structure.rs:572 missing-socket report assertion
+tests/gate_qmp_backstop_structure.rs:576 invalid-budget report assertion
+tests/gate_qmp_backstop_structure.rs:589 hung-dump report assertion
+tests/gate_qmp_backstop_structure.rs:591 dump-receipt assertion
+tests/gate_qmp_backstop_structure.rs:593 bounded marker assertion
+tests/gate_qmp_backstop_structure.rs:603 extraction subprocesses
+tests/gate_qmp_backstop_structure.rs:704 allocation and bind test
+tests/gate_qmp_backstop_structure.rs:775 allocation/free test
+tests/gate_qmp_backstop_structure.rs:799 namespace refusal test
+tests/gate_qmp_backstop_structure.rs:839 shipped deadline ratchet
+tests/gate_qmp_backstop_structure.rs:855 receipt-order ratchet
+tests/gate_capture_drain_structure.rs:404 synchronous drain override
+docker/qemu/lib/gate-qmp-backstop.sh:85 invalid-budget framing
+docker/qemu/lib/gate-qmp-backstop.sh:100 whole-capture deadline
+docker/qemu/lib/gate-qmp-backstop.sh:106 decoder deadline
+scripts/forensic-capture.sh:125 QMP exchange
+scripts/forensic-capture.sh:132 first QMP pacing sleep
+scripts/forensic-capture.sh:134 second QMP pacing sleep
+scripts/forensic-capture.sh:136 third QMP pacing sleep
+scripts/forensic-capture.sh:158 stop command
+scripts/forensic-capture.sh:164 status command
+scripts/forensic-capture.sh:175 dump command
+scripts/forensic-capture.sh:182 dump settling
+scripts/forensic-capture.sh:188 dump settling
+scripts/forensic-capture.sh:325 GDB timeout
+docker/qemu/run-x86-boot-tests.sh:1072 x86 final assertion (not executed in this slot)
+kernel/src/task/softirq_tests.rs:228 is now DISPATCHES.store; the earlier panic string is absent at HEAD.

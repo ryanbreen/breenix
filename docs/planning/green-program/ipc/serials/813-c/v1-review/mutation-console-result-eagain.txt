@@ -1,0 +1,33 @@
+revision=9cb3efb327537c7b45657034468a200bf33801b9 + V-1 test changes + single mutation
+kernel/src/syscall/handlers.rs
+== compiling blocking_fd_eagain_structure ==
+== running blocking_fd_eagain_structure  ==
+
+running 4 tests
+test parser_tracks_renames_negation_formatting_and_extracted_errors ... ok
+test blocking_eagain_mutations_fail_the_live_helper_census ... ok
+test console_result_route_rejects_blocking_eagain_with_adapter_retained ... FAILED
+test repaired_families_have_no_blocking_eagain_exit ... FAILED
+
+failures:
+
+---- console_result_route_rejects_blocking_eagain_with_adapter_retained stdout ----
+
+thread 'console_result_route_rejects_blocking_eagain_with_adapter_retained' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c2/wt/tests/blocking_fd_eagain_structure.rs:469:45:
+live Console/Tty route: "blocking route reaches EAGAIN"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- repaired_families_have_no_blocking_eagain_exit stdout ----
+
+thread 'repaired_families_have_no_blocking_eagain_exit' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813c2/wt/tests/blocking_fd_eagain_structure.rs:661:45:
+Console/Tty syscall result route: "blocking route reaches EAGAIN"
+
+
+failures:
+    console_result_route_rejects_blocking_eagain_with_adapter_retained
+    repaired_families_have_no_blocking_eagain_exit
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+exit=101

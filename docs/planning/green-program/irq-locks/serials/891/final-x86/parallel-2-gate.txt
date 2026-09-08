@@ -1,0 +1,45 @@
+a15ffa600817ce100dce7d8a4c268c1fb6119099
+Running 5 parallel full boot tests (runner: native)...
+Image: <isolated-checkout-133>/target/release/build/breenix-5ac7b276747c983c/out/breenix-uefi.img
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+  Started test 1
+  Started test 2
+  Started test 3
+  Started test 4
+  Started test 5
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: PASS
+    [SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=4:wait_ns=15926611:dispatches=1:iterations=41:verdict=ok]
+strand census: latest snapshot seq=46 tick=9028 at 60620 ms; 46 valid snapshot(s), previous 6 ms earlier, largest gap 4465 ms
+strand census: age at the completion marker: 1003 ms (newest cadence snapshot seq=44 at 59611 ms, completion snapshot seq=45 at 60614 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5325
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+  Test 2: PASS
+    [SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4864925:dispatches=5:iterations=25:verdict=ok]
+strand census: latest snapshot seq=46 tick=8919 at 60099 ms; 46 valid snapshot(s), previous 649 ms earlier, largest gap 4450 ms
+strand census: age at the completion marker: 356 ms (newest cadence snapshot seq=44 at 59094 ms, completion snapshot seq=45 at 59450 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5297
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+  Test 3: PASS
+    [SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4408896:dispatches=5:iterations=25:verdict=ok]
+strand census: latest snapshot seq=44 tick=9030 at 64207 ms; 44 valid snapshot(s), previous 298 ms earlier, largest gap 13399 ms
+strand census: age at the completion marker: 707 ms (newest cadence snapshot seq=42 at 63202 ms, completion snapshot seq=43 at 63909 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5246
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+  Test 4: PASS
+    [SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=5066368:dispatches=5:iterations=25:verdict=ok]
+strand census: latest snapshot seq=48 tick=9727 at 64046 ms; 48 valid snapshot(s), previous 1002 ms earlier, largest gap 6582 ms
+strand census: age at the completion marker: 990 ms (newest cadence snapshot seq=42 at 59028 ms, completion snapshot seq=43 at 60018 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5224
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+  Test 5: PASS
+    [SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SW]<K>[SW]<1>[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=3:wait_ns=9190699:dispatches=5:iterations=25:verdict=ok]
+strand census: latest snapshot seq=50 tick=9733 at 64246 ms; 50 valid snapshot(s), previous 1003 ms earlier, largest gap 4497 ms
+strand census: age at the completion marker: 196 ms (newest cadence snapshot seq=43 at 58230 ms, completion snapshot seq=44 at 58426 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5287
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+
+=========================================
+Results: 5 passed, 0 failed out of 5
+=========================================
+GATE_EXIT=0

@@ -3,7 +3,7 @@
 #       hard-coded feature list patched for the run to add capture_selftest;
 #       the patch was reverted afterwards and git status came back clean.
 #       See PR-3-2026-09-05.md section 6.7 for why that patch is needed on x86.
-# host: beast, breenix-x86 Incus container, own clone /root/breenix-ftc
+# host: beast, the x86 build environment, own clone <isolated-checkout-41>
 # branch: capture/ftc-pr3-bxcap-emitter at fe4390c904ef6ca89f1fc3ac35d9dab014e06ddf
 # base: ee48a4a132ebb97e4297141e0bf1fb1d85f31b39
 # kernel features: boot_tests,testing,external_test_bins,capture_selftest

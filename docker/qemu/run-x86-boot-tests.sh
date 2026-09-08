@@ -121,7 +121,7 @@ source "$SCRIPT_DIR/lib/gate-boot-facts.sh"
 # it) before this gate's own kernel build, further down.
 # shellcheck source=lib/gate-structure-preflight.sh
 source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
-# #797: concurrent lanes sharing one host (e.g. the beast Incus container) each
+# #797: concurrent lanes sharing one host (e.g. the beast build environment) each
 # invoking this script hardcode the identical /tmp/breenix_x86_boot_tests_$i
 # path, so one lane's rm -rf/mkdir can clobber another lane's in-flight run and
 # a poll loop can read back the wrong lane's serial as its own. Defaulting to
@@ -881,6 +881,8 @@ for i in $(seq 1 "$COUNT"); do
         "$QEMU_CPU_S" "$GUEST_UPTIME_MS" "$ENDED_BY")"
     printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
     echo "  $FACTS_LINE"
+
+    python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt"
 
     # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
     # BEFORE the passed-flag check below (and before the ~40 marker-count

@@ -1,0 +1,3 @@
+# Preserve captured serial/transcript bytes for their recorded hashes.
+*.txt -text
+*.log -text

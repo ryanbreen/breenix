@@ -1,0 +1,53 @@
+69c039a06ef31cdc60790b77211a0dff303c57d3
+ docker/qemu/run-blocking-io-oracle-gate.sh         |  44 +---
+ .../green-program/ipc/813-PR-B-2026-09-07.md       | 262 ++++++++++-----------
+ kernel/src/process/manager.rs                      |  52 ++--
+ tests/gate_capture_drain_structure.rs              |  96 ++++----
+ tests/unix_stream_blocking_structure.rs            |   5 +-
+ 5 files changed, 199 insertions(+), 260 deletions(-)
+== compiling x86_boot_tests_profile_structure ==
+== running x86_boot_tests_profile_structure  ==
+
+running 10 tests
+test gate_builds_only_boot_tests_and_reuses_cohort_pins ... ok
+test x86_oracle_allows_the_same_cohort_startup_window ... ok
+test context_fork_is_profile_independent ... ok
+test supplied_page_table_fork_is_profile_independent ... ok
+test mutation_cow_error_before_parent_restore_is_rejected ... ok
+test mutation_testing_only_cow_is_rejected ... ok
+test mutation_missing_completion_is_rejected ... ok
+test mutation_context_cow_error_before_restore_is_rejected ... ok
+test mutation_testing_only_context_fork_is_rejected ... ok
+test oracle_scorer_distinguishes_gdt_setup_from_faults_without_weakening_arms ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.73s
+
+== compiling unix_stream_blocking_structure ==
+== running unix_stream_blocking_structure  ==
+
+running 9 tests
+test census::parser_tracks_renames_negation_formatting_and_extracted_errors ... ok
+test driver_and_gate_have_six_scored_legs ... ok
+test census::blocking_eagain_mutations_fail_the_live_helper_census ... ok
+test guarded_state_defines_transmit_space_and_publication ... ok
+test transmit_predicate_and_single_mutations ... ok
+test descriptor_mode_drain_and_poll_are_connected ... ok
+test mode_drain_and_poll_mutations_are_rejected_singly ... ok
+test census::repaired_families_have_no_blocking_eagain_exit ... ok
+test close_notifications_leave_pm_without_the_isr_buffer ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+== compiling gate_capture_drain_structure ==
+== running gate_capture_drain_structure  ==
+
+running 6 tests
+test moving_a_kill_above_its_drain_decision_reddens_the_check ... ok
+test converted_gates_exist_and_call_both_drain_functions ... ok
+test every_guest_kill_site_is_preceded_by_a_drain_decision ... ok
+test classify_pairs_a_begin_and_end_split_across_two_serial_files_by_seq ... ok
+test classify_distinguishes_complete_partial_and_absent_with_no_boot ... ok
+test drain_disabled_reads_partial_drain_enabled_reads_complete_same_race ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.22s
+

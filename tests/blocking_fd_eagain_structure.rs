@@ -1,4 +1,4 @@
-//! PR-A census: Pipe/FIFO repaired; Unix stream and Console/Tty inventoried only.
+//! Blocking-adapter census: Pipe/FIFO, Unix writes, and Console/Tty reads.
 //! This deliberately bounded Rust recognizer fails closed on an unknown result
 //! route. It is a structural regression check, not a Rust type checker.
 use std::collections::{BTreeMap, BTreeSet};
@@ -392,6 +392,18 @@ fn inspect(
                     "preempt_disable",
                     "from",
                     "min",
+                    "read_or_prepare",
+                    "writer",
+                    "queue",
+                    "state",
+                    "peer_closed",
+                    "copy",
+                    "is_empty",
+                    "wake_readers",
+                    // Device result-route primitives: copying cannot return EAGAIN;
+                    // device_read serves the non-Console/Tty fallback only.
+                    "copy_to_user",
+                    "device_read",
                 ];
                 if !LEAVES.contains(&token)
                     && !["let", "=", ",", "&", "|", "||", "return"].contains(&token)
@@ -418,6 +430,74 @@ fn audit_helper(source: &str, entry: &str) -> Result<(), String> {
         .ok_or_else(|| format!("missing route {entry}"))?;
     let bindings = f.bool_params.iter().map(|p| (p.clone(), false)).collect();
     inspect(&f.body, bindings, &defs, &mut BTreeSet::new())
+}
+
+/// Traverse the entire sys_read Device arm, so errors before the adapter and
+/// errors introduced while converting its result are subject to the same audit.
+/// Local error helpers are followed; descriptor mode is derived by inspect from
+/// the live status_flags snapshot instead of assumed from a variable name.
+fn audit_console_route(handlers: &str, helper: &str) -> Result<(), String> {
+    let body = function(handlers, "sys_read");
+    let arms = match_arms(&body, "FdKind");
+    let devices: Vec<_> = arms
+        .iter()
+        .filter(|(names, _)| names.iter().any(|name| name == "Device"))
+        .collect();
+    if devices.len() != 1 {
+        return Err("missing/ambiguous Device read result route".into());
+    }
+    let route = &devices[0].1;
+    let console = match_arms(route, "DeviceType");
+    for family in ["Console", "Tty"] {
+        let selected: Vec<_> = console
+            .iter()
+            .filter(|(names, _)| names.iter().any(|name| name == family))
+            .collect();
+        if selected.len() != 1 || !contains(&selected[0].1, "blocking_io::read_console(") {
+            return Err(format!("missing/ambiguous {family} adapter route"));
+        }
+    }
+    let mut defs = functions(&lex(handlers));
+    defs.extend(functions(&lex(helper)));
+    inspect(route, BTreeMap::new(), &defs, &mut BTreeSet::new())
+}
+
+#[test]
+fn console_result_route_rejects_blocking_eagain_with_adapter_retained() {
+    let handlers = read("kernel/src/syscall/handlers.rs");
+    let helper = read("kernel/src/syscall/blocking_io.rs");
+    audit_console_route(&handlers, &helper).expect("live Console/Tty route");
+    let call = "super::blocking_io::read_console(&mut user_buf, is_nonblocking)";
+    assert_eq!(handlers.matches(call).count(), 1);
+    for terminal in [
+        "SyscallResult::Err(errno::EAGAIN as u64)",
+        "SyscallResult::Err(11)",
+        "extracted_error()",
+        "unknown_error()",
+    ] {
+        let mutated = handlers.replace(
+            call,
+            &format!("if !is_nonblocking && !crate::ipc::stdin::has_data() {{ return {terminal}; }} {call}"),
+        ) + " fn extracted_error() -> SyscallResult { SyscallResult::Err(errno::EAGAIN as u64) }";
+        let error = audit_console_route(&mutated, &helper).unwrap_err();
+        assert!(
+            error.contains("EAGAIN") || error.contains("11") || error.contains("unknown_error"),
+            "mutation rejected for unrelated reason: {error}"
+        );
+    }
+    let converted = handlers.replace(
+        "SyscallResult::Err((-e) as u64)",
+        "SyscallResult::Err(errno::EAGAIN as u64)",
+    );
+    assert_ne!(converted, handlers);
+    assert!(audit_console_route(&converted, &helper).is_err());
+    let renamed = handlers.replace("is_nonblocking", "descriptor_mode");
+    audit_console_route(&renamed, &helper).expect("mode rename stays recognized");
+    let nonblocking = handlers.replace(
+        call,
+        &format!("if is_nonblocking {{ return SyscallResult::Err(errno::EAGAIN as u64); }} {call}"),
+    );
+    audit_console_route(&nonblocking, &helper).expect("nonblocking EAGAIN remains permitted");
 }
 
 #[test]
@@ -476,12 +556,14 @@ fn repaired_families_have_no_blocking_eagain_exit() {
     let defs = functions(&lex(&helper));
     let roots: Vec<_> = defs
         .keys()
-        .filter(|name| compacted.contains(&format!("blocking_io::{name}(")))
+        .filter(|name| {
+            name.as_str() != "read_console" && compacted.contains(&format!("blocking_io::{name}("))
+        })
         .collect();
     assert_eq!(
         roots.len(),
-        1,
-        "both adapters must reach one recognized shared writer"
+        2,
+        "pipe/FIFO and Unix must reach their recognized writer adapters"
     );
     assert_eq!(
         compacted
@@ -491,7 +573,7 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         "shared Pipe/Fifo match must delegate together"
     );
     let routes = match_arms(&nodes, "WriteOperation");
-    for family in ["Pipe", "Fifo"] {
+    for family in ["Pipe", "Fifo", "UnixStream"] {
         let arms: Vec<_> = routes
             .iter()
             .filter(|(names, _)| names.iter().any(|name| name == family))
@@ -499,8 +581,10 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         assert_eq!(arms.len(), 1, "missing/ambiguous {family} result route");
         let snapshot_family = if family == "Pipe" {
             "PipeWrite"
-        } else {
+        } else if family == "Fifo" {
             "FifoWrite"
+        } else {
+            "UnixStream"
         };
         let snapshots = match_arms(&nodes, "FdKind");
         let snapshot = snapshots
@@ -571,25 +655,11 @@ fn repaired_families_have_no_blocking_eagain_exit() {
     }
     audit_helper(&helper, roots[0])
         .unwrap_or_else(|e| panic!("Pipe/FIFO blocking route rejected: {e}"));
-    // The unrepaired inventory remains explicit and does not assert a repair.
-    assert!(
-        contains(
-            &function(&read("kernel/src/socket/unix.rs"), "write"),
-            "EAGAIN"
-        ) || contains(&function(&read("kernel/src/socket/unix.rs"), "write"), "11")
-    );
-    assert!(
-        contains(
-            &function(&read("kernel/src/fs/devfs/mod.rs"), "device_read"),
-            "EAGAIN"
-        ) || contains(
-            &function(&read("kernel/src/fs/devfs/mod.rs"), "device_read"),
-            "11"
-        )
-    );
-    println!(
-        "Pipe/FIFO: 0 prohibited blocking EAGAIN exits; Unix/Console: inventoried, unrepaired"
-    );
+    audit_helper(&helper, "write_unix")
+        .unwrap_or_else(|e| panic!("Unix blocking route rejected: {e}"));
+    audit_helper(&helper, "read_console").expect("Console/Tty blocking route");
+    audit_console_route(&handlers, &helper).expect("Console/Tty syscall result route");
+    println!("Pipe/FIFO/Unix writes and Console/Tty reads: bounded blocking EAGAIN census");
 }
 
 #[test]

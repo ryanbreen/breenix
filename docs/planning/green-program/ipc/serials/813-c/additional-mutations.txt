@@ -1,0 +1,19 @@
+[
+  {
+    "name": "drop-generic-status-flags",
+    "file": "kernel/src/syscall/fs.rs",
+    "scope": "after first let fd_kind = FileDescriptor::with_flags(",
+    "from": "flags & crate::ipc::fd::status_flags::O_NONBLOCK,",
+    "to": "0,",
+    "suite": "console_read_structure",
+    "exit": 101
+  },
+  {
+    "name": "leak-both-cleanups",
+    "file": "kernel/src/syscall/blocking_io.rs",
+    "from": "queue.take_waiter(tid);\n    queue.finish_wait_for(tid);",
+    "to": "/* both cleanup operations removed */",
+    "suite": "console_read_structure",
+    "exit": 101
+  }
+]

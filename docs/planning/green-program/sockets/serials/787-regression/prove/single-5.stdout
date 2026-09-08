@@ -1,12 +1,12 @@
   RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
-   Compiling kernel v0.1.0 (/root/breenix-787/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-787)
+   Compiling kernel v0.1.0 (<isolated-checkout-3>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-203>)
     Finished `release` profile [optimized] target(s) in 15.77s
-   Compiling kernel v0.1.0 (/root/breenix-787/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-787)
+   Compiling kernel v0.1.0 (<isolated-checkout-3>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-203>)
     Finished `release` profile [optimized] target(s) in 15.50s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-787/target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-3>/target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img (7405568 bytes)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -168,7 +168,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60088 sectors (29.34 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-787/target/ext2.img
+  Output: <isolated-checkout-3>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -388,8 +388,8 @@ drwxr-xr-x 3 root root   4096 Sep  4 23:44 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-787/target/ext2.img
-  /root/breenix-787/testdata/ext2.img
+  <isolated-checkout-3>/target/ext2.img
+  <isolated-checkout-3>/testdata/ext2.img
   Size: 256M
 
 Contents:

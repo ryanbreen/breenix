@@ -2623,7 +2623,14 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         std::env::temp_dir().join(format!("breenix-pinned-gate-legs-{}", std::process::id()));
     fs::create_dir_all(&scratch).expect("create the scratch directory for the gate legs");
     for (gate, variable, baseline) in gates {
-        let serial = repo_text(baseline);
+        let mut serial = repo_text(baseline);
+        // Synthetic scorer fixture extension for the new production control;
+        // the saved historical serial remains unchanged. This is not a boot.
+        if variable == "BREENIX_PROD_SCORE_ONLY" {
+            serial.push_str(
+                "\n[INPUT_INJECT_NEGATIVE_CONTROL:request=0xb8130004:probe=-25:verdict=PASS]\n",
+            );
+        }
         assert!(
             serial.contains(
                 "[PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]"
@@ -2643,7 +2650,7 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         let (passed, output) = leg("green", &serial);
         assert!(
             passed,
-            "{gate} must pass the serial it was recorded green on, or the failing legs below \
+            "{gate} must pass the extended scorer fixture, or the failing legs below \
              say nothing: {output}"
         );
 
@@ -2744,8 +2751,10 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
 /// the 4 expect a red
 #[test]
 fn the_gates_score_the_pin_guard_oracle_in_opposite_directions() {
-    let scratch =
-        std::env::temp_dir().join(format!("breenix-pin-guard-gate-legs-{}", std::process::id()));
+    let scratch = std::env::temp_dir().join(format!(
+        "breenix-pin-guard-gate-legs-{}",
+        std::process::id()
+    ));
     fs::create_dir_all(&scratch).expect("create the scratch directory for the oracle gate legs");
     let leg = |name: &str, body: &str, gate: &str, variable: &str| {
         let path = scratch.join(format!("{variable}-{name}.txt"));
@@ -2754,9 +2763,7 @@ fn the_gates_score_the_pin_guard_oracle_in_opposite_directions() {
     };
 
     let strict = "docker/qemu/run-aarch64-boot-test-strict.sh";
-    let strict_serial = repo_text(
-        "tests/fixtures/udp-socket-lock-aarch64-serial.txt",
-    );
+    let strict_serial = repo_text("tests/fixtures/udp-socket-lock-aarch64-serial.txt");
     let pass_line = strict_serial
         .lines()
         .find(|line| line.contains("[PIN_GUARD_ORACLE:aarch64:"))
@@ -2771,7 +2778,7 @@ fn the_gates_score_the_pin_guard_oracle_in_opposite_directions() {
     let (passed, output) = leg("green", &strict_serial, strict, "BREENIX_STRICT_SCORE_ONLY");
     assert!(
         passed,
-        "{strict} must pass the serial it was recorded green on: {output}"
+        "{strict} must pass the extended scorer fixture: {output}"
     );
 
     // Leg B. The oracle's verdict is FAIL -- the reading origin/main produces.
@@ -3007,11 +3014,12 @@ fn pin_blind_migration_sites(source: &str) -> Vec<PinBlindSite> {
             let Some(pop_rel_close) = scan_region[pop_bracket_open..].find(']') else {
                 break;
             };
-            let pop_idx =
-                scan_region[pop_bracket_open..pop_bracket_open + pop_rel_close].trim();
+            let pop_idx = scan_region[pop_bracket_open..pop_bracket_open + pop_rel_close].trim();
             let pop_after = pop_bracket_open + pop_rel_close + 1;
             if pop_idx == idx_text
-                && scan_region[pop_after..].trim_start().starts_with(".pop_front(")
+                && scan_region[pop_after..]
+                    .trim_start()
+                    .starts_with(".pop_front(")
             {
                 declined = true;
                 break;
@@ -3221,7 +3229,11 @@ fn pin_guard_call_validator_rejects_a_discarded_answer() {
 /// this function to count it into the same gate-failing counter arm 7 uses,
 /// rather than leaving 4 arms where a violated pin moves a thread in silence.
 fn validate_percpu_stack_reroute_counts_a_pin_conflict(source: &str) -> Result<(), String> {
-    if compact_code(source).matches("PINNED_STACK_HOME_CONFLICT.fetch_add(").count() != 2 {
+    if compact_code(source)
+        .matches("PINNED_STACK_HOME_CONFLICT.fetch_add(")
+        .count()
+        != 2
+    {
         return Err("PINNED_STACK_HOME_CONFLICT requires its two documented writers".into());
     }
     let body = function_body(source, "percpu_stack_home_cpu")
@@ -3607,7 +3619,8 @@ fn validate_loopback_enqueue_owns_its_delivery(source: &str) -> Result<(), Strin
 
     let handler = function_body(source, "net_rx_softirq_handler")
         .ok_or_else(|| "net_rx_softirq_handler is not defined".to_string())?;
-    if !normalized_code(handler).contains("drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Softirq)")
+    if !normalized_code(handler)
+        .contains("drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Softirq)")
     {
         return Err("the NetRx softirq does not drain the loopback queue".to_string());
     }
@@ -3640,8 +3653,9 @@ fn validate_loopback_drain_exits_own_their_leftovers(source: &str) -> Result<(),
     if !code.contains("LoopbackTake::Empty => { tcp::drain_deferred_tx(); return false; }") {
         return Err("the empty-queue exit does not flush deferred TX".to_string());
     }
-    if !code.contains("LoopbackTake::Contended => { tcp::drain_deferred_tx(); return rearm_if_work_remains(); }")
-    {
+    if !code.contains(
+        "LoopbackTake::Contended => { tcp::drain_deferred_tx(); return rearm_if_work_remains(); }",
+    ) {
         return Err("the contended exit does not re-arm delivery".to_string());
     }
     if !code.ends_with("rearm_if_work_remains() }") {
@@ -3667,7 +3681,8 @@ fn loopback_enqueue_owns_its_delivery() {
 #[test]
 fn loopback_enqueue_validator_rejects_a_missing_kick() {
     let source = repo_text("kernel/src/net/mod.rs");
-    let call = "kick_loopback_delivery();\n        crate::net::loopback_pump::wake_loopback_pump();";
+    let call =
+        "kick_loopback_delivery();\n        crate::net::loopback_pump::wake_loopback_pump();";
     assert!(source.contains(call), "fixture mutation target must exist");
     let mutated = source.replacen(call, "crate::net::loopback_pump::wake_loopback_pump();", 1);
     assert_ne!(mutated, source, "fixture mutation must apply");
@@ -3680,7 +3695,10 @@ fn loopback_enqueue_validator_rejects_a_softirq_that_does_not_drain() {
     let handler =
         function_body(&source, "net_rx_softirq_handler").expect("find the NetRx handler fixture");
     let drain = "let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Softirq);";
-    assert!(handler.contains(drain), "fixture mutation target must exist");
+    assert!(
+        handler.contains(drain),
+        "fixture mutation target must exist"
+    );
     let mutated_handler = handler.replacen(drain, "", 1);
     let mutated = source.replacen(handler, &mutated_handler, 1);
     assert!(validate_loopback_enqueue_owns_its_delivery(&mutated).is_err());
@@ -3775,9 +3793,7 @@ fn pinned_census_counters(scheduler: &str) -> Result<Vec<String>, String> {
         searched = offset + ".load(".len();
         let head = &compact[..offset];
         let start = head
-            .rfind(|character: char| {
-                !(character.is_ascii_alphanumeric() || character == '_')
-            })
+            .rfind(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
             .map(|index| index + 1)
             .unwrap_or(0);
         let name = &head[start..];
@@ -3947,11 +3963,10 @@ fn census_counters_have_no_decrementing_writer() {
 #[test]
 fn census_decrement_validator_rejects_a_reintroduced_fetch_sub() {
     let mut sources = kernel_sources();
-    let counter = pinned_census_counters(
-        scheduler_source(&sources).expect("find the scheduler source"),
-    )
-    .expect("discover the census counters")
-    .remove(0);
+    let counter =
+        pinned_census_counters(scheduler_source(&sources).expect("find the scheduler source"))
+            .expect("discover the census counters")
+            .remove(0);
     let scheduler = sources
         .iter_mut()
         .find(|(path, _)| path == "kernel/src/task/scheduler.rs")
@@ -3969,11 +3984,10 @@ fn spare_refusal_correction(refused: u64) {{
 #[test]
 fn census_decrement_validator_rejects_a_load_subtract_store() {
     let mut sources = kernel_sources();
-    let counter = pinned_census_counters(
-        scheduler_source(&sources).expect("find the scheduler source"),
-    )
-    .expect("discover the census counters")
-    .remove(0);
+    let counter =
+        pinned_census_counters(scheduler_source(&sources).expect("find the scheduler source"))
+            .expect("discover the census counters")
+            .remove(0);
     let scheduler = sources
         .iter_mut()
         .find(|(path, _)| path == "kernel/src/task/scheduler.rs")
@@ -4018,7 +4032,9 @@ fn oracle_snapshots_cover_the_census() {
 fn oracle_snapshot_validator_rejects_a_counter_dropped_from_census_before() {
     let source = repo_text("kernel/src/task/scheduler.rs");
     let anchor = "let census_before = (";
-    let start = source.find(anchor).expect("find the census_before snapshot");
+    let start = source
+        .find(anchor)
+        .expect("find the census_before snapshot");
     let end = start
         + source[start..]
             .find(");")
@@ -4125,13 +4141,23 @@ fn rescue_retention_sites(source: &str) -> Vec<RescueRetentionSite> {
         let body = compact_code(&source[span.open..=span.close]);
         for (ordinal, (offset, _)) in body.match_indices(".pop_front()").enumerate() {
             let before = &body[..offset];
-            let Some(queue_start) = before.rfind("self.per_cpu_queues[") else { continue };
+            let Some(queue_start) = before.rfind("self.per_cpu_queues[") else {
+                continue;
+            };
             let queue = &before[queue_start + "self.per_cpu_queues[".len()..];
-            let Some(queue) = queue.strip_suffix(']') else { continue };
-            if queue == "current_cpu" { continue; }
-            let Some(binding) = before[..queue_start].rfind("letSome(") else { continue };
+            let Some(queue) = queue.strip_suffix(']') else {
+                continue;
+            };
+            if queue == "current_cpu" {
+                continue;
+            }
+            let Some(binding) = before[..queue_start].rfind("letSome(") else {
+                continue;
+            };
             let binding = &before[binding + "letSome(".len()..queue_start];
-            let Some((tid, _)) = binding.split_once(")=") else { continue };
+            let Some((tid, _)) = binding.split_once(")=") else {
+                continue;
+            };
             let after = &body[offset + ".pop_front()".len()..];
             // Bound the candidate's window by the next pop: a later rescue
             // cannot discharge an earlier candidate's obligation.
@@ -4139,7 +4165,10 @@ fn rescue_retention_sites(source: &str) -> Vec<RescueRetentionSite> {
             let guard = format!("self.retain_cpu_affine_thread({tid},current_cpu)");
             if let Some(guard_at) = window.find(&guard) {
                 sites.push(RescueRetentionSite {
-                    function: span.name.clone(), ordinal, queue: queue.into(), tid: tid.into(),
+                    function: span.name.clone(),
+                    ordinal,
+                    queue: queue.into(),
+                    tid: tid.into(),
                     between: window[..guard_at].into(),
                 });
             }
@@ -4149,12 +4178,20 @@ fn rescue_retention_sites(source: &str) -> Vec<RescueRetentionSite> {
 }
 
 fn retention_helper_name(source: &str) -> Result<String, String> {
-    let helpers: Vec<_> = function_spans(source).into_iter().filter(|span| {
-        let body = compact_code(&source[span.open..=span.close]);
-        body.contains("self.per_cpu_queues[source_cpu].push_back(thread_id)")
-            && body.contains("CPU_PINS_STAMPED.load")
-    }).collect();
-    if helpers.len() != 1 { return Err(format!("expected one source-queue retention helper, found {}", helpers.len())); }
+    let helpers: Vec<_> = function_spans(source)
+        .into_iter()
+        .filter(|span| {
+            let body = compact_code(&source[span.open..=span.close]);
+            body.contains("self.per_cpu_queues[source_cpu].push_back(thread_id)")
+                && body.contains("CPU_PINS_STAMPED.load")
+        })
+        .collect();
+    if helpers.len() != 1 {
+        return Err(format!(
+            "expected one source-queue retention helper, found {}",
+            helpers.len()
+        ));
+    }
     Ok(helpers[0].name.clone())
 }
 
@@ -4252,16 +4289,22 @@ fn rescue_retention_rejects_wrong_kick_architecture() {
 
 fn validate_rescue_retention(source: &str) -> Result<(), String> {
     let sites = rescue_retention_sites(source);
-    if sites.is_empty() { return Err("rescue pop/guard census is empty".into()); }
+    if sites.is_empty() {
+        return Err("rescue pop/guard census is empty".into());
+    }
     let name = retention_helper_name(source);
     let mut errors = Vec::new();
     for site in &sites {
-        let call = name.as_ref().map(|name| format!("ifself.{name}({},{}){{continue;}}", site.queue, site.tid));
+        let call = name
+            .as_ref()
+            .map(|name| format!("ifself.{name}({},{}){{continue;}}", site.queue, site.tid));
         if !call.as_ref().is_ok_and(|call| site.between.contains(call)) {
             errors.push(format!("kernel/src/task/scheduler.rs:{} pop {} queue {} tid {}: missing source retention before guard", site.function, site.ordinal, site.queue, site.tid));
         }
     }
-    if !errors.is_empty() { return Err(errors.join("\n")); }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
     let name = name?;
     let body = compact_code(function_body(source, &name).unwrap());
     let arms = [
@@ -4276,13 +4319,19 @@ fn validate_rescue_retention(source: &str) -> Result<(), String> {
     ];
     let mut cursor = 0;
     for arm in arms {
-        let Some(at) = body[cursor..].find(arm) else { return Err(format!("kernel/src/task/scheduler.rs:{name}: missing/changed retention arm {arm}")); };
+        let Some(at) = body[cursor..].find(arm) else {
+            return Err(format!(
+                "kernel/src/task/scheduler.rs:{name}: missing/changed retention arm {arm}"
+            ));
+        };
         cursor += at + arm.len();
     }
     if body.contains("fetch_add") || body.contains("send_resched") {
         return Err("retention must neither count nor kick".into());
     }
-    let guard = compact_code_with_aarch64_literal(function_body(source, "retain_cpu_affine_thread").ok_or("missing guard")?);
+    let guard = compact_code_with_aarch64_literal(
+        function_body(source, "retain_cpu_affine_thread").ok_or("missing guard")?,
+    );
     for disposition in [
         "self.per_cpu_queues[pin.cpu].push_back(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);returntrue;",
         "self.hold_pinned_wake_for_home(thread_id);#[cfg(target_arch=\"aarch64\")]self.send_resched_ipi_to_cpu(pin.cpu);",
@@ -4307,7 +4356,8 @@ fn rescue_retention_census() {
 fn forced_retention_probe(offline: bool) {
     let source = repo_text("kernel/src/task/scheduler.rs");
     let helper = retention_helper_name(&source).expect("retention helper");
-    let mut harness = String::from(r#"
+    let mut harness = String::from(
+        r#"
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::VecDeque;
 const MAX_CPUS: usize = 4;
@@ -4343,19 +4393,49 @@ fn get_thread(&self, tid: u64) -> Option<&Thread> { (tid == 7).then_some(&self.t
 fn get_thread_mut(&mut self, tid: u64) -> Option<&mut Thread> { (tid == 7).then_some(&mut self.thread) }
 fn is_in_deferred_requeue(&self, tid: u64) -> bool { assert_eq!(tid, 7); false }
 fn send_resched_ipi_to_cpu(&self, cpu: usize) { assert!(cpu < MAX_CPUS); }
-"#);
+"#,
+    );
     for (name, signature) in [
-        (helper.as_str(), format!("fn {helper}(&mut self, source_cpu: usize, thread_id: u64) -> bool")),
-        ("reclaim_unschedulable_cpu_queues", "fn reclaim_unschedulable_cpu_queues(&mut self)".into()),
-        ("retain_cpu_affine_thread", "fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool".into()),
-        ("cpu_accepts_wakeups", "fn cpu_accepts_wakeups(&self, cpu: usize) -> bool".into()),
-        ("cpu_dispatch_stale", "fn cpu_dispatch_stale(&self, cpu: usize) -> bool".into()),
-        ("pinned_wake_is_waiting_here", "fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool".into()),
-        ("hold_pinned_wake_for_home", "fn hold_pinned_wake_for_home(&self, thread_id: u64)".into()),
-        ("pin_guard_oracle_where", "fn pin_guard_oracle_where(&self, tid: u64) -> usize".into()),
+        (
+            helper.as_str(),
+            format!("fn {helper}(&mut self, source_cpu: usize, thread_id: u64) -> bool"),
+        ),
+        (
+            "reclaim_unschedulable_cpu_queues",
+            "fn reclaim_unschedulable_cpu_queues(&mut self)".into(),
+        ),
+        (
+            "retain_cpu_affine_thread",
+            "fn retain_cpu_affine_thread(&mut self, thread_id: u64, taking_cpu: usize) -> bool"
+                .into(),
+        ),
+        (
+            "cpu_accepts_wakeups",
+            "fn cpu_accepts_wakeups(&self, cpu: usize) -> bool".into(),
+        ),
+        (
+            "cpu_dispatch_stale",
+            "fn cpu_dispatch_stale(&self, cpu: usize) -> bool".into(),
+        ),
+        (
+            "pinned_wake_is_waiting_here",
+            "fn pinned_wake_is_waiting_here(&self, tid: u64, cpu: usize) -> bool".into(),
+        ),
+        (
+            "hold_pinned_wake_for_home",
+            "fn hold_pinned_wake_for_home(&self, thread_id: u64)".into(),
+        ),
+        (
+            "pin_guard_oracle_where",
+            "fn pin_guard_oracle_where(&self, tid: u64) -> usize".into(),
+        ),
     ] {
-        let body = function_body(&source, name).expect("production/probe method body")
-            .replace("#[cfg(all(target_arch = \"aarch64\", feature = \"boot_tests\"))]", "#[cfg(any())]")
+        let body = function_body(&source, name)
+            .expect("production/probe method body")
+            .replace(
+                "#[cfg(all(target_arch = \"aarch64\", feature = \"boot_tests\"))]",
+                "#[cfg(any())]",
+            )
             .replace("#[cfg(target_arch = \"aarch64\")]", "#[cfg(all())]");
         harness.push_str(&format!("{signature} {body}\n"));
     }
@@ -4386,27 +4466,45 @@ pub fn run(offline: bool) {
 }
 "#);
     harness.push_str(&format!("fn main() {{ scheduler::run({offline}); }}\n"));
-    let scratch = std::env::temp_dir().join(format!("retention-probe-{}-{offline}", std::process::id()));
+    let scratch =
+        std::env::temp_dir().join(format!("retention-probe-{}-{offline}", std::process::id()));
     fs::create_dir_all(&scratch).unwrap();
     let input = scratch.join("probe.rs");
     let binary = scratch.join("probe");
     fs::write(&input, harness).unwrap();
-    let build = std::process::Command::new("rustc").args(["--edition=2021", "-Dwarnings"])
-        .arg(&input).arg("-o").arg(&binary).output().unwrap();
-    assert!(build.status.success(), "host probe compile: {}", String::from_utf8_lossy(&build.stderr));
+    let build = std::process::Command::new("rustc")
+        .args(["--edition=2021", "-Dwarnings"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "host probe compile: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     let run = std::process::Command::new(&binary).output().unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     println!("{stdout}");
-    assert!(run.status.success(), "probe failed: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        run.status.success(),
+        "probe failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     assert!(!stdout.contains("[PINNED_HOME_CPU_UNAVAILABLE:first:"));
     fs::remove_dir_all(scratch).unwrap();
 }
 
 #[test]
-fn forced_stalled_home_retention() { forced_retention_probe(false); }
+fn forced_stalled_home_retention() {
+    forced_retention_probe(false);
+}
 
 #[test]
-fn forced_offline_home_declines_retention() { forced_retention_probe(true); }
+fn forced_offline_home_declines_retention() {
+    forced_retention_probe(true);
+}
 
 /// The wake-budget marker is printed on the passing path and on every
 /// failing path, from one producer, over three bracketed clocks.
@@ -4478,7 +4576,11 @@ fn validate_loopback_wake_budget_marker(source: &str) -> Result<(), String> {
     let sleep = code_text_offset(body, "sleep_current_thread_ms(LOOPBACK_WAKE_BUDGET_MS)")
         .ok_or_else(|| "the wake budget is not spent in one named sleep".to_string())?;
     for (before, after, clock) in [
-        ("let tick_before_ms", "let tick_after_ms", "get_monotonic_time"),
+        (
+            "let tick_before_ms",
+            "let tick_after_ms",
+            "get_monotonic_time",
+        ),
         ("let ctr_before_ns", "let ctr_after_ns", "monotonic_now_ns"),
         ("let ctx_before", "let ctx_after", "CTX_SWITCH_TOTAL"),
     ] {
@@ -4551,10 +4653,8 @@ fn validate_loopback_wake_budget_marker(source: &str) -> Result<(), String> {
 
 #[test]
 fn loopback_wake_budget_marker_is_printed_on_both_paths() {
-    validate_loopback_wake_budget_marker(&repo_text(
-        "kernel/src/test_framework/registry.rs",
-    ))
-    .expect("the wake-budget marker is printed on the passing and the failing paths");
+    validate_loopback_wake_budget_marker(&repo_text("kernel/src/test_framework/registry.rs"))
+        .expect("the wake-budget marker is printed on the passing and the failing paths");
 }
 
 /// Every occurrence of the compacted-code text `scheduler` that is a
@@ -4799,9 +4899,8 @@ fn validate_placement_slot_distinguishes_unavailable(source: &str) -> Result<(),
 #[test]
 fn loopback_wake_budget_emitter_distinguishes_unavailable_from_not_queued() {
     let source = repo_text("kernel/src/test_framework/registry.rs");
-    validate_placement_slot_distinguishes_unavailable(&source).expect(
-        "the emitter must keep an unavailable placement sample distinct from an empty one",
-    );
+    validate_placement_slot_distinguishes_unavailable(&source)
+        .expect("the emitter must keep an unavailable placement sample distinct from an empty one");
 }
 
 /// The mutation legs: reintroduce each half of the collapse V-5 found --

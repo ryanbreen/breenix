@@ -1,12 +1,12 @@
   RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
-   Compiling kernel v0.1.0 (/root/breenix-busgate-prove/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-busgate-prove)
+   Compiling kernel v0.1.0 (<isolated-checkout-54>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-56>)
     Finished `release` profile [optimized] target(s) in 14.48s
-   Compiling kernel v0.1.0 (/root/breenix-busgate-prove/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-busgate-prove)
+   Compiling kernel v0.1.0 (<isolated-checkout-54>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-56>)
     Finished `release` profile [optimized] target(s) in 14.81s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-busgate-prove/target/release/build/breenix-27744f238db676e7/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-54>/target/release/build/breenix-27744f238db676e7/out/breenix-uefi.img (7405568 bytes)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -168,7 +168,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60242 sectors (29.42 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-busgate-prove/target/ext2.img
+  Output: <isolated-checkout-54>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -388,8 +388,8 @@ drwxr-xr-x 3 root root   4096 Sep  4 15:25 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-busgate-prove/target/ext2.img
-  /root/breenix-busgate-prove/testdata/ext2.img
+  <isolated-checkout-54>/target/ext2.img
+  <isolated-checkout-54>/testdata/ext2.img
   Size: 256M
 
 Contents:

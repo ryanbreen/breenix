@@ -18,7 +18,7 @@ fn six_gates_source_and_call_the_post_verdict_importer() {
         assert!(code.iter().any(|line| line.starts_with("source ")
             && line.contains("/lib/run-inspector-import.sh")), "{name}: missing importer source");
         let expected_calls: usize = match name {
-            "run-aarch64-boot-test-strict.sh" => 2,
+            "run-aarch64-boot-test-strict.sh" => 3,
             "run-aarch64-prod-profile-boot-test.sh" => 1,
             "run-aarch64-testing-profile-boot-test.sh" => 1,
             "run-x86-boot-tests.sh" => 2,
@@ -64,6 +64,8 @@ fn six_gates_source_and_call_the_post_verdict_importer() {
                 let anchor = match (name, arguments[4], arguments[5]) {
                     ("run-aarch64-boot-test-strict.sh", "PASS", "0") =>
                         "if [ \"$SCORE_PASS\" = \"1\" ]; then",
+                    ("run-aarch64-boot-test-strict.sh", "INCONCLUSIVE", "2") =>
+                        "if [ \"$SCORE_STATUS\" -eq 2 ]; then",
                     ("run-aarch64-boot-test-strict.sh", "FAIL", "1") =>
                         "report_failure \"$iteration\"",
                     ("run-x86-boot-tests.sh", "PASS", "0") =>

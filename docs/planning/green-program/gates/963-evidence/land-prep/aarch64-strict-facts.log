@@ -1,0 +1,5 @@
+Revision: 04fe4bc02861628c5a5a0eb5c8df2335e0a402b3
+[GATE_BOOT_FACTS:boot=1:host_ms=1788863545773-1788863564074:qemu_at_start=0:load_at_start=8.98:qemu_at_end=1:load_at_end=17.85:qemu_cpu_s=28.43:guest_uptime_ms=17811:ended_by=scored_pass]
+[CAPTURE_DRAIN:capture=n/a:seq=n/a:edge=n/a:cpu=n/a:records=n/a:drain_ms=0]
+[CAPTURE_DRAIN_EVENTS:last_events=n/a]
+[QMP_DUMP:capture=n/a:reason=n/a:core=n/a:decoded_events=n/a:dump_ms=0]

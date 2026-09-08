@@ -1,0 +1,4 @@
+a15ffa600817ce100dce7d8a4c268c1fb6119099
+   Compiling kernel v0.1.0 (<isolated-checkout-133>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-145>)
+    Finished `release` profile [optimized] target(s) in 19.76s

@@ -1,0 +1,14 @@
+revision=45ff0a90b76e71671d9499542f6a2165181ee344
+tests/gate_qmp_backstop_structure.rs:253: pathlib.Path('dump-received').touch()
+tests/gate_qmp_backstop_structure.rs:267: const FIXTURE_TIMEOUT: &str = r#"
+tests/gate_qmp_backstop_structure.rs:281: while not pathlib.Path('dump-received').exists():
+tests/gate_qmp_backstop_structure.rs:288: result = child.wait(timeout=budget)
+tests/gate_qmp_backstop_structure.rs:315: fn complete_report(out: &str) -> bool {
+tests/gate_qmp_backstop_structure.rs:416: "touch dump-received; sleep 0.1; exit 124",
+tests/gate_qmp_backstop_structure.rs:420: ("expired", "touch dump-received; exec sleep 60", 124, true),
+tests/gate_qmp_backstop_structure.rs:616: fn missing_socket_and_hung_dump_are_partial_and_bounded() {
+tests/gate_qmp_backstop_structure.rs:902: fn receipt_precedes_response_deadline() {
+tests/gate_qmp_backstop_structure.rs:903: let receipt = "while not pathlib.Path('dump-received').exists():";
+tests/gate_qmp_backstop_structure.rs:904: let deadline = "result = child.wait(timeout=budget)";
+tests/gate_qmp_backstop_structure.rs:912: assert!(FAKE_QMP.contains("pathlib.Path('dump-received').touch()"));
+tests/gate_capture_drain_structure.rs:398: release_writer() {{

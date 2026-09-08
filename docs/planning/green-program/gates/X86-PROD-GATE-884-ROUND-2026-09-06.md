@@ -155,7 +155,7 @@ above.
 
 Full log: `884-x86-prod-prompt-verdict/force-prompt-absent-proof.txt`,
 alongside this doc (612 lines,
-`/root/breenix-884` on `breenix-x86`, `BREENIX_GATE_TMP=/root/breenix-884-tmp`).
+`<isolated-checkout-71>` on `<x86-build-environment>`, `BREENIX_GATE_TMP=<isolated-checkout-73>`).
 The relevant lines:
 
 ```
@@ -169,7 +169,7 @@ x86 production-profile gate: FAIL (set -e abort at docker/qemu/run-x86-prod-prof
   failing command: false
 [CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=0]
 [CAPTURE_DRAIN_EVENTS:last_events=none]
-  preserved failing serial: /root/breenix-884-tmp/breenix_x86_prod_profile_failures/20260906T190240Z_2775915
+  preserved failing serial: <isolated-checkout-73>/breenix_x86_prod_profile_failures/20260906T190240Z_2775915
 --- observed values ---
   ...
   console prompt before/after liveness stimulus: 0 -> 2 (expected 1 -> 2)
@@ -203,9 +203,9 @@ check-and-false block), which a structure test proves by direct
 inspection strictly more reliably than re-triggering the same host-timing
 race a second time on shared hardware would.
 
-## Gates at HEAD (`93266a10`), beast, `breenix-x86`, clone `/root/breenix-884`
+## Gates at HEAD (`93266a10`), beast, `<x86-build-environment>`, clone `<isolated-checkout-71>`
 
-Both gates below ran with `BREENIX_GATE_TMP=/root/breenix-884-tmp` and no
+Both gates below ran with `BREENIX_GATE_TMP=<isolated-checkout-73>` and no
 force knobs -- ordinary runs.
 
 **x86 production-profile gate x1**
@@ -321,7 +321,7 @@ into `$failure_dir` alongside the serials, guarded on the file existing (a
 pre-boot abort has none yet). Proved live, not just read: a beast run with
 `BREENIX_X86_PROD_FORCE_PROMPT_ABSENT=1` reproduced the exact `ended_by=
 prompt_absent` failure this round's fix names, and the preserved
-`failure_dir` (`/root/breenix-884-tmp/breenix_x86_prod_profile_failures/
+`failure_dir` (`<isolated-checkout-73>/breenix_x86_prod_profile_failures/
 20260906T203911Z_2964142/`) now contains `gate_boot_facts.txt` reading
 `[GATE_BOOT_FACTS:boot=1:host_ms=1788727078348-1788727150935:qemu_at_start=
 0:load_at_start=1.00:qemu_at_end=0:load_at_end=0.53:qemu_cpu_s=12.00:
@@ -382,7 +382,7 @@ also re-run clean after the F6/F9 script edits:
 `test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered
 out`.
 
-### x86 prod gate x1 (beast, `breenix-x86` container, `/root/breenix-884`)
+### x86 prod gate x1 (beast, the x86 build environment, `<isolated-checkout-71>`)
 
 Beast's clone was synced to this branch's HEAD (`40ac73ed`) plus this fix
 round's working-tree diff; the two `git diff` outputs for
@@ -397,7 +397,7 @@ defect, and both are visible in the log as `QEMU HOST LOCK: waiting for
 ...` lines.
 
 ```
-$ BREENIX_GATE_TMP=/root/breenix-884-tmp bash docker/qemu/run-x86-prod-profile-boot-test.sh
+$ BREENIX_GATE_TMP=<isolated-checkout-73> bash docker/qemu/run-x86-prod-profile-boot-test.sh
 [GATE_PREFLIGHT:structure_suites=48/48:critical_path_lines=275:pinned=136]
 ...
 PASS: x86 production profile reached steady state with the teardown census at rest
@@ -533,9 +533,9 @@ x86_smp_enum_structure:                   ok. 6 passed; 0 failed
 `teardown_structure`'s 92, already re-run individually in the "Review fix
 round" section above).
 
-### x86 prod gate x1 (beast, `breenix-x86` container, `/root/breenix-884`, merge commit `20b00edaa6a846b4387ad03b21a55b5b8bb27e5c`)
+### x86 prod gate x1 (beast, the x86 build environment, `<isolated-checkout-71>`, merge commit `20b00edaa6a846b4387ad03b21a55b5b8bb27e5c`)
 
-Beast's `/root/breenix-884` clone had a stale, uncommitted working tree left
+Beast's `<isolated-checkout-71>` clone had a stale, uncommitted working tree left
 over from an earlier round on `40ac73ed` (the F6/F8/F9/F12 fix content,
 already superseded by the pushed `4a378bd8` commit); it was reset to
 `origin/gate/884-x86-prod-prompt-verdict` (`4a378bd8`) and then merged against
@@ -547,7 +547,7 @@ is empty), so the clone's existing `*.elf`/font build artifacts (already
 present from prior rounds' setup) needed no refresh.
 
 ```
-$ BREENIX_GATE_TMP=/root/breenix-884-tmp bash docker/qemu/run-x86-prod-profile-boot-test.sh
+$ BREENIX_GATE_TMP=<isolated-checkout-73> bash docker/qemu/run-x86-prod-profile-boot-test.sh
 [GATE_PREFLIGHT:structure_suites=50/50:critical_path_lines=259:pinned=120]
 ...
 PASS: x86 production profile reached steady state with the teardown census at rest
@@ -565,10 +565,10 @@ fix targets, passing through the verdict trap rather than aborting. Full
 353-line log committed at
 `884-x86-prod-prompt-verdict/x86-prod-gate-merged-head-landing.txt`.
 
-### `run-x86-boot-tests.sh 1` (beast, `breenix-x86` container, `/root/breenix-884`, merge commit `20b00edaa6a846b4387ad03b21a55b5b8bb27e5c`)
+### `run-x86-boot-tests.sh 1` (beast, the x86 build environment, `<isolated-checkout-71>`, merge commit `20b00edaa6a846b4387ad03b21a55b5b8bb27e5c`)
 
 ```
-$ BREENIX_GATE_TMP=/root/breenix-884-tmp bash docker/qemu/run-x86-boot-tests.sh 1
+$ BREENIX_GATE_TMP=<isolated-checkout-73> bash docker/qemu/run-x86-boot-tests.sh 1
 [GATE_PREFLIGHT:structure_suites=50/50:critical_path_lines=259:pinned=120]
 ...
 [TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=45:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=547:window_ms=509:measured=1:PASS]
@@ -585,8 +585,8 @@ at `884-x86-prod-prompt-verdict/x86-boot-tests-merged-head-landing.txt`.
 | Gate | Where | Verdict | GATE_PREFLIGHT |
 |---|---|---|---|
 | `scripts/run-structure-tests.sh` (50 suites) | local worktree | 50/50 files, 0 failures | n/a (host-side rustc runner, not a booted gate) |
-| x86 prod profile gate x1 | beast, `breenix-x86`, `/root/breenix-884` | PASS | `structure_suites=50/50:critical_path_lines=259:pinned=120` |
-| `run-x86-boot-tests.sh 1` | beast, `breenix-x86`, `/root/breenix-884` | PASS (1/1) | `structure_suites=50/50:critical_path_lines=259:pinned=120` |
+| x86 prod profile gate x1 | beast, `<x86-build-environment>`, `<isolated-checkout-71>` | PASS | `structure_suites=50/50:critical_path_lines=259:pinned=120` |
+| `run-x86-boot-tests.sh 1` | beast, `<x86-build-environment>`, `<isolated-checkout-71>` | PASS (1/1) | `structure_suites=50/50:critical_path_lines=259:pinned=120` |
 
 Not claimed: a second independent run of either beast gate beyond the x1
 this landing step asked for; an aarch64 re-smoke (out of scope -- this

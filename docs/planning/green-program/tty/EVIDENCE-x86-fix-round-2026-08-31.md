@@ -290,7 +290,7 @@ the full three-item coverage-gap record, not the bare path string.
   target), zero warnings (aarch64 build log carries only the pre-existing,
   unrelated `-Z build-std` sysroot `core` future-incompat notice, same as
   the implement slot found).
-- **Dedicated x86 TTY oracle gate, on beast (`breenix-x86` Incus VM):
+- **Dedicated x86 TTY oracle gate, on beast (the x86 build environment):
   green, 1/1 boots, 13/13 arms, new `INIT_REAP_FAILED_LITERAL` check and
   240s bound both exercised.**
   `serials/x86-fix2-dedicated-tty-oracle-gate-script-log-20260831.txt`,

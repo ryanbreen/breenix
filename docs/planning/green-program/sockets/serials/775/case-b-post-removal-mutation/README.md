@@ -19,7 +19,7 @@ hung.
 
 | item | value |
 |---|---|
-| repository | `/root/breenix-775` on the beast `breenix-x86` VM |
+| repository | `<isolated-checkout-53>` on the x86 build environment on beast |
 | commit booted | `482a2e86` — `365c20c2` (this branch's head) plus `bare-hlt-wedge.patch` |
 | harness | `docker/qemu/run-x86-gate.sh 1 full` (`--features testing,external_test_bins`, KVM, `cpu=host`) |
 | mutation | `bare-hlt-wedge.patch` in this directory: `interrupts::disable()` + `hlt()` at both poll wait sites in `kernel/src/syscall/handlers.rs` |

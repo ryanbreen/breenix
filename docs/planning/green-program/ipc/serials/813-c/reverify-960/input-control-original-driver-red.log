@@ -1,0 +1,20 @@
+revision=09d03f2d02c74f050d299f5c4288df2e06805614; driver restored to unmodified 7c448dd9 source for this structural baseline
+== compiling console_read_structure ==
+== running console_read_structure production_input_inject_control_requires_actual_rejection ==
+
+running 1 test
+test production_input_inject_control_requires_actual_rejection ... FAILED
+
+failures:
+
+failures:
+    production_input_inject_control_requires_actual_rejection
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+
+thread 'production_input_inject_control_requires_actual_rejection' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813pd/wt/tests/console_read_structure.rs:159:5:
+assertion failed: driver.contains("input_inject_negative_control();")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+exit=101

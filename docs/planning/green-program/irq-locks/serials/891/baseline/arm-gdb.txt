@@ -1,0 +1,120 @@
+
+====================================================================
+            Breenix Kernel GDB Configuration (multi-arch)
+====================================================================
+
+Architecture-neutral commands (auto-detect x86_64 / aarch64):
+  breenix-connect      - Connect to QEMU on localhost:1234
+  breenix-breaks       - Set common kernel breakpoints
+  show-all-registers   - Display all registers
+  show-stack [n]       - Display stack (default: 32 entries)
+  ctx                  - Show execution context
+
+x86_64-specific:
+  show-segments        - Display segment registers
+  show-control         - Display control registers (CR0-CR4, CR8)
+  show-idt-entry <n>   - Examine IDT entry
+
+ARM64-specific:
+  show-sysregs         - Display system registers (ELR, ESR, FAR, ...)
+  decode-esr           - Decode ESR_EL1 exception syndrome
+
+Quick start (x86_64):
+  ./breenix-gdb-chat/scripts/gdb_session.sh start
+
+Quick start (ARM64):
+  ./breenix-gdb-chat/scripts/gdb_session.sh start --arch aarch64
+
+0x0000000040080000 in _start ()
+Breakpoint 1 at 0xffff000040564518: file kernel/src/task/softirq_tests.rs, line 207.
+
+Thread 1 hit Breakpoint 1, kernel::task::softirq_tests::test_softirq () at kernel/src/task/softirq_tests.rs:207
+207	    for _ in 0..100 {
+Warning: the current language does not match this frame.
+  Id   Target Id                    Frame 
+* 1    Thread 1.1 (CPU#0 [running]) kernel::task::softirq_tests::test_softirq () at kernel/src/task/softirq_tests.rs:207
+  2    Thread 1.2 (CPU#1 [running]) alloc::raw_vec::RawVecInner<alloc::alloc::Global>::current_memory<alloc::alloc::Global> (elem_layout=..., self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:527
+  3    Thread 1.3 (CPU#2 [running]) kernel::task::softirqd::ksoftirqd_fn () at kernel/src/task/softirqd.rs:251
+  4    Thread 1.4 (CPU#3 [running]) core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+$1 = {v = {value = 10}}
+$2 = {v = {value = 0 '\000'}}
+$3 = {v = {value = 13}}
+$4 = {v = {value = 3}}
+0xffff000040814480 <CTX_SWITCH_TOTAL+64>:	0
+0xffff0000408144c0 <CTX_SWITCH_TOTAL+128>:	26
+0xffff000040814500 <CTX_SWITCH_TOTAL+192>:	29
+0xffff000040814540 <CTX_SWITCH_TOTAL+256>:	31
+
+Thread 4 (Thread 1.4 (CPU#3 [running])):
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+#1  core::core_arch::arm_shared::barrier::__isb<core::core_arch::arm_shared::barrier::common::SY> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/mod.rs:144
+#2  core::hint::spin_loop () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/hint.rs:295
+#3  core::sync::atomic::spin_loop_hint () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/sync/atomic.rs:4478
+#4  spin::relax::{impl#0}::relax () at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/relax.rs:29
+
+Thread 3 (Thread 1.3 (CPU#2 [running])):
+#0  kernel::task::softirqd::ksoftirqd_fn () at kernel/src/task/softirqd.rs:251
+#1  core::ops::function::FnOnce::call_once<fn(), ()> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250
+#2  core::ops::function::FnOnce::call_once<fn(), ()> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250
+#3  0xffff000040563894 in alloc::boxed::{impl#28}::call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (self=..., args=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/boxed.rs:1966
+#4  kernel::task::kthread::kthread_entry (arg=<optimized out>) at kernel/src/task/kthread.rs:421
+
+Thread 2 (Thread 1.2 (CPU#1 [running])):
+#0  alloc::raw_vec::RawVecInner<alloc::alloc::Global>::current_memory<alloc::alloc::Global> (elem_layout=..., self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:527
+#1  alloc::raw_vec::RawVecInner<alloc::alloc::Global>::deallocate<alloc::alloc::Global> (elem_layout=..., self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:755
+#2  alloc::raw_vec::{impl#3}::drop<u64, alloc::alloc::Global> (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs:406
+#3  core::ptr::drop_in_place<alloc::raw_vec::RawVec<u64, alloc::alloc::Global>> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:799
+#4  alloc::vec::into_iter::{impl#15}::drop::{impl#0}::drop<u64, alloc::alloc::Global> (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/vec/into_iter.rs:496
+
+Thread 1 (Thread 1.1 (CPU#0 [running])):
+#0  kernel::task::softirq_tests::test_softirq () at kernel/src/task/softirq_tests.rs:207
+#1  0xffff0000404032f0 in kernel_aarch64::kernel_main (hw_config_ptr=<optimized out>) at kernel/src/main_aarch64.rs:1356
+#2  0x00000000400800c0 in bss_done ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+$5 = {inner = {phantom = {<No data fields>}, lock = {v = {value = 0 '\000'}}, data = {value = {18446462600078035080, Some = {__0 = {inner = {ptr = {pointer = 0xffff0000502e0888}, phantom = {<No data fields>}, alloc = {<No data fields>}}}}}}}}
+Breakpoint 2 at 0xffff000040564b98: file kernel/src/task/softirq_tests.rs, line 228.
+
+Thread 1 hit Breakpoint 2, kernel::task::softirq_tests::test_softirq () at kernel/src/task/softirq_tests.rs:228
+228	    assert!(
+  Id   Target Id                    Frame 
+* 1    Thread 1.1 (CPU#0 [running]) kernel::task::softirq_tests::test_softirq () at kernel/src/task/softirq_tests.rs:228
+  2    Thread 1.2 (CPU#1 [running]) core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+  3    Thread 1.3 (CPU#2 [halted ]) core::ptr::non_null::NonNull<alloc::sync::ArcInner<kernel::task::kthread::Kthread>>::as_ref<alloc::sync::ArcInner<kernel::task::kthread::Kthread>> (self=0xffff000054210ef8) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs:437
+  4    Thread 1.4 (CPU#3 [running]) core::num::{impl#9}::saturating_sub (self=142136000, rhs=8361000) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:1927
+$6 = {v = {value = 25}}
+$7 = {v = {value = 0 '\000'}}
+$8 = {v = {value = 14}}
+$9 = {v = {value = 3}}
+0xffff000040814480 <CTX_SWITCH_TOTAL+64>:	0
+0xffff0000408144c0 <CTX_SWITCH_TOTAL+128>:	27
+0xffff000040814500 <CTX_SWITCH_TOTAL+192>:	31
+0xffff000040814540 <CTX_SWITCH_TOTAL+256>:	31
+
+Thread 4 (Thread 1.4 (CPU#3 [running])):
+#0  core::num::{impl#9}::saturating_sub (self=142136000, rhs=8361000) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs:1927
+#1  kernel::arch_impl::aarch64::timer::nanoseconds_since_base () at kernel/src/arch_impl/aarch64/timer.rs:180
+#2  kernel::arch_impl::aarch64::timer::monotonic_time () at kernel/src/arch_impl/aarch64/timer.rs:192
+#3  kernel::time::tsc::monotonic_time () at kernel/src/time/tsc.rs:70
+#4  kernel::time::timer::get_monotonic_time_ns () at kernel/src/time/timer.rs:147
+
+Thread 3 (Thread 1.3 (CPU#2 [halted ])):
+#0  core::ptr::non_null::NonNull<alloc::sync::ArcInner<kernel::task::kthread::Kthread>>::as_ref<alloc::sync::ArcInner<kernel::task::kthread::Kthread>> (self=0xffff000054210ef8) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs:437
+#1  alloc::sync::Arc<kernel::task::kthread::Kthread, alloc::alloc::Global>::inner<kernel::task::kthread::Kthread, alloc::alloc::Global> (self=0xffff000054210ef8) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/sync.rs:1927
+#2  alloc::sync::{impl#30}::deref<kernel::task::kthread::Kthread, alloc::alloc::Global> (self=0xffff000054210ef8) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/sync.rs:2242
+#3  kernel::task::kthread::kthread_park () at kernel/src/task/kthread.rs:233
+#4  0xffff00004055f998 in kernel::task::softirqd::ksoftirqd_fn () at kernel/src/task/softirqd.rs:286
+
+Thread 2 (Thread 1.2 (CPU#1 [running])):
+#0  core::core_arch::arm_shared::barrier::common::{impl#0}::__isb (self=<optimized out>) at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/common.rs:14
+#1  core::core_arch::arm_shared::barrier::__isb<core::core_arch::arm_shared::barrier::common::SY> () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/../../stdarch/crates/core_arch/src/arm_shared/barrier/mod.rs:144
+#2  core::hint::spin_loop () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/hint.rs:295
+#3  core::sync::atomic::spin_loop_hint () at /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/sync/atomic.rs:4478
+#4  spin::relax::{impl#0}::relax () at /Users/wrb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.9.9/src/relax.rs:29
+
+Thread 1 (Thread 1.1 (CPU#0 [running])):
+#0  kernel::task::softirq_tests::test_softirq () at kernel/src/task/softirq_tests.rs:228
+#1  0xffff0000404032f0 in kernel_aarch64::kernel_main (hw_config_ptr=<optimized out>) at kernel/src/main_aarch64.rs:1356
+#2  0x00000000400800c0 in bss_done ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+$10 = {inner = {phantom = {<No data fields>}, lock = {v = {value = 0 '\000'}}, data = {value = {18446462600078035080, Some = {__0 = {inner = {ptr = {pointer = 0xffff0000502e0888}, phantom = {<No data fields>}, alloc = {<No data fields>}}}}}}}}
+[Inferior 1 (process 1) detached]

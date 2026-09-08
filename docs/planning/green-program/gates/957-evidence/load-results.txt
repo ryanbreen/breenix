@@ -1,0 +1,22 @@
+76d7b725dac238867527b1156313efe8d83fb9c5
+drain-01 0.308s exit=0
+drain-02 0.312s exit=0
+drain-03 0.316s exit=0
+drain-04 0.311s exit=0
+drain-05 0.319s exit=0
+drain-06 0.322s exit=0
+drain-07 0.309s exit=0
+drain-08 0.303s exit=0
+drain-09 0.311s exit=0
+drain-10 0.324s exit=0
+drain-11 0.316s exit=0
+drain-12 0.313s exit=0
+drain-13 0.327s exit=0
+drain-14 0.330s exit=0
+drain-15 0.329s exit=0
+drain-16 0.333s exit=0
+drain-17 0.325s exit=0
+drain-18 0.304s exit=0
+drain-19 0.319s exit=0
+drain-20 0.311s exit=0
+all-suites 81.722s exit=0

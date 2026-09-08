@@ -1,0 +1,19 @@
+== compiling critical_path_logging_census_structure ==
+== running critical_path_logging_census_structure  ==
+
+running 12 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test shell_parity_validator_rejects_a_removed_critical_file ... ok
+test the_shell_and_this_suite_check_the_same_shapes ... ok
+test zero_pin_files_stay_clean ... ok
+test zero_pin_validator_rejects_a_synthetic_violation_in_timer_rs ... ok
+test census_validator_rejects_a_synthetic_violation_at_a_checked_path ... ok
+test census_validator_rejects_a_decremented_anchor_count ... ok
+test census_validator_rejects_a_logging_macro_inside_the_soft_lockup_dump ... ok
+test critical_path_log_wider_census_is_pinned ... ok
+test census_validator_rejects_a_deleted_anchor_row ... ok
+test critical_path_log_census_is_pinned ... ok
+test the_anchor_table_sums_to_the_ledger_total ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s
+

@@ -1,0 +1,13 @@
+Revision: 2297746ec5aae00b90dea2a2bf835458c4d6b162
+Scope: restored working fixture patch
+Command: bash scripts/run-structure-tests.sh gate_qmp_backstop_structure missing_tool_report_rejects_malformed_lines
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure missing_tool_report_rejects_malformed_lines ==
+
+running 1 test
+test missing_tool_report_rejects_malformed_lines ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+
+exit=0

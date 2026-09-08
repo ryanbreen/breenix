@@ -1,0 +1,58 @@
+[
+  {
+    "gate": "structure",
+    "revision": "69c039a06ef31cdc60790b77211a0dff303c57d3",
+    "boots": 0,
+    "result": "103/103",
+    "exit": 0,
+    "transcript": "proof-structure.txt"
+  },
+  {
+    "gate": "arm-oracle",
+    "revision": "69c039a06ef31cdc60790b77211a0dff303c57d3",
+    "boots": 1,
+    "result": "6/6 arms; 65/65 preflight",
+    "exit": 0,
+    "transcript": "proof-arm-oracle.txt"
+  },
+  {
+    "gate": "arm-strict",
+    "revision": "69c039a06ef31cdc60790b77211a0dff303c57d3",
+    "boots": 3,
+    "result": "3/3 boots; 65/65 preflight",
+    "exit": 0,
+    "transcript": "proof-arm-strict.txt"
+  },
+  {
+    "gate": "x86-full",
+    "revision": "40e2925f32800702e3dfd42d31d0fe63760cf65c",
+    "boots": 1,
+    "result": "1/1 boot; 66/66 preflight",
+    "exit": 0,
+    "transcript": "proof-x86-full.txt"
+  },
+  {
+    "gate": "x86-oracle",
+    "revision": "40e2925f32800702e3dfd42d31d0fe63760cf65c",
+    "boots": 1,
+    "result": "6/6 arms; 66/66 preflight",
+    "exit": 0,
+    "transcript": "proof-x86-oracle.txt"
+  },
+  {
+    "gate": "arm-prod",
+    "revision": "40e2925f32800702e3dfd42d31d0fe63760cf65c",
+    "boots": 1,
+    "result": "1/1 boot; 66/66 preflight; retry timeout=900",
+    "exit": 0,
+    "transcript": "proof-arm-prod.txt"
+  },
+  {
+    "gate": "arm-prod-first-preflight",
+    "revision": "40e2925f32800702e3dfd42d31d0fe63760cf65c",
+    "boots": 0,
+    "exit": 1,
+    "result": "65/66; capture-drain timeout at 300 seconds; 957",
+    "transcript": "proof-arm-prod-preflight-timeout.txt"
+  }
+]

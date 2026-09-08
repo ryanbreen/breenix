@@ -3,7 +3,7 @@
 #       feature list was patched to add capture_panic_oracle for the run and
 #       reverted afterwards -- that gate REBUILDS the kernel, where the aarch64
 #       strict gate validates the kernel it is handed)
-# host: beast, Incus container breenix-x86 (-smp 1)
+# host: beast, the x86 build environment (-smp 1)
 # file: serial_user.txt (COM1)
 # branch: capture/ftc-pr4-terminal-edges
 # base: 9538ebb769b4fb5bc292e554d38b8ba5834d70b2

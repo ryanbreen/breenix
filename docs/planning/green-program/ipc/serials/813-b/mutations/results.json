@@ -1,0 +1,141 @@
+[
+  {
+    "name": "immediate_eagain",
+    "arm": "backpressure",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "delete_drain",
+    "arm": "backpressure",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "delete_read_wake",
+    "arm": "backpressure",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "swap_writer_queues",
+    "arm": "backpressure",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "full_count",
+    "arm": "backpressure",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "construction_only",
+    "arm": "mode",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "ignore_nonblock_sleep",
+    "arm": "mode",
+    "verdict": "timeout_after_oracle_start",
+    "launcherExit": 0
+  },
+  {
+    "name": "poll_peer_only",
+    "arm": "poll",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "poll_receive_space",
+    "arm": "poll",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "reverse_transmit_direction",
+    "arm": "poll",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "close_readers_only",
+    "arm": "peer_close",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "close_wrong_writers",
+    "arm": "peer_close",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "outer_lock_across_wait",
+    "arm": "peer_close",
+    "verdict": "timeout_after_oracle_start",
+    "launcherExit": 0
+  },
+  {
+    "name": "ignore_interruption",
+    "arm": "signal",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "ignored_pending_interrupts",
+    "arm": "signal",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "leak_registration",
+    "arm": "signal",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "unrelated_waiter_list",
+    "arm": "signal",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "stream_atomicity_draft_aborted",
+    "arm": "partial",
+    "verdict": "prerequisite_failure",
+    "launcherExit": 2,
+    "review": "Stopped lane-owned QEMU PID 57819 after discovering the threshold-only mutation also rejects the initial fill. Not partial-space sensitivity evidence."
+  },
+  {
+    "name": "stream_atomicity",
+    "arm": "partial",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "positive_space_eagain",
+    "arm": "partial",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "mode_unconditional_eagain",
+    "arm": "mode",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "peer_close_fake_success",
+    "arm": "peer_close",
+    "verdict": "rejected",
+    "launcherExit": 0
+  },
+  {
+    "name": "partial_full_count",
+    "arm": "partial",
+    "verdict": "rejected",
+    "launcherExit": 0
+  }
+]

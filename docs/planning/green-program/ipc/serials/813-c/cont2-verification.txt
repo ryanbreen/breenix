@@ -1,0 +1,4 @@
+revision=4bdbf267a87cbfe8ea4545c3f40ae75e7918f0d7
+792 recorded citation lines match HEAD.
+Runtime and gate diff e1e42bd1..HEAD: empty.
+Issue 927: CLOSED. Issue 891: OPEN, softirq_tests.rs:228 ksoftirqd tid=Some(2).

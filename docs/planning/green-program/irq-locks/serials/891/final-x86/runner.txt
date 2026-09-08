@@ -1,0 +1,17 @@
+ 06:04:49 up 26 days, 12:20,  0 user,  load average: 1.02, 1.63, 3.57
+launch_load_1m=1.02
+boot-tests exit=0
+ 06:18:08 up 26 days, 12:33,  0 user,  load average: 1.30, 1.85, 3.15
+launch_load_1m=1.30
+ 06:21:31 up 26 days, 12:37,  0 user,  load average: 5.16, 4.66, 4.13
+launch_load_1m=5.16
+parallel-1 exit=0
+ 06:22:40 up 26 days, 12:38,  0 user,  load average: 4.68, 4.64, 4.17
+launch_load_1m=4.68
+ 06:26:17 up 26 days, 12:41,  0 user,  load average: 5.10, 5.93, 4.90
+launch_load_1m=5.10
+parallel-2 exit=0
+ 06:27:33 up 26 days, 12:43,  0 user,  load average: 5.45, 5.85, 4.96
+launch_load_1m=5.45
+prod exit=0
+FINAL_X86_DONE

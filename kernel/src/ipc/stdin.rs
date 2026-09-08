@@ -4,10 +4,14 @@
 //! Characters from the keyboard interrupt handler are pushed here,
 //! and userspace processes can read from it via the read() syscall.
 
+use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
 use alloc::collections::VecDeque;
 #[cfg(target_arch = "x86_64")]
 use alloc::vec::Vec;
 use spin::Mutex;
+
+/// Console/Tty readers share the live input ring, but not the legacy stdin registry.
+pub(crate) static INPUT_READERS: WaitQueueHead = WaitQueueHead::new();
 
 /// Default stdin buffer size
 pub const STDIN_BUF_SIZE: usize = 4096;
@@ -51,6 +55,9 @@ impl StdinBuffer {
         self.buffer[self.write_pos] = byte;
         self.write_pos = (self.write_pos + 1) % STDIN_BUF_SIZE;
         self.len += 1;
+        // Buffer -> queue order matches checked publication. Deferred delivery
+        // avoids acquiring the scheduler in the input producer.
+        INPUT_READERS.wake_up_deferred();
         true
     }
 
@@ -284,4 +291,35 @@ pub fn available() -> usize {
 #[no_mangle]
 pub extern "C" fn debug_inject_stdin_char(byte: u64) {
     push_byte_from_irq(byte as u8);
+}
+
+/// Check/copy and publish under one ring guard with local IRQs masked.
+/// The guard is dropped here before the scheduler wait lifecycle.
+pub(crate) fn read_or_prepare(
+    buf: &mut [u8],
+    is_nonblocking: bool,
+) -> Result<usize, PrepareOutcome> {
+    crate::arch_without_interrupts(|| {
+        let mut buffer = STDIN_BUFFER.lock();
+        if !buffer.is_empty() || buf.is_empty() {
+            return Ok(buffer.read_bytes(buf));
+        }
+        if is_nonblocking {
+            return Err(PrepareOutcome::Mismatch);
+        }
+        Err(INPUT_READERS.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            None,
+            || buffer.is_empty(),
+        ))
+    })
+}
+
+/// Boot observer is read-only: it neither consumes input nor removes waiters.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn input_witness(tid: u64) -> (bool, usize) {
+    crate::arch_without_interrupts(|| {
+        let buffer = STDIN_BUFFER.lock();
+        (INPUT_READERS.contains_waiter(tid), buffer.len)
+    })
 }

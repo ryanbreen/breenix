@@ -97,7 +97,7 @@ preflight; it is not a new tracing-provider assertion.
 ## ARM64 build, baseline notice check, and strict regression
 
 The existing primary-checkout image was available at
-`/Users/wrb/fun/code/breenix/target/ext2-aarch64.img` and the worktree's
+`<local-checkout>` and the worktree's
 `target/ext2-aarch64.img` already symlinked to it. No ARM64 userspace image
 was rebuilt.
 
@@ -123,7 +123,7 @@ cargo build --release --features boot_tests --target aarch64-breenix-kernel.json
 
 ```text
     Finished `release` profile [optimized] target(s) in 8.32s
-warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (<local-checkout>)
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
 baseline build exit: 0
 ```
@@ -177,10 +177,10 @@ PASS: 3/3 boots succeeded
 ## Beast positive gates
 
 Commands were executed with
-`ssh beast 'sudo -n incus exec breenix-x86 -- bash -s'`, feeding the exact
-runner scripts reproduced in the appendix. The lane used `/root/breenix-slot1`,
-`TMPDIR=/root/breenix-slot1-tmp`, and
-`BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork-real/library`.
+`ssh beast 'sudo -n incus exec <x86-build-environment> -- bash -s'`, feeding the exact
+runner scripts reproduced in the appendix. The lane used `<isolated-checkout-221>`,
+`TMPDIR=<isolated-checkout-222>`, and
+`BREENIX_RUST_FORK_LIBRARY=<rust-fork-checkout>/library`.
 Setup cloned the pushed WIP branch, linked the existing Rust fork, copied
 fonts and the existing userspace ELF files. The required ELF glob was nonempty;
 no alternative ELF staging location was needed.
@@ -237,9 +237,9 @@ production serial tracing-provider marker count: 0
 Serial paths in the container:
 
 ```text
-/root/breenix-slot1-tmp/before-boot/breenix_x86_boot_tests_1/serial_user.txt
-/root/breenix-slot1-tmp/main-boot/breenix_x86_boot_tests_1/serial_user.txt
-/root/breenix-slot1-tmp/main-prod/breenix_x86_prod_profile/serial_user.txt
+<isolated-checkout-222>/before-boot/breenix_x86_boot_tests_1/serial_user.txt
+<isolated-checkout-222>/main-boot/breenix_x86_boot_tests_1/serial_user.txt
+<isolated-checkout-222>/main-prod/breenix_x86_prod_profile/serial_user.txt
 ```
 
 The x86 compile stages produced no lines matching `^warning|^error` in the
@@ -254,7 +254,7 @@ Error: x86_64-linux-musl-gcc not found in PATH
   WARNING: busybox.elf not found, skipping coreutils
 ```
 
-`ssh beast 'sudo -n incus exec breenix-x86 -- find /root/breenix -type f -name busybox.elf -print'`
+`ssh beast 'sudo -n incus exec <x86-build-environment> -- find <canonical-checkout> -type f -name busybox.elf -print'`
 exited 0 with no output. No BusyBox compiler was installed and no userspace
 source was changed. The gate scripts continued with the supplied ELF payload;
 the positive verdicts above do not claim BusyBox coverage.
@@ -337,8 +337,8 @@ direct full-gate result.
 Restoration was checked in the runner with `cmp`, then independently with:
 
 ```bash
-cd /root/breenix-slot1
-cmp /root/breenix-slot1-evidence/process_task.before-mutation.rs kernel/src/task/process_task.rs
+cd <isolated-checkout-221>
+cmp <isolated-checkout-223>/process_task.before-mutation.rs kernel/src/task/process_task.rs
 git diff --exit-code -- kernel/src/task/process_task.rs
 ```
 
@@ -356,24 +356,24 @@ lane-owned QEMU PIDs: []
 The specified command was attempted:
 
 ```bash
-scp 'beast:/root/breenix-slot1-evidence/*' ../evidence/
+scp 'beast:<isolated-checkout-223>/*' ../evidence/
 ```
 
 It exited 1 (`scp-attempt.txt`):
 
 ```text
-scp: remote readdir("/root/breenix-slot1-evidence/"): Permission denied
-scp: /root/breenix-slot1-evidence/*: No such file or directory
+scp: remote readdir("<isolated-checkout-223>/"): Permission denied
+scp: <isolated-checkout-223>/*: No such file or directory
 ```
 
-The artifacts are inside `breenix-x86`, not the SSH user's host filesystem.
-Instead, these commands copied the evidence and raw serials through Incus;
+The artifacts are inside `<x86-build-environment>`, not the SSH user's host filesystem.
+Instead, these commands copied the evidence and raw serials through remote-environment;
 both SSH/tar transfers and both local extractions exited 0:
 
 ```bash
-ssh beast 'sudo -n incus exec breenix-x86 -- tar -C /root/breenix-slot1-evidence -cf - .' > ../evidence/beast-evidence.tar
+ssh beast 'sudo -n incus exec <x86-build-environment> -- tar -C <isolated-checkout-223> -cf - .' > ../evidence/beast-evidence.tar
 tar -xf ../evidence/beast-evidence.tar -C ../evidence
-ssh beast 'sudo -n incus exec breenix-x86 -- tar -C /root/breenix-slot1-tmp -cf - before-boot/breenix_x86_boot_tests_1/serial_user.txt before-boot/breenix_x86_boot_tests_1/serial_kernel.txt main-boot/breenix_x86_boot_tests_1/serial_user.txt main-boot/breenix_x86_boot_tests_1/serial_kernel.txt mutation/breenix_x86_boot_tests_1/serial_user.txt mutation/breenix_x86_boot_tests_1/serial_kernel.txt main-prod' > ../evidence/beast-serials.tar
+ssh beast 'sudo -n incus exec <x86-build-environment> -- tar -C <isolated-checkout-222> -cf - before-boot/breenix_x86_boot_tests_1/serial_user.txt before-boot/breenix_x86_boot_tests_1/serial_kernel.txt main-boot/breenix_x86_boot_tests_1/serial_user.txt main-boot/breenix_x86_boot_tests_1/serial_kernel.txt mutation/breenix_x86_boot_tests_1/serial_user.txt mutation/breenix_x86_boot_tests_1/serial_kernel.txt main-prod' > ../evidence/beast-serials.tar
 mkdir -p ../evidence/beast-serials
 tar -xf ../evidence/beast-serials.tar -C ../evidence/beast-serials
 ```
@@ -491,7 +491,7 @@ above assumed.
 The following scripts were supplied on stdin to:
 
 ```bash
-ssh beast 'sudo -n incus exec breenix-x86 -- bash -s'
+ssh beast 'sudo -n incus exec <x86-build-environment> -- bash -s'
 ```
 
 Local wrappers used `bash -o pipefail` and `tee` to retain SSH output.
@@ -503,31 +503,31 @@ expectations and restoration checks passed; the nested gate itself exited 1.
 
 ```bash
 set -euo pipefail
-export PATH=/root/.cargo/bin:$PATH
-rm -rf /root/breenix-slot1
-git clone -b tracing/x86-provider-gate --single-branch https://github.com/ryanbreen/breenix.git /root/breenix-slot1
-cd /root/breenix-slot1
-ln -s /root/breenix/rust-fork-real rust-fork
-cp -a /root/breenix/fonts/. fonts/
+export PATH=<cargo-home>/bin:$PATH
+rm -rf <isolated-checkout-221>
+git clone -b tracing/x86-provider-gate --single-branch https://github.com/ryanbreen/breenix.git <isolated-checkout-221>
+cd <isolated-checkout-221>
+ln -s <rust-fork-checkout> rust-fork
+cp -a <canonical-checkout>/fonts/. fonts/
 mkdir -p userspace/programs
-cp /root/breenix/userspace/programs/*.elf userspace/programs/ 2>/dev/null || true
+cp <canonical-checkout>/userspace/programs/*.elf userspace/programs/ 2>/dev/null || true
 if ! compgen -G 'userspace/programs/*.elf' >/dev/null; then
-    find /root/breenix -type f -name '*.elf' -print
+    find <canonical-checkout> -type f -name '*.elf' -print
     exit 1
 fi
-mkdir -p /root/breenix-slot1-tmp /root/breenix-slot1-evidence
+mkdir -p <isolated-checkout-222> <isolated-checkout-223>
 ```
 
 ### `beast-branch-once.sh`
 
 ```bash
 set -euo pipefail
-export PATH=/root/.cargo/bin:$PATH
-cd /root/breenix-slot1
-export TMPDIR=/root/breenix-slot1-tmp
-export BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork-real/library
+export PATH=<cargo-home>/bin:$PATH
+cd <isolated-checkout-221>
+export TMPDIR=<isolated-checkout-222>
+export BREENIX_RUST_FORK_LIBRARY=<rust-fork-checkout>/library
 mkdir -p "$TMPDIR/before-boot"
-BREENIX_GATE_TMP="$TMPDIR/before-boot" bash docker/qemu/run-x86-boot-tests.sh 1 2>&1 | tee /root/breenix-slot1-evidence/before-boot.txt
+BREENIX_GATE_TMP="$TMPDIR/before-boot" bash docker/qemu/run-x86-boot-tests.sh 1 2>&1 | tee <isolated-checkout-223>/before-boot.txt
 serial=$(ls "$TMPDIR"/before-boot/breenix_x86_boot_tests_*/serial_user.txt | head -1)
 grep -c 'TEST:process:deferred_fault_ring_overflow_injection' "$serial" || true
 ```
@@ -536,27 +536,27 @@ grep -c 'TEST:process:deferred_fault_ring_overflow_injection' "$serial" || true
 
 ```bash
 set -euo pipefail
-export PATH=/root/.cargo/bin:$PATH
-cd /root/breenix-slot1
-export TMPDIR=/root/breenix-slot1-tmp
-export BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork-real/library
+export PATH=<cargo-home>/bin:$PATH
+cd <isolated-checkout-221>
+export TMPDIR=<isolated-checkout-222>
+export BREENIX_RUST_FORK_LIBRARY=<rust-fork-checkout>/library
 mkdir -p "$TMPDIR/main-boot" "$TMPDIR/main-prod"
-BREENIX_GATE_TMP="$TMPDIR/main-boot" bash docker/qemu/run-x86-boot-tests.sh 1 2>&1 | tee /root/breenix-slot1-evidence/x86-boot-tests.txt
-BREENIX_GATE_TMP="$TMPDIR/main-prod" bash docker/qemu/run-x86-prod-profile-boot-test.sh 2>&1 | tee /root/breenix-slot1-evidence/x86-prod.txt
+BREENIX_GATE_TMP="$TMPDIR/main-boot" bash docker/qemu/run-x86-boot-tests.sh 1 2>&1 | tee <isolated-checkout-223>/x86-boot-tests.txt
+BREENIX_GATE_TMP="$TMPDIR/main-prod" bash docker/qemu/run-x86-prod-profile-boot-test.sh 2>&1 | tee <isolated-checkout-223>/x86-prod.txt
 ```
 
 ### `beast-marker-check.sh`
 
 ```bash
 set -euo pipefail
-boot_serial=$(ls /root/breenix-slot1-tmp/main-boot/breenix_x86_boot_tests_*/serial_user.txt | head -1)
+boot_serial=$(ls <isolated-checkout-222>/main-boot/breenix_x86_boot_tests_*/serial_user.txt | head -1)
 awk '
   index($0,"[TEST:process:deferred_fault_ring_overflow_injection:START]") { started++ }
   index($0,"[TEST:process:deferred_fault_ring_overflow_injection:PASS]") { passed++ }
   index($0,"[TEST:process:deferred_fault_ring_overflow_injection:FAIL:") { failed++ }
   END { printf "boot-tests serial: started=%d passed=%d failed=%d\n", started+0, passed+0, failed+0; exit !(started==1 && passed==1 && failed==0) }
 ' "$boot_serial"
-prod_serial=$(ls /root/breenix-slot1-tmp/main-prod/*/serial_user.txt 2>/dev/null | head -1)
+prod_serial=$(ls <isolated-checkout-222>/main-prod/*/serial_user.txt 2>/dev/null | head -1)
 if [ -z "$prod_serial" ]; then
   echo "no production serial_user.txt found -- report this plainly, do not guess a path"
 else
@@ -570,11 +570,11 @@ fi
 
 ```bash
 set -euo pipefail
-export PATH=/root/.cargo/bin:$PATH
-cd /root/breenix-slot1
-export TMPDIR=/root/breenix-slot1-tmp
-export BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork-real/library
-backup=/root/breenix-slot1-evidence/process_task.before-mutation.rs
+export PATH=<cargo-home>/bin:$PATH
+cd <isolated-checkout-221>
+export TMPDIR=<isolated-checkout-222>
+export BREENIX_RUST_FORK_LIBRARY=<rust-fork-checkout>/library
+backup=<isolated-checkout-223>/process_task.before-mutation.rs
 cp kernel/src/task/process_task.rs "$backup"
 trap 'cp "$backup" kernel/src/task/process_task.rs' EXIT
 python3 - <<'MUTATE'
@@ -589,7 +589,7 @@ p.write_text(s.replace(fragment, '', 1))
 MUTATE
 mkdir -p "$TMPDIR/mutation"
 set +e
-BREENIX_GATE_TMP="$TMPDIR/mutation" bash docker/qemu/run-x86-boot-tests.sh 1 2>&1 | tee /root/breenix-slot1-evidence/provider-mutation.txt
+BREENIX_GATE_TMP="$TMPDIR/mutation" bash docker/qemu/run-x86-boot-tests.sh 1 2>&1 | tee <isolated-checkout-223>/provider-mutation.txt
 mutation_exit=${PIPESTATUS[0]}
 set -e
 echo "mutation gate exit: $mutation_exit"
@@ -1038,13 +1038,13 @@ structure_suites=53/53:critical_path_lines=260:pinned=120]`, then
 `[OK] Boot 1: SUCCESS`, `PASS: 1/1 boots succeeded`.
 
 `bash docker/qemu/run-x86-boot-tests.sh 1` on beast, in
-`/root/breenix-slot1`: **first attempt's structure-suite preflight came
+`<isolated-checkout-221>`: **first attempt's structure-suite preflight came
 back `GATE_PREFLIGHT: FAIL (2 of 53 ... red: coreproof_component_h_structure
 coreproof_coverage_structure)`.** Both suites pass cleanly in this worktree
 (`5/5` and `4/4` respectively, same commit `b0019cfb`), and neither suite's
 own log file existed under the shared `/tmp/breenix_gate_structure_preflight`
 afterward, even though 51 other suites' logs did. At the time, another lane
-(clone `/root/breenix-823`, confirmed via `ps`) was concurrently running the
+(clone `<isolated-checkout-132>`, confirmed via `ps`) was concurrently running the
 same gate script on the same beast container, and both
 `docker/qemu/lib/gate-structure-preflight.sh` (its `rm -rf "$log_dir"` +
 shared log directory) and `scripts/run-structure-tests.sh` (its shared
@@ -1055,14 +1055,14 @@ a source defect newly introduced by this branch or by origin/main's merged
 commits — it is a preexisting gap in this gate's own temp-path scoping, not
 touched by this branch's diff, so it is not fixed here; a session
 encountering it again should isolate `BREENIX_GATE_TMP`/`TMPDIR` per run, as
-done below. **Second attempt, with `TMPDIR=/root/slot1-gate-tmp
-BREENIX_GATE_TMP=/root/slot1-gate-tmp`** (a run-scoped directory, avoiding
+done below. **Second attempt, with `TMPDIR=<host-artifact-dir-224>
+BREENIX_GATE_TMP=<host-artifact-dir-224>`** (a run-scoped directory, avoiding
 the shared-`/tmp` race): `[GATE_PREFLIGHT:structure_suites=53/53:
 critical_path_lines=260:pinned=120]`, kernel + userspace + ext2 build
 succeeded, queued on the shared `x86-qemu.lock` behind other lanes'
 concurrent boots (normal per this task's own instructions), then booted and
 scored `x86 frame-custody gate run 1: PASS`. The provider gate's own lines
-in `/root/slot1-gate-tmp/breenix_x86_boot_tests_1/serial_user.txt` (copied
+in `<host-artifact-dir-224>/breenix_x86_boot_tests_1/serial_user.txt` (copied
 locally to
 `/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/slot1/landing-evidence/x86-serial-user.txt`,
 lines 119-120):

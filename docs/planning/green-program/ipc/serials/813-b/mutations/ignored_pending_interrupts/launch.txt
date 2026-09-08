@@ -1,0 +1,5 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+[UNIX_WRITE_START:aarch64:signal]
+F123456789SCUNIX_CHILD_FAIL:write=-4 expected=4096
+[UNIX_WRITE_ORACLE:aarch64:signal:verdict=FAIL:ignored signal completed write]
+[UNIX_WRITE_RESULT:aarch64:status=1]

@@ -1,0 +1,28 @@
+revision=4394409fca3932296f3468914b5be325ce0d48a6
+kernel/src/main_aarch64.rs:1320:         serial_println!(
+kernel/src/main_aarch64.rs:1329:     kernel::task::softirqd::init_online_daemons();
+kernel/src/main_aarch64.rs:1345:     kernel::task::kthread_tests::test_kthread_lifecycle();
+kernel/src/main_aarch64.rs:1361:     kernel::task::workqueue_tests::test_workqueue();
+kernel/src/main_aarch64.rs:1363:     kernel::task::softirq_tests::test_softirq();
+kernel/src/main_aarch64.rs:1503:         serial_println!("[test] Loading test binaries from ext2...");
+kernel/src/main_aarch64.rs:1504:         load_test_binaries_from_ext2();
+kernel/src/main_aarch64.rs:1505:         serial_println!("[test] Test processes loaded - will run via timer interrupts");
+kernel/src/main_aarch64.rs:1723:         "[test] Loaded {}/{} test binaries ({} failed, {} not found)",
+kernel/src/task/softirqd.rs:335: pub fn init_online_daemons() {
+kernel/src/task/softirqd.rs:343:         #[cfg(target_arch = "aarch64")]
+kernel/src/task/softirqd.rs:351:             let name = alloc::format!("ksoftirqd/{cpu}");
+kernel/src/task/softirq_tests.rs:144:     let deferral_ok = test_deferral();
+kernel/src/task/softirq_tests.rs:233:         if dispatches > 0 && iterations >= TARGET_ITERATIONS {
+kernel/src/task/softirq_tests.rs:239:         if elapsed_ticks >= WAIT_TICKS {
+kernel/src/task/softirq_tests.rs:243:         if elapsed_ns >= WALL_LIMIT_NS || !ACTIVE.load(Ordering::Acquire) {
+kernel/src/task/softirq_tests.rs:273:             if crate::task::kthread::kthread_run_on_cpu(deferral_probe, "softirq-probe", 1).is_err()
+kernel/src/task/softirq_tests.rs:297:         "[SOFTIRQ_DEFERRAL_ORACLE:arch={}:cpu={}:budget_ticks={}:wait_ticks={}:wait_ns={}:dispatches={}:iterations={}:verdict={}]",
+docker/qemu/run-aarch64-testing-profile-boot-test.sh:41: BOOT_SECONDS="${BREENIX_TESTING_PROFILE_BOOT_SECONDS:-45}"
+docker/qemu/run-aarch64-testing-profile-boot-test.sh:62: LOADED_LINE_RE='\[test\] Loaded [0-9]+/[0-9]+ test binaries'
+docker/qemu/run-aarch64-testing-profile-boot-test.sh:63: MARKER_LINE='[test] Test processes loaded - will run via timer interrupts'
+docker/qemu/run-aarch64-testing-profile-boot-test.sh:138:     [ "$MARKER" -eq 0 ] && RED_REASONS="$RED_REASONS loader-marker-missing"
+docker/qemu/run-aarch64-testing-profile-boot-test.sh:139:     [ "$LOADED" -eq 0 ] && RED_REASONS="$RED_REASONS loaded-line-missing"
+docker/qemu/run-aarch64-testing-profile-boot-test.sh:193: ITERATIONS="${1:-3}"
+scripts/score-softirq-deferral.py:13: def score(text):
+scripts/score-softirq-deferral.py:23:     if verdict == "ok" and (int(dispatches) == 0 or int(iterations) < 25):
+scripts/score-softirq-deferral.py:29:     return {"ok": 0, "lost": 1, "starved": 2}[verdict], lines[0]
