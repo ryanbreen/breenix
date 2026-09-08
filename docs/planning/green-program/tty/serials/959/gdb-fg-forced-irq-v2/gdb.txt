@@ -1,0 +1,24 @@
+source revision: c93ecf5297f42bf4127849f0b26961d74c25f85c
+0x0000000040080000 in _start ()
+Breakpoint 1 at 0xffff00004056272c
+[Switching to Thread 1.4]
+
+Thread 4 hit Breakpoint 1, 0xffff00004056272c in kernel::test_framework::registry::tty_irq_fg_inject ()
+FG_AFTER_START_TIMESTAMP
+pc             0xffff00004056272c  0xffff00004056272c <kernel::test_framework::registry::tty_irq_fg_inject+184>
+cpsr           0x60000005          [ SP EL=1 BTYPE=0 C Z ]
+cpsr           0x60000005          [ SP EL=1 BTYPE=0 C Z ]
+CNTFRQ_EL0     0x3b9aca0           62500000
+CNTP_CTL_EL0   0x0                 0
+CNTP_CVAL_EL0  0x0                 0
+CNTV_CTL_EL0   0x1                 1
+CNTV_CVAL_EL0  0x23ebf7f8          602667000
+CNTPS_CTL_EL1  0x0                 0
+CNTPS_CVAL_EL1 0x0                 0
+Breakpoint 2 at 0xffff0000404ab268
+
+Thread 4 hit Breakpoint 2, 0xffff0000404ab268 in handle_irq ()
+FORCED_TIMER_IN_MEASURED_FG elr=0xffff00004056272c saved_spsr=0x60000005
+   0xffff00004056272c <_ZN6kernel14test_framework8registry17tty_irq_fg_inject17h875aca3e87a8513cE+184>:	adrp	x9, 0xffff000040a54000 <_ZN6kernel3ipc5stdin12STDIN_BUFFER17hdc26ea8f25f429acE.llvm.6567107105475765849+3096>
+   0xffff000040562730 <_ZN6kernel14test_framework8registry17tty_irq_fg_inject17h875aca3e87a8513cE+188>:	add	x9, x9, #0x448
+[Inferior 1 (process 1) detached]

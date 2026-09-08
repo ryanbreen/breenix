@@ -1,0 +1,1 @@
+[GATE_SUITE:stem=udp_socket_lock_irq_structure:attempt=1:timeout_s=300:wall_s=2:exit=0]

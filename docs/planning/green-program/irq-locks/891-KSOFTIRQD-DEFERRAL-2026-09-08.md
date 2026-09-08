@@ -548,3 +548,14 @@ in this population. Beast had 0 lane-owned QEMUs after the parallel gate.
 
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/pre968-message.txt -> exit 0
+
+### Merge of concurrent PR 968
+
+`git merge --no-ff --no-commit origin/main` merged PR 968 without
+conflicts, including 0 kernel/docker conflicts. The incoming code is
+in `kernel/src/test_framework/registry.rs`, with structure-test updates.
+It changes no scorer requirement, so no additional R182 re-record is
+required by this merge. The required gates will run on this merge commit.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/merge-main-message.txt -> exit 0

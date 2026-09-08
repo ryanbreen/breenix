@@ -1,0 +1,53 @@
+revision: 880174edb0ce98b6a464f2630d47bb12f0304004
+sha256 2db29b2ad1f42cfa793410078350fbf7f83abee57401cde001d2a3abc32e5bda kernel/src/test_framework/registry.rs
+kernel/src/test_framework/registry.rs:6620: const TTY_IRQ_PM_ENTRY_CEILING_US: u64 = 1_000;
+kernel/src/test_framework/registry.rs:6676: fn tty_irq_pm_holder_body() {
+kernel/src/test_framework/registry.rs:6689:         if TTY_IRQ_PM_HOLD_RELEASE.load(AtomicOrdering::Acquire) && elapsed >= TTY_IRQ_PM_HOLD_US {
+kernel/src/test_framework/registry.rs:6696:             TTY_IRQ_PM_HOLD_SAFETY.store(true, AtomicOrdering::Release);
+kernel/src/test_framework/registry.rs:6762: pub fn run_tty_irq_pm_oracle() -> bool {
+kernel/src/test_framework/registry.rs:6845:             crate::arch_without_interrupts(|| {
+kernel/src/test_framework/registry.rs:6863:                     peer_held_after = crate::process::try_manager().is_none()
+kernel/src/test_framework/registry.rs:6940:         && peer_held_after
+kernel/src/test_framework/registry.rs:6944:         && pm_busy_probe == 1
+kernel/src/test_framework/registry.rs:7099: const TTY_IRQ_FG_ENTRY_CEILING_US: u64 = 1_000;
+kernel/src/test_framework/registry.rs:7120: fn tty_irq_fg_holder_body() {
+kernel/src/test_framework/registry.rs:7137:             if TTY_IRQ_FG_HOLD_RELEASE.load(AtomicOrdering::Acquire)
+kernel/src/test_framework/registry.rs:7146:                 TTY_IRQ_FG_HOLD_SAFETY.store(true, AtomicOrdering::Release);
+kernel/src/test_framework/registry.rs:7162: fn tty_irq_fg_inject(byte: u8) -> (u64, u64, u64, u64, u64, u64) {
+kernel/src/test_framework/registry.rs:7249: pub fn run_tty_irq_fg_oracle() -> bool {
+kernel/src/test_framework/registry.rs:7325:             crate::arch_without_interrupts(|| {
+kernel/src/test_framework/registry.rs:7345:                     peer_held_after = tty.foreground_pgrp_busy_for_test()
+kernel/src/test_framework/registry.rs:7429:         && fg_busy_probe == 1
+kernel/src/test_framework/registry.rs:7439:         && peer_held_after
+sha256 88dfc480c29cbbc9a68e5af0531b394beefe2d7744b15176239537475aae5e25 kernel/src/tty/driver.rs
+kernel/src/tty/driver.rs:326:         if self.foreground_pgrp_snapshot().is_none() {
+kernel/src/tty/driver.rs:764:         if let Some(pgrp) = self.foreground_pgrp_snapshot() {
+kernel/src/tty/driver.rs:852:         if let Some(mut manager) = process::try_manager() {
+sha256 20801b897774b1f06dbd9a2b1d4a640a2a40da0d3b31b61b38a203670322cc31 kernel/src/socket/unix.rs
+kernel/src/socket/unix.rs:238:         // FdTable destruction may run under PM or from fault cleanup.
+kernel/src/socket/unix.rs:253:                 let ids = core::mem::take(&mut *readers.lock());
+kernel/src/socket/unix.rs:266:     pub fn deliver_deferred(self) {
+kernel/src/socket/unix.rs:281: pub(crate) fn drain_close_notifications() {
+sha256 c0a6a2b5ded14985bea729c88b8d064efd6c9ab84a397c327681cea72c761cc0 kernel/src/task/process_task.rs
+kernel/src/task/process_task.rs:1238:     crate::socket::unix::drain_close_notifications();
+sha256 fd5be9a967c051e685b2fa4515984c8e17379e28a61279d39258f118b41d8030 kernel/src/syscall/blocking_io.rs
+kernel/src/syscall/blocking_io.rs:115: pub(crate) fn write_unix(
+kernel/src/syscall/blocking_io.rs:137:             queue.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+kernel/src/syscall/blocking_io.rs:141:         if let Err(error) = wait_prepared(&queue, outcome) {
+sha256 84d2d235a7c8e9bb9b447c3a335f49a9d109a2f597db15ccf919970aeb74e831 kernel/src/ipc/pipe.rs
+kernel/src/ipc/pipe.rs:46:     pub fn deliver_deferred(self) {
+sha256 b3fb614dd4f6aca79e7c1723f1ac05201dfc8f21bb89ae0bd98f1ddbf354c05d kernel/src/task/waitqueue.rs
+kernel/src/task/waitqueue.rs:182:     pub fn wake_up_deferred(&self) {
+kernel/src/task/waitqueue.rs:185:                 crate::task::scheduler::isr_unblock_for_io(waiter.tid());
+sha256 e01cc68614802679d087d300bfab606d07e9f41732ee12e667b09964c21ee4dc kernel/src/arch_impl/aarch64/exception.rs
+kernel/src/arch_impl/aarch64/exception.rs:2137:                     crate::drivers::virtio::input_mmio::handle_interrupt();
+kernel/src/arch_impl/aarch64/exception.rs:2229:         let reopen_nested_irq_window =
+kernel/src/arch_impl/aarch64/exception.rs:2252:         crate::task::softirqd::do_softirq();
+sha256 ea0a0e9fb321b01af96cc5259e565f46ff1414996dcef0586888c73e1d058e6a kernel/src/arch_impl/aarch64/gic.rs
+kernel/src/arch_impl/aarch64/gic.rs:890: pub fn is_spi_level_triggered(irq: u32) -> bool {
+sha256 93753c69370b6fb22161cde3efc4807b9d8c193d5c64c091b2377aee23f9c68f tests/tty_irq_pm_structure.rs
+tests/tty_irq_pm_structure.rs:1119: fn validate_peer_hold_rendezvous(registry: &str) -> Result<(), String> {
+tests/tty_irq_pm_structure.rs:1168: fn peer_hold_rendezvous_covers_both_lock_probes() {
+tests/tty_irq_pm_structure.rs:1174: fn peer_hold_rendezvous_rejects_time_only_and_unmasked_mutations() {
+sha256 2727e2e7c00a7adc8759936d8056e03f91030928ec604a9deececa52bcf05f41 tests/tracing_provider_gate_structure.rs
+tests/tracing_provider_gate_structure.rs:35:     let expected = format!(

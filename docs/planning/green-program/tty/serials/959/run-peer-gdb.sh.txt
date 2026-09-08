@@ -1,0 +1,34 @@
+Recorded lane launcher; source snapshots/revisions are in adjacent transcripts.
+#!/bin/bash
+set -eu
+export PATH=/opt/homebrew/bin:$PATH
+ROOT="/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t959/wt"
+export TMPDIR="$ROOT/.tmp"
+export BREENIX_GATE_TMP="$ROOT/.gate-tmp"
+OUT="$ROOT/../serials/gdb-original"
+mkdir -p "$OUT"
+git -C "$ROOT/../ab-prb" rev-parse HEAD > "$OUT/revision.txt"
+cp "$ROOT/.tmp/peer-repro.py" "$OUT/peer-repro.py"
+cp "$ROOT/target/ext2-aarch64.img" "$OUT/ext2.img"
+source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
+qemu_host_lock_acquire
+qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
+ -kernel "$ROOT/../ab-prb/target/aarch64-breenix-kernel/release/kernel-aarch64" \
+ -S -gdb tcp:127.0.0.1:19599 -display none -no-reboot \
+ -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
+ -device virtio-blk-device,drive=ext2 -drive if=none,id=ext2,format=raw,file="$OUT/ext2.img" \
+ -device virtio-net-device,netdev=net0 -netdev user,id=net0 -serial file:"$OUT/serial.txt" > "$OUT/qemu.log" 2>&1 &
+QEMU_PID=$!
+qemu_host_lock_track_pid "$QEMU_PID"
+echo "$QEMU_PID" > "$OUT/qemu.pid"
+sleep 1
+set +e
+timeout 90 gdb -nx -batch "$ROOT/../ab-prb/target/aarch64-breenix-kernel/release/kernel-aarch64" -ex "source $ROOT/.tmp/peer-repro.py" > "$OUT/gdb.txt" 2>&1
+rc=$?
+set -e
+echo "$rc" > "$OUT/gdb.exit"
+# Let the unchanged registry print the result after the debugger detaches.
+sleep 8
+kill "$QEMU_PID" 2>/dev/null || true
+wait "$QEMU_PID" 2>/dev/null || true
+qemu_host_lock_release

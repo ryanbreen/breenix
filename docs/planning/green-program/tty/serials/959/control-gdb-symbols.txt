@@ -1,0 +1,23 @@
+All functions matching regular expression "try_manager":
+
+Non-debugging symbols:
+0xffff00004051ab80  kernel::process::try_manager
+All variables matching regular expression "TTY_IRQ_PM_HOLD":
+
+Non-debugging symbols:
+0xffff000040a31de8  kernel::test_framework::registry::TTY_IRQ_PM_HOLD_CPU
+0xffff0000414608b0  kernel::test_framework::registry::TTY_IRQ_PM_HOLD_ACTIVE
+0xffff0000414608b4  kernel::test_framework::registry::TTY_IRQ_PM_HOLD_DONE
+0xffff0000414608b8  kernel::test_framework::registry::TTY_IRQ_PM_HOLD_MEASURED_US
+All functions matching regular expression "run_tty_irq_pm_oracle":
+
+Non-debugging symbols:
+0xffff00004054e9c8  kernel::test_framework::registry::run_tty_irq_pm_oracle
+All functions matching regular expression "tty_irq_pm_holder_body":
+
+Non-debugging symbols:
+0xffff00004054e68c  kernel::test_framework::registry::tty_irq_pm_holder_body
+All functions matching regular expression "handle_irq":
+
+Non-debugging symbols:
+0xffff00004044ba1c  handle_irq
