@@ -1,0 +1,23 @@
+revision=4ae11b95a2b8f11b981738c8607e68fd9b3d916f
+{'run': 'normal', 'exit': 0, 'seconds': 5.628}
+{'run': 'load-01', 'exit': 0, 'seconds': 5.715}
+{'run': 'load-02', 'exit': 0, 'seconds': 5.704}
+{'run': 'load-03', 'exit': 0, 'seconds': 5.708}
+{'run': 'load-04', 'exit': 0, 'seconds': 5.695}
+{'run': 'load-05', 'exit': 0, 'seconds': 5.709}
+{'run': 'load-06', 'exit': 0, 'seconds': 5.716}
+{'run': 'load-07', 'exit': 0, 'seconds': 5.689}
+{'run': 'load-08', 'exit': 0, 'seconds': 5.747}
+{'run': 'load-09', 'exit': 0, 'seconds': 5.826}
+{'run': 'load-10', 'exit': 0, 'seconds': 5.854}
+{'run': 'load-11', 'exit': 0, 'seconds': 5.966}
+{'run': 'load-12', 'exit': 0, 'seconds': 5.839}
+{'run': 'load-13', 'exit': 0, 'seconds': 5.749}
+{'run': 'load-14', 'exit': 0, 'seconds': 5.745}
+{'run': 'load-15', 'exit': 0, 'seconds': 5.721}
+{'run': 'load-16', 'exit': 0, 'seconds': 5.775}
+{'run': 'load-17', 'exit': 0, 'seconds': 5.741}
+{'run': 'load-18', 'exit': 0, 'seconds': 5.733}
+{'run': 'load-19', 'exit': 0, 'seconds': 5.738}
+{'run': 'load-20', 'exit': 0, 'seconds': 5.719}
+Tracked eight hogs reaped
