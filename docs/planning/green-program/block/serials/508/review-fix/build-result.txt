@@ -1,0 +1,9 @@
+SOURCE_REVISION=48610ba15e16a3a0785c7398e758cde9e2ed43a0 plus review patch
+Kernel sources subsequently committed at c236b037d86e5d7e0cd04fc3c700d52f53a45bab
+Command: cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
+LAUNCH_LOAD=3.40
+  Finished `release` profile [optimized] target(s) in 1.28s
+  Finished `release` profile [optimized] target(s) in 0.17s
+    Finished `release` profile [optimized] target(s) in 21.23s
+REVIEW_BUILD_EXIT=0
+Project compiler diagnostics: 0

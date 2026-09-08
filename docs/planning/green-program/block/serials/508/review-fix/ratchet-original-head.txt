@@ -28,4 +28,3 @@ failures:
     switch_and_admission_have_no_text_output
 
 test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
-

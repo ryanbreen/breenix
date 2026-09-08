@@ -1,0 +1,4 @@
+SOURCE_REVISION=c236b037d86e5d7e0cd04fc3c700d52f53a45bab
+Command: python3 scripts/score-boot-disk-wait.py <decoded serial_user.txt.gz> <decoded serial_kernel.txt.gz>
+boot disk wait oracle: PASS (switched_away=0 tests_completed=1)
+exit=0

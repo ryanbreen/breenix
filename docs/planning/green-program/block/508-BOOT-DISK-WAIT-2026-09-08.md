@@ -190,3 +190,47 @@ Code-commit checks:
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-review-code-commit.txt -> exit 0
 ```
+
+### Committed-revision rerun
+
+The code revision is `c236b037d86e5d7e0cd04fc3c700d52f53a45bab`, pushed on
+`sched/508-boot-thread-disk-wait`. Source citations were re-derived from that
+commit in `serials/508/review-fix/source-citations.txt`: the outgoing count
+snapshot is at `kernel/src/interrupts/context_switch.rs:363`, the switch call
+at line 367, the resolved-ID read at line 381, and the increment at line 384.
+The line references in the earlier sections describe their named historical
+revisions, not this revision.
+
+The committed-revision x86 gate launched at 1-minute load 0.91. Its preflight
+passed 70/70 suites, with the context-restore suite finishing in 258 seconds
+under its 300-second budget. There was no structure timeout and no 900-second
+suite-timeout rerun. The gate rebuilt without project compiler diagnostics.
+
+The QEMU launch after preflight/build recorded load 2.89. The full gate exited
+1 with `ended_by=poll_exhausted`; its terminal completion requirements were not
+met. `serials/508/review-fix/gate.log.gz` preserves the transcript with the
+revision it ran at. `serials/508/review-fix/gate-result.txt` names the decoded
+source file and line for each retained marker.
+
+The saved `serials/508/review-fix/serial_user.txt.gz` contains one final
+64-call registration marker followed by one accepted boot-disk oracle:
+`switched_away=0`, `tests_completed=1`. Running the scorer on the two decoded
+serial files exited 0 (`serials/508/review-fix/oracle-score.txt`). The timer-wake
+latency oracle also passed, with 42 ms overrun against its 100 ms bound.
+The same user serial later contains `ARGV_TEST_FAILED` and
+`EXT2_LOCK_SPIN_STALL lock=ROOT_EXT2_write`; these remain failed runtime
+observations. Follow-ups 973, 728, and 748 were confirmed open. This pass does
+not establish an identical root cause for the ext2 observations or claim a
+green full gate. The gate's tracked QEMU PID was absent after exit; no
+process-name kill was used.
+
+V-1 and V-2 are closed at the code-finding scope by the regression tests,
+mutation rejections, and source changes described above. This disposition
+does not close issue 508 or its runtime follow-ups.
+
+Evidence-commit checks:
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-review-evidence-commit.txt -> exit 0
+```

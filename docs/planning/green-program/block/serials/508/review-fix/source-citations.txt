@@ -1,0 +1,13 @@
+SOURCE_REVISION=c236b037d86e5d7e0cd04fc3c700d52f53a45bab
+kernel/src/interrupts/context_switch.rs:363: let outgoing_preempt = crate::per_cpu::preempt_count() as u64;
+kernel/src/interrupts/context_switch.rs:367: switch_to_thread(
+kernel/src/interrupts/context_switch.rs:382: if dispatched_tid != old_thread_id {
+kernel/src/interrupts/context_switch.rs:384: SWITCHED_AWAY.fetch_add(1, Ordering::Release);
+kernel/src/interrupts/context_switch.rs:682: if crate::tls::switch_tls(thread_id).is_err() {
+kernel/src/interrupts/context_switch.rs:683: scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+kernel/src/interrupts/context_switch.rs:1013: scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+kernel/src/interrupts/context_switch.rs:1182: scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+kernel/src/per_cpu.rs:1366: pub fn can_schedule(saved_cs: u64) -> bool {
+tests/boot_disk_wait_structure.rs:89: fn departure_counter_observes_dispatch_result_after_rollback() {
+tests/boot_disk_wait_structure.rs:108: fn switch_and_admission_have_no_text_output() {
+tests/boot_disk_wait_structure.rs:144: fn resolved_departure_block_rejects_tls_rollback_and_counts_departure() {

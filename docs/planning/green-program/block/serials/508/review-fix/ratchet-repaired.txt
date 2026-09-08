@@ -11,4 +11,3 @@ test scorer_rejects_mutation_missing_duplicate_and_unfinished_evidence ... ok
 test resolved_departure_block_rejects_tls_rollback_and_counts_departure ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
-
