@@ -27,6 +27,7 @@
 //! The x86 serial implementation retains its existing mutex/raw-output split;
 //! issue 847's UART ownership mechanism is aarch64-only.
 
+#[cfg(feature = "boot_tests")]
 use super::thread::ThreadPrivilege;
 use super::thread::{CpuContext, VirtAddr};
 use super::thread::{Thread, ThreadState};
