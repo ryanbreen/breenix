@@ -1,4 +1,4 @@
-# run-x86-prod-profile-boot-test.sh at merged head 436f476a (breenix-x86 Incus container)
+# run-x86-prod-profile-boot-test.sh at merged head 436f476a (the x86 build environment)
 255:PASS: x86 production profile reached steady state with the teardown census at rest
 283:  test-only marker '[INIT_DESIGNATION_ORACLE:': 0
 296:  fault marker 'DISK LOADING FAILED': 0

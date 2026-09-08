@@ -502,8 +502,8 @@ round 2 changed kernel source and round 3 rebuilt everything afterwards.
 
 ## 9. The x86_64 build
 
-x86 builds run on beast, not on this Mac. The clone at `/root/breenix-ttbr0`
-inside the `breenix-x86` Incus container was reset to this branch and built
+x86 builds run on beast, not on this Mac. The clone at `<isolated-checkout-44>`
+inside the x86 build environment was reset to this branch and built
 with the standard command:
 
 ```

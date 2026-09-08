@@ -16,7 +16,7 @@ the emission survives into a zero-feature build.
 
 | item | value |
 |---|---|
-| repository | `/root/breenix-775` on the beast `breenix-x86` VM |
+| repository | `<isolated-checkout-53>` on the x86 build environment on beast |
 | commit booted | `365c20c2`, the branch head, unmodified |
 | harness | `docker/qemu/run-x86-prod-profile-boot-test.sh`, twice, back to back |
 | build | that script's own `cargo build --release --bin qemu-uefi` — no `--features` flag at all |

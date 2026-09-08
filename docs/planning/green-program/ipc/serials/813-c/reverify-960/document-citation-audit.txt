@@ -34,7 +34,7 @@ kernel/src/ipc/stdin.rs:221: pub fn unregister_blocked_reader(thread_id: u64) {
 kernel/src/syscall/handlers.rs:919:                         // Check if data arrived during setup (race condition fix)
 kernel/src/task/scheduler.rs:3426:     pub fn block_current_in_syscall(&mut self) {
 kernel/src/syscall/fifo.rs:86: #[cfg(not(target_arch = "x86_64"))]
-docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `/root/breenix-p796`, `BREENIX_GATE_TMP=/root/breenix-p796-tmp`,
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `<isolated-checkout-124>`, `BREENIX_GATE_TMP=<isolated-checkout-125>`,
 docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:837: * **The oracle does not witness a successful `F_SETFD` under contention.** Its
 userspace/programs/src/futex_handoff_oracle.rs:68: fn input_inject_negative_control() {
 docker/qemu/run-aarch64-prod-profile-boot-test.sh:707: python3 "$BREENIX_ROOT/scripts/score-input-inject-negative-control.py" "$SERIAL_FILE"

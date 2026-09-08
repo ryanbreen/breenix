@@ -38,11 +38,11 @@ touches only `mod.rs` (344 insertions/9 deletions), zero lines in
 
 This is the honest finding, not a hand-wave. Two independent attempts
 this round, using a dedicated isolated beast clone
-(`/root/breenix-728-prove` for the fix bytes, `/root/breenix-728-prove-red`
+(`<isolated-checkout-157>` for the fix bytes, `<isolated-checkout-158>`
 for a fresh single-hunk revert — see `single-hunk-revert-diff.txt`, which
 reinstates exactly the B1 defect the review found and this round's fix
 commit `dc4cb536` removed: the `interrupts_enabled()` conjunct on x86,
-which review B1 proved is unconditionally false at every x86 syscall
+which review B1 proved is unconditionally false at the inspected x86 syscall
 site):
 
 - **Attempt 1** (`attempt1-green-gate-stdout.txt`,
@@ -112,7 +112,7 @@ question with a different instrument.
 config and exercises real `sys_mkdir`/`sys_open`/`sys_read` syscall-path
 acquisitions, the shape B1 in review.md specifically named as the one
 this harness's kthread-based race leg does *not* exercise), at landed
-fix bytes (`85d08733`), in a dedicated clone (`/root/breenix-728-prove-hist`).
+fix bytes (`85d08733`), in a dedicated clone (`<isolated-checkout-159>`).
 
 **10/10 boots: zero occurrences of the #728 stall shape** (no silent
 post-`sys_mkdir` hang, no wedge). 8/10 PASS cleanly; 2/10 (boot 4 of each

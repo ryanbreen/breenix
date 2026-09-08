@@ -211,8 +211,8 @@ not. Adding a tolerance there would be a FAIL-condition relaxation that R30 does
 ## 5. x86 differential (review B3)
 
 `main` was rebuilt from a **fresh clone** (`git clone --no-local` of the branch checkout, `main`
-`e377e7a8`) in the beast `breenix-x86` VM. Three fresh-clone landmines had to be repaired before it
-would build and boot, all local-only and all pre-existing: the gitignored `Cargo.lock` (a fresh
+`e377e7a8`) in the x86 build environment on beast. Three fresh-clone landmines had to be repaired before it
+would build and boot, local-only and pre-existing: the gitignored `Cargo.lock` (a fresh
 resolve picks `x86_64 0.15.5`, which breaks the pinned nightly), the `rust-fork` symlink (points at a
 Mac path; must be pointed at the VM's real fork clone or `kernel/build.rs:170` panics), and the
 missing `target/ovmf` firmware. These are why the previous attempt's differential was abandoned.

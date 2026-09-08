@@ -1,4 +1,4 @@
-[gate] repo: /root/breenix  head: f8ab03b5
+[gate] repo: <canonical-checkout>  head: f8ab03b5
 [gate] accel=kvm cpu=host
 [gate] === Building userspace ELFs ===
 [gate] === Repacking the userspace test disk and the ext2 image ===

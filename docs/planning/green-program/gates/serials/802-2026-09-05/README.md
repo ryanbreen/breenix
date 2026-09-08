@@ -1,8 +1,8 @@
 # #802 preflight-verdict evidence, 2026-09-05
 
-Beast (`breenix-x86` Incus VM) evidence for branch
+Beast (the x86 build environment) evidence for branch
 `fix/802-prod-gate-preflight-verdict`, head `4b6b82d4`, clone
-`/root/breenix-health`, with `BREENIX_GATE_TMP=/root/gate-tmp-802` for the
+`<isolated-checkout-17>`, with `BREENIX_GATE_TMP=<host-artifact-dir-24>` for the
 default run (R18). The narrative that reads these files is
 `../../GATE-PREFLIGHT-VERDICT-802-2026-09-05.md`.
 
@@ -14,6 +14,6 @@ default run (R18). The narrative that reads these files is
 | `preflight-timing.txt` | A second, timed pass over the two rejection legs (`date +%s.%N` either side), plus the `ls -d` check that neither leg created its output directory. |
 
 The default run's own serial files stay in the container at
-`/root/gate-tmp-802/breenix_x86_prod_profile/`; the gate PASSed, so
+`<host-artifact-dir-24>/breenix_x86_prod_profile/`; the gate PASSed, so
 `report_gate_failure` did not run and this directory holds no preserved
 failure serial.

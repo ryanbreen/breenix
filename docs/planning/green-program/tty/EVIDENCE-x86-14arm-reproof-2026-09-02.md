@@ -36,8 +36,8 @@ bytes actually on `main`. This leg closes that gap by re-running the real
 ## Leg run
 
 ```
-ssh beast 'sudo -n incus exec breenix-x86 -- bash -lc \
-  "cd /root/breenix && bash docker/qemu/run-x86-tty-oracle-gate.sh --boots 25 --rebuild-userspace"'
+ssh beast 'sudo -n incus exec <x86-build-environment> -- bash -lc \
+  "cd <canonical-checkout> && bash docker/qemu/run-x86-tty-oracle-gate.sh --boots 25 --rebuild-userspace"'
 ```
 
 - Repo state confirmed on beast before the run: `git fetch origin && git

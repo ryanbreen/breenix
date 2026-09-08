@@ -1,6 +1,6 @@
 REVISION=19427ef42612d14bb4cc4474a7dd460cdc850a03
-BASE=0x10000000000 ELF=/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845
-add symbol table from file "/root/breenix-927a/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845" with all sections offset by 0x10000000000
+BASE=0x10000000000 ELF=<isolated-checkout-166>/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845
+add symbol table from file "<isolated-checkout-166>/target/x86_64-unknown-none/release/deps/artifact/kernel-53a4eb09c66a2845/bin/kernel-53a4eb09c66a2845" with all sections offset by 0x10000000000
 0x000000000000fff0 in ?? ()
 Hardware assisted breakpoint 1 at 0x100001c85d0
 

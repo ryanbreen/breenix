@@ -71,7 +71,7 @@
    Compiling futures-task v0.3.34
    Compiling untrusted v0.9.0
    Compiling slab v0.4.12
-   Compiling kernel v0.1.0 (/root/breenix-slice3e/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-39>/kernel)
    Compiling httparse v1.10.1
    Compiling anyhow v1.0.104
    Compiling crc-catalog v2.5.0
@@ -116,7 +116,7 @@
    Compiling lzma-rs v0.3.0
    Compiling rustls-webpki v0.103.15
    Compiling tar v0.4.46
-   Compiling breenix v0.1.0 (/root/breenix-slice3e)
+   Compiling breenix v0.1.0 (<isolated-checkout-50>)
    Compiling base16ct v1.0.0
    Compiling ureq v3.4.0
    Compiling ovmf-prebuilt v0.2.9

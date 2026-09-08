@@ -1,5 +1,5 @@
 40e2925f32800702e3dfd42d31d0fe63760cf65c
-Artifacts: /root/breenix-i813d-tmp/breenix_813_x86_64.Rl7GbC
+Artifacts: <isolated-checkout-114>/breenix_813_x86_64.Rl7GbC
 Revision: 40e2925f32800702e3dfd42d31d0fe63760cf65c
 [GATE_PREFLIGHT:structure_suites=66/66:critical_path_lines=260:pinned=120]
 ========================================
@@ -174,19 +174,19 @@ Revision: 40e2925f32800702e3dfd42d31d0fe63760cf65c
   STD BUILD COMPLETE (x86_64)
   Installed: 153 binaries
 ========================================
-   Compiling kernel v0.1.0 (/root/breenix-i813d/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813d)
+   Compiling kernel v0.1.0 (<isolated-checkout-115>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-116>)
     Finished `release` profile [optimized] target(s) in 18.44s
-   Compiling kernel v0.1.0 (/root/breenix-i813d/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-i813d)
+   Compiling kernel v0.1.0 (<isolated-checkout-115>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-116>)
     Finished `release` profile [optimized] target(s) in 15.71s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-i813d/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-115>/target/release/build/breenix-5849e86bb7dcf3bf/out/breenix-uefi.img (7405568 bytes)
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
 QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (30s elapsed, host qemu-system-x86_64 count=0)...
 QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (60s elapsed, host qemu-system-x86_64 count=0)...
 QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (90s elapsed, host qemu-system-x86_64 count=0)...
 QEMU HOST LOCK: waiting for /root/.cache/breenix/x86-qemu.lock (120s elapsed, host qemu-system-x86_64 count=0)...
 PASS: x86_64, 6 Unix arms, byte totals and worker reap
-PASS: blocking I/O oracle x86_64 boots=1; serials=/root/breenix-i813d-tmp/breenix_813_x86_64.Rl7GbC/boot_*/serial.txt
+PASS: blocking I/O oracle x86_64 boots=1; serials=<isolated-checkout-114>/breenix_813_x86_64.Rl7GbC/boot_*/serial.txt
 GATE_EXIT=0

@@ -140,7 +140,7 @@
    Compiling llvm-tools v0.1.1
    Compiling slab v0.4.12
    Compiling httparse v1.10.1
-   Compiling kernel v0.1.0 (/root/breenix-t957b/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-74>/kernel)
    Compiling untrusted v0.9.0
    Compiling micromath v2.1.0
    Compiling crc-catalog v2.5.0
@@ -185,13 +185,13 @@
    Compiling lzma-rs v0.3.0
    Compiling tar v0.4.46
    Compiling base16ct v1.0.0
-   Compiling breenix v0.1.0 (/root/breenix-t957b)
+   Compiling breenix v0.1.0 (<isolated-checkout-79>)
    Compiling rustls-webpki v0.103.15
    Compiling ureq v3.4.1
    Compiling ovmf-prebuilt v0.2.9
     Finished `release` profile [optimized] target(s) in 40.04s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-t957b/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
+  ELF:      <isolated-checkout-74>/target/x86_64-unknown-none/release/deps/artifact/kernel-0c2106fd652894df/bin/kernel-0c2106fd652894df
   sha256:   ce1825abbf66f2524bcc22dc37b08cfa850b086f5d388f0fda228596b7ab7658
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -199,11 +199,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 14
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-t957b/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-t957b)
+   Compiling kernel v0.1.0 (<isolated-checkout-74>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-79>)
     Finished `release` profile [optimized] target(s) in 21.48s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-t957b/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-74>/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img (8454144 bytes)
    Compiling proc-macro2 v1.0.107
    Compiling unicode-ident v1.0.24
    Compiling quote v1.0.47
@@ -230,7 +230,7 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
    Compiling serde_derive v1.0.229
-   Compiling xtask v0.1.0 (/root/breenix-t957b/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-74>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 32.55s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -265,7 +265,7 @@ Creating test disk image...
   Added: concurrent_recv_stress (188992 bytes, sectors 13416-13785)
   Added: confetti (189288 bytes, sectors 13786-14155)
   Added: counter (177680 bytes, sectors 14156-14503)
-Error: No space left on device (os error 28)
+Error: the x86 build host ran out of space (os error 28); gate verification did not complete.
 x86 frame-custody gate: FAIL (set -e abort at docker/qemu/run-x86-boot-tests.sh:621, exit 1)
   failing command: cargo run -p xtask -- create-test-disk
 EXIT=1
