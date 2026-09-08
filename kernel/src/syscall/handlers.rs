@@ -246,6 +246,13 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
                 crate::task::exit_tally::FailureList::new(failures, nonzero)
             );
 
+            #[cfg(all(
+                target_arch = "x86_64",
+                feature = "testing",
+                not(feature = "interactive")
+            ))]
+            crate::boot::disk_wait_oracle::report();
+
             if nonzero == 0 {
                 log::info!("=====================================");
                 log::info!("✅ USERSPACE EXECUTION SUCCESSFUL ✅");

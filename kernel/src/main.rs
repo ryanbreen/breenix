@@ -1219,10 +1219,10 @@ fn kernel_main_continue() -> ! {
     // This is the last point in the x86 boot where the registry CAN be
     // dispatched: `run_staged_tests` spawns one kthread per subsystem and
     // `kthread_join`s them, so it needs preemption enabled, and the boot thread
-    // has to still be running. Both stop being true a few lines below - the
-    // `preempt_disable()` immediately after this takes the scheduling brake, and
-    // the boot thread then strands inside the disk-backed `get_test_binary()`
-    // busy-wait in `test_exec::test_direct_execution()` and never returns.
+    // has to still be running. The `preempt_disable()` below takes the
+    // scheduling brake. Completion now retains that brake for idle-task disk
+    // waits (508), so the test_exec registration block can return, but joining
+    // the registry workers still requires this earlier, preemptible site.
     //
     // The historical call site sat next to `preempt_enable()` several hundred
     // lines further down, past both of those. It was therefore unreachable, and
@@ -1303,14 +1303,13 @@ fn kernel_main_continue() -> ! {
     // preempt_disable() is the brake here, not interrupts::disable(), because
     // the disk-backed test binaries loaded in the block below need VirtIO block
     // IRQ completions: interrupts stay hardware-enabled and preempt_count gates
-    // scheduling instead. PRECONDITION 7 further below checks that real
-    // invariant. NOTE: real boot testing shows the timer interrupt can still
-    // switch away from the boot thread during the busy-spin disk-completion
-    // wait in this window (a pre-existing gap between preempt_count and this
-    // kernel's actual can_schedule() logic, which this change neither
-    // introduces nor closes - see the PR that added this comment for the
-    // investigation notes and the recommended follow-up RCA).
+    // scheduling instead. PRECONDITION 7 checks that invariant. Completion's
+    // idle-task wait retains the brake and uses a masked check plus STI; HLT:
+    // IRQs can complete disk requests without donating boot's continuation.
     kernel::per_cpu::preempt_disable();
+
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
+    kernel::boot::disk_wait_oracle::begin();
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done before int3() which might hang in CI
@@ -2081,6 +2080,8 @@ fn kernel_main_continue() -> ! {
         // Test FbInfo syscall (framebuffer information)
         log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
         test_exec::test_fbinfo();
+        kernel::boot::disk_wait_oracle::tests_completed();
+        serial_println!("[TEST_EXEC_BLOCK_COMPLETE:x86:calls=64]");
     }
 
     // NOTE: Premature success markers removed - tests must verify actual execution
@@ -2235,9 +2236,8 @@ fn kernel_main_continue() -> ! {
 
     // Test our clock_gettime implementation BEFORE enabling preemption.
     // Interrupts are already hardware-enabled at this point (see the first
-    // RING3_SMOKE block above); preemption is intended to still be disabled
-    // via preempt_disable() called there (see that comment for a known gap:
-    // the timer can still switch away during a disk-completion busy-wait).
+    // RING3_SMOKE block above); preemption remains disabled by the bracket
+    // there, including Completion's idle-task IRQ wait.
     log::info!("Testing clock_gettime syscall implementation...");
     clock_gettime_test::test_clock_gettime();
     log::info!("✅ clock_gettime tests passed");
@@ -2256,6 +2256,9 @@ fn kernel_main_continue() -> ! {
     // registered test processes have completed.
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
     kernel::test_framework::btrt::finalize();
+
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
+    kernel::boot::disk_wait_oracle::finish();
 
     // Release the scheduling brake taken in the first RING3_SMOKE block
     // above (see its preempt_disable() comment) - this is the true,

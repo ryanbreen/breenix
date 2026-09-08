@@ -6,11 +6,11 @@
 
 #![cfg(target_arch = "x86_64")]
 
+use crate::task::dispatch_strand_census::{note_fact, DispatchLogFact};
 use crate::task::process_context::{
     is_kernel_code_selector, restore_userspace_context, save_userspace_context, RestoreError,
     SavedRegisters,
 };
-use crate::task::dispatch_strand_census::{note_fact, DispatchLogFact};
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
 use crate::tracing::providers::counters::{
@@ -395,6 +395,15 @@ pub extern "C" fn check_need_resched_and_switch(
                 check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
             }
             return;
+        }
+
+        #[cfg(all(feature = "testing", not(feature = "interactive")))]
+        {
+            use crate::boot::disk_wait_oracle::{BOOT_TID, SWITCHED_AWAY, SWITCH_PREEMPT};
+            if BOOT_TID.load(Ordering::Acquire) == old_thread_id {
+                SWITCH_PREEMPT.store(crate::per_cpu::preempt_count() as u64, Ordering::Relaxed);
+                SWITCHED_AWAY.fetch_add(1, Ordering::Release);
+            }
         }
 
         // NOTE: No logging here - log statements in the context switch path
@@ -1077,7 +1086,9 @@ fn switch_to_thread(
                                 scheduler::set_need_resched();
                                 setup_idle_return(interrupt_frame);
                                 scheduler::switch_to_idle();
-                                trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedBlocked);
+                                trace_dispatch_abandon(
+                                    DispatchAbandonSite::IdleSignalTerminatedBlocked,
+                                );
                                 unsafe {
                                     crate::memory::process_memory::switch_to_kernel_page_table();
                                 }
@@ -1505,7 +1516,9 @@ fn restore_userspace_thread_context(
                                         signal_termination_info = Some(notification);
                                         setup_idle_return(interrupt_frame);
                                         crate::task::scheduler::switch_to_idle();
-                                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedUser);
+                                        trace_dispatch_abandon(
+                                            DispatchAbandonSite::IdleSignalTerminatedUser,
+                                        );
                                         // Don't return here - fall through to handle notification
                                     }
                                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
@@ -1515,7 +1528,9 @@ fn restore_userspace_thread_context(
                                             crate::task::scheduler::set_need_resched();
                                             setup_idle_return(interrupt_frame);
                                             crate::task::scheduler::switch_to_idle();
-                                            trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedUser);
+                                            trace_dispatch_abandon(
+                                                DispatchAbandonSite::IdleProcessTerminatedUser,
+                                            );
                                         }
                                     }
                                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
@@ -1745,7 +1760,9 @@ fn check_and_deliver_signals_for_current_thread(
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return(interrupt_frame);
                             crate::task::scheduler::switch_to_idle();
-                            trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedOnReturn);
+                            trace_dispatch_abandon(
+                                DispatchAbandonSite::IdleProcessTerminatedOnReturn,
+                            );
                         }
                     }
                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
