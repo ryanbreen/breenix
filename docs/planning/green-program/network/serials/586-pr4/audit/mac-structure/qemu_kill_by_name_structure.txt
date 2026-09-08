@@ -1,0 +1,12 @@
+revision=96fa978116f7472b9ea0729f830e0b1711af3a9d
+command=bash scripts/run-structure-tests.sh qemu_kill_by_name_structure
+== compiling qemu_kill_by_name_structure ==
+== running qemu_kill_by_name_structure  ==
+
+running 2 tests
+test kill_by_name_predicates_are_not_vacuous ... ok
+test no_shell_script_kills_qemu_by_name_or_pattern ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+exit=0
