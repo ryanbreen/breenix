@@ -1,0 +1,17 @@
+Source revision: 27ac5db1695d754f5592db1415f9a7eb0279bac4
+kernel/src/task/kthread.rs:211:     kthread_park_if(|| true);
+kernel/src/task/kthread.rs:217: pub fn kthread_park_if(should_park: impl FnOnce() -> bool) {
+kernel/src/task/kthread.rs:274: pub fn kthread_unpark(handle: &KthreadHandle) {
+kernel/src/task/softirq_tests.rs:180: const WALL_LIMIT_NS: u64 = 15_000_000_000;
+kernel/src/task/softirq_tests.rs:194:     if !(dispatches > 0 && iterations >= TARGET_ITERATIONS) {
+kernel/src/task/softirq_tests.rs:233:         if dispatches > 0 && iterations >= TARGET_ITERATIONS {
+kernel/src/task/softirq_tests.rs:239:         if elapsed_ticks >= WAIT_TICKS {
+kernel/src/task/softirq_tests.rs:243:         if elapsed_ns >= WALL_LIMIT_NS || !ACTIVE.load(Ordering::Acquire) {
+kernel/src/task/softirq_tests.rs:297:         "[SOFTIRQ_DEFERRAL_ORACLE:arch={}:cpu={}:budget_ticks={}:wait_ticks={}:wait_ns={}:dispatches={}:iterations={}:verdict={}]",
+kernel/src/task/softirqd.rs:23:     kthread_park_if, kthread_run_on_cpu, kthread_should_stop, kthread_unpark, KthreadHandle,
+kernel/src/task/softirqd.rs:245:                 wakeup_ksoftirqd();
+kernel/src/task/softirqd.rs:313:             kthread_park_if(|| per_cpu::softirq_pending() == 0);
+scripts/score-softirq-deferral.py:8:     r"\[SOFTIRQ_DEFERRAL_ORACLE:arch=(x86|aarch64):cpu=(\d+):budget_ticks=(\d+)"
+scripts/score-softirq-deferral.py:13: def score(text):
+scripts/score-softirq-deferral.py:14:     lines = [line for line in text.splitlines() if "[SOFTIRQ_DEFERRAL_ORACLE:" in line]
+scripts/score-softirq-deferral.py:27:     if verdict == "starved" and int(ns) < 15_000_000_000:

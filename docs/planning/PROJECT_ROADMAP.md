@@ -15,6 +15,14 @@ Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).
 
+Issue 891: PR 967 makes softirq daemons CPU-local and changes the deferral
+self-test to require daemon callbacks within a delivered-tick budget, with
+a separate host-starvation outcome. The [round record](green-program/irq-locks/891-KSOFTIRQD-DEFERRAL-2026-09-08.md)
+records the ownership/park repairs, wake-deletion and lost-verdict mutations,
+and landing gates. Landing stopped on the merged-tip timer oracle
+three-backstop FAIL (issues 960 and 965); PR 967 remains open. Issue 562's testing-profile loader boundary remains open;
+a passing deferral oracle alone does not establish a passing profile boot.
+
 Issue 959: the aarch64 TTY peer-hold harness repair is validated on
 `tty/959-peer-hold-after-pr-b`. The control and PR B A/B each passed 20/20;
 the forward repair passed strict 20/20, x86 boot-tests, and production-last.

@@ -559,3 +559,62 @@ required by this merge. The required gates will run on this merge commit.
 
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/merge-main-message.txt -> exit 0
+
+### Combined-tip verification at 27ac5db1
+
+Merge revision: `27ac5db1695d754f5592db1415f9a7eb0279bac4`.
+The standalone structure suite and the merged-tip fixture replay both
+pass 68/68 (`serials/891/landing-merged/structure.txt` and
+`serials/891/landing-merged/fixture-structure.txt`). The strict fixture
+was refreshed again from this merge revision's own required boot.
+
+`bash docker/qemu/run-aarch64-boot-test-strict.sh 1` passes 1/1,
+with 0 failures and 0 inconclusive boots. Its oracle reports 2 guest
+ticks, 3591008 ns, 5 dispatches, 25 iterations, and verdict ok.
+See `serials/891/landing-merged/aarch64-strict.txt` and
+`serials/891/landing-merged/aarch64-serial.txt`. The soft-float build
+emits no project-source diagnostic; its pinned-core notice is accepted
+under the documented toolchain precedent.
+
+### Landing result: NOT LANDED
+
+The merged-tip beast command `bash docker/qemu/run-x86-boot-tests.sh`
+ran once and exited 1. Its 68/68 structure preflight passed on attempt 1.
+R238 gate-launch load was 0.23; QEMU-start facts report 3.18, and end
+load 0.26. No load wait or structure timeout retry was used.
+
+The user serial reports deferral ok (2 ticks, 6477108 ns, 5 dispatches,
+25 iterations), but the timer oracle reports `backstops=3`,
+`window_ms=30057`, `overrun_ms=4`, `bound_ms=100`, `measured=1`, and FAIL.
+The failure is not an overrun beyond the latency bound. Issues 960 and
+965 contain the same three-backstop failure family; this run supplies
+no causal attribution to host contention or to this branch.
+
+Evidence: `serials/891/landing-merged/beast/landing-merged/x86.txt`,
+`serials/891/landing-merged/beast/breenix_x86_boot_tests_1/serial_user.txt`,
+and the sibling `serial_kernel.txt`. After the explicit FAIL, the
+operator sent SIGTERM only to verified lane-owned QEMU PID 2345055.
+`serials/891/landing-merged/beast/landing-merged/stop-reason.txt` records
+that action. The gate records ended_by=qemu_exited_early and exits 1
+at `docker/qemu/run-x86-boot-tests.sh:1072`. This was not a natural
+deadline timeout, a second attempt, or a passing boot.
+
+The optional image-builder BusyBox attempt also reports missing
+`x86_64-linux-musl-gcc`; image creation continued. No causal connection
+to the timer failure is established. No SCSI/IO failure was reported.
+
+The merged-tip parallel gate was not launched under the STOP-on-red
+rule. PR 967 is not merged. Issues 891 and 562 remain open; PR 948
+readiness is not asserted in issue 586. The branch and this Mac worktree
+are retained for follow-up. The earlier 10-boot proof tally and the
+pre-968 5/5 landing batch remain separate historical populations.
+They do not substitute for the missing combined-tip five-boot gate.
+
+Not claimed at landing: a GREEN x86 merged-tip boot; a completed
+merged-tip 15-boot proof/landing population; a repaired timer-backstop
+defect; a 3/3 aarch64 testing-profile result; PR merge or issue closure.
+Known follow-up is tracked by issues 960 and 965; no duplicate issue
+is needed for this retained signature.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/not-landed-message.txt -> exit 0
