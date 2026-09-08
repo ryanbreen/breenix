@@ -218,28 +218,17 @@ fn validate_eintr_call_site(source: &str) -> Result<(), &'static str> {
 fn validate_interrupting_predicate(source: &str) -> Result<(), &'static str> {
     let body = function_body(source, "has_interrupting_signals")
         .ok_or("missing SignalState::has_interrupting_signals")?;
-    let mask = code_mask(body);
-
-    for field in ["pending", "blocked"] {
-        if identifier_offsets(body, &mask, field).is_empty() {
-            return Err("interrupting predicate does not filter pending and blocked signals");
-        }
+    if !calls_identifier(body, "has_deliverable_signals") {
+        return Err("EINTR and delivery must share the disposition predicate");
     }
-    for helper in [
-        "get_handler",
-        "is_default",
-        "is_ignore",
-        "is_handler",
-        "default_action",
-    ] {
-        if !calls_identifier(body, helper) {
-            return Err("interrupting predicate is missing a disposition helper call");
-        }
+    let delivery = function_body(source, "has_deliverable_signals").unwrap();
+    if !delivery.contains("self.pending & !self.blocked & !self.ignored") {
+        return Err("delivery must filter the cached ignored disposition mask");
     }
-    for disposition in ["SignalDefaultAction", "Ignore"] {
-        if identifier_offsets(body, &mask, disposition).is_empty() {
-            return Err("interrupting predicate is missing the default-ignore check");
-        }
+    let install = function_body(source, "set_handler").unwrap();
+    for required in ["action.is_ignore()", "action.is_default()", "DEFAULT_IGNORED_SIGNALS",
+                     "self.ignored |= bit", "self.ignored &= !bit", "self.pending &= !bit"] {
+        if !install.contains(required) { return Err("disposition cache maintenance missing"); }
     }
     Ok(())
 }
@@ -305,4 +294,67 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         let offset = fixture.find("serial_println!").unwrap();
         assert!(mask[offset], "raw-string close swallowed the next byte");
     }
+}
+
+#[test]
+fn disposition_mutation_is_rejected() {
+    let source = repo_text("kernel/src/signal/types.rs");
+    let mutant = source.replace("self.pending & !self.blocked & !self.ignored",
+                                "self.pending & !self.blocked");
+    assert!(validate_interrupting_predicate(&mutant).is_err());
+}
+
+#[test]
+fn child_barrier_precedes_handler_assertion() {
+    let source = repo_text("userspace/programs/src/block_eintr_oracle.rs");
+    let race = function_body(&source, "run_race").unwrap();
+    assert!(calls_identifier(race, "waitpid"));
+    assert!(race.contains("pid == child"));
+    assert!(race.contains("child_wait_timeout"));
+}
+
+#[test]
+fn disposition_oracle_drives_real_wait_and_strict_scorer_requires_both_arms() {
+    let futex = repo_text("kernel/src/syscall/futex.rs");
+    let queued = futex.rfind("PrepareOutcome::Queued =>").unwrap();
+    let inject = futex.find("disposition_inject(_val3, thread_id)").unwrap();
+    let check = futex.find("crate::syscall::check_signals_for_eintr()").unwrap();
+    assert!(queued < inject && inject < check);
+    assert!(futex.contains("disposition_report(_val3, disposition_armed, &result)"));
+    let oracle = repo_text("kernel/src/syscall/futex_oracle.rs");
+    assert!(oracle.contains("thread.state == crate::task::thread::ThreadState::BlockedOnIO"));
+    assert!(oracle.contains("process.signals.pending |= sig_mask(SIGCHLD)"));
+    let scorer = repo_text("docker/qemu/run-aarch64-boot-test-strict.sh");
+    for arm in ["default:blocked=1:pending=1:errno=110:PASS]",
+                "handler:blocked=1:pending=1:errno=4:PASS]"] {
+        assert!(scorer.contains(arm));
+    }
+    assert!(scorer.contains("Signal disposition oracle failed"));
+}
+
+#[test]
+fn strict_disposition_scoring_rejects_missing_and_failed_arms() {
+    let fixture = repo_text("tests/fixtures/udp-socket-lock-aarch64-serial.txt");
+    let arms = [
+        "[SIGNAL_DISPOSITION_ORACLE:arm=default:blocked=1:pending=1:errno=110:PASS]",
+        "[SIGNAL_DISPOSITION_ORACLE:arm=handler:blocked=1:pending=1:errno=4:PASS]",
+    ];
+    let scratch = std::env::temp_dir().join(format!("disposition-score-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    for (index, (serial, expected)) in [
+        (fixture.clone(), true),
+        (fixture.replace(arms[0], ""), false),
+        (fixture.replace(arms[1], ""), false),
+        (format!("{}\n[SIGNAL_DISPOSITION_ORACLE:arm=default:blocked=1:pending=1:errno=4:FAIL]\n", fixture), false),
+    ].into_iter().enumerate() {
+        let path = scratch.join(format!("{index}.txt"));
+        std::fs::write(&path, serial).unwrap();
+        let output = std::process::Command::new("bash")
+            .arg("docker/qemu/run-aarch64-boot-test-strict.sh")
+            .env("BREENIX_STRICT_SCORE_ONLY", &path)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output().unwrap();
+        assert_eq!(output.status.success(), expected, "{}", String::from_utf8_lossy(&output.stdout));
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
 }

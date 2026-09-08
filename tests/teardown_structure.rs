@@ -6113,7 +6113,8 @@ fn validate_futex_oracle_marker_and_gate_pins(
         "futex oracle marker emission shape",
         validate_census(
             &oracle_sites,
-            &[("kernel/src/syscall/futex_oracle.rs", "fn report", 1)],
+            &[("kernel/src/syscall/futex_oracle.rs", "fn report", 1),
+              ("kernel/src/syscall/futex_oracle.rs", "fn disposition_report", 1)],
         ),
     );
     check(

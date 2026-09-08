@@ -73,9 +73,7 @@ static RESCUES: AtomicU64 = AtomicU64::new(0);
 #[inline]
 fn now_ns() -> u64 {
     let (seconds, nanos) = crate::time::get_monotonic_time_ns();
-    seconds
-        .saturating_mul(1_000_000_000)
-        .saturating_add(nanos)
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
 }
 
 pub fn arm_from_val3(val3: u32) -> Option<Stage> {
@@ -313,5 +311,80 @@ pub fn report() {
         RESCUES.load(Ordering::Acquire),
         queue_residual,
         balance(total_enqueued, total_left),
+    );
+}
+
+// Issues 493/598: inject only after the real futex queue published BlockedOnIO.
+// The raw pending write deliberately models pre-existing pending work: using
+// set_pending here would let generation discard hide a broken delivery filter.
+pub fn disposition_inject(tag: u32, thread_id: u64) -> bool {
+    if tag != 0x5344_0001 && tag != 0x5344_0002 {
+        return false;
+    }
+    let blocked = crate::task::scheduler::with_scheduler(|sched| {
+        sched
+            .current_thread_mut()
+            .is_some_and(|thread| thread.state == crate::task::thread::ThreadState::BlockedOnIO)
+    })
+    .unwrap_or(false);
+    if !blocked {
+        return false;
+    }
+    let mut guard = crate::process::manager();
+    if let Some(manager) = guard.as_mut() {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            use crate::signal::constants::{sig_mask, SIGCHLD};
+            let action = process.signals.get_handler(SIGCHLD);
+            let installed = if tag == 0x5344_0001 {
+                action.is_default()
+            } else {
+                action.is_handler()
+            };
+            if installed && process.signals.blocked & sig_mask(SIGCHLD) == 0 {
+                process.signals.pending |= sig_mask(SIGCHLD);
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn disposition_report(tag: u32, armed: bool, result: &super::SyscallResult) {
+    if tag != 0x5344_0001 && tag != 0x5344_0002 {
+        return;
+    }
+    if tag == 0x5344_0001 {
+        if let Some(tid) = crate::task::scheduler::current_thread_id() {
+            let mut guard = crate::process::manager();
+            if let Some(manager) = guard.as_mut() {
+                if let Some((_, process)) = manager.find_process_by_thread_mut(tid) {
+                    process
+                        .signals
+                        .clear_pending(crate::signal::constants::SIGCHLD);
+                }
+            }
+        }
+    }
+    let errno = match result {
+        super::SyscallResult::Err(errno) => *errno,
+        super::SyscallResult::Ok(_) => 0,
+    };
+    let (arm, expected) = if tag == 0x5344_0001 {
+        ("default", super::errno::ETIMEDOUT as u64)
+    } else {
+        ("handler", super::errno::EINTR as u64)
+    };
+    let verdict = if armed && errno == expected {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+    crate::serial_println!(
+        "[SIGNAL_DISPOSITION_ORACLE:arm={}:blocked={}:pending={}:errno={}:{}]",
+        arm,
+        armed as u8,
+        armed as u8,
+        errno,
+        verdict
     );
 }

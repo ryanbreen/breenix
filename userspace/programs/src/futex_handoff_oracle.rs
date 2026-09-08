@@ -86,6 +86,8 @@ fn input_inject_negative_control() {
     }
 }
 
+extern "C" fn disposition_handler(_signal: i32) {}
+
 fn main() {
     let page = unsafe { map_region() };
     let probe_word = page as *mut u32;
@@ -138,6 +140,33 @@ fn main() {
             &timeout as *const Timespec as u64,
             STAGE3,
         );
+
+        // Issues 493/598: same real interruptible wait, differing dispositions.
+        // Kernel injection is after publication of the blocked waiter.
+        let default_result = futex(
+            word2,
+            FUTEX_WAIT,
+            9,
+            &timeout as *const Timespec as u64,
+            0x5344_0001,
+        );
+        let action = libbreenix::Sigaction::new(disposition_handler);
+        libbreenix::sigaction(libbreenix::signal::SIGCHLD, Some(&action), None)
+            .expect("install disposition oracle handler");
+        let handler_result = futex(
+            word2,
+            FUTEX_WAIT,
+            9,
+            &timeout as *const Timespec as u64,
+            0x5344_0002,
+        );
+        if default_result != -110 || handler_result != -4 {
+            println!(
+                "[SIGNAL_DISPOSITION_ORACLE:driver:FAIL:default={}:handler={}]",
+                default_result, handler_result
+            );
+            process::exit(1);
+        }
 
         let _report = futex(word0, FUTEX_WAKE, 0, 0, REPORT);
         println!(

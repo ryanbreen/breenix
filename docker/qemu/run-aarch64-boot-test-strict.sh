@@ -553,6 +553,18 @@ score_serial() {
         echo "Exec commit marker missing"
         return 1
     fi
+    for disposition_arm in \
+        '[SIGNAL_DISPOSITION_ORACLE:arm=default:blocked=1:pending=1:errno=110:PASS]' \
+        '[SIGNAL_DISPOSITION_ORACLE:arm=handler:blocked=1:pending=1:errno=4:PASS]'; do
+        if ! grep -qF "$disposition_arm" "$serial_file"; then
+            echo "Signal disposition oracle arm missing: $disposition_arm"
+            return 1
+        fi
+    done
+    if grep -qE '\[SIGNAL_DISPOSITION_ORACLE:[^]]*:FAIL' "$serial_file"; then
+        echo "Signal disposition oracle failed"
+        return 1
+    fi
     if ! grep -qF "[BLOCK_EINTR_ORACLE:" "$serial_file" 2>/dev/null; then
         echo "Block EINTR oracle marker missing"
         return 1
