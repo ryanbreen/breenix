@@ -1,3 +1,6 @@
+SOURCE_REVISION=UNRECORDED
+SOURCE_HASHES=UNRECORDED
+PROVENANCE=Archived output; exact input tree unverified; excluded from revision-specific proof.
 == compiling loopback_pump_structure ==
 == running loopback_pump_structure  ==
 

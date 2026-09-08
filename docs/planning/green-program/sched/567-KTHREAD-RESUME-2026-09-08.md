@@ -3,10 +3,16 @@
 Branch: `sched/567-kthread-resume-context`. Investigation base:
 `4394409fca3932296f3468914b5be325ce0d48a6`.
 
-Historical attribution remains unresolved. This change restores the four
-scheduling loopback tests to the direct gate sequence and adds a permanent
-register-witness regression guard. It does not change production dispatch.
-No Tier-1 or Tier-2 source was modified.
+The repaired API mechanism is selection without CPU dispatch: the former public
+x86 scheduling entry could set current_thread=B while the CPU still executed
+thread A with RIP=A.rip and RSP=A.rsp. The next interrupt could then write A's
+RIP/RSP/RFLAGS into B's owned CpuContext. Round 2 restricts selection to the
+interrupt-return dispatcher and makes the public entry request rescheduling.
+It also restores four scheduling loopback tests and adds a register witness.
+The Tier-2 change is in context_switch.rs at the selection boundary and removes
+inherited output. Tier-1 source was not modified. Historical attribution of
+567 remains unresolved; matching debugger samples do not identify an original
+corrupting instruction.
 
 ## Mechanism examined
 
@@ -167,11 +173,13 @@ mutation in guest memory, not a source edit or an exception dump. Terminating
 that guest discards it. It establishes detection of this mismatch class,
 not historical causation.
 
-The revised loopback placement ratchet fails with original base main/registry
-source (exit 101, `serials/567/structure-base-red.log`). After restoration,
-the loopback suite passes 130 tests (`serials/567/loopback-structure.log`).
-The oracle/scorer suite passes two tests and includes missing-witness,
-missing-peer and scorer mutations.
+The archived `serials/567/structure-base-red.log` reports exit 101;
+`serials/567/loopback-structure.log` reports 130 passing tests and
+`serials/567/resume-structure.log` reports two passing tests. These three
+standalone captures did not record a source revision or source hashes. Their
+exact input trees cannot be authenticated retrospectively, so they are excluded
+from revision-specific baseline and landing proof. A later HEAD-stamped run
+does not establish the archived base-red input identity.
 
 ## Validation record
 
@@ -367,3 +375,34 @@ claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-round2-code-mess
 - Protection from arbitrary memory corruption or unsafe fabrication of a permit.
 - Aarch64/SMP coverage, or a production-profile runtime result in this round.
 - Final-source runtime validation from the initial gate that preceded marker deferral.
+
+## Landing
+
+Deferred code findings supplied for this continuation: [].
+
+V-1: the wrong-slot write is identified mechanically at f416efbd:
+`kernel/src/task/scheduler.rs:2705` publishes current_thread=next_thread_id;
+the former public wrapper at fe491f47 selected and returned without installing
+a CPU frame. If A remained executing while B was published, the destination
+selected by `kernel/src/interrupts/context_switch.rs:603` would be B and the
+RIP/RSP/RFLAGS assignments at `kernel/src/interrupts/context_switch.rs:622`
+would copy A's interrupted state into B. The public entry at
+`kernel/src/task/scheduler.rs:5823` now sets NEED_RESCHED, and the selecting
+wrapper at `kernel/src/task/scheduler.rs:5829` requires the dispatcher permit.
+This identifies the API failure mechanism prevented by construction; it does
+not turn the 32 fresh or 1,595 inherited matching samples into a reproduction
+of the historical fault. Those samples establish agreement only at their
+recorded save, restore and resume observations.
+
+V-4: provenance headers now explicitly mark the three standalone archived
+structure captures as source-unverified. Their exact historical source identity
+is not claimed, and they are excluded from revision-specific validation. Replacement
+landing runs will record the revision they execute.
+
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/sched/567-KTHREAD-RESUME-2026-09-08.md docs/planning/green-program/sched/serials/567/structure-base-red.log docs/planning/green-program/sched/serials/567/resume-structure.log docs/planning/green-program/sched/serials/567/loopback-structure.log -> exit 1
+
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/sched/567-KTHREAD-RESUME-2026-09-08.md docs/planning/green-program/sched/serials/567/structure-base-red.log docs/planning/green-program/sched/serials/567/resume-structure.log docs/planning/green-program/sched/serials/567/loopback-structure.log -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/567-prose-message.txt -> exit 0
