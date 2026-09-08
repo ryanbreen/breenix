@@ -105,7 +105,9 @@ pub fn server_authenticate(io: &mut PacketIo, session_id: &[u8]) -> Result<Strin
             );
 
             // Check if this key is in our authorized_keys
-            if !keys::is_authorized_key(key_blob) {
+            if !matches!(algo, b"rsa-sha2-256" | b"rsa-sha2-512")
+                || !keys::is_authorized_key(key_blob)
+            {
                 println!("bsshd: key NOT in authorized_keys");
                 send_auth_failure(io, false)?;
                 continue;
@@ -146,7 +148,12 @@ pub fn server_authenticate(io: &mut PacketIo, session_id: &[u8]) -> Result<Strin
             SshBuf::put_string(&mut signed_data, algo);
             SshBuf::put_string(&mut signed_data, key_blob);
 
-            if keys::verify_rsa_signature(key_blob, signature, &signed_data) {
+            let mut signature_pos = 0;
+            let signature_algo = SshBuf::get_string(signature, &mut signature_pos);
+            if pos == msg.len()
+                && signature_algo == Some(algo)
+                && keys::verify_rsa_signature(key_blob, signature, &signed_data)
+            {
                 io.send_packet(&[SSH_MSG_USERAUTH_SUCCESS])
                     .map_err(|_| SshError::Io)?;
                 return Ok(username_str);
@@ -314,14 +321,17 @@ pub fn client_auth_publickey(
     session_id: &[u8],
     wrong_key: bool,
 ) -> Result<(), SshError> {
-    let mut key_blob = keys::embedded_client_public_key_blob();
-    if wrong_key {
-        if let Some(last) = key_blob.last_mut() {
-            *last ^= 0x01;
-        }
-    }
+    // Both arms advertise the authorized key, so refusal tests the signature.
+    let key_blob = keys::embedded_client_public_key_blob();
+    let wrong_identity =
+        keys::RsaIdentity::from_pkcs1_pem(include_str!("wrong-client-test-key.pem"))
+            .map_err(|_| SshError::Protocol("invalid negative-test identity"))?;
     client_auth_publickey_with_signer(io, username, session_id, key_blob, |data| {
-        keys::sign_with_embedded_client_key(data)
+        if wrong_key {
+            wrong_identity.sign(data)
+        } else {
+            keys::sign_with_embedded_client_key(data)
+        }
     })
 }
 

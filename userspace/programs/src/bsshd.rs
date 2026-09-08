@@ -111,33 +111,37 @@ fn handle_connection(fd: Fd) {
 
     if let Some(command) = session.take_exec_command() {
         let status = run_exec_command(&mut session, &command);
-        let _ = session.send_exit_status(status);
-        session.close();
+        if let Err(e) = session.finish(status) {
+            eprintln!("bsshd: exec close failed: {:?}", e);
+        }
         return;
     }
 
-    // Allocate PTY if requested
-    let (master_fd, slave_path) = if pty_requested {
+    // Shell input and output are separate pipes without a requested PTY.
+    let mut child_pipe_fds = None;
+    let (master_fd, input_fd, slave_path) = if pty_requested {
         match pty::openpty() {
-            Ok((master, path)) => (master, path),
+            Ok((master, path)) => (master, master, path),
             Err(e) => {
                 eprintln!("bsshd: openpty() failed: {:?}", e);
                 return;
             }
         }
     } else {
-        // No PTY — use a pipe instead
-        match io::pipe() {
-            Ok((_r, w)) => {
-                // Use the write end as "master" for simplicity
-                let path = [0u8; 32];
-                (w, path)
-            }
-            Err(e) => {
-                eprintln!("bsshd: pipe() failed: {:?}", e);
+        let (input_read, input_write) = match io::pipe() {
+            Ok(pipe) => pipe,
+            Err(_) => return,
+        };
+        let (output_read, output_write) = match io::pipe() {
+            Ok(pipe) => pipe,
+            Err(_) => {
+                let _ = io::close(input_read);
+                let _ = io::close(input_write);
                 return;
             }
-        }
+        };
+        child_pipe_fds = Some((input_read, output_write));
+        (output_read, input_write, [0u8; 32])
     };
 
     // Fork a child for the shell
@@ -145,6 +149,16 @@ fn handle_connection(fd: Fd) {
         Ok(process::ForkResult::Child) => {
             // Child: close master, set up slave as stdin/stdout/stderr
             let _ = io::close(master_fd);
+            if input_fd != master_fd {
+                let _ = io::close(input_fd);
+            }
+            if let Some((input_read, output_write)) = child_pipe_fds {
+                let _ = io::dup2(input_read, Fd::from_raw(0));
+                let _ = io::dup2(output_write, Fd::from_raw(1));
+                let _ = io::dup2(output_write, Fd::from_raw(2));
+                let _ = io::close(input_read);
+                let _ = io::close(output_write);
+            }
 
             if pty_requested {
                 // Open the slave PTY
@@ -188,16 +202,38 @@ fn handle_connection(fd: Fd) {
                 child_pid.raw(),
                 username
             );
-            data_shuttle(&mut session, master_fd);
+            if let Some((input_read, output_write)) = child_pipe_fds {
+                let _ = io::close(input_read);
+                let _ = io::close(output_write);
+            }
+            let input_closed = data_shuttle(&mut session, master_fd, input_fd, pty_requested);
             println!("bsshd: session ended for user '{}'", username);
 
             // Clean up
             let _ = io::close(master_fd);
-            let _ = process::waitpid(child_pid.raw() as i32, core::ptr::null_mut(), 0);
+            if input_fd != master_fd && !input_closed {
+                let _ = io::close(input_fd);
+            }
+            let mut status = 0;
+            let shell_status = match process::waitpid(child_pid.raw() as i32, &mut status, 0) {
+                Ok(_) if process::wifexited(status) => process::wexitstatus(status),
+                Ok(_) if process::wifsignaled(status) => 128 + process::wtermsig(status),
+                _ => 1,
+            };
+            if let Err(e) = session.finish(shell_status) {
+                eprintln!("bsshd: shell close failed: {:?}", e);
+            }
         }
         Err(e) => {
             eprintln!("bsshd: fork() for shell failed: {:?}", e);
             let _ = io::close(master_fd);
+            if input_fd != master_fd {
+                let _ = io::close(input_fd);
+            }
+            if let Some((input_read, output_write)) = child_pipe_fds {
+                let _ = io::close(input_read);
+                let _ = io::close(output_write);
+            }
         }
     }
 
@@ -330,7 +366,8 @@ fn c_string(value: &str) -> Vec<u8> {
 /// Uses poll() to multiplex between:
 /// - Data from the PTY master (shell output) → send to SSH client
 /// - Data from the SSH client → write to PTY master (shell input)
-fn data_shuttle(session: &mut ServerSession, master_fd: Fd) {
+fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pty: bool) -> bool {
+    let mut input_eof = false;
     let ssh_fd = session.io().fd();
 
     loop {
@@ -356,7 +393,7 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd) {
                         break;
                     }
                 }
-                Ok(_) => {}
+                Ok(_) => break,
                 Err(_) => break,
             }
         }
@@ -365,19 +402,30 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd) {
         if fds[1].revents & io::poll_events::POLLIN != 0 {
             match session.recv_data() {
                 Ok(Some(data)) => {
-                    let _ = io::write(master_fd, &data);
+                    let _ = io::write(input_fd, &data);
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    if session.input_eof() && !input_eof {
+                        input_eof = true;
+                        if has_pty {
+                            let _ = io::write(input_fd, &[4]);
+                        } else {
+                            let _ = io::close(input_fd);
+                        }
+                    }
+                }
                 Err(libbreenix::ssh::SshError::Disconnected) => break,
                 Err(_) => break,
             }
         }
 
         // Check for hangup/error on either fd
-        if fds[0].revents & io::poll_events::POLLHUP != 0
+        if (fds[0].revents & io::poll_events::POLLHUP != 0
+            && fds[0].revents & io::poll_events::POLLIN == 0)
             || fds[1].revents & io::poll_events::POLLHUP != 0
         {
             break;
         }
     }
+    input_eof && !has_pty
 }
