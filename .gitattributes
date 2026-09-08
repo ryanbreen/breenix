@@ -176,3 +176,6 @@ docs/planning/green-program/sweeps/network-483-465-2026-09-07/evidence/**/*.log 
 # run.sh emit are part of the preserved evidence round3/DISPOSITIONS.md quotes
 # by line number, and a CRLF normalisation would edit it.
 docs/planning/green-program/sweeps/network-483-465-2026-09-07/round3/evidence/**/*.log -text
+
+# 586 PR 4 audit: retain the captured serial bytes used by marker-tally hashes.
+docs/planning/green-program/network/serials/586-pr4/audit/** -text
