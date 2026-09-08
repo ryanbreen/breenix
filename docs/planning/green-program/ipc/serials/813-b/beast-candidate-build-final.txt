@@ -1,0 +1,11 @@
+4eac269d9fe4fff53fdb3391200635bd4888bc87
+ kernel/src/ipc/fd.rs                               |   2 +-
+ kernel/src/socket/unix.rs                          | 105 ++++++++++++++++-----
+ kernel/src/task/process_task.rs                    |   3 +
+ tests/unix_stream_blocking_structure.rs            |  88 ++++++++++++++---
+ .../programs/src/unix_stream_blocking_oracle.rs    |   1 +
+ 5 files changed, 165 insertions(+), 34 deletions(-)
+   Compiling kernel v0.1.0 (/root/breenix-i813d/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-i813d)
+    Finished `release` profile [optimized] target(s) in 15.35s
+BUILD_EXIT=0

@@ -1,0 +1,7 @@
+{
+  "name": "peer_close_fake_success",
+  "arm": "peer_close",
+  "path": "kernel/src/syscall/blocking_io.rs",
+  "before": "if state.peer_closed() {\n                return SyscallResult::Err(errno::EPIPE as u64);",
+  "after": "if state.peer_closed() {\n                return SyscallResult::Ok(data.len() as u64);"
+}

@@ -1,0 +1,23 @@
+revision=a123f392560e3c404a4011b50a69ce0f3ea516e0; scope=mutation retry: docker/qemu/lib/gate-structure-preflight.sh; replacement=3a8a973b
+command=['bash', 'scripts/run-structure-tests.sh', 'structure_preflight_parallel_structure', 'timeout_retries_only_that_suite_once_with_double_budget']
+== compiling structure_preflight_parallel_structure ==
+== running structure_preflight_parallel_structure timeout_retries_only_that_suite_once_with_double_budget ==
+
+running 1 test
+
+thread 'timeout_retries_only_that_suite_once_with_double_budget' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957c/wt/tests/structure_preflight_parallel_structure.rs:363:9:
+assertion `left == right` failed: Output { status: ExitStatus(unix_wait_status(256)), stdout: "[GATE_PREFLIGHT:structure_suites=1/2:critical_path_lines=0:pinned=0]\n", stderr: "GATE_PREFLIGHT: FAIL (1 of 2 structure suite(s) red: alpha_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957c/wt/.tmp/gsp fixture ' 99169 1788831573599582000 0/gate/breenix_gate_structure_preflight.jrg8Lp)\n" }
+  left: false
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test timeout_retries_only_that_suite_once_with_double_budget ... FAILED
+
+failures:
+
+failures:
+    timeout_retries_only_that_suite_once_with_double_budget
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s
+
+
+exit=101; wall_seconds=0.144

@@ -1,0 +1,7 @@
+{
+  "name": "close_wrong_writers",
+  "arm": "peer_close",
+  "path": "kernel/src/socket/unix.rs",
+  "before": "(closed_a, &self.pair.waiters_b, &self.pair.write_waiters_b),\n            (closed_b, &self.pair.waiters_a, &self.pair.write_waiters_a),",
+  "after": "(closed_a, &self.pair.waiters_b, &self.pair.write_waiters_a),\n            (closed_b, &self.pair.waiters_a, &self.pair.write_waiters_b),"
+}

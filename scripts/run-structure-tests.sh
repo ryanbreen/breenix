@@ -31,7 +31,7 @@
 # invocation, whoever or whatever triggers it.
 #
 # Usage:
-#   scripts/run-structure-tests.sh                       # teardown_structure, whole file
+#   scripts/run-structure-tests.sh                       # discovered suites, shared preflight
 #   scripts/run-structure-tests.sh teardown_structure    # one file, whole file
 #   scripts/run-structure-tests.sh teardown_structure scheduler_lock
 #                                                        # one file, filtered
@@ -41,7 +41,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STEM="${1:-teardown_structure}"
+if [[ $# -eq 0 ]]; then
+    source "$REPO_ROOT/docker/qemu/lib/gate-structure-preflight.sh"
+    gate_structure_preflight "$REPO_ROOT" "${BREENIX_GATE_TMP:-${TMPDIR:-/tmp}}"
+    exit $?
+fi
+STEM="$1"
 FILTER="${2:-}"
 
 SOURCE="${REPO_ROOT}/tests/${STEM}.rs"
@@ -55,7 +60,12 @@ mkdir -p "${OUT_DIR}"
 BINARY="${OUT_DIR}/${STEM}"
 
 echo "== compiling ${STEM} =="
-CARGO_MANIFEST_DIR="${REPO_ROOT}" rustc --edition=2021 --test "${SOURCE}" -o "${BINARY}"
+# A restricted system PATH can omit rustup even when the toolchain is installed.
+RUSTC_BIN="$(command -v rustc || true)"
+if [[ -z "$RUSTC_BIN" ]]; then
+    RUSTC_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/rustc"
+fi
+CARGO_MANIFEST_DIR="${REPO_ROOT}" "$RUSTC_BIN" --edition=2021 --test "${SOURCE}" -o "${BINARY}"
 
 echo "== running ${STEM} ${FILTER} =="
 if [[ -n "${FILTER}" ]]; then

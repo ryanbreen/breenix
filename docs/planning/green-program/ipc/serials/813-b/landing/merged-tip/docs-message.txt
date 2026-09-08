@@ -1,0 +1,7 @@
+docs(ipc): record merge resolutions and merged-tip gate evidence
+
+Retain failed attempts, revision-scoped gate results, source citations,
+and the TTY peer-hold follow-up without claiming a successful landing.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

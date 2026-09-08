@@ -1,4 +1,4 @@
-//! PR-C census: Pipe/FIFO and Console/Tty adapted; Unix stream inventoried only.
+//! Blocking-adapter census: Pipe/FIFO, Unix writes, and Console/Tty reads.
 //! This deliberately bounded Rust recognizer fails closed on an unknown result
 //! route. It is a structural regression check, not a Rust type checker.
 use std::collections::{BTreeMap, BTreeSet};
@@ -393,6 +393,13 @@ fn inspect(
                     "from",
                     "min",
                     "read_or_prepare",
+                    "writer",
+                    "queue",
+                    "state",
+                    "peer_closed",
+                    "copy",
+                    "is_empty",
+                    "wake_readers",
                 ];
                 if !LEAVES.contains(&token)
                     && !["let", "=", ",", "&", "|", "||", "return"].contains(&token)
@@ -483,8 +490,8 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         .collect();
     assert_eq!(
         roots.len(),
-        1,
-        "both adapters must reach one recognized shared writer"
+        2,
+        "pipe/FIFO and Unix must reach their recognized writer adapters"
     );
     assert_eq!(
         compacted
@@ -494,7 +501,7 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         "shared Pipe/Fifo match must delegate together"
     );
     let routes = match_arms(&nodes, "WriteOperation");
-    for family in ["Pipe", "Fifo"] {
+    for family in ["Pipe", "Fifo", "UnixStream"] {
         let arms: Vec<_> = routes
             .iter()
             .filter(|(names, _)| names.iter().any(|name| name == family))
@@ -502,8 +509,10 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         assert_eq!(arms.len(), 1, "missing/ambiguous {family} result route");
         let snapshot_family = if family == "Pipe" {
             "PipeWrite"
-        } else {
+        } else if family == "Fifo" {
             "FifoWrite"
+        } else {
+            "UnixStream"
         };
         let snapshots = match_arms(&nodes, "FdKind");
         let snapshot = snapshots
@@ -574,16 +583,11 @@ fn repaired_families_have_no_blocking_eagain_exit() {
     }
     audit_helper(&helper, roots[0])
         .unwrap_or_else(|e| panic!("Pipe/FIFO blocking route rejected: {e}"));
-    // The unrepaired inventory remains explicit and does not assert a repair.
-    assert!(
-        contains(
-            &function(&read("kernel/src/socket/unix.rs"), "write"),
-            "EAGAIN"
-        ) || contains(&function(&read("kernel/src/socket/unix.rs"), "write"), "11")
-    );
+    audit_helper(&helper, "write_unix")
+        .unwrap_or_else(|e| panic!("Unix blocking route rejected: {e}"));
     audit_helper(&helper, "read_console").expect("Console/Tty blocking route");
     assert!(compacted.contains("blocking_io::read_console(&mutuser_buf,is_nonblocking)"));
-    println!("Pipe/FIFO/Console/Tty: bounded blocking EAGAIN census; Unix remains unrepaired at this revision");
+    println!("Pipe/FIFO/Unix writes and Console/Tty reads: bounded blocking EAGAIN census");
 }
 
 #[test]

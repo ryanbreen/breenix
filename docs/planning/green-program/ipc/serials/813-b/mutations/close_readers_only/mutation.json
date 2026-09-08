@@ -1,0 +1,7 @@
+{
+  "name": "close_readers_only",
+  "arm": "peer_close",
+  "path": "kernel/src/socket/unix.rs",
+  "before": "                writers.wake_up();",
+  "after": "                if !closed { writers.wake_up(); }"
+}

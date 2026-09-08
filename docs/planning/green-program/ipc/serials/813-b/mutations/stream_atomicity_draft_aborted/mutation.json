@@ -1,0 +1,7 @@
+{
+  "name": "stream_atomicity",
+  "arm": "partial",
+  "path": "kernel/src/syscall/blocking_io.rs",
+  "before": "let count = state.copy(data);",
+  "after": "let count = if data.len() > 4096 { 0 } else { state.copy(data) };"
+}

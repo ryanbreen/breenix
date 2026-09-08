@@ -399,6 +399,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         },
         UnixStream {
             socket: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>>,
+            is_nonblocking: bool,
         },
         RegularFile {
             file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>>,
@@ -462,6 +463,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp, // UDP must use sendto
             FdKind::UnixStream(socket) => WriteOperation::UnixStream {
                 socket: socket.clone(),
+                is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)
+                    != 0,
             },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn, // Unconnected Unix socket
             FdKind::UnixListener(_) => WriteOperation::Enotconn, // Listener can't write
@@ -516,15 +519,12 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             pipe_buffer,
             is_nonblocking,
         } => super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking),
-        WriteOperation::UnixStream { socket } => {
-            let sock = socket.lock();
-            match sock.write(&buffer) {
-                Ok(n) => {
-                    log::debug!("sys_write: Wrote {} bytes to Unix socket", n);
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            }
+        WriteOperation::UnixStream {
+            socket,
+            is_nonblocking,
+        } => {
+            let writer = socket.lock().writer();
+            super::blocking_io::write_unix(writer, &buffer, is_nonblocking)
         }
         WriteOperation::TcpConnection { conn_id } => {
             // Write to established TCP connection

@@ -1,0 +1,2 @@
+After x86 gate completion at 40e2925f; read-only PID census.
+Lane-owned beast QEMU processes: 0

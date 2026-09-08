@@ -1,0 +1,21 @@
+revision=a123f392560e3c404a4011b50a69ce0f3ea516e0; scope=mutation wiring: scripts/f23-render-verdict.sh; replacement=436313ed
+command=['bash', 'scripts/run-structure-tests.sh', 'parallels_capture_structure', 'pil_consumers_use_shared_resolution']
+== compiling parallels_capture_structure ==
+== running parallels_capture_structure pil_consumers_use_shared_resolution ==
+
+running 1 test
+
+thread 'pil_consumers_use_shared_resolution' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957c/wt/tests/parallels_capture_structure.rs:612:9:
+/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t957c/wt/scripts/f23-render-verdict.sh missing resolver
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test pil_consumers_use_shared_resolution ... FAILED
+
+failures:
+
+failures:
+    pil_consumers_use_shared_resolution
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+
+exit=101; wall_seconds=0.131

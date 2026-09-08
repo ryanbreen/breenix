@@ -1,0 +1,9 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+[UNIX_WRITE_ORACLE:aarch64:backpressure:verdict=PASS:bytes=139264]
+[UNIX_WRITE_ORACLE:aarch64:mode:verdict=PASS:bytes=139264]
+[UNIX_WRITE_ORACLE:aarch64:poll:verdict=PASS:bytes=131074]
+[UNIX_WRITE_ORACLE:aarch64:peer_close:verdict=PASS:bytes=0]
+[UNIX_WRITE_ORACLE:aarch64:signal:verdict=PASS:bytes=270338]
+[UNIX_WRITE_ORACLE:aarch64:partial:verdict=PASS:bytes=262144]
+[UNIX_WRITE_SUMMARY:aarch64:passed=6:failed=0]
+[UNIX_WRITE_RESULT:aarch64:status=0]

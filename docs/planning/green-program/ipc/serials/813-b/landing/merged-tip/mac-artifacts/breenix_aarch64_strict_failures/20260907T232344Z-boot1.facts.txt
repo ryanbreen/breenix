@@ -1,0 +1,4 @@
+[GATE_BOOT_FACTS:boot=1:host_ms=1788823329867-1788823424150:qemu_at_start=0:load_at_start=15.02:qemu_at_end=0:load_at_end=10.47:qemu_cpu_s=NA:guest_uptime_ms=89041:ended_by=hard_timeout]
+[CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=300]
+[CAPTURE_DRAIN_EVENTS:last_events=none]
+[QMP_DUMP:capture=partial:reason=qmp_socket_missing:core=-:decoded_events=-:dump_ms=15]

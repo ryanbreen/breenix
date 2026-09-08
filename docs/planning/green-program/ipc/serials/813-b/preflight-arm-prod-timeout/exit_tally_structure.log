@@ -1,0 +1,14 @@
+== compiling exit_tally_structure ==
+== running exit_tally_structure  ==
+
+running 7 tests
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test terminated_assignment_detector_handles_paths_without_counting_patterns ... ok
+test failure_table_lock_is_only_taken_with_interrupts_disabled ... ok
+test termination_functions_guard_assign_and_record_in_order_once_each ... ok
+test process_task_has_no_record_exit_call ... ok
+test record_exit_calls_exist_only_at_the_two_termination_transitions ... ok
+test terminated_state_assignments_are_confined_to_the_two_termination_functions ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+

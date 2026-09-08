@@ -151,3 +151,43 @@ fn data_signal_and_immediate_controls_remain_observable() {
     assert!(driver.contains("ifname==\"nonblock_fcntl\"{mode(fd,true)?;}"));
     assert!(driver.contains("errno(io::read(fd,&mut[0;1]))==-11"));
 }
+
+#[test]
+fn production_input_inject_control_requires_actual_rejection() {
+    use std::process::Command;
+    let driver = read("userspace/programs/src/futex_handoff_oracle.rs");
+    assert!(driver.contains("input_inject_negative_control();"));
+    assert!(driver.contains("const INPUT_INJECT: u64 = 0xB8130004;"));
+    assert!(driver
+        .contains("raw::syscall3(nr::IOCTL, fd.raw(), INPUT_INJECT, witness.as_ptr() as u64)"));
+    assert!(driver.contains("result == -25"));
+    let gate = read("docker/qemu/run-aarch64-prod-profile-boot-test.sh");
+    assert!(gate.contains(
+        "python3 \"$BREENIX_ROOT/scripts/score-input-inject-negative-control.py\" \"$SERIAL_FILE\""
+    ));
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixture =
+        std::env::temp_dir().join(format!("input-inject-control-{}.txt", std::process::id()));
+    let pass = "[INPUT_INJECT_NEGATIVE_CONTROL:request=0xb8130004:probe=-25:verdict=PASS]";
+    for (text, expected) in [
+        (pass.to_string(), true),
+        (String::new(), false),
+        (
+            "[FUTEX_HANDOFF_ORACLE_DRIVER:seam_absent:probe=-110]".to_string(),
+            false,
+        ),
+        (pass.replace("probe=-25", "probe=0"), false),
+        (pass.replace("probe=-25", "probe=-9"), false),
+        (pass.replace("0xb8130004", "0xb8130003"), false),
+        (format!("{pass}\n{pass}"), false),
+    ] {
+        std::fs::write(&fixture, text).unwrap();
+        let output = Command::new("python3")
+            .arg(root.join("scripts/score-input-inject-negative-control.py"))
+            .arg(&fixture)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.success(), expected, "{:?}", output);
+    }
+    std::fs::remove_file(fixture).unwrap();
+}

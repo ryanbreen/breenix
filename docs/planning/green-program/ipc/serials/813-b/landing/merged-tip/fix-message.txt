@@ -1,0 +1,7 @@
+fix(ipc): preserve main pipe oracle scorer invocation
+
+Dispatch the Unix program option separately from the pipe/FIFO default.
+The unchanged x86 profile structure fixture exposed this merge mismatch.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

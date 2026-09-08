@@ -1,0 +1,11 @@
+START stream_atomicity
+END stream_atomicity rejected
+START positive_space_eagain
+END positive_space_eagain rejected
+START mode_unconditional_eagain
+END mode_unconditional_eagain rejected
+START peer_close_fake_success
+END peer_close_fake_success rejected
+START partial_full_count
+END partial_full_count rejected
+RESTORED

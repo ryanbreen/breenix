@@ -1,0 +1,4 @@
+tar: The following options were used after non-option arguments.  These options are positional and affect only arguments that follow them.  Please, rearrange them properly.
+tar: --exclude ‘*.img’ has no effect
+tar: --exclude ‘breenix-structure-tests’ has no effect
+tar: Exiting with failure status due to previous errors

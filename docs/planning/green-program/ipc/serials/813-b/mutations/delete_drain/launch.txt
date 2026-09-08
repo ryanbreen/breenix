@@ -1,0 +1,3 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+[UNIX_WRITE_ORACLE:aarch64:backpressure:verdict=FAIL:read offset=0:EAGAIN]
+[UNIX_WRITE_RESULT:aarch64:status=1]

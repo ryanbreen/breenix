@@ -1,0 +1,9 @@
+revision=436313ed58543e121bf7959563597d2734d45893 + working tree resolver passed on stdin; lane=mac
+candidate=/usr/bin/python3
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'PIL'
+candidate=/opt/homebrew/bin/python3
+12.3.0
+resolver_exit=0 selected=/opt/homebrew/bin/python3
+exit=0

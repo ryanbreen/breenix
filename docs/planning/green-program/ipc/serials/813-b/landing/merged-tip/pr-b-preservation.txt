@@ -1,0 +1,6 @@
+Revision: 3f29bc7bf0d166ef75e5b7c84a1049250d195c29
+kernel/src/socket/unix.rs: byte-identical to PR B starting tip 3419d2a0
+kernel/src/syscall/blocking_io.rs: byte-identical to PR B starting tip 3419d2a0
+kernel/src/task/process_task.rs: byte-identical to PR B starting tip 3419d2a0
+userspace/programs/src/unix_stream_blocking_oracle.rs: byte-identical to PR B starting tip 3419d2a0
+userspace/programs/src/unix_stream_blocking_supervisor.rs: byte-identical to PR B starting tip 3419d2a0

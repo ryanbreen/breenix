@@ -276,7 +276,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             }
             // Check for writable
             if (events & events::POLLOUT) != 0 {
-                if !socket.peer_closed() {
+                if socket.has_write_space() {
                     revents |= events::POLLOUT;
                 }
             }

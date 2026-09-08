@@ -1,0 +1,6 @@
+merge(ipc): reconcile main prerequisites with Unix stream oracle
+
+Take the main x86 profile fixture and preserve the Unix oracle additions.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

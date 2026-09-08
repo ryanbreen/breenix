@@ -1,0 +1,14 @@
+== compiling dispatch_strand_census_structure ==
+== running dispatch_strand_census_structure  ==
+
+running 7 tests
+test host_consumers_have_no_removed_record_dependency ... ok
+test every_in_repo_caller_hands_the_census_the_kernel_serial ... ok
+test the_snapshot_is_emitted_on_the_kernel_log_channel ... ok
+test dispatch_records_and_diagnostic_feature_are_gone ... ok
+test the_surviving_record_census_in_the_dispatch_path_is_pinned ... ok
+test replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion ... ok
+test the_staleness_bound_has_exactly_one_copy_in_the_repository ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

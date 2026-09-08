@@ -1,0 +1,74 @@
+import os, pathlib, subprocess, json, time
+root = pathlib.Path.cwd()
+U='kernel/src/socket/unix.rs'; H='kernel/src/syscall/blocking_io.rs'; D='userspace/programs/src/unix_stream_blocking_oracle.rs'; S='kernel/src/syscall/handlers.rs'; M='kernel/src/syscall/mod.rs'
+paths=[U,H,D,S,M]
+original={p:(root/p).read_text() for p in paths}
+out=root/'docs/planning/green-program/ipc/serials/813-b/mutations'
+out.mkdir(parents=True,exist_ok=True)
+env=os.environ.copy();env.update(TMPDIR=str(root/'.tmp'),BREENIX_GATE_TMP=str(root/'.gate-tmp'),BREENIX_RUST_FORK_LIBRARY='/Users/wrb/fun/code/breenix-parallels/rust-fork/library')
+# Each source mutation runs singly. Driver selection isolates the named matrix leg.
+cases=[
+ ('immediate_eagain','backpressure',H,'if is_nonblocking {\n                return SyscallResult::Err(errno::EAGAIN as u64);','if is_nonblocking || !data.is_empty() {\n                return SyscallResult::Err(errno::EAGAIN as u64);'),
+ ('delete_drain','backpressure',D,'check(read_exact(peer, A)? == vec![0x83; A], "prescribed drain")?;','check(A == 4096, "mutation removes drain")?;'),
+ ('delete_read_wake','backpressure',U,'\n            writers.wake_up();','\n            if to_read == 0 { writers.wake_up(); }'),
+ ('swap_writer_queues','backpressure',U,'UnixEndpoint::A => self.pair.write_waiters_a.clone(),\n            UnixEndpoint::B => self.pair.write_waiters_b.clone(),','UnixEndpoint::A => self.pair.write_waiters_b.clone(),\n            UnixEndpoint::B => self.pair.write_waiters_a.clone(),'),
+ ('full_count','backpressure',H,'return SyscallResult::Ok(count as u64);','return SyscallResult::Ok(data.len() as u64);'),
+ ('construction_only','mode',S,'FdKind::UnixStream(socket) => WriteOperation::UnixStream {\n                socket: socket.clone(),\n                is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)\n                    != 0,','FdKind::UnixStream(socket) => WriteOperation::UnixStream {\n                socket: socket.clone(),\n                is_nonblocking: socket.lock().nonblocking,'),
+ ('ignore_nonblock_sleep','mode',H,'if is_nonblocking {\n                return SyscallResult::Err(errno::EAGAIN as u64);','if is_nonblocking && data.is_empty() {\n                return SyscallResult::Err(errno::EAGAIN as u64);'),
+ ('poll_peer_only','poll',U,'self.writer().state().has_write_space()','!self.peer_closed()'),
+ ('poll_receive_space','poll',U,'self.writer().state().has_write_space()','self.has_data()'),
+ ('reverse_transmit_direction','poll',U,'UnixEndpoint::A => (&self.pair.buffer_a_to_b, &self.pair.closed_b),\n            UnixEndpoint::B => (&self.pair.buffer_b_to_a, &self.pair.closed_a),','UnixEndpoint::A => (&self.pair.buffer_b_to_a, &self.pair.closed_b),\n            UnixEndpoint::B => (&self.pair.buffer_a_to_b, &self.pair.closed_a),'),
+ ('close_readers_only','peer_close',U,'                writers.wake_up();','                if !closed { writers.wake_up(); }'),
+ ('close_wrong_writers','peer_close',U,'(closed_a, &self.pair.waiters_b, &self.pair.write_waiters_b),\n            (closed_b, &self.pair.waiters_a, &self.pair.write_waiters_a),','(closed_a, &self.pair.waiters_b, &self.pair.write_waiters_a),\n            (closed_b, &self.pair.waiters_a, &self.pair.write_waiters_b),'),
+ ('outer_lock_across_wait','peer_close',S,'let writer = socket.lock().writer();\n            super::blocking_io::write_unix(writer, &buffer, is_nonblocking)','let socket_guard = socket.lock();\n            let writer = socket_guard.writer();\n            super::blocking_io::write_unix(writer, &buffer, is_nonblocking)'),
+ ('ignore_interruption','signal',H,'if let Err(error) = wait_prepared(&queue, outcome) {\n            return SyscallResult::Err(error as u64);','if let Err(error) = wait_prepared(&queue, outcome) {\n            if error == errno::EINTR { continue; }\n            return SyscallResult::Err(error as u64);'),
+ ('ignored_pending_interrupts','signal',M,'crate::signal::delivery::has_interrupting_signals(process)','process.signals.pending != 0'),
+ ('leak_registration','signal',H,'queue.take_waiter(tid);\n    queue.finish_wait_for(tid);','if !interrupted { queue.take_waiter(tid); queue.finish_wait_for(tid); }'),
+ ('unrelated_waiter_list','signal',U,'UnixEndpoint::A => self.pair.write_waiters_a.clone(),\n            UnixEndpoint::B => self.pair.write_waiters_b.clone(),','UnixEndpoint::A => Arc::new(WaitQueueHead::new()),\n            UnixEndpoint::B => Arc::new(WaitQueueHead::new()),'),
+ ('stream_atomicity','partial',U,'let count = data.len().min(UNIX_SOCKET_BUFFER_SIZE - self.buffer.len());','if data.len() > UNIX_SOCKET_BUFFER_SIZE - self.buffer.len() { return 0; }\n        let count = data.len().min(UNIX_SOCKET_BUFFER_SIZE - self.buffer.len());'),
+ ('positive_space_eagain','partial',H,'let count = state.copy(data);','if data.len() == 4097 { return SyscallResult::Err(errno::EAGAIN as u64); }\n            let count = state.copy(data);'),
+]
+cases.extend([
+ ('mode_unconditional_eagain','mode',H,'if is_nonblocking {\n                return SyscallResult::Err(errno::EAGAIN as u64);','if is_nonblocking || !data.is_empty() {\n                return SyscallResult::Err(errno::EAGAIN as u64);'),
+ ('peer_close_fake_success','peer_close',H,'if state.peer_closed() {\n                return SyscallResult::Err(errno::EPIPE as u64);','if state.peer_closed() {\n                return SyscallResult::Ok(data.len() as u64);'),
+ ('partial_full_count','partial',H,'return SyscallResult::Ok(count as u64);','return SyscallResult::Ok(data.len() as u64);'),
+])
+results=json.loads((out/'results.json').read_text()) if (out/'results.json').exists() else []
+completed={r['name'] for r in results}
+try:
+ for name, arm, path, old, new in cases:
+  if name in completed: continue
+  folder=out/name;folder.mkdir(exist_ok=True)
+  for p,s in original.items():(root/p).write_text(s)
+  assert original[path].count(old)==1,(name,original[path].count(old))
+  (root/path).write_text(original[path].replace(old,new))
+  driver=(root/D).read_text();start=driver.index('const ARMS:');end=driver.index('#[repr(C)]',start)
+  driver=driver[:start]+f'const ARMS: [&str; 1] = ["{arm}"];\n'+driver[end:]
+  if name=='ignored_pending_interrupts':
+   driver=driver.replace('for variant in 0..if matches!(arm, "signal" | "partial") {','for variant in 1..if matches!(arm, "signal" | "partial") {')
+  (root/D).write_text(driver)
+  (folder/'mutation.json').write_text(json.dumps(dict(name=name,arm=arm,path=path,before=old,after=new),indent=2)+'\n')
+  print('START',name,flush=True)
+  with (folder/'build.txt').open('w') as log:
+   log.write('Revision: '+subprocess.check_output(['git','rev-parse','HEAD'],text=True));log.flush()
+   cmd='cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64'
+   rc=subprocess.run(['bash','-lc',cmd],env=env,stdout=log,stderr=subprocess.STDOUT).returncode
+   if rc: raise RuntimeError((name,'kernel build',rc))
+   rc=subprocess.run(['bash','userspace/programs/build.sh','--arch','aarch64'],env=env,stdout=log,stderr=subprocess.STDOUT).returncode
+   if rc: raise RuntimeError((name,'userspace build',rc))
+  # Record exact delta, run only the diagnostic launcher, never an acceptance gate on mutated source.
+  env['BREENIX_UNIX_PROBE_OUT']=str(folder)
+  with (folder/'launch.txt').open('w') as log:
+   rc=subprocess.run(['bash','.tmp/run-unix-probe.sh'],env=env,stdout=log,stderr=subprocess.STDOUT).returncode
+  serial=(folder/'serial.txt').read_text(errors='replace')
+  verdict='rejected' if f'UNIX_WRITE_ORACLE:aarch64:{arm}:verdict=FAIL' in serial else 'timeout_after_oracle_start' if f'UNIX_WRITE_START:aarch64:{arm}' in serial else 'prerequisite_failure'
+  if f'UNIX_WRITE_ORACLE:aarch64:{arm}:verdict=PASS' in serial:verdict='SURVIVED'
+  results.append(dict(name=name,arm=arm,verdict=verdict,launcherExit=rc))
+  (out/'results.json').write_text(json.dumps(results,indent=2)+'\n')
+  print('END',name,verdict,flush=True)
+  for pattern in ('*.img','*.elf'):
+   for f in folder.glob(pattern):f.unlink()
+  if verdict in ('SURVIVED','prerequisite_failure'): raise RuntimeError((name, verdict))
+finally:
+ for p,s in original.items():(root/p).write_text(s)
+ print('RESTORED',flush=True)
