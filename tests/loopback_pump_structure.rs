@@ -916,7 +916,14 @@ fn validate_loopback_eof_timeout_measures_dispatch(source: &str) -> Result<(), S
     if !(probe < print && print < exit) {
         return Err("EOF timeout must measure and print before exit 15".to_string());
     }
-    if !arm.contains("LOOPBACK_WAKE_TEST: reader_eof_dispatch_probe max_gap_ms={} samples={} window_ms={} verdict=eof_timeout") {
+    let print_offset = code_text_offset(arm, "println!")
+        .ok_or_else(|| "missing EOF dispatch print".to_string())?;
+    let printed = &arm[print_offset..];
+    let expected = "println!(\"LOOPBACK_WAKE_TEST: reader_eof_dispatch_probe max_gap_ms={} samples={} window_ms={} verdict=eof_timeout\",";
+    // Keep the format literal attached to the executable print, rather than
+    // accepting the verdict text in a comment elsewhere in the arm.
+    let printed = printed.lines().map(str::trim).collect::<String>();
+    if !printed.starts_with(expected) {
         return Err("EOF dispatch measurement lost its single-line verdict".to_string());
     }
     Ok(())
@@ -2032,6 +2039,19 @@ fn loopback_eof_dispatch_validator_rejects_deleted_probe() {
     );
     assert_ne!(mutated_arm, arm, "fixture mutation must apply");
     let mutated = source.replacen(arm, &mutated_arm, 1);
+    assert!(validate_loopback_eof_timeout_measures_dispatch(&mutated).is_err());
+}
+
+#[test]
+fn loopback_eof_dispatch_validator_rejects_commented_verdict() {
+    let source = repo_text("userspace/programs/src/loopback_wake_test.rs");
+    let marker = "LOOPBACK_WAKE_TEST: reader_eof_dispatch_probe max_gap_ms={} samples={} window_ms={} verdict=eof_timeout";
+    let mutated = source.replacen(marker, "incorrect marker", 1).replacen(
+        "if eof_wait_ms > EOF_WAKE_BOUND_MS {",
+        &format!("if eof_wait_ms > EOF_WAKE_BOUND_MS {{\n// {marker}"),
+        1,
+    );
+    assert_ne!(mutated, source, "fixture mutation must apply");
     assert!(validate_loopback_eof_timeout_measures_dispatch(&mutated).is_err());
 }
 

@@ -84,9 +84,10 @@ fn role_now_or_exit(exit_code: i32) -> u64 {
 /// Sample the monotonic clock in a tight loop for `window_ms` and report the
 /// largest gap between consecutive samples, plus the sample count.
 ///
-/// A thread that is runnable but not on a CPU cannot sample, so the largest gap
-/// is a direct measurement of the longest dispatch delay this thread suffered
-/// during the window. It is the same quantity #766 measured for `sleep_until`
+/// A thread that is runnable but not on a CPU cannot sample. The largest gap
+/// includes dispatch delay and time spent reading the clock; it does not isolate
+/// either cause or measure the preceding blocked read. It is the quantity #766
+/// measured for `sleep_until`
 /// on x86, taken here by the role that missed its bound, on the boot that
 /// missed it.
 ///
