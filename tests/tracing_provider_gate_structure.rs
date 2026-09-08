@@ -37,7 +37,7 @@ fn assert_result_controls_markers(body: &str) {
         crate::serial_println!("{START}");
         let result = crate::tracing::providers::teardown::deferred_fault_ring_overflow_test();
         match result {{
-            TestResult::Pass => crate::serial_println!("{PASS}"),
+            TestResult::Pass => {{ crate::serial_println!("{PASS}") }}
             _ => crate::serial_println!("{FAIL}{{}}]",
                 result.failure_message().unwrap_or("test failed")),
         }}
