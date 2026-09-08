@@ -523,3 +523,28 @@ The completed fixture refresh passes 68/68 suites in
 `serials/891/landing/fixture-structure-final.txt`. Raw serial bytes retain
 CRLF where the guest emitted it; diff whitespace checking with
 `git -c core.whitespace=cr-at-eol diff --check` exits 0.
+
+### First landing gate population, before concurrent main advance
+
+At `1fdab37b40d0e955b6f131b2a65c6cca377be05d`, beast's requested x86
+boot gate passed 1/1 and parallel gate passed 5/5. Both structure preflights
+passed 68/68, without timeout retry. Launch loads were 1.43 for the x86
+gate, 1.05 for the parallel preflight, and 5.35 for the five guests.
+The x86 boot oracle reports 4 ticks, 12731531 ns, 1 dispatch, 41 iterations,
+verdict ok; timer wake overrun is 45 ms against the 100 ms bound.
+See `serials/891/landing/beast/landing/x86.txt` and
+`serials/891/landing/beast/landing/parallel.txt`.
+
+`serials/891/landing/landing-tally.txt` checks the six x86 landing user
+serials and both ports for panic markers: 6 ok oracles, 0 panic markers.
+`serials/891/landing/proof-tally.txt` checks the prior ten parallel proof
+boots: 10 ok oracles, 0 panic markers across both ports.
+
+The subsequent fetch found PR 968 on main. These first landing results
+remain a separate pre-968 population, not validation of the combined tip.
+The R182 fixture commit changed no kernel, docker, or scripts source.
+No project warnings, structure timeout retry, or SCSI/IO failure occurred
+in this population. Beast had 0 lane-owned QEMUs after the parallel gate.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/pre968-message.txt -> exit 0
