@@ -102,7 +102,7 @@ require_cmd() {
 
 image_probe() {
     local image="$1"
-    python3 - "$image" <<'PY'
+    "$BREENIX_PYTHON" - "$image" <<'PY'
 import json
 import sys
 import warnings
@@ -178,7 +178,7 @@ PY
 json_bool() {
     local json="$1"
     local key="$2"
-    python3 - "$json" "$key" <<'PY'
+    "$BREENIX_PYTHON" - "$json" "$key" <<'PY'
 import json
 import sys
 data = json.loads(sys.argv[1])
@@ -189,7 +189,7 @@ PY
 json_value() {
     local json="$1"
     local key="$2"
-    python3 - "$json" "$key" <<'PY'
+    "$BREENIX_PYTHON" - "$json" "$key" <<'PY'
 import json
 import sys
 data = json.loads(sys.argv[1])
@@ -209,7 +209,7 @@ write_baseline_and_stats() {
     local solid_baseline="$BASELINE_DIR/solid-red.png"
 
     if [ ! -f "$solid_baseline" ]; then
-        python3 - "$image" "$solid_baseline" <<'PY'
+        "$BREENIX_PYTHON" - "$image" "$solid_baseline" <<'PY'
 import sys
 from pathlib import Path
 from PIL import Image
@@ -225,7 +225,7 @@ PY
     printf '%s\n' "$stats" > "${image}.stats.json"
 
     local baseline_cmp
-    baseline_cmp=$(python3 - "$image" "$solid_baseline" <<'PY'
+    baseline_cmp=$("$BREENIX_PYTHON" - "$image" "$solid_baseline" <<'PY'
 import sys
 from pathlib import Path
 from PIL import Image, ImageChops
@@ -298,7 +298,7 @@ find_vm_backend_pid() {
 # claim-lint:ok: #917
 find_parallels_window_id() {
     local vm_pid="$1"
-    python3 - "$VM_NAME" "$vm_pid" <<'PY'
+    "$BREENIX_PYTHON" - "$VM_NAME" "$vm_pid" <<'PY'
 import sys
 import Quartz
 
@@ -386,7 +386,12 @@ capture_window() {
 }
 
 require_cmd prlctl
-require_cmd python3
+# Resolve before retries, retaining the capture failure verdict on dependency failure.
+if ! source "$BREENIX_ROOT/scripts/lib/python-with-pil.sh"; then
+    rm -f "$OUTPUT"
+    emit_verdict "none" "missing-python-with-pil"
+    exit 1
+fi
 
 mkdir -p "$(dirname "$OUTPUT")"
 # Clear a prior invocation's screenshot so failed retries cannot leave stale

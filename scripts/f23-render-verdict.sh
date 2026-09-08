@@ -10,7 +10,9 @@ set -euo pipefail
 
 PNG="${1:?png path required}"
 
-python3 - "$PNG" <<'PY'
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/python-with-pil.sh"
+
+"$BREENIX_PYTHON" - "$PNG" <<'PY'
 import sys
 import warnings
 from PIL import Image
