@@ -123,3 +123,70 @@ The tree command checks changed text hunks; gzip artifacts are not linted as pro
 - A new `BlockedOnIO` all-producers invariant, or closure of 666 or the staged-registry work in 533.
 - Removal of pre-scheduler polling, or changes to ordinary non-idle completion waits.
 - Aarch64 runtime coverage or SMP x86 coverage.
+
+## Astra fix pass, 2026-09-08: V-1 and V-2
+
+The input revision was `48610ba15e16a3a0785c7398e758cde9e2ed43a0`.
+Tier-2 changes are confined to the defects in `kernel/src/interrupts/context_switch.rs`
+and `kernel/src/per_cpu.rs::can_schedule`. V-1 needs a publication-site change;
+nonintrusive debugging cannot repair the premature increment. V-2 needs removal
+of the emitting diagnostics themselves. This pass does not edit the five Tier-1
+files named in the lane brief.
+
+V-1: the oracle now reads the resolved per-CPU thread identity after
+`switch_to_thread` returns. It increments only when the outgoing thread is the
+recorded boot thread and the resulting thread differs. TLS and first-entry
+rollback restore the outgoing identity before that observation. The preemption
+count is sampled before the switch and published only with a departure.
+`tests/boot_disk_wait_structure.rs` pins that ordering and executes the extracted
+measurement block against rollback, departure, non-boot, and absent-pointer
+inputs. These are host tests of the publication logic, not injected live TLS
+failures.
+
+V-2: the context-switch implementation no longer contains direct logger calls
+or raw serial writers. `can_schedule` loses its warning, periodic port writes,
+and their diagnostic-only counters. Refusal counters, dispatch abandonment
+records, and scheduler safety actions remain. The refusal helper's removed
+formatting arguments also require a caller update in
+`kernel/src/tracing/providers/teardown.rs`. Per-CPU initialization diagnostics
+and the idle thread's deferred log drain are outside the switch/admission path.
+
+The diagnostic ratchets are updated with the code they pin:
+`tests/critical_path_logging_census_structure.rs` removes 15 logger sites from
+its expected total (119 to 104); `tests/serial_line_atomicity_structure.rs`
+removes the deleted writers; `tests/dispatch_strand_census_structure.rs` now
+requires an empty logger census in the context-switch file.
+`tests/dispatch_fact_census_structure.rs` retires the serial-only KernelFrame
+split while retaining the `IdleRestoreError` publication check.
+`tests/context_restore_structure.rs` retains the missing-CR3 refusal counter
+and safety checks and retires the requirement to print a breadcrumb.
+
+Regression evidence: `serials/508/review-fix/ratchet-original-head.txt` records
+4 passing and 2 failing tests on the original source, one failure per finding.
+`scripts/test-boot-disk-wait-mutations.py` reruns eight named source mutations
+through `scripts/run-structure-tests.sh`; the exit-101 results are in
+`serials/508/review-fix/mutations.txt`. Its finally blocks restore each changed
+source before the next case. Scorer rejection cases and the existing in-suite
+mutations run with the structure suites.
+
+Not claimed by this review pass: live TLS-failure injection, aarch64 runtime
+coverage, SMP coverage, removal of initialization diagnostics, or retirement
+of the runtime limitations recorded earlier in this document. Gate results
+and the final source revision are recorded below after validation.
+
+Pre-commit validation: the local shared preflight passed 70/70 suites
+(`serials/508/review-fix/structure.txt`); the focused suite passed 7/7
+(`serials/508/review-fix/ratchet-repaired.txt`). Rustfmt checks passed for the
+three changed kernel files. The x86 testing-profile build completed with
+exit 0 and no project compiler diagnostics. The first x86 gate attempt
+launched at load 1.14 and exited 1 in preflight: a diagnostic-publication
+array still declared 16 entries after its serial-only row was removed.
+The corrected array has 15 entries; its suite then passed 7/7 locally.
+No QEMU process was launched by that failed preflight.
+
+Code-commit checks:
+
+```text
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/508-review-code-commit.txt -> exit 0
+```

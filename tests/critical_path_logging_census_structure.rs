@@ -1,35 +1,20 @@
 //! Structural ratchet for `scripts/check-critical-path-violations.sh`.
 //!
-//! The shell script greps a fixed file list for a fixed spelling list and
-//! exits 1 today (119 distinct call sites across 9 files -- 135 at the
-//! classification snapshot in `docs/planning/green-program/gates/
-//! CRITICAL-PATH-DEBT-2026-09-06.md` §1-4, less the 16 PR-1 of that
-//! document's drain plan deleted from
-//! `kernel/src/interrupts/context_switch.rs`). It is not
-//! wired into any gate, so today the only thing that notices a NEW call
-//! creeping in is a human rereading 259 lines of grep output. This suite
-//! pins the census in Rust so a per-`(file, item-path)` INCREASE fails a
-//! `cargo test` run, the same way `tests/serial_line_atomicity_structure.rs`
-//! pins the raw-serial-primitive census and `tests/
-//! capture_path_lock_free_structure.rs` pins the capture path's denylist.
-//! The pin is a full `(file, item-path) -> count` exact match, not a
-//! one-directional ratchet: a DECREASE at an existing anchor fails the same
-//! run, with its own `~ <file> :: <item>  (expected N, found N-1)` diff
-//! line, so a drain PR has to update the table consciously rather than
-//! coast on a stale higher count. See "Direction" in `docs/planning/
-//! green-program/gates/CRITICAL-PATH-DEBT-2026-09-06.md` for the fuller
-//! statement of this.
+//! 508 review V-2 removes 14 context-switch logger calls and one admission
+//! warning from the PR-1 census: 119 -> 104 sites. The shared structure
+//! preflight runs this exact item-path census before the boot gates.
+//! Both additions and removals require an explicit anchor-table update.
 //!
 //! # Two censuses, on purpose
 //!
 //! `CRITICAL_PATH_LOG_ANCHORS` pins the shell script's ORIGINAL twelve
-//! spellings at 119 -- the number the drain plan's PR ledger tracks PR by
+//! spellings at 104 -- the number the drain plan's PR ledger tracks PR by
 //! PR, 135 before PR-1. A second, WIDER set adds three spellings the
 //! original denylist
 //! misses by construction (`serial_print!`, `log_serial_print!`,
 //! `log::log!` -- each reaches the same blocking serial lock as the
 //! `serial_println!`/`log::*!` families the narrow list already denies).
-//! That wider census is 120 today: the 119 plus exactly one escaped site,
+//! That wider census is 105 today: the 104 plus exactly one escaped site,
 //! `kernel/src/arch_impl/aarch64/exception.rs :: fn sys_write`, a
 //! `crate::serial_print!` call inside a per-BYTE loop. This same PR widens
 //! `PROHIBITED_PATTERNS` in the shell script to carry the three new
@@ -51,7 +36,7 @@
 //!
 //! `arch_impl/aarch64/context.rs`, `interrupts/timer.rs` and
 //! `arch_impl/aarch64/percpu.rs` are three of the fourteen checked files
-//! that carry NO denylisted call today. 0 of the 47 rows in the anchor
+//! that carry NO denylisted call today. 0 of the 39 rows in the anchor
 //! table name them, so silence from the general census already catches a
 //! first print there as an unexpected `+` row -- but a `+` row buried in a
 //! sea of a 9-file diff is easy to misread as "one more example from an
@@ -642,14 +627,6 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn handle_syscall", 8),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn dump_gic_state", 9),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn init", 9),
-    ("kernel/src/interrupts/context_switch.rs", "fn check_need_resched_and_switch", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn restore_userspace_thread_context", 5),
-    ("kernel/src/interrupts/context_switch.rs", "fn save_current_thread_context_with_guard", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn save_kthread_context", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn setup_first_userspace_entry", 3),
-    ("kernel/src/interrupts/context_switch.rs", "fn setup_idle_return", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn switch_to_thread", 2),
-    ("kernel/src/per_cpu.rs", "fn can_schedule", 1),
     ("kernel/src/per_cpu.rs", "fn init", 9),
     ("kernel/src/per_cpu.rs", "fn set_kernel_cr3", 2),
     ("kernel/src/per_cpu_aarch64.rs", "fn init", 5),
@@ -704,7 +681,7 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 /// pinned as its own number so a PR that moves rows around without changing
 /// the total -- or changes the total without saying so -- fails on the number
 /// the plan is written in, not only on the per-row diff.
-const CRITICAL_PATH_LOG_TOTAL: usize = 119;
+const CRITICAL_PATH_LOG_TOTAL: usize = 104;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();

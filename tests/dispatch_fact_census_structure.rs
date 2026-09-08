@@ -4,7 +4,8 @@
 //! The census ratchet next door
 //! (`tests/critical_path_logging_census_structure.rs`) says the sixteen calls
 //! are GONE. It does not say whether the facts they carried are still
-//! published. This suite is the other half: for each of the sixteen sites, the
+//! published. This suite retains 15 publication checks after 508 review V-2 removed
+//! the serial-only KernelFrame split. At those retained sites, the
 //! arm now carries either a `trace_dispatch_abandon(DispatchAbandonSite::…)`
 //! that already counted it, or exactly one
 //! `note_fact(DispatchLogFact::…)` in the new sibling family -- and the ten
@@ -100,7 +101,7 @@ const FACTS: [(&str, &str); 10] = [
 /// print and already counted that arm; ten name a new `DispatchLogFact`. The
 /// count column is what makes a copy-paste of the wrong variant fail: a
 /// function that publishes the same fact twice, or drops one of two, moves it.
-const SITE_PUBLICATIONS: [(&str, &str, usize); 16] = [
+const SITE_PUBLICATIONS: [(&str, &str, usize); 15] = [
     // Already counted before this PR (the print was redundant).
     (
         "check_need_resched_and_switch",
@@ -123,10 +124,8 @@ const SITE_PUBLICATIONS: [(&str, &str, usize); 16] = [
         "DispatchAbandonSite::IdleRestoreError",
         1,
     ),
-    // The KernelFrame arm's own split, which `IdleRestoreError` does not
-    // carry: a lock-free raw-serial marker that was already there beside the
-    // deleted `log::error!`.
-    ("restore_userspace_thread_context", "<KFRAME>", 1),
+    // 508 review V-2 removes the serial-only KernelFrame split. The
+    // IdleRestoreError abandonment publication above remains required.
     // New this PR.
     (
         "save_current_thread_context_with_guard",

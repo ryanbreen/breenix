@@ -4327,16 +4327,7 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
     fn published_dispatch_refused(process: &crate::process::Process) -> bool {
         #[cfg(target_arch = "x86_64")]
         {
-            let thread_id = process
-                .main_thread
-                .as_ref()
-                .map(|thread| thread.id)
-                .unwrap_or(0);
-            crate::interrupts::context_switch::refuse_unpublished_dispatch(
-                process,
-                thread_id,
-                process.id.as_u64(),
-            )
+            crate::interrupts::context_switch::refuse_unpublished_dispatch(process)
         }
         #[cfg(target_arch = "aarch64")]
         {

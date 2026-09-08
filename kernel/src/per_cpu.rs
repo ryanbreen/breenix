@@ -1380,12 +1380,6 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // at CR2=0x8 (offset 8 in PerCpuData = current_thread pointer).
     if current_thread().is_none() {
         // No current thread set yet - cannot schedule
-        static EARLY_RETURN_COUNT: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0);
-        let count = EARLY_RETURN_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if count < 10 {
-            log::warn!("can_schedule: returning false - current_thread is None");
-        }
         return false;
     }
 
@@ -1441,34 +1435,6 @@ pub fn can_schedule(saved_cs: u64) -> bool {
         || current_thread_blocked_or_terminated
         || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel))
         || (current_preempt == 0 && need_resched_set);
-
-    // DEBUG: Print why can_schedule returns false (every 1000 calls)
-    static CAN_SCHED_DEBUG_COUNT: core::sync::atomic::AtomicU32 =
-        core::sync::atomic::AtomicU32::new(0);
-    let dbg_count = CAN_SCHED_DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if !result && dbg_count % 1000 == 0 {
-        // Raw serial output to debug
-        use x86_64::instructions::port::Port;
-        unsafe {
-            let mut port: Port<u8> = Port::new(0x3F8);
-            // Print: 'p' + preempt_count_hex + 'r' + (need_resched ? '1' : '0')
-            port.write(b'p');
-            let p = current_preempt as u8;
-            port.write(if (p >> 4) < 10 {
-                b'0' + (p >> 4)
-            } else {
-                b'A' + (p >> 4) - 10
-            });
-            port.write(if (p & 0xF) < 10 {
-                b'0' + (p & 0xF)
-            } else {
-                b'A' + (p & 0xF) - 10
-            });
-            port.write(b'r');
-            port.write(if need_resched_set { b'1' } else { b'0' });
-            port.write(b' ');
-        }
-    }
 
     result
 }

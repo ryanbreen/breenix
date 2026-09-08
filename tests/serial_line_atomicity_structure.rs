@@ -775,17 +775,6 @@ const RAW_SERIAL_PRIMITIVE_ANCHORS: &[(&str, &str, usize)] = &[
         1,
     ),
     (
-        "kernel/src/interrupts/context_switch.rs",
-        "fn raw_serial_char",
-        1,
-    ),
-    (
-        "kernel/src/interrupts/context_switch.rs",
-        "fn raw_serial_str",
-        1,
-    ),
-    ("kernel/src/per_cpu.rs", "fn can_schedule", 1),
-    (
         "kernel/src/serial.rs",
         "fn emergency_print::impl fmt::Write for EmergencySerial::fn write_str",
         1,
@@ -1079,36 +1068,6 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
         "fn timer_interrupt_handler",
         6,
-    ),
-    (
-        "kernel/src/interrupts/context_switch.rs",
-        "fn check_need_resched_and_switch",
-        4,
-    ),
-    (
-        "kernel/src/interrupts/context_switch.rs",
-        "fn note_dispatch_guard_unavailable",
-        5,
-    ),
-    (
-        "kernel/src/interrupts/context_switch.rs",
-        "fn raw_serial_u64",
-        1,
-    ),
-    (
-        "kernel/src/interrupts/context_switch.rs",
-        "fn refuse_unpublished_dispatch",
-        3,
-    ),
-    (
-        "kernel/src/interrupts/context_switch.rs",
-        "fn restore_userspace_thread_context",
-        10,
-    ),
-    (
-        "kernel/src/interrupts/context_switch.rs",
-        "fn switch_to_thread",
-        10,
     ),
     // #608 F4: the timed-futex failure record. It fires only when a timed
     // wait arbitrates to something other than ETIMEDOUT, is budgeted to 32

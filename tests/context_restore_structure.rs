@@ -1516,12 +1516,8 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
     let no_cr3_mask = code_mask(no_cr3_arm);
     let normalized_arm = normalized_code(no_cr3_arm);
     let compact_arm = normalized_arm.replace(' ', "");
-    if !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add")
-        || !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_LOGGED.swap")
-        || identifier_offsets(no_cr3_arm, &no_cr3_mask, "raw_serial_str").is_empty()
-        || identifier_offsets(no_cr3_arm, &no_cr3_mask, "raw_serial_u64").len() < 2
-    {
-        return Err("unavailable CR3 arm lacks the guarded raw breadcrumb".to_string());
+    if !compact_arm.contains("USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add") {
+        return Err("unavailable CR3 arm lacks the refusal counter".to_string());
     }
 
     let with_thread_mut_source = identifier_offsets(no_cr3_arm, &no_cr3_mask, "with_thread_mut")

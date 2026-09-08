@@ -1,0 +1,14 @@
+== compiling boot_disk_wait_structure ==
+== running boot_disk_wait_structure  ==
+
+running 7 tests
+test kernel_schedule_admission_checks_the_count_before_exceptions ... ok
+test boot_completion_preserves_brake_and_uses_atomic_check_halt ... ok
+test departure_counter_observes_dispatch_result_after_rollback ... ok
+test oracle_measures_switches_and_final_test_block_return ... ok
+test switch_and_admission_have_no_text_output ... ok
+test scorer_rejects_mutation_missing_duplicate_and_unfinished_evidence ... ok
+test resolved_departure_block_rejects_tls_rollback_and_counts_departure ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
