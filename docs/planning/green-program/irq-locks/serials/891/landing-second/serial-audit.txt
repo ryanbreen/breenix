@@ -1,0 +1,113 @@
+Source revision: 5733a504703385abaeed0ec2807acb4203dc9bd2
+[
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/aarch64-serial.txt",
+    "panic_markers": [],
+    "fail_lines": [
+      "[EXEC_FAILED_RELEASE_ORACLE:aarch64:used_before=1:used_after=1:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:live_refused=0]"
+    ],
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=5151008:dispatches=5:iterations=25:verdict=ok]",
+      "[TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=0:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=6:window_ms=17:measured=1:PASS]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_1/serial_kernel.txt",
+    "panic_markers": [],
+    "fail_lines": [],
+    "oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_1/serial_user.txt",
+    "panic_markers": [],
+    "fail_lines": [
+      "[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1088ms)"
+    ],
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=6080568:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_2/serial_kernel.txt",
+    "panic_markers": [],
+    "fail_lines": [],
+    "oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_2/serial_user.txt",
+    "panic_markers": [],
+    "fail_lines": [
+      "[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1090ms)"
+    ],
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=6372324:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_3/serial_kernel.txt",
+    "panic_markers": [],
+    "fail_lines": [],
+    "oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_3/serial_user.txt",
+    "panic_markers": [],
+    "fail_lines": [
+      "[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1083ms)"
+    ],
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=3:wait_ns=7982986:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_4/serial_kernel.txt",
+    "panic_markers": [],
+    "fail_lines": [],
+    "oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_4/serial_user.txt",
+    "panic_markers": [],
+    "fail_lines": [
+      "[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1107ms)"
+    ],
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=7237714:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_5/serial_kernel.txt",
+    "panic_markers": [],
+    "fail_lines": [],
+    "oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_boot_5/serial_user.txt",
+    "panic_markers": [],
+    "fail_lines": [
+      "[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1090ms)"
+    ],
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=4252274:dispatches=5:iterations=25:verdict=ok]"
+    ]
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_x86_boot_tests_1/serial_kernel.txt",
+    "panic_markers": [],
+    "fail_lines": [],
+    "oracles": []
+  },
+  {
+    "file": "docs/planning/green-program/irq-locks/serials/891/landing-second/beast/breenix_x86_boot_tests_1/serial_user.txt",
+    "panic_markers": [],
+    "fail_lines": [
+      "[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=16502:used_after=16502:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0]",
+      "[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]",
+      "[dns] 'this.domain.does.not.exist.invalid' FAILED all servers (total 1079ms)"
+    ],
+    "oracles": [
+      "[SOFTIRQ_DEFERRAL_ORACLE:arch=x86:cpu=0:budget_ticks=250:wait_ticks=2:wait_ns=5473947:dispatches=5:iterations=25:verdict=ok]",
+      "[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=44:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=552:window_ms=509:measured=1:PASS]"
+    ]
+  }
+]

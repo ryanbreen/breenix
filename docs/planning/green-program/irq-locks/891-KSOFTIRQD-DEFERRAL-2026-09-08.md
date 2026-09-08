@@ -642,3 +642,109 @@ claim-lint: python3 scripts/claim-lint.py --files .tmp/issue891-comment.md .tmp/
 claim-lint: python3 scripts/claim-lint.py --files .tmp/issue891-comment.md .tmp/issue562-comment.md .tmp/pr-body.md -> exit 0
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/handoff-message.txt -> exit 0
+
+### Second landing attempt under R242
+
+Starting and gate revision: `5733a504703385abaeed0ec2807acb4203dc9bd2`.
+`git pull --ff-only origin sched/891-ksoftirqd-deferral-selftest` returned
+Already up to date. `git fetch origin && git merge origin/main` also
+returned Already up to date, with main at
+`fafac665a7ae1945659b8ff575de551378d5e066` and 0 conflicts.
+V-4's three inline PROVENANCE CORRECTION notes and the empty deferred-code
+findings list were verified intact. No provenance was reconstructed.
+No incoming scorer requirement grew; R182's prior fixture refresh remains.
+
+claim-lint: python3 scripts/claim-lint.py --files docs/planning/green-program/irq-locks/serials/891/testing-diagnostic.txt docs/planning/green-program/irq-locks/serials/891/preflight.txt docs/planning/green-program/irq-locks/serials/891/preflight2.txt -> exit 0
+
+The first attempt's NOT LANDED record above is preserved verbatim. R242
+now attributes its timer-backstop failure to issues 960 and 965 for the
+landing decision. This coordinator attribution does not turn that run into
+a passing boot or establish measured host contention at its low
+launch load. Its revision was `27ac5db1695d754f5592db1415f9a7eb0279bac4`,
+beast launch load 0.23 (QEMU-start 3.18, end 0.26).
+The verbatim oracle token below is from
+`serials/891/landing-merged/beast/breenix_x86_boot_tests_1/serial_user.txt:127`
+(preceding switch breadcrumbs omitted):
+
+```text
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=4:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=3:setup_ms=504:window_ms=30057:measured=1:FAIL]
+```
+
+claim-lint: python3 scripts/claim-lint.py -> exit 1
+
+The draft lint rejected an unquantified modifier; it was removed.
+
+At the second-attempt revision, the standalone structure sweep passed 68/68
+(`serials/891/landing-second/structure.txt`) and the strict aarch64 command
+passed 1/1 with 0 inconclusive boots
+(`serials/891/landing-second/aarch64-strict.txt`). Its own preflight passed
+68/68. The soft-float build used the required fork-library path; its only
+warning was the accepted pinned-core future-incompatibility notice in
+`serials/891/landing-second/aarch64-build.txt`. No project-source warning
+or source edit was needed. The userspace ELFs and ext2 image were copied
+from the specified Mac checkout before this boot.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+
+The second-attempt x86 boot-tests command passed 1/1 (exit 0), with
+68/68 structure suites on attempt 1 and userspace exited=110, nonzero=0,
+failed=[]. The slow suite took 236 seconds; no timeout retry was needed.
+Gate transcript: `serials/891/landing-second/beast/landing-second/x86-1.txt`.
+Revision: `5733a504703385abaeed0ec2807acb4203dc9bd2`.
+R238 command-launch load: 5.12; QEMU-start load: 13.73; end load: 0.87.
+The host load rose during preflight/build; ended_by is scored_pass.
+No second or third x86 boot-tests attempt was required.
+The optional BusyBox image-builder step reported a missing cross compiler;
+image creation continued, with no project-source build warning or SCSI/I/O
+error. BusyBox coverage remains outside this result.
+
+`serials/891/landing-second/beast/breenix_x86_boot_tests_1/serial_user.txt:127`
+(verbatim timer oracle token; preceding switch breadcrumbs omitted):
+
+```text
+[TIMER_WAKE_LATENCY_ORACLE:x86:sleep_ms=10:peers=8:overrun_ms=44:bound_ms=100:quantum_ms=50:round_ms=400:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=552:window_ms=509:measured=1:PASS]
+```
+
+This PASS is retained as evidence for issues 960 and 965 alongside the
+first attempt's attributed three-backstop FAIL. It does not claim that
+this branch repairs their oracle-coordinator defect.
+
+The second-attempt parallel command passed 5/5 (exit 0), after a separate
+68/68 structure preflight and the documented testing,external_test_bins
+profile build. This runner does not wire its own structure preflight, so
+that sweep was run explicitly before it. Preflight/build launch load was
+0.72; five-guest command-launch load was 1.75. No load wait or timeout retry
+was required. Revision remained `5733a504703385abaeed0ec2807acb4203dc9bd2`.
+See `serials/891/landing-second/beast/landing-second/parallel.txt`,
+`serials/891/landing-second/beast/landing-second/parallel-preflight-build.txt`,
+and their sibling load transcripts. Each boot reports 23 userspace exits,
+0 nonzero exits, and deferral verdict ok. The five user serials contain
+0 timer-wake oracle tokens in this profile; no timer verdict is inferred.
+
+`serials/891/landing-second/serial-audit.txt` scans 13 serial ports from
+7 new boots: 1 aarch64 and 6 x86. It finds 0 occurrences of the three
+required panic strings, 7 ok deferral oracles, 0 lost/starved oracles,
+and 0 explicit FAIL verdicts. A broad FAIL substring scan also retains
+the expected invalid-domain DNS failures and EXEC_FAILED_RELEASE oracle
+names; those are negative-test output, not failing test verdicts.
+The gate transcripts have 0 hard_timeout or crash-marker terminations.
+
+The separate historical scan in
+`serials/891/landing-second/historical-panic-scan.txt` finds 0 required
+panic markers across 36 retained ports. It includes the prior ten proof
+boots (10/10 ok, as enumerated in `serials/891/landing/proof-tally.txt`),
+the earlier landing batches, and the first attempt's attributed timer red.
+The populations are not relabeled as second-attempt boots.
+
+Second-attempt gate decision: GREEN under R242. The x86 boot-tests run
+passed without using the allowed retry exception. Main was fetched again
+after the gates and remained `fafac665a7ae1945659b8ff575de551378d5e066`;
+there were 0 new main commits to integrate. PR 967 can now proceed to merge.
+
+Not claimed in this attempt: repair of the timer coordinator in issues
+960/965 (PR 958); 3/3 testing-profile aarch64 boots; loader repair in issue
+761; additional production boots; attribution of each historical x86 panic;
+or a production lost-wake reproduction from the callback-evidence mutation.
+
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/second-landing-message.txt -> exit 0

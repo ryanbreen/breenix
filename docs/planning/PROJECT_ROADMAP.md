@@ -19,8 +19,9 @@ Issue 891: PR 967 makes softirq daemons CPU-local and changes the deferral
 self-test to require daemon callbacks within a delivered-tick budget, with
 a separate host-starvation outcome. The [round record](green-program/irq-locks/891-KSOFTIRQD-DEFERRAL-2026-09-08.md)
 records the ownership/park repairs, wake-deletion and lost-verdict mutations,
-and landing gates. Landing stopped on the merged-tip timer oracle
-three-backstop FAIL (issues 960 and 965); PR 967 remains open. Issue 562's testing-profile loader boundary remains open;
+and landing gates. The R242 second attempt passes strict aarch64 1/1,
+x86 boot-tests 1/1, and parallel x86 5/5. The first attempt's timer
+three-backstop FAIL remains attributed to issues 960 and 965. Issue 562's testing-profile loader boundary remains open;
 a passing deferral oracle alone does not establish a passing profile boot.
 
 Issue 959: the aarch64 TTY peer-hold harness repair is validated on
