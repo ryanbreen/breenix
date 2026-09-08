@@ -15,6 +15,13 @@ Focus is ARM64/Parallels: teardown/process-lifecycle correctness, SMP
 scheduling, and the userland/POSIX compliance stack (dashboard:
 https://v0-breenix-dashboard.vercel.app/).
 
+Issue 959: the aarch64 TTY peer-hold harness repair is validated on
+`tty/959-peer-hold-after-pr-b`. The control and PR B A/B each passed 20/20;
+the forward repair passed strict 20/20, x86 boot-tests, and production-last.
+Merge is pending. The [round record](green-program/tty/959-PEER-HOLD-2026-09-08.md)
+distinguishes the GDB-reproduced expired PM hold from foreground latency
+contamination and does not attribute the historical failures to PR B.
+
 Issue 927: the x86 boot_tests-only fork helpers now run independently of the
 testing loader. PR 944's [round record](green-program/process/927-2026-09-07.md)
 records fresh integration gates: boot_tests-only, full x86 testing, production,

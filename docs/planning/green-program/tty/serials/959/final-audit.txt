@@ -1,0 +1,6 @@
+audit HEAD: 252b9d404195c2e6a7c62ea9c5cd7ce60ba2bfed
+ab-control: verified 20 serial hashes, 40 passing PM/FG markers
+ab-prb: verified 20 serial hashes, 40 passing PM/FG markers
+fix: verified 20 serial hashes, 40 passing PM/FG markers
+HEAD source citations and source hashes match recorded code revision
+Gates, GDB witnesses, red/green/mutation exits verified; kernel/tests unchanged since code commit

@@ -1,0 +1,40 @@
+import gdb
+
+def mem(addr,n):
+    return int.from_bytes(gdb.selected_inferior().read_memory(addr,n),'little')
+def witness(label):
+    print('%s active=%d done=%d holder_cpu=%d hold_us=%d' % (label,mem(0xffff0000413e5a90,1),mem(0xffff0000413e5a94,1),mem(0xffff000040a05938,8),mem(0xffff0000413e5a98,8)))
+gdb.execute('set pagination off')
+gdb.execute('set confirm off')
+gdb.execute('target remote localhost:19599')
+b=gdb.Breakpoint('*0xffff000040561a50')
+gdb.execute('continue')
+driver=gdb.selected_thread()
+witness('DRIVER_BEFORE_BUSY_PROBE')
+print('driver_thread=%d cpsr=%s' % (driver.num,gdb.parse_and_eval('$cpsr')))
+gdb.execute('info threads')
+b.delete()
+holder=mem(0xffff000040a05938,8)
+if mem(0xffff0000413e5a94,1)==0:
+    end=gdb.Breakpoint('*0xffff000040561590')
+    gdb.execute('set scheduler-locking on')
+    gdb.execute('thread %d' % (holder+1))
+    gdb.execute('continue')
+    witness('HOLDER_COMPLETED_WHILE_DRIVER_STOPPED')
+    end.delete()
+    driver.switch()
+    gdb.execute('set scheduler-locking off')
+else:
+    witness('HOLDER_ALREADY_COMPLETED')
+# Stop immediately before leg-B injection, after the independent mutex probe.
+a=gdb.Breakpoint('*0xffff000040561d50')
+gdb.execute('continue')
+witness('DRIVER_AFTER_BUSY_PROBE')
+gdb.execute('info registers pc cpsr')
+a.delete()
+fg=gdb.Breakpoint('*0xffff000040562674')
+gdb.execute('continue')
+print('FG_INJECTION_ENTRY_CPSR=%s' % gdb.parse_and_eval('$cpsr'))
+gdb.execute('info registers pc cpsr')
+fg.delete()
+gdb.execute('detach')

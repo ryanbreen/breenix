@@ -1,0 +1,10 @@
+source revision: 252b9d40 source snapshot before commit
+== compiling tty_irq_pm_structure ==
+== running tty_irq_pm_structure peer_hold_rendezvous ==
+
+running 2 tests
+test peer_hold_rendezvous_covers_both_lock_probes ... ok
+test peer_hold_rendezvous_rejects_time_only_and_unmasked_mutations ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.15s
+
