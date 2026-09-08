@@ -1,0 +1,32 @@
+Revision: 3f29bc7bf0d166ef75e5b7c84a1049250d195c29
+kernel/src/test_framework/registry.rs:6920:     let common_pass = fg_unset_before == 1
+kernel/src/test_framework/registry.rs:6921:         && blocking_acquires == 0
+kernel/src/test_framework/registry.rs:6922:         && deferred_a == 1
+kernel/src/test_framework/registry.rs:6923:         && pgrp_set_by_entry == 0
+kernel/src/test_framework/registry.rs:6924:         && processed_a == 1
+kernel/src/test_framework/registry.rs:6925:         && buffered >= 1
+kernel/src/test_framework/registry.rs:6926:         && pending_before_adopt == 1
+kernel/src/test_framework/registry.rs:6927:         && adopted_delta == 1
+kernel/src/test_framework/registry.rs:6928:         && adopted_pgrp == TTY_IRQ_PM_READER_PID
+kernel/src/test_framework/registry.rs:6929:         && restored == 1;
+kernel/src/test_framework/registry.rs:6930: 
+kernel/src/test_framework/registry.rs:6931:     #[cfg(target_arch = "aarch64")]
+kernel/src/test_framework/registry.rs:6932:     let passed = common_pass
+kernel/src/test_framework/registry.rs:6933:         && arm == TTY_IRQ_PM_ARM_PEER_HOLD
+kernel/src/test_framework/registry.rs:6934:         && irqs_enabled_before == 1
+kernel/src/test_framework/registry.rs:6935:         && pm_busy_probe == 1
+kernel/src/test_framework/registry.rs:6936:         && holder_cpu != u64::MAX
+kernel/src/test_framework/registry.rs:6937:         && hold_us >= TTY_IRQ_PM_HOLD_US
+kernel/src/test_framework/registry.rs:6938:         && processed_b == 1
+kernel/src/test_framework/registry.rs:6939:         && entry_us < TTY_IRQ_PM_ENTRY_CEILING_US
+kernel/src/test_framework/registry.rs:6940:         && joined == 1;
+kernel/src/test_framework/registry.rs:6941: 
+kernel/src/task/softirq_tests.rs:226:     // Verify ksoftirqd specifically processed the deferred work
+kernel/src/task/softirq_tests.rs:227:     let ksoftirqd_did_work = KSOFTIRQD_PROCESSED.load(Ordering::SeqCst);
+kernel/src/task/softirq_tests.rs:228:     assert!(
+kernel/src/task/softirq_tests.rs:229:         ksoftirqd_did_work,
+kernel/src/task/softirq_tests.rs:230:         "ksoftirqd should have processed deferred softirqs (tid={:?})",
+kernel/src/task/softirq_tests.rs:231:         ksoftirqd_tid
+kernel/src/task/softirq_tests.rs:232:     );
+kernel/src/task/softirq_tests.rs:233:     log::info!(
+kernel/src/task/softirq_tests.rs:234:         "SOFTIRQ_TEST: iteration limit passed ({} total iterations, ksoftirqd verified)",

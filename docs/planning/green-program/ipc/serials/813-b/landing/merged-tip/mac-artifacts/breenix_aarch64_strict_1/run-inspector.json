@@ -1,0 +1,1 @@
+{"schemaVersion": 1, "id": "63ce4e4e-9d57-4f24-ace0-5bec679187c0", "arch": "aarch64", "profile": "strict", "verdict": "FAIL", "exitCode": 1, "startedAt": "2026-09-07T23:22:09.867000+00:00", "endedAt": "2026-09-07T23:23:44.305012+00:00", "command": ["docker/qemu/run-aarch64-boot-test-strict.sh", "1"], "serials": ["serial.txt"], "captures": ["gate_boot_facts.txt"]}

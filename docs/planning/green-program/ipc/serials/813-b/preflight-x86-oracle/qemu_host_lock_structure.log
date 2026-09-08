@@ -1,0 +1,10 @@
+== compiling qemu_host_lock_structure ==
+== running qemu_host_lock_structure  ==
+
+running 3 tests
+test qemu_host_lock_predicates_are_not_vacuous ... ok
+test every_aarch64_qemu_launch_script_sources_and_acquires_the_host_lock ... ok
+test every_x86_qemu_launch_script_sources_and_acquires_the_host_lock ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+

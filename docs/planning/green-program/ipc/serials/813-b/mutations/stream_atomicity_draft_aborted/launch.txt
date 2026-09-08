@@ -1,0 +1,3 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+QEMU HOST LOCK: waiting for /Users/wrb/.cache/breenix/a64-qemu.lock (30s elapsed, host qemu-system-aarch64 count=1)...
+.tmp/run-unix-probe.sh: line 35: syntax error near unexpected token `)'

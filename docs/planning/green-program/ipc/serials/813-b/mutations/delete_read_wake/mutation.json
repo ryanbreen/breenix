@@ -1,0 +1,7 @@
+{
+  "name": "delete_read_wake",
+  "arm": "backpressure",
+  "path": "kernel/src/socket/unix.rs",
+  "before": "\n            writers.wake_up();",
+  "after": "\n            if to_read == 0 { writers.wake_up(); }"
+}

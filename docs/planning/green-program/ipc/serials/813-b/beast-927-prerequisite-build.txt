@@ -1,0 +1,10 @@
+69c039a06ef31cdc60790b77211a0dff303c57d3
+ docker/qemu/run-blocking-io-oracle-gate.sh | 44 +++-----------
+ kernel/src/process/manager.rs              | 52 +++++-----------
+ tests/gate_capture_drain_structure.rs      | 96 ++++++++++++++++--------------
+ tests/unix_stream_blocking_structure.rs    |  5 +-
+ 4 files changed, 77 insertions(+), 120 deletions(-)
+   Compiling kernel v0.1.0 (/root/breenix-i813d/kernel)
+   Compiling breenix v0.1.0 (/root/breenix-i813d)
+    Finished `release` profile [optimized] target(s) in 18.30s
+BUILD_EXIT=0

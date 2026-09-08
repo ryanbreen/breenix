@@ -1,0 +1,10 @@
+== compiling poll_tcp_gate_wiring_structure ==
+== running poll_tcp_gate_wiring_structure  ==
+
+running 3 tests
+test discover_files_finds_the_known_wired_gate ... ok
+test negative_a_script_missing_the_kernel_marker_is_detected ... ok
+test every_oracle_fail_gate_also_requires_the_kernel_ready_lost_marker ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+

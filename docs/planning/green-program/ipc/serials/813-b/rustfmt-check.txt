@@ -1,0 +1,3 @@
+Revision: 40e2925f32800702e3dfd42d31d0fe63760cf65c
+Command: rustfmt --check --edition 2021 kernel/src/ipc/fd.rs kernel/src/process/manager.rs kernel/src/socket/unix.rs kernel/src/task/process_task.rs
+EXIT=0

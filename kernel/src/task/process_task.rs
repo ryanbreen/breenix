@@ -22,8 +22,7 @@ unsafe impl Sync for DeferredFaultExitBuffer {}
 impl DeferredFaultExitBuffer {
     const fn new() -> Self {
         Self {
-            slots: [const { AtomicU64::new(DEFERRED_FAULT_EXIT_EMPTY) };
-                DEFERRED_FAULT_EXIT_SLOTS],
+            slots: [const { AtomicU64::new(DEFERRED_FAULT_EXIT_EMPTY) }; DEFERRED_FAULT_EXIT_SLOTS],
         }
     }
 
@@ -41,9 +40,7 @@ impl DeferredFaultExitBuffer {
                 return true;
             }
         }
-        crate::trace_count!(
-            crate::tracing::providers::teardown::DEFERRED_FAULT_RING_DROPPED
-        );
+        crate::trace_count!(crate::tracing::providers::teardown::DEFERRED_FAULT_RING_DROPPED);
         false
     }
 
@@ -67,9 +64,8 @@ static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 1] =
 pub(crate) struct PendingProcessReclaim {
     pid: u64,
     page_table: Option<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>>,
-    old_page_tables: alloc::vec::Vec<
-        alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
-    >,
+    old_page_tables:
+        alloc::vec::Vec<alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>>,
     after_epoch: scheduler::RetirementFence,
     last_pass: u32,
     proof_failures: u8,
@@ -502,11 +498,8 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     {
         let mut budget = u32::MAX;
         let pid = process.id.as_u64();
-        let _ = drain_old_page_tables_counted(
-            pid,
-            &mut process.pending_old_page_tables,
-            &mut budget,
-        );
+        let _ =
+            drain_old_page_tables_counted(pid, &mut process.pending_old_page_tables, &mut budget);
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(page_table) = process.page_table.take() {
@@ -534,8 +527,8 @@ pub(crate) fn defer_live_process_resources(
             )
         });
     #[cfg(feature = "boot_tests")]
-    let root_is_live = root_is_live
-        || FORCE_LIVE_RECLAIM_TEST_PID.load(Ordering::Acquire) == process.id.as_u64();
+    let root_is_live =
+        root_is_live || FORCE_LIVE_RECLAIM_TEST_PID.load(Ordering::Acquire) == process.id.as_u64();
     if !root_is_live {
         return None;
     }
@@ -680,9 +673,7 @@ fn settle_abandoned_retirement(pid: u64) {
 
 pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
     if crate::process::process_manager_held_on_current_cpu() {
-        crate::trace_count!(
-            crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM
-        );
+        crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM);
     }
     push_pending_or_abandon(reclaim);
 }
@@ -730,7 +721,8 @@ pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescripto
                 }
             }
             FdKind::UnixStream(socket) => {
-                socket.lock().close();
+                let notifications = socket.lock().close();
+                notifications.deliver();
             }
             FdKind::FifoRead(path, buffer) => {
                 crate::ipc::fifo::close_fifo_read(&path);
@@ -1210,9 +1202,7 @@ pub fn reclaim_deferred_process_resources() {
     if crate::process::process_manager_held_on_current_cpu()
         || crate::tracing::providers::teardown::scheduler_scope_active()
     {
-        crate::trace_count!(
-            crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS
-        );
+        crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS);
         return;
     }
     #[cfg(feature = "boot_tests")]
@@ -1235,9 +1225,7 @@ pub fn reclaim_deferred_process_resources() {
         .is_err()
     {
         // Refusing benign nesting is correct: the receipt is already queued; the owning drain will take it.
-        crate::trace_count!(
-            crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED
-        );
+        crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_DRAIN_NESTED_REFUSED);
         #[cfg(not(feature = "coreproof_mut_reclaim_bracket"))]
         reclaim_preempt_enable();
         return;
@@ -1245,6 +1233,9 @@ pub fn reclaim_deferred_process_resources() {
     #[cfg(feature = "coreproof_mut_reclaim_bracket")]
     reclaim_preempt_disable();
 
+    // Keep detached Unix close work inside the existing preemption/ownership
+    // bracket, after PM and scheduler-scope refusal.
+    crate::socket::unix::drain_close_notifications();
     reclaim_deferred_process_resources_for_pass(my_pass, false);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
     reclaim_preempt_enable();
@@ -1272,8 +1263,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
         }
         let reclaim = crate::arch_without_interrupts(|| {
             let mut pending = PENDING_PROCESS_RECLAIMS.lock();
-            let _proof_scope =
-                crate::tracing::providers::teardown::ReclaimProofScope::enter();
+            let _proof_scope = crate::tracing::providers::teardown::ReclaimProofScope::enter();
             let snapshot = scheduler::RetirementSnapshot::capture();
             let ready = pending.iter_mut().position(|reclaim| {
                 if reclaim.last_pass == my_pass {
@@ -1515,9 +1505,7 @@ impl Drop for BootReclaimReserveFailureGuard {
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
-fn boot_page_table_reclaim(
-    pid: u64,
-) -> Result<(PendingProcessReclaim, usize, u64), &'static str> {
+fn boot_page_table_reclaim(pid: u64) -> Result<(PendingProcessReclaim, usize, u64), &'static str> {
     let page_table = alloc::boxed::Box::new(
         crate::memory::process_memory::ProcessPageTable::new()
             .map_err(|_| "proof root allocation failed")?,
@@ -1530,8 +1518,7 @@ fn boot_page_table_reclaim(
 }
 
 #[cfg(feature = "boot_tests")]
-fn boot_oversized_page_table(
-) -> Result<
+fn boot_oversized_page_table() -> Result<
     (
         alloc::boxed::Box<crate::memory::process_memory::ProcessPageTable>,
         usize,
@@ -2648,23 +2635,13 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
 
     #[cfg(target_arch = "x86_64")]
     {
-        if x86_forced_root_proof_case(
-            BOOT_RECLAIM_PID_BASE + 10,
-            RootBlocker::Hardware,
-        )
-        .is_err()
-        {
+        if x86_forced_root_proof_case(BOOT_RECLAIM_PID_BASE + 10, RootBlocker::Hardware).is_err() {
             return TestResult::Fail("P1: x86 hardware proof injection failed");
         }
         if x86_shadow_proof_case(BOOT_RECLAIM_PID_BASE + 11).is_err() {
             return TestResult::Fail("P2: x86 CR3 shadow injections failed");
         }
-        if x86_forced_root_proof_case(
-            BOOT_RECLAIM_PID_BASE + 12,
-            RootBlocker::LiveRow,
-        )
-        .is_err()
-        {
+        if x86_forced_root_proof_case(BOOT_RECLAIM_PID_BASE + 12, RootBlocker::LiveRow).is_err() {
             return TestResult::Fail("P3: x86 live-row proof injection failed");
         }
         if x86_forced_root_proof_case(BOOT_RECLAIM_PID_BASE + 13, RootBlocker::Epoch).is_err() {
@@ -3119,8 +3096,7 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             Ok(fixture) => fixture,
             Err(message) => return TestResult::Fail(message),
         };
-        let refused_page =
-            Page::<Size4KiB>::containing_address(VirtAddr::new(0x0123_4000));
+        let refused_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0x0123_4000));
         let refused_frame = match crate::memory::frame_allocator::allocate_frame() {
             Some(frame) => frame,
             None => return TestResult::Fail("Q: refused leaf allocation failed"),
@@ -3322,10 +3298,7 @@ pub fn run_x86_retirement_fence_gate() {
     if result.is_pass() {
         crate::serial_println!("[TEST:process:retirement_fence_gate:PASS]");
     } else {
-        crate::serial_println!(
-            "[TEST:process:retirement_fence_gate:FAIL:{:?}]",
-            result
-        );
+        crate::serial_println!("[TEST:process:retirement_fence_gate:FAIL:{:?}]", result);
     }
     assert!(result.is_pass(), "x86 retirement fence gate failed");
 }

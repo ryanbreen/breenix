@@ -1,0 +1,8 @@
+e9d3c1682d073d8d553e86dabde9101ed1868267
+9b984abd5b958d4477f003a5383be5665fc4fa9b856106f298a52db966cc720a  target/aarch64-breenix-kernel/release/kernel-aarch64
+20:25  up 15 days,  9:29, 24 users, load averages: 3.02 3.82 4.57
+[GATE_PREFLIGHT:structure_suites=66/67:critical_path_lines=260:pinned=120]
+GATE_PREFLIGHT: FAIL (1 of 67 structure suite(s) red: gate_capture_drain_structure -- per-suite logs under /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813e/wt/.gate-tmp/breenix_gate_structure_preflight.SRZ3kD)
+GATE: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)
+gate_exit=1
+20:30  up 15 days,  9:34, 24 users, load averages: 2.94 3.96 4.54

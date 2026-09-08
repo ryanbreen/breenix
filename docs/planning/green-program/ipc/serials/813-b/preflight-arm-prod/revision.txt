@@ -1,0 +1,2 @@
+Revision: 40e2925f32800702e3dfd42d31d0fe63760cf65c
+Production gate retry: BREENIX_STRUCTURE_SUITE_TIMEOUT_SECS=900; preflight enabled.

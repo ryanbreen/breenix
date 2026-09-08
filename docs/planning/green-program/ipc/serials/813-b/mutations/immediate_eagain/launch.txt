@@ -1,0 +1,4 @@
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 1
+F123456789SCUNIX_CHILD_FAIL:write=-11 expected=4096
+[UNIX_WRITE_ORACLE:aarch64:backpressure:verdict=FAIL:query returned -9]
+[UNIX_WRITE_RESULT:aarch64:status=1]
