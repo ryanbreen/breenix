@@ -1,0 +1,13 @@
+{
+  "revision": "b5f11b353f9ae04ce3f8869277c153e782fe22c3",
+  "strict_exit": 1,
+  "strict_boots": "0/1",
+  "not_run": [
+    "service max 2",
+    "service cortex-a72 2",
+    "x86",
+    "production"
+  ],
+  "disk_sha256": "c7bcf249df3fe86992cc42fea200644294fd680d864023524ae6eab65c548ea7",
+  "serial_sha256": "5656cc1125b357dc0f5ef85234237028194c9860ff70d1c8ca4c654b216094e5"
+}
