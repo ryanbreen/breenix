@@ -1,0 +1,11 @@
+revision=96fa978116f7472b9ea0729f830e0b1711af3a9d
+command=bash scripts/run-structure-tests.sh run_inspector_import_structure
+== compiling run_inspector_import_structure ==
+== running run_inspector_import_structure  ==
+
+running 1 test
+test six_gates_source_and_call_the_post_verdict_importer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit=0

@@ -1,0 +1,70 @@
+Revision under test: 735bdf01225d372cdc42f0d3b5d2f148276380e9
+Retrospective provenance annotation from the continuation record; original stdout follows.
+Running 5 parallel full boot tests (runner: native)...
+Image: /root/breenix-n586p4/target/release/build/breenix-d924c107d332c75a/out/breenix-uefi.img
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+  Started test 1
+  Started test 2
+  Started test 3
+  Started test 4
+  Started test 5
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: FAIL (x86 userspace verdict rejected the run)
+    strand census: latest snapshot seq=396 tick=57425 at 505318 ms; 396 valid snapshot(s), previous 1255 ms earlier, largest gap 4040 ms
+strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=396 at 505318 ms
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=14204
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: priority order passed (Timer=1, NetRx=2)
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing nested interrupt rejection...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: nested interrupt rejection passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: Tasklet handler registered
+unblock(2): Added to per_cpu_queues[0]
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: After do_softirq(): 10 iterations (limit=10)
+[DISPATCH_STRAND_CENSUS:seq=396:tick=57425:ms=505318:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=1]
+[ERROR] kernel: KERNEL PANIC: panicked at kernel/src/task/softirq_tests.rs:228:5:
+ksoftirqd should have processed deferred softirqs (tid=Some(2))
+  Test 2: PASS
+    strand census: latest snapshot seq=457 tick=71158 at 576184 ms; 457 valid snapshot(s), previous 126 ms earlier, largest gap 3925 ms
+strand census: age at the completion marker: 126 ms (newest cadence snapshot seq=456 at 576058 ms, completion snapshot seq=457 at 576184 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=18709
+x86 userspace gate: PASS - exited=110 expected>=17 nonzero=0 allowlist=0
+  Test 3: FAIL (x86 userspace verdict rejected the run)
+    strand census: latest snapshot seq=395 tick=55115 at 496786 ms; 395 valid snapshot(s), previous 1073 ms earlier, largest gap 4596 ms
+strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=395 at 496786 ms
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=14203
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: priority order passed (Timer=1, NetRx=2)
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing nested interrupt rejection...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: nested interrupt rejection passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: Tasklet handler registered
+unblock(2): Added to per_cpu_queues[0]
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: After do_softirq(): 10 iterations (limit=10)
+[DISPATCH_STRAND_CENSUS:seq=395:tick=55115:ms=496786:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=1]
+[ERROR] kernel: KERNEL PANIC: panicked at kernel/src/task/softirq_tests.rs:228:5:
+ksoftirqd should have processed deferred softirqs (tid=Some(2))
+  Test 4: FAIL (x86 userspace verdict rejected the run)
+    strand census: latest snapshot seq=391 tick=55149 at 494411 ms; 391 valid snapshot(s), previous 1013 ms earlier, largest gap 4164 ms
+strand census: age at the completion marker: not measurable -- this capture carries no USERSPACE TEST COMPLETE, so it has no kernel timestamp for a known late point; newest snapshot seq=391 at 494411 ms
+STRAND_CENSUS: threads_saved_blocked=0 stranded=0 lines=14197
+x86 userspace gate: FAIL - USERSPACE TEST COMPLETE was absent; boot did not finish
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: priority order passed (Timer=1, NetRx=2)
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing nested interrupt rejection...
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: nested interrupt rejection passed
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: Tasklet handler registered
+unblock(2): Added to per_cpu_queues[0]
+[ INFO] kernel::task::softirq_tests: SOFTIRQ_TEST: After do_softirq(): 10 iterations (limit=10)
+[DISPATCH_STRAND_CENSUS:seq=391:tick=55149:ms=494411:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=1:save_no_proc=1:save_no_pm=1:sig_pending_blocked=1:sig_ctx_blocked=1:sig_delivered_blocked=1:idle_no_stack=1:kthread_no_info=1:user_no_kstack=1:sig_deliverable_user=1]
+[ERROR] kernel: KERNEL PANIC: panicked at kernel/src/task/softirq_tests.rs:228:5:
+ksoftirqd should have processed deferred softirqs (tid=Some(2))
+  Test 5: PASS
+    strand census: latest snapshot seq=625 tick=106461 at 736310 ms; 625 valid snapshot(s), previous 1003 ms earlier, largest gap 4557 ms
+strand census: age at the completion marker: 579 ms (newest cadence snapshot seq=426 at 537880 ms, completion snapshot seq=427 at 538459 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=19052
+x86 userspace gate: PASS - exited=110 expected>=17 nonzero=0 allowlist=0
+
+=========================================
+Results: 2 passed, 3 failed out of 5
+=========================================

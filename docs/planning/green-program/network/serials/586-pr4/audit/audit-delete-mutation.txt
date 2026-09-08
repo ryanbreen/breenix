@@ -1,0 +1,19 @@
+revision=d095c8569d8a34b02b2f7adc4fba0c4f12d76f7e + audit working diff; mutation=audit-delete-mutation
+== compiling loopback_pump_structure ==
+== running loopback_pump_structure loopback_eof_timeout_measures_dispatch ==
+
+running 1 test
+
+thread 'loopback_eof_timeout_measures_dispatch' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/n586p4/wt/tests/loopback_pump_structure.rs:2025:6:
+EOF timeout measures and prints dispatch before exit 15: "EOF timeout arm does not measure dispatch"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test loopback_eof_timeout_measures_dispatch ... FAILED
+
+failures:
+
+failures:
+    loopback_eof_timeout_measures_dispatch
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 137 filtered out; finished in 0.00s
+
+exit=101

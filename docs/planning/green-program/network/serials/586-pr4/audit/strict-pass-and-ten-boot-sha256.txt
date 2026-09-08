@@ -1,0 +1,33 @@
+586 PR 4 continuation evidence: sha256 of preserved captures
+(Locally refreshed after retrospective revision annotations; raw serial bytes unchanged.)
+
+8559cc649b84d6e0271c28ccf02d80e0275427625a5c2eaa4af46dce05cabfa9  docs/planning/green-program/network/serials/586-pr4/audit/panic1-891/capture_drain.txt
+10b307d71b20707451cbbeb0ba21db8fd85c5031c97c94da9368cc25bb5c47e2  docs/planning/green-program/network/serials/586-pr4/audit/panic1-891/gate-stdout.txt
+b668eedae3e91a2faf2d57cb4915aa91846a84d032493df796c69ce7ae7ada4d  docs/planning/green-program/network/serials/586-pr4/audit/panic1-891/serial_kernel.txt
+688f8ab891ff87163d61c20206ba7e6c1422d0a285544dd18d32a82f8c183d44  docs/planning/green-program/network/serials/586-pr4/audit/panic1-891/serial_user.txt
+7a22fe50c83a5b586eba53e01b8edb60dfddf14e7d9003bac0b16569499d91f9  docs/planning/green-program/network/serials/586-pr4/audit/strict-pass/gate-stdout.txt
+9f6dd7b18a6d095de4d29482886d2e8d8a6872e2b6fec420da3df3803087b322  docs/planning/green-program/network/serials/586-pr4/audit/strict-pass/serial_kernel.txt
+110d26d7a207f37d655087dc9480a33ff316f1e057e47dae9e2de657d9390720  docs/planning/green-program/network/serials/586-pr4/audit/strict-pass/serial_user.txt
+d86af6ac752e35be27df959998555d0b55d668298b98c212cdbb8e563ad1e71e  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-1/serial_kernel.txt
+11e39c36837f49f5a9a9138ff04207429fa0e2479cd514834b4b18878a0b9401  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-1/serial_user.txt
+72fd4754eb7c84bc98c78d4cb023e9741ea3068a320a5d289a7ef81b42468a02  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-2/serial_kernel.txt
+85c49d6fb58d49587214818ca07848b94964041c8fff7e192deba611b98a9ddb  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-2/serial_user.txt
+e00aed48c712fc4465494470c6c9885670d28dcdf557cf56320e8c7dd3e1af11  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-3/serial_kernel.txt
+ec236b248313ebb7ffc7703ca19ecf8ce3783a8ce52bafa198dbc27db1e15bf3  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-3/serial_user.txt
+c2508c746dc2cb2bd1ba22ea3a3a3dc2e7a16192768b4fe7867ee90c7942569c  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-4/serial_kernel.txt
+c02f8c59b8f0a2e7878e861aa84cb210ef3651987d6054458f2bfe73bab0ffa8  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-4/serial_user.txt
+fee46a1be564560ffa1c6ab2e7396e296e59bb95bd8c6d30519030fbc0d910f3  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-5/serial_kernel.txt
+7f13e5eb245fb48d14b56dc68c5b9327beb356180de8eaa658091a0eaf2b384b  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/boot-5/serial_user.txt
+ab17008c8e0b55a0c62f915b3de228b135c8fc0eb5123879ae1072c0f1e479c0  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch1/gate-stdout.txt
+54cb44f613155dfa0c090acbc2edae23726dad9d317c890cb078ef38919a3d2d  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-1/serial_kernel.txt
+5df88a009e6c507d1e78a84231446daa6d5f68ca5fbcc2eda66b46931601e521  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-1/serial_user.txt
+adbca70c6ba5f46ee60be0719137a552d6ba333a3603a1d327cb2aec3eb7ed91  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-2/serial_kernel.txt
+c04a420b1b24c5291c800d077b82c42dc63a713f9eeccb0e1b220ea67a400cd9  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-2/serial_user.txt
+b6c1700b695660ff205d0d37150a2d7e68f28f1e3c1e30928c7d01414c3071a8  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-3/serial_kernel.txt
+543ea2daaa0d8979ed8999a470bb7257f98f920882b277c2da38848a4055012c  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-3/serial_user.txt
+8369b46aaa84ca02db9334eb2b92227fd6bcf5f36715002c27104705ed11f57d  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-4/serial_kernel.txt
+2a90d4c4e177cf49b6f721321201b611fe93427faa097783c110404a034506f3  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-4/serial_user.txt
+c8abb010b32b0740c23ba720e0f67b5d960e09b146691a3713f05a04da248b30  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-5/serial_kernel.txt
+42795768d2db77088884ad8ffdd35dd1b89c84229658cd4cb52196c55aa3f0d4  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/boot-5/serial_user.txt
+297620ae43100edc4145cfd6440d3dd356641b65d43d4d4a1b71b1024ee5044e  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/batch2/gate-stdout.txt
+addb0ba66e8509865f211860bde21031bd235ea1e2872f816e4a326f58fac7cf  docs/planning/green-program/network/serials/586-pr4/audit/ten-boot/marker-tally.txt

@@ -1,0 +1,18 @@
+revision=96fa978116f7472b9ea0729f830e0b1711af3a9d
+command=bash scripts/run-structure-tests.sh timer_wake_dispatch_structure
+== compiling timer_wake_dispatch_structure ==
+== running timer_wake_dispatch_structure  ==
+
+running 8 tests
+test the_head_check_rejects_a_body_with_no_enqueue_at_all - should panic ... ok
+test the_head_check_rejects_a_tail_enqueue - should panic ... ok
+test the_quantum_check_rejects_a_drifted_x86_quantum - should panic ... ok
+test the_quantum_check_rejects_a_drifted_aarch64_quantum - should panic ... ok
+test the_gates_read_the_marker ... ok
+test the_oracle_reports_the_quantum_the_scheduler_enforces ... ok
+test the_oracle_is_boot_tests_only_and_runs_on_both_architectures ... ok
+test a_late_timer_wake_is_enqueued_at_the_head ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit=0

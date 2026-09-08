@@ -1,0 +1,9 @@
+Revision under test: e0f6e21156ee56aea2caa77959bbcd0e4cc21f6b
+serial_user.txt: literal [TEST:userspace:loopback_recv_wake:START]: occurrences=0
+serial_user.txt: literal [TEST:userspace:loopback_recv_wake:FAIL:reader_exit_15]: occurrences=0
+serial_user.txt: literal reader_eof_dispatch_probe: occurrences=0
+serial_user.txt: sha256=0b97880c126fa3ef2d38c365937a1b1fde39384c72f76c7f381d391fd16b2f6a
+serial_kernel.txt: literal [TEST:userspace:loopback_recv_wake:START]: occurrences=0
+serial_kernel.txt: literal [TEST:userspace:loopback_recv_wake:FAIL:reader_exit_15]: occurrences=0
+serial_kernel.txt: literal reader_eof_dispatch_probe: occurrences=0
+serial_kernel.txt: sha256=a4fa3d92dc6441d7f38789fd2969ea478f2d0925374d27c93efc700688f6fb3f

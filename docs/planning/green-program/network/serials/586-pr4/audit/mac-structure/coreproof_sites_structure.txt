@@ -1,0 +1,14 @@
+revision=96fa978116f7472b9ea0729f830e0b1711af3a9d
+command=bash scripts/run-structure-tests.sh coreproof_sites_structure
+== compiling coreproof_sites_structure ==
+== running coreproof_sites_structure  ==
+
+running 4 tests
+test every_declared_site_is_listed_and_named ... ok
+test every_scheduler_seam_is_classified_correctly ... ok
+test every_declared_site_is_actually_placed ... ok
+test every_placed_site_is_declared ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+exit=0

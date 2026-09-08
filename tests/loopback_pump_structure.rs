@@ -896,6 +896,39 @@ fn validate_io_wake_buffers_before_thread_context_overflow_fallback(
     Ok(())
 }
 
+fn validate_loopback_eof_timeout_measures_dispatch(source: &str) -> Result<(), String> {
+    let reader =
+        function_body(source, "reader_child").ok_or_else(|| "missing reader_child".to_string())?;
+    let offset = code_text_offset(reader, "if eof_wait_ms > EOF_WAKE_BOUND_MS")
+        .ok_or_else(|| "missing EOF timeout arm".to_string())?;
+    let arm = braced_block(reader, &code_mask(reader), offset)
+        .ok_or_else(|| "cannot parse EOF timeout arm".to_string())?;
+    let code = compact_code(arm);
+    let probe = code
+        .find("let(max_gap_ms,samples)=dispatch_gap_probe(DISPATCH_PROBE_MS);")
+        .ok_or_else(|| "EOF timeout arm does not measure dispatch".to_string())?;
+    let print = code
+        .find("println!(,max_gap_ms,samples,DISPATCH_PROBE_MS);")
+        .ok_or_else(|| "EOF timeout arm does not print its measured dispatch".to_string())?;
+    let exit = code
+        .find("std_process::exit(15);")
+        .ok_or_else(|| "EOF timeout arm lost exit 15".to_string())?;
+    if !(probe < print && print < exit) {
+        return Err("EOF timeout must measure and print before exit 15".to_string());
+    }
+    let print_offset = code_text_offset(arm, "println!")
+        .ok_or_else(|| "missing EOF dispatch print".to_string())?;
+    let printed = &arm[print_offset..];
+    let expected = "println!(\"LOOPBACK_WAKE_TEST: reader_eof_dispatch_probe max_gap_ms={} samples={} window_ms={} verdict=eof_timeout\",";
+    // Keep the format literal attached to the executable print, rather than
+    // accepting the verdict text in a comment elsewhere in the arm.
+    let printed = printed.lines().map(str::trim).collect::<String>();
+    if !printed.starts_with(expected) {
+        return Err("EOF dispatch measurement lost its single-line verdict".to_string());
+    }
+    Ok(())
+}
+
 fn validate_loopback_regression_tests_are_arch_neutral(source: &str) -> Result<(), String> {
     for name in [
         "loopback_recv_wake_when_idle",
@@ -1982,6 +2015,44 @@ fn loopback_regression_tests_are_arch_neutral() {
         "kernel/src/test_framework/registry.rs",
     ))
     .expect("all loopback regression TestDefs remain Arch::Any");
+}
+
+#[test]
+fn loopback_eof_timeout_measures_dispatch() {
+    validate_loopback_eof_timeout_measures_dispatch(&repo_text(
+        "userspace/programs/src/loopback_wake_test.rs",
+    ))
+    .expect("EOF timeout measures and prints dispatch before exit 15");
+}
+
+#[test]
+fn loopback_eof_dispatch_validator_rejects_deleted_probe() {
+    let source = repo_text("userspace/programs/src/loopback_wake_test.rs");
+    let offset = code_text_offset(&source, "if eof_wait_ms > EOF_WAKE_BOUND_MS")
+        .expect("find EOF timeout fixture");
+    let arm =
+        braced_block(&source, &code_mask(&source), offset).expect("parse EOF timeout fixture");
+    let mutated_arm = arm.replacen(
+        "let (max_gap_ms, samples) = dispatch_gap_probe(DISPATCH_PROBE_MS);",
+        "",
+        1,
+    );
+    assert_ne!(mutated_arm, arm, "fixture mutation must apply");
+    let mutated = source.replacen(arm, &mutated_arm, 1);
+    assert!(validate_loopback_eof_timeout_measures_dispatch(&mutated).is_err());
+}
+
+#[test]
+fn loopback_eof_dispatch_validator_rejects_commented_verdict() {
+    let source = repo_text("userspace/programs/src/loopback_wake_test.rs");
+    let marker = "LOOPBACK_WAKE_TEST: reader_eof_dispatch_probe max_gap_ms={} samples={} window_ms={} verdict=eof_timeout";
+    let mutated = source.replacen(marker, "incorrect marker", 1).replacen(
+        "if eof_wait_ms > EOF_WAKE_BOUND_MS {",
+        &format!("if eof_wait_ms > EOF_WAKE_BOUND_MS {{\n// {marker}"),
+        1,
+    );
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_loopback_eof_timeout_measures_dispatch(&mutated).is_err());
 }
 
 #[test]

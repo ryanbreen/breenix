@@ -1,0 +1,30 @@
+revision=96fa978116f7472b9ea0729f830e0b1711af3a9d
+blob=67bc58e9d54e4c9e043a028b3472d92e4a425503 file=userspace/programs/src/loopback_wake_test.rs
+userspace/programs/src/loopback_wake_test.rs:55: const EOF_WAKE_BOUND_MS: u64 = 4000;
+userspace/programs/src/loopback_wake_test.rs:66: const DISPATCH_PROBE_MS: u64 = 2000;
+userspace/programs/src/loopback_wake_test.rs:96: fn dispatch_gap_probe(window_ms: u64) -> (u64, u64) {
+userspace/programs/src/loopback_wake_test.rs:197:         let (max_gap_ms, samples) = dispatch_gap_probe(DISPATCH_PROBE_MS);
+userspace/programs/src/loopback_wake_test.rs:225:     if eof_wait_ms > EOF_WAKE_BOUND_MS {
+userspace/programs/src/loopback_wake_test.rs:228:         let (max_gap_ms, samples) = dispatch_gap_probe(DISPATCH_PROBE_MS);
+userspace/programs/src/loopback_wake_test.rs:230:             "LOOPBACK_WAKE_TEST: reader_eof_dispatch_probe max_gap_ms={} samples={} window_ms={} verdict=eof_timeout",
+userspace/programs/src/loopback_wake_test.rs:233:         std_process::exit(15);
+blob=458d6bd6a834306bdc2d29d848af76878853947a file=tests/loopback_pump_structure.rs
+tests/loopback_pump_structure.rs:899: fn validate_loopback_eof_timeout_measures_dispatch(source: &str) -> Result<(), String> {
+tests/loopback_pump_structure.rs:2021: fn loopback_eof_timeout_measures_dispatch() {
+tests/loopback_pump_structure.rs:2029: fn loopback_eof_dispatch_validator_rejects_deleted_probe() {
+tests/loopback_pump_structure.rs:2046: fn loopback_eof_dispatch_validator_rejects_commented_verdict() {
+blob=3d167ab941fc5f94ddd7dd9941a7fb37401d65fc file=kernel/src/test_framework/executor.rs
+kernel/src/test_framework/executor.rs:705: static X86_DEFERRED_TESTS: &[(&str, u32)] = &[
+kernel/src/test_framework/executor.rs:710:     ("loopback_recv_wake_when_idle", 567),
+blob=25985ce52733a37da8c863f972b697f46d54fb2b file=kernel/src/task/scheduler.rs
+kernel/src/task/scheduler.rs:6593: pub fn is_cpu_idle_raw(cpu_id: usize) -> bool {
+blob=f99803d271804294717da064da86678afdec6e2a file=docker/qemu/run-x86-boot-tests.sh
+docker/qemu/run-x86-boot-tests.sh:155: if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-x86-boot-tests.sh:603: cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
+docker/qemu/run-x86-boot-tests.sh:781:             && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
+docker/qemu/run-x86-boot-tests.sh:1094:     test "$(grep -h -c '\[TEST:userspace:loopback_recv_wake:PASS\]' \
+blob=c68c05e805c5923fd56fac3f6bd328f7fce7714f file=docker/qemu/run-boot-parallel.sh
+docker/qemu/run-boot-parallel.sh:67: readonly EXPECTED_USERSPACE_EXITS=17
+docker/qemu/run-boot-parallel.sh:110: qemu_host_lock_acquire qemu-system-x86_64
+docker/qemu/run-boot-parallel.sh:133:             -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
+docker/qemu/run-boot-parallel.sh:156:                 -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \

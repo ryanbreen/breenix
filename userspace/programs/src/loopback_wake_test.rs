@@ -61,7 +61,7 @@ const EOF_WAKE_BOUND_MS: u64 = 4000;
 // (see the scope note in the module header).
 const LOAD_SPIN_MS: u64 = 10000;
 const WATCHDOG_AT_MS: u64 = 30000;
-// Only the failure path spins this long, and only after exit 13 is already
+// Only the failure paths spin this long, after exit 13 or 15 is already
 // decided, so no passing boot pays for it.
 const DISPATCH_PROBE_MS: u64 = 2000;
 
@@ -84,15 +84,15 @@ fn role_now_or_exit(exit_code: i32) -> u64 {
 /// Sample the monotonic clock in a tight loop for `window_ms` and report the
 /// largest gap between consecutive samples, plus the sample count.
 ///
-/// A thread that is runnable but not on a CPU cannot sample, so the largest gap
-/// is a direct measurement of the longest dispatch delay this thread suffered
-/// during the window. It is the same quantity #766 measured for `sleep_until`
+/// A thread that is runnable but not on a CPU cannot sample. The largest gap
+/// includes dispatch delay and time spent reading the clock; it does not isolate
+/// either cause or measure the preceding blocked read. It is the quantity #766
+/// measured for `sleep_until`
 /// on x86, taken here by the role that missed its bound, on the boot that
 /// missed it.
 ///
-/// It is called from one site only, inside the `data_latency_ms >
-/// DATA_WAKE_BOUND_MS` arm, so a boot that stays inside the bound does not
-/// execute it at all.
+/// Called only after the data or EOF wake bound is missed. A boot that stays
+/// inside both bounds does not execute it.
 fn dispatch_gap_probe(window_ms: u64) -> (u64, u64) {
     let start_ms = match monotonic_ms() {
         Some(now) => now,
@@ -223,6 +223,13 @@ fn reader_child(server_fd: Fd, ready_w: Fd) -> ! {
         std_process::exit(14);
     }
     if eof_wait_ms > EOF_WAKE_BOUND_MS {
+        // The EOF bound was already missed. This samples subsequent dispatch
+        // gaps on the same boot without changing the timeout verdict.
+        let (max_gap_ms, samples) = dispatch_gap_probe(DISPATCH_PROBE_MS);
+        println!(
+            "LOOPBACK_WAKE_TEST: reader_eof_dispatch_probe max_gap_ms={} samples={} window_ms={} verdict=eof_timeout",
+            max_gap_ms, samples, DISPATCH_PROBE_MS
+        );
         std_process::exit(15);
     }
 

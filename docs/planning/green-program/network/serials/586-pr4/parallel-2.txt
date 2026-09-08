@@ -1,0 +1,38 @@
+Running 5 parallel full boot tests (runner: native)...
+Image: /root/breenix-586-pr4/target/release/build/breenix-5ac7b276747c983c/out/breenix-uefi.img
+QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
+  Started test 1
+  Started test 2
+  Started test 3
+  Started test 4
+  Started test 5
+Waiting for kthread tests to complete (900s timeout)...
+  Test 1: PASS
+    strand census: latest snapshot seq=42 tick=7968 at 52489 ms; 42 valid snapshot(s), previous 34 ms earlier, largest gap 3542 ms
+strand census: age at the completion marker: 34 ms (newest cadence snapshot seq=41 at 52455 ms, completion snapshot seq=42 at 52489 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5325
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+  Test 2: PASS
+    strand census: latest snapshot seq=43 tick=7966 at 52253 ms; 43 valid snapshot(s), previous 769 ms earlier, largest gap 3542 ms
+strand census: age at the completion marker: 234 ms (newest cadence snapshot seq=41 at 51250 ms, completion snapshot seq=42 at 51484 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5306
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+  Test 3: PASS
+    strand census: latest snapshot seq=43 tick=8105 at 53313 ms; 43 valid snapshot(s), previous 1005 ms earlier, largest gap 3600 ms
+strand census: age at the completion marker: 78 ms (newest cadence snapshot seq=40 at 51304 ms, completion snapshot seq=41 at 51382 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5252
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+  Test 4: PASS
+    strand census: latest snapshot seq=43 tick=7955 at 52334 ms; 43 valid snapshot(s), previous 576 ms earlier, largest gap 3497 ms
+strand census: age at the completion marker: 429 ms (newest cadence snapshot seq=41 at 51329 ms, completion snapshot seq=42 at 51758 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5287
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+  Test 5: PASS
+    strand census: latest snapshot seq=41 tick=8067 at 52543 ms; 41 valid snapshot(s), previous 1005 ms earlier, largest gap 7616 ms
+strand census: age at the completion marker: 937 ms (newest cadence snapshot seq=38 at 50535 ms, completion snapshot seq=39 at 51472 ms, bound 15000 ms)
+STRAND_CENSUS: threads_saved_blocked=11 stranded=0 lines=5378
+x86 userspace gate: PASS - exited=23 expected>=17 nonzero=0 allowlist=0
+
+=========================================
+Results: 5 passed, 0 failed out of 5
+=========================================

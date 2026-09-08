@@ -1,0 +1,10 @@
+From https://github.com/ryanbreen/breenix
+ * branch                net/586-pr4-x86-eof-arm-dispatch -> FETCH_HEAD
+   d095c8569..96fa97811  net/586-pr4-x86-eof-arm-dispatch -> origin/net/586-pr4-x86-eof-arm-dispatch
+Updating d095c8569..96fa97811
+Fast-forward
+ tests/loopback_pump_structure.rs             | 22 +++++++++++++++++++++-
+ userspace/programs/src/loopback_wake_test.rs |  7 ++++---
+ 2 files changed, 25 insertions(+), 4 deletions(-)
+userspace-build exit=0 revision=96fa978116f7472b9ea0729f830e0b1711af3a9d
+strict exit=1 revision=96fa978116f7472b9ea0729f830e0b1711af3a9d

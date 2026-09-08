@@ -1,0 +1,4 @@
+userspace-build.txt: compiler_warnings=0 compiler_errors=0
+x86-boot-tests.txt: compiler_warnings=0 compiler_errors=0
+parallel-build.txt: compiler_warnings=0 compiler_errors=0
+x86-boot-tests-rerun.txt: compiler_warnings=0 compiler_errors=0
