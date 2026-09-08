@@ -1,0 +1,7 @@
+revision=9ee19079c7310ee5d617c85ed64072ad6e0c8367
+first_parent=182d28e32fe6a0b9f934565cf67811db499f8b73
+second_parent=fbb1cd3be126618f02aa7c84d5163ae3daaa5627
+conflicts=0
+manual_resolution_files=[]
+automerged=tests/tty_irq_pm_structure.rs
+local_kernel_edits=[]

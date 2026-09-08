@@ -1,0 +1,32 @@
+[
+  {
+    "command": "bash docker/qemu/run-x86-boot-tests.sh",
+    "revision": "87cf3de694cea98806e66d9352d1cb56329b81b1",
+    "exit": 0,
+    "result": "GREEN",
+    "log": "docs/planning/green-program/ipc/serials/813-c/land2/final/x86-boot.log",
+    "facts": [
+      "[GATE_BOOT_FACTS:boot=1:host_ms=1788860776652-1788861234048:qemu_at_start=0:load_at_start=13.60:qemu_at_end=0:load_at_end=0.96:qemu_cpu_s=451.00:guest_uptime_ms=NA:ended_by=scored_pass]"
+    ]
+  },
+  {
+    "command": "bash docker/qemu/run-aarch64-boot-test-strict.sh 1",
+    "revision": "87cf3de694cea98806e66d9352d1cb56329b81b1",
+    "exit": 0,
+    "result": "GREEN",
+    "log": "docs/planning/green-program/ipc/serials/813-c/land2/final/aarch64-strict.log",
+    "facts": [
+      "[GATE_BOOT_FACTS:boot=1:host_ms=1788860306371-1788860320928:qemu_at_start=0:load_at_start=10.58:qemu_at_end=1:load_at_end=10.02:qemu_cpu_s=24.65:guest_uptime_ms=13927:ended_by=scored_pass]"
+    ]
+  },
+  {
+    "command": "bash docker/qemu/run-blocking-io-oracle-gate.sh --arch x86_64",
+    "revision": "87cf3de694cea98806e66d9352d1cb56329b81b1",
+    "exit": 0,
+    "result": "GREEN",
+    "pipeFifo": "30/30",
+    "consoleTty": "12/12",
+    "launchLoad": 0.9,
+    "log": "docs/planning/green-program/ipc/serials/813-c/land2/final/x86-oracle.log"
+  }
+]

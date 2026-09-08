@@ -385,7 +385,12 @@ fn drain_disabled_reads_partial_drain_enabled_reads_complete_same_race() {
     let rest = "[BXCAP:EV cpu=0 i=1 ts=2 type=0x2 n=CTX_SWITCH p=8 f=0x0]\n\
                 [BXCAP:END v=1 seq=3 edge=FAULT verdict=complete records=3 bytes=200 truncated=0 sections_skipped=0x0]\n";
 
-    for (case, disabled, expected) in [("disabled", "1", "partial"), ("enabled", "0", "complete")] {
+    for (case, disabled, startup_delay, expected) in [
+        ("disabled", "1", "0", "partial"),
+        ("enabled", "0", "0", "complete"),
+        ("disabled-delayed", "1", "0.3", "partial"),
+        ("enabled-delayed", "0", "0.3", "complete"),
+    ] {
         let serial = dir.join(format!("{case}.txt"));
         fs::write(&serial, begin).unwrap();
         let script = format!(
@@ -397,6 +402,7 @@ release_writer() {{
     fi
 }}
 sleep() {{ release_writer; }}
+command sleep {startup_delay}
 BREENIX_GATE_DRAIN_DISABLE={disabled} BREENIX_GATE_DRAIN_SETTLE_MS=50 \
 BREENIX_GATE_DRAIN_QUIET_MS=100 BREENIX_GATE_DRAIN_MAX_MS=2000 \
 gcd_drain_and_report '{serial}'

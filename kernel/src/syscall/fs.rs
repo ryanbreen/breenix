@@ -2558,8 +2558,16 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
                 return SyscallResult::Err(3); // ESRCH
             }
         };
-        let fd_kind = FdKind::Device(device.device_type);
-        return match process.fd_table.alloc(fd_kind) {
+        let fd_kind = FileDescriptor::with_flags(
+            FdKind::Device(device.device_type),
+            if flags & O_CLOEXEC != 0 {
+                crate::ipc::fd::flags::FD_CLOEXEC
+            } else {
+                0
+            },
+            flags & crate::ipc::fd::status_flags::O_NONBLOCK,
+        );
+        return match process.fd_table.alloc_with_entry(fd_kind) {
             Ok(fd) => {
                 log::info!("handle_devfs_open: /dev/tty (no ctty) as fd {}", fd);
                 SyscallResult::Ok(fd as u64)
@@ -2569,8 +2577,16 @@ fn handle_devfs_open(device_name: &str, flags: u32) -> SyscallResult {
     }
 
     // Allocate file descriptor with Device kind
-    let fd_kind = FdKind::Device(device.device_type);
-    match process.fd_table.alloc(fd_kind) {
+    let fd_kind = FileDescriptor::with_flags(
+        FdKind::Device(device.device_type),
+        if flags & O_CLOEXEC != 0 {
+            crate::ipc::fd::flags::FD_CLOEXEC
+        } else {
+            0
+        },
+        flags & crate::ipc::fd::status_flags::O_NONBLOCK,
+    );
+    match process.fd_table.alloc_with_entry(fd_kind) {
         Ok(fd) => {
             log::info!(
                 "handle_devfs_open: opened /dev/{} as fd {}",

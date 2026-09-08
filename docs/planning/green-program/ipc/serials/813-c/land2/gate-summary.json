@@ -1,0 +1,57 @@
+{
+  "revision": "9ee19079c7310ee5d617c85ed64072ad6e0c8367",
+  "builds": {
+    "aarch64-kernel": 0,
+    "x86_64-kernel-cross-build": 0
+  },
+  "gates": {
+    "structure": {
+      "exit": 0,
+      "suites": "69/69"
+    },
+    "aarch64-strict": {
+      "exit": 0,
+      "boots": 1
+    },
+    "aarch64-oracle": {
+      "exit": 0,
+      "boots": 1,
+      "pipe_fifo_arms": 30,
+      "console_tty_arms": 12,
+      "worker_reaped": true
+    },
+    "aarch64-prod": {
+      "exit": 0,
+      "boots": 1,
+      "last": true,
+      "INPUT_INJECT": -25
+    }
+  },
+  "serials": {
+    "aarch64-oracle-serial.txt": {
+      "revision": "9ee19079c7310ee5d617c85ed64072ad6e0c8367",
+      "capture_sha256": "edf239c328696396461a21931ab404f40430d166b3f896e70b0d3650fb67c1c3",
+      "committed_lf_sha256": "de75ee3e55798899b757b42ae4a6d5bc2de6a61e798ddc5e6a52dd53686dfdf9"
+    },
+    "aarch64-prod-serial.txt": {
+      "revision": "9ee19079c7310ee5d617c85ed64072ad6e0c8367",
+      "capture_sha256": "65c9d9d8a12c838ec00f9ddf6e25b29101551d8452c6150163dbc2ffa1492c83",
+      "committed_lf_sha256": "7c9bd4a70d25841226ed227f8391d05b71634d80679eed98559fd5ce8f458dfe"
+    },
+    "aarch64-strict-serial.txt": {
+      "revision": "9ee19079c7310ee5d617c85ed64072ad6e0c8367",
+      "capture_sha256": "77d7cd6a58cb15ea84002c7ec273b77752867dbe959d3b595f2f4c3554462bf0",
+      "committed_lf_sha256": "232fbb435f640b933841453bd1286c8661b58554b972125b146c8648e03bd3da"
+    }
+  },
+  "manual_resolution_files": [],
+  "local_kernel_edits": [],
+  "PIPE_WRITE_ORACLE": {
+    "raw": 60,
+    "distinct": 30
+  },
+  "CONSOLE_READ_ORACLE": {
+    "raw": 24,
+    "distinct": 12
+  }
+}

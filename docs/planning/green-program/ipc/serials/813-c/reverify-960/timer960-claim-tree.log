@@ -1,0 +1,7 @@
+base=09d03f2d02c74f050d299f5c4288df2e06805614; working fix committed as dfe14edf6e7c90b1973464e31acee1fb6c014989
+tests/timer_wake_dispatch_structure.rs:297: [universal-claim] Peer zero is released, then preempts the coordinator before peer one is released. Runnable work excludes idle, exactly as schedule() does. Peers keep running until the sleeper completes; it needs both peers.
+    -> unquantified absolute ('zero') with no N-of-M count, resolving evidence-log citation, or claim-lint:ok in this paragraph
+
+claim-lint: 1 finding(s) across 146 file(s) [changed hunks vs c93ecf5297f4]. Discharge a legitimate claim with a same-paragraph `claim-lint:ok: <citation>` annotation naming an N-of-M count, a resolving path, an issue, or a review. See docs/planning/green-program/claim-linting.md.
+claim-lint: 159 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 6 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/ipc/serials/813-c/landing-arm-oracle-boot_1-qemu.log, docs/planning/green-program/ipc/serials/813-c/landing-arm-oracle-install.log, docs/planning/green-program/ipc/serials/813-c/landing-arm-oracle-kernel-build.log, docs/planning/green-program/ipc/serials/813-c/landing-arm-oracle-userspace-build.log, docs/planning/green-program/ipc/serials/813-c/landing-arm-strict-inspector-import.log, docs/planning/green-program/ipc/serials/813-c/reverify-960/source-sha256.json

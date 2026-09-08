@@ -704,6 +704,8 @@ if grep -qF '[BOOT_TESTS:FAIL' "$SERIAL_FILE" 2>/dev/null; then
     exit 1
 fi
 
+python3 "$BREENIX_ROOT/scripts/score-input-inject-negative-control.py" "$SERIAL_FILE"
+
 [ "$PROD_SEAM_ABSENT_COUNT" -eq 1 ] || {
     echo "FAIL: seam-absent timeout marker count must be exactly one"
     exit 1

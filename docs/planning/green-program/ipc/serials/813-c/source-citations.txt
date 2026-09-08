@@ -1,0 +1,1636 @@
+revision=8ff71840e8c8577220132ae6d1256351169a6296
+kernel/src/syscall/blocking_io.rs:1: //! Interruptible prepared waits shared by blocking descriptor adapters.
+kernel/src/syscall/blocking_io.rs:2: //!
+kernel/src/syscall/blocking_io.rs:3: //! Publication happens under the caller's object lock. This module's sleep
+kernel/src/syscall/blocking_io.rs:4: //! lifecycle receives the queue and publication outcome rather than a guard.
+kernel/src/syscall/blocking_io.rs:5: 
+kernel/src/syscall/blocking_io.rs:6: use super::{errno, SyscallResult};
+kernel/src/syscall/blocking_io.rs:7: use crate::ipc::pipe::{PipeBuffer, WriteAttempt, PIPE_BUF};
+kernel/src/syscall/blocking_io.rs:8: use crate::task::thread::ThreadState;
+kernel/src/syscall/blocking_io.rs:9: use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
+kernel/src/syscall/blocking_io.rs:10: use alloc::sync::Arc;
+kernel/src/syscall/blocking_io.rs:11: use spin::Mutex;
+kernel/src/syscall/blocking_io.rs:12: 
+kernel/src/syscall/blocking_io.rs:13: /// Complete a checked publication after the caller has released object/PM locks.
+kernel/src/syscall/blocking_io.rs:14: /// Mismatch retries, publication failure is an internal thread error, and the
+kernel/src/syscall/blocking_io.rs:15: /// queued exit normalizes the scheduler's blocked-in-syscall flag.
+kernel/src/syscall/blocking_io.rs:16: pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> Result<(), i32> {
+kernel/src/syscall/blocking_io.rs:17:     match outcome {
+kernel/src/syscall/blocking_io.rs:18:         PrepareOutcome::Mismatch => {
+kernel/src/syscall/blocking_io.rs:19:             queue.finish_wait();
+kernel/src/syscall/blocking_io.rs:20:             return Ok(());
+kernel/src/syscall/blocking_io.rs:21:         }
+kernel/src/syscall/blocking_io.rs:22:         PrepareOutcome::PublishFailed => {
+kernel/src/syscall/blocking_io.rs:23:             queue.finish_wait();
+kernel/src/syscall/blocking_io.rs:24:             return Err(errno::ESRCH);
+kernel/src/syscall/blocking_io.rs:25:         }
+kernel/src/syscall/blocking_io.rs:26:         PrepareOutcome::Queued => {}
+kernel/src/syscall/blocking_io.rs:27:     }
+kernel/src/syscall/blocking_io.rs:28: 
+kernel/src/syscall/blocking_io.rs:29:     // Queued publication required a current thread with preemption disabled;
+kernel/src/syscall/blocking_io.rs:30:     // retain that identity through the wait and both cleanup operations.
+kernel/src/syscall/blocking_io.rs:31:     let tid =
+kernel/src/syscall/blocking_io.rs:32:         crate::task::scheduler::current_thread_id().expect("queued wait requires a current thread");
+kernel/src/syscall/blocking_io.rs:33:     crate::per_cpu::preempt_enable();
+kernel/src/syscall/blocking_io.rs:34:     let interrupted = loop {
+kernel/src/syscall/blocking_io.rs:35:         if crate::syscall::check_signals_for_eintr().is_some() {
+kernel/src/syscall/blocking_io.rs:36:             break true;
+kernel/src/syscall/blocking_io.rs:37:         }
+kernel/src/syscall/blocking_io.rs:38:         let waiting = crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/syscall/blocking_io.rs:39:             sched
+kernel/src/syscall/blocking_io.rs:40:                 .current_thread_mut()
+kernel/src/syscall/blocking_io.rs:41:                 .map(|thread| thread.state == ThreadState::BlockedOnIO)
+kernel/src/syscall/blocking_io.rs:42:                 .unwrap_or(false)
+kernel/src/syscall/blocking_io.rs:43:         })
+kernel/src/syscall/blocking_io.rs:44:         .unwrap_or(false);
+kernel/src/syscall/blocking_io.rs:45:         if !waiting {
+kernel/src/syscall/blocking_io.rs:46:             break false;
+kernel/src/syscall/blocking_io.rs:47:         }
+kernel/src/syscall/blocking_io.rs:48:         crate::task::scheduler::yield_current();
+kernel/src/syscall/blocking_io.rs:49:         crate::arch_halt_with_interrupts();
+kernel/src/syscall/blocking_io.rs:50:     };
+kernel/src/syscall/blocking_io.rs:51:     crate::per_cpu::preempt_disable();
+kernel/src/syscall/blocking_io.rs:52: 
+kernel/src/syscall/blocking_io.rs:53:     queue.take_waiter(tid);
+kernel/src/syscall/blocking_io.rs:54:     queue.finish_wait_for(tid);
+kernel/src/syscall/blocking_io.rs:55:     if interrupted {
+kernel/src/syscall/blocking_io.rs:56:         Err(errno::EINTR)
+kernel/src/syscall/blocking_io.rs:57:     } else {
+kernel/src/syscall/blocking_io.rs:58:         Ok(())
+kernel/src/syscall/blocking_io.rs:59:     }
+kernel/src/syscall/blocking_io.rs:60: }
+kernel/src/syscall/blocking_io.rs:61: 
+kernel/src/syscall/blocking_io.rs:62: /// PM-free adapter for an owned pipe/FIFO snapshot and its snapshotted mode.
+kernel/src/syscall/blocking_io.rs:63: /// Small writes stay atomic; large blocking writes retain their copied offset.
+kernel/src/syscall/blocking_io.rs:64: pub(crate) fn write_pipe(
+kernel/src/syscall/blocking_io.rs:65:     pipe_buffer: &Arc<Mutex<PipeBuffer>>,
+kernel/src/syscall/blocking_io.rs:66:     data: &[u8],
+kernel/src/syscall/blocking_io.rs:67:     is_nonblocking: bool,
+kernel/src/syscall/blocking_io.rs:68: ) -> SyscallResult {
+kernel/src/syscall/blocking_io.rs:69:     let atomic_request = data.len() <= PIPE_BUF;
+kernel/src/syscall/blocking_io.rs:70:     let mut offset = 0;
+kernel/src/syscall/blocking_io.rs:71:     loop {
+kernel/src/syscall/blocking_io.rs:72:         let (queue, outcome) = {
+kernel/src/syscall/blocking_io.rs:73:             let mut pipe = pipe_buffer.lock();
+kernel/src/syscall/blocking_io.rs:74:             match pipe.try_write(&data[offset..], atomic_request) {
+kernel/src/syscall/blocking_io.rs:75:                 Ok(written) => {
+kernel/src/syscall/blocking_io.rs:76:                     offset += written;
+kernel/src/syscall/blocking_io.rs:77:                     if is_nonblocking || offset == data.len() {
+kernel/src/syscall/blocking_io.rs:78:                         return SyscallResult::Ok(offset as u64);
+kernel/src/syscall/blocking_io.rs:79:                     }
+kernel/src/syscall/blocking_io.rs:80:                     continue;
+kernel/src/syscall/blocking_io.rs:81:                 }
+kernel/src/syscall/blocking_io.rs:82:                 Err(WriteAttempt::BrokenPipe) => {
+kernel/src/syscall/blocking_io.rs:83:                     return progress_or_error(offset, errno::EPIPE);
+kernel/src/syscall/blocking_io.rs:84:                 }
+kernel/src/syscall/blocking_io.rs:85:                 Err(WriteAttempt::WouldBlock) => {
+kernel/src/syscall/blocking_io.rs:86:                     if is_nonblocking {
+kernel/src/syscall/blocking_io.rs:87:                         return progress_or_error(offset, errno::EAGAIN);
+kernel/src/syscall/blocking_io.rs:88:                     }
+kernel/src/syscall/blocking_io.rs:89:                 }
+kernel/src/syscall/blocking_io.rs:90:             }
+kernel/src/syscall/blocking_io.rs:91:             let required = if atomic_request { data.len() } else { 1 };
+kernel/src/syscall/blocking_io.rs:92:             let queue = pipe.write_waiters.clone();
+kernel/src/syscall/blocking_io.rs:93:             let outcome = queue.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+kernel/src/syscall/blocking_io.rs:94:                 pipe.has_readers() && !pipe.has_write_space(required)
+kernel/src/syscall/blocking_io.rs:95:             });
+kernel/src/syscall/blocking_io.rs:96:             (queue, outcome)
+kernel/src/syscall/blocking_io.rs:97:         };
+kernel/src/syscall/blocking_io.rs:98:         // The pipe guard is gone before preemption, signals, or sleeping.
+kernel/src/syscall/blocking_io.rs:99:         if let Err(error) = wait_prepared(&queue, outcome) {
+kernel/src/syscall/blocking_io.rs:100:             return progress_or_error(offset, error);
+kernel/src/syscall/blocking_io.rs:101:         }
+kernel/src/syscall/blocking_io.rs:102:     }
+kernel/src/syscall/blocking_io.rs:103: }
+kernel/src/syscall/blocking_io.rs:104: 
+kernel/src/syscall/blocking_io.rs:105: fn progress_or_error(offset: usize, error: i32) -> SyscallResult {
+kernel/src/syscall/blocking_io.rs:106:     if offset > 0 {
+kernel/src/syscall/blocking_io.rs:107:         SyscallResult::Ok(offset as u64)
+kernel/src/syscall/blocking_io.rs:108:     } else {
+kernel/src/syscall/blocking_io.rs:109:         SyscallResult::Err(error as u64)
+kernel/src/syscall/blocking_io.rs:110:     }
+kernel/src/syscall/blocking_io.rs:111: }
+kernel/src/syscall/blocking_io.rs:112: 
+kernel/src/syscall/blocking_io.rs:113: /// Generic Console/Tty reads use the live input ring and descriptor status flags.
+kernel/src/syscall/blocking_io.rs:114: pub(crate) fn read_console(buf: &mut [u8], is_nonblocking: bool) -> Result<usize, i32> {
+kernel/src/syscall/blocking_io.rs:115:     loop {
+kernel/src/syscall/blocking_io.rs:116:         let outcome = match crate::ipc::stdin::read_or_prepare(buf, is_nonblocking) {
+kernel/src/syscall/blocking_io.rs:117:             Ok(n) => return Ok(n),
+kernel/src/syscall/blocking_io.rs:118:             Err(outcome) => outcome,
+kernel/src/syscall/blocking_io.rs:119:         };
+kernel/src/syscall/blocking_io.rs:120:         if is_nonblocking {
+kernel/src/syscall/blocking_io.rs:121:             return Err(errno::EAGAIN);
+kernel/src/syscall/blocking_io.rs:122:         }
+kernel/src/syscall/blocking_io.rs:123:         wait_prepared(&crate::ipc::stdin::INPUT_READERS, outcome)?;
+kernel/src/syscall/blocking_io.rs:124:     }
+kernel/src/syscall/blocking_io.rs:125: }
+kernel/src/ipc/stdin.rs:1: //! Stdin ring buffer for keyboard input
+kernel/src/ipc/stdin.rs:2: //!
+kernel/src/ipc/stdin.rs:3: //! This module provides a kernel-side ring buffer for stdin input.
+kernel/src/ipc/stdin.rs:4: //! Characters from the keyboard interrupt handler are pushed here,
+kernel/src/ipc/stdin.rs:5: //! and userspace processes can read from it via the read() syscall.
+kernel/src/ipc/stdin.rs:6: 
+kernel/src/ipc/stdin.rs:7: use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
+kernel/src/ipc/stdin.rs:8: use alloc::collections::VecDeque;
+kernel/src/ipc/stdin.rs:9: #[cfg(target_arch = "x86_64")]
+kernel/src/ipc/stdin.rs:10: use alloc::vec::Vec;
+kernel/src/ipc/stdin.rs:11: use spin::Mutex;
+kernel/src/ipc/stdin.rs:12: 
+kernel/src/ipc/stdin.rs:13: /// Console/Tty readers share the live input ring, but not the legacy stdin registry.
+kernel/src/ipc/stdin.rs:14: pub(crate) static INPUT_READERS: WaitQueueHead = WaitQueueHead::new();
+kernel/src/ipc/stdin.rs:15: 
+kernel/src/ipc/stdin.rs:16: /// Default stdin buffer size
+kernel/src/ipc/stdin.rs:17: pub const STDIN_BUF_SIZE: usize = 4096;
+kernel/src/ipc/stdin.rs:18: 
+kernel/src/ipc/stdin.rs:19: /// Thread IDs blocked waiting for stdin input
+kernel/src/ipc/stdin.rs:20: static BLOCKED_READERS: Mutex<VecDeque<u64>> = Mutex::new(VecDeque::new());
+kernel/src/ipc/stdin.rs:21: 
+kernel/src/ipc/stdin.rs:22: /// The global stdin buffer
+kernel/src/ipc/stdin.rs:23: static STDIN_BUFFER: Mutex<StdinBuffer> = Mutex::new(StdinBuffer::new());
+kernel/src/ipc/stdin.rs:24: 
+kernel/src/ipc/stdin.rs:25: /// Stdin ring buffer
+kernel/src/ipc/stdin.rs:26: pub struct StdinBuffer {
+kernel/src/ipc/stdin.rs:27:     /// Circular buffer storage
+kernel/src/ipc/stdin.rs:28:     buffer: [u8; STDIN_BUF_SIZE],
+kernel/src/ipc/stdin.rs:29:     /// Read position
+kernel/src/ipc/stdin.rs:30:     read_pos: usize,
+kernel/src/ipc/stdin.rs:31:     /// Write position
+kernel/src/ipc/stdin.rs:32:     write_pos: usize,
+kernel/src/ipc/stdin.rs:33:     /// Number of bytes in buffer
+kernel/src/ipc/stdin.rs:34:     len: usize,
+kernel/src/ipc/stdin.rs:35: }
+kernel/src/ipc/stdin.rs:36: 
+kernel/src/ipc/stdin.rs:37: impl StdinBuffer {
+kernel/src/ipc/stdin.rs:38:     /// Create a new empty stdin buffer
+kernel/src/ipc/stdin.rs:39:     pub const fn new() -> Self {
+kernel/src/ipc/stdin.rs:40:         StdinBuffer {
+kernel/src/ipc/stdin.rs:41:             buffer: [0; STDIN_BUF_SIZE],
+kernel/src/ipc/stdin.rs:42:             read_pos: 0,
+kernel/src/ipc/stdin.rs:43:             write_pos: 0,
+kernel/src/ipc/stdin.rs:44:             len: 0,
+kernel/src/ipc/stdin.rs:45:         }
+kernel/src/ipc/stdin.rs:46:     }
+kernel/src/ipc/stdin.rs:47: 
+kernel/src/ipc/stdin.rs:48:     /// Push a single byte to the buffer
+kernel/src/ipc/stdin.rs:49:     /// Returns true if the byte was added, false if buffer is full
+kernel/src/ipc/stdin.rs:50:     fn push_byte(&mut self, byte: u8) -> bool {
+kernel/src/ipc/stdin.rs:51:         if self.len >= STDIN_BUF_SIZE {
+kernel/src/ipc/stdin.rs:52:             return false;
+kernel/src/ipc/stdin.rs:53:         }
+kernel/src/ipc/stdin.rs:54: 
+kernel/src/ipc/stdin.rs:55:         self.buffer[self.write_pos] = byte;
+kernel/src/ipc/stdin.rs:56:         self.write_pos = (self.write_pos + 1) % STDIN_BUF_SIZE;
+kernel/src/ipc/stdin.rs:57:         self.len += 1;
+kernel/src/ipc/stdin.rs:58:         // Buffer -> queue order matches checked publication. Deferred delivery
+kernel/src/ipc/stdin.rs:59:         // avoids acquiring the scheduler in the input producer.
+kernel/src/ipc/stdin.rs:60:         INPUT_READERS.wake_up_deferred();
+kernel/src/ipc/stdin.rs:61:         true
+kernel/src/ipc/stdin.rs:62:     }
+kernel/src/ipc/stdin.rs:63: 
+kernel/src/ipc/stdin.rs:64:     /// Read bytes from the buffer into the provided slice
+kernel/src/ipc/stdin.rs:65:     /// Returns the number of bytes actually read
+kernel/src/ipc/stdin.rs:66:     fn read_bytes(&mut self, buf: &mut [u8]) -> usize {
+kernel/src/ipc/stdin.rs:67:         let to_read = buf.len().min(self.len);
+kernel/src/ipc/stdin.rs:68:         let mut read = 0;
+kernel/src/ipc/stdin.rs:69: 
+kernel/src/ipc/stdin.rs:70:         while read < to_read {
+kernel/src/ipc/stdin.rs:71:             buf[read] = self.buffer[self.read_pos];
+kernel/src/ipc/stdin.rs:72:             self.read_pos = (self.read_pos + 1) % STDIN_BUF_SIZE;
+kernel/src/ipc/stdin.rs:73:             read += 1;
+kernel/src/ipc/stdin.rs:74:         }
+kernel/src/ipc/stdin.rs:75: 
+kernel/src/ipc/stdin.rs:76:         self.len -= read;
+kernel/src/ipc/stdin.rs:77:         read
+kernel/src/ipc/stdin.rs:78:     }
+kernel/src/ipc/stdin.rs:79: 
+kernel/src/ipc/stdin.rs:80:     /// Check if buffer is empty
+kernel/src/ipc/stdin.rs:81:     fn is_empty(&self) -> bool {
+kernel/src/ipc/stdin.rs:82:         self.len == 0
+kernel/src/ipc/stdin.rs:83:     }
+kernel/src/ipc/stdin.rs:84: 
+kernel/src/ipc/stdin.rs:85:     /// Get number of bytes available to read
+kernel/src/ipc/stdin.rs:86:     #[allow(dead_code)]
+kernel/src/ipc/stdin.rs:87:     fn available(&self) -> usize {
+kernel/src/ipc/stdin.rs:88:         self.len
+kernel/src/ipc/stdin.rs:89:     }
+kernel/src/ipc/stdin.rs:90: }
+kernel/src/ipc/stdin.rs:91: 
+kernel/src/ipc/stdin.rs:92: /// Push a byte to the stdin buffer
+kernel/src/ipc/stdin.rs:93: /// Called from keyboard task when a character is typed
+kernel/src/ipc/stdin.rs:94: ///
+kernel/src/ipc/stdin.rs:95: /// Note: With TTY integration, keyboard input now goes through the TTY layer
+kernel/src/ipc/stdin.rs:96: /// which handles echo, line editing, and signals. This function is kept for
+kernel/src/ipc/stdin.rs:97: /// fallback when TTY is not initialized.
+kernel/src/ipc/stdin.rs:98: #[allow(dead_code)]
+kernel/src/ipc/stdin.rs:99: pub fn push_byte(byte: u8) {
+kernel/src/ipc/stdin.rs:100:     let mut buffer = STDIN_BUFFER.lock();
+kernel/src/ipc/stdin.rs:101:     if buffer.push_byte(byte) {
+kernel/src/ipc/stdin.rs:102:         // Echo character to serial output for now
+kernel/src/ipc/stdin.rs:103:         crate::serial::write_byte(byte);
+kernel/src/ipc/stdin.rs:104: 
+kernel/src/ipc/stdin.rs:105:         // Drop buffer lock before waking readers to avoid deadlock
+kernel/src/ipc/stdin.rs:106:         drop(buffer);
+kernel/src/ipc/stdin.rs:107: 
+kernel/src/ipc/stdin.rs:108:         // Wake any blocked readers
+kernel/src/ipc/stdin.rs:109:         wake_blocked_readers();
+kernel/src/ipc/stdin.rs:110:     } else {
+kernel/src/ipc/stdin.rs:111:         log::warn!("stdin buffer full, dropping byte: 0x{:02x}", byte);
+kernel/src/ipc/stdin.rs:112:     }
+kernel/src/ipc/stdin.rs:113: }
+kernel/src/ipc/stdin.rs:114: 
+kernel/src/ipc/stdin.rs:115: /// Push a byte to stdin from interrupt context (uses try_lock to avoid deadlock)
+kernel/src/ipc/stdin.rs:116: /// Returns true if the byte was pushed, false if locks couldn't be acquired
+kernel/src/ipc/stdin.rs:117: ///
+kernel/src/ipc/stdin.rs:118: /// Note: This function does NOT echo. Echo is handled by the TTY layer
+kernel/src/ipc/stdin.rs:119: /// which respects termios settings (ECHO flag).
+kernel/src/ipc/stdin.rs:120: pub fn push_byte_from_irq(byte: u8) -> bool {
+kernel/src/ipc/stdin.rs:121:     // Try to acquire the buffer lock - don't block in interrupt context
+kernel/src/ipc/stdin.rs:122:     if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
+kernel/src/ipc/stdin.rs:123:         if buffer.push_byte(byte) {
+kernel/src/ipc/stdin.rs:124:             drop(buffer);
+kernel/src/ipc/stdin.rs:125: 
+kernel/src/ipc/stdin.rs:126:             // Try to wake blocked readers (may fail if scheduler lock is held)
+kernel/src/ipc/stdin.rs:127:             wake_blocked_readers_try();
+kernel/src/ipc/stdin.rs:128:             return true;
+kernel/src/ipc/stdin.rs:129:         }
+kernel/src/ipc/stdin.rs:130:     }
+kernel/src/ipc/stdin.rs:131:     false
+kernel/src/ipc/stdin.rs:132: }
+kernel/src/ipc/stdin.rs:133: 
+kernel/src/ipc/stdin.rs:134: /// Try to wake blocked readers without blocking (for interrupt context)
+kernel/src/ipc/stdin.rs:135: #[cfg(target_arch = "x86_64")]
+kernel/src/ipc/stdin.rs:136: fn wake_blocked_readers_try() {
+kernel/src/ipc/stdin.rs:137:     let readers: alloc::vec::Vec<u64> = {
+kernel/src/ipc/stdin.rs:138:         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
+kernel/src/ipc/stdin.rs:139:             blocked.drain(..).collect()
+kernel/src/ipc/stdin.rs:140:         } else {
+kernel/src/ipc/stdin.rs:141:             return; // Can't get lock, readers will be woken when they retry
+kernel/src/ipc/stdin.rs:142:         }
+kernel/src/ipc/stdin.rs:143:     };
+kernel/src/ipc/stdin.rs:144: 
+kernel/src/ipc/stdin.rs:145:     if readers.is_empty() {
+kernel/src/ipc/stdin.rs:146:         return;
+kernel/src/ipc/stdin.rs:147:     }
+kernel/src/ipc/stdin.rs:148: 
+kernel/src/ipc/stdin.rs:149:     // Try to wake threads via the scheduler's non-blocking path
+kernel/src/ipc/stdin.rs:150:     // Note: We use the with_scheduler variant here which may need to disable
+kernel/src/ipc/stdin.rs:151:     // interrupts, but since we're already in an interrupt handler with a
+kernel/src/ipc/stdin.rs:152:     // non-reentrant interrupt, this is safe.
+kernel/src/ipc/stdin.rs:153:     crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/ipc/stdin.rs:154:         for thread_id in &readers {
+kernel/src/ipc/stdin.rs:155:             sched.unblock(*thread_id);
+kernel/src/ipc/stdin.rs:156:         }
+kernel/src/ipc/stdin.rs:157:     });
+kernel/src/ipc/stdin.rs:158: 
+kernel/src/ipc/stdin.rs:159:     // Trigger reschedule so the woken thread runs soon
+kernel/src/ipc/stdin.rs:160:     crate::task::scheduler::set_need_resched();
+kernel/src/ipc/stdin.rs:161: }
+kernel/src/ipc/stdin.rs:162: 
+kernel/src/ipc/stdin.rs:163: /// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
+kernel/src/ipc/stdin.rs:164: #[cfg(target_arch = "aarch64")]
+kernel/src/ipc/stdin.rs:165: fn wake_blocked_readers_try() {
+kernel/src/ipc/stdin.rs:166:     let readers: alloc::vec::Vec<u64> = {
+kernel/src/ipc/stdin.rs:167:         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
+kernel/src/ipc/stdin.rs:168:             blocked.drain(..).collect()
+kernel/src/ipc/stdin.rs:169:         } else {
+kernel/src/ipc/stdin.rs:170:             return; // Can't get lock, readers will be woken when they retry
+kernel/src/ipc/stdin.rs:171:         }
+kernel/src/ipc/stdin.rs:172:     };
+kernel/src/ipc/stdin.rs:173: 
+kernel/src/ipc/stdin.rs:174:     if readers.is_empty() {
+kernel/src/ipc/stdin.rs:175:         return;
+kernel/src/ipc/stdin.rs:176:     }
+kernel/src/ipc/stdin.rs:177: 
+kernel/src/ipc/stdin.rs:178:     // Try to wake threads via the scheduler
+kernel/src/ipc/stdin.rs:179:     crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/ipc/stdin.rs:180:         for thread_id in &readers {
+kernel/src/ipc/stdin.rs:181:             sched.unblock(*thread_id);
+kernel/src/ipc/stdin.rs:182:         }
+kernel/src/ipc/stdin.rs:183:     });
+kernel/src/ipc/stdin.rs:184: 
+kernel/src/ipc/stdin.rs:185:     // Trigger reschedule so the woken thread runs soon
+kernel/src/ipc/stdin.rs:186:     crate::task::scheduler::set_need_resched();
+kernel/src/ipc/stdin.rs:187: }
+kernel/src/ipc/stdin.rs:188: 
+kernel/src/ipc/stdin.rs:189: /// Read bytes from stdin buffer
+kernel/src/ipc/stdin.rs:190: /// Returns Ok(n) with bytes read, or Err(EAGAIN) if would block
+kernel/src/ipc/stdin.rs:191: pub fn read_bytes(buf: &mut [u8]) -> Result<usize, i32> {
+kernel/src/ipc/stdin.rs:192:     let mut buffer = STDIN_BUFFER.lock();
+kernel/src/ipc/stdin.rs:193: 
+kernel/src/ipc/stdin.rs:194:     if buffer.is_empty() {
+kernel/src/ipc/stdin.rs:195:         // No data available - would block
+kernel/src/ipc/stdin.rs:196:         return Err(11); // EAGAIN
+kernel/src/ipc/stdin.rs:197:     }
+kernel/src/ipc/stdin.rs:198: 
+kernel/src/ipc/stdin.rs:199:     Ok(buffer.read_bytes(buf))
+kernel/src/ipc/stdin.rs:200: }
+kernel/src/ipc/stdin.rs:201: 
+kernel/src/ipc/stdin.rs:202: /// Check if stdin has data available
+kernel/src/ipc/stdin.rs:203: #[allow(dead_code)]
+kernel/src/ipc/stdin.rs:204: pub fn has_data() -> bool {
+kernel/src/ipc/stdin.rs:205:     !STDIN_BUFFER.lock().is_empty()
+kernel/src/ipc/stdin.rs:206: }
+kernel/src/ipc/stdin.rs:207: 
+kernel/src/ipc/stdin.rs:208: /// Register a thread as waiting for stdin input
+kernel/src/ipc/stdin.rs:209: ///
+kernel/src/ipc/stdin.rs:210: /// Used by sys_read when blocking on stdin. When data becomes available
+kernel/src/ipc/stdin.rs:211: /// via push_byte_from_irq, the blocked readers are woken.
+kernel/src/ipc/stdin.rs:212: pub fn register_blocked_reader(thread_id: u64) {
+kernel/src/ipc/stdin.rs:213:     let mut blocked = BLOCKED_READERS.lock();
+kernel/src/ipc/stdin.rs:214:     if !blocked.contains(&thread_id) {
+kernel/src/ipc/stdin.rs:215:         blocked.push_back(thread_id);
+kernel/src/ipc/stdin.rs:216:         log::trace!("stdin: Thread {} blocked waiting for input", thread_id);
+kernel/src/ipc/stdin.rs:217:     }
+kernel/src/ipc/stdin.rs:218: }
+kernel/src/ipc/stdin.rs:219: 
+kernel/src/ipc/stdin.rs:220: /// Unregister a thread from waiting for stdin (e.g., on signal or timeout)
+kernel/src/ipc/stdin.rs:221: pub fn unregister_blocked_reader(thread_id: u64) {
+kernel/src/ipc/stdin.rs:222:     let mut blocked = BLOCKED_READERS.lock();
+kernel/src/ipc/stdin.rs:223:     blocked.retain(|&id| id != thread_id);
+kernel/src/ipc/stdin.rs:224: }
+kernel/src/ipc/stdin.rs:225: 
+kernel/src/ipc/stdin.rs:226: /// Wake all threads blocked on stdin read
+kernel/src/ipc/stdin.rs:227: ///
+kernel/src/ipc/stdin.rs:228: /// Note: With TTY integration, blocked readers are woken through
+kernel/src/ipc/stdin.rs:229: /// TtyDevice::wake_blocked_readers. This function is kept for fallback.
+kernel/src/ipc/stdin.rs:230: #[cfg(target_arch = "x86_64")]
+kernel/src/ipc/stdin.rs:231: #[allow(dead_code)]
+kernel/src/ipc/stdin.rs:232: fn wake_blocked_readers() {
+kernel/src/ipc/stdin.rs:233:     let readers: Vec<u64> = {
+kernel/src/ipc/stdin.rs:234:         let mut blocked = BLOCKED_READERS.lock();
+kernel/src/ipc/stdin.rs:235:         blocked.drain(..).collect()
+kernel/src/ipc/stdin.rs:236:     };
+kernel/src/ipc/stdin.rs:237: 
+kernel/src/ipc/stdin.rs:238:     if readers.is_empty() {
+kernel/src/ipc/stdin.rs:239:         return;
+kernel/src/ipc/stdin.rs:240:     }
+kernel/src/ipc/stdin.rs:241: 
+kernel/src/ipc/stdin.rs:242:     log::trace!("stdin: Waking {} blocked readers", readers.len());
+kernel/src/ipc/stdin.rs:243: 
+kernel/src/ipc/stdin.rs:244:     // Wake each blocked thread
+kernel/src/ipc/stdin.rs:245:     crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/ipc/stdin.rs:246:         for thread_id in readers {
+kernel/src/ipc/stdin.rs:247:             sched.unblock(thread_id);
+kernel/src/ipc/stdin.rs:248:             log::trace!("stdin: Woke thread {}", thread_id);
+kernel/src/ipc/stdin.rs:249:         }
+kernel/src/ipc/stdin.rs:250:     });
+kernel/src/ipc/stdin.rs:251: 
+kernel/src/ipc/stdin.rs:252:     // Trigger reschedule to let woken threads run
+kernel/src/ipc/stdin.rs:253:     crate::task::scheduler::set_need_resched();
+kernel/src/ipc/stdin.rs:254: }
+kernel/src/ipc/stdin.rs:255: 
+kernel/src/ipc/stdin.rs:256: /// Wake blocked readers on ARM64
+kernel/src/ipc/stdin.rs:257: #[cfg(target_arch = "aarch64")]
+kernel/src/ipc/stdin.rs:258: #[allow(dead_code)]
+kernel/src/ipc/stdin.rs:259: fn wake_blocked_readers() {
+kernel/src/ipc/stdin.rs:260:     use alloc::vec::Vec;
+kernel/src/ipc/stdin.rs:261: 
+kernel/src/ipc/stdin.rs:262:     let readers: Vec<u64> = {
+kernel/src/ipc/stdin.rs:263:         let mut blocked = BLOCKED_READERS.lock();
+kernel/src/ipc/stdin.rs:264:         blocked.drain(..).collect()
+kernel/src/ipc/stdin.rs:265:     };
+kernel/src/ipc/stdin.rs:266: 
+kernel/src/ipc/stdin.rs:267:     if readers.is_empty() {
+kernel/src/ipc/stdin.rs:268:         return;
+kernel/src/ipc/stdin.rs:269:     }
+kernel/src/ipc/stdin.rs:270: 
+kernel/src/ipc/stdin.rs:271:     // Wake each blocked thread
+kernel/src/ipc/stdin.rs:272:     crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/ipc/stdin.rs:273:         for thread_id in readers {
+kernel/src/ipc/stdin.rs:274:             sched.unblock(thread_id);
+kernel/src/ipc/stdin.rs:275:         }
+kernel/src/ipc/stdin.rs:276:     });
+kernel/src/ipc/stdin.rs:277: 
+kernel/src/ipc/stdin.rs:278:     // Trigger reschedule to let woken threads run
+kernel/src/ipc/stdin.rs:279:     crate::task::scheduler::set_need_resched();
+kernel/src/ipc/stdin.rs:280: }
+kernel/src/ipc/stdin.rs:281: 
+kernel/src/ipc/stdin.rs:282: /// Get the number of bytes available in the stdin buffer
+kernel/src/ipc/stdin.rs:283: #[allow(dead_code)]
+kernel/src/ipc/stdin.rs:284: pub fn available() -> usize {
+kernel/src/ipc/stdin.rs:285:     STDIN_BUFFER.lock().len
+kernel/src/ipc/stdin.rs:286: }
+kernel/src/ipc/stdin.rs:287: 
+kernel/src/ipc/stdin.rs:288: /// Debug helper: inject a character into stdin as if typed on the keyboard.
+kernel/src/ipc/stdin.rs:289: /// This can be called from GDB: `call debug_inject_stdin_char(0x68)` for 'h'
+kernel/src/ipc/stdin.rs:290: /// or from automation scripts to trigger keyboard input paths non-interactively.
+kernel/src/ipc/stdin.rs:291: #[no_mangle]
+kernel/src/ipc/stdin.rs:292: pub extern "C" fn debug_inject_stdin_char(byte: u64) {
+kernel/src/ipc/stdin.rs:293:     push_byte_from_irq(byte as u8);
+kernel/src/ipc/stdin.rs:294: }
+kernel/src/ipc/stdin.rs:295: 
+kernel/src/ipc/stdin.rs:296: /// Check/copy and publish under one ring guard with local IRQs masked.
+kernel/src/ipc/stdin.rs:297: /// The guard is dropped here before the scheduler wait lifecycle.
+kernel/src/ipc/stdin.rs:298: pub(crate) fn read_or_prepare(
+kernel/src/ipc/stdin.rs:299:     buf: &mut [u8],
+kernel/src/ipc/stdin.rs:300:     is_nonblocking: bool,
+kernel/src/ipc/stdin.rs:301: ) -> Result<usize, PrepareOutcome> {
+kernel/src/ipc/stdin.rs:302:     crate::arch_without_interrupts(|| {
+kernel/src/ipc/stdin.rs:303:         let mut buffer = STDIN_BUFFER.lock();
+kernel/src/ipc/stdin.rs:304:         if !buffer.is_empty() || buf.is_empty() {
+kernel/src/ipc/stdin.rs:305:             return Ok(buffer.read_bytes(buf));
+kernel/src/ipc/stdin.rs:306:         }
+kernel/src/ipc/stdin.rs:307:         if is_nonblocking {
+kernel/src/ipc/stdin.rs:308:             return Err(PrepareOutcome::Mismatch);
+kernel/src/ipc/stdin.rs:309:         }
+kernel/src/ipc/stdin.rs:310:         Err(INPUT_READERS.prepare_to_wait_checked(
+kernel/src/ipc/stdin.rs:311:             crate::task::thread::ThreadState::BlockedOnIO,
+kernel/src/ipc/stdin.rs:312:             None,
+kernel/src/ipc/stdin.rs:313:             || buffer.is_empty(),
+kernel/src/ipc/stdin.rs:314:         ))
+kernel/src/ipc/stdin.rs:315:     })
+kernel/src/ipc/stdin.rs:316: }
+kernel/src/ipc/stdin.rs:317: 
+kernel/src/ipc/stdin.rs:318: /// Boot observer is read-only: it neither consumes input nor removes waiters.
+kernel/src/ipc/stdin.rs:319: #[cfg(feature = "boot_tests")]
+kernel/src/ipc/stdin.rs:320: pub(crate) fn input_witness(tid: u64) -> (bool, usize) {
+kernel/src/ipc/stdin.rs:321:     crate::arch_without_interrupts(|| {
+kernel/src/ipc/stdin.rs:322:         let buffer = STDIN_BUFFER.lock();
+kernel/src/ipc/stdin.rs:323:         (INPUT_READERS.contains_waiter(tid), buffer.len)
+kernel/src/ipc/stdin.rs:324:     })
+kernel/src/ipc/stdin.rs:325: }
+kernel/src/syscall/blocking_io_oracle.rs:1: //! Boot-only, read-only witnesses for #813. No query performs a wake or transfer.
+kernel/src/syscall/blocking_io_oracle.rs:2: use super::{errno, userptr, SyscallResult};
+kernel/src/syscall/blocking_io_oracle.rs:3: use crate::ipc::fd::FdKind;
+kernel/src/syscall/blocking_io_oracle.rs:4: use alloc::sync::Arc;
+kernel/src/syscall/blocking_io_oracle.rs:5: 
+kernel/src/syscall/blocking_io_oracle.rs:6: pub const QUERY: u64 = 0xB8130001;
+kernel/src/syscall/blocking_io_oracle.rs:7: pub const FIFO_FIXTURE: u64 = 0xB8130002;
+kernel/src/syscall/blocking_io_oracle.rs:8: pub const INPUT_QUERY: u64 = 0xB8130003;
+kernel/src/syscall/blocking_io_oracle.rs:9: pub const INPUT_INJECT: u64 = 0xB8130004;
+kernel/src/syscall/blocking_io_oracle.rs:10: 
+kernel/src/syscall/blocking_io_oracle.rs:11: #[repr(C)]
+kernel/src/syscall/blocking_io_oracle.rs:12: #[derive(Clone, Copy, Default)]
+kernel/src/syscall/blocking_io_oracle.rs:13: struct Witness {
+kernel/src/syscall/blocking_io_oracle.rs:14:     tid: u64,
+kernel/src/syscall/blocking_io_oracle.rs:15:     target_fd: u64,
+kernel/src/syscall/blocking_io_oracle.rs:16:     kind: u64,
+kernel/src/syscall/blocking_io_oracle.rs:17:     identity: u64,
+kernel/src/syscall/blocking_io_oracle.rs:18:     queued: u64,
+kernel/src/syscall/blocking_io_oracle.rs:19:     blocked: u64,
+kernel/src/syscall/blocking_io_oracle.rs:20:     blocked_in_syscall: u64,
+kernel/src/syscall/blocking_io_oracle.rs:21:     occupancy: u64,
+kernel/src/syscall/blocking_io_oracle.rs:22:     capacity: u64,
+kernel/src/syscall/blocking_io_oracle.rs:23:     atomic_limit: u64,
+kernel/src/syscall/blocking_io_oracle.rs:24: }
+kernel/src/syscall/blocking_io_oracle.rs:25: 
+kernel/src/syscall/blocking_io_oracle.rs:26: pub fn dispatch(fd: u64, request: u64, arg: u64) -> SyscallResult {
+kernel/src/syscall/blocking_io_oracle.rs:27:     let result = if request == INPUT_QUERY || request == INPUT_INJECT {
+kernel/src/syscall/blocking_io_oracle.rs:28:         console(fd, request, arg)
+kernel/src/syscall/blocking_io_oracle.rs:29:     } else if request == FIFO_FIXTURE {
+kernel/src/syscall/blocking_io_oracle.rs:30:         fixture(fd, arg)
+kernel/src/syscall/blocking_io_oracle.rs:31:     } else {
+kernel/src/syscall/blocking_io_oracle.rs:32:         query(fd, arg)
+kernel/src/syscall/blocking_io_oracle.rs:33:     };
+kernel/src/syscall/blocking_io_oracle.rs:34:     match result {
+kernel/src/syscall/blocking_io_oracle.rs:35:         Ok(()) => SyscallResult::Ok(0),
+kernel/src/syscall/blocking_io_oracle.rs:36:         Err(error) => SyscallResult::Err(error),
+kernel/src/syscall/blocking_io_oracle.rs:37:     }
+kernel/src/syscall/blocking_io_oracle.rs:38: }
+kernel/src/syscall/blocking_io_oracle.rs:39: 
+kernel/src/syscall/blocking_io_oracle.rs:40: fn fixture(fd: u64, arg: u64) -> Result<(), u64> {
+kernel/src/syscall/blocking_io_oracle.rs:41:     // A valid caller-owned descriptor is required even for fixture setup.
+kernel/src/syscall/blocking_io_oracle.rs:42:     let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:43:     let path = userptr::copy_cstr_from_user(arg)?;
+kernel/src/syscall/blocking_io_oracle.rs:44:     if !path.starts_with("/tmp/pipe_fifo_oracle_")
+kernel/src/syscall/blocking_io_oracle.rs:45:         || path.len() > 128
+kernel/src/syscall/blocking_io_oracle.rs:46:         || path.contains("..")
+kernel/src/syscall/blocking_io_oracle.rs:47:         || fd > i32::MAX as u64
+kernel/src/syscall/blocking_io_oracle.rs:48:     {
+kernel/src/syscall/blocking_io_oracle.rs:49:         return Err(errno::EINVAL as u64);
+kernel/src/syscall/blocking_io_oracle.rs:50:     }
+kernel/src/syscall/blocking_io_oracle.rs:51:     {
+kernel/src/syscall/blocking_io_oracle.rs:52:         let guard = crate::process::manager();
+kernel/src/syscall/blocking_io_oracle.rs:53:         let manager = guard.as_ref().ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:54:         let (_, caller) = manager
+kernel/src/syscall/blocking_io_oracle.rs:55:             .find_process_by_thread(tid)
+kernel/src/syscall/blocking_io_oracle.rs:56:             .ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:57:         caller.fd_table.get(fd as i32).ok_or(errno::EBADF as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:58:     }
+kernel/src/syscall/blocking_io_oracle.rs:59:     crate::ipc::fifo::FIFO_REGISTRY
+kernel/src/syscall/blocking_io_oracle.rs:60:         .create(&path, 0o600)
+kernel/src/syscall/blocking_io_oracle.rs:61:         .map_err(|e| e as u64)
+kernel/src/syscall/blocking_io_oracle.rs:62: }
+kernel/src/syscall/blocking_io_oracle.rs:63: 
+kernel/src/syscall/blocking_io_oracle.rs:64: fn query(fd: u64, arg: u64) -> Result<(), u64> {
+kernel/src/syscall/blocking_io_oracle.rs:65:     if arg % core::mem::align_of::<Witness>() as u64 != 0 {
+kernel/src/syscall/blocking_io_oracle.rs:66:         return Err(errno::EINVAL as u64);
+kernel/src/syscall/blocking_io_oracle.rs:67:     }
+kernel/src/syscall/blocking_io_oracle.rs:68:     let mut witness = userptr::copy_from_user(arg as *const Witness)?;
+kernel/src/syscall/blocking_io_oracle.rs:69:     if fd > i32::MAX as u64 || witness.target_fd > i32::MAX as u64 {
+kernel/src/syscall/blocking_io_oracle.rs:70:         return Err(errno::EBADF as u64);
+kernel/src/syscall/blocking_io_oracle.rs:71:     }
+kernel/src/syscall/blocking_io_oracle.rs:72:     let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:73:     let (buffer, kind) = {
+kernel/src/syscall/blocking_io_oracle.rs:74:         let guard = crate::process::manager();
+kernel/src/syscall/blocking_io_oracle.rs:75:         let manager = guard.as_ref().ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:76:         let (caller_pid, caller) = manager
+kernel/src/syscall/blocking_io_oracle.rs:77:             .find_process_by_thread(tid)
+kernel/src/syscall/blocking_io_oracle.rs:78:             .ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:79:         let (target_pid, target) = manager
+kernel/src/syscall/blocking_io_oracle.rs:80:             .find_process_by_thread(witness.tid)
+kernel/src/syscall/blocking_io_oracle.rs:81:             .ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:82:         if target_pid != caller_pid && target.parent != Some(caller_pid) {
+kernel/src/syscall/blocking_io_oracle.rs:83:             return Err(errno::EPERM as u64);
+kernel/src/syscall/blocking_io_oracle.rs:84:         }
+kernel/src/syscall/blocking_io_oracle.rs:85:         let own = caller.fd_table.get(fd as i32).ok_or(errno::EBADF as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:86:         let other = target
+kernel/src/syscall/blocking_io_oracle.rs:87:             .fd_table
+kernel/src/syscall/blocking_io_oracle.rs:88:             .get(witness.target_fd as i32)
+kernel/src/syscall/blocking_io_oracle.rs:89:             .ok_or(errno::EBADF as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:90:         let (buffer, kind) = match &own.kind {
+kernel/src/syscall/blocking_io_oracle.rs:91:             FdKind::PipeWrite(buffer) => (buffer.clone(), 1),
+kernel/src/syscall/blocking_io_oracle.rs:92:             FdKind::FifoWrite(_, buffer) => (buffer.clone(), 2),
+kernel/src/syscall/blocking_io_oracle.rs:93:             _ => return Err(errno::EINVAL as u64),
+kernel/src/syscall/blocking_io_oracle.rs:94:         };
+kernel/src/syscall/blocking_io_oracle.rs:95:         let same = match &other.kind {
+kernel/src/syscall/blocking_io_oracle.rs:96:             FdKind::PipeWrite(other) | FdKind::FifoWrite(_, other) => Arc::ptr_eq(&buffer, other),
+kernel/src/syscall/blocking_io_oracle.rs:97:             _ => false,
+kernel/src/syscall/blocking_io_oracle.rs:98:         };
+kernel/src/syscall/blocking_io_oracle.rs:99:         if !same {
+kernel/src/syscall/blocking_io_oracle.rs:100:             return Err(errno::EPERM as u64);
+kernel/src/syscall/blocking_io_oracle.rs:101:         }
+kernel/src/syscall/blocking_io_oracle.rs:102:         (buffer, kind)
+kernel/src/syscall/blocking_io_oracle.rs:103:     };
+kernel/src/syscall/blocking_io_oracle.rs:104:     witness.kind = kind;
+kernel/src/syscall/blocking_io_oracle.rs:105:     witness.identity = Arc::as_ptr(&buffer) as u64;
+kernel/src/syscall/blocking_io_oracle.rs:106:     {
+kernel/src/syscall/blocking_io_oracle.rs:107:         let buffer = buffer.lock();
+kernel/src/syscall/blocking_io_oracle.rs:108:         witness.queued = buffer.write_waiters.contains_waiter(witness.tid) as u64;
+kernel/src/syscall/blocking_io_oracle.rs:109:         witness.occupancy = buffer.available() as u64;
+kernel/src/syscall/blocking_io_oracle.rs:110:         witness.capacity = crate::ipc::pipe::PIPE_BUF_SIZE as u64;
+kernel/src/syscall/blocking_io_oracle.rs:111:         witness.atomic_limit = crate::ipc::pipe::PIPE_BUF as u64;
+kernel/src/syscall/blocking_io_oracle.rs:112:     }
+kernel/src/syscall/blocking_io_oracle.rs:113:     let (blocked, in_syscall) = crate::task::scheduler::with_thread_mut(witness.tid, |thread| {
+kernel/src/syscall/blocking_io_oracle.rs:114:         (
+kernel/src/syscall/blocking_io_oracle.rs:115:             thread.state == crate::task::thread::ThreadState::BlockedOnIO,
+kernel/src/syscall/blocking_io_oracle.rs:116:             thread.blocked_in_syscall,
+kernel/src/syscall/blocking_io_oracle.rs:117:         )
+kernel/src/syscall/blocking_io_oracle.rs:118:     })
+kernel/src/syscall/blocking_io_oracle.rs:119:     .ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:120:     witness.blocked = blocked as u64;
+kernel/src/syscall/blocking_io_oracle.rs:121:     witness.blocked_in_syscall = in_syscall as u64;
+kernel/src/syscall/blocking_io_oracle.rs:122:     userptr::copy_to_user(arg as *mut Witness, &witness)
+kernel/src/syscall/blocking_io_oracle.rs:123: }
+kernel/src/syscall/blocking_io_oracle.rs:124: 
+kernel/src/syscall/blocking_io_oracle.rs:125: /// Boot-only thread-context input seam. Injection uses the real enqueue primitive
+kernel/src/syscall/blocking_io_oracle.rs:126: /// and rejects a remote target unless it is witnessed asleep on the empty ring.
+kernel/src/syscall/blocking_io_oracle.rs:127: fn console(fd: u64, request: u64, arg: u64) -> Result<(), u64> {
+kernel/src/syscall/blocking_io_oracle.rs:128:     use crate::fs::devfs::DeviceType;
+kernel/src/syscall/blocking_io_oracle.rs:129:     if arg % core::mem::align_of::<Witness>() as u64 != 0 {
+kernel/src/syscall/blocking_io_oracle.rs:130:         return Err(errno::EINVAL as u64);
+kernel/src/syscall/blocking_io_oracle.rs:131:     }
+kernel/src/syscall/blocking_io_oracle.rs:132:     let mut witness = userptr::copy_from_user(arg as *const Witness)?;
+kernel/src/syscall/blocking_io_oracle.rs:133:     if fd > i32::MAX as u64 || witness.target_fd > i32::MAX as u64 {
+kernel/src/syscall/blocking_io_oracle.rs:134:         return Err(errno::EBADF as u64);
+kernel/src/syscall/blocking_io_oracle.rs:135:     }
+kernel/src/syscall/blocking_io_oracle.rs:136:     let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:137:     let kind = {
+kernel/src/syscall/blocking_io_oracle.rs:138:         let guard = crate::process::manager();
+kernel/src/syscall/blocking_io_oracle.rs:139:         let manager = guard.as_ref().ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:140:         let (caller_pid, caller) = manager
+kernel/src/syscall/blocking_io_oracle.rs:141:             .find_process_by_thread(tid)
+kernel/src/syscall/blocking_io_oracle.rs:142:             .ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:143:         let (target_pid, target) = manager
+kernel/src/syscall/blocking_io_oracle.rs:144:             .find_process_by_thread(witness.tid)
+kernel/src/syscall/blocking_io_oracle.rs:145:             .ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:146:         if target_pid != caller_pid && target.parent != Some(caller_pid) {
+kernel/src/syscall/blocking_io_oracle.rs:147:             return Err(errno::EPERM as u64);
+kernel/src/syscall/blocking_io_oracle.rs:148:         }
+kernel/src/syscall/blocking_io_oracle.rs:149:         let own = caller.fd_table.get(fd as i32).ok_or(errno::EBADF as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:150:         let other = target
+kernel/src/syscall/blocking_io_oracle.rs:151:             .fd_table
+kernel/src/syscall/blocking_io_oracle.rs:152:             .get(witness.target_fd as i32)
+kernel/src/syscall/blocking_io_oracle.rs:153:             .ok_or(errno::EBADF as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:154:         match (&own.kind, &other.kind) {
+kernel/src/syscall/blocking_io_oracle.rs:155:             (FdKind::Device(DeviceType::Console), FdKind::Device(DeviceType::Console)) => 3,
+kernel/src/syscall/blocking_io_oracle.rs:156:             (FdKind::Device(DeviceType::Tty), FdKind::Device(DeviceType::Tty)) => 4,
+kernel/src/syscall/blocking_io_oracle.rs:157:             _ => return Err(errno::EINVAL as u64),
+kernel/src/syscall/blocking_io_oracle.rs:158:         }
+kernel/src/syscall/blocking_io_oracle.rs:159:     };
+kernel/src/syscall/blocking_io_oracle.rs:160:     let (queued, occupancy) = crate::ipc::stdin::input_witness(witness.tid);
+kernel/src/syscall/blocking_io_oracle.rs:161:     let (blocked, in_syscall) = crate::task::scheduler::with_thread_mut(witness.tid, |thread| {
+kernel/src/syscall/blocking_io_oracle.rs:162:         (
+kernel/src/syscall/blocking_io_oracle.rs:163:             thread.state == crate::task::thread::ThreadState::BlockedOnIO,
+kernel/src/syscall/blocking_io_oracle.rs:164:             thread.blocked_in_syscall,
+kernel/src/syscall/blocking_io_oracle.rs:165:         )
+kernel/src/syscall/blocking_io_oracle.rs:166:     })
+kernel/src/syscall/blocking_io_oracle.rs:167:     .ok_or(errno::ESRCH as u64)?;
+kernel/src/syscall/blocking_io_oracle.rs:168:     if request == INPUT_INJECT {
+kernel/src/syscall/blocking_io_oracle.rs:169:         if witness.identity > 255
+kernel/src/syscall/blocking_io_oracle.rs:170:             || (witness.tid != tid && !(queued && blocked && in_syscall && occupancy == 0))
+kernel/src/syscall/blocking_io_oracle.rs:171:         {
+kernel/src/syscall/blocking_io_oracle.rs:172:             return Err(errno::EINVAL as u64);
+kernel/src/syscall/blocking_io_oracle.rs:173:         }
+kernel/src/syscall/blocking_io_oracle.rs:174:         if !crate::ipc::stdin::push_byte_from_irq(witness.identity as u8) {
+kernel/src/syscall/blocking_io_oracle.rs:175:             return Err(errno::EAGAIN as u64);
+kernel/src/syscall/blocking_io_oracle.rs:176:         }
+kernel/src/syscall/blocking_io_oracle.rs:177:         return Ok(());
+kernel/src/syscall/blocking_io_oracle.rs:178:     }
+kernel/src/syscall/blocking_io_oracle.rs:179:     witness.kind = kind;
+kernel/src/syscall/blocking_io_oracle.rs:180:     witness.identity = 1; // One global input ring; no kernel address disclosure.
+kernel/src/syscall/blocking_io_oracle.rs:181:     witness.queued = queued as u64;
+kernel/src/syscall/blocking_io_oracle.rs:182:     witness.occupancy = occupancy as u64;
+kernel/src/syscall/blocking_io_oracle.rs:183:     witness.blocked = blocked as u64;
+kernel/src/syscall/blocking_io_oracle.rs:184:     witness.blocked_in_syscall = in_syscall as u64;
+kernel/src/syscall/blocking_io_oracle.rs:185:     witness.capacity = crate::ipc::stdin::STDIN_BUF_SIZE as u64;
+kernel/src/syscall/blocking_io_oracle.rs:186:     witness.atomic_limit = 0;
+kernel/src/syscall/blocking_io_oracle.rs:187:     userptr::copy_to_user(arg as *mut Witness, &witness)
+kernel/src/syscall/blocking_io_oracle.rs:188: }
+kernel/src/fs/devfs/mod.rs:1: //! Device Filesystem (devfs)
+kernel/src/fs/devfs/mod.rs:2: //!
+kernel/src/fs/devfs/mod.rs:3: //! Provides a virtual filesystem mounted at /dev containing device nodes.
+kernel/src/fs/devfs/mod.rs:4: //! Unlike ext2, devfs doesn't use disk storage - all nodes are virtual.
+kernel/src/fs/devfs/mod.rs:5: //!
+kernel/src/fs/devfs/mod.rs:6: //! # Supported Devices
+kernel/src/fs/devfs/mod.rs:7: //!
+kernel/src/fs/devfs/mod.rs:8: //! - `/dev/null` - Discards all writes, reads return EOF
+kernel/src/fs/devfs/mod.rs:9: //! - `/dev/zero` - Discards all writes, reads return zero bytes
+kernel/src/fs/devfs/mod.rs:10: //! - `/dev/console` - System console (serial output)
+kernel/src/fs/devfs/mod.rs:11: //! - `/dev/tty` - Current process's controlling terminal
+kernel/src/fs/devfs/mod.rs:12: //!
+kernel/src/fs/devfs/mod.rs:13: //! # Architecture
+kernel/src/fs/devfs/mod.rs:14: //!
+kernel/src/fs/devfs/mod.rs:15: //! ```text
+kernel/src/fs/devfs/mod.rs:16: //! sys_open("/dev/null")
+kernel/src/fs/devfs/mod.rs:17: //!         |
+kernel/src/fs/devfs/mod.rs:18: //!         v
+kernel/src/fs/devfs/mod.rs:19: //!     devfs_open()
+kernel/src/fs/devfs/mod.rs:20: //!         |
+kernel/src/fs/devfs/mod.rs:21: //!         v
+kernel/src/fs/devfs/mod.rs:22: //!     DeviceFile { device_type: DevNull }
+kernel/src/fs/devfs/mod.rs:23: //!         |
+kernel/src/fs/devfs/mod.rs:24: //!         v
+kernel/src/fs/devfs/mod.rs:25: //!     sys_read/sys_write dispatch to device handlers
+kernel/src/fs/devfs/mod.rs:26: //! ```
+kernel/src/fs/devfs/mod.rs:27: 
+kernel/src/fs/devfs/mod.rs:28: use alloc::string::String;
+kernel/src/fs/devfs/mod.rs:29: use alloc::vec::Vec;
+kernel/src/fs/devfs/mod.rs:30: use spin::Mutex;
+kernel/src/fs/devfs/mod.rs:31: 
+kernel/src/fs/devfs/mod.rs:32: /// Device types supported by devfs
+kernel/src/fs/devfs/mod.rs:33: #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+kernel/src/fs/devfs/mod.rs:34: pub enum DeviceType {
+kernel/src/fs/devfs/mod.rs:35:     /// /dev/null - discards writes, reads return EOF
+kernel/src/fs/devfs/mod.rs:36:     Null,
+kernel/src/fs/devfs/mod.rs:37:     /// /dev/zero - discards writes, reads return zero bytes
+kernel/src/fs/devfs/mod.rs:38:     Zero,
+kernel/src/fs/devfs/mod.rs:39:     /// /dev/console - system console (serial port)
+kernel/src/fs/devfs/mod.rs:40:     Console,
+kernel/src/fs/devfs/mod.rs:41:     /// /dev/tty - controlling terminal
+kernel/src/fs/devfs/mod.rs:42:     Tty,
+kernel/src/fs/devfs/mod.rs:43: }
+kernel/src/fs/devfs/mod.rs:44: 
+kernel/src/fs/devfs/mod.rs:45: impl DeviceType {
+kernel/src/fs/devfs/mod.rs:46:     /// Get the device name (without /dev/ prefix)
+kernel/src/fs/devfs/mod.rs:47:     pub fn name(&self) -> &'static str {
+kernel/src/fs/devfs/mod.rs:48:         match self {
+kernel/src/fs/devfs/mod.rs:49:             DeviceType::Null => "null",
+kernel/src/fs/devfs/mod.rs:50:             DeviceType::Zero => "zero",
+kernel/src/fs/devfs/mod.rs:51:             DeviceType::Console => "console",
+kernel/src/fs/devfs/mod.rs:52:             DeviceType::Tty => "tty",
+kernel/src/fs/devfs/mod.rs:53:         }
+kernel/src/fs/devfs/mod.rs:54:     }
+kernel/src/fs/devfs/mod.rs:55: 
+kernel/src/fs/devfs/mod.rs:56:     /// Get the inode number for this device
+kernel/src/fs/devfs/mod.rs:57:     /// Using fixed inode numbers for devices
+kernel/src/fs/devfs/mod.rs:58:     pub fn inode(&self) -> u64 {
+kernel/src/fs/devfs/mod.rs:59:         match self {
+kernel/src/fs/devfs/mod.rs:60:             DeviceType::Null => 1,
+kernel/src/fs/devfs/mod.rs:61:             DeviceType::Zero => 2,
+kernel/src/fs/devfs/mod.rs:62:             DeviceType::Console => 3,
+kernel/src/fs/devfs/mod.rs:63:             DeviceType::Tty => 4,
+kernel/src/fs/devfs/mod.rs:64:         }
+kernel/src/fs/devfs/mod.rs:65:     }
+kernel/src/fs/devfs/mod.rs:66: 
+kernel/src/fs/devfs/mod.rs:67:     /// Check if this device is readable
+kernel/src/fs/devfs/mod.rs:68:     pub fn is_readable(&self) -> bool {
+kernel/src/fs/devfs/mod.rs:69:         true // All devices are readable
+kernel/src/fs/devfs/mod.rs:70:     }
+kernel/src/fs/devfs/mod.rs:71: 
+kernel/src/fs/devfs/mod.rs:72:     /// Check if this device is writable
+kernel/src/fs/devfs/mod.rs:73:     pub fn is_writable(&self) -> bool {
+kernel/src/fs/devfs/mod.rs:74:         true // All devices are writable
+kernel/src/fs/devfs/mod.rs:75:     }
+kernel/src/fs/devfs/mod.rs:76: }
+kernel/src/fs/devfs/mod.rs:77: 
+kernel/src/fs/devfs/mod.rs:78: /// A devfs device node
+kernel/src/fs/devfs/mod.rs:79: #[derive(Debug, Clone)]
+kernel/src/fs/devfs/mod.rs:80: pub struct DeviceNode {
+kernel/src/fs/devfs/mod.rs:81:     /// Device type
+kernel/src/fs/devfs/mod.rs:82:     pub device_type: DeviceType,
+kernel/src/fs/devfs/mod.rs:83:     /// Device major number (for st_rdev)
+kernel/src/fs/devfs/mod.rs:84:     pub major: u32,
+kernel/src/fs/devfs/mod.rs:85:     /// Device minor number (for st_rdev)
+kernel/src/fs/devfs/mod.rs:86:     pub minor: u32,
+kernel/src/fs/devfs/mod.rs:87: }
+kernel/src/fs/devfs/mod.rs:88: 
+kernel/src/fs/devfs/mod.rs:89: impl DeviceNode {
+kernel/src/fs/devfs/mod.rs:90:     /// Create a new device node
+kernel/src/fs/devfs/mod.rs:91:     pub fn new(device_type: DeviceType, major: u32, minor: u32) -> Self {
+kernel/src/fs/devfs/mod.rs:92:         Self {
+kernel/src/fs/devfs/mod.rs:93:             device_type,
+kernel/src/fs/devfs/mod.rs:94:             major,
+kernel/src/fs/devfs/mod.rs:95:             minor,
+kernel/src/fs/devfs/mod.rs:96:         }
+kernel/src/fs/devfs/mod.rs:97:     }
+kernel/src/fs/devfs/mod.rs:98: 
+kernel/src/fs/devfs/mod.rs:99:     /// Get the combined device number (major << 8 | minor)
+kernel/src/fs/devfs/mod.rs:100:     pub fn rdev(&self) -> u64 {
+kernel/src/fs/devfs/mod.rs:101:         ((self.major as u64) << 8) | (self.minor as u64)
+kernel/src/fs/devfs/mod.rs:102:     }
+kernel/src/fs/devfs/mod.rs:103: }
+kernel/src/fs/devfs/mod.rs:104: 
+kernel/src/fs/devfs/mod.rs:105: /// Global devfs state
+kernel/src/fs/devfs/mod.rs:106: struct DevfsState {
+kernel/src/fs/devfs/mod.rs:107:     /// Registered devices
+kernel/src/fs/devfs/mod.rs:108:     devices: Vec<DeviceNode>,
+kernel/src/fs/devfs/mod.rs:109:     /// Whether devfs is initialized
+kernel/src/fs/devfs/mod.rs:110:     initialized: bool,
+kernel/src/fs/devfs/mod.rs:111: }
+kernel/src/fs/devfs/mod.rs:112: 
+kernel/src/fs/devfs/mod.rs:113: impl DevfsState {
+kernel/src/fs/devfs/mod.rs:114:     const fn new() -> Self {
+kernel/src/fs/devfs/mod.rs:115:         Self {
+kernel/src/fs/devfs/mod.rs:116:             devices: Vec::new(),
+kernel/src/fs/devfs/mod.rs:117:             initialized: false,
+kernel/src/fs/devfs/mod.rs:118:         }
+kernel/src/fs/devfs/mod.rs:119:     }
+kernel/src/fs/devfs/mod.rs:120: }
+kernel/src/fs/devfs/mod.rs:121: 
+kernel/src/fs/devfs/mod.rs:122: static DEVFS: Mutex<DevfsState> = Mutex::new(DevfsState::new());
+kernel/src/fs/devfs/mod.rs:123: 
+kernel/src/fs/devfs/mod.rs:124: /// Initialize devfs with standard devices
+kernel/src/fs/devfs/mod.rs:125: pub fn init() {
+kernel/src/fs/devfs/mod.rs:126:     let mut devfs = DEVFS.lock();
+kernel/src/fs/devfs/mod.rs:127:     if devfs.initialized {
+kernel/src/fs/devfs/mod.rs:128:         log::warn!("devfs already initialized");
+kernel/src/fs/devfs/mod.rs:129:         return;
+kernel/src/fs/devfs/mod.rs:130:     }
+kernel/src/fs/devfs/mod.rs:131: 
+kernel/src/fs/devfs/mod.rs:132:     // Register standard devices
+kernel/src/fs/devfs/mod.rs:133:     // Major 1 = memory devices (null, zero, etc.)
+kernel/src/fs/devfs/mod.rs:134:     devfs.devices.push(DeviceNode::new(DeviceType::Null, 1, 3)); // /dev/null
+kernel/src/fs/devfs/mod.rs:135:     devfs.devices.push(DeviceNode::new(DeviceType::Zero, 1, 5)); // /dev/zero
+kernel/src/fs/devfs/mod.rs:136: 
+kernel/src/fs/devfs/mod.rs:137:     // Major 5 = TTY devices
+kernel/src/fs/devfs/mod.rs:138:     devfs
+kernel/src/fs/devfs/mod.rs:139:         .devices
+kernel/src/fs/devfs/mod.rs:140:         .push(DeviceNode::new(DeviceType::Console, 5, 1)); // /dev/console
+kernel/src/fs/devfs/mod.rs:141:     devfs.devices.push(DeviceNode::new(DeviceType::Tty, 5, 0)); // /dev/tty
+kernel/src/fs/devfs/mod.rs:142: 
+kernel/src/fs/devfs/mod.rs:143:     devfs.initialized = true;
+kernel/src/fs/devfs/mod.rs:144:     log::info!("devfs: initialized with {} devices", devfs.devices.len());
+kernel/src/fs/devfs/mod.rs:145: 
+kernel/src/fs/devfs/mod.rs:146:     // Register mount point
+kernel/src/fs/devfs/mod.rs:147:     crate::fs::vfs::mount::mount("/dev", "devfs");
+kernel/src/fs/devfs/mod.rs:148: }
+kernel/src/fs/devfs/mod.rs:149: 
+kernel/src/fs/devfs/mod.rs:150: /// Look up a device by path (without /dev/ prefix)
+kernel/src/fs/devfs/mod.rs:151: pub fn lookup(name: &str) -> Option<DeviceNode> {
+kernel/src/fs/devfs/mod.rs:152:     let devfs = DEVFS.lock();
+kernel/src/fs/devfs/mod.rs:153:     for device in &devfs.devices {
+kernel/src/fs/devfs/mod.rs:154:         if device.device_type.name() == name {
+kernel/src/fs/devfs/mod.rs:155:             return Some(device.clone());
+kernel/src/fs/devfs/mod.rs:156:         }
+kernel/src/fs/devfs/mod.rs:157:     }
+kernel/src/fs/devfs/mod.rs:158:     None
+kernel/src/fs/devfs/mod.rs:159: }
+kernel/src/fs/devfs/mod.rs:160: 
+kernel/src/fs/devfs/mod.rs:161: /// Look up a device by inode number
+kernel/src/fs/devfs/mod.rs:162: pub fn lookup_by_inode(inode: u64) -> Option<DeviceNode> {
+kernel/src/fs/devfs/mod.rs:163:     let devfs = DEVFS.lock();
+kernel/src/fs/devfs/mod.rs:164:     for device in &devfs.devices {
+kernel/src/fs/devfs/mod.rs:165:         if device.device_type.inode() == inode {
+kernel/src/fs/devfs/mod.rs:166:             return Some(device.clone());
+kernel/src/fs/devfs/mod.rs:167:         }
+kernel/src/fs/devfs/mod.rs:168:     }
+kernel/src/fs/devfs/mod.rs:169:     None
+kernel/src/fs/devfs/mod.rs:170: }
+kernel/src/fs/devfs/mod.rs:171: 
+kernel/src/fs/devfs/mod.rs:172: /// List all device names (for /dev directory listing)
+kernel/src/fs/devfs/mod.rs:173: pub fn list_devices() -> Vec<String> {
+kernel/src/fs/devfs/mod.rs:174:     let devfs = DEVFS.lock();
+kernel/src/fs/devfs/mod.rs:175:     devfs
+kernel/src/fs/devfs/mod.rs:176:         .devices
+kernel/src/fs/devfs/mod.rs:177:         .iter()
+kernel/src/fs/devfs/mod.rs:178:         .map(|d| String::from(d.device_type.name()))
+kernel/src/fs/devfs/mod.rs:179:         .collect()
+kernel/src/fs/devfs/mod.rs:180: }
+kernel/src/fs/devfs/mod.rs:181: 
+kernel/src/fs/devfs/mod.rs:182: /// Check if devfs is initialized
+kernel/src/fs/devfs/mod.rs:183: pub fn is_initialized() -> bool {
+kernel/src/fs/devfs/mod.rs:184:     DEVFS.lock().initialized
+kernel/src/fs/devfs/mod.rs:185: }
+kernel/src/fs/devfs/mod.rs:186: 
+kernel/src/fs/devfs/mod.rs:187: /// Device file operations - read from device
+kernel/src/fs/devfs/mod.rs:188: pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
+kernel/src/fs/devfs/mod.rs:189:     match device_type {
+kernel/src/fs/devfs/mod.rs:190:         DeviceType::Null => {
+kernel/src/fs/devfs/mod.rs:191:             // /dev/null always returns EOF (0 bytes read)
+kernel/src/fs/devfs/mod.rs:192:             Ok(0)
+kernel/src/fs/devfs/mod.rs:193:         }
+kernel/src/fs/devfs/mod.rs:194:         DeviceType::Zero => {
+kernel/src/fs/devfs/mod.rs:195:             // /dev/zero fills buffer with zeros
+kernel/src/fs/devfs/mod.rs:196:             for byte in buf.iter_mut() {
+kernel/src/fs/devfs/mod.rs:197:                 *byte = 0;
+kernel/src/fs/devfs/mod.rs:198:             }
+kernel/src/fs/devfs/mod.rs:199:             Ok(buf.len())
+kernel/src/fs/devfs/mod.rs:200:         }
+kernel/src/fs/devfs/mod.rs:201:         DeviceType::Console | DeviceType::Tty => {
+kernel/src/fs/devfs/mod.rs:202:             // This device API is non-sleeping; sys_read owns the blocking adapter.
+kernel/src/fs/devfs/mod.rs:203:             crate::ipc::stdin::read_bytes(buf).map_err(|e| -e)
+kernel/src/fs/devfs/mod.rs:204:         }
+kernel/src/fs/devfs/mod.rs:205:     }
+kernel/src/fs/devfs/mod.rs:206: }
+kernel/src/fs/devfs/mod.rs:207: 
+kernel/src/fs/devfs/mod.rs:208: /// Device file operations - write to device
+kernel/src/fs/devfs/mod.rs:209: pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
+kernel/src/fs/devfs/mod.rs:210:     match device_type {
+kernel/src/fs/devfs/mod.rs:211:         DeviceType::Null | DeviceType::Zero => {
+kernel/src/fs/devfs/mod.rs:212:             // /dev/null and /dev/zero discard all writes
+kernel/src/fs/devfs/mod.rs:213:             Ok(buf.len())
+kernel/src/fs/devfs/mod.rs:214:         }
+kernel/src/fs/devfs/mod.rs:215:         DeviceType::Console | DeviceType::Tty => {
+kernel/src/fs/devfs/mod.rs:216:             // Console/TTY write - output to serial port
+kernel/src/fs/devfs/mod.rs:217:             for &byte in buf {
+kernel/src/fs/devfs/mod.rs:218:                 crate::serial::write_byte(byte);
+kernel/src/fs/devfs/mod.rs:219:             }
+kernel/src/fs/devfs/mod.rs:220:             Ok(buf.len())
+kernel/src/fs/devfs/mod.rs:221:         }
+kernel/src/fs/devfs/mod.rs:222:     }
+kernel/src/fs/devfs/mod.rs:223: }
+kernel/src/ipc/poll.rs:1: //! Poll implementation for monitoring file descriptors
+kernel/src/ipc/poll.rs:2: //!
+kernel/src/ipc/poll.rs:3: //! This module provides the poll() syscall implementation that allows
+kernel/src/ipc/poll.rs:4: //! monitoring multiple file descriptors for I/O readiness.
+kernel/src/ipc/poll.rs:5: 
+kernel/src/ipc/poll.rs:6: use super::fd::{FdKind, FileDescriptor};
+kernel/src/ipc/poll.rs:7: 
+kernel/src/ipc/poll.rs:8: /// Poll event flags (matching Linux definitions)
+kernel/src/ipc/poll.rs:9: pub mod events {
+kernel/src/ipc/poll.rs:10:     /// Data available to read
+kernel/src/ipc/poll.rs:11:     pub const POLLIN: i16 = 0x0001;
+kernel/src/ipc/poll.rs:12:     /// Write won't block
+kernel/src/ipc/poll.rs:13:     pub const POLLOUT: i16 = 0x0004;
+kernel/src/ipc/poll.rs:14:     /// Error condition (output only)
+kernel/src/ipc/poll.rs:15:     pub const POLLERR: i16 = 0x0008;
+kernel/src/ipc/poll.rs:16:     /// Hang up (output only)
+kernel/src/ipc/poll.rs:17:     pub const POLLHUP: i16 = 0x0010;
+kernel/src/ipc/poll.rs:18:     /// Invalid fd (output only)
+kernel/src/ipc/poll.rs:19:     pub const POLLNVAL: i16 = 0x0020;
+kernel/src/ipc/poll.rs:20: }
+kernel/src/ipc/poll.rs:21: 
+kernel/src/ipc/poll.rs:22: /// pollfd structure matching Linux definition
+kernel/src/ipc/poll.rs:23: #[repr(C)]
+kernel/src/ipc/poll.rs:24: #[derive(Clone, Copy, Debug, Default)]
+kernel/src/ipc/poll.rs:25: pub struct PollFd {
+kernel/src/ipc/poll.rs:26:     /// File descriptor to poll
+kernel/src/ipc/poll.rs:27:     pub fd: i32,
+kernel/src/ipc/poll.rs:28:     /// Events to poll for (input)
+kernel/src/ipc/poll.rs:29:     pub events: i16,
+kernel/src/ipc/poll.rs:30:     /// Events that occurred (output)
+kernel/src/ipc/poll.rs:31:     pub revents: i16,
+kernel/src/ipc/poll.rs:32: }
+kernel/src/ipc/poll.rs:33: 
+kernel/src/ipc/poll.rs:34: /// Poll a single file descriptor for readiness
+kernel/src/ipc/poll.rs:35: ///
+kernel/src/ipc/poll.rs:36: /// Returns the revents for this fd based on requested events
+kernel/src/ipc/poll.rs:37: pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
+kernel/src/ipc/poll.rs:38:     let mut revents: i16 = 0;
+kernel/src/ipc/poll.rs:39: 
+kernel/src/ipc/poll.rs:40:     match &fd_entry.kind {
+kernel/src/ipc/poll.rs:41:         FdKind::StdIo(n) => {
+kernel/src/ipc/poll.rs:42:             match *n {
+kernel/src/ipc/poll.rs:43:                 0 => {
+kernel/src/ipc/poll.rs:44:                     // stdin - check if data available
+kernel/src/ipc/poll.rs:45:                     if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:46:                         if super::stdin::has_data() {
+kernel/src/ipc/poll.rs:47:                             revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:48:                         }
+kernel/src/ipc/poll.rs:49:                     }
+kernel/src/ipc/poll.rs:50:                 }
+kernel/src/ipc/poll.rs:51:                 1 | 2 => {
+kernel/src/ipc/poll.rs:52:                     // stdout/stderr - always writable
+kernel/src/ipc/poll.rs:53:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:54:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:55:                     }
+kernel/src/ipc/poll.rs:56:                 }
+kernel/src/ipc/poll.rs:57:                 _ => {
+kernel/src/ipc/poll.rs:58:                     // Unknown stdio fd
+kernel/src/ipc/poll.rs:59:                 }
+kernel/src/ipc/poll.rs:60:             }
+kernel/src/ipc/poll.rs:61:         }
+kernel/src/ipc/poll.rs:62:         FdKind::PipeRead(buffer) => {
+kernel/src/ipc/poll.rs:63:             let pipe = buffer.lock();
+kernel/src/ipc/poll.rs:64: 
+kernel/src/ipc/poll.rs:65:             // Check for data available
+kernel/src/ipc/poll.rs:66:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:67:                 if pipe.available() > 0 {
+kernel/src/ipc/poll.rs:68:                     revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:69:                 }
+kernel/src/ipc/poll.rs:70:             }
+kernel/src/ipc/poll.rs:71: 
+kernel/src/ipc/poll.rs:72:             // Check for write end closed (HUP)
+kernel/src/ipc/poll.rs:73:             if !pipe.has_writers() {
+kernel/src/ipc/poll.rs:74:                 revents |= events::POLLHUP;
+kernel/src/ipc/poll.rs:75:             }
+kernel/src/ipc/poll.rs:76:         }
+kernel/src/ipc/poll.rs:77:         FdKind::PipeWrite(buffer) => {
+kernel/src/ipc/poll.rs:78:             let pipe = buffer.lock();
+kernel/src/ipc/poll.rs:79: 
+kernel/src/ipc/poll.rs:80:             // Check for space available
+kernel/src/ipc/poll.rs:81:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:82:                 if pipe.has_write_space(1) {
+kernel/src/ipc/poll.rs:83:                     revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:84:                 }
+kernel/src/ipc/poll.rs:85:             }
+kernel/src/ipc/poll.rs:86: 
+kernel/src/ipc/poll.rs:87:             // Check for read end closed (error condition for writers)
+kernel/src/ipc/poll.rs:88:             if !pipe.has_readers() {
+kernel/src/ipc/poll.rs:89:                 revents |= events::POLLERR;
+kernel/src/ipc/poll.rs:90:             }
+kernel/src/ipc/poll.rs:91:         }
+kernel/src/ipc/poll.rs:92:         FdKind::FifoRead(_, buffer) => {
+kernel/src/ipc/poll.rs:93:             let pipe = buffer.lock();
+kernel/src/ipc/poll.rs:94:             if (events & events::POLLIN) != 0 && pipe.available() > 0 {
+kernel/src/ipc/poll.rs:95:                 revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:96:             }
+kernel/src/ipc/poll.rs:97:             if !pipe.has_writers() {
+kernel/src/ipc/poll.rs:98:                 revents |= events::POLLHUP;
+kernel/src/ipc/poll.rs:99:             }
+kernel/src/ipc/poll.rs:100:         }
+kernel/src/ipc/poll.rs:101:         FdKind::FifoWrite(_, buffer) => {
+kernel/src/ipc/poll.rs:102:             let pipe = buffer.lock();
+kernel/src/ipc/poll.rs:103:             if (events & events::POLLOUT) != 0 && pipe.has_write_space(1) {
+kernel/src/ipc/poll.rs:104:                 revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:105:             }
+kernel/src/ipc/poll.rs:106:             if !pipe.has_readers() {
+kernel/src/ipc/poll.rs:107:                 revents |= events::POLLERR;
+kernel/src/ipc/poll.rs:108:             }
+kernel/src/ipc/poll.rs:109:         }
+kernel/src/ipc/poll.rs:110:         FdKind::UdpSocket(socket) => {
+kernel/src/ipc/poll.rs:111:             // #823: this lock is also taken, masked, by the NetRx IRQ route
+kernel/src/ipc/poll.rs:112:             // (`net/udp.rs::deliver_to_socket`, inside `with_process_manager`).
+kernel/src/ipc/poll.rs:113:             // `sys_poll`, `sys_select` and `sys_epoll_wait` reach this arm
+kernel/src/ipc/poll.rs:114:             // through this one function, with no PM guard active here, so this
+kernel/src/ipc/poll.rs:115:             // was the one call site actually reachable unmasked on both
+kernel/src/ipc/poll.rs:116:             // architectures.
+kernel/src/ipc/poll.rs:117:             let has_data = crate::socket::udp::with_locked_masked(socket, |s| s.has_data());
+kernel/src/ipc/poll.rs:118:             if (events & events::POLLIN) != 0 && has_data {
+kernel/src/ipc/poll.rs:119:                 revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:120:             }
+kernel/src/ipc/poll.rs:121:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:122:                 revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:123:             }
+kernel/src/ipc/poll.rs:124:         }
+kernel/src/ipc/poll.rs:125:         FdKind::RegularFile(_file) => {
+kernel/src/ipc/poll.rs:126:             // Regular files are always readable/writable (for now)
+kernel/src/ipc/poll.rs:127:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:128:                 revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:129:             }
+kernel/src/ipc/poll.rs:130:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:131:                 revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:132:             }
+kernel/src/ipc/poll.rs:133:         }
+kernel/src/ipc/poll.rs:134:         FdKind::Directory(_dir) => {
+kernel/src/ipc/poll.rs:135:             // Directories are always "readable" for getdents purposes
+kernel/src/ipc/poll.rs:136:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:137:                 revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:138:             }
+kernel/src/ipc/poll.rs:139:         }
+kernel/src/ipc/poll.rs:140:         FdKind::Device(device_type) => {
+kernel/src/ipc/poll.rs:141:             // Device files have different poll behavior based on type
+kernel/src/ipc/poll.rs:142:             use crate::fs::devfs::DeviceType;
+kernel/src/ipc/poll.rs:143:             match device_type {
+kernel/src/ipc/poll.rs:144:                 DeviceType::Null => {
+kernel/src/ipc/poll.rs:145:                     // /dev/null: always readable (returns EOF), always writable
+kernel/src/ipc/poll.rs:146:                     if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:147:                         revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:148:                     }
+kernel/src/ipc/poll.rs:149:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:150:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:151:                     }
+kernel/src/ipc/poll.rs:152:                 }
+kernel/src/ipc/poll.rs:153:                 DeviceType::Zero => {
+kernel/src/ipc/poll.rs:154:                     // /dev/zero: always readable (infinite zeros), always writable
+kernel/src/ipc/poll.rs:155:                     if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:156:                         revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:157:                     }
+kernel/src/ipc/poll.rs:158:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:159:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:160:                     }
+kernel/src/ipc/poll.rs:161:                 }
+kernel/src/ipc/poll.rs:162:                 DeviceType::Console | DeviceType::Tty => {
+kernel/src/ipc/poll.rs:163:                     // Console/Tty readiness follows the same ring as read().
+kernel/src/ipc/poll.rs:164:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:165:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:166:                     }
+kernel/src/ipc/poll.rs:167:                     if (events & events::POLLIN) != 0 && crate::ipc::stdin::has_data() {
+kernel/src/ipc/poll.rs:168:                         revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:169:                     }
+kernel/src/ipc/poll.rs:170:                 }
+kernel/src/ipc/poll.rs:171:             }
+kernel/src/ipc/poll.rs:172:         }
+kernel/src/ipc/poll.rs:173:         FdKind::DevfsDirectory { .. } => {
+kernel/src/ipc/poll.rs:174:             // Devfs directory is always "readable" for getdents purposes
+kernel/src/ipc/poll.rs:175:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:176:                 revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:177:             }
+kernel/src/ipc/poll.rs:178:         }
+kernel/src/ipc/poll.rs:179:         FdKind::DevptsDirectory { .. } => {
+kernel/src/ipc/poll.rs:180:             // Devpts directory is always "readable" for getdents purposes
+kernel/src/ipc/poll.rs:181:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:182:                 revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:183:             }
+kernel/src/ipc/poll.rs:184:         }
+kernel/src/ipc/poll.rs:185:         FdKind::TcpSocket(_) => {
+kernel/src/ipc/poll.rs:186:             // Unconnected TCP socket - always writable (for connect attempt)
+kernel/src/ipc/poll.rs:187:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:188:                 revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:189:             }
+kernel/src/ipc/poll.rs:190:         }
+kernel/src/ipc/poll.rs:191:         FdKind::TcpListener(port) => {
+kernel/src/ipc/poll.rs:192:             // Listening socket - check for pending connections
+kernel/src/ipc/poll.rs:193:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:194:                 if crate::net::tcp::tcp_has_pending(*port) {
+kernel/src/ipc/poll.rs:195:                     revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:196:                 }
+kernel/src/ipc/poll.rs:197:             }
+kernel/src/ipc/poll.rs:198:         }
+kernel/src/ipc/poll.rs:199:         FdKind::TcpConnection(conn_id) => {
+kernel/src/ipc/poll.rs:200:             // Connected socket - check for data and connection state
+kernel/src/ipc/poll.rs:201:             crate::net::tcp::with_tcp_connections(|connections| {
+kernel/src/ipc/poll.rs:202:                 if let Some(conn) = connections.get(conn_id) {
+kernel/src/ipc/poll.rs:203:                     // Check for readable data
+kernel/src/ipc/poll.rs:204:                     if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:205:                         if !conn.rx_is_empty() {
+kernel/src/ipc/poll.rs:206:                             revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:207:                         }
+kernel/src/ipc/poll.rs:208:                     }
+kernel/src/ipc/poll.rs:209:                     // Check for writable
+kernel/src/ipc/poll.rs:210:                     if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:211:                         if conn.state == crate::net::tcp::TcpState::Established {
+kernel/src/ipc/poll.rs:212:                             revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:213:                         }
+kernel/src/ipc/poll.rs:214:                     }
+kernel/src/ipc/poll.rs:215:                     // Check for connection closed
+kernel/src/ipc/poll.rs:216:                     if conn.state == crate::net::tcp::TcpState::Closed
+kernel/src/ipc/poll.rs:217:                         || conn.state == crate::net::tcp::TcpState::CloseWait
+kernel/src/ipc/poll.rs:218:                     {
+kernel/src/ipc/poll.rs:219:                         revents |= events::POLLHUP;
+kernel/src/ipc/poll.rs:220:                     }
+kernel/src/ipc/poll.rs:221:                 } else {
+kernel/src/ipc/poll.rs:222:                     // Connection not found - error
+kernel/src/ipc/poll.rs:223:                     revents |= events::POLLERR;
+kernel/src/ipc/poll.rs:224:                 }
+kernel/src/ipc/poll.rs:225:             });
+kernel/src/ipc/poll.rs:226:         }
+kernel/src/ipc/poll.rs:227:         FdKind::PtyMaster(pty_num) => {
+kernel/src/ipc/poll.rs:228:             // PTY master - check slave_to_master buffer for readable data
+kernel/src/ipc/poll.rs:229:             if let Some(pair) = crate::tty::pty::get(*pty_num) {
+kernel/src/ipc/poll.rs:230:                 if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:231:                     let buffer = pair.slave_to_master.lock();
+kernel/src/ipc/poll.rs:232:                     if !buffer.is_empty() {
+kernel/src/ipc/poll.rs:233:                         revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:234:                     }
+kernel/src/ipc/poll.rs:235:                 }
+kernel/src/ipc/poll.rs:236:                 if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:237:                     // Master can always write (goes through line discipline)
+kernel/src/ipc/poll.rs:238:                     revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:239:                 }
+kernel/src/ipc/poll.rs:240:                 // POLLHUP only when slave was opened and then all slave FDs closed.
+kernel/src/ipc/poll.rs:241:                 // If slave was never opened (child hasn't connected yet), no hangup.
+kernel/src/ipc/poll.rs:242:                 if pair.has_slave_hung_up() {
+kernel/src/ipc/poll.rs:243:                     revents |= events::POLLHUP;
+kernel/src/ipc/poll.rs:244:                 }
+kernel/src/ipc/poll.rs:245:             } else {
+kernel/src/ipc/poll.rs:246:                 revents |= events::POLLERR;
+kernel/src/ipc/poll.rs:247:             }
+kernel/src/ipc/poll.rs:248:         }
+kernel/src/ipc/poll.rs:249:         FdKind::PtySlave(pty_num) => {
+kernel/src/ipc/poll.rs:250:             // PTY slave - check line discipline for readable data
+kernel/src/ipc/poll.rs:251:             if let Some(pair) = crate::tty::pty::get(*pty_num) {
+kernel/src/ipc/poll.rs:252:                 if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:253:                     let ldisc = pair.ldisc.lock();
+kernel/src/ipc/poll.rs:254:                     if ldisc.has_data() {
+kernel/src/ipc/poll.rs:255:                         revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:256:                     }
+kernel/src/ipc/poll.rs:257:                 }
+kernel/src/ipc/poll.rs:258:                 if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:259:                     let buffer = pair.slave_to_master.lock();
+kernel/src/ipc/poll.rs:260:                     // Can write if buffer not full
+kernel/src/ipc/poll.rs:261:                     if buffer.available() < 4096 {
+kernel/src/ipc/poll.rs:262:                         revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:263:                     }
+kernel/src/ipc/poll.rs:264:                 }
+kernel/src/ipc/poll.rs:265:             } else {
+kernel/src/ipc/poll.rs:266:                 revents |= events::POLLERR;
+kernel/src/ipc/poll.rs:267:             }
+kernel/src/ipc/poll.rs:268:         }
+kernel/src/ipc/poll.rs:269:         FdKind::UnixStream(socket_ref) => {
+kernel/src/ipc/poll.rs:270:             let socket = socket_ref.lock();
+kernel/src/ipc/poll.rs:271:             // Check for readable data
+kernel/src/ipc/poll.rs:272:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:273:                 if socket.has_data() {
+kernel/src/ipc/poll.rs:274:                     revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:275:                 }
+kernel/src/ipc/poll.rs:276:             }
+kernel/src/ipc/poll.rs:277:             // Check for writable
+kernel/src/ipc/poll.rs:278:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:279:                 if !socket.peer_closed() {
+kernel/src/ipc/poll.rs:280:                     revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:281:                 }
+kernel/src/ipc/poll.rs:282:             }
+kernel/src/ipc/poll.rs:283:             // Check for peer closed
+kernel/src/ipc/poll.rs:284:             if socket.peer_closed() && !socket.has_data() {
+kernel/src/ipc/poll.rs:285:                 revents |= events::POLLHUP;
+kernel/src/ipc/poll.rs:286:             }
+kernel/src/ipc/poll.rs:287:         }
+kernel/src/ipc/poll.rs:288:         FdKind::UnixSocket(_) => {
+kernel/src/ipc/poll.rs:289:             // Unconnected Unix socket - always writable (for connect attempt)
+kernel/src/ipc/poll.rs:290:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:291:                 revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:292:             }
+kernel/src/ipc/poll.rs:293:         }
+kernel/src/ipc/poll.rs:294:         FdKind::UnixListener(listener_ref) => {
+kernel/src/ipc/poll.rs:295:             // Listening socket - check for pending connections
+kernel/src/ipc/poll.rs:296:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:297:                 let listener = listener_ref.lock();
+kernel/src/ipc/poll.rs:298:                 if listener.has_pending() {
+kernel/src/ipc/poll.rs:299:                     revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:300:                 }
+kernel/src/ipc/poll.rs:301:             }
+kernel/src/ipc/poll.rs:302:         }
+kernel/src/ipc/poll.rs:303:         FdKind::ProcfsFile { content, position } => {
+kernel/src/ipc/poll.rs:304:             // Procfs file is readable if there's remaining content
+kernel/src/ipc/poll.rs:305:             if (events & events::POLLIN) != 0 && *position < content.len() {
+kernel/src/ipc/poll.rs:306:                 revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:307:             }
+kernel/src/ipc/poll.rs:308:         }
+kernel/src/ipc/poll.rs:309:         FdKind::ProcfsDirectory { .. } => {
+kernel/src/ipc/poll.rs:310:             // Procfs directory is always "readable" for getdents purposes
+kernel/src/ipc/poll.rs:311:             if (events & events::POLLIN) != 0 {
+kernel/src/ipc/poll.rs:312:                 revents |= events::POLLIN;
+kernel/src/ipc/poll.rs:313:             }
+kernel/src/ipc/poll.rs:314:         }
+kernel/src/ipc/poll.rs:315:         FdKind::Epoll(_) => {
+kernel/src/ipc/poll.rs:316:             // Epoll fds are not directly pollable
+kernel/src/ipc/poll.rs:317:         }
+kernel/src/ipc/poll.rs:318:     }
+kernel/src/ipc/poll.rs:319: 
+kernel/src/ipc/poll.rs:320:     revents
+kernel/src/ipc/poll.rs:321: }
+kernel/src/ipc/poll.rs:322: 
+kernel/src/ipc/poll.rs:323: /// Check if a file descriptor is readable (POLLIN)
+kernel/src/ipc/poll.rs:324: /// Returns true if there is data available to read
+kernel/src/ipc/poll.rs:325: pub fn check_readable(fd_entry: &FileDescriptor) -> bool {
+kernel/src/ipc/poll.rs:326:     (poll_fd(fd_entry, events::POLLIN) & events::POLLIN) != 0
+kernel/src/ipc/poll.rs:327: }
+kernel/src/ipc/poll.rs:328: 
+kernel/src/ipc/poll.rs:329: /// Check if a file descriptor is writable (POLLOUT)
+kernel/src/ipc/poll.rs:330: /// Returns true if writing would not block
+kernel/src/ipc/poll.rs:331: pub fn check_writable(fd_entry: &FileDescriptor) -> bool {
+kernel/src/ipc/poll.rs:332:     (poll_fd(fd_entry, events::POLLOUT) & events::POLLOUT) != 0
+kernel/src/ipc/poll.rs:333: }
+kernel/src/ipc/poll.rs:334: 
+kernel/src/ipc/poll.rs:335: /// Check if a file descriptor has an exception condition (POLLERR, POLLHUP)
+kernel/src/ipc/poll.rs:336: /// Returns true if there is an error or hangup condition
+kernel/src/ipc/poll.rs:337: pub fn check_exception(fd_entry: &FileDescriptor) -> bool {
+kernel/src/ipc/poll.rs:338:     let revents = poll_fd(fd_entry, events::POLLIN | events::POLLOUT);
+kernel/src/ipc/poll.rs:339:     (revents & (events::POLLERR | events::POLLHUP)) != 0
+kernel/src/ipc/poll.rs:340: }
+kernel/src/ipc/poll.rs:341: 
+kernel/src/ipc/poll.rs:342: /// The receive-side readiness state of a connected TCP fd: the monotonic
+kernel/src/ipc/poll.rs:343: /// nanosecond instant at which bytes were most recently published into its
+kernel/src/ipc/poll.rs:344: /// receive buffer (`0` before the first publication), and how many bytes are in
+kernel/src/ipc/poll.rs:345: /// that buffer now. `None` for fd kinds other than a TCP connection, and for a
+kernel/src/ipc/poll.rs:346: /// connection id that no longer resolves: 1 of 3 TCP-shaped `FdKind` variants
+kernel/src/ipc/poll.rs:347: /// answers with a value, and a listener or an unconnected socket does not.
+kernel/src/ipc/poll.rs:348: ///
+kernel/src/ipc/poll.rs:349: /// #693 is the reason this exists. A blocking `poll()` that returns 0 ready fds
+kernel/src/ipc/poll.rs:350: /// after its whole timeout is indistinguishable, from outside, between
+kernel/src/ipc/poll.rs:351: /// "readiness was published while I was parked and I failed to report it" and
+kernel/src/ipc/poll.rs:352: /// "no bytes were published before my deadline" -- and the issue stalled on
+kernel/src/ipc/poll.rs:353: /// exactly that fork.
+kernel/src/ipc/poll.rs:354: /// These two numbers, read at the instant the poll gives up, decide it from
+kernel/src/ipc/poll.rs:355: /// kernel state: see `poll_report_timeout` in `syscall/handlers.rs`.
+kernel/src/ipc/poll.rs:356: pub fn tcp_rx_publication(fd_entry: &FileDescriptor) -> Option<(u64, usize)> {
+kernel/src/ipc/poll.rs:357:     match &fd_entry.kind {
+kernel/src/ipc/poll.rs:358:         FdKind::TcpConnection(conn_id) => crate::net::tcp::with_tcp_connections(|connections| {
+kernel/src/ipc/poll.rs:359:             connections
+kernel/src/ipc/poll.rs:360:                 .get(conn_id)
+kernel/src/ipc/poll.rs:361:                 .map(|conn| (conn.rx_publish_ns(), conn.rx_len()))
+kernel/src/ipc/poll.rs:362:         }),
+kernel/src/ipc/poll.rs:363:         _ => None,
+kernel/src/ipc/poll.rs:364:     }
+kernel/src/ipc/poll.rs:365: }
+kernel/src/task/waitqueue.rs:1: //! Scheduler-integrated wait queues.
+kernel/src/task/waitqueue.rs:2: //!
+kernel/src/task/waitqueue.rs:3: //! This is Breenix's equivalent of Linux waitqueues: callers enqueue the
+kernel/src/task/waitqueue.rs:4: //! current thread, mark it blocked in the scheduler, re-check their condition,
+kernel/src/task/waitqueue.rs:5: //! then schedule if the condition is still false. Task-context wakers remove
+kernel/src/task/waitqueue.rs:6: //! queued TIDs and wake them inline; interrupt-context wakers use F16's
+kernel/src/task/waitqueue.rs:7: //! lock-free `isr_unblock_for_io` path.
+kernel/src/task/waitqueue.rs:8: 
+kernel/src/task/waitqueue.rs:9: use alloc::collections::VecDeque;
+kernel/src/task/waitqueue.rs:10: 
+kernel/src/task/waitqueue.rs:11: use super::thread::ThreadState;
+kernel/src/task/waitqueue.rs:12: 
+kernel/src/task/waitqueue.rs:13: /// A single waiter recorded by thread ID.
+kernel/src/task/waitqueue.rs:14: #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+kernel/src/task/waitqueue.rs:15: pub struct Waiter {
+kernel/src/task/waitqueue.rs:16:     tid: u64,
+kernel/src/task/waitqueue.rs:17: }
+kernel/src/task/waitqueue.rs:18: 
+kernel/src/task/waitqueue.rs:19: /// Result of attempting to prepare a checked wait.
+kernel/src/task/waitqueue.rs:20: #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+kernel/src/task/waitqueue.rs:21: pub enum PrepareOutcome {
+kernel/src/task/waitqueue.rs:22:     /// The condition did not match while the waitqueue lock was held.
+kernel/src/task/waitqueue.rs:23:     Mismatch,
+kernel/src/task/waitqueue.rs:24:     /// The waiter was enqueued and its blocked state was published.
+kernel/src/task/waitqueue.rs:25:     Queued,
+kernel/src/task/waitqueue.rs:26:     /// The waiter could not be published and was removed again.
+kernel/src/task/waitqueue.rs:27:     PublishFailed,
+kernel/src/task/waitqueue.rs:28: }
+kernel/src/task/waitqueue.rs:29: 
+kernel/src/task/waitqueue.rs:30: impl Waiter {
+kernel/src/task/waitqueue.rs:31:     pub const fn new(tid: u64) -> Self {
+kernel/src/task/waitqueue.rs:32:         Self { tid }
+kernel/src/task/waitqueue.rs:33:     }
+kernel/src/task/waitqueue.rs:34: 
+kernel/src/task/waitqueue.rs:35:     pub const fn tid(&self) -> u64 {
+kernel/src/task/waitqueue.rs:36:         self.tid
+kernel/src/task/waitqueue.rs:37:     }
+kernel/src/task/waitqueue.rs:38: }
+kernel/src/task/waitqueue.rs:39: 
+kernel/src/task/waitqueue.rs:40: /// Wait queue head for event-driven scheduler waits.
+kernel/src/task/waitqueue.rs:41: ///
+kernel/src/task/waitqueue.rs:42: /// Linux stores caller-owned intrusive wait entries. Breenix's scheduler wake
+kernel/src/task/waitqueue.rs:43: /// API is TID-based, so the first implementation stores duplicate-free TIDs
+kernel/src/task/waitqueue.rs:44: /// behind a small spin mutex. The public semantics match Linux's core pattern:
+kernel/src/task/waitqueue.rs:45: /// prepare, check condition, schedule, finish.
+kernel/src/task/waitqueue.rs:46: pub struct WaitQueueHead {
+kernel/src/task/waitqueue.rs:47:     waiters: spin::Mutex<VecDeque<Waiter>>,
+kernel/src/task/waitqueue.rs:48: }
+kernel/src/task/waitqueue.rs:49: 
+kernel/src/task/waitqueue.rs:50: impl WaitQueueHead {
+kernel/src/task/waitqueue.rs:51:     /// Create an empty waitqueue.
+kernel/src/task/waitqueue.rs:52:     pub const fn new() -> Self {
+kernel/src/task/waitqueue.rs:53:         Self {
+kernel/src/task/waitqueue.rs:54:             waiters: spin::Mutex::new(VecDeque::new()),
+kernel/src/task/waitqueue.rs:55:         }
+kernel/src/task/waitqueue.rs:56:     }
+kernel/src/task/waitqueue.rs:57: 
+kernel/src/task/waitqueue.rs:58:     /// Enqueue the current thread and publish its scheduler wait state.
+kernel/src/task/waitqueue.rs:59:     ///
+kernel/src/task/waitqueue.rs:60:     /// F32 initially supports `BlockedOnIO` because that is the state wired to
+kernel/src/task/waitqueue.rs:61:     /// `scheduler::isr_unblock_for_io`. Unsupported states return `None` rather
+kernel/src/task/waitqueue.rs:62:     /// than duplicating scheduler policy.
+kernel/src/task/waitqueue.rs:63:     pub fn prepare_to_wait(&self, state: ThreadState) -> Option<u64> {
+kernel/src/task/waitqueue.rs:64:         if state != ThreadState::BlockedOnIO {
+kernel/src/task/waitqueue.rs:65:             return None;
+kernel/src/task/waitqueue.rs:66:         }
+kernel/src/task/waitqueue.rs:67: 
+kernel/src/task/waitqueue.rs:68:         let tid = crate::task::scheduler::current_thread_id()?;
+kernel/src/task/waitqueue.rs:69: 
+kernel/src/task/waitqueue.rs:70:         let published = self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:71:             if !waiters.iter().any(|waiter| waiter.tid == tid) {
+kernel/src/task/waitqueue.rs:72:                 waiters.push_back(Waiter::new(tid));
+kernel/src/task/waitqueue.rs:73:             }
+kernel/src/task/waitqueue.rs:74: 
+kernel/src/task/waitqueue.rs:75:             let published = crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/task/waitqueue.rs:76:                 sched.block_current_for_io_with_timeout(None)
+kernel/src/task/waitqueue.rs:77:             })
+kernel/src/task/waitqueue.rs:78:             .unwrap_or(false);
+kernel/src/task/waitqueue.rs:79: 
+kernel/src/task/waitqueue.rs:80:             if !published {
+kernel/src/task/waitqueue.rs:81:                 waiters.retain(|waiter| waiter.tid != tid);
+kernel/src/task/waitqueue.rs:82:             }
+kernel/src/task/waitqueue.rs:83: 
+kernel/src/task/waitqueue.rs:84:             published
+kernel/src/task/waitqueue.rs:85:         });
+kernel/src/task/waitqueue.rs:86: 
+kernel/src/task/waitqueue.rs:87:         if published {
+kernel/src/task/waitqueue.rs:88:             Some(tid)
+kernel/src/task/waitqueue.rs:89:         } else {
+kernel/src/task/waitqueue.rs:90:             None
+kernel/src/task/waitqueue.rs:91:         }
+kernel/src/task/waitqueue.rs:92:     }
+kernel/src/task/waitqueue.rs:93: 
+kernel/src/task/waitqueue.rs:94:     /// Check a condition, enqueue the current thread, and publish its timed
+kernel/src/task/waitqueue.rs:95:     /// I/O wait state while holding the waitqueue lock.
+kernel/src/task/waitqueue.rs:96:     pub(crate) fn prepare_to_wait_checked<F: FnOnce() -> bool>(
+kernel/src/task/waitqueue.rs:97:         &self,
+kernel/src/task/waitqueue.rs:98:         state: ThreadState,
+kernel/src/task/waitqueue.rs:99:         wake_time_ns: Option<u64>,
+kernel/src/task/waitqueue.rs:100:         cond: F,
+kernel/src/task/waitqueue.rs:101:     ) -> PrepareOutcome {
+kernel/src/task/waitqueue.rs:102:         if state != ThreadState::BlockedOnIO {
+kernel/src/task/waitqueue.rs:103:             return PrepareOutcome::PublishFailed;
+kernel/src/task/waitqueue.rs:104:         }
+kernel/src/task/waitqueue.rs:105: 
+kernel/src/task/waitqueue.rs:106:         let Some(tid) = crate::task::scheduler::current_thread_id() else {
+kernel/src/task/waitqueue.rs:107:             return PrepareOutcome::PublishFailed;
+kernel/src/task/waitqueue.rs:108:         };
+kernel/src/task/waitqueue.rs:109: 
+kernel/src/task/waitqueue.rs:110:         self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:111:             if !cond() {
+kernel/src/task/waitqueue.rs:112:                 return PrepareOutcome::Mismatch;
+kernel/src/task/waitqueue.rs:113:             }
+kernel/src/task/waitqueue.rs:114: 
+kernel/src/task/waitqueue.rs:115:             if !waiters.iter().any(|waiter| waiter.tid == tid) {
+kernel/src/task/waitqueue.rs:116:                 waiters.push_back(Waiter::new(tid));
+kernel/src/task/waitqueue.rs:117:             }
+kernel/src/task/waitqueue.rs:118: 
+kernel/src/task/waitqueue.rs:119:             let published = crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/task/waitqueue.rs:120:                 sched.block_current_for_io_with_timeout(wake_time_ns)
+kernel/src/task/waitqueue.rs:121:             })
+kernel/src/task/waitqueue.rs:122:             .unwrap_or(false);
+kernel/src/task/waitqueue.rs:123: 
+kernel/src/task/waitqueue.rs:124:             if published {
+kernel/src/task/waitqueue.rs:125:                 PrepareOutcome::Queued
+kernel/src/task/waitqueue.rs:126:             } else {
+kernel/src/task/waitqueue.rs:127:                 waiters.retain(|waiter| waiter.tid != tid);
+kernel/src/task/waitqueue.rs:128:                 PrepareOutcome::PublishFailed
+kernel/src/task/waitqueue.rs:129:             }
+kernel/src/task/waitqueue.rs:130:         })
+kernel/src/task/waitqueue.rs:131:     }
+kernel/src/task/waitqueue.rs:132: 
+kernel/src/task/waitqueue.rs:133:     /// Remove the current thread from the waitqueue and normalize syscall state.
+kernel/src/task/waitqueue.rs:134:     ///
+kernel/src/task/waitqueue.rs:135:     /// This mirrors Linux `finish_wait`: a thread that was prepared but never
+kernel/src/task/waitqueue.rs:136:     /// actually slept must become runnable before returning from the syscall.
+kernel/src/task/waitqueue.rs:137:     pub fn finish_wait(&self) {
+kernel/src/task/waitqueue.rs:138:         let Some(tid) = crate::task::scheduler::current_thread_id() else {
+kernel/src/task/waitqueue.rs:139:             return;
+kernel/src/task/waitqueue.rs:140:         };
+kernel/src/task/waitqueue.rs:141: 
+kernel/src/task/waitqueue.rs:142:         self.finish_wait_for(tid);
+kernel/src/task/waitqueue.rs:143:     }
+kernel/src/task/waitqueue.rs:144: 
+kernel/src/task/waitqueue.rs:145:     /// Finish a prepared wait using the identity captured before sleeping.
+kernel/src/task/waitqueue.rs:146:     pub(crate) fn finish_wait_for(&self, tid: u64) {
+kernel/src/task/waitqueue.rs:147:         self.remove_waiter(tid);
+kernel/src/task/waitqueue.rs:148:         crate::task::scheduler::with_thread_mut(tid, |thread| {
+kernel/src/task/waitqueue.rs:149:             if thread.state == ThreadState::BlockedOnIO {
+kernel/src/task/waitqueue.rs:150:                 thread.set_ready();
+kernel/src/task/waitqueue.rs:151:                 thread.wake_time_ns = None;
+kernel/src/task/waitqueue.rs:152:             }
+kernel/src/task/waitqueue.rs:153:             thread.blocked_in_syscall = false;
+kernel/src/task/waitqueue.rs:154:         });
+kernel/src/task/waitqueue.rs:155:     }
+kernel/src/task/waitqueue.rs:156: 
+kernel/src/task/waitqueue.rs:157:     /// Wake all waiters.
+kernel/src/task/waitqueue.rs:158:     pub fn wake_up(&self) {
+kernel/src/task/waitqueue.rs:159:         self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:160:             while let Some(waiter) = waiters.pop_front() {
+kernel/src/task/waitqueue.rs:161:                 wake_waiter(waiter);
+kernel/src/task/waitqueue.rs:162:             }
+kernel/src/task/waitqueue.rs:163:         });
+kernel/src/task/waitqueue.rs:164:     }
+kernel/src/task/waitqueue.rs:165: 
+kernel/src/task/waitqueue.rs:166:     /// Drain the waitqueue for a context that must not acquire the
+kernel/src/task/waitqueue.rs:167:     /// scheduler lock inline (P-2/#919). Unlike `wake_up()`, this skips the
+kernel/src/task/waitqueue.rs:168:     /// `in_interrupt_context()` branch and the `wake_waitqueue_thread()` arm:
+kernel/src/task/waitqueue.rs:169:     /// each popped waiter goes straight to
+kernel/src/task/waitqueue.rs:170:     /// `scheduler::isr_unblock_for_io()`, lock-free in the common case (a
+kernel/src/task/waitqueue.rs:171:     /// per-CPU atomic-CAS buffer drained by the next `schedule()`) --
+kernel/src/task/waitqueue.rs:172:     /// mutation-tested by `deferred_delivery_never_touches_the_scheduler_lock`
+kernel/src/task/waitqueue.rs:173:     /// in `tests/pipe_fifo_blocking_structure.rs`. See the "Lock Ordering
+kernel/src/task/waitqueue.rs:174:     /// Discipline" note atop `scheduler.rs`: SCHEDULER (Level 1) is not to be
+kernel/src/task/waitqueue.rs:175:     /// acquired while the caller holds PROCESS_MANAGER (Level 2), which is
+kernel/src/task/waitqueue.rs:176:     /// the situation `Process::close_all_fds()`'s callers are in
+kernel/src/task/waitqueue.rs:177:     /// (`Process::terminate()`'s 4 identified callers each hold PM there --
+kernel/src/task/waitqueue.rs:178:     /// see `Process::close_all_fds()`'s own comment). The buffer's own
+kernel/src/task/waitqueue.rs:179:     /// full-buffer fallback can still take the scheduler lock; this is the
+kernel/src/task/waitqueue.rs:180:     /// same degraded path `isr_unblock_for_io()`'s other callers already
+kernel/src/task/waitqueue.rs:181:     /// accept.
+kernel/src/task/waitqueue.rs:182:     pub fn wake_up_deferred(&self) {
+kernel/src/task/waitqueue.rs:183:         self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:184:             while let Some(waiter) = waiters.pop_front() {
+kernel/src/task/waitqueue.rs:185:                 crate::task::scheduler::isr_unblock_for_io(waiter.tid());
+kernel/src/task/waitqueue.rs:186:             }
+kernel/src/task/waitqueue.rs:187:         });
+kernel/src/task/waitqueue.rs:188:     }
+kernel/src/task/waitqueue.rs:189: 
+kernel/src/task/waitqueue.rs:190:     /// Wake the first waiter, if any.
+kernel/src/task/waitqueue.rs:191:     pub fn wake_up_one(&self) {
+kernel/src/task/waitqueue.rs:192:         self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:193:             if let Some(waiter) = waiters.pop_front() {
+kernel/src/task/waitqueue.rs:194:                 wake_waiter(waiter);
+kernel/src/task/waitqueue.rs:195:             }
+kernel/src/task/waitqueue.rs:196:         });
+kernel/src/task/waitqueue.rs:197:     }
+kernel/src/task/waitqueue.rs:198: 
+kernel/src/task/waitqueue.rs:199:     /// Wake up to `max` waiters while holding the waitqueue lock.
+kernel/src/task/waitqueue.rs:200:     pub fn wake_up_n(&self, max: u32) -> u32 {
+kernel/src/task/waitqueue.rs:201:         let mut woken = 0;
+kernel/src/task/waitqueue.rs:202:         self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:203:             while woken < max {
+kernel/src/task/waitqueue.rs:204:                 let Some(waiter) = waiters.pop_front() else {
+kernel/src/task/waitqueue.rs:205:                     break;
+kernel/src/task/waitqueue.rs:206:                 };
+kernel/src/task/waitqueue.rs:207:                 wake_waiter(waiter);
+kernel/src/task/waitqueue.rs:208:                 woken += 1;
+kernel/src/task/waitqueue.rs:209:             }
+kernel/src/task/waitqueue.rs:210:         });
+kernel/src/task/waitqueue.rs:211:         woken
+kernel/src/task/waitqueue.rs:212:     }
+kernel/src/task/waitqueue.rs:213: 
+kernel/src/task/waitqueue.rs:214:     /// Remove a specific waiter under the waitqueue lock.
+kernel/src/task/waitqueue.rs:215:     pub fn take_waiter(&self, tid: u64) -> bool {
+kernel/src/task/waitqueue.rs:216:         let mut removed = false;
+kernel/src/task/waitqueue.rs:217:         self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:218:             waiters.retain(|waiter| {
+kernel/src/task/waitqueue.rs:219:                 if waiter.tid == tid {
+kernel/src/task/waitqueue.rs:220:                     removed = true;
+kernel/src/task/waitqueue.rs:221:                     false
+kernel/src/task/waitqueue.rs:222:                 } else {
+kernel/src/task/waitqueue.rs:223:                     true
+kernel/src/task/waitqueue.rs:224:                 }
+kernel/src/task/waitqueue.rs:225:             });
+kernel/src/task/waitqueue.rs:226:         });
+kernel/src/task/waitqueue.rs:227:         removed
+kernel/src/task/waitqueue.rs:228:     }
+kernel/src/task/waitqueue.rs:229: 
+kernel/src/task/waitqueue.rs:230:     /// Return whether the queue currently has waiters.
+kernel/src/task/waitqueue.rs:231:     pub fn has_waiters(&self) -> bool {
+kernel/src/task/waitqueue.rs:232:         self.with_waiters(|waiters| !waiters.is_empty())
+kernel/src/task/waitqueue.rs:233:     }
+kernel/src/task/waitqueue.rs:234: 
+kernel/src/task/waitqueue.rs:235:     fn remove_waiter(&self, tid: u64) {
+kernel/src/task/waitqueue.rs:236:         self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:237:             waiters.retain(|waiter| waiter.tid != tid);
+kernel/src/task/waitqueue.rs:238:         });
+kernel/src/task/waitqueue.rs:239:     }
+kernel/src/task/waitqueue.rs:240: 
+kernel/src/task/waitqueue.rs:241:     #[cfg(test)]
+kernel/src/task/waitqueue.rs:242:     fn drain_waiters(&self) -> VecDeque<Waiter> {
+kernel/src/task/waitqueue.rs:243:         self.with_waiters(|waiters| waiters.drain(..).collect::<VecDeque<_>>())
+kernel/src/task/waitqueue.rs:244:     }
+kernel/src/task/waitqueue.rs:245: 
+kernel/src/task/waitqueue.rs:246:     #[cfg(test)]
+kernel/src/task/waitqueue.rs:247:     fn pop_one_waiter(&self) -> Option<Waiter> {
+kernel/src/task/waitqueue.rs:248:         self.with_waiters(|waiters| waiters.pop_front())
+kernel/src/task/waitqueue.rs:249:     }
+kernel/src/task/waitqueue.rs:250: 
+kernel/src/task/waitqueue.rs:251:     fn with_waiters<R>(&self, f: impl FnOnce(&mut VecDeque<Waiter>) -> R) -> R {
+kernel/src/task/waitqueue.rs:252:         crate::arch_without_interrupts(|| {
+kernel/src/task/waitqueue.rs:253:             let mut waiters = self.waiters.lock();
+kernel/src/task/waitqueue.rs:254:             f(&mut waiters)
+kernel/src/task/waitqueue.rs:255:         })
+kernel/src/task/waitqueue.rs:256:     }
+kernel/src/task/waitqueue.rs:257: 
+kernel/src/task/waitqueue.rs:258:     #[cfg(test)]
+kernel/src/task/waitqueue.rs:259:     fn push_waiter_for_test(&self, tid: u64) {
+kernel/src/task/waitqueue.rs:260:         self.with_waiters(|waiters| {
+kernel/src/task/waitqueue.rs:261:             if !waiters.iter().any(|waiter| waiter.tid == tid) {
+kernel/src/task/waitqueue.rs:262:                 waiters.push_back(Waiter::new(tid));
+kernel/src/task/waitqueue.rs:263:             }
+kernel/src/task/waitqueue.rs:264:         });
+kernel/src/task/waitqueue.rs:265:     }
+kernel/src/task/waitqueue.rs:266: 
+kernel/src/task/waitqueue.rs:267:     #[cfg(test)]
+kernel/src/task/waitqueue.rs:268:     fn waiter_count_for_test(&self) -> usize {
+kernel/src/task/waitqueue.rs:269:         self.with_waiters(|waiters| waiters.len())
+kernel/src/task/waitqueue.rs:270:     }
+kernel/src/task/waitqueue.rs:271: 
+kernel/src/task/waitqueue.rs:272:     #[cfg(feature = "boot_tests")]
+kernel/src/task/waitqueue.rs:273:     pub(crate) fn waiter_count(&self) -> usize {
+kernel/src/task/waitqueue.rs:274:         self.with_waiters(|waiters| waiters.len())
+kernel/src/task/waitqueue.rs:275:     }
+kernel/src/task/waitqueue.rs:276: 
+kernel/src/task/waitqueue.rs:277:     /// Read-only membership for the boot-only blocking I/O observer.
+kernel/src/task/waitqueue.rs:278:     #[cfg(feature = "boot_tests")]
+kernel/src/task/waitqueue.rs:279:     pub(crate) fn contains_waiter(&self, tid: u64) -> bool {
+kernel/src/task/waitqueue.rs:280:         self.with_waiters(|waiters| waiters.iter().any(|waiter| waiter.tid == tid))
+kernel/src/task/waitqueue.rs:281:     }
+kernel/src/task/waitqueue.rs:282: 
+kernel/src/task/waitqueue.rs:283:     #[cfg(test)]
+kernel/src/task/waitqueue.rs:284:     fn contains_waiter_for_test(&self, tid: u64) -> bool {
+kernel/src/task/waitqueue.rs:285:         self.with_waiters(|waiters| waiters.iter().any(|waiter| waiter.tid == tid))
+kernel/src/task/waitqueue.rs:286:     }
+kernel/src/task/waitqueue.rs:287: }
+kernel/src/task/waitqueue.rs:288: 
+kernel/src/task/waitqueue.rs:289: fn wake_waiter(waiter: Waiter) {
+kernel/src/task/waitqueue.rs:290:     if in_interrupt_context() {
+kernel/src/task/waitqueue.rs:291:         crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+kernel/src/task/waitqueue.rs:292:     } else {
+kernel/src/task/waitqueue.rs:293:         crate::task::scheduler::wake_waitqueue_thread(waiter.tid);
+kernel/src/task/waitqueue.rs:294:     }
+kernel/src/task/waitqueue.rs:295: }
+kernel/src/task/waitqueue.rs:296: 
+kernel/src/task/waitqueue.rs:297: fn in_interrupt_context() -> bool {
+kernel/src/task/waitqueue.rs:298:     #[cfg(target_arch = "aarch64")]
+kernel/src/task/waitqueue.rs:299:     {
+kernel/src/task/waitqueue.rs:300:         crate::per_cpu_aarch64::in_interrupt()
+kernel/src/task/waitqueue.rs:301:     }
+kernel/src/task/waitqueue.rs:302:     #[cfg(not(target_arch = "aarch64"))]
+kernel/src/task/waitqueue.rs:303:     {
+kernel/src/task/waitqueue.rs:304:         crate::per_cpu::in_interrupt()
+kernel/src/task/waitqueue.rs:305:     }
+kernel/src/task/waitqueue.rs:306: }
+kernel/src/task/waitqueue.rs:307: 
+kernel/src/task/waitqueue.rs:308: /// Sleep the current prepared waiter until the scheduler wake path makes it
+kernel/src/task/waitqueue.rs:309: /// runnable again.
+kernel/src/task/waitqueue.rs:310: ///
+kernel/src/task/waitqueue.rs:311: /// Syscall handlers enter with preemption disabled. Waiting must enable
+kernel/src/task/waitqueue.rs:312: /// preemption before scheduling and restore the syscall entry invariant before
+kernel/src/task/waitqueue.rs:313: /// returning to the caller.
+kernel/src/task/waitqueue.rs:314: pub fn schedule_current_wait() {
+kernel/src/task/waitqueue.rs:315:     #[cfg(target_arch = "aarch64")]
+kernel/src/task/waitqueue.rs:316:     crate::per_cpu_aarch64::preempt_enable();
+kernel/src/task/waitqueue.rs:317:     #[cfg(not(target_arch = "aarch64"))]
+kernel/src/task/waitqueue.rs:318:     crate::per_cpu::preempt_enable();
+kernel/src/task/waitqueue.rs:319: 
+kernel/src/task/waitqueue.rs:320:     loop {
+kernel/src/task/waitqueue.rs:321:         let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/task/waitqueue.rs:322:             sched
+kernel/src/task/waitqueue.rs:323:                 .current_thread_mut()
+kernel/src/task/waitqueue.rs:324:                 .map(|thread| thread.state == ThreadState::BlockedOnIO)
+kernel/src/task/waitqueue.rs:325:                 .unwrap_or(false)
+kernel/src/task/waitqueue.rs:326:         })
+kernel/src/task/waitqueue.rs:327:         .unwrap_or(false);
+kernel/src/task/waitqueue.rs:328: 
+kernel/src/task/waitqueue.rs:329:         if !still_waiting {
+kernel/src/task/waitqueue.rs:330:             break;
+kernel/src/task/waitqueue.rs:331:         }
+kernel/src/task/waitqueue.rs:332: 
+kernel/src/task/waitqueue.rs:333:         #[cfg(target_arch = "aarch64")]
+kernel/src/task/waitqueue.rs:334:         {
+kernel/src/task/waitqueue.rs:335:             crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
+kernel/src/task/waitqueue.rs:336:             crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
+kernel/src/task/waitqueue.rs:337:         }
+kernel/src/task/waitqueue.rs:338:         #[cfg(not(target_arch = "aarch64"))]
+kernel/src/task/waitqueue.rs:339:         crate::arch_halt_with_interrupts();
+kernel/src/task/waitqueue.rs:340:     }
+kernel/src/task/waitqueue.rs:341: 
+kernel/src/task/waitqueue.rs:342:     #[cfg(target_arch = "aarch64")]
+kernel/src/task/waitqueue.rs:343:     crate::per_cpu_aarch64::preempt_disable();
+kernel/src/task/waitqueue.rs:344:     #[cfg(not(target_arch = "aarch64"))]
+kernel/src/task/waitqueue.rs:345:     crate::per_cpu::preempt_disable();
+kernel/src/task/waitqueue.rs:346: }
+kernel/src/task/waitqueue.rs:347: 
+kernel/src/task/waitqueue.rs:348: #[cfg(test)]
+kernel/src/task/waitqueue.rs:349: mod tests {
+kernel/src/task/waitqueue.rs:350:     use super::WaitQueueHead;
+kernel/src/task/waitqueue.rs:351: 
+kernel/src/task/waitqueue.rs:352:     #[test]
+kernel/src/task/waitqueue.rs:353:     fn duplicate_waiters_are_ignored() {
+kernel/src/task/waitqueue.rs:354:         let waitq = WaitQueueHead::new();
+kernel/src/task/waitqueue.rs:355: 
+kernel/src/task/waitqueue.rs:356:         waitq.push_waiter_for_test(42);
+kernel/src/task/waitqueue.rs:357:         waitq.push_waiter_for_test(42);
+kernel/src/task/waitqueue.rs:358: 
+kernel/src/task/waitqueue.rs:359:         assert_eq!(waitq.waiter_count_for_test(), 1);
+kernel/src/task/waitqueue.rs:360:     }
+kernel/src/task/waitqueue.rs:361: 
+kernel/src/task/waitqueue.rs:362:     #[test]
+kernel/src/task/waitqueue.rs:363:     fn wake_up_one_removes_single_waiter() {
+kernel/src/task/waitqueue.rs:364:         let waitq = WaitQueueHead::new();
+kernel/src/task/waitqueue.rs:365: 
+kernel/src/task/waitqueue.rs:366:         waitq.push_waiter_for_test(1);
+kernel/src/task/waitqueue.rs:367:         waitq.push_waiter_for_test(2);
+kernel/src/task/waitqueue.rs:368:         let waiter = waitq.pop_one_waiter();
+kernel/src/task/waitqueue.rs:369: 
+kernel/src/task/waitqueue.rs:370:         assert_eq!(waiter.map(|waiter| waiter.tid()), Some(1));
+kernel/src/task/waitqueue.rs:371:         assert_eq!(waitq.waiter_count_for_test(), 1);
+kernel/src/task/waitqueue.rs:372:         assert!(!waitq.contains_waiter_for_test(1));
+kernel/src/task/waitqueue.rs:373:         assert!(waitq.contains_waiter_for_test(2));
+kernel/src/task/waitqueue.rs:374:     }
+kernel/src/task/waitqueue.rs:375: 
+kernel/src/task/waitqueue.rs:376:     #[test]
+kernel/src/task/waitqueue.rs:377:     fn wake_up_drains_waiters() {
+kernel/src/task/waitqueue.rs:378:         let waitq = WaitQueueHead::new();
+kernel/src/task/waitqueue.rs:379: 
+kernel/src/task/waitqueue.rs:380:         waitq.push_waiter_for_test(1);
+kernel/src/task/waitqueue.rs:381:         waitq.push_waiter_for_test(2);
+kernel/src/task/waitqueue.rs:382:         let waiters = waitq.drain_waiters();
+kernel/src/task/waitqueue.rs:383: 
+kernel/src/task/waitqueue.rs:384:         assert_eq!(waiters.len(), 2);
+kernel/src/task/waitqueue.rs:385:         assert_eq!(waitq.waiter_count_for_test(), 0);
+kernel/src/task/waitqueue.rs:386:     }
+kernel/src/task/waitqueue.rs:387: 
+kernel/src/task/waitqueue.rs:388:     #[test]
+kernel/src/task/waitqueue.rs:389:     fn take_waiter_removes_only_the_requested_tid() {
+kernel/src/task/waitqueue.rs:390:         let waitq = WaitQueueHead::new();
+kernel/src/task/waitqueue.rs:391: 
+kernel/src/task/waitqueue.rs:392:         waitq.push_waiter_for_test(1);
+kernel/src/task/waitqueue.rs:393:         waitq.push_waiter_for_test(2);
+kernel/src/task/waitqueue.rs:394: 
+kernel/src/task/waitqueue.rs:395:         assert!(waitq.take_waiter(1));
+kernel/src/task/waitqueue.rs:396:         assert!(!waitq.take_waiter(1));
+kernel/src/task/waitqueue.rs:397:         assert!(!waitq.contains_waiter_for_test(1));
+kernel/src/task/waitqueue.rs:398:         assert!(waitq.contains_waiter_for_test(2));
+kernel/src/task/waitqueue.rs:399:     }
+kernel/src/task/waitqueue.rs:400: 
+kernel/src/task/waitqueue.rs:401:     #[test]
+kernel/src/task/waitqueue.rs:402:     fn wake_up_n_zero_does_not_consume_waiters() {
+kernel/src/task/waitqueue.rs:403:         let waitq = WaitQueueHead::new();
+kernel/src/task/waitqueue.rs:404: 
+kernel/src/task/waitqueue.rs:405:         waitq.push_waiter_for_test(1);
+kernel/src/task/waitqueue.rs:406:         assert_eq!(waitq.wake_up_n(0), 0);
+kernel/src/task/waitqueue.rs:407:         assert_eq!(waitq.waiter_count_for_test(), 1);
+kernel/src/task/waitqueue.rs:408:     }
+kernel/src/task/waitqueue.rs:409: }

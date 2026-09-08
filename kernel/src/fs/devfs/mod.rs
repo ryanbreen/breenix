@@ -199,9 +199,8 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
             Ok(buf.len())
         }
         DeviceType::Console | DeviceType::Tty => {
-            // Console/TTY read - for now return EAGAIN (no input available)
-            // In the future, this would read from keyboard buffer
-            Err(-11) // EAGAIN
+            // This device API is non-sleeping; sys_read owns the blocking adapter.
+            crate::ipc::stdin::read_bytes(buf).map_err(|e| -e)
         }
     }
 }

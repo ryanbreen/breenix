@@ -46,6 +46,9 @@ case "$BOOTS" in ''|*[!0-9]*|0*) echo "FAIL: positive --boots required"; false ;
 mkdir -p "$BREENIX_GATE_TMP"
 OUTPUT_ROOT="$(mktemp -d "$BREENIX_GATE_TMP/breenix_813_${ARCH}.XXXXXX")"
 echo "Artifacts: $OUTPUT_ROOT"
+git -C "$BREENIX_ROOT" rev-parse HEAD | tee "$OUTPUT_ROOT/revision.txt"
+
+CONSOLE_ARMS=(blocking nonblock_open nonblock_fcntl readiness_partial eintr immediate)
 
 # Kept equal to the driver's derived arm set by pipe_fifo_blocking_structure.
 EXPECTED_ARMS=(
@@ -213,7 +216,7 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     if [ "$PROGRAM" = unix_stream_blocking_oracle ]; then
         python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" --program "$PROGRAM" "${EXPECTED_ARMS[@]}"
     else
-        python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" "${EXPECTED_ARMS[@]}"
+        python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" "${EXPECTED_ARMS[@]}" --console "${CONSOLE_ARMS[@]}"
     fi
 done
 echo "PASS: blocking I/O oracle $ARCH boots=$BOOTS; serials=$OUTPUT_ROOT/boot_*/serial.txt"

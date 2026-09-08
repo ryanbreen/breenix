@@ -54,6 +54,8 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
     #[cfg(feature = "boot_tests")]
     if request == super::blocking_io_oracle::QUERY
         || request == super::blocking_io_oracle::FIFO_FIXTURE
+        || request == super::blocking_io_oracle::INPUT_QUERY
+        || request == super::blocking_io_oracle::INPUT_INJECT
     {
         return super::blocking_io_oracle::dispatch(fd, request, arg);
     }

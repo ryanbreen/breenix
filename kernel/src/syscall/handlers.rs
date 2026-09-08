@@ -1252,9 +1252,17 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::Device(device_type) => {
             // Read from devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
             let device_type = *device_type;
+            let is_nonblocking =
+                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
             let mut user_buf = alloc::vec![0u8; count as usize];
-            match crate::fs::devfs::device_read(device_type, &mut user_buf) {
+            let result = match device_type {
+                crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
+                    super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
+                }
+                _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
+            };
+            match result {
                 Ok(n) => {
                     if n > 0 {
                         // Copy to userspace

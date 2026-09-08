@@ -1,0 +1,43 @@
+revision=dfe14edf6e7c90b1973464e31acee1fb6c014989
+kernel/src/syscall/handlers.rs:1252:         FdKind::Device(device_type) => {
+kernel/src/syscall/blocking_io.rs:16: pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> Result<(), i32> {
+kernel/src/syscall/blocking_io.rs:114: pub(crate) fn read_console(buf: &mut [u8], is_nonblocking: bool) -> Result<usize, i32> {
+kernel/src/ipc/stdin.rs:298: pub(crate) fn read_or_prepare(
+kernel/src/task/waitqueue.rs:96:     pub(crate) fn prepare_to_wait_checked<F: FnOnce() -> bool>(
+kernel/src/task/waitqueue.rs:146:     pub(crate) fn finish_wait_for(&self, tid: u64) {
+kernel/src/task/scheduler.rs:4093:     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
+kernel/src/task/scheduler.rs:4165:     pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) -> bool {
+kernel/src/ipc/stdin.rs:50:     fn push_byte(&mut self, byte: u8) -> bool {
+kernel/src/task/waitqueue.rs:182:     pub fn wake_up_deferred(&self) {
+kernel/src/ipc/stdin.rs:120: pub fn push_byte_from_irq(byte: u8) -> bool {
+kernel/src/tty/driver.rs:279:                             crate::ipc::stdin::push_byte_from_irq(byte);
+kernel/src/tty/driver.rs:353:                             crate::ipc::stdin::push_byte_from_irq(byte);
+kernel/src/tty/driver.rs:395:     pub fn read(&self, buf: &mut [u8]) -> Result<usize, i32> {
+kernel/src/fs/devfs/mod.rs:188: pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
+kernel/src/syscall/fs.rs:2561:         let fd_kind = FileDescriptor::with_flags(
+kernel/src/syscall/fs.rs:2580:     let fd_kind = FileDescriptor::with_flags(
+kernel/src/syscall/fs.rs:2450:     // For /dev/tty, redirect to the controlling PTY if one exists.
+kernel/src/ipc/poll.rs:162:                 DeviceType::Console | DeviceType::Tty => {
+kernel/src/ipc/stdin.rs:204: pub fn has_data() -> bool {
+kernel/src/syscall/handlers.rs:675:     // Validate buffer pointer and count
+kernel/src/syscall/mod.rs:32: pub mod blocking_io_oracle;
+kernel/src/syscall/ioctl.rs:55:     if request == super::blocking_io_oracle::QUERY
+kernel/src/syscall/blocking_io_oracle.rs:148: fn console(fd: u64, request: u64, arg: u64) -> Result<(), u64> {
+userspace/programs/src/console_read_oracle.rs:63: fn parked(fd: Fd, tid: u64) -> TestResult<()> {
+userspace/programs/src/console_read_oracle.rs:147: fn arm(path: &str, name: &str) -> TestResult<usize> {
+userspace/programs/src/console_read_oracle.rs:219: pub fn run(arch: &str) -> bool {
+docker/qemu/run-blocking-io-oracle-gate.sh:51: CONSOLE_ARMS=(blocking nonblock_open nonblock_fcntl readiness_partial eintr immediate)
+docker/qemu/run-blocking-io-oracle-gate.sh:78: if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+scripts/score-blocking-io-oracle.py:52: console_records = re.findall(r'\[CONSOLE_READ_ORACLE:([^\]]+)\]', text)
+kernel/src/ipc/stdin.rs:212: pub fn register_blocked_reader(thread_id: u64) {
+kernel/src/ipc/stdin.rs:221: pub fn unregister_blocked_reader(thread_id: u64) {
+kernel/src/syscall/handlers.rs:919:                         // Check if data arrived during setup (race condition fix)
+kernel/src/task/scheduler.rs:3426:     pub fn block_current_in_syscall(&mut self) {
+kernel/src/syscall/fifo.rs:86: #[cfg(not(target_arch = "x86_64"))]
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `/root/breenix-p796`, `BREENIX_GATE_TMP=/root/breenix-p796-tmp`,
+docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:837: * **The oracle does not witness a successful `F_SETFD` under contention.** Its
+userspace/programs/src/futex_handoff_oracle.rs:68: fn input_inject_negative_control() {
+docker/qemu/run-aarch64-prod-profile-boot-test.sh:707: python3 "$BREENIX_ROOT/scripts/score-input-inject-negative-control.py" "$SERIAL_FILE"
+kernel/src/task/timer_wake_oracle.rs:302: pub fn run() {
+kernel/src/task/timer_wake_oracle.rs:323: fn run_coordinator() {
+kernel/src/task/timer_wake_oracle.rs:380:             for (index, handle) in peers.iter().enumerate() {

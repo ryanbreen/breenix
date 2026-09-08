@@ -1,0 +1,4 @@
+revision=9ee19079c7310ee5d617c85ed64072ad6e0c8367
+Lane-owned QEMU processes remaining=0
+
+Gate process cleanup was by PID. No kill-by-name was used.

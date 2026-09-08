@@ -1,0 +1,11 @@
+$ git rev-parse HEAD
+87cf3de694cea98806e66d9352d1cb56329b81b1
+exit=0
+$ git rev-parse origin/main
+fbb1cd3be126618f02aa7c84d5163ae3daaa5627
+exit=0
+$ git merge-base --is-ancestor origin/main HEAD
+exit=0
+$ git diff origin/main HEAD -- docker/qemu/run-aarch64-boot-test-strict.sh docker/qemu/run-x86-boot-tests.sh
+exit=0
+git fetch origin succeeded; git merge origin/main reported Already up to date. The existing merge commit is 9ee19079. This attempt introduced no scorer change; R182 requires no additional fixture recording.

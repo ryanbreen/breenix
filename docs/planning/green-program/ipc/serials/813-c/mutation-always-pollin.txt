@@ -1,0 +1,28 @@
+revision=3a8a973b013dbbee09f17c660c0f310ecdf3640e + PR C working-tree single mutation
+kernel/src/ipc/poll.rs
+== compiling console_read_structure ==
+== running console_read_structure  ==
+
+running 5 tests
+test observer_is_read_only_and_injection_requires_witness ... ok
+test both_architectures_score_all_console_arms ... ok
+test same_guard_check_prepare_and_common_enqueue_wake ... ok
+test data_signal_and_immediate_controls_remain_observable ... ok
+test device_modes_poll_and_non_sleeping_device_api ... FAILED
+
+failures:
+
+---- device_modes_poll_and_non_sleeping_device_api stdout ----
+
+thread 'device_modes_poll_and_non_sleeping_device_api' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/i813pc/wt/tests/console_read_structure.rs:58:5:
+assertion failed: p.contains("(events&events::POLLIN)!=0&&crate::ipc::stdin::has_data()")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    device_modes_poll_and_non_sleeping_device_api
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+exit=101
