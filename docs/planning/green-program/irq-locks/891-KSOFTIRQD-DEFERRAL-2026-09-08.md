@@ -618,3 +618,27 @@ is needed for this retained signature.
 
 claim-lint: python3 scripts/claim-lint.py -> exit 0
 claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/not-landed-message.txt -> exit 0
+
+### Blocked-landing handoff
+
+PR 967 was already open; its title now matches the requested title and
+its linted body leads with NOT LANDED. Comments on issues 891 and 562
+record the mechanism, oracle grammar, ten-boot historical tally, and
+closure limits. Both issues remain open. No readiness comment was
+posted to issue 586. GitHub reports PR state OPEN, mergedAt=null, and
+mergeCommit=null; `git log origin/main..HEAD` is nonempty.
+
+The failure evidence was committed and pushed before beast cleanup.
+The process-use census found 0 processes using either lane path, and
+`rm -rf /root/breenix-s891 /root/breenix-s891-tmp` completed. The Mac
+process census found 0 QEMUs using this lane; the battery QEMU was
+left untouched. This worktree and remote branch remain for recovery.
+No task-created stash exists. No later boot attempt was launched.
+
+The first PR-body lint found an uncited proof-tally sentence. Adding
+the resolving tally path and 10/10 count made the next check pass.
+
+claim-lint: python3 scripts/claim-lint.py --files .tmp/issue891-comment.md .tmp/issue562-comment.md .tmp/pr-body.md -> exit 1
+claim-lint: python3 scripts/claim-lint.py --files .tmp/issue891-comment.md .tmp/issue562-comment.md .tmp/pr-body.md -> exit 0
+claim-lint: python3 scripts/claim-lint.py -> exit 0
+claim-lint: python3 scripts/claim-lint.py --commit-msg .tmp/handoff-message.txt -> exit 0
