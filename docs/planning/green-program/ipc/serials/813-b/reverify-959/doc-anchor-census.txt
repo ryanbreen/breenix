@@ -1,0 +1,253 @@
+Revision: 21e470ebd8aaf13b909a8449168878678a7d2cbb
+docker/qemu/run-blocking-io-oracle-gate.sh:213:     if [ "$PROGRAM" = unix_stream_blocking_oracle ]; then
+docker/qemu/run-blocking-io-oracle-gate.sh:214:         python3 "$BREENIX_ROOT/scripts/score-blocking-io-oracle.py" "$ARCH" "$RUN_DIR" --program "$PROGRAM" "${EXPECTED_ARMS[@]}"
+docker/qemu/run-blocking-io-oracle-gate.sh:215:     else
+docker/qemu/run-blocking-io-oracle-gate.sh:69: if [ "$PROGRAM" = unix_stream_blocking_oracle ]; then
+docker/qemu/run-blocking-io-oracle-gate.sh:70:     EXPECTED_ARMS=(backpressure mode poll peer_close signal partial)
+docker/qemu/run-blocking-io-oracle-gate.sh:71: fi
+docker/qemu/run-blocking-io-oracle-gate.sh:74: 
+docker/qemu/run-blocking-io-oracle-gate.sh:75: if ! gate_structure_preflight "$BREENIX_ROOT" "$BREENIX_GATE_TMP"; then
+docker/qemu/run-blocking-io-oracle-gate.sh:76:     echo "blocking I/O oracle gate preflight: FAIL (structure-suite preflight failed -- see GATE_PREFLIGHT line above)" >&2
+kernel/src/arch_impl/aarch64/context_switch.rs:6620:     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+kernel/src/arch_impl/aarch64/context_switch.rs:6621:     crate::task::process_task::reclaim_deferred_process_resources();
+kernel/src/arch_impl/aarch64/context_switch.rs:6622:     crate::task::scheduler::reclaim_terminated_threads();
+kernel/src/interrupts/context_switch.rs:1399:                             thread.set_terminated();
+kernel/src/interrupts/context_switch.rs:1400:                             process.terminate(-11); // SIGSEGV equivalent
+kernel/src/interrupts/context_switch.rs:1401:                             crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+kernel/src/interrupts/context_switch.rs:1791:         crate::task::report_dispatch_strand_census_heartbeat();
+kernel/src/interrupts/context_switch.rs:1792:         crate::task::process_task::reclaim_deferred_process_resources();
+kernel/src/interrupts/context_switch.rs:1793:         // P6a PR-2, review finding B2. Retention at quiesce has to be sampled
+kernel/src/ipc/fd.rs:398:     /// Used for dup2() syscall
+kernel/src/ipc/fd.rs:399:     pub fn dup2(&mut self, old_fd: i32, new_fd: i32) -> Result<(i32, Option<FileDescriptor>), i32> {
+kernel/src/ipc/fd.rs:400:         if old_fd < 0 || old_fd as usize >= MAX_FDS {
+kernel/src/ipc/fd.rs:575:     /// Properly decrements pipe/fifo reference counts.
+kernel/src/ipc/fd.rs:576:     pub fn close_cloexec(&mut self, closes: &mut DeferredFdCloses) {
+kernel/src/ipc/fd.rs:577:         for i in 0..MAX_FDS {
+kernel/src/ipc/fd.rs:591:     /// Only modifies O_NONBLOCK and O_APPEND; other flags are ignored
+kernel/src/ipc/fd.rs:592:     pub fn set_status_flags(&mut self, fd: i32, flags: u32) -> Result<(), i32> {
+kernel/src/ipc/fd.rs:593:         let fd_entry = self.get_mut(fd).ok_or(9)?; // EBADF
+kernel/src/ipc/fd.rs:698:                     }
+kernel/src/ipc/fd.rs:699:                     FdKind::UnixStream(socket) => {
+kernel/src/ipc/fd.rs:700:                         // Close the Unix socket endpoint
+kernel/src/ipc/fd.rs:759: 
+kernel/src/ipc/fd.rs:760: impl Drop for DeferredFdCloses {
+kernel/src/ipc/fd.rs:761:     fn drop(&mut self) {
+kernel/src/ipc/fifo.rs:61:     /// Get or create the pipe buffer
+kernel/src/ipc/fifo.rs:62:     pub fn get_or_create_buffer(&mut self) -> Arc<Mutex<PipeBuffer>> {
+kernel/src/ipc/fifo.rs:63:         if let Some(ref buffer) = self.buffer {
+kernel/src/ipc/fifo.rs:68:             // Do not invent a writer reference to turn that EOF into EAGAIN.
+kernel/src/ipc/fifo.rs:69:             let buffer = Arc::new(Mutex::new(PipeBuffer::new_zero_refs()));
+kernel/src/ipc/fifo.rs:70:             self.buffer = Some(buffer.clone());
+kernel/src/ipc/poll.rs:266:         }
+kernel/src/ipc/poll.rs:267:         FdKind::UnixStream(socket_ref) => {
+kernel/src/ipc/poll.rs:268:             let socket = socket_ref.lock();
+kernel/src/ipc/poll.rs:276:             if (events & events::POLLOUT) != 0 {
+kernel/src/ipc/poll.rs:277:                 if socket.has_write_space() {
+kernel/src/ipc/poll.rs:278:                     revents |= events::POLLOUT;
+kernel/src/ipc/poll.rs:282:             if socket.peer_closed() && !socket.has_data() {
+kernel/src/ipc/poll.rs:283:                 revents |= events::POLLHUP;
+kernel/src/ipc/poll.rs:284:             }
+kernel/src/ipc/poll.rs:328: /// Returns true if writing would not block
+kernel/src/ipc/poll.rs:329: pub fn check_writable(fd_entry: &FileDescriptor) -> bool {
+kernel/src/ipc/poll.rs:330:     (poll_fd(fd_entry, events::POLLOUT) & events::POLLOUT) != 0
+kernel/src/process/manager.rs:1946:                 // order would walk the same CoW mappings twice.
+kernel/src/process/manager.rs:1947:                 process.terminate(exit_code);
+kernel/src/process/manager.rs:1948:             }
+kernel/src/process/manager.rs:2183:     #[cfg(target_arch = "x86_64")]
+kernel/src/process/manager.rs:2184:     pub fn fork_process_with_page_table(
+kernel/src/process/manager.rs:2185:         &mut self,
+kernel/src/process/manager.rs:2271:             // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
+kernel/src/process/manager.rs:2272:             let cow_result = super::fork::setup_cow_pages_with_vmas(
+kernel/src/process/manager.rs:2273:                 parent_page_table.as_mut(),
+kernel/src/process/manager.rs:2279:             parent.page_table = Some(parent_page_table);
+kernel/src/process/manager.rs:2280:             let pages_shared = cow_result?;
+kernel/src/process/manager.rs:2281: 
+kernel/src/process/manager.rs:2941:     #[cfg(target_arch = "x86_64")]
+kernel/src/process/manager.rs:2942:     pub fn fork_process_with_context(
+kernel/src/process/manager.rs:2943:         &mut self,
+kernel/src/process/manager.rs:3032:             // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
+kernel/src/process/manager.rs:3033:             let cow_result = super::fork::setup_cow_pages_with_vmas(
+kernel/src/process/manager.rs:3034:                 parent_page_table.as_mut(),
+kernel/src/process/manager.rs:3040:             parent_mut.page_table = Some(parent_page_table);
+kernel/src/process/manager.rs:3041:             let pages_shared = cow_result?;
+kernel/src/process/manager.rs:3042: 
+kernel/src/process/process.rs:596:                     FdKind::UnixStream(socket) => {
+kernel/src/process/process.rs:597:                         let notifications = socket.lock().close();
+kernel/src/process/process.rs:598:                         notifications.deliver_deferred();
+kernel/src/process/process.rs:679:                     FdKind::UnixStream(socket) => {
+kernel/src/process/process.rs:680:                         let notifications = socket.lock().close();
+kernel/src/process/process.rs:681:                         notifications.deliver_deferred();
+kernel/src/signal/delivery.rs:238:             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+kernel/src/signal/delivery.rs:239:             process.terminate(-(sig as i32));
+kernel/src/signal/delivery.rs:240: 
+kernel/src/signal/delivery.rs:273:             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+kernel/src/signal/delivery.rs:274:             process.terminate(-((sig as i32) | 0x80));
+kernel/src/signal/delivery.rs:275: 
+kernel/src/socket/unix.rs:119:     /// Returns the number of bytes read, or an error code.
+kernel/src/socket/unix.rs:120:     pub fn read(&self, buf: &mut [u8]) -> Result<usize, i32> {
+kernel/src/socket/unix.rs:121:         // Get the buffer to read from
+kernel/src/socket/unix.rs:155: 
+kernel/src/socket/unix.rs:156:         drop(rx_buf);
+kernel/src/socket/unix.rs:157:         if to_read > 0 {
+kernel/src/socket/unix.rs:158:             let writers = match self.endpoint {
+kernel/src/socket/unix.rs:159:                 UnixEndpoint::A => &self.pair.write_waiters_b,
+kernel/src/socket/unix.rs:160:                 UnixEndpoint::B => &self.pair.write_waiters_a,
+kernel/src/socket/unix.rs:161:             };
+kernel/src/socket/unix.rs:162:             writers.wake_up();
+kernel/src/socket/unix.rs:163:         }
+kernel/src/socket/unix.rs:205:     /// Mark this endpoint as closed and wake any waiters on peer
+kernel/src/socket/unix.rs:206:     pub fn close(&self) -> UnixCloseNotifications {
+kernel/src/socket/unix.rs:207:         // Mark ourselves as closed
+kernel/src/socket/unix.rs:236: impl UnixCloseNotifications {
+kernel/src/socket/unix.rs:237:     pub fn deliver(self) {
+kernel/src/socket/unix.rs:238:         // FdTable destruction may run under PM or from fault cleanup.
+kernel/src/socket/unix.rs:265:     /// reclamation boundary. Duplicate closes coalesce; no capacity can overflow.
+kernel/src/socket/unix.rs:266:     pub fn deliver_deferred(self) {
+kernel/src/socket/unix.rs:267:         crate::arch_without_interrupts(|| {
+kernel/src/socket/unix.rs:280: /// A bounded pass leaves remaining pairs owned by the queue for the next pass.
+kernel/src/socket/unix.rs:281: pub(crate) fn drain_close_notifications() {
+kernel/src/socket/unix.rs:282:     if crate::process::process_manager_held_on_current_cpu()
+kernel/src/socket/unix.rs:313: /// Keep both guards through publication so neither drain nor close loses a wake.
+kernel/src/socket/unix.rs:314: pub(crate) struct UnixWriteState<'a> {
+kernel/src/socket/unix.rs:315:     buffer: MutexGuard<'a, VecDeque<u8>>,
+kernel/src/socket/unix.rs:319: impl UnixWriteState<'_> {
+kernel/src/socket/unix.rs:320:     pub(crate) fn has_write_space(&self) -> bool {
+kernel/src/socket/unix.rs:321:         !*self.peer_closed && self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE
+kernel/src/socket/unix.rs:327: 
+kernel/src/socket/unix.rs:328:     pub(crate) fn copy(&mut self, data: &[u8]) -> usize {
+kernel/src/socket/unix.rs:329:         if !self.has_write_space() {
+kernel/src/socket/unix.rs:338: impl UnixWriter {
+kernel/src/socket/unix.rs:339:     pub(crate) fn state(&self) -> UnixWriteState<'_> {
+kernel/src/socket/unix.rs:340:         let (buffer, closed) = match self.endpoint {
+kernel/src/socket/unix.rs:351: 
+kernel/src/socket/unix.rs:352:     pub(crate) fn queue(&self) -> Arc<WaitQueueHead> {
+kernel/src/socket/unix.rs:353:         match self.endpoint {
+kernel/src/syscall/blocking_io.rs:114: /// atomicity threshold. No guard survives entry to the prepared-wait helper.
+kernel/src/syscall/blocking_io.rs:115: pub(crate) fn write_unix(
+kernel/src/syscall/blocking_io.rs:116:     writer: crate::socket::unix::UnixWriter,
+kernel/src/syscall/blocking_io.rs:136:             }
+kernel/src/syscall/blocking_io.rs:137:             queue.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+kernel/src/syscall/blocking_io.rs:138:                 !state.peer_closed() && !state.has_write_space()
+kernel/src/syscall/blocking_io.rs:140:         };
+kernel/src/syscall/blocking_io.rs:141:         if let Err(error) = wait_prepared(&queue, outcome) {
+kernel/src/syscall/blocking_io.rs:142:             return SyscallResult::Err(error as u64);
+kernel/src/syscall/blocking_io.rs:15: /// queued exit normalizes the scheduler's blocked-in-syscall flag.
+kernel/src/syscall/blocking_io.rs:16: pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> Result<(), i32> {
+kernel/src/syscall/blocking_io.rs:17:     match outcome {
+kernel/src/syscall/blocking_io_oracle.rs:88:     match (buffer, kind) {
+kernel/src/syscall/blocking_io_oracle.rs:89:         (FdKind::UnixStream(own), FdKind::UnixStream(other)) => {
+kernel/src/syscall/blocking_io_oracle.rs:90:             let own_pair = own.lock().pair.clone();
+kernel/src/syscall/epoll.rs:349:                 let poll_events = epoll_to_poll_events(entry.events);
+kernel/src/syscall/epoll.rs:350:                 let revents = poll::poll_fd(fd, poll_events);
+kernel/src/syscall/epoll.rs:351:                 let epoll_revents = poll_to_epoll_events(revents);
+kernel/src/syscall/handlers.rs:4000:         },
+kernel/src/syscall/handlers.rs:4001:         F_SETFL => match process.fd_table.set_status_flags(fd, arg as u32) {
+kernel/src/syscall/handlers.rs:4002:             Ok(()) => {
+kernel/src/syscall/handlers.rs:463:             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp, // UDP must use sendto
+kernel/src/syscall/handlers.rs:464:             FdKind::UnixStream(socket) => WriteOperation::UnixStream {
+kernel/src/syscall/handlers.rs:465:                 socket: socket.clone(),
+kernel/src/syscall/handlers.rs:521:         } => super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking),
+kernel/src/syscall/handlers.rs:522:         WriteOperation::UnixStream {
+kernel/src/syscall/handlers.rs:523:             socket,
+kernel/src/syscall/ioctl.rs:53: 
+kernel/src/syscall/ioctl.rs:54:     #[cfg(feature = "boot_tests")]
+kernel/src/syscall/ioctl.rs:55:     if request == super::blocking_io_oracle::QUERY
+kernel/src/syscall/iovec.rs:25: /// Returns total bytes written or negative errno on error.
+kernel/src/syscall/iovec.rs:26: pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
+kernel/src/syscall/iovec.rs:27:     if iovcnt == 0 {
+kernel/src/syscall/iovec.rs:53:         vectors.push(vector);
+kernel/src/syscall/iovec.rs:54:     }
+kernel/src/syscall/iovec.rs:55:     if length > 0 && length <= crate::ipc::pipe::PIPE_BUF as u64 {
+kernel/src/syscall/iovec.rs:84:                 }
+kernel/src/syscall/iovec.rs:85:             }
+kernel/src/syscall/iovec.rs:86:             return super::blocking_io::write_pipe(&buffer, &gathered, nonblocking);
+kernel/src/syscall/mod.rs:30: pub(crate) mod blocking_io;
+kernel/src/syscall/mod.rs:31: #[cfg(feature = "boot_tests")]
+kernel/src/syscall/mod.rs:32: pub mod blocking_io_oracle;
+kernel/src/syscall/pipe.rs:153:     // Close the file descriptor
+kernel/src/syscall/pipe.rs:154:     let closed = process.fd_table.close(fd);
+kernel/src/syscall/pipe.rs:155:     // #813: descriptor ownership escapes PM before any endpoint cleanup.
+kernel/src/syscall/pipe.rs:155:     // #813: descriptor ownership escapes PM before any endpoint cleanup.
+kernel/src/syscall/pipe.rs:156:     drop(manager_guard);
+kernel/src/syscall/pipe.rs:157:     match closed {
+kernel/src/syscall/pipe.rs:247:                 }
+kernel/src/syscall/pipe.rs:248:                 FdKind::UnixStream(socket) => {
+kernel/src/syscall/pipe.rs:249:                     // Close Unix socket endpoint
+kernel/src/syscall/socket.rs:1691:     // Create a connected pair: client gets socket_a, server gets socket_b
+kernel/src/syscall/socket.rs:1692:     let (socket_client, socket_server) = UnixStreamSocket::new_pair(false);
+kernel/src/syscall/socket.rs:1693: 
+kernel/src/syscall/socket.rs:1903:         // Create the socket pair
+kernel/src/syscall/socket.rs:1904:         let (socket_a, socket_b) = UnixStreamSocket::new_pair(nonblocking);
+kernel/src/syscall/socket.rs:1905: 
+kernel/src/syscall/socket.rs:1908:         let fd_status_flags = if nonblocking {
+kernel/src/syscall/socket.rs:1909:             status_flags::O_NONBLOCK
+kernel/src/syscall/socket.rs:1910:         } else {
+kernel/src/syscall/socket.rs:1914:         let fd_entry_a =
+kernel/src/syscall/socket.rs:1915:             FileDescriptor::with_flags(FdKind::UnixStream(socket_a), fd_flags, fd_status_flags);
+kernel/src/syscall/socket.rs:1916:         let fd_entry_b =
+kernel/src/task/process_task.rs:1201:     );
+kernel/src/task/process_task.rs:1202:     if crate::process::process_manager_held_on_current_cpu()
+kernel/src/task/process_task.rs:1203:         || crate::tracing::providers::teardown::scheduler_scope_active()
+kernel/src/task/process_task.rs:1221:     #[cfg(not(feature = "coreproof_mut_reclaim_bracket"))]
+kernel/src/task/process_task.rs:1222:     reclaim_preempt_disable();
+kernel/src/task/process_task.rs:1223:     if RECLAIM_DRAIN_ACTIVE
+kernel/src/task/process_task.rs:1237:     // bracket, after PM and scheduler-scope refusal.
+kernel/src/task/process_task.rs:1238:     crate::socket::unix::drain_close_notifications();
+kernel/src/task/process_task.rs:1239:     reclaim_deferred_process_resources_for_pass(my_pass, false);
+kernel/src/task/process_task.rs:688: /// CRITICAL: No PM lock is held when this runs.
+kernel/src/task/process_task.rs:689: pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
+kernel/src/task/process_task.rs:690:     use crate::ipc::FdKind;
+kernel/src/task/process_task.rs:723:             FdKind::UnixStream(socket) => {
+kernel/src/task/process_task.rs:724:                 let notifications = socket.lock().close();
+kernel/src/task/process_task.rs:725:                 notifications.deliver();
+kernel/src/task/scheduler.rs:6520: 
+kernel/src/task/scheduler.rs:6521: fn buffer_isr_wakeup(tid: u64) -> WakeOutcome {
+kernel/src/task/scheduler.rs:6522:     let cpu = current_cpu_id_raw();
+kernel/src/task/scheduler.rs:6537:         }
+kernel/src/task/scheduler.rs:6538:         IsrWakePush::Full => {
+kernel/src/task/scheduler.rs:6539:             if !crate::per_cpu::in_interrupt() {
+kernel/src/task/scheduler.rs:6539:             if !crate::per_cpu::in_interrupt() {
+kernel/src/task/scheduler.rs:6540:                 match with_scheduler(|scheduler| scheduler.unblock(tid)) {
+kernel/src/task/scheduler.rs:6541:                     Some(UnblockOutcome::Transitioned) => WakeOutcome::Applied,
+kernel/src/task/softirq_tests.rs:227:     let ksoftirqd_did_work = KSOFTIRQD_PROCESSED.load(Ordering::SeqCst);
+kernel/src/task/softirq_tests.rs:228:     assert!(
+kernel/src/task/softirq_tests.rs:229:         ksoftirqd_did_work,
+kernel/src/task/waitqueue.rs:181:     /// accept.
+kernel/src/task/waitqueue.rs:182:     pub fn wake_up_deferred(&self) {
+kernel/src/task/waitqueue.rs:183:         self.with_waiters(|waiters| {
+kernel/src/test_framework/registry.rs:6934:         && irqs_enabled_before == 1
+kernel/src/test_framework/registry.rs:6935:         && pm_busy_probe == 1
+kernel/src/test_framework/registry.rs:6936:         && holder_cpu != u64::MAX
+scripts/score-blocking-io-oracle.py:17: assert not re.search(r'KERNEL PANIC|panic!|DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception|DOUBLE FAULT|TRIPLE FAULT|soft lockup detected', crash_text, re.I), 'kernel crash'
+scripts/score-blocking-io-oracle.py:18: if program == 'unix_stream_blocking_oracle':
+scripts/score-blocking-io-oracle.py:19:     results = re.findall(r'\[UNIX_WRITE_RESULT:([^\]]+)\]', text)
+userspace/programs/src/unix_stream_blocking_oracle.rs:139: }
+userspace/programs/src/unix_stream_blocking_oracle.rs:140: fn wait_witness(peer: Fd, writer: Fd, tid: u64) -> TestResult<()> {
+userspace/programs/src/unix_stream_blocking_oracle.rs:141:     let deadline = now() + 2000;
+userspace/programs/src/unix_stream_blocking_oracle.rs:151: extern "C" fn caught_signal(_: i32) {}
+userspace/programs/src/unix_stream_blocking_oracle.rs:152: fn clean(fd: Fd) -> TestResult<()> {
+userspace/programs/src/unix_stream_blocking_oracle.rs:153:     let w = query(fd, fd, cv(process::gettid())?.raw())?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:166: }
+userspace/programs/src/unix_stream_blocking_oracle.rs:167: fn construction_control() -> TestResult<()> {
+userspace/programs/src/unix_stream_blocking_oracle.rs:168:     let (writer, reader) = cv(socket::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0))?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:183: // ever inheriting connected endpoints across fork.
+userspace/programs/src/unix_stream_blocking_oracle.rs:184: fn connection(arm: &str, reverse: bool, variant: usize) -> TestResult<usize> {
+userspace/programs/src/unix_stream_blocking_oracle.rs:185:     let (ack_r, ack_w) = cv(io::pipe())?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:196:     let addr = SockAddrUn::abstract_socket(name.as_bytes());
+userspace/programs/src/unix_stream_blocking_oracle.rs:197:     let pid = match cv(process::fork())? {
+userspace/programs/src/unix_stream_blocking_oracle.rs:198:         ForkResult::Child => {
+userspace/programs/src/unix_stream_blocking_oracle.rs:201:                 cv(io::close(go_w))?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:202:                 let setup = cv(socket::socket(AF_UNIX, SOCK_STREAM, 0))?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:203:                 let writer = if reverse {
+userspace/programs/src/unix_stream_blocking_oracle.rs:207:                     receive(go_r)?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:208:                     let fd = cv(socket::accept(setup, None))?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:209:                     cv(io::close(setup))?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:212:                     receive(go_r)?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:213:                     cv(socket::connect_unix(setup, &addr))?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:214:                     send(ack_w, 1)?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:364:             check(got == count as i64, "parent count")?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:365:             let filled = if arm == "partial" { C - A } else { C };
+userspace/programs/src/unix_stream_blocking_oracle.rs:366:             let actual = read_exact(peer, filled - drained + count)?;
+userspace/programs/src/unix_stream_blocking_oracle.rs:372:                 actual[filled - drained..]
+userspace/programs/src/unix_stream_blocking_oracle.rs:373:                     == payload(if arm == "poll" { 1 } else { A + 1 })[..count],
+userspace/programs/src/unix_stream_blocking_oracle.rs:374:                 "wire prefix",
