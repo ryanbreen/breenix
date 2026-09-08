@@ -123,8 +123,7 @@ pub static RESUME_PC_CUSTODY_BLIND: AtomicU64 = AtomicU64::new(0);
 pub static RESUME_PC_FOREIGN_REPORTS: AtomicU64 = AtomicU64::new(0);
 /// Last `eret_guard_count` already reported for a foreign CPU's record, so an
 /// undrained foreign record is described once instead of on every drain pass.
-static RESUME_PC_FOREIGN_LAST_COUNT: [AtomicU64;
-    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+static RESUME_PC_FOREIGN_LAST_COUNT: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 /// Drains that found this CPU's published current thread still naming the
 /// thread the refusal is about to terminate, and how many of those were
@@ -168,14 +167,11 @@ const RESUME_PC_CENSUS_SOURCE_NAMES: [&str; RESUME_PC_CENSUS_SOURCES] = [
     "lr-save-el0",
     "lr-restore-el0",
 ];
-static RESUME_PC_CENSUS: [
-    [[AtomicU32; RESUME_PC_CENSUS_CLASSES]; RESUME_PC_CENSUS_SOURCES];
-    crate::arch_impl::aarch64::constants::MAX_CPUS
-] = [const {
-    [const {
-        [const { AtomicU32::new(0) }; RESUME_PC_CENSUS_CLASSES]
-    }; RESUME_PC_CENSUS_SOURCES]
-}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static RESUME_PC_CENSUS: [[[AtomicU32; RESUME_PC_CENSUS_CLASSES]; RESUME_PC_CENSUS_SOURCES];
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+    [const { [const { AtomicU32::new(0) }; RESUME_PC_CENSUS_CLASSES] }; RESUME_PC_CENSUS_SOURCES]
+};
+    crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 /// A saved kernel resume PC must name an aligned instruction in kernel text.
 #[inline(always)]
@@ -248,8 +244,7 @@ fn census_resume_pc(source_idx: usize, addr: u64) {
     {
         return;
     }
-    RESUME_PC_CENSUS[cpu_id][source_idx][resume_pc_class(addr)]
-        .fetch_add(1, Ordering::Relaxed);
+    RESUME_PC_CENSUS[cpu_id][source_idx][resume_pc_class(addr)].fetch_add(1, Ordering::Relaxed);
 }
 
 // ── Saved link-register custody ───────────────────────────────────────────
@@ -485,15 +480,16 @@ pub(crate) fn set_saved_lr(
     SAVED_LR_NONTEXT_VALUE.store(value, Ordering::Release);
     SAVED_LR_NONTEXT_SITES.fetch_or(which.bit(el), Ordering::Release);
     if SAVED_LR_NONTEXT_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 8 {
-        raw_uart_str("[LR_NONTEXT:site=");
-        raw_uart_str(which.name(el));
-        raw_uart_str(":tid=");
-        raw_uart_dec(tid);
-        raw_uart_str(":lr=");
-        raw_uart_hex(value);
-        raw_uart_str(":cpu=");
-        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str("]\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("[LR_NONTEXT:site=");
+        line.text(which.name(el));
+        line.text(":tid=");
+        line.dec(tid);
+        line.text(":lr=");
+        line.hex(value);
+        line.text(":cpu=");
+        line.dec(Aarch64PerCpu::cpu_id() as u64);
+        line.text("]\n");
     }
 }
 
@@ -546,28 +542,29 @@ pub fn record_resume_pc_refusal(
     sp: u64,
     spsr: u64,
 ) {
+    let mut line = crate::serial_line::Line::new();
     let Some((cpu_id, el0)) = record_resume_pc_refusal_common(source, tid, pc) else {
         return;
     };
-    raw_uart_str("[RESUME_PC_REFUSED:source=");
-    raw_uart_str(resume_pc_source_name(source));
-    raw_uart_str(":el0=");
-    raw_uart_dec(u64::from(el0));
-    raw_uart_str(":tid=");
-    raw_uart_dec(tid);
-    raw_uart_str(":pc=");
-    raw_uart_hex(pc);
-    raw_uart_str(":x29=");
-    raw_uart_hex(x29);
-    raw_uart_str(":x30=");
-    raw_uart_hex(x30);
-    raw_uart_str(":sp=");
-    raw_uart_hex(sp);
-    raw_uart_str(":spsr=");
-    raw_uart_hex(spsr);
-    raw_uart_str(":cpu=");
-    raw_uart_dec(cpu_id);
-    raw_uart_str("]\n");
+    line.text("[RESUME_PC_REFUSED:source=");
+    line.text(resume_pc_source_name(source));
+    line.text(":el0=");
+    line.dec(u64::from(el0));
+    line.text(":tid=");
+    line.dec(tid);
+    line.text(":pc=");
+    line.hex(pc);
+    line.text(":x29=");
+    line.hex(x29);
+    line.text(":x30=");
+    line.hex(x30);
+    line.text(":sp=");
+    line.hex(sp);
+    line.text(":spsr=");
+    line.hex(spsr);
+    line.text(":cpu=");
+    line.dec(cpu_id);
+    line.text("]\n");
 }
 
 /// Record and emit a bounded serialized diagnostic for a cold-path refusal.
@@ -674,15 +671,7 @@ pub fn drain_asm_resume_pc_refusals() {
             RESUME_PC_CUSTODY_BLIND.fetch_add(1, Ordering::Release);
         }
         let tid = last_dispatched_tid(cpu_id).unwrap_or(0);
-        record_resume_pc_refusal_locked(
-            claimed_source,
-            tid,
-            elr,
-            x29,
-            x30,
-            sp,
-            spsr,
-        );
+        record_resume_pc_refusal_locked(claimed_source, tid, elr, x29, x30, sp, spsr);
         if tid != 0 {
             let mut victim_stack_top = 0;
             let mut on_victim_stack = false;
@@ -692,10 +681,7 @@ pub fn drain_asm_resume_pc_refusals() {
             let mut decided = false;
             let mut acted = false;
             let scheduler_consulted = crate::task::scheduler::with_scheduler(|sched| {
-                let is_idle = sched
-                    .cpu_state
-                    .iter()
-                    .any(|state| state.idle_thread == tid);
+                let is_idle = sched.cpu_state.iter().any(|state| state.idle_thread == tid);
                 if is_idle {
                     return;
                 }
@@ -708,10 +694,7 @@ pub fn drain_asm_resume_pc_refusals() {
                     return;
                 };
                 let victim_ptr = thread as *const _ as *mut u8;
-                victim_stack_top = thread
-                    .kernel_stack_top
-                    .map(|top| top.as_u64())
-                    .unwrap_or(0);
+                victim_stack_top = thread.kernel_stack_top.map(|top| top.as_u64()).unwrap_or(0);
                 record_sp_on_victim_stack = victim_stack_top != 0
                     && crate::memory::kernel_stack::sp_within_kernel_stack(sp, victim_stack_top);
                 on_victim_stack = victim_stack_top != 0
@@ -886,6 +869,7 @@ pub extern "C" fn aarch64_resume_pc_refused_el0() -> ! {
 pub fn emit_resume_pc_census() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
+            let mut line = crate::serial_line::Line::new();
             let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
             let text = row[0].load(Ordering::Relaxed);
             let kstack = row[1].load(Ordering::Relaxed);
@@ -896,21 +880,21 @@ pub fn emit_resume_pc_census() {
                 continue;
             }
 
-            raw_uart_str("[RESUME_PC_CENSUS:cpu=");
-            raw_uart_dec(cpu_id as u64);
-            raw_uart_str(":source=");
-            raw_uart_str(source_name);
-            raw_uart_str(":text=");
-            raw_uart_dec(text as u64);
-            raw_uart_str(":kstack=");
-            raw_uart_dec(kstack as u64);
-            raw_uart_str(":uva=");
-            raw_uart_dec(uva as u64);
-            raw_uart_str(":smallint=");
-            raw_uart_dec(smallint as u64);
-            raw_uart_str(":other=");
-            raw_uart_dec(other as u64);
-            raw_uart_str("]\n");
+            line.text("[RESUME_PC_CENSUS:cpu=");
+            line.dec(cpu_id as u64);
+            line.text(":source=");
+            line.text(source_name);
+            line.text(":text=");
+            line.dec(text as u64);
+            line.text(":kstack=");
+            line.dec(kstack as u64);
+            line.text(":uva=");
+            line.dec(uva as u64);
+            line.text(":smallint=");
+            line.dec(smallint as u64);
+            line.text(":other=");
+            line.dec(other as u64);
+            line.text("]\n");
         }
     }
 }
@@ -962,9 +946,7 @@ fn emit_resume_pc_census_if_due() {
         return;
     }
     let (seconds, nanos) = crate::time::get_monotonic_time_ns();
-    let now_ns = seconds
-        .saturating_mul(1_000_000_000)
-        .saturating_add(nanos);
+    let now_ns = seconds.saturating_mul(1_000_000_000).saturating_add(nanos);
     let last_ns = RESUME_PC_CENSUS_LAST_EMIT_NS.load(Ordering::Acquire);
     if now_ns.saturating_sub(last_ns) < EMIT_INTERVAL_NS {
         return;
@@ -1027,11 +1009,7 @@ fn trace_ctx_publish(thread: &Thread, stage: u16) {
         0,
         thread.context.x30 as u32,
     );
-    crate::tracing::record_event(
-        crate::tracing::TraceEventType::CTX_PUBLISH_FLAGS,
-        0,
-        flags,
-    );
+    crate::tracing::record_event(crate::tracing::TraceEventType::CTX_PUBLISH_FLAGS, 0, flags);
     crate::tracing::record_event(
         crate::tracing::TraceEventType::CTX_PUBLISH_AUX,
         0,
@@ -1102,11 +1080,7 @@ fn trace_ctx_diag(
         thread_x30 as u32,
     );
     crate::tracing::record_event(crate::tracing::TraceEventType::CTX_DIAG_SP, 0, sp as u32);
-    crate::tracing::record_event(
-        crate::tracing::TraceEventType::CTX_DIAG_FLAGS,
-        0,
-        flags,
-    );
+    crate::tracing::record_event(crate::tracing::TraceEventType::CTX_DIAG_FLAGS, 0, flags);
 }
 
 #[inline(always)]
@@ -1124,12 +1098,7 @@ fn trace_thread_state_code(state: ThreadState) -> u16 {
 }
 
 #[inline(always)]
-fn trace_defer_requeue(
-    stage: u16,
-    thread_id: u64,
-    aux_tid: u64,
-    thread: Option<&Thread>,
-) {
+fn trace_defer_requeue(stage: u16, thread_id: u64, aux_tid: u64, thread: Option<&Thread>) {
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let sampled = if cpu_id < DEFER_REQUEUE_CALL_COUNT.len() {
         let count = DEFER_REQUEUE_CALL_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
@@ -1191,6 +1160,7 @@ fn trace_defer_requeue(
 
 #[inline(always)]
 fn log_last_defer_requeue_snapshot(cpu_id: usize) {
+    let mut line = crate::serial_line::Line::new();
     if cpu_id >= LAST_DEFER_REQUEUE_INFO.len() {
         return;
     }
@@ -1201,23 +1171,23 @@ fn log_last_defer_requeue_snapshot(cpu_id: usize) {
     let aux_tid = (info >> 16) & 0xFFFF;
     let flags = info & 0xFFFF;
 
-    raw_uart_str("[DEFER_SNAP] cpu=");
-    raw_uart_dec(cpu_id as u64);
-    raw_uart_str(" stage=");
-    raw_uart_dec(stage);
-    raw_uart_str(" tid=");
-    raw_uart_dec(tid);
-    raw_uart_str(" aux=");
-    raw_uart_dec(aux_tid);
-    raw_uart_str(" flags=");
-    raw_uart_hex(flags);
-    raw_uart_str(" sp=");
-    raw_uart_hex(LAST_DEFER_REQUEUE_SP[cpu_id].load(Ordering::Relaxed));
-    raw_uart_str(" elr=");
-    raw_uart_hex(LAST_DEFER_REQUEUE_ELR[cpu_id].load(Ordering::Relaxed));
-    raw_uart_str(" x30=");
-    raw_uart_hex(LAST_DEFER_REQUEUE_X30[cpu_id].load(Ordering::Relaxed));
-    raw_uart_str("\n");
+    line.text("[DEFER_SNAP] cpu=");
+    line.dec(cpu_id as u64);
+    line.text(" stage=");
+    line.dec(stage);
+    line.text(" tid=");
+    line.dec(tid);
+    line.text(" aux=");
+    line.dec(aux_tid);
+    line.text(" flags=");
+    line.hex(flags);
+    line.text(" sp=");
+    line.hex(LAST_DEFER_REQUEUE_SP[cpu_id].load(Ordering::Relaxed));
+    line.text(" elr=");
+    line.hex(LAST_DEFER_REQUEUE_ELR[cpu_id].load(Ordering::Relaxed));
+    line.text(" x30=");
+    line.hex(LAST_DEFER_REQUEUE_X30[cpu_id].load(Ordering::Relaxed));
+    line.text("\n");
 }
 
 pub fn dump_defer_requeue_snapshots() {
@@ -1879,13 +1849,11 @@ pub(crate) fn deferred_requeue_contains(thread_id: u64) -> bool {
 /// this hot dispatch/defer-requeue path invalidated every OTHER CPU's line
 /// too. Padding each element to its own line removes that.
 static CTX_DIAG_CALL_COUNT: [CacheLineAligned<AtomicU64>;
-    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
-    CacheLineAligned(AtomicU64::new(0))
-}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { CacheLineAligned(AtomicU64::new(0)) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 static DEFER_REQUEUE_CALL_COUNT: [CacheLineAligned<AtomicU64>;
-    crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
-    CacheLineAligned(AtomicU64::new(0))
-}; crate::arch_impl::aarch64::constants::MAX_CPUS];
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { CacheLineAligned(AtomicU64::new(0)) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 const _: () = assert!(
     core::mem::size_of::<CacheLineAligned<AtomicU64>>() == 64,
@@ -2077,30 +2045,32 @@ pub fn dump_all_save_skew_snapshots() {
             frame_x19,
         )) = save_skew_snapshot(cpu_id)
         {
+            let mut line = crate::serial_line::Line::new();
             any_recorded = true;
-            raw_uart_str("[SAVE_SKEW] cpu=");
-            raw_uart_dec(cpu_id as u64);
-            raw_uart_str(" old_id=");
-            raw_uart_dec(old_id);
-            raw_uart_str(" is_old_idle=");
-            raw_uart_dec(is_old_idle);
-            raw_uart_str(" cpu_state_tid=");
-            raw_uart_dec(cpu_state_tid);
-            raw_uart_str(" frame_elr=");
-            raw_uart_hex(frame_elr);
-            raw_uart_str(" frame_sp=");
-            raw_uart_hex(frame_sp);
-            raw_uart_str(" sp_reused=");
-            raw_uart_dec(sp_reused);
-            raw_uart_str(" frame_x26=");
-            raw_uart_hex(frame_x26);
-            raw_uart_str(" frame_x19=");
-            raw_uart_hex(frame_x19);
-            raw_uart_str("\n");
+            line.text("[SAVE_SKEW] cpu=");
+            line.dec(cpu_id as u64);
+            line.text(" old_id=");
+            line.dec(old_id);
+            line.text(" is_old_idle=");
+            line.dec(is_old_idle);
+            line.text(" cpu_state_tid=");
+            line.dec(cpu_state_tid);
+            line.text(" frame_elr=");
+            line.hex(frame_elr);
+            line.text(" frame_sp=");
+            line.hex(frame_sp);
+            line.text(" sp_reused=");
+            line.dec(sp_reused);
+            line.text(" frame_x26=");
+            line.hex(frame_x26);
+            line.text(" frame_x19=");
+            line.hex(frame_x19);
+            line.text("\n");
         }
     }
     if !any_recorded {
-        raw_uart_str("[SAVE_SKEW] none recorded on any cpu\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("[SAVE_SKEW] none recorded on any cpu\n");
     }
 }
 
@@ -2169,8 +2139,7 @@ static IDLE_REDIRECT_HISTORY: [[AtomicU64; IDLE_REDIRECT_HISTORY_SIZE * IDLE_RED
         [INIT_FIELD; IDLE_REDIRECT_HISTORY_SIZE * IDLE_REDIRECT_FIELDS];
     [INIT_CPU; crate::arch_impl::aarch64::constants::MAX_CPUS]
 };
-static IDLE_REDIRECT_HISTORY_IDX: [AtomicU64;
-    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+static IDLE_REDIRECT_HISTORY_IDX: [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 #[inline(never)]
@@ -2196,41 +2165,42 @@ fn record_idle_redirect(
 /// Dump the bounded, per-CPU setup_idle_return_locked event history.
 pub fn dump_all_idle_redirect_histories() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let mut line = crate::serial_line::Line::new();
         let total = IDLE_REDIRECT_HISTORY_IDX[cpu_id].load(Ordering::Relaxed) as usize;
         let count = total.min(IDLE_REDIRECT_HISTORY_SIZE);
         if count == 0 {
             continue;
         }
         let start = total.saturating_sub(IDLE_REDIRECT_HISTORY_SIZE);
-        raw_uart_str("[IDLE_REDIRECT_HISTORY] cpu=");
-        raw_uart_dec(cpu_id as u64);
-        raw_uart_str(" last=");
-        raw_uart_dec(count as u64);
-        raw_uart_str(" total=");
-        raw_uart_dec(total as u64);
-        raw_uart_str("\n");
+        line.text("[IDLE_REDIRECT_HISTORY] cpu=");
+        line.dec(cpu_id as u64);
+        line.text(" last=");
+        line.dec(count as u64);
+        line.text(" total=");
+        line.dec(total as u64);
+        line.text("\n");
         for index in start..total {
             let base = (index % IDLE_REDIRECT_HISTORY_SIZE) * IDLE_REDIRECT_FIELDS;
             let reason_code = IDLE_REDIRECT_HISTORY[cpu_id][base].load(Ordering::Relaxed);
             let idle_thread = IDLE_REDIRECT_HISTORY[cpu_id][base + 1].load(Ordering::Relaxed);
             let current_before = IDLE_REDIRECT_HISTORY[cpu_id][base + 2].load(Ordering::Relaxed);
             let current_after = IDLE_REDIRECT_HISTORY[cpu_id][base + 3].load(Ordering::Relaxed);
-            raw_uart_str("  [");
-            raw_uart_dec(index as u64);
-            raw_uart_str("] reason=");
-            raw_uart_dec(reason_code);
+            line.text("  [");
+            line.dec(index as u64);
+            line.text("] reason=");
+            line.dec(reason_code);
             if let Some(reason) = IdleRedirectReason::from_code(reason_code) {
-                raw_uart_str("(");
-                raw_uart_str(reason.label());
-                raw_uart_str(")");
+                line.text("(");
+                line.text(reason.label());
+                line.text(")");
             }
-            raw_uart_str(" idle_thread=");
-            raw_uart_dec(idle_thread);
-            raw_uart_str(" current_thread=");
-            raw_uart_dec(current_before);
-            raw_uart_str("->");
-            raw_uart_dec(current_after);
-            raw_uart_str("\n");
+            line.text(" idle_thread=");
+            line.dec(idle_thread);
+            line.text(" current_thread=");
+            line.dec(current_before);
+            line.text("->");
+            line.dec(current_after);
+            line.text("\n");
         }
     }
 }
@@ -2246,8 +2216,7 @@ pub fn dump_all_idle_redirect_histories() {
 
 const STACK_PIVOT_HISTORY_SIZE: usize = 16;
 const STACK_PIVOT_HISTORY_FIELDS: usize = 3;
-type StackPivotHistory = [[AtomicU64;
-    STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS];
+type StackPivotHistory = [[AtomicU64; STACK_PIVOT_HISTORY_SIZE * STACK_PIVOT_HISTORY_FIELDS];
     crate::arch_impl::aarch64::constants::MAX_CPUS];
 static STACK_PIVOT_HISTORY: CacheLineAligned<StackPivotHistory> = CacheLineAligned({
     const INIT_FIELD: AtomicU64 = AtomicU64::new(0);
@@ -2257,10 +2226,7 @@ static STACK_PIVOT_HISTORY: CacheLineAligned<StackPivotHistory> = CacheLineAlign
 });
 static STACK_PIVOT_HISTORY_IDX: CacheLineAligned<
     [AtomicU64; crate::arch_impl::aarch64::constants::MAX_CPUS],
-> = CacheLineAligned([
-    const { AtomicU64::new(0) };
-    crate::arch_impl::aarch64::constants::MAX_CPUS
-]);
+> = CacheLineAligned([const { AtomicU64::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS]);
 
 #[cold]
 #[inline(never)]
@@ -2314,30 +2280,31 @@ fn pivot_destination(cpu: CpuId, dest_top: u64, cur_sp: u64, half: PivotHalf, si
 
 pub fn dump_stack_pivot_alias_history() {
     for cpu in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let mut line = crate::serial_line::Line::new();
         let total = STACK_PIVOT_HISTORY_IDX[cpu].load(Ordering::Relaxed) as usize;
         let count = total.min(STACK_PIVOT_HISTORY_SIZE);
         if count == 0 {
             continue;
         }
         let start = total.saturating_sub(STACK_PIVOT_HISTORY_SIZE);
-        raw_uart_str("[STACK_PIVOT_ALIAS_HISTORY] cpu=");
-        raw_uart_dec(cpu as u64);
-        raw_uart_str(" last=");
-        raw_uart_dec(count as u64);
-        raw_uart_str(" total=");
-        raw_uart_dec(total as u64);
-        raw_uart_str("\n");
+        line.text("[STACK_PIVOT_ALIAS_HISTORY] cpu=");
+        line.dec(cpu as u64);
+        line.text(" last=");
+        line.dec(count as u64);
+        line.text(" total=");
+        line.dec(total as u64);
+        line.text("\n");
         for index in start..total {
             let base = (index % STACK_PIVOT_HISTORY_SIZE) * STACK_PIVOT_HISTORY_FIELDS;
-            raw_uart_str("  [");
-            raw_uart_dec(index as u64);
-            raw_uart_str("] site=");
-            raw_uart_dec(STACK_PIVOT_HISTORY[cpu][base].load(Ordering::Relaxed));
-            raw_uart_str(" dest_top=");
-            raw_uart_hex(STACK_PIVOT_HISTORY[cpu][base + 1].load(Ordering::Relaxed));
-            raw_uart_str(" cur_sp=");
-            raw_uart_hex(STACK_PIVOT_HISTORY[cpu][base + 2].load(Ordering::Relaxed));
-            raw_uart_str("\n");
+            line.text("  [");
+            line.dec(index as u64);
+            line.text("] site=");
+            line.dec(STACK_PIVOT_HISTORY[cpu][base].load(Ordering::Relaxed));
+            line.text(" dest_top=");
+            line.hex(STACK_PIVOT_HISTORY[cpu][base + 1].load(Ordering::Relaxed));
+            line.text(" cur_sp=");
+            line.hex(STACK_PIVOT_HISTORY[cpu][base + 2].load(Ordering::Relaxed));
+            line.text("\n");
         }
     }
 }
@@ -2437,21 +2404,23 @@ pub fn dump_all_inline_save_skew_snapshots() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         for direction in InlineSaveSkewDirection::ALL {
             if let Some((old_id, sp)) = inline_save_skew_snapshot(cpu_id, direction) {
+                let mut line = crate::serial_line::Line::new();
                 any_recorded = true;
-                raw_uart_str("[INLINE_SAVE_SKEW] cpu=");
-                raw_uart_dec(cpu_id as u64);
-                raw_uart_str(" direction=");
-                raw_uart_str(direction.label());
-                raw_uart_str(" old_id=");
-                raw_uart_dec(old_id);
-                raw_uart_str(" sp=");
-                raw_uart_hex(sp);
-                raw_uart_str("\n");
+                line.text("[INLINE_SAVE_SKEW] cpu=");
+                line.dec(cpu_id as u64);
+                line.text(" direction=");
+                line.text(direction.label());
+                line.text(" old_id=");
+                line.dec(old_id);
+                line.text(" sp=");
+                line.hex(sp);
+                line.text("\n");
             }
         }
     }
     if !any_recorded {
-        raw_uart_str("[INLINE_SAVE_SKEW] none recorded on any cpu\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("[INLINE_SAVE_SKEW] none recorded on any cpu\n");
     }
 }
 
@@ -2488,7 +2457,13 @@ static DISPATCH_MISMATCH_SP: [AtomicU64; crate::arch_impl::aarch64::constants::M
 /// overwhelmingly common, correct case. Lock-free; safe to call from inside
 /// the scheduler lock hold.
 #[inline(always)]
-fn record_dispatch_mismatch_if_needed(cpu_id: usize, tid: u64, frame_elr: u64, ctx_elr: u64, sp: u64) {
+fn record_dispatch_mismatch_if_needed(
+    cpu_id: usize,
+    tid: u64,
+    frame_elr: u64,
+    ctx_elr: u64,
+    sp: u64,
+) {
     if frame_elr == ctx_elr {
         return;
     }
@@ -2526,22 +2501,24 @@ pub fn dump_all_dispatch_mismatch_snapshots() {
     let mut any_recorded = false;
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         if let Some((tid, frame_elr, ctx_elr, sp)) = dispatch_mismatch_snapshot(cpu_id) {
+            let mut line = crate::serial_line::Line::new();
             any_recorded = true;
-            raw_uart_str("[DISPATCH_MISMATCH] cpu=");
-            raw_uart_dec(cpu_id as u64);
-            raw_uart_str(" tid=");
-            raw_uart_dec(tid);
-            raw_uart_str(" frame_elr=");
-            raw_uart_hex(frame_elr);
-            raw_uart_str(" ctx_elr=");
-            raw_uart_hex(ctx_elr);
-            raw_uart_str(" sp=");
-            raw_uart_hex(sp);
-            raw_uart_str("\n");
+            line.text("[DISPATCH_MISMATCH] cpu=");
+            line.dec(cpu_id as u64);
+            line.text(" tid=");
+            line.dec(tid);
+            line.text(" frame_elr=");
+            line.hex(frame_elr);
+            line.text(" ctx_elr=");
+            line.hex(ctx_elr);
+            line.text(" sp=");
+            line.hex(sp);
+            line.text("\n");
         }
     }
     if !any_recorded {
-        raw_uart_str("[DISPATCH_MISMATCH] none recorded on any cpu\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("[DISPATCH_MISMATCH] none recorded on any cpu\n");
     }
 }
 
@@ -2596,8 +2573,7 @@ static LAST_DISPATCHED_TID: [AtomicU64; crate::arch_impl::aarch64::constants::MA
 const LAST_DISPATCHED_SLOT_BITS: u32 = 9;
 const LAST_DISPATCHED_SLOT_MASK: u64 = (1 << LAST_DISPATCHED_SLOT_BITS) - 1;
 const _: () = assert!(
-    crate::memory::kernel_stack::ARM64_MAX_KERNEL_STACKS
-        <= LAST_DISPATCHED_SLOT_MASK as usize
+    crate::memory::kernel_stack::ARM64_MAX_KERNEL_STACKS <= LAST_DISPATCHED_SLOT_MASK as usize
 );
 
 #[inline(always)]
@@ -2683,45 +2659,47 @@ pub fn last_dispatched_tid(cpu_id: usize) -> Option<u64> {
 /// Dump the owner-TID canary and its reusable stack slot for every CPU.
 pub fn dump_all_last_dispatched_tids() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let mut line = crate::serial_line::Line::new();
         let (tid, slot) =
             decode_last_dispatched(LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire));
-        raw_uart_str("[LAST_DISPATCHED_TID] cpu=");
-        raw_uart_dec(cpu_id as u64);
-        raw_uart_str(" tid=");
-        raw_uart_dec(tid);
+        line.text("[LAST_DISPATCHED_TID] cpu=");
+        line.dec(cpu_id as u64);
+        line.text(" tid=");
+        line.dec(tid);
         if let Some(slot) = slot {
-            raw_uart_str(" kstack_slot=");
-            raw_uart_dec(slot as u64);
+            line.text(" kstack_slot=");
+            line.dec(slot as u64);
         }
-        raw_uart_str("\n");
+        line.text("\n");
     }
 }
 
 /// Dump the last branch-only ERET invariant redirect captured on each CPU.
 pub fn dump_all_eret_guard_records() {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        let mut line = crate::serial_line::Line::new();
         let Some((source, elr, spsr, x29, x30, sp, count)) =
             crate::per_cpu_aarch64::eret_guard_record_full(cpu_id)
         else {
             continue;
         };
-        raw_uart_str("[ERET_GUARD_REDIRECT] cpu=");
-        raw_uart_dec(cpu_id as u64);
-        raw_uart_str(" source=");
-        raw_uart_dec(source);
-        raw_uart_str(" elr=");
-        raw_uart_hex(elr);
-        raw_uart_str(" spsr=");
-        raw_uart_hex(spsr);
-        raw_uart_str(" x29=");
-        raw_uart_hex(x29);
-        raw_uart_str(" x30=");
-        raw_uart_hex(x30);
-        raw_uart_str(" sp=");
-        raw_uart_hex(sp);
-        raw_uart_str(" count=");
-        raw_uart_dec(count);
-        raw_uart_str("\n");
+        line.text("[ERET_GUARD_REDIRECT] cpu=");
+        line.dec(cpu_id as u64);
+        line.text(" source=");
+        line.dec(source);
+        line.text(" elr=");
+        line.hex(elr);
+        line.text(" spsr=");
+        line.hex(spsr);
+        line.text(" x29=");
+        line.hex(x29);
+        line.text(" x30=");
+        line.hex(x30);
+        line.text(" sp=");
+        line.hex(sp);
+        line.text(" count=");
+        line.dec(count);
+        line.text("\n");
     }
 }
 
@@ -2778,28 +2756,30 @@ pub fn dump_all_eret_frame_anomaly_snapshots() {
     let mut any_recorded = false;
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         if let Some((tid, frame_elr, ctx_elr, x26, spsr)) = eret_frame_anomaly_snapshot(cpu_id) {
+            let mut line = crate::serial_line::Line::new();
             any_recorded = true;
             let (owner_tid, _) =
                 decode_last_dispatched(LAST_DISPATCHED_TID[cpu_id].load(Ordering::Acquire));
-            raw_uart_str("[ERET_ANOMALY] cpu=");
-            raw_uart_dec(cpu_id as u64);
-            raw_uart_str(" tid=");
-            raw_uart_dec(tid);
-            raw_uart_str(" frame_elr=");
-            raw_uart_hex(frame_elr);
-            raw_uart_str(" ctx_elr=");
-            raw_uart_hex(ctx_elr);
-            raw_uart_str(" x26=");
-            raw_uart_hex(x26);
-            raw_uart_str(" spsr=");
-            raw_uart_hex(spsr);
-            raw_uart_str(" owner_tid_canary=");
-            raw_uart_dec(owner_tid);
-            raw_uart_str("\n");
+            line.text("[ERET_ANOMALY] cpu=");
+            line.dec(cpu_id as u64);
+            line.text(" tid=");
+            line.dec(tid);
+            line.text(" frame_elr=");
+            line.hex(frame_elr);
+            line.text(" ctx_elr=");
+            line.hex(ctx_elr);
+            line.text(" x26=");
+            line.hex(x26);
+            line.text(" spsr=");
+            line.hex(spsr);
+            line.text(" owner_tid_canary=");
+            line.dec(owner_tid);
+            line.text("\n");
         }
     }
     if !any_recorded {
-        raw_uart_str("[ERET_ANOMALY] none recorded on any cpu\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("[ERET_ANOMALY] none recorded on any cpu\n");
     }
 }
 
@@ -2879,11 +2859,9 @@ static COREPROOF_INLINE_HANDOFF_SELF_RETRACTED: [AtomicBool;
 #[cfg(feature = "coreproof")]
 pub(crate) static COREPROOF_INLINE_SLOT_ENTERED_UNCONSUMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "coreproof")]
-pub(crate) static COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_ATTRIBUTED: AtomicU64 =
-    AtomicU64::new(0);
+pub(crate) static COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_ATTRIBUTED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "coreproof")]
-pub(crate) static COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_UNEXPLAINED: AtomicU64 =
-    AtomicU64::new(0);
+pub(crate) static COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_UNEXPLAINED: AtomicU64 = AtomicU64::new(0);
 
 /// Reset every CPU's self-retraction attribution tag.
 ///
@@ -2907,13 +2885,13 @@ struct ExitScheduleState {
     thread_id: AtomicU64,
 }
 
-static EXIT_SCHEDULE_STATE: [ExitScheduleState; crate::arch_impl::aarch64::constants::MAX_CPUS] =
-    [const {
-        ExitScheduleState {
-            scheduler_ptr: AtomicUsize::new(0),
-            thread_id: AtomicU64::new(0),
-        }
-    }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static EXIT_SCHEDULE_STATE: [ExitScheduleState; crate::arch_impl::aarch64::constants::MAX_CPUS] = [const {
+    ExitScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        thread_id: AtomicU64::new(0),
+    }
+};
+    crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 const INLINE_SCHEDULE_BREADCRUMB_CPUS: usize = crate::arch_impl::aarch64::constants::MAX_CPUS;
 const INLINE_SCHEDULE_BREADCRUMB_SLOTS: usize = 16;
@@ -2927,9 +2905,9 @@ const INLINE_BC_IDLE_RET_BRANCH: u8 = 0x47;
 
 #[no_mangle]
 pub static INLINE_SCHEDULE_BREADCRUMB_TRAIL: [[AtomicU64; INLINE_SCHEDULE_BREADCRUMB_SLOTS];
-    INLINE_SCHEDULE_BREADCRUMB_CPUS] = [const {
-    [const { AtomicU64::new(0) }; INLINE_SCHEDULE_BREADCRUMB_SLOTS]
-}; INLINE_SCHEDULE_BREADCRUMB_CPUS];
+    INLINE_SCHEDULE_BREADCRUMB_CPUS] =
+    [const { [const { AtomicU64::new(0) }; INLINE_SCHEDULE_BREADCRUMB_SLOTS] };
+        INLINE_SCHEDULE_BREADCRUMB_CPUS];
 
 #[no_mangle]
 pub static INLINE_SCHEDULE_BREADCRUMB_INDEX: [AtomicU64; INLINE_SCHEDULE_BREADCRUMB_CPUS] =
@@ -2950,8 +2928,7 @@ fn inline_schedule_breadcrumb(cpu_id: usize, site: u8, extra: u16) {
         );
     }
 
-    let idx = (INLINE_SCHEDULE_BREADCRUMB_INDEX[cpu_id].fetch_add(1, Ordering::Relaxed)
-        as usize)
+    let idx = (INLINE_SCHEDULE_BREADCRUMB_INDEX[cpu_id].fetch_add(1, Ordering::Relaxed) as usize)
         & (INLINE_SCHEDULE_BREADCRUMB_SLOTS - 1);
     let value = ((timestamp & 0xffff_ffff) << 32)
         | ((site as u64) << 24)
@@ -3051,19 +3028,20 @@ fn stage_ret_dispatch_context(
 }
 
 fn record_ret_stage_refusal(cpu_id: usize, tid: u64, resume_pc: u64, reason: &str) {
+    let mut line = crate::serial_line::Line::new();
     RET_STAGE_REFUSALS.fetch_add(1, Ordering::Release);
     if RET_STAGE_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 8 {
         return;
     }
-    raw_uart_str("[RET_STAGE_REFUSED:reason=");
-    raw_uart_str(reason);
-    raw_uart_str(":tid=");
-    raw_uart_dec(tid);
-    raw_uart_str(":pc=");
-    raw_uart_hex(resume_pc);
-    raw_uart_str(":cpu=");
-    raw_uart_dec(cpu_id as u64);
-    raw_uart_str("]\n");
+    line.text("[RET_STAGE_REFUSED:reason=");
+    line.text(reason);
+    line.text(":tid=");
+    line.dec(tid);
+    line.text(":pc=");
+    line.hex(resume_pc);
+    line.text(":cpu=");
+    line.dec(cpu_id as u64);
+    line.text("]\n");
 }
 
 #[inline(always)]
@@ -3172,7 +3150,8 @@ pub fn dump_dispatch_trace(cpu_id: usize) {
         let ring = &DISPATCH_TRACE[cpu_id];
         let count = ring.count;
         if count == 0 {
-            raw_uart_str("  (no dispatches recorded)\n");
+            let mut line = crate::serial_line::Line::new();
+            line.text("  (no dispatches recorded)\n");
             return;
         }
         // Print from oldest to newest
@@ -3182,88 +3161,30 @@ pub fn dump_dispatch_trace(cpu_id: usize) {
             ring.write_idx
         };
         for i in 0..count {
+            let mut line = crate::serial_line::Line::new();
             let idx = (start + i) % DISPATCH_RING_SIZE;
             let e = &ring.entries[idx];
-            raw_uart_str("  [");
-            raw_uart_dec(i as u64);
-            raw_uart_str("] ");
-            raw_uart_char(e.path);
-            raw_uart_str(" old=");
-            raw_uart_dec(e.old_tid);
-            raw_uart_str("->tid=");
-            raw_uart_dec(e.tid);
-            raw_uart_str(" elr=");
-            raw_uart_hex(e.elr);
-            raw_uart_str(" spsr=");
-            raw_uart_hex(e.spsr);
-            raw_uart_str(" x30=");
-            raw_uart_hex(e.x30);
-            raw_uart_str(" sp=");
-            raw_uart_hex(e.sp);
+            line.text("  [");
+            line.dec(i as u64);
+            line.text("] ");
+            line.char(e.path);
+            line.text(" old=");
+            line.dec(e.old_tid);
+            line.text("->tid=");
+            line.dec(e.tid);
+            line.text(" elr=");
+            line.hex(e.elr);
+            line.text(" spsr=");
+            line.hex(e.spsr);
+            line.text(" x30=");
+            line.hex(e.x30);
+            line.text(" sp=");
+            line.hex(e.sp);
             if e.from_el0 != 0 {
-                raw_uart_str(" EL0");
+                line.text(" EL0");
             }
-            raw_uart_str("\n");
+            line.text("\n");
         }
-    }
-}
-
-/// Raw serial debug output - single character, no locks, no allocations.
-/// Use this for debugging context switch paths where any allocation/locking
-/// could perturb timing or cause deadlocks.
-#[inline(always)]
-#[allow(dead_code)]
-pub fn raw_uart_char(c: u8) {
-    let addr = crate::platform_config::uart_virt() as *mut u8;
-    unsafe {
-        core::ptr::write_volatile(addr, c);
-    }
-}
-
-/// Raw UART string output - no locks, no allocations.
-#[inline(always)]
-#[allow(dead_code)]
-pub fn raw_uart_str(s: &str) {
-    for byte in s.bytes() {
-        raw_uart_char(byte);
-    }
-}
-
-/// Raw UART hex output for a u64 value - no locks, no allocations.
-#[inline(always)]
-#[allow(dead_code)]
-pub fn raw_uart_hex(val: u64) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    raw_uart_str("0x");
-    // Skip leading zeros for readability but always print at least one digit
-    let mut started = false;
-    for i in (0..16).rev() {
-        let nibble = ((val >> (i * 4)) & 0xF) as usize;
-        if nibble != 0 || started || i == 0 {
-            raw_uart_char(HEX[nibble]);
-            started = true;
-        }
-    }
-}
-
-/// Raw UART decimal output for a u64 value - no locks, no allocations.
-#[inline(always)]
-#[allow(dead_code)]
-pub fn raw_uart_dec(val: u64) {
-    if val == 0 {
-        raw_uart_char(b'0');
-        return;
-    }
-    let mut buf = [0u8; 20]; // max u64 is 20 digits
-    let mut pos = 0;
-    let mut v = val;
-    while v > 0 {
-        buf[pos] = b'0' + (v % 10) as u8;
-        v /= 10;
-        pos += 1;
-    }
-    for i in (0..pos).rev() {
-        raw_uart_char(buf[i]);
     }
 }
 
@@ -3439,8 +3360,7 @@ fn thread_kernel_stack_contains(thread: &Thread, sp: u64) -> bool {
         return false;
     };
     let top = kst.as_u64();
-    let bottom =
-        top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64);
+    let bottom = top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64);
     sp >= bottom && sp <= top
 }
 
@@ -3451,52 +3371,54 @@ fn idle_loop_addr() -> u64 {
 
 #[inline(always)]
 fn log_bad_thread_sp(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u64, spsr: u64) {
-    raw_uart_str("\n[");
-    raw_uart_str(tag);
-    raw_uart_str("] tid=");
-    raw_uart_dec(thread.id());
-    raw_uart_str(" pid=");
-    raw_uart_dec(thread.owner_pid.unwrap_or(0));
-    raw_uart_str(" cpu=");
-    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-    raw_uart_str(" sp=");
-    raw_uart_hex(sp);
-    raw_uart_str(" kst=");
-    raw_uart_hex(thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0));
-    raw_uart_str(" elr=");
-    raw_uart_hex(elr);
-    raw_uart_str(" x30=");
-    raw_uart_hex(x30);
-    raw_uart_str(" spsr=");
-    raw_uart_hex(spsr);
-    raw_uart_str("\n");
+    let mut line = crate::serial_line::Line::new();
+    line.text("\n[");
+    line.text(tag);
+    line.text("] tid=");
+    line.dec(thread.id());
+    line.text(" pid=");
+    line.dec(thread.owner_pid.unwrap_or(0));
+    line.text(" cpu=");
+    line.dec(Aarch64PerCpu::cpu_id() as u64);
+    line.text(" sp=");
+    line.hex(sp);
+    line.text(" kst=");
+    line.hex(thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0));
+    line.text(" elr=");
+    line.hex(elr);
+    line.text(" x30=");
+    line.hex(x30);
+    line.text(" spsr=");
+    line.hex(spsr);
+    line.text("\n");
 }
 
 #[inline(always)]
 fn log_idle_thread_context(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u64, spsr: u64) {
+    let mut line = crate::serial_line::Line::new();
     let idle = idle_loop_addr();
     if elr < idle || elr > idle + 0x400 {
         return;
     }
-    raw_uart_str("\n[");
-    raw_uart_str(tag);
-    raw_uart_str("] tid=");
-    raw_uart_dec(thread.id());
-    raw_uart_str(" pid=");
-    raw_uart_dec(thread.owner_pid.unwrap_or(0));
-    raw_uart_str(" cpu=");
-    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-    raw_uart_str(" sp=");
-    raw_uart_hex(sp);
-    raw_uart_str(" kst=");
-    raw_uart_hex(thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0));
-    raw_uart_str(" elr=");
-    raw_uart_hex(elr);
-    raw_uart_str(" x30=");
-    raw_uart_hex(x30);
-    raw_uart_str(" spsr=");
-    raw_uart_hex(spsr);
-    raw_uart_str("\n");
+    line.text("\n[");
+    line.text(tag);
+    line.text("] tid=");
+    line.dec(thread.id());
+    line.text(" pid=");
+    line.dec(thread.owner_pid.unwrap_or(0));
+    line.text(" cpu=");
+    line.dec(Aarch64PerCpu::cpu_id() as u64);
+    line.text(" sp=");
+    line.hex(sp);
+    line.text(" kst=");
+    line.hex(thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0));
+    line.text(" elr=");
+    line.hex(elr);
+    line.text(" x30=");
+    line.hex(x30);
+    line.text(" spsr=");
+    line.hex(spsr);
+    line.text("\n");
 }
 
 // =============================================================================
@@ -3514,6 +3436,7 @@ fn clear_inline_schedule_state(thread: &mut Thread) {
 
 #[inline(always)]
 fn check_inline_save_resume_point(thread: &Thread, site: u64) {
+    let mut line = crate::serial_line::Line::new();
     if !thread.saved_by_inline_schedule || thread.context.elr_el1 == thread.context.x30 {
         return;
     }
@@ -3521,23 +3444,24 @@ fn check_inline_save_resume_point(thread: &Thread, site: u64) {
         return;
     }
 
-    raw_uart_str("\n[CTX596_ORACLE:FAIL:save_elr_mismatch:tid=");
-    raw_uart_dec(thread.id());
-    raw_uart_str(":site=");
-    raw_uart_dec(site);
-    raw_uart_str(":cpu=");
-    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-    raw_uart_str(":ctx_elr=");
-    raw_uart_hex(thread.context.elr_el1);
-    raw_uart_str(":x30=");
-    raw_uart_hex(thread.context.x30);
-    raw_uart_str(":prev_elr=");
-    raw_uart_hex(thread.inline_schedule_prev_elr);
-    raw_uart_str("]\n");
+    line.text("\n[CTX596_ORACLE:FAIL:save_elr_mismatch:tid=");
+    line.dec(thread.id());
+    line.text(":site=");
+    line.dec(site);
+    line.text(":cpu=");
+    line.dec(Aarch64PerCpu::cpu_id() as u64);
+    line.text(":ctx_elr=");
+    line.hex(thread.context.elr_el1);
+    line.text(":x30=");
+    line.hex(thread.context.x30);
+    line.text(":prev_elr=");
+    line.hex(thread.inline_schedule_prev_elr);
+    line.text("]\n");
 }
 
 #[inline(always)]
 fn check_inline_eret_resume_pc(thread: &Thread, frame_elr: u64) {
+    let mut line = crate::serial_line::Line::new();
     if !thread.saved_by_inline_schedule || frame_elr == thread.context.x30 {
         return;
     }
@@ -3545,22 +3469,21 @@ fn check_inline_eret_resume_pc(thread: &Thread, frame_elr: u64) {
         return;
     }
 
-    raw_uart_str("\n[CTX596_ORACLE:FAIL:eret_resume_pc:tid=");
-    raw_uart_dec(thread.id());
-    raw_uart_str(":cpu=");
-    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-    raw_uart_str(":frame_elr=");
-    raw_uart_hex(frame_elr);
-    raw_uart_str(":x30=");
-    raw_uart_hex(thread.context.x30);
-    raw_uart_str("]\n");
+    line.text("\n[CTX596_ORACLE:FAIL:eret_resume_pc:tid=");
+    line.dec(thread.id());
+    line.text(":cpu=");
+    line.dec(Aarch64PerCpu::cpu_id() as u64);
+    line.text(":frame_elr=");
+    line.hex(frame_elr);
+    line.text(":x30=");
+    line.hex(thread.context.x30);
+    line.text("]\n");
 }
 
 #[inline(always)]
 fn record_inline_elr_divergence(thread: &Thread) {
-    if !thread.saved_by_inline_schedule
-        || thread.inline_schedule_prev_elr == thread.context.x30
-    {
+    let mut line = crate::serial_line::Line::new();
+    if !thread.saved_by_inline_schedule || thread.inline_schedule_prev_elr == thread.context.x30 {
         return;
     }
 
@@ -3569,17 +3492,17 @@ fn record_inline_elr_divergence(thread: &Thread) {
         return;
     }
 
-    raw_uart_str("\n[CTX596_ELR_DIVERGENCE] tid=");
-    raw_uart_dec(thread.id());
-    raw_uart_str(" cpu=");
-    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-    raw_uart_str(" prev_elr=");
-    raw_uart_hex(thread.inline_schedule_prev_elr);
-    raw_uart_str(" x30=");
-    raw_uart_hex(thread.context.x30);
-    raw_uart_str(" ctx_elr=");
-    raw_uart_hex(thread.context.elr_el1);
-    raw_uart_str("\n");
+    line.text("\n[CTX596_ELR_DIVERGENCE] tid=");
+    line.dec(thread.id());
+    line.text(" cpu=");
+    line.dec(Aarch64PerCpu::cpu_id() as u64);
+    line.text(" prev_elr=");
+    line.hex(thread.inline_schedule_prev_elr);
+    line.text(" x30=");
+    line.hex(thread.context.x30);
+    line.text(" ctx_elr=");
+    line.hex(thread.context.elr_el1);
+    line.text("\n");
 }
 
 /// Everything a ret-based kernel dispatch needs, all of it read under the
@@ -3604,10 +3527,7 @@ struct RetDispatchInfo {
 }
 
 #[inline(always)]
-fn take_inline_ret_dispatch_info(
-    thread: &mut Thread,
-) -> Option<RetDispatchInfo>
-{
+fn take_inline_ret_dispatch_info(thread: &mut Thread) -> Option<RetDispatchInfo> {
     if !thread.has_started || !thread.saved_by_inline_schedule {
         return None;
     }
@@ -3633,25 +3553,26 @@ fn take_inline_ret_dispatch_info(
         RET_DISPATCH_REFUSED_TID.store(thread_id, Ordering::Relaxed);
         RET_DISPATCH_REFUSALS.fetch_add(1, Ordering::Release);
         if RET_DISPATCH_REFUSAL_EMISSIONS.fetch_add(1, Ordering::Relaxed) < 8 {
-            raw_uart_str("[RET_DISPATCH_REFUSED:tid=");
-            raw_uart_dec(thread_id);
-            raw_uart_str(":pc=");
-            raw_uart_hex(resume_pc);
-            raw_uart_str(":cpu=");
-            raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-            raw_uart_str(":x30=");
-            raw_uart_hex(thread.context.x30);
-            raw_uart_str(":elr=");
-            raw_uart_hex(thread.context.elr_el1);
-            raw_uart_str(":sp=");
-            raw_uart_hex(thread.context.sp);
-            raw_uart_str(":has_started=");
-            raw_uart_dec(u64::from(thread.has_started));
-            raw_uart_str(":bis=");
-            raw_uart_dec(u64::from(thread.saved_by_inline_schedule));
-            raw_uart_str(":priv=");
-            raw_uart_dec(u64::from(thread.privilege == ThreadPrivilege::Kernel));
-            raw_uart_str("]\n");
+            let mut line = crate::serial_line::Line::new();
+            line.text("[RET_DISPATCH_REFUSED:tid=");
+            line.dec(thread_id);
+            line.text(":pc=");
+            line.hex(resume_pc);
+            line.text(":cpu=");
+            line.dec(Aarch64PerCpu::cpu_id() as u64);
+            line.text(":x30=");
+            line.hex(thread.context.x30);
+            line.text(":elr=");
+            line.hex(thread.context.elr_el1);
+            line.text(":sp=");
+            line.hex(thread.context.sp);
+            line.text(":has_started=");
+            line.dec(u64::from(thread.has_started));
+            line.text(":bis=");
+            line.dec(u64::from(thread.saved_by_inline_schedule));
+            line.text(":priv=");
+            line.dec(u64::from(thread.privilege == ThreadPrivilege::Kernel));
+            line.text("]\n");
         }
         return None;
     }
@@ -3715,8 +3636,12 @@ fn take_inline_ret_dispatch_info(
     // The identity that adjudicated the resume SP is the identity that stages
     // the copy: one hardware read, spent at both, so this path cannot become
     // the round-4 split in miniature.
-    let ctx_ptr =
-        stage_ret_dispatch_context(dispatch_cpu.index(), thread.id(), &thread.context, resume_pc)?;
+    let ctx_ptr = stage_ret_dispatch_context(
+        dispatch_cpu.index(),
+        thread.id(),
+        &thread.context,
+        resume_pc,
+    )?;
     clear_inline_schedule_state(thread);
     Some(RetDispatchInfo {
         thread_ptr,
@@ -3736,8 +3661,7 @@ fn take_inline_ret_dispatch_info(
 fn inline_ret_dispatch_info_if_ready(
     _sched: &mut Scheduler,
     _thread_id: u64,
-) -> Option<RetDispatchInfo>
-{
+) -> Option<RetDispatchInfo> {
     // This forces only a production-reachable ERET path (PmLockBusy,
     // RowUnpublished, ProcessGone, is_idle, or !has_started); it invents
     // no new scheduler or thread state.
@@ -3749,8 +3673,7 @@ fn inline_ret_dispatch_info_if_ready(
 fn inline_ret_dispatch_info_if_ready(
     sched: &mut Scheduler,
     thread_id: u64,
-) -> Option<RetDispatchInfo>
-{
+) -> Option<RetDispatchInfo> {
     const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
 
     let should_use_inline_ret = match sched.get_thread(thread_id) {
@@ -3788,7 +3711,8 @@ fn inline_ret_dispatch_info_if_ready(
     crate::task::ret_zero_pc_oracle::inject_ret_stack_pc_if_armed(sched, thread_id);
     #[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
     crate::task::ret_zero_pc_oracle::inject_saved_lr_if_armed(sched, thread_id);
-    sched.get_thread_mut(thread_id)
+    sched
+        .get_thread_mut(thread_id)
         .and_then(take_inline_ret_dispatch_info)
 }
 
@@ -3836,13 +3760,14 @@ pub(crate) fn quiesce_probe_ttbr0_for_test(thread_id: u64, root: u64) -> (bool, 
 /// Save userspace context — called inside scheduler lock hold.
 fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame) {
     if frame.elr == 0 && frame.x30 == 0 && frame.spsr == 0 {
-        raw_uart_str("\n[SKIP_ZERO_FRAME_SAVE] path=U tid=");
-        raw_uart_dec(thread.id());
-        raw_uart_str(" pid=");
-        raw_uart_dec(thread.owner_pid.unwrap_or(0));
-        raw_uart_str(" cpu=");
-        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str("\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("\n[SKIP_ZERO_FRAME_SAVE] path=U tid=");
+        line.dec(thread.id());
+        line.text(" pid=");
+        line.dec(thread.owner_pid.unwrap_or(0));
+        line.text(" cpu=");
+        line.dec(Aarch64PerCpu::cpu_id() as u64);
+        line.text("\n");
         return;
     }
 
@@ -3938,36 +3863,36 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
         );
     }
 
-    if thread.owner_pid.is_some()
-        && thread.blocked_in_syscall
-        && (frame.elr == 0 || frame.x30 == 0)
+    if thread.owner_pid.is_some() && thread.blocked_in_syscall && (frame.elr == 0 || frame.x30 == 0)
     {
-        raw_uart_str("\n[ZERO_CTX_SAVE] path=U tid=");
-        raw_uart_dec(thread.id());
-        raw_uart_str(" pid=");
-        raw_uart_dec(thread.owner_pid.unwrap_or(0));
-        raw_uart_str(" cpu=");
-        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str(" elr=");
-        raw_uart_hex(frame.elr);
-        raw_uart_str(" x30=");
-        raw_uart_hex(frame.x30);
-        raw_uart_str(" spsr=");
-        raw_uart_hex(frame.spsr);
-        raw_uart_str("\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("\n[ZERO_CTX_SAVE] path=U tid=");
+        line.dec(thread.id());
+        line.text(" pid=");
+        line.dec(thread.owner_pid.unwrap_or(0));
+        line.text(" cpu=");
+        line.dec(Aarch64PerCpu::cpu_id() as u64);
+        line.text(" elr=");
+        line.hex(frame.elr);
+        line.text(" x30=");
+        line.hex(frame.x30);
+        line.text(" spsr=");
+        line.hex(frame.spsr);
+        line.text("\n");
     }
 }
 
 /// Save kernel context — called inside scheduler lock hold.
 fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame) {
     if frame.elr == 0 && frame.x30 == 0 && frame.spsr == 0 {
-        raw_uart_str("\n[SKIP_ZERO_FRAME_SAVE] path=K tid=");
-        raw_uart_dec(thread.id());
-        raw_uart_str(" pid=");
-        raw_uart_dec(thread.owner_pid.unwrap_or(0));
-        raw_uart_str(" cpu=");
-        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str("\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("\n[SKIP_ZERO_FRAME_SAVE] path=K tid=");
+        line.dec(thread.id());
+        line.text(" pid=");
+        line.dec(thread.owner_pid.unwrap_or(0));
+        line.text(" cpu=");
+        line.dec(Aarch64PerCpu::cpu_id() as u64);
+        line.text("\n");
         return;
     }
 
@@ -4027,32 +3952,33 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
         && thread.owner_pid.is_some()
         && thread.blocked_in_syscall
     {
+        let mut line = crate::serial_line::Line::new();
         let current_sp = frame as *const _ as u64 + 272;
         let slot20 = unsafe { core::ptr::read_volatile((current_sp + 0x20) as *const u64) };
         let saved_slot20 = unsafe {
             core::ptr::read_volatile((thread.inline_schedule_saved_sp + 0x20) as *const u64)
         };
-        raw_uart_str("\n[INLINE_SAVE_OVERWRITE] tid=");
-        raw_uart_dec(thread.id());
-        raw_uart_str(" sp=");
-        raw_uart_hex(current_sp);
-        raw_uart_str(" old_sp=");
-        raw_uart_hex(thread.context.sp);
-        raw_uart_str(" saved_sp=");
-        raw_uart_hex(thread.inline_schedule_saved_sp);
-        raw_uart_str(" delta=");
-        raw_uart_hex(current_sp.wrapping_sub(thread.inline_schedule_saved_sp));
-        raw_uart_str(" saved_lr=");
-        raw_uart_hex(thread.inline_schedule_caller_lr);
-        raw_uart_str(" saved_slot20=");
-        raw_uart_hex(saved_slot20);
-        raw_uart_str(" slot20=");
-        raw_uart_hex(slot20);
-        raw_uart_str(" elr=");
-        raw_uart_hex(frame.elr);
-        raw_uart_str(" x30=");
-        raw_uart_hex(frame.x30);
-        raw_uart_str("\n");
+        line.text("\n[INLINE_SAVE_OVERWRITE] tid=");
+        line.dec(thread.id());
+        line.text(" sp=");
+        line.hex(current_sp);
+        line.text(" old_sp=");
+        line.hex(thread.context.sp);
+        line.text(" saved_sp=");
+        line.hex(thread.inline_schedule_saved_sp);
+        line.text(" delta=");
+        line.hex(current_sp.wrapping_sub(thread.inline_schedule_saved_sp));
+        line.text(" saved_lr=");
+        line.hex(thread.inline_schedule_caller_lr);
+        line.text(" saved_slot20=");
+        line.hex(saved_slot20);
+        line.text(" slot20=");
+        line.hex(slot20);
+        line.text(" elr=");
+        line.hex(frame.elr);
+        line.text(" x30=");
+        line.hex(frame.x30);
+        line.text("\n");
     }
 
     // Clear inline-schedule flag: this thread was saved by the IRQ-return
@@ -4116,23 +4042,22 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
         );
     }
 
-    if thread.owner_pid.is_some()
-        && thread.blocked_in_syscall
-        && (frame.elr == 0 || frame.x30 == 0)
+    if thread.owner_pid.is_some() && thread.blocked_in_syscall && (frame.elr == 0 || frame.x30 == 0)
     {
-        raw_uart_str("\n[ZERO_CTX_SAVE] path=K tid=");
-        raw_uart_dec(thread.id());
-        raw_uart_str(" pid=");
-        raw_uart_dec(thread.owner_pid.unwrap_or(0));
-        raw_uart_str(" cpu=");
-        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str(" elr=");
-        raw_uart_hex(frame.elr);
-        raw_uart_str(" x30=");
-        raw_uart_hex(frame.x30);
-        raw_uart_str(" spsr=");
-        raw_uart_hex(frame.spsr);
-        raw_uart_str("\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("\n[ZERO_CTX_SAVE] path=K tid=");
+        line.dec(thread.id());
+        line.text(" pid=");
+        line.dec(thread.owner_pid.unwrap_or(0));
+        line.text(" cpu=");
+        line.dec(Aarch64PerCpu::cpu_id() as u64);
+        line.text(" elr=");
+        line.hex(frame.elr);
+        line.text(" x30=");
+        line.hex(frame.x30);
+        line.text(" spsr=");
+        line.hex(frame.spsr);
+        line.text("\n");
     }
 }
 
@@ -4203,6 +4128,7 @@ fn restore_kernel_context_inline(
     );
 
     if !elr_valid {
+        let mut line = crate::serial_line::Line::new();
         record_resume_pc_refusal(
             RESUME_PC_SOURCE_EL1_RESTORE,
             thread_id,
@@ -4212,32 +4138,32 @@ fn restore_kernel_context_inline(
             thread.context.sp,
             thread.context.spsr_el1,
         );
-        raw_uart_str("\n!!! BUG: invalid context for kernel dispatch tid=");
-        raw_uart_dec(thread_id);
-        raw_uart_str("\n  elr_el1=");
-        raw_uart_hex(thread.context.elr_el1);
-        raw_uart_str(" spsr_el1=");
-        raw_uart_hex(thread.context.spsr_el1);
-        raw_uart_str(" x30=");
-        raw_uart_hex(thread.context.x30);
-        raw_uart_str(" sp=");
-        raw_uart_hex(thread.context.sp);
-        raw_uart_str("\n  has_started=");
-        raw_uart_char(if has_started { b'1' } else { b'0' });
-        raw_uart_str(" priv=");
-        raw_uart_char(match thread.privilege {
+        line.text("\n!!! BUG: invalid context for kernel dispatch tid=");
+        line.dec(thread_id);
+        line.text("\n  elr_el1=");
+        line.hex(thread.context.elr_el1);
+        line.text(" spsr_el1=");
+        line.hex(thread.context.spsr_el1);
+        line.text(" x30=");
+        line.hex(thread.context.x30);
+        line.text(" sp=");
+        line.hex(thread.context.sp);
+        line.text("\n  has_started=");
+        line.char(if has_started { b'1' } else { b'0' });
+        line.text(" priv=");
+        line.char(match thread.privilege {
             ThreadPrivilege::Kernel => b'K',
             ThreadPrivilege::User => b'U',
         });
-        raw_uart_str(" blocked_in_syscall=");
-        raw_uart_char(if thread.blocked_in_syscall {
+        line.text(" blocked_in_syscall=");
+        line.char(if thread.blocked_in_syscall {
             b'1'
         } else {
             b'0'
         });
-        raw_uart_str(" cpu=");
-        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str("\n");
+        line.text(" cpu=");
+        line.dec(Aarch64PerCpu::cpu_id() as u64);
+        line.text("\n");
         return false;
     }
 
@@ -4322,6 +4248,7 @@ fn restore_kernel_context_inline(
         thread.context.spsr_el1 = kernel_dispatch_spsr(thread.context.spsr_el1);
         frame.spsr = dispatch_spsr(thread.context.spsr_el1); // Restore saved processor state
     } else {
+        let mut line = crate::serial_line::Line::new();
         // elr_el1 == 0 or not a valid kernel address — redirect to idle
         record_resume_pc_refusal(
             RESUME_PC_SOURCE_EL1_RESTORE,
@@ -4332,11 +4259,11 @@ fn restore_kernel_context_inline(
             thread.context.sp,
             thread.context.spsr_el1,
         );
-        raw_uart_str("WARN: bad elr=");
-        raw_uart_hex(resume_pc);
-        raw_uart_str(" for started kthread tid=");
-        raw_uart_dec(thread_id);
-        raw_uart_str(", redirecting to idle\n");
+        line.text("WARN: bad elr=");
+        line.hex(resume_pc);
+        line.text(" for started kthread tid=");
+        line.dec(thread_id);
+        line.text(", redirecting to idle\n");
         return false;
     }
 
@@ -4767,7 +4694,12 @@ fn dispatch_idle_locked(
     cpu_id: usize,
 ) {
     let current_before = setup_idle_return_locked(sched, frame, cpu_id);
-    record_idle_redirect(sched, cpu_id, IdleRedirectReason::IdleDispatch, current_before);
+    record_idle_redirect(
+        sched,
+        cpu_id,
+        IdleRedirectReason::IdleDispatch,
+        current_before,
+    );
 }
 
 /// Dispatch a non-idle thread — called inside scheduler lock hold.
@@ -4814,19 +4746,19 @@ fn dispatch_thread_locked(
         context_sp,
         thread_ptr,
     ) = match thread_info {
-            Some(info) => info,
-            None => {
-                trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_MISSING);
-                let current_before = setup_idle_return_locked(sched, frame, cpu_id);
-                record_idle_redirect(
-                    sched,
-                    cpu_id,
-                    IdleRedirectReason::ThreadMissing,
-                    current_before,
-                );
-                return;
-            }
-        };
+        Some(info) => info,
+        None => {
+            trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_MISSING);
+            let current_before = setup_idle_return_locked(sched, frame, cpu_id);
+            record_idle_redirect(
+                sched,
+                cpu_id,
+                IdleRedirectReason::ThreadMissing,
+                current_before,
+            );
+            return;
+        }
+    };
 
     // DEFENSE: Verify thread is not terminated before dispatch.
     if state == ThreadState::Terminated {
@@ -4954,15 +4886,16 @@ fn dispatch_thread_locked(
                     return;
                 }
                 TtbrResult::ProcessGone => {
+                    let mut line = crate::serial_line::Line::new();
                     TTBR_PROCESS_GONE_COUNT.fetch_add(1, Ordering::Relaxed);
                     trace_dispatch_redirect(thread_id, TRACE_REDIRECT_TTBR_PROCESS_GONE);
-                    raw_uart_str("\n[TTBR_GONE_K] tid=");
-                    raw_uart_dec(thread_id);
-                    raw_uart_str(" elr=");
-                    raw_uart_hex(frame.elr);
-                    raw_uart_str(" cpu=");
-                    raw_uart_dec(cpu_id as u64);
-                    raw_uart_str("\n");
+                    line.text("\n[TTBR_GONE_K] tid=");
+                    line.dec(thread_id);
+                    line.text(" elr=");
+                    line.hex(frame.elr);
+                    line.text(" cpu=");
+                    line.dec(cpu_id as u64);
+                    line.text("\n");
                     // Process no longer exists — terminate orphaned thread.
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
                         thread.state = ThreadState::Terminated;
@@ -5099,6 +5032,7 @@ fn dispatch_thread_locked(
         if has_started {
             // SAFETY GUARD: Check for corrupted ELR before committing to dispatch.
             if frame.elr < 0x1000 || (frame.spsr & 0xF) != 0 {
+                let mut line = crate::serial_line::Line::new();
                 let context_sp = sched
                     .get_thread(thread_id)
                     .map(|thread| thread.context.sp)
@@ -5112,15 +5046,15 @@ fn dispatch_thread_locked(
                     context_sp,
                     frame.spsr,
                 );
-                raw_uart_str("\n[BUG] dispatch_thread: bad context tid=");
-                raw_uart_dec(thread_id);
-                raw_uart_str(" elr=");
-                raw_uart_hex(frame.elr);
-                raw_uart_str(" spsr=");
-                raw_uart_hex(frame.spsr);
-                raw_uart_str(" cpu=");
-                raw_uart_dec(cpu_id as u64);
-                raw_uart_str(", terminating thread\n");
+                line.text("\n[BUG] dispatch_thread: bad context tid=");
+                line.dec(thread_id);
+                line.text(" elr=");
+                line.hex(frame.elr);
+                line.text(" spsr=");
+                line.hex(frame.spsr);
+                line.text(" cpu=");
+                line.dec(cpu_id as u64);
+                line.text(", terminating thread\n");
                 log_last_defer_requeue_snapshot(cpu_id);
 
                 // Terminate the thread — a corrupt context (ELR=0 or garbage SPSR)
@@ -5193,14 +5127,15 @@ fn dispatch_thread_locked(
                 return;
             }
             TtbrResult::ProcessGone => {
+                let mut line = crate::serial_line::Line::new();
                 TTBR_PROCESS_GONE_COUNT.fetch_add(1, Ordering::Relaxed);
-                raw_uart_str("\n[TTBR_GONE] tid=");
-                raw_uart_dec(thread_id);
-                raw_uart_str(" elr=");
-                raw_uart_hex(frame.elr);
-                raw_uart_str(" cpu=");
-                raw_uart_dec(cpu_id as u64);
-                raw_uart_str("\n");
+                line.text("\n[TTBR_GONE] tid=");
+                line.dec(thread_id);
+                line.text(" elr=");
+                line.hex(frame.elr);
+                line.text(" cpu=");
+                line.dec(cpu_id as u64);
+                line.text("\n");
                 // Process no longer exists — terminate orphaned thread.
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
                     thread.state = ThreadState::Terminated;
@@ -5394,7 +5329,10 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // which is a no-op for our decision (we'd still skip).
     // When deferred_tid was non-zero, we already processed it above under
     // the lock and can treat it as "done" for fast-path eligibility.
-    if !exception_cleanup_context && !need_resched && (deferred_tid == 0 || deferred_already_processed) {
+    if !exception_cleanup_context
+        && !need_resched
+        && (deferred_tid == 0 || deferred_already_processed)
+    {
         let current_blocked = {
             let thread_ptr = Aarch64PerCpu::current_thread_ptr();
             if !thread_ptr.is_null() {
@@ -5735,17 +5673,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             );
         }
         if previous != 0 {
+            let mut line = crate::serial_line::Line::new();
             // A previously deferred requeue is being evicted before it was processed.
             // This means two rapid context switches happened on the same CPU without an
             // intervening check_need_resched_and_switch_arm64 call to drain the slot.
             // Requeue the evicted thread now (under the scheduler lock) and log the event.
             let previous_thread = sched.get_thread(previous);
-            trace_defer_requeue(
-                TRACE_DEFER_REQUEUE_EVICT,
-                previous,
-                old_id,
-                previous_thread,
-            );
+            trace_defer_requeue(TRACE_DEFER_REQUEUE_EVICT, previous, old_id, previous_thread);
             if let Some(thread) = previous_thread {
                 trace_ctx_diag(
                     TRACE_CTX_DIAG_DEFER_EVICT,
@@ -5761,13 +5695,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                     thread.saved_by_inline_schedule,
                 );
             }
-            raw_uart_str("[DEFER_EVICT] cpu=");
-            raw_uart_dec(cpu_id as u64);
-            raw_uart_str(" evicted=");
-            raw_uart_dec(previous);
-            raw_uart_str(" new=");
-            raw_uart_dec(old_id);
-            raw_uart_str("\n");
+            line.text("[DEFER_EVICT] cpu=");
+            line.dec(cpu_id as u64);
+            line.text(" evicted=");
+            line.dec(previous);
+            line.text(" new=");
+            line.dec(old_id);
+            line.text("\n");
             sched.requeue_thread_after_save(previous);
         }
     }
@@ -5805,7 +5739,19 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             previous_thread,
             true,
         );
-        trace_ctx_diag(TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT, new_id, old_id, new_id, resume_pc, resume_lr_slot, resume_pc, resume_lr_slot, resume_sp, previous_thread, true);
+        trace_ctx_diag(
+            TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT,
+            new_id,
+            old_id,
+            new_id,
+            resume_pc,
+            resume_lr_slot,
+            resume_pc,
+            resume_lr_slot,
+            resume_sp,
+            previous_thread,
+            true,
+        );
         crate::tracing::record_event(
             crate::tracing::TraceEventType::RET_DISPATCH_SP,
             0,
@@ -5864,15 +5810,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // an idle dispatch, while current_tid read the ret-dispatched thread.
         // 'R' rows carry spsr=0 because this path restores no SPSR at all.
         record_dispatch(
-            cpu_id,
-            old_id,
-            new_id,
-            resume_pc,
-            0,
-            resume_pc,
-            resume_sp,
-            b'R',
-            from_el0,
+            cpu_id, old_id, new_id, resume_pc, 0, resume_pc, resume_sp, b'R', from_el0,
         );
         // OWNER-TID CANARY: this ret-based dispatch is finalized for new_id. The
         // assembly refusal record carries no tid, so the drain's terminate decision
@@ -5909,7 +5847,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         if let Some(thread) = sched.get_thread(new_id) {
             let ctx_elr = thread.context.elr_el1;
             if frame.elr != ctx_elr || frame_is_idle_register_file(frame, false) {
-                record_eret_frame_anomaly(cpu_id, new_id, frame.elr, ctx_elr, frame.x26, frame.spsr);
+                record_eret_frame_anomaly(
+                    cpu_id, new_id, frame.elr, ctx_elr, frame.x26, frame.spsr,
+                );
             }
         }
     }
@@ -6136,19 +6076,15 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         // outgoing transaction as well as roll back the incoming selection.
         let idle_id = unsafe { (*sched_ptr).cpu_state[cpu_id].idle_thread };
         let outgoing_is_live = idle_id != old_id;
-        let injected_leg = if outgoing_is_live
-            && crate::task::ret_zero_pc_oracle::is_strand_live_driver(old_id)
-        {
-            crate::task::strand_oracle::inject_if_armed(new_id)
-        } else {
-            None
-        };
+        let injected_leg =
+            if outgoing_is_live && crate::task::ret_zero_pc_oracle::is_strand_live_driver(old_id) {
+                crate::task::strand_oracle::inject_if_armed(new_id)
+            } else {
+                None
+            };
         let live_outgoing_injected = injected_leg.is_some();
         if live_outgoing_injected {
-            crate::task::ret_zero_pc_oracle::note_live_outgoing_fired(
-                old_id,
-                !outgoing_is_live,
-            );
+            crate::task::ret_zero_pc_oracle::note_live_outgoing_fired(old_id, !outgoing_is_live);
             // Test-only: remove the exception-cleanup recovery owner while
             // this CPU still owns the scheduler lock. The fallback itself
             // must complete the saved affirmative outgoing requeue intent.
@@ -6173,18 +6109,16 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let inline_rollback_suppressed = false;
 
     let state_extra =
-        ((if sched_ptr.is_null() { 0u16 } else { 1u16 }) << 8)
-            | should_requeue_old as u16
-            | {
-                #[cfg(feature = "boot_tests")]
-                {
-                    (inline_rollback_suppressed as u16) << 1
-                }
-                #[cfg(not(feature = "boot_tests"))]
-                {
-                    0
-                }
-            };
+        ((if sched_ptr.is_null() { 0u16 } else { 1u16 }) << 8) | should_requeue_old as u16 | {
+            #[cfg(feature = "boot_tests")]
+            {
+                (inline_rollback_suppressed as u16) << 1
+            }
+            #[cfg(not(feature = "boot_tests"))]
+            {
+                0
+            }
+        };
     inline_schedule_breadcrumb(cpu_id, INLINE_BC_STATE_SWAP, state_extra);
     inline_schedule_breadcrumb(
         cpu_id,
@@ -6375,11 +6309,23 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             previous_thread,
             true,
         );
-        trace_ctx_diag(TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT, new_id, old_id, new_id, resume_pc, resume_lr_slot, resume_pc, resume_lr_slot, resume_sp, previous_thread, true);
+        trace_ctx_diag(
+            TRACE_CTX_DIAG_RET_TO_KERNEL_CONTEXT,
+            new_id,
+            old_id,
+            new_id,
+            resume_pc,
+            resume_lr_slot,
+            resume_pc,
+            resume_lr_slot,
+            resume_sp,
+            previous_thread,
+            true,
+        );
         cpu0_breadcrumb(cpu_id, 35); // taking ret-based dispatch
-        // ret-based dispatch: restore callee-saved regs + SP, branch to
-        // resume_pc (= elr_el1). No ERET, no SPSR, no DAIF from the thread.
-        // IRQs are enabled by the assembly before branching.
+                                     // ret-based dispatch: restore callee-saved regs + SP, branch to
+                                     // resume_pc (= elr_el1). No ERET, no SPSR, no DAIF from the thread.
+                                     // IRQs are enabled by the assembly before branching.
         crate::tracing::record_event(
             crate::tracing::TraceEventType::RET_DISPATCH_SP,
             0,
@@ -6424,13 +6370,13 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
         cpu0_breadcrumb(cpu_id, 36); // before aarch64_ret_to_kernel_context
-        // DISPATCH_MISMATCH check: right before the staged context is
-        // consumed for ret-based kernel resume (inline-schedule trampoline
-        // path). `live_ctx_elr` was read from the live row while the scheduler
-        // lock was still held, above; this path no longer dereferences a raw
-        // context pointer after force_unlock_scheduler(), because the pointer
-        // it holds now names this CPU's staging copy and not a row in the
-        // scheduler's threads Vec.
+                                     // DISPATCH_MISMATCH check: right before the staged context is
+                                     // consumed for ret-based kernel resume (inline-schedule trampoline
+                                     // path). `live_ctx_elr` was read from the live row while the scheduler
+                                     // lock was still held, above; this path no longer dereferences a raw
+                                     // context pointer after force_unlock_scheduler(), because the pointer
+                                     // it holds now names this CPU's staging copy and not a row in the
+                                     // scheduler's threads Vec.
         record_dispatch_mismatch_if_needed(cpu_id, new_id, resume_pc, live_ctx_elr, resume_sp);
         #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
         let resume_pc =
@@ -6438,15 +6384,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         // See the IRQ-path site: the ret-based dispatch records its own 'R' row
         // so the ring names the dispatch that actually happened.
         record_dispatch(
-            cpu_id,
-            old_id,
-            new_id,
-            resume_pc,
-            0,
-            resume_pc,
-            resume_sp,
-            b'R',
-            false,
+            cpu_id, old_id, new_id, resume_pc, 0, resume_pc, resume_sp, b'R', false,
         );
         // OWNER-TID CANARY: this ret-based dispatch is finalized for new_id. The
         // assembly refusal record carries no tid, so the drain's terminate decision
@@ -6461,9 +6399,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     // ERET-based dispatch: for idle threads, user threads, and first-run
     // kernel threads that haven't been context-switched yet.
     cpu0_breadcrumb(cpu_id, 40); // taking ERET-based dispatch
-    // Keep the prepared ERET frame off the live scheduler stack so nested
-    // exception entry cannot overwrite a stack-local frame before
-    // aarch64_enter_exception_frame() consumes it.
+                                 // Keep the prepared ERET frame off the live scheduler stack so nested
+                                 // exception entry cannot overwrite a stack-local frame before
+                                 // aarch64_enter_exception_frame() consumes it.
     let frame = inline_schedule_dispatch_frame(cpu_id);
     let trace_eret_tid = sched.get_thread(new_id).and_then(|thread| {
         if thread.owner_pid.is_some() && thread.blocked_in_syscall {
@@ -6486,7 +6424,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     // would be an unsynchronized iteration of the shared threads Vec that
     // could race a concurrent spawn/reap on a peer CPU (realloc/element-shift
     // -> data race/UAF).
-    let eret_anomaly_ctx_elr = sched.get_thread(new_id).map(|thread| thread.context.elr_el1);
+    let eret_anomaly_ctx_elr = sched
+        .get_thread(new_id)
+        .map(|thread| thread.context.elr_el1);
     if let Some(trace_tid) = trace_eret_tid {
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_POST, &frame);
     }
@@ -6541,7 +6481,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     // Capture what CPU 0 is dispatching via ERET and where it's going
     if cpu_id == 0 {
         use crate::arch_impl::aarch64::timer_interrupt::{
-            CPU0_DISPATCH_TID, CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR,
+            CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR, CPU0_DISPATCH_TID,
         };
         CPU0_DISPATCH_TID.store(new_id, Ordering::Relaxed);
         CPU0_DISPATCH_ELR.store(frame.elr, Ordering::Relaxed);
@@ -6856,11 +6796,7 @@ pub fn schedule_from_kernel() {
     );
 
     unsafe {
-        aarch64_inline_schedule_switch(
-            old_context_ptr,
-            scheduler_top,
-            inline_schedule_trampoline,
-        );
+        aarch64_inline_schedule_switch(old_context_ptr, scheduler_top, inline_schedule_trampoline);
     }
 
     let resumed_thread_ptr = Aarch64PerCpu::current_thread_ptr();
@@ -7051,22 +6987,23 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
                 .map(|pt| pt.level_4_frame().start_address().as_u64())
                 .or(process.inherited_cr3)
         } else {
+            let mut line = crate::serial_line::Line::new();
             // Thread's process not found — orphaned thread.
             // Diagnostic: dump all process thread IDs to identify the mismatch.
-            raw_uart_str("\n[TTBR_DIAG] wanted_tid=");
-            raw_uart_dec(thread_id);
-            raw_uart_str(" nproc=");
-            raw_uart_dec(manager.process_count() as u64);
+            line.text("\n[TTBR_DIAG] wanted_tid=");
+            line.dec(thread_id);
+            line.text(" nproc=");
+            line.dec(manager.process_count() as u64);
             for (pid, proc) in manager.iter_processes() {
-                raw_uart_str(" p");
-                raw_uart_dec(pid.as_u64());
-                raw_uart_str(":t");
+                line.text(" p");
+                line.dec(pid.as_u64());
+                line.text(":t");
                 match proc.main_thread.as_ref() {
-                    Some(t) => raw_uart_dec(t.id),
-                    None => raw_uart_str("X"),
+                    Some(t) => line.dec(t.id),
+                    None => line.text("X"),
                 }
             }
-            raw_uart_str("\n");
+            line.text("\n");
             drop(manager_guard);
             return TtbrResult::ProcessGone;
         }
@@ -7257,7 +7194,8 @@ static SCHEDULE_MARKER_EMITTED: AtomicBool = AtomicBool::new(false);
 #[allow(dead_code)]
 fn emit_schedule_boot_marker() {
     if !SCHEDULE_MARKER_EMITTED.swap(true, Ordering::Relaxed) {
-        raw_uart_str("[ INFO] scheduler::schedule() returned (boot marker)\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("[ INFO] scheduler::schedule() returned (boot marker)\n");
     }
 }
 
@@ -7268,8 +7206,9 @@ static EMITTED_EL0_MARKER: AtomicBool = AtomicBool::new(false);
 #[allow(dead_code)]
 fn emit_el0_entry_marker() {
     if !EMITTED_EL0_MARKER.swap(true, Ordering::Relaxed) {
-        raw_uart_str("EL0_ENTER: First userspace entry\n");
-        raw_uart_str("[ OK ] EL0_SMOKE: userspace executed + syscall path verified\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text("EL0_ENTER: First userspace entry\n");
+        line.text("[ OK ] EL0_SMOKE: userspace executed + syscall path verified\n");
     }
 }
 

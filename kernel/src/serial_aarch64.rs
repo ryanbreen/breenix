@@ -195,19 +195,7 @@ impl SerialPort {
 
     /// Send a single byte
     pub fn send(&mut self, byte: u8) {
-        if is_16550() {
-            // 16550: wait for THRE (Transmit Holding Register Empty)
-            while read_reg8(reg16550::LSR) & reg16550::LSR_THRE == 0 {
-                core::hint::spin_loop();
-            }
-            write_reg8(reg16550::THR, byte);
-        } else {
-            // PL011: wait until TX FIFO is not full
-            while (read_reg(reg::FR) & flag::TXFF) != 0 {
-                core::hint::spin_loop();
-            }
-            write_reg(reg::DR, byte as u32);
-        }
+        crate::serial_line::Line::new().char(byte);
     }
 
     /// Try to receive a byte (non-blocking)
@@ -241,9 +229,7 @@ impl SerialPort {
 
 impl fmt::Write for SerialPort {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for byte in s.bytes() {
-            self.send(byte);
-        }
+        crate::serial_line::Line::new().text(s);
         Ok(())
     }
 }
@@ -332,114 +318,31 @@ pub fn get_received_byte() -> Option<u8> {
     }
 }
 
-/// Write a single byte to serial output.
-///
-/// Disables interrupts before acquiring the lock to prevent deadlock:
-/// without this, a timer IRQ could fire while holding SERIAL1, and
-/// any code on another CPU holding SCHEDULER that tries to log would
-/// create a SERIAL1 → SCHEDULER / SCHEDULER → SERIAL1 deadlock.
+/// Write one byte through the bounded UART ownership/staging path.
 pub fn write_byte(byte: u8) {
     write_bytes_atomic(core::slice::from_ref(&byte));
 }
 
-/// Write one caller-defined output unit while holding the serial lock once.
+/// Serialize newline-delimited records and the caller-defined unterminated tail.
 pub fn write_bytes_atomic(bytes: &[u8]) {
-    let daif_before: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, DAIF", out(reg) daif_before, options(nomem, nostack));
-        core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
-    }
-    let mut serial = SERIAL1.lock();
-    for &byte in bytes {
-        serial.send(byte);
-    }
-    drop(serial);
-    unsafe {
-        core::arch::asm!("msr DAIF, {}", in(reg) daif_before, options(nomem, nostack));
-    }
-}
-
-/// Writer that tees output to both UART and the log capture ring buffer.
-struct TeeWriter<'a>(&'a mut SerialPort);
-
-impl fmt::Write for TeeWriter<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for byte in s.bytes() {
-            self.0.send(byte);
-            crate::graphics::log_capture::capture_byte(byte);
-            crate::log_buffer::capture_byte(byte);
-        }
-        Ok(())
-    }
+    crate::serial_line::Line::new().bytes(bytes);
 }
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-
-    // CRITICAL: Disable interrupts during serial output to prevent deadlock.
-    // On ARM64, unlike x86_64, there's only one serial port (SERIAL1).
-    // Both serial_println! and log_serial_println! use the same lock.
-    // If a timer interrupt fires while holding the lock and something in
-    // the timer path tries to log, we get a deadlock.
-    //
-    // The interrupt disable is done via DAIF (Debug/Abort/IRQ/FIQ mask) bits.
-    let daif_before: u64;
-    unsafe {
-        // Read current interrupt state
-        core::arch::asm!("mrs {}, DAIF", out(reg) daif_before, options(nomem, nostack));
-        // Mask IRQ (bit 7) and FIQ (bit 6)
-        core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
-    }
-
-    let mut serial = SERIAL1.lock();
-    // Tee: write to both UART and log capture buffer
-    let mut tee = TeeWriter(&mut *serial);
-    let _ = write!(tee, "{}", args);
-    drop(serial);
-
-    // Restore previous interrupt state
-    unsafe {
-        core::arch::asm!("msr DAIF, {}", in(reg) daif_before, options(nomem, nostack));
-    }
+    let _ = crate::serial_line::TeeLine::new().write_fmt(args);
 }
 
-/// Try to print without blocking - returns Err if lock is held
 pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     use core::fmt::Write;
-
-    match SERIAL1.try_lock() {
-        Some(mut serial) => {
-            serial.write_fmt(args).map_err(|_| ())?;
-            Ok(())
-        }
-        None => Err(()), // Lock is held
-    }
+    crate::serial_line::TeeLine::new()
+        .write_fmt(args)
+        .map_err(|_| ())
 }
 
-/// Emergency print for panics - uses direct port I/O without locking
-#[allow(dead_code)]
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
-    use core::fmt::Write;
-
-    struct EmergencySerial;
-
-    impl fmt::Write for EmergencySerial {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            for byte in s.bytes() {
-                // Wait for TX FIFO
-                while (read_reg(reg::FR) & flag::TXFF) != 0 {
-                    core::hint::spin_loop();
-                }
-                write_reg(reg::DR, byte as u32);
-            }
-            Ok(())
-        }
-    }
-
-    let mut emergency = EmergencySerial;
-    emergency.write_fmt(args).map_err(|_| ())?;
-    Ok(())
+    try_print(args)
 }
 
 /// Log print function for the log_serial_print macro
@@ -449,52 +352,25 @@ pub fn _log_print(args: fmt::Arguments) {
 }
 
 // =============================================================================
-// Lock-Free Debug Output for Critical Paths
+// Hardware output under UART ownership
 // =============================================================================
 
-/// Raw serial debug output - single character, no locks, no allocations.
-/// Safe to call from any context including interrupt handlers and syscalls.
-///
-/// This is the ONLY acceptable way to add debug markers to critical paths like:
-/// - Context switch code
-/// - Kernel thread entry
-/// - Workqueue workers
-/// - Interrupt handlers
-/// - Syscall entry/exit
-#[inline(always)]
-pub fn raw_serial_char(c: u8) {
-    let addr = crate::platform_config::uart_virt();
+/// Private UART sink used while owning the line ticket.
+pub(super) fn hardware_byte(c: u8, _ticket: &crate::serial_line::Ticket) {
+    let addr = crate::platform_config::uart_virt() as usize;
     unsafe {
         if crate::platform_config::uart_type() == 1 {
-            // 16550: byte write to THR
+            while core::ptr::read_volatile((addr + reg16550::LSR) as *const u8) & reg16550::LSR_THRE
+                == 0
+            {
+                core::hint::spin_loop();
+            }
             core::ptr::write_volatile(addr as *mut u8, c);
         } else {
-            // PL011: 32-bit write to DR
+            while core::ptr::read_volatile((addr + reg::FR) as *const u32) & flag::TXFF != 0 {
+                core::hint::spin_loop();
+            }
             core::ptr::write_volatile(addr as *mut u32, c as u32);
-        }
-    }
-}
-
-/// Raw serial debug output - write a string without locks or allocations.
-/// Safe to call from any context including interrupt handlers and syscalls.
-///
-/// Use this for unique, descriptive debug markers that are easy to grep for:
-/// - `raw_serial_str(b"[STDIN_READ]")` instead of `raw_serial_char(b'r')`
-/// - `raw_serial_str(b"[VIRTIO_KEY]")` instead of `raw_serial_char(b'V')`
-///
-/// This helps identify markers in test output without ambiguity.
-#[inline(always)]
-pub fn raw_serial_str(s: &[u8]) {
-    let addr = crate::platform_config::uart_virt();
-    unsafe {
-        if crate::platform_config::uart_type() == 1 {
-            for &c in s {
-                core::ptr::write_volatile(addr as *mut u8, c);
-            }
-        } else {
-            for &c in s {
-                core::ptr::write_volatile(addr as *mut u32, c as u32);
-            }
         }
     }
 }

@@ -42,6 +42,9 @@
 //! matching cannot pass forever. 7 further legs run the aarch64 strict gate for
 //! real, in its scoring-only mode, over committed serials.
 
+#[path = "support/serial_interleave_fixture.rs"]
+mod serial_interleave_fixture;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 fn repo_root() -> PathBuf {
@@ -1107,7 +1110,7 @@ fn the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it() {
     fs::create_dir_all(&scratch).expect("create the scratch directory for the gate legs");
     let write = |name: &str, body: &str| -> PathBuf {
         let path = scratch.join(format!("{name}.txt"));
-        fs::write(&path, body).expect("write a gate leg serial");
+        fs::write(&path, serial_interleave_fixture::extend(body)).expect("write a gate leg serial");
         path
     };
 

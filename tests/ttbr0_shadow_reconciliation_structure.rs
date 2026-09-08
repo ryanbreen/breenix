@@ -30,6 +30,9 @@
 //! is recorded verbatim under
 //! docs/planning/green-program/aarch64-testing/serials/slice1b/
 
+#[path = "support/serial_interleave_fixture.rs"]
+mod serial_interleave_fixture;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2446,7 +2449,7 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
         );
         let leg = |name: &str, body: &str| {
             let path = scratch.join(format!("{}-{name}.txt", gate.replace('/', "_")));
-            fs::write(&path, body).expect("write a gate leg serial");
+            fs::write(&path, serial_interleave_fixture::extend(body)).expect("write a gate leg serial");
             score_with_gate(gate, variable, &path)
         };
 

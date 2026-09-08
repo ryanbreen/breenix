@@ -10,6 +10,10 @@
 #![allow(dead_code)]
 
 use crate::arch_impl::aarch64::constants::{
+    percpu_kernel_stack_top, percpu_sched_stack_top, percpu_stack_published_owner,
+    percpu_stack_slot_of, percpu_stack_top_owned_by,
+};
+use crate::arch_impl::aarch64::constants::{
     HARDIRQ_MASK, HARDIRQ_SHIFT, NMI_MASK, NMI_SHIFT, PERCPU_CPU_ID_OFFSET,
     PERCPU_CURRENT_THREAD_OFFSET, PERCPU_DISPATCH_ELR_OFFSET, PERCPU_DISPATCH_SPSR_OFFSET,
     PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET,
@@ -17,10 +21,6 @@ use crate::arch_impl::aarch64::constants::{
     PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
     PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET, PREEMPT_ACTIVE, SOFTIRQ_DISABLE_OFFSET,
     SOFTIRQ_MASK, SOFTIRQ_OFFSET,
-};
-use crate::arch_impl::aarch64::constants::{
-    percpu_kernel_stack_top, percpu_sched_stack_top, percpu_stack_published_owner,
-    percpu_stack_slot_of, percpu_stack_top_owned_by,
 };
 use crate::arch_impl::traits::PerCpuOps;
 use core::panic::Location;
@@ -37,7 +37,7 @@ pub struct Aarch64PerCpu;
 pub static PERCPU_STACK_ALIEN_REFUSALS: AtomicU64 = AtomicU64::new(0);
 
 /// Emission budget for the whole boot. The refusal record is written with
-/// `raw_uart_*` from the dispatch path, so it is bounded exactly like the
+/// `serial_line::Line` from the dispatch path, so it is bounded exactly like the
 /// resume-PC refusal record.
 static PERCPU_STACK_ALIEN_EMISSIONS: AtomicU64 = AtomicU64::new(0);
 
@@ -203,16 +203,17 @@ fn record_cpu_identity_split(carried: usize, fresh: usize, site: &'static Locati
     if CPU_IDENTITY_SPLIT_EMISSIONS.fetch_add(1, Ordering::Relaxed)
         < CPU_IDENTITY_SPLIT_EMISSION_CAP
     {
-        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-        raw_uart_str("[CPU_IDENTITY_SPLIT:carried=");
-        raw_uart_dec(carried as u64);
-        raw_uart_str(":fresh=");
-        raw_uart_dec(fresh as u64);
-        raw_uart_str(":site=");
-        raw_uart_str(site.file());
-        raw_uart_str(":");
-        raw_uart_dec(u64::from(site.line()));
-        raw_uart_str("]\n");
+        let mut line = crate::serial_line::Line::new();
+
+        line.text("[CPU_IDENTITY_SPLIT:carried=");
+        line.dec(carried as u64);
+        line.text(":fresh=");
+        line.dec(fresh as u64);
+        line.text(":site=");
+        line.text(site.file());
+        line.text(":");
+        line.dec(u64::from(site.line()));
+        line.text("]\n");
     }
 }
 
@@ -276,7 +277,7 @@ impl CpuId {
 /// evidence channel is a single literal with a single census, and moving the
 /// repair upstream cannot quietly move the evidence out of the gate.
 ///
-/// Lock-free `raw_uart_*` with a whole-boot emission budget: this runs from the
+/// Lock-free `serial_line::Line` with a whole-boot emission budget: this runs from the
 /// dispatch path, where the resume-PC refusal record set the precedent.
 fn record_percpu_stack_alien(cpu: usize, addr: u64, site: &'static Location<'static>) {
     let slot = percpu_stack_slot_of(addr).unwrap_or(usize::MAX);
@@ -286,25 +287,24 @@ fn record_percpu_stack_alien(cpu: usize, addr: u64, site: &'static Location<'sta
     if PERCPU_STACK_ALIEN_EMISSIONS.fetch_add(1, Ordering::Relaxed)
         < PERCPU_STACK_ALIEN_EMISSION_CAP
     {
-        use crate::arch_impl::aarch64::context_switch::{
-            last_dispatched_tid, raw_uart_dec, raw_uart_hex, raw_uart_str,
-        };
-        raw_uart_str("[PERCPU_STACK_ALIEN:cpu=");
-        raw_uart_dec(cpu as u64);
-        raw_uart_str(":owner=");
+        let mut line = crate::serial_line::Line::new();
+        use crate::arch_impl::aarch64::context_switch::last_dispatched_tid;
+        line.text("[PERCPU_STACK_ALIEN:cpu=");
+        line.dec(cpu as u64);
+        line.text(":owner=");
         match published {
-            Some(owner) => raw_uart_dec(owner as u64),
-            None => raw_uart_str("unpublished"),
+            Some(owner) => line.dec(owner as u64),
+            None => line.text("unpublished"),
         }
-        raw_uart_str(":sp=");
-        raw_uart_hex(addr);
-        raw_uart_str(":tid=");
-        raw_uart_dec(last_dispatched_tid(cpu).unwrap_or(0));
-        raw_uart_str(":site=");
-        raw_uart_str(site.file());
-        raw_uart_str(":");
-        raw_uart_dec(u64::from(site.line()));
-        raw_uart_str("]\n");
+        line.text(":sp=");
+        line.hex(addr);
+        line.text(":tid=");
+        line.dec(last_dispatched_tid(cpu).unwrap_or(0));
+        line.text(":site=");
+        line.text(site.file());
+        line.text(":");
+        line.dec(u64::from(site.line()));
+        line.text("]\n");
     }
 }
 

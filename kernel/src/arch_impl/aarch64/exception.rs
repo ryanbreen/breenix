@@ -54,8 +54,7 @@ pub(crate) static EL1_FATAL_FRAME_DUMPS: AtomicU64 = AtomicU64::new(0);
 pub fn el1_fatal_frame_dumps() -> u64 {
     EL1_FATAL_FRAME_DUMPS.load(Ordering::Acquire)
 }
-static FATAL_POSTMORTEM_SECTIONS_CLAIMED: [AtomicU64; 8] =
-    [const { AtomicU64::new(0) }; 8];
+static FATAL_POSTMORTEM_SECTIONS_CLAIMED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static EL1_UNHANDLED_FAULT_LATCHED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
 static FATAL_POSTMORTEM_UART_LOCK: AtomicBool = AtomicBool::new(false);
 
@@ -182,25 +181,12 @@ fn capture_el1_first_fault_evidence(elr: u64) -> El1FirstFaultEvidence {
     }
 }
 
-#[cold]
-#[inline(never)]
-fn raw_uart_hex_u32(value: u32) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_char, raw_uart_str};
-
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    raw_uart_str("0x");
-    for shift in (0..32).step_by(4).rev() {
-        raw_uart_char(HEX[((value >> shift) & 0xF) as usize]);
-    }
-}
-
 /// EL1 faults can interrupt code that already holds SCHEDULER. Fatal diagnostics
 /// therefore consult only the per-CPU published pointer and never take that lock.
 #[inline(always)]
 fn current_thread_lock_free() -> Option<&'static crate::task::thread::Thread> {
-    let thread_ptr =
-        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::current_thread_ptr()
-            as *const crate::task::thread::Thread;
+    let thread_ptr = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::current_thread_ptr()
+        as *const crate::task::thread::Thread;
     if thread_ptr.is_null() {
         None
     } else {
@@ -217,37 +203,37 @@ fn dump_el1_fatal_frame_and_dispatch_trace(
     far: u64,
     cpu_id: usize,
 ) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+    let mut line = crate::serial_line::Line::new();
 
     EL1_FATAL_FRAME_DUMPS.fetch_add(1, Ordering::Release);
     let sp_at_crash = frame as *const _ as u64 + 272;
-    raw_uart_str("\n[FATAL_REGS] label=");
-    raw_uart_str(label);
-    raw_uart_str(" cpu=");
-    raw_uart_dec(cpu_id as u64);
-    raw_uart_str(" spsr=");
-    raw_uart_hex(frame.spsr);
-    raw_uart_str(" esr=");
-    raw_uart_hex(esr);
-    raw_uart_str(" far=");
-    raw_uart_hex(far);
-    raw_uart_str(" elr=");
-    raw_uart_hex(frame.elr);
-    raw_uart_str(" sp=");
-    raw_uart_hex(sp_at_crash);
+    line.text("\n[FATAL_REGS] label=");
+    line.text(label);
+    line.text(" cpu=");
+    line.dec(cpu_id as u64);
+    line.text(" spsr=");
+    line.hex(frame.spsr);
+    line.text(" esr=");
+    line.hex(esr);
+    line.text(" far=");
+    line.hex(far);
+    line.text(" elr=");
+    line.hex(frame.elr);
+    line.text(" sp=");
+    line.hex(sp_at_crash);
 
     let registers = unsafe { core::slice::from_raw_parts(&frame.x0 as *const u64, 31) };
     for (register, value) in registers.iter().enumerate() {
         let separator = if register % 4 == 0 { "\n  " } else { " " };
-        raw_uart_str(separator);
-        raw_uart_str("x");
-        raw_uart_dec(register as u64);
-        raw_uart_str("=");
-        raw_uart_hex(*value);
+        line.text(separator);
+        line.text("x");
+        line.dec(register as u64);
+        line.text("=");
+        line.hex(*value);
     }
-    raw_uart_str("\n  DISPATCH_TRACE cpu=");
-    raw_uart_dec(cpu_id as u64);
-    raw_uart_str(":\n");
+    line.text("\n  DISPATCH_TRACE cpu=");
+    line.dec(cpu_id as u64);
+    line.text(":\n");
     crate::arch_impl::aarch64::context_switch::dump_dispatch_trace(cpu_id);
 }
 
@@ -261,60 +247,60 @@ fn dump_el1_first_fault(
     cpu_id: usize,
     evidence: &El1FirstFaultEvidence,
 ) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+    let mut line = crate::serial_line::Line::new();
 
-    raw_uart_str("[UNHANDLED_EC] cpu=");
-    raw_uart_dec(cpu_id as u64);
-    raw_uart_str(" EC=");
-    raw_uart_hex(ec as u64);
-    raw_uart_str(" ELR=");
-    raw_uart_hex(frame.elr);
-    raw_uart_str("\n[EL1_FIRST_FAULT] instruction_word=");
+    line.text("[UNHANDLED_EC] cpu=");
+    line.dec(cpu_id as u64);
+    line.text(" EC=");
+    line.hex(ec as u64);
+    line.text(" ELR=");
+    line.hex(frame.elr);
+    line.text("\n[EL1_FIRST_FAULT] instruction_word=");
     if let Some(word) = evidence.instruction_word {
-        raw_uart_hex_u32(word);
+        line.hex32(word);
     } else {
-        raw_uart_str("unavailable");
+        line.text("unavailable");
     }
-    raw_uart_str(" tpidr_el1=");
-    raw_uart_hex(evidence.tpidr_el1);
-    raw_uart_str(" mpidr_el1=");
-    raw_uart_hex(evidence.mpidr_el1);
-    raw_uart_str("\n  sctlr_el1=");
-    raw_uart_hex(evidence.sctlr_el1);
-    raw_uart_str(" vbar_el1=");
-    raw_uart_hex(evidence.vbar_el1);
-    raw_uart_str(" ttbr1_el1=");
-    raw_uart_hex(evidence.ttbr1_el1);
-    raw_uart_str("\n  tcr_el1=");
-    raw_uart_hex(evidence.tcr_el1);
-    raw_uart_str(" cntvct_el0=");
-    raw_uart_hex(evidence.cntvct_el0);
-    raw_uart_str("\n");
+    line.text(" tpidr_el1=");
+    line.hex(evidence.tpidr_el1);
+    line.text(" mpidr_el1=");
+    line.hex(evidence.mpidr_el1);
+    line.text("\n  sctlr_el1=");
+    line.hex(evidence.sctlr_el1);
+    line.text(" vbar_el1=");
+    line.hex(evidence.vbar_el1);
+    line.text(" ttbr1_el1=");
+    line.hex(evidence.ttbr1_el1);
+    line.text("\n  tcr_el1=");
+    line.hex(evidence.tcr_el1);
+    line.text(" cntvct_el0=");
+    line.hex(evidence.cntvct_el0);
+    line.text("\n");
 
     let sp_at_crash = frame as *const _ as u64 + 272;
-    raw_uart_str("[FATAL_REGS] cpu=");
-    raw_uart_dec(cpu_id as u64);
-    raw_uart_str(" spsr=");
-    raw_uart_hex(frame.spsr);
-    raw_uart_str(" esr=");
-    raw_uart_hex(esr);
-    raw_uart_str(" far=");
-    raw_uart_hex(far);
-    raw_uart_str(" elr=");
-    raw_uart_hex(frame.elr);
-    raw_uart_str(" sp=");
-    raw_uart_hex(sp_at_crash);
+    line.text("[FATAL_REGS] cpu=");
+    line.dec(cpu_id as u64);
+    line.text(" spsr=");
+    line.hex(frame.spsr);
+    line.text(" esr=");
+    line.hex(esr);
+    line.text(" far=");
+    line.hex(far);
+    line.text(" elr=");
+    line.hex(frame.elr);
+    line.text(" sp=");
+    line.hex(sp_at_crash);
 
     let registers = unsafe { core::slice::from_raw_parts(&frame.x0 as *const u64, 31) };
     for (register, value) in registers.iter().enumerate() {
         let separator = if register % 4 == 0 { "\n  " } else { " " };
-        raw_uart_str(separator);
-        raw_uart_str("x");
-        raw_uart_dec(register as u64);
-        raw_uart_str("=");
-        raw_uart_hex(*value);
+        line.text(separator);
+        line.text("x");
+        line.dec(register as u64);
+        line.text("=");
+        line.hex(*value);
     }
-    raw_uart_str("\n");
+    line.text("\n");
 
     crate::arch_impl::aarch64::context_switch::dump_dispatch_trace(cpu_id);
 
@@ -403,8 +389,6 @@ fn defer_current_user_thread_sigsegv_exit(
     frame_addr: u64,
     entry_already_counted: bool,
 ) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-
     // Publish the deferred exit only after this CPU has left the retiring root
     // and cleared both assembly return shadows. A peer CPU may drain the queue
     // immediately after publication.
@@ -416,24 +400,25 @@ fn defer_current_user_thread_sigsegv_exit(
         )
         .and_then(|(_, tid)| (tid != 0).then_some(tid));
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-    let victim_tid = stack_owner.or_else(|| {
-        crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id)
-    });
+    let victim_tid = stack_owner
+        .or_else(|| crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id));
 
     if let Some(tid) = victim_tid {
+        let mut line = crate::serial_line::Line::new();
         if !entry_already_counted {
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
         }
         let queued = crate::task::process_task::defer_fault_sigsegv_exit(tid);
-        raw_uart_str(label);
-        raw_uart_str(" deferred_tid=");
-        raw_uart_dec(tid);
-        raw_uart_str(" queued=");
-        raw_uart_dec(if queued { 1 } else { 0 });
-        raw_uart_str("\n");
+        line.text(label);
+        line.text(" deferred_tid=");
+        line.dec(tid);
+        line.text(" queued=");
+        line.dec(if queued { 1 } else { 0 });
+        line.text("\n");
     } else {
-        raw_uart_str(label);
-        raw_uart_str(" deferred_tid=none\n");
+        let mut line = crate::serial_line::Line::new();
+        line.text(label);
+        line.text(" deferred_tid=none\n");
     }
 }
 
@@ -442,13 +427,10 @@ fn defer_current_user_thread_sigsegv_exit(
 /// per-CPU dispatch record so this exception path never acquires SCHEDULER.
 fn resolve_el0_fault_victim(page_table_phys: u64) -> Option<(crate::process::ProcessId, bool)> {
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-    let dispatched_tid =
-        crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id);
+    let dispatched_tid = crate::arch_impl::aarch64::context_switch::last_dispatched_tid(cpu_id);
     let resolution = crate::process::with_process_manager(|pm| {
-        let tid_owner = dispatched_tid.and_then(|tid| {
-            pm.find_process_by_thread(tid)
-                .map(|(pid, _process)| pid)
-        });
+        let tid_owner = dispatched_tid
+            .and_then(|tid| pm.find_process_by_thread(tid).map(|(pid, _process)| pid));
         let cr3_victim = pm
             .find_process_by_cr3_mut(page_table_phys)
             .map(|(pid, process)| (pid, process.is_terminated()));
@@ -472,9 +454,7 @@ fn resolve_el0_fault_victim(page_table_phys: u64) -> Option<(crate::process::Pro
         (None, Some(victim)) => Some(victim),
         (Some(_), None) => None,
         (None, None) => {
-            crate::trace_count!(
-                crate::tracing::providers::teardown::EXIT_ATTRIBUTION_UNCERTAIN
-            );
+            crate::trace_count!(crate::tracing::providers::teardown::EXIT_ATTRIBUTION_UNCERTAIN);
             None
         }
     }
@@ -486,6 +466,7 @@ fn dump_fatal_postmortem_section<F>(cpu_id: usize, section: usize, heading: &str
 where
     F: FnOnce(),
 {
+    let mut line = crate::serial_line::Line::new();
     let section_bit = 1u64 << section;
     if FATAL_POSTMORTEM_SECTIONS_CLAIMED[cpu_id].fetch_or(section_bit, Ordering::AcqRel)
         & section_bit
@@ -494,23 +475,22 @@ where
         return;
     }
 
-    crate::arch_impl::aarch64::context_switch::raw_uart_str(heading);
+    line.text(heading);
     dump();
 }
 
 fn dump_fatal_postmortem_once(label: &str) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     if cpu_id >= FATAL_POSTMORTEM_CAPTURED.len() {
         return;
     }
 
     if !FATAL_POSTMORTEM_CAPTURED[cpu_id].swap(true, Ordering::AcqRel) {
-        raw_uart_str("[FATAL_POSTMORTEM] cpu=");
-        raw_uart_dec(cpu_id as u64);
-        raw_uart_str(" label=");
-        raw_uart_str(label);
+        let mut line = crate::serial_line::Line::new();
+        line.text("[FATAL_POSTMORTEM] cpu=");
+        line.dec(cpu_id as u64);
+        line.text(" label=");
+        line.text(label);
     }
 
     // Claim each section before entering it. If the section itself faults, a
@@ -532,57 +512,54 @@ fn dump_fatal_postmortem_once(label: &str) {
         crate::arch_impl::aarch64::context_switch::dump_all_inline_save_skew_snapshots();
     });
     dump_fatal_postmortem_section(cpu_id, 5, "\n  Stack-half boundary canaries:\n", || {
+        let mut line = crate::serial_line::Line::new();
         for canary_cpu in 0..super::constants::MAX_CPUS {
-            raw_uart_str("    cpu=");
-            raw_uart_dec(canary_cpu as u64);
-            raw_uart_str(" intact=");
-            raw_uart_dec(
-                super::constants::percpu_stack_boundary_canary_is_intact(canary_cpu) as u64,
-            );
+            line.text("    cpu=");
+            line.dec(canary_cpu as u64);
+            line.text(" intact=");
+            line.dec(super::constants::percpu_stack_boundary_canary_is_intact(canary_cpu) as u64);
             // The record's own sentinel, reported separately: a downward
             // overrun destroys it BEFORE it can reach the ownership record, so
             // a 0 here with a 1 above is the reading that says the record the
             // custody predicate would have consulted is stack bytes.
-            raw_uart_str(" record_guard=");
-            raw_uart_dec(
-                super::constants::percpu_stack_overrun_sentinel_is_intact(canary_cpu) as u64,
-            );
-            raw_uart_str("\n");
+            line.text(" record_guard=");
+            line.dec(super::constants::percpu_stack_overrun_sentinel_is_intact(canary_cpu) as u64);
+            line.text("\n");
         }
         // The refusal TOTAL, which the per-record emissions stop reporting once
         // the whole-boot budget is spent. Without this the counter has no
         // reader and 17 refusals look exactly like 16.
-        raw_uart_str("    percpu_stack_alien_refusals=");
-        raw_uart_dec(crate::arch_impl::aarch64::percpu::percpu_stack_alien_refusals());
+        line.text("    percpu_stack_alien_refusals=");
+        line.dec(crate::arch_impl::aarch64::percpu::percpu_stack_alien_refusals());
         // Steals the selection side declined for the same custody rule. A
         // refusal count of 0 next to a non-zero routed count is the reading
         // that says the pinning worked: the thread was kept off the wrong CPU
         // instead of being refused after it got there.
-        raw_uart_str(" percpu_stack_selection_routed=");
-        raw_uart_dec(crate::task::scheduler::percpu_stack_selection_routed());
-        raw_uart_str("\n");
+        line.text(" percpu_stack_selection_routed=");
+        line.dec(crate::task::scheduler::percpu_stack_selection_routed());
+        line.text("\n");
         // Saved-LR report totals. Same argument as the line above: the
         // per-record emissions stop at their whole-boot budget, so without a
         // total here 9 non-PC words and 8 read identically.
         let (lr_nontext, lr_tid, lr_value, lr_sites, lr_el0_kernel) =
             crate::arch_impl::aarch64::context_switch::saved_lr_report_snapshot();
-        raw_uart_str("    saved_lr_nontext=");
-        raw_uart_dec(lr_nontext);
-        raw_uart_str(" last_tid=");
-        raw_uart_dec(lr_tid);
-        raw_uart_str(" last_lr=");
-        crate::arch_impl::aarch64::context_switch::raw_uart_hex(lr_value);
-        raw_uart_str(" sites=");
-        crate::arch_impl::aarch64::context_switch::raw_uart_hex(lr_sites);
-        raw_uart_str(" el0_kernel_lr=");
-        raw_uart_dec(lr_el0_kernel);
-        raw_uart_str("\n");
-        raw_uart_str("    ret_stage_refusals=");
-        raw_uart_dec(
+        line.text("    saved_lr_nontext=");
+        line.dec(lr_nontext);
+        line.text(" last_tid=");
+        line.dec(lr_tid);
+        line.text(" last_lr=");
+        line.hex(lr_value);
+        line.text(" sites=");
+        line.hex(lr_sites);
+        line.text(" el0_kernel_lr=");
+        line.dec(lr_el0_kernel);
+        line.text("\n");
+        line.text("    ret_stage_refusals=");
+        line.dec(
             crate::arch_impl::aarch64::context_switch::RET_STAGE_REFUSALS
                 .load(core::sync::atomic::Ordering::Acquire),
         );
-        raw_uart_str("\n");
+        line.text("\n");
     });
     dump_fatal_postmortem_section(cpu_id, 6, "\n  Last-dispatched tids:\n", || {
         crate::arch_impl::aarch64::context_switch::dump_all_last_dispatched_tids();
@@ -636,36 +613,37 @@ fn dump_fatal_postmortem_once(label: &str) {
 
 #[inline(never)]
 fn dump_stack_classification(frame_addr: u64) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-
     let stack_base = super::constants::percpu_stack_region_base();
     let stack_end = stack_base + super::constants::PERCPU_STACK_REGION_SIZE as u64;
     use crate::memory::kernel_stack::{ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END};
 
     if frame_addr >= stack_base && frame_addr < stack_end {
+        let mut line = crate::serial_line::Line::new();
         let offset_from_base = frame_addr - stack_base;
         let cpu_id = offset_from_base / super::constants::PERCPU_STACK_STRIDE;
         let offset_in_slot = offset_from_base % super::constants::PERCPU_STACK_STRIDE;
         if offset_in_slot < super::constants::PERCPU_SCHED_STACK_SIZE {
-            raw_uart_str("\n  STACK=sched_cpu");
+            line.text("\n  STACK=sched_cpu");
         } else {
-            raw_uart_str("\n  STACK=boot_cpu");
+            line.text("\n  STACK=boot_cpu");
         }
-        raw_uart_dec(cpu_id);
+        line.dec(cpu_id);
     } else if frame_addr >= ARM64_KERNEL_STACK_BASE && frame_addr < ARM64_KERNEL_STACK_END {
-        raw_uart_str("\n  STACK=alloc_kstack");
+        let mut line = crate::serial_line::Line::new();
+        line.text("\n  STACK=alloc_kstack");
         if let Some((slot, tid)) =
             crate::arch_impl::aarch64::context_switch::last_dispatched_tid_for_stack_address(
                 frame_addr,
             )
         {
-            raw_uart_str(" slot=");
-            raw_uart_dec(slot as u64);
-            raw_uart_str(" last_dispatched_tid=");
-            raw_uart_dec(tid);
+            line.text(" slot=");
+            line.dec(slot as u64);
+            line.text(" last_dispatched_tid=");
+            line.dec(tid);
         }
     } else {
-        raw_uart_str("\n  STACK=unknown");
+        let mut line = crate::serial_line::Line::new();
+        line.text("\n  STACK=unknown");
     }
 }
 
@@ -775,9 +753,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             )
                         )
                     ))]
-                    crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(
-                        frame_ref,
-                    );
+                    crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame_ref);
                     return;
                 }
             }
@@ -827,21 +803,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Lock-free diagnostic — serial_println! acquires SERIAL lock which
             // can deadlock on SMP if another CPU holds SCHEDULER.
             {
-                use crate::arch_impl::aarch64::context_switch::{
-                    raw_uart_char, raw_uart_dec, raw_uart_hex, raw_uart_str,
-                };
-                raw_uart_str("\n[DATA_ABORT] FAR=");
-                raw_uart_hex(far);
-                raw_uart_str(" ELR=");
-                raw_uart_hex(frame_ref.elr);
-                raw_uart_str(" ESR=");
-                raw_uart_hex(esr);
-                raw_uart_str(" DFSC=");
-                raw_uart_hex(dfsc as u64);
-                raw_uart_str(" TTBR0=");
-                raw_uart_hex(ttbr0);
-                raw_uart_str(" from_el0=");
-                raw_uart_char(if from_el0 { b'1' } else { b'0' });
+                let mut line = crate::serial_line::Line::new();
+
+                line.text("\n[DATA_ABORT] FAR=");
+                line.hex(far);
+                line.text(" ELR=");
+                line.hex(frame_ref.elr);
+                line.text(" ESR=");
+                line.hex(esr);
+                line.text(" DFSC=");
+                line.hex(dfsc as u64);
+                line.text(" TTBR0=");
+                line.hex(ttbr0);
+                line.text(" from_el0=");
+                line.char(if from_el0 { b'1' } else { b'0' });
 
                 // For kernel-mode faults, dump extra diagnostic info to identify
                 // the faulting code path (null deref, wild pointer, use-after-free)
@@ -854,38 +829,38 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         far,
                         cpu_id as usize,
                     );
-                    raw_uart_str(" cpu=");
-                    raw_uart_dec(cpu_id as u64);
-                    raw_uart_str("\n  x19=");
-                    raw_uart_hex(frame_ref.x19);
-                    raw_uart_str(" x20=");
-                    raw_uart_hex(frame_ref.x20);
-                    raw_uart_str(" x8=");
-                    raw_uart_hex(frame_ref.x8);
-                    raw_uart_str(" x9=");
-                    raw_uart_hex(frame_ref.x9);
-                    raw_uart_str(" x29=");
-                    raw_uart_hex(frame_ref.x29);
-                    raw_uart_str(" x30=");
-                    raw_uart_hex(frame_ref.x30);
+                    line.text(" cpu=");
+                    line.dec(cpu_id as u64);
+                    line.text("\n  x19=");
+                    line.hex(frame_ref.x19);
+                    line.text(" x20=");
+                    line.hex(frame_ref.x20);
+                    line.text(" x8=");
+                    line.hex(frame_ref.x8);
+                    line.text(" x9=");
+                    line.hex(frame_ref.x9);
+                    line.text(" x29=");
+                    line.hex(frame_ref.x29);
+                    line.text(" x30=");
+                    line.hex(frame_ref.x30);
                     // SP at crash = frame address + 272 (exception frame size)
-                    raw_uart_str(" sp=");
-                    raw_uart_hex(frame as u64 + 272);
+                    line.text(" sp=");
+                    line.hex(frame as u64 + 272);
                     let current_thread = current_thread_lock_free();
                     if let Some(thread) = current_thread {
                         let tid = thread.id();
-                        raw_uart_str(" tid=");
-                        raw_uart_dec(tid);
-                        raw_uart_str(" name=");
-                        raw_uart_str(&thread.name);
+                        line.text(" tid=");
+                        line.dec(tid);
+                        line.text(" name=");
+                        line.text(&thread.name);
                     }
 
                     // Per-CPU state diagnostic: shows whether kernel_stack_top and
                     // user_rsp_scratch are correct for the current thread.
                     let percpu_kst =
                         crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
-                    raw_uart_str("\n  percpu_kst=");
-                    raw_uart_hex(percpu_kst);
+                    line.text("\n  percpu_kst=");
+                    line.hex(percpu_kst);
                     let user_rsp: u64;
                     unsafe {
                         let percpu_base: u64;
@@ -896,8 +871,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             0
                         };
                     }
-                    raw_uart_str(" user_rsp_scratch=");
-                    raw_uart_hex(user_rsp);
+                    line.text(" user_rsp_scratch=");
+                    line.hex(user_rsp);
 
                     // Check thread's expected kernel_stack_top from scheduler
                     if let Some(thread) = current_thread {
@@ -905,28 +880,28 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             .kernel_stack_top
                             .map(|value| value.as_u64())
                             .unwrap_or(0);
-                        raw_uart_str(" thread_kst=");
-                        raw_uart_hex(thread_kst);
+                        line.text(" thread_kst=");
+                        line.hex(thread_kst);
                     }
 
                     let (armed_port, armed_cmd, isr_port, isr_cmd, waiter_tid) =
                         crate::drivers::ahci::last_irq_debug_snapshot();
-                    raw_uart_str("\n  AHCI arm port=");
-                    raw_uart_dec(armed_port as u64);
-                    raw_uart_str(" cmd=");
-                    raw_uart_dec(armed_cmd as u64);
-                    raw_uart_str(" isr port=");
-                    raw_uart_dec(isr_port as u64);
-                    raw_uart_str(" cmd=");
-                    raw_uart_dec(isr_cmd as u64);
-                    raw_uart_str(" waiter_tid=");
-                    raw_uart_dec(waiter_tid);
+                    line.text("\n  AHCI arm port=");
+                    line.dec(armed_port as u64);
+                    line.text(" cmd=");
+                    line.dec(armed_cmd as u64);
+                    line.text(" isr port=");
+                    line.dec(isr_port as u64);
+                    line.text(" cmd=");
+                    line.dec(isr_cmd as u64);
+                    line.text(" waiter_tid=");
+                    line.dec(waiter_tid);
 
                     // Classify which stack region the frame is on
                     let frame_addr = frame as u64;
                     dump_stack_classification(frame_addr);
                 }
-                raw_uart_str("\n");
+                line.text("\n");
             }
 
             if from_el0 {
@@ -934,22 +909,23 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // Page table walk diagnostic: dump L0-L3 entries for the fault VA
                 // to understand why the mapping is missing or has wrong permissions.
                 {
-                    use crate::arch_impl::aarch64::context_switch::{raw_uart_hex, raw_uart_str};
+                    let mut line = crate::serial_line::Line::new();
+
                     let pt_base = ttbr0 & 0x0000_FFFF_FFFF_F000;
                     let hhdm: u64 = 0xFFFF_0000_0000_0000;
-                    raw_uart_str("\n[PT_WALK] VA=");
-                    raw_uart_hex(far);
-                    raw_uart_str(" TTBR0_phys=");
-                    raw_uart_hex(pt_base);
+                    line.text("\n[PT_WALK] VA=");
+                    line.hex(far);
+                    line.text(" TTBR0_phys=");
+                    line.hex(pt_base);
 
                     // L0 index: bits [47:39]
                     let l0_idx = ((far >> 39) & 0x1FF) as usize;
                     let l0_table = (hhdm + pt_base) as *const u64;
                     let l0_entry = unsafe { core::ptr::read_volatile(l0_table.add(l0_idx)) };
-                    raw_uart_str(" L0[");
-                    raw_uart_hex(l0_idx as u64);
-                    raw_uart_str("]=");
-                    raw_uart_hex(l0_entry);
+                    line.text(" L0[");
+                    line.hex(l0_idx as u64);
+                    line.text("]=");
+                    line.hex(l0_entry);
 
                     if l0_entry & 0x3 == 0x3 {
                         // Valid table descriptor -> walk L1
@@ -957,10 +933,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         let l1_idx = ((far >> 30) & 0x1FF) as usize;
                         let l1_table = (hhdm + l1_base) as *const u64;
                         let l1_entry = unsafe { core::ptr::read_volatile(l1_table.add(l1_idx)) };
-                        raw_uart_str(" L1[");
-                        raw_uart_hex(l1_idx as u64);
-                        raw_uart_str("]=");
-                        raw_uart_hex(l1_entry);
+                        line.text(" L1[");
+                        line.hex(l1_idx as u64);
+                        line.text("]=");
+                        line.hex(l1_entry);
 
                         if l1_entry & 0x3 == 0x3 {
                             // Valid table descriptor -> walk L2
@@ -969,10 +945,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             let l2_table = (hhdm + l2_base) as *const u64;
                             let l2_entry =
                                 unsafe { core::ptr::read_volatile(l2_table.add(l2_idx)) };
-                            raw_uart_str(" L2[");
-                            raw_uart_hex(l2_idx as u64);
-                            raw_uart_str("]=");
-                            raw_uart_hex(l2_entry);
+                            line.text(" L2[");
+                            line.hex(l2_idx as u64);
+                            line.text("]=");
+                            line.hex(l2_entry);
 
                             if l2_entry & 0x3 == 0x3 {
                                 // Valid table descriptor -> walk L3
@@ -981,24 +957,24 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                                 let l3_table = (hhdm + l3_base) as *const u64;
                                 let l3_entry =
                                     unsafe { core::ptr::read_volatile(l3_table.add(l3_idx)) };
-                                raw_uart_str(" L3[");
-                                raw_uart_hex(l3_idx as u64);
-                                raw_uart_str("]=");
-                                raw_uart_hex(l3_entry);
+                                line.text(" L3[");
+                                line.hex(l3_idx as u64);
+                                line.text("]=");
+                                line.hex(l3_entry);
                             } else if l1_entry & 0x1 == 0x1 {
-                                raw_uart_str(" (L2=block)");
+                                line.text(" (L2=block)");
                             } else {
-                                raw_uart_str(" (L2=invalid)");
+                                line.text(" (L2=invalid)");
                             }
                         } else if l1_entry & 0x1 == 0x1 {
-                            raw_uart_str(" (L1=block)");
+                            line.text(" (L1=block)");
                         } else {
-                            raw_uart_str(" (L1=invalid)");
+                            line.text(" (L1=invalid)");
                         }
                     } else {
-                        raw_uart_str(" (L0=invalid)");
+                        line.text(" (L0=invalid)");
                     }
-                    raw_uart_str("\n");
+                    line.text("\n");
                 }
 
                 // From userspace - terminate the process with SIGSEGV
@@ -1021,10 +997,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     if was_terminated {
                         already_terminated = true;
                     } else {
-                        let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
-                        crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
+                        let batch =
+                            crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
+                        crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
+                            pid.as_u64(),
+                            batch,
+                        );
                         crate::tracing::providers::process::trace_process_exit(
-                            pid.as_u64() as u16, (-11i16) as u16);
+                            pid.as_u64() as u16,
+                            (-11i16) as u16,
+                        );
                         let _ = crate::process::exit_process_and_retire(pid, -11);
                         terminated = true;
                     }
@@ -1068,8 +1050,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // From kernel or couldn't terminate — defer full process cleanup to
             // the next safe scheduling point, then redirect to idle.
             {
-                use crate::arch_impl::aarch64::context_switch::raw_uart_str;
-                raw_uart_str("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
+                let mut line = crate::serial_line::Line::new();
+
+                line.text("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
             }
             defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             dump_fatal_postmortem_once("DATA_ABORT");
@@ -1116,21 +1099,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Use raw UART for ALL output — serial_println! acquires a spin lock
             // that may already be held by this or another CPU, causing deadlock.
             {
-                use crate::arch_impl::aarch64::context_switch::{
-                    raw_uart_char, raw_uart_dec, raw_uart_hex, raw_uart_str,
-                };
-                raw_uart_str("\n[INSTRUCTION_ABORT] FAR=");
-                raw_uart_hex(far);
-                raw_uart_str(" ELR=");
-                raw_uart_hex(frame_ref.elr);
-                raw_uart_str(" ESR=");
-                raw_uart_hex(esr);
-                raw_uart_str(" IFSC=");
-                raw_uart_hex(ifsc as u64);
-                raw_uart_str(" TTBR0=");
-                raw_uart_hex(ttbr0);
-                raw_uart_str(" from_el0=");
-                raw_uart_char(if from_el0 { b'1' } else { b'0' });
+                let mut line = crate::serial_line::Line::new();
+
+                line.text("\n[INSTRUCTION_ABORT] FAR=");
+                line.hex(far);
+                line.text(" ELR=");
+                line.hex(frame_ref.elr);
+                line.text(" ESR=");
+                line.hex(esr);
+                line.text(" IFSC=");
+                line.hex(ifsc as u64);
+                line.text(" TTBR0=");
+                line.hex(ttbr0);
+                line.text(" from_el0=");
+                line.char(if from_el0 { b'1' } else { b'0' });
 
                 if !from_el0 {
                     let cpu_id =
@@ -1153,22 +1135,22 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                                     (thread.inline_schedule_saved_sp + 0x20) as *const u64,
                                 )
                             };
-                            raw_uart_str("\n[EL1_INLINE_ABORT] tid=");
-                            raw_uart_dec(thread.id());
-                            raw_uart_str(" x29=");
-                            raw_uart_hex(frame_ref.x29);
-                            raw_uart_str(" x30=");
-                            raw_uart_hex(frame_ref.x30);
-                            raw_uart_str(" sp=");
-                            raw_uart_hex(current_sp);
-                            raw_uart_str(" slot20=");
-                            raw_uart_hex(current_slot20);
-                            raw_uart_str(" saved_sp=");
-                            raw_uart_hex(thread.inline_schedule_saved_sp);
-                            raw_uart_str(" saved_lr=");
-                            raw_uart_hex(thread.inline_schedule_caller_lr);
-                            raw_uart_str(" saved_slot20=");
-                            raw_uart_hex(saved_slot20);
+                            line.text("\n[EL1_INLINE_ABORT] tid=");
+                            line.dec(thread.id());
+                            line.text(" x29=");
+                            line.hex(frame_ref.x29);
+                            line.text(" x30=");
+                            line.hex(frame_ref.x30);
+                            line.text(" sp=");
+                            line.hex(current_sp);
+                            line.text(" slot20=");
+                            line.hex(current_slot20);
+                            line.text(" saved_sp=");
+                            line.hex(thread.inline_schedule_saved_sp);
+                            line.text(" saved_lr=");
+                            line.hex(thread.inline_schedule_caller_lr);
+                            line.text(" saved_slot20=");
+                            line.hex(saved_slot20);
                             crate::tracing::record_event(
                                 crate::tracing::TraceEventType::EL1_INLINE_ABORT,
                                 0,
@@ -1199,33 +1181,33 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // (e.g., x30=0x18 → ret jumps to 0x18) vs a BWM code bug.
                 if from_el0 && frame_ref.elr < 0x1000 {
                     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
-                    raw_uart_str("\n[EL0_DIAG] cpu=");
-                    raw_uart_dec(cpu_id as u64);
+                    line.text("\n[EL0_DIAG] cpu=");
+                    line.dec(cpu_id as u64);
                     if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                        raw_uart_str(" tid=");
-                        raw_uart_dec(tid);
+                        line.text(" tid=");
+                        line.dec(tid);
                     }
-                    raw_uart_str("\n  x0=");
-                    raw_uart_hex(frame_ref.x0);
-                    raw_uart_str(" x1=");
-                    raw_uart_hex(frame_ref.x1);
-                    raw_uart_str(" x8=");
-                    raw_uart_hex(frame_ref.x8);
-                    raw_uart_str("\n  x16=");
-                    raw_uart_hex(frame_ref.x16);
-                    raw_uart_str(" x17=");
-                    raw_uart_hex(frame_ref.x17);
-                    raw_uart_str(" x29=");
-                    raw_uart_hex(frame_ref.x29);
-                    raw_uart_str(" x30=");
-                    raw_uart_hex(frame_ref.x30);
+                    line.text("\n  x0=");
+                    line.hex(frame_ref.x0);
+                    line.text(" x1=");
+                    line.hex(frame_ref.x1);
+                    line.text(" x8=");
+                    line.hex(frame_ref.x8);
+                    line.text("\n  x16=");
+                    line.hex(frame_ref.x16);
+                    line.text(" x17=");
+                    line.hex(frame_ref.x17);
+                    line.text(" x29=");
+                    line.hex(frame_ref.x29);
+                    line.text(" x30=");
+                    line.hex(frame_ref.x30);
                     let sp_el0: u64;
                     unsafe {
                         core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
                     }
-                    raw_uart_str("\n  sp_el0=");
-                    raw_uart_hex(sp_el0);
-                    raw_uart_str("\n");
+                    line.text("\n  sp_el0=");
+                    line.hex(sp_el0);
+                    line.text("\n");
                 }
 
                 if !from_el0
@@ -1233,90 +1215,90 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     && !PC_ALIGN_VERBOSE_CAPTURED.swap(true, Ordering::Relaxed)
                 {
                     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
-                    raw_uart_str("\n[DIAG] ELR=");
-                    raw_uart_hex(frame_ref.elr);
-                    raw_uart_str(" from EL1 cpu=");
-                    raw_uart_dec(cpu_id as u64);
+                    line.text("\n[DIAG] ELR=");
+                    line.hex(frame_ref.elr);
+                    line.text(" from EL1 cpu=");
+                    line.dec(cpu_id as u64);
                     let current_thread = current_thread_lock_free();
                     if let Some(thread) = current_thread {
-                        raw_uart_str(" tid=");
-                        raw_uart_dec(thread.id());
-                        raw_uart_str(" name=");
-                        raw_uart_str(&thread.name);
+                        line.text(" tid=");
+                        line.dec(thread.id());
+                        line.text(" name=");
+                        line.text(&thread.name);
                     }
                     // Full register dump — ALL registers, not just a subset
-                    raw_uart_str("\n  x0=");
-                    raw_uart_hex(frame_ref.x0);
-                    raw_uart_str(" x1=");
-                    raw_uart_hex(frame_ref.x1);
-                    raw_uart_str(" x2=");
-                    raw_uart_hex(frame_ref.x2);
-                    raw_uart_str(" x3=");
-                    raw_uart_hex(frame_ref.x3);
-                    raw_uart_str("\n  x4=");
-                    raw_uart_hex(frame_ref.x4);
-                    raw_uart_str(" x5=");
-                    raw_uart_hex(frame_ref.x5);
-                    raw_uart_str(" x6=");
-                    raw_uart_hex(frame_ref.x6);
-                    raw_uart_str(" x7=");
-                    raw_uart_hex(frame_ref.x7);
-                    raw_uart_str("\n  x8=");
-                    raw_uart_hex(frame_ref.x8);
-                    raw_uart_str(" x9=");
-                    raw_uart_hex(frame_ref.x9);
-                    raw_uart_str(" x10=");
-                    raw_uart_hex(frame_ref.x10);
-                    raw_uart_str(" x11=");
-                    raw_uart_hex(frame_ref.x11);
-                    raw_uart_str("\n  x12=");
-                    raw_uart_hex(frame_ref.x12);
-                    raw_uart_str(" x13=");
-                    raw_uart_hex(frame_ref.x13);
-                    raw_uart_str(" x14=");
-                    raw_uart_hex(frame_ref.x14);
-                    raw_uart_str(" x15=");
-                    raw_uart_hex(frame_ref.x15);
-                    raw_uart_str("\n  x16=");
-                    raw_uart_hex(frame_ref.x16);
-                    raw_uart_str(" x17=");
-                    raw_uart_hex(frame_ref.x17);
-                    raw_uart_str(" x18=");
-                    raw_uart_hex(frame_ref.x18);
-                    raw_uart_str(" x19=");
-                    raw_uart_hex(frame_ref.x19);
-                    raw_uart_str("\n  x20=");
-                    raw_uart_hex(frame_ref.x20);
-                    raw_uart_str(" x21=");
-                    raw_uart_hex(frame_ref.x21);
-                    raw_uart_str(" x22=");
-                    raw_uart_hex(frame_ref.x22);
-                    raw_uart_str(" x23=");
-                    raw_uart_hex(frame_ref.x23);
-                    raw_uart_str("\n  x24=");
-                    raw_uart_hex(frame_ref.x24);
-                    raw_uart_str(" x25=");
-                    raw_uart_hex(frame_ref.x25);
-                    raw_uart_str(" x26=");
-                    raw_uart_hex(frame_ref.x26);
-                    raw_uart_str(" x27=");
-                    raw_uart_hex(frame_ref.x27);
-                    raw_uart_str("\n  x28=");
-                    raw_uart_hex(frame_ref.x28);
-                    raw_uart_str(" x29=");
-                    raw_uart_hex(frame_ref.x29);
-                    raw_uart_str(" x30=");
-                    raw_uart_hex(frame_ref.x30);
-                    raw_uart_str("\n  spsr=");
-                    raw_uart_hex(frame_ref.spsr);
-                    raw_uart_str(" sp_at_frame=");
-                    raw_uart_hex(frame_ref as *const _ as u64);
+                    line.text("\n  x0=");
+                    line.hex(frame_ref.x0);
+                    line.text(" x1=");
+                    line.hex(frame_ref.x1);
+                    line.text(" x2=");
+                    line.hex(frame_ref.x2);
+                    line.text(" x3=");
+                    line.hex(frame_ref.x3);
+                    line.text("\n  x4=");
+                    line.hex(frame_ref.x4);
+                    line.text(" x5=");
+                    line.hex(frame_ref.x5);
+                    line.text(" x6=");
+                    line.hex(frame_ref.x6);
+                    line.text(" x7=");
+                    line.hex(frame_ref.x7);
+                    line.text("\n  x8=");
+                    line.hex(frame_ref.x8);
+                    line.text(" x9=");
+                    line.hex(frame_ref.x9);
+                    line.text(" x10=");
+                    line.hex(frame_ref.x10);
+                    line.text(" x11=");
+                    line.hex(frame_ref.x11);
+                    line.text("\n  x12=");
+                    line.hex(frame_ref.x12);
+                    line.text(" x13=");
+                    line.hex(frame_ref.x13);
+                    line.text(" x14=");
+                    line.hex(frame_ref.x14);
+                    line.text(" x15=");
+                    line.hex(frame_ref.x15);
+                    line.text("\n  x16=");
+                    line.hex(frame_ref.x16);
+                    line.text(" x17=");
+                    line.hex(frame_ref.x17);
+                    line.text(" x18=");
+                    line.hex(frame_ref.x18);
+                    line.text(" x19=");
+                    line.hex(frame_ref.x19);
+                    line.text("\n  x20=");
+                    line.hex(frame_ref.x20);
+                    line.text(" x21=");
+                    line.hex(frame_ref.x21);
+                    line.text(" x22=");
+                    line.hex(frame_ref.x22);
+                    line.text(" x23=");
+                    line.hex(frame_ref.x23);
+                    line.text("\n  x24=");
+                    line.hex(frame_ref.x24);
+                    line.text(" x25=");
+                    line.hex(frame_ref.x25);
+                    line.text(" x26=");
+                    line.hex(frame_ref.x26);
+                    line.text(" x27=");
+                    line.hex(frame_ref.x27);
+                    line.text("\n  x28=");
+                    line.hex(frame_ref.x28);
+                    line.text(" x29=");
+                    line.hex(frame_ref.x29);
+                    line.text(" x30=");
+                    line.hex(frame_ref.x30);
+                    line.text("\n  spsr=");
+                    line.hex(frame_ref.spsr);
+                    line.text(" sp_at_frame=");
+                    line.hex(frame_ref as *const _ as u64);
 
                     // Per-CPU state
                     let percpu_kst =
                         crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
-                    raw_uart_str("\n  percpu_kst=");
-                    raw_uart_hex(percpu_kst);
+                    line.text("\n  percpu_kst=");
+                    line.hex(percpu_kst);
                     let user_rsp: u64;
                     unsafe {
                         let percpu_base: u64;
@@ -1327,26 +1309,26 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             0
                         };
                     }
-                    raw_uart_str(" user_rsp_scratch=");
-                    raw_uart_hex(user_rsp);
+                    line.text(" user_rsp_scratch=");
+                    line.hex(user_rsp);
 
                     // Last dispatched ELR/SPSR from per-CPU data
                     let dispatch_elr =
                         crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_elr();
                     let dispatch_spsr =
                         crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_spsr();
-                    raw_uart_str("\n  last_dispatch_elr=");
-                    raw_uart_hex(dispatch_elr);
-                    raw_uart_str(" last_dispatch_spsr=");
-                    raw_uart_hex(dispatch_spsr);
+                    line.text("\n  last_dispatch_elr=");
+                    line.hex(dispatch_elr);
+                    line.text(" last_dispatch_spsr=");
+                    line.hex(dispatch_spsr);
 
                     if let Some(thread) = current_thread {
                         let thread_kst = thread
                             .kernel_stack_top
                             .map(|value| value.as_u64())
                             .unwrap_or(0);
-                        raw_uart_str(" thread_kst=");
-                        raw_uart_hex(thread_kst);
+                        line.text(" thread_kst=");
+                        line.hex(thread_kst);
                     }
 
                     // Stack classification
@@ -1360,9 +1342,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     dump_stack_classification(frame_addr);
 
                     // DISPATCH TRACE: last 8 dispatches on this CPU
-                    raw_uart_str("\n  DISPATCH_TRACE cpu=");
-                    raw_uart_dec(cpu_id as u64);
-                    raw_uart_str(":\n");
+                    line.text("\n  DISPATCH_TRACE cpu=");
+                    line.dec(cpu_id as u64);
+                    line.text(":\n");
                     crate::arch_impl::aarch64::context_switch::dump_dispatch_trace(cpu_id as usize);
 
                     // OUTER FRAME: Read the frame 272 bytes above (if on a valid stack)
@@ -1376,15 +1358,15 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             let outer_x30 = core::ptr::read_volatile(outer.add(30));
                             let outer_elr = core::ptr::read_volatile(outer.add(31));
                             let outer_spsr = core::ptr::read_volatile(outer.add(32));
-                            raw_uart_str("  OUTER_FRAME(stale?): elr=");
-                            raw_uart_hex(outer_elr);
-                            raw_uart_str(" x30=");
-                            raw_uart_hex(outer_x30);
-                            raw_uart_str(" spsr=");
-                            raw_uart_hex(outer_spsr);
+                            line.text("  OUTER_FRAME(stale?): elr=");
+                            line.hex(outer_elr);
+                            line.text(" x30=");
+                            line.hex(outer_x30);
+                            line.text(" spsr=");
+                            line.hex(outer_spsr);
                         }
                     }
-                    raw_uart_str("\n");
+                    line.text("\n");
                 }
             }
             drop(fatal_uart_guard);
@@ -1410,20 +1392,27 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         already_terminated = true;
                     } else {
                         killed_pid = pid.as_u64();
-                        let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
-                        crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch);
+                        let batch =
+                            crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
+                        crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
+                            pid.as_u64(),
+                            batch,
+                        );
                         crate::tracing::providers::process::trace_process_exit(
-                            pid.as_u64() as u16, (-11i16) as u16);
+                            pid.as_u64() as u16,
+                            (-11i16) as u16,
+                        );
                         let _ = crate::process::exit_process_and_retire(pid, -11);
                         terminated = true;
                     }
                 }
                 // Lock-free diagnostic AFTER releasing process manager lock
                 if terminated {
-                    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-                    raw_uart_str("[INSTRUCTION_ABORT] Terminating PID ");
-                    raw_uart_dec(killed_pid);
-                    raw_uart_str(" (SIGSEGV)\n");
+                    let mut line = crate::serial_line::Line::new();
+
+                    line.text("[INSTRUCTION_ABORT] Terminating PID ");
+                    line.dec(killed_pid);
+                    line.text(" (SIGSEGV)\n");
                 }
 
                 if terminated || already_terminated {
@@ -1460,14 +1449,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // if switch_to_idle panics or hits a nested exception, the frame
             // must already have safe ELR/SPSR for the assembly ERET path.
             {
-                use crate::arch_impl::aarch64::context_switch::raw_uart_str;
-                raw_uart_str("[INSTRUCTION_ABORT] deferring process cleanup\n");
+                let mut line = crate::serial_line::Line::new();
+
+                line.text("[INSTRUCTION_ABORT] deferring process cleanup\n");
             }
-            defer_current_user_thread_sigsegv_exit(
-                "[INSTRUCTION_ABORT]",
-                frame as u64,
-                from_el0,
-            );
+            defer_current_user_thread_sigsegv_exit("[INSTRUCTION_ABORT]", frame as u64, from_el0);
             // EL1 may have faulted while holding SCHEDULER, so termination is
             // non-blocking there. Preserve the established EL0 path exactly.
             if from_el0 {
@@ -1497,27 +1483,19 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let frame_ref = unsafe { &mut *frame };
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             {
-                use crate::arch_impl::aarch64::context_switch::{
-                    raw_uart_char, raw_uart_hex, raw_uart_str,
-                };
-                raw_uart_str("\n[SP_ALIGN] ELR=");
-                raw_uart_hex(frame_ref.elr);
-                raw_uart_str(" FAR=");
-                raw_uart_hex(far);
-                raw_uart_str(" from_el0=");
-                raw_uart_char(if from_el0 { b'1' } else { b'0' });
-                raw_uart_str("\n");
+                let mut line = crate::serial_line::Line::new();
+
+                line.text("\n[SP_ALIGN] ELR=");
+                line.hex(frame_ref.elr);
+                line.text(" FAR=");
+                line.hex(far);
+                line.text(" from_el0=");
+                line.char(if from_el0 { b'1' } else { b'0' });
+                line.text("\n");
             }
             if !from_el0 {
-                let cpu_id =
-                    crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-                dump_el1_fatal_frame_and_dispatch_trace(
-                    "SP_ALIGN",
-                    frame_ref,
-                    esr,
-                    far,
-                    cpu_id,
-                );
+                let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+                dump_el1_fatal_frame_and_dispatch_trace("SP_ALIGN", frame_ref, esr, far, cpu_id);
             }
             if from_el0 {
                 crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
@@ -1531,7 +1509,15 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 if let Some((pid, was_terminated)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
-                    }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
+                    });
+                    if !was_terminated {
+                        let batch =
+                            crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
+                        crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
+                            pid.as_u64(),
+                            batch,
+                        );
+                    }
                     let _ = crate::process::exit_process_and_retire(pid, -11);
                 }
                 terminate_current_scheduler_thread();
@@ -1557,18 +1543,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok();
             {
-                use crate::arch_impl::aarch64::context_switch::{
-                    raw_uart_char, raw_uart_dec, raw_uart_hex, raw_uart_str,
-                };
+                let mut line = crate::serial_line::Line::new();
+
                 let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
-                raw_uart_str("\n[PC_ALIGN] ELR=");
-                raw_uart_hex(frame_ref.elr);
-                raw_uart_str(" FAR=");
-                raw_uart_hex(far);
-                raw_uart_str(" from_el0=");
-                raw_uart_char(if from_el0 { b'1' } else { b'0' });
-                raw_uart_str(" cpu=");
-                raw_uart_dec(cpu_id as u64);
+                line.text("\n[PC_ALIGN] ELR=");
+                line.hex(frame_ref.elr);
+                line.text(" FAR=");
+                line.hex(far);
+                line.text(" from_el0=");
+                line.char(if from_el0 { b'1' } else { b'0' });
+                line.text(" cpu=");
+                line.dec(cpu_id as u64);
                 if verbose {
                     if !from_el0 {
                         dump_el1_fatal_frame_and_dispatch_trace(
@@ -1584,67 +1569,67 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let dispatch_spsr =
                         crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_spsr();
                     let sp = frame_ref as *const _ as u64 + 272;
-                    raw_uart_str(" sp=");
-                    raw_uart_hex(sp);
-                    raw_uart_str("\n  x29=");
-                    raw_uart_hex(frame_ref.x29);
-                    raw_uart_str(" x30=");
-                    raw_uart_hex(frame_ref.x30);
-                    raw_uart_str(" x0=");
-                    raw_uart_hex(frame_ref.x0);
-                    raw_uart_str(" x1=");
-                    raw_uart_hex(frame_ref.x1);
+                    line.text(" sp=");
+                    line.hex(sp);
+                    line.text("\n  x29=");
+                    line.hex(frame_ref.x29);
+                    line.text(" x30=");
+                    line.hex(frame_ref.x30);
+                    line.text(" x0=");
+                    line.hex(frame_ref.x0);
+                    line.text(" x1=");
+                    line.hex(frame_ref.x1);
                     if from_el0 {
                         if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                            raw_uart_str("\n  current_tid=");
-                            raw_uart_dec(tid);
+                            line.text("\n  current_tid=");
+                            line.dec(tid);
                             if let Some(dump) = crate::task::scheduler::try_dump_state() {
                                 if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
-                                    raw_uart_str(" owner_pid=");
-                                    raw_uart_dec(thread.owner_pid);
-                                    raw_uart_str(" bis=");
-                                    raw_uart_char(if thread.blocked_in_syscall {
+                                    line.text(" owner_pid=");
+                                    line.dec(thread.owner_pid);
+                                    line.text(" bis=");
+                                    line.char(if thread.blocked_in_syscall {
                                         b'1'
                                     } else {
                                         b'0'
                                     });
-                                    raw_uart_str(" saved_elr=");
-                                    raw_uart_hex(thread.elr_el1);
-                                    raw_uart_str(" saved_x30=");
-                                    raw_uart_hex(thread.x30);
+                                    line.text(" saved_elr=");
+                                    line.hex(thread.elr_el1);
+                                    line.text(" saved_x30=");
+                                    line.hex(thread.x30);
                                 }
                             }
                         }
                     } else if let Some(thread) = current_thread_lock_free() {
-                        raw_uart_str("\n  current_tid=");
-                        raw_uart_dec(thread.id());
-                        raw_uart_str(" owner_pid=");
-                        raw_uart_dec(thread.owner_pid.unwrap_or(0));
-                        raw_uart_str(" bis=");
-                        raw_uart_char(if thread.blocked_in_syscall {
+                        line.text("\n  current_tid=");
+                        line.dec(thread.id());
+                        line.text(" owner_pid=");
+                        line.dec(thread.owner_pid.unwrap_or(0));
+                        line.text(" bis=");
+                        line.char(if thread.blocked_in_syscall {
                             b'1'
                         } else {
                             b'0'
                         });
-                        raw_uart_str(" saved_elr=");
-                        raw_uart_hex(thread.context.elr_el1);
-                        raw_uart_str(" saved_x30=");
-                        raw_uart_hex(thread.context.x30);
+                        line.text(" saved_elr=");
+                        line.hex(thread.context.elr_el1);
+                        line.text(" saved_x30=");
+                        line.hex(thread.context.x30);
                     }
-                    raw_uart_str("\n  last_dispatch_elr=");
-                    raw_uart_hex(dispatch_elr);
-                    raw_uart_str(" last_dispatch_spsr=");
-                    raw_uart_hex(dispatch_spsr);
-                    raw_uart_str("\n  stack[0]=");
-                    raw_uart_hex(unsafe { core::ptr::read_volatile(sp as *const u64) });
-                    raw_uart_str(" stack[1]=");
-                    raw_uart_hex(unsafe { core::ptr::read_volatile((sp + 8) as *const u64) });
-                    raw_uart_str(" stack[2]=");
-                    raw_uart_hex(unsafe { core::ptr::read_volatile((sp + 16) as *const u64) });
-                    raw_uart_str(" stack[3]=");
-                    raw_uart_hex(unsafe { core::ptr::read_volatile((sp + 24) as *const u64) });
+                    line.text("\n  last_dispatch_elr=");
+                    line.hex(dispatch_elr);
+                    line.text(" last_dispatch_spsr=");
+                    line.hex(dispatch_spsr);
+                    line.text("\n  stack[0]=");
+                    line.hex(unsafe { core::ptr::read_volatile(sp as *const u64) });
+                    line.text(" stack[1]=");
+                    line.hex(unsafe { core::ptr::read_volatile((sp + 8) as *const u64) });
+                    line.text(" stack[2]=");
+                    line.hex(unsafe { core::ptr::read_volatile((sp + 16) as *const u64) });
+                    line.text(" stack[3]=");
+                    line.hex(unsafe { core::ptr::read_volatile((sp + 24) as *const u64) });
                 }
-                raw_uart_str("\n");
+                line.text("\n");
             }
             if from_el0 {
                 crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
@@ -1658,7 +1643,15 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 if let Some((pid, was_terminated)) = victim {
                     let _ = crate::task::scheduler::with_scheduler(|sched| {
                         sched.terminate_process_threads(pid.as_u64());
-                    }); if !was_terminated { let batch = crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64()); crate::task::scheduler::Scheduler::send_exit_expedite_sgi(pid.as_u64(), batch); }
+                    });
+                    if !was_terminated {
+                        let batch =
+                            crate::task::scheduler::GroupBatchId::for_single_victim(pid.as_u64());
+                        crate::task::scheduler::Scheduler::send_exit_expedite_sgi(
+                            pid.as_u64(),
+                            batch,
+                        );
+                    }
                     let _ = crate::process::exit_process_and_retire(pid, -11);
                 }
                 terminate_current_scheduler_thread();
@@ -1687,17 +1680,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // held by another CPU, causing deadlock when this exception fires during a
             // context switch that already holds the scheduler lock.
             {
-                use crate::arch_impl::aarch64::context_switch::{
-                    raw_uart_dec, raw_uart_hex, raw_uart_str,
-                };
+                let mut line = crate::serial_line::Line::new();
+
                 let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
-                raw_uart_str("[UNHANDLED_EC] cpu=");
-                raw_uart_dec(cpu_id as u64);
-                raw_uart_str(" EC=");
-                raw_uart_hex(ec as u64);
-                raw_uart_str(" ELR=");
-                raw_uart_hex(frame_ref.elr);
-                raw_uart_str("\n");
+                line.text("[UNHANDLED_EC] cpu=");
+                line.dec(cpu_id as u64);
+                line.text(" EC=");
+                line.hex(ec as u64);
+                line.text(" ELR=");
+                line.hex(frame_ref.elr);
+                line.text("\n");
 
                 // Full fatal register dump. EC=0xe (Illegal Execution State) means
                 // an ERET restored an illegal PSTATE — we MUST see SPSR/ESR/FAR plus
@@ -1708,94 +1700,98 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // SP at crash time = frame address + 272 (exception frame size),
                 // matching the convention used by the other fatal handlers.
                 let sp_at_crash = frame_ref as *const _ as u64 + 272;
-                raw_uart_str("[FATAL_REGS] cpu=");
-                raw_uart_dec(cpu_id as u64);
-                raw_uart_str(" spsr=");
-                raw_uart_hex(frame_ref.spsr);
-                raw_uart_str(" esr=");
-                raw_uart_hex(esr);
-                raw_uart_str(" far=");
-                raw_uart_hex(far);
-                raw_uart_str(" elr=");
-                raw_uart_hex(frame_ref.elr);
-                raw_uart_str(" sp=");
-                raw_uart_hex(sp_at_crash);
-                raw_uart_str("\n  x0=");
-                raw_uart_hex(frame_ref.x0);
-                raw_uart_str(" x1=");
-                raw_uart_hex(frame_ref.x1);
-                raw_uart_str(" x2=");
-                raw_uart_hex(frame_ref.x2);
-                raw_uart_str(" x3=");
-                raw_uart_hex(frame_ref.x3);
-                raw_uart_str("\n  x4=");
-                raw_uart_hex(frame_ref.x4);
-                raw_uart_str(" x5=");
-                raw_uart_hex(frame_ref.x5);
-                raw_uart_str(" x6=");
-                raw_uart_hex(frame_ref.x6);
-                raw_uart_str(" x7=");
-                raw_uart_hex(frame_ref.x7);
-                raw_uart_str("\n  x8=");
-                raw_uart_hex(frame_ref.x8);
-                raw_uart_str(" x9=");
-                raw_uart_hex(frame_ref.x9);
-                raw_uart_str(" x10=");
-                raw_uart_hex(frame_ref.x10);
-                raw_uart_str(" x11=");
-                raw_uart_hex(frame_ref.x11);
-                raw_uart_str("\n  x12=");
-                raw_uart_hex(frame_ref.x12);
-                raw_uart_str(" x13=");
-                raw_uart_hex(frame_ref.x13);
-                raw_uart_str(" x14=");
-                raw_uart_hex(frame_ref.x14);
-                raw_uart_str(" x15=");
-                raw_uart_hex(frame_ref.x15);
-                raw_uart_str("\n  x16=");
-                raw_uart_hex(frame_ref.x16);
-                raw_uart_str(" x17=");
-                raw_uart_hex(frame_ref.x17);
-                raw_uart_str(" x18=");
-                raw_uart_hex(frame_ref.x18);
-                raw_uart_str(" x19=");
-                raw_uart_hex(frame_ref.x19);
-                raw_uart_str("\n  x20=");
-                raw_uart_hex(frame_ref.x20);
-                raw_uart_str(" x21=");
-                raw_uart_hex(frame_ref.x21);
-                raw_uart_str(" x22=");
-                raw_uart_hex(frame_ref.x22);
-                raw_uart_str(" x23=");
-                raw_uart_hex(frame_ref.x23);
-                raw_uart_str("\n  x24=");
-                raw_uart_hex(frame_ref.x24);
-                raw_uart_str(" x25=");
-                raw_uart_hex(frame_ref.x25);
-                raw_uart_str(" x26=");
-                raw_uart_hex(frame_ref.x26);
-                raw_uart_str(" x27=");
-                raw_uart_hex(frame_ref.x27);
-                raw_uart_str("\n  x28=");
-                raw_uart_hex(frame_ref.x28);
-                raw_uart_str(" x29=");
-                raw_uart_hex(frame_ref.x29);
-                raw_uart_str(" x30=");
-                raw_uart_hex(frame_ref.x30);
-                raw_uart_str("\n");
+                line.text("[FATAL_REGS] cpu=");
+                line.dec(cpu_id as u64);
+                line.text(" spsr=");
+                line.hex(frame_ref.spsr);
+                line.text(" esr=");
+                line.hex(esr);
+                line.text(" far=");
+                line.hex(far);
+                line.text(" elr=");
+                line.hex(frame_ref.elr);
+                line.text(" sp=");
+                line.hex(sp_at_crash);
+                line.text("\n  x0=");
+                line.hex(frame_ref.x0);
+                line.text(" x1=");
+                line.hex(frame_ref.x1);
+                line.text(" x2=");
+                line.hex(frame_ref.x2);
+                line.text(" x3=");
+                line.hex(frame_ref.x3);
+                line.text("\n  x4=");
+                line.hex(frame_ref.x4);
+                line.text(" x5=");
+                line.hex(frame_ref.x5);
+                line.text(" x6=");
+                line.hex(frame_ref.x6);
+                line.text(" x7=");
+                line.hex(frame_ref.x7);
+                line.text("\n  x8=");
+                line.hex(frame_ref.x8);
+                line.text(" x9=");
+                line.hex(frame_ref.x9);
+                line.text(" x10=");
+                line.hex(frame_ref.x10);
+                line.text(" x11=");
+                line.hex(frame_ref.x11);
+                line.text("\n  x12=");
+                line.hex(frame_ref.x12);
+                line.text(" x13=");
+                line.hex(frame_ref.x13);
+                line.text(" x14=");
+                line.hex(frame_ref.x14);
+                line.text(" x15=");
+                line.hex(frame_ref.x15);
+                line.text("\n  x16=");
+                line.hex(frame_ref.x16);
+                line.text(" x17=");
+                line.hex(frame_ref.x17);
+                line.text(" x18=");
+                line.hex(frame_ref.x18);
+                line.text(" x19=");
+                line.hex(frame_ref.x19);
+                line.text("\n  x20=");
+                line.hex(frame_ref.x20);
+                line.text(" x21=");
+                line.hex(frame_ref.x21);
+                line.text(" x22=");
+                line.hex(frame_ref.x22);
+                line.text(" x23=");
+                line.hex(frame_ref.x23);
+                line.text("\n  x24=");
+                line.hex(frame_ref.x24);
+                line.text(" x25=");
+                line.hex(frame_ref.x25);
+                line.text(" x26=");
+                line.hex(frame_ref.x26);
+                line.text(" x27=");
+                line.hex(frame_ref.x27);
+                line.text("\n  x28=");
+                line.hex(frame_ref.x28);
+                line.text(" x29=");
+                line.hex(frame_ref.x29);
+                line.text(" x30=");
+                line.hex(frame_ref.x30);
+                line.text("\n");
 
                 // This fatal dump runs with DAIF masked on an exception-report path
                 // that an EL1 fault can reach, so it must consult only the per-CPU
                 // published thread pointer and never take the SCHEDULER lock (#597).
                 if let Some(thread) = current_thread_lock_free() {
                     let tid = thread.id();
-                    raw_uart_str("[FATAL_THREAD] tid=");
-                    raw_uart_dec(tid);
-                    raw_uart_str(" saved_by_inline_schedule=");
-                    raw_uart_dec(if thread.saved_by_inline_schedule { 1 } else { 0 });
-                    raw_uart_str(" ctx_elr_el1=");
-                    raw_uart_hex(thread.context.elr_el1);
-                    raw_uart_str("\n");
+                    line.text("[FATAL_THREAD] tid=");
+                    line.dec(tid);
+                    line.text(" saved_by_inline_schedule=");
+                    line.dec(if thread.saved_by_inline_schedule {
+                        1
+                    } else {
+                        0
+                    });
+                    line.text(" ctx_elr_el1=");
+                    line.hex(thread.context.elr_el1);
+                    line.text("\n");
                 }
 
                 // [SAVE_SKEW]: lock-free per-CPU record from the context-save path
@@ -2122,9 +2118,9 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
                 && irq != crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
                 && irq != crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
             {
-                crate::serial_aarch64::raw_serial_char(b'P');
-                crate::serial_aarch64::raw_serial_char(b'0' + (irq / 10) as u8);
-                crate::serial_aarch64::raw_serial_char(b'0' + (irq % 10) as u8);
+                crate::serial_line::Line::new().char(b'P');
+                crate::serial_line::Line::new().char(b'0' + (irq / 10) as u8);
+                crate::serial_line::Line::new().char(b'0' + (irq % 10) as u8);
             }
         }
 

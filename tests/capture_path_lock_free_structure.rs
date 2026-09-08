@@ -598,11 +598,11 @@ fn the_strict_lockup_scope_carries_no_lock_allocation_or_formatting() {
 }
 
 /// Anti-vacuity for the scope itself. A scope that collapsed to the dump alone
-/// would pass the denylist while checking none of the helpers the dump calls,
+/// would pass the denylist while missing local helpers called by the dump,
 /// which is the shape this guard exists to reach.
-/// claim-lint:ok: the scope reaches 4 of 4 items on this tree --
-/// dump_lockup_state, raw_serial_str, print_timer_count_decimal, raw_serial_char --
-/// as printed by scripts/check-aarch64-lockup-no-alloc.sh --extract-source
+/// The local scope follows dump_lockup_state into emit_lockup_progress.
+/// Cross-file UART ownership and staging are covered by the linked-code
+/// guard in scripts/check-aarch64-lockup-no-alloc.sh.
 #[test]
 fn the_strict_lockup_scope_reaches_the_helpers_the_dump_calls() {
     let scope = extract_lockup_scope(None).unwrap();

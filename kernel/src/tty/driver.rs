@@ -689,7 +689,7 @@ impl TtyDevice {
         // Handle CR-LF translation
         if do_crlf {
             #[cfg(target_arch = "aarch64")]
-            crate::serial_aarch64::raw_serial_char(b'\r');
+            crate::serial_line::Line::new().char(b'\r');
             #[cfg(target_arch = "x86_64")]
             crate::serial::write_byte(b'\r');
             // Queue for deferred framebuffer rendering
@@ -699,7 +699,7 @@ impl TtyDevice {
 
         // Write the character -- lock-free on ARM64, locked on x86_64
         #[cfg(target_arch = "aarch64")]
-        crate::serial_aarch64::raw_serial_char(c);
+        crate::serial_line::Line::new().char(c);
         #[cfg(target_arch = "x86_64")]
         crate::serial::write_byte(c);
 
@@ -861,7 +861,7 @@ impl TtyDevice {
                     // function, and read back from thread context.
                     #[cfg(target_arch = "aarch64")]
                     {
-                        crate::serial_aarch64::raw_serial_str(b"[TTY] sig sent to PID\n");
+                        crate::serial_line::Line::new().bytes(b"[TTY] sig sent to PID\n");
                     }
                     #[cfg(target_arch = "x86_64")]
                     {

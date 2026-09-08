@@ -5,7 +5,7 @@
 //! those lines to the Logs terminal pane.
 //!
 //! The buffer is single-producer (serial output path, which already holds
-//! the SERIAL1 lock) and single-consumer (render thread), so we only need
+//! the UART ownership ticket) and single-consumer (render thread), so we only need
 //! atomic head/tail indices — no additional locks.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -15,7 +15,7 @@ const CAPTURE_SIZE: usize = 32 * 1024;
 
 /// The capture ring buffer — static array, no mutex.
 /// Safety: Only modified by `capture_byte` (producer) at tail, and
-/// `drain` (consumer) at head. Single producer guaranteed by SERIAL1 lock.
+/// `drain` (consumer) at head. Aarch64 producers serialize with the UART ownership ticket.
 static mut CAPTURE_BUFFER: [u8; CAPTURE_SIZE] = [0u8; CAPTURE_SIZE];
 
 /// Head index (where the consumer reads from).
@@ -58,7 +58,7 @@ pub fn capture_byte(byte: u8) {
         return;
     }
 
-    // Safety: Single producer (SERIAL1 lock held), writes only at tail.
+    // Safety: Single producer (UART ownership held), writes only at tail.
     unsafe {
         CAPTURE_BUFFER[tail] = byte;
     }

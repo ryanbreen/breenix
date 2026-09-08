@@ -1,3 +1,6 @@
+#[path = "support/serial_interleave_fixture.rs"]
+mod serial_interleave_fixture;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -2639,7 +2642,8 @@ fn both_aarch64_gates_fail_on_a_pinned_placement_refusal() {
         );
         let leg = |name: &str, body: &str| {
             let path = scratch.join(format!("{variable}-{name}.txt"));
-            fs::write(&path, body).expect("write a gate leg serial");
+            fs::write(&path, serial_interleave_fixture::extend(body))
+                .expect("write a gate leg serial");
             score_with_gate(gate, variable, &path)
         };
 
@@ -2758,7 +2762,8 @@ fn the_gates_score_the_pin_guard_oracle_in_opposite_directions() {
     fs::create_dir_all(&scratch).expect("create the scratch directory for the oracle gate legs");
     let leg = |name: &str, body: &str, gate: &str, variable: &str| {
         let path = scratch.join(format!("{variable}-{name}.txt"));
-        fs::write(&path, body).expect("write an oracle gate leg serial");
+        fs::write(&path, serial_interleave_fixture::extend(body))
+            .expect("write an oracle gate leg serial");
         score_with_gate(gate, variable, &path)
     };
 
@@ -4376,7 +4381,7 @@ static ENQUEUE_STALLED_RECLAIMED: AtomicU64 = AtomicU64::new(0);
 mod thread { pub static CPU_PINS_STAMPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); }
 mod time { pub fn get_ticks() -> u64 { 100 } }
 mod arch_impl { pub mod aarch64 { pub mod constants { pub fn percpu_stack_slot_of(sp: u64) -> Option<usize> { assert_eq!(sp, 0); None } } } }
-mod tracing { pub mod output { pub fn raw_serial_str(s: &str) { print!("{s}"); } pub fn raw_serial_dec(n: u64) { print!("{n}"); } } }
+mod tracing { pub mod output { pub struct Line; impl Line { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
 fn arch_can_dispatch_here() -> bool { true }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
 #[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }

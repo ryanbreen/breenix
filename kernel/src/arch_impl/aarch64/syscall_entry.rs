@@ -46,14 +46,9 @@ pub fn is_el0_confirmed() -> bool {
 /// Also advances test framework to Userspace stage if boot_tests is enabled.
 #[inline(never)]
 fn emit_el0_syscall_marker() {
-    let uart_addr = crate::platform_config::uart_virt();
-
-    let msg = b"EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)\n[ OK ] syscall path verified\n";
-    for &byte in msg {
-        unsafe {
-            core::ptr::write_volatile(uart_addr as *mut u8, byte);
-        }
-    }
+    crate::serial_line::Line::new().bytes(
+        b"EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)\n[ OK ] syscall path verified\n",
+    );
 
     // Advance test framework to Userspace stage - we have confirmed EL0 execution
     // Note: We use advance_stage_marker_only() instead of advance_to_stage() because
@@ -387,11 +382,10 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
 
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
-        let has_other_userspace_threads =
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.has_userspace_threads_other_than(thread_id)
-            })
-            .unwrap_or(false);
+        let has_other_userspace_threads = crate::task::scheduler::with_scheduler(|sched| {
+            sched.has_userspace_threads_other_than(thread_id)
+        })
+        .unwrap_or(false);
 
         if !has_other_userspace_threads {
             crate::serial_println!();
@@ -907,7 +901,7 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
         crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_CTL
             .store(ctl, core::sync::atomic::Ordering::Relaxed);
     }
-    crate::serial_aarch64::raw_serial_char(b'F'); // Fork entry
+    crate::serial_line::Line::new().char(b'F'); // Fork entry
 
     // Read SP_EL0 (user stack pointer) which isn't in the exception frame
     let user_sp: u64;
@@ -933,7 +927,7 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     };
 
     // Phase 1: Read parent info under PM lock (NO logging — interrupts disabled)
-    crate::serial_aarch64::raw_serial_char(b'1'); // Fork phase 1: PM lock
+    crate::serial_line::Line::new().char(b'1'); // Fork phase 1: PM lock
     let parent_pid = {
         let manager_guard = crate::process::manager();
         let process_info = if let Some(ref manager) = *manager_guard {
@@ -946,7 +940,7 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             None => return (-3_i64) as u64, // -ESRCH
         }
     }; // PM lock dropped, interrupts restored
-    crate::serial_aarch64::raw_serial_char(b'2'); // Fork phase 1 done, PM lock dropped
+    crate::serial_line::Line::new().char(b'2'); // Fork phase 1 done, PM lock dropped
 
     // Reclaim quiesced process frames and scheduler-owned kernel stacks before
     // consuming more of either finite allocator pool.
@@ -954,23 +948,23 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     crate::task::scheduler::reclaim_terminated_threads();
 
     // Create child page table OUTSIDE PM lock (heap allocation safe — interrupts enabled)
-    crate::serial_aarch64::raw_serial_char(b'3'); // Fork: allocating page table
+    crate::serial_line::Line::new().char(b'3'); // Fork: allocating page table
     let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
         Ok(pt) => Box::new(pt),
         Err(_e) => return (-12_i64) as u64, // -ENOMEM
     };
-    crate::serial_aarch64::raw_serial_char(b'4'); // Fork: page table allocated
+    crate::serial_line::Line::new().char(b'4'); // Fork: page table allocated
 
     // Phase 2: Fork under PM lock (NO logging inside — interrupts disabled by PM lock)
-    crate::serial_aarch64::raw_serial_char(b'5'); // Fork phase 2: PM lock
+    crate::serial_line::Line::new().char(b'5'); // Fork phase 2: PM lock
     let mut manager_guard = crate::process::manager();
-    crate::serial_aarch64::raw_serial_char(b'6'); // Fork: PM lock acquired
+    crate::serial_line::Line::new().char(b'6'); // Fork: PM lock acquired
     let fork_result = if let Some(ref mut manager) = *manager_guard {
         manager.fork_process_aarch64(parent_pid, parent_context, child_page_table)
     } else {
         Err("Process manager not available")
     };
-    crate::serial_aarch64::raw_serial_char(b'7'); // Fork: fork_process_aarch64 returned
+    crate::serial_line::Line::new().char(b'7'); // Fork: fork_process_aarch64 returned
 
     match fork_result {
         Ok(child_pid) => {
@@ -987,19 +981,19 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             };
 
             // Drop PM lock BEFORE any logging or scheduler operations
-            crate::serial_aarch64::raw_serial_char(b'8'); // Fork: dropping PM lock
+            crate::serial_line::Line::new().char(b'8'); // Fork: dropping PM lock
             drop(manager_guard);
-            crate::serial_aarch64::raw_serial_char(b'9'); // Fork: PM lock dropped
+            crate::serial_line::Line::new().char(b'9'); // Fork: PM lock dropped
 
             if let Some((child_thread_id, child_thread)) = child_info {
-                crate::serial_aarch64::raw_serial_char(b'S'); // Fork: calling spawn_front
+                crate::serial_line::Line::new().char(b'S'); // Fork: calling spawn_front
                 crate::task::scheduler::spawn_front(child_thread);
                 crate::tracing::providers::process::trace_spawn_front(
                     current_thread_id as u16,
                     child_thread_id as u16,
                 );
                 // Breadcrumb: child created and spawned
-                crate::serial_aarch64::raw_serial_char(b'C'); // Child created
+                crate::serial_line::Line::new().char(b'C'); // Child created
                 if cpu_id == 0 {
                     crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID
                         .store(51, core::sync::atomic::Ordering::Relaxed);
@@ -1254,7 +1248,13 @@ fn sys_exec_aarch64(
             previous_ttbr0 = read_ttbr0_for_exec();
             super::switch_ttbr0_to_kernel();
 
-            manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices, &mut closes)
+            manager.exec_process_with_argv(
+                current_pid,
+                elf_data,
+                Some(&program_name),
+                &argv_slices,
+                &mut closes,
+            )
         };
 
         let (new_entry_point, new_rsp, commit) = match exec_result {

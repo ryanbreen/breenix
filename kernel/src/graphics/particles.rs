@@ -30,10 +30,7 @@ pub fn start_animation(left: i32, top: i32, right: i32, bottom: i32) {
 pub fn animation_thread_entry() {
     // Raw serial output - no locks, safe in any context
     fn raw_char(c: u8) {
-        let addr = crate::platform_config::uart_virt() as *mut u32;
-        unsafe {
-            core::ptr::write_volatile(addr, c as u32);
-        }
+        crate::serial_line::Line::new().char(c);
     }
 
     raw_char(b'<'); // Thread entry point reached

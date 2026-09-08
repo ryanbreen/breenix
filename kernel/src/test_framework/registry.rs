@@ -2114,7 +2114,7 @@ fn test_serial_output() -> TestResult {
     #[cfg(target_arch = "aarch64")]
     {
         // Use the raw_serial_str function for lock-free output
-        crate::serial_aarch64::raw_serial_str(b"[LOGGING_TEST] Serial test ARM64\n");
+        crate::serial_line::Line::new().bytes(b"[LOGGING_TEST] Serial test ARM64\n");
     }
 
     TestResult::Pass
@@ -10618,6 +10618,14 @@ static SYSCALL_TESTS: &[TestDef] = &[
         arch: Arch::Aarch64,
         timeout_ms: 2000,
         stage: TestStage::EarlyBoot,
+    },
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "serial_interleave",
+        func: crate::serial_line_oracle::run,
+        arch: Arch::Aarch64,
+        timeout_ms: 10000,
+        stage: TestStage::ProcessContext,
     },
     // #796, and the stage is the load-bearing part. This oracle's window is
     // 8 ms in which no CPU can commit a dispatch, because it holds the lock

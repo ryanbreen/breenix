@@ -467,19 +467,19 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     // Breadcrumb: 'E' = exception vectors installed
-    kernel::serial_aarch64::raw_serial_char(b'E');
+    kernel::serial_line::Line::new().char(b'E');
 
     // Initialize physical memory offset (needed for MMIO access)
     kernel::memory::init_physical_memory_offset_aarch64();
 
     // Breadcrumb: 'O' = physical memory offset initialized
-    kernel::serial_aarch64::raw_serial_char(b'O');
+    kernel::serial_line::Line::new().char(b'O');
 
     // Initialize serial output first so we can print
     serial::init_serial();
 
     // Breadcrumb: 'S' = serial initialized
-    kernel::serial_aarch64::raw_serial_char(b'S');
+    kernel::serial_line::Line::new().char(b'S');
 
     // Install debug-only sentinels between the scheduler and idle/exception
     // halves before either scheduler startup or secondary-CPU bring-up.
@@ -664,7 +664,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             );
         }
     }
-
 
     // ext2/VFS fault-injection leg (test profile only, feature `fs_fault_inject`).
     // Runs immediately after the root filesystem mounts, so every marker the rest
@@ -867,6 +866,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize scheduler with an idle task
     serial_println!("[boot] Initializing scheduler...");
     init_scheduler();
+    kernel::serial_line::start_reporter();
     serial_println!("[boot] Scheduler initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
@@ -1125,9 +1125,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                     Some(initialization_started_at) => {
                         let pre_wait_gap_ticks =
                             timer::elapsed_ticks(start, initialization_started_at);
-                        let margin_ticks = counter_frequency_hz.saturating_mul(
-                            INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS,
-                        );
+                        let margin_ticks = counter_frequency_hz
+                            .saturating_mul(INITIALIZATION_WATCHDOG_LOCAL_CEILING_MARGIN_SECONDS);
                         let gap_extended_ticks = absolute_ceiling_ticks
                             .saturating_add(pre_wait_gap_ticks)
                             .saturating_add(margin_ticks);

@@ -245,6 +245,7 @@ static EL0_VICTIM_TID: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle"))]
 pub(crate) fn inject_ret_zero_pc_if_armed(sched: &mut Scheduler, thread_id: u64) {
+    let mut line = crate::serial_line::Line::new();
     let victim_tid = RET_VICTIM_TID.load(Ordering::Acquire);
     if victim_tid == 0 || thread_id != victim_tid {
         return;
@@ -265,16 +266,16 @@ pub(crate) fn inject_ret_zero_pc_if_armed(sched: &mut Scheduler, thread_id: u64)
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64;
     RET_FIRE_CPU.store(cpu, Ordering::Release);
 
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-    raw_uart_str("[RET_ZERO_PC_ORACLE:aarch64:leg=K:FIRED:tid=");
-    raw_uart_dec(thread_id);
-    raw_uart_str(":cpu=");
-    raw_uart_dec(cpu);
-    raw_uart_str("]\n");
+    line.text("[RET_ZERO_PC_ORACLE:aarch64:leg=K:FIRED:tid=");
+    line.dec(thread_id);
+    line.text(":cpu=");
+    line.dec(cpu);
+    line.text("]\n");
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_stack_pc_oracle"))]
 pub(crate) fn inject_ret_stack_pc_if_armed(sched: &mut Scheduler, thread_id: u64) {
+    let mut line = crate::serial_line::Line::new();
     let victim_tid = STACK_VICTIM_TID.load(Ordering::Acquire);
     if victim_tid == 0 || thread_id != victim_tid {
         return;
@@ -297,14 +298,13 @@ pub(crate) fn inject_ret_stack_pc_if_armed(sched: &mut Scheduler, thread_id: u64
     let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64;
     STACK_FIRE_CPU.store(cpu, Ordering::Release);
 
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
-    raw_uart_str("[RET_STACK_PC_ORACLE:aarch64:leg=T:FIRED:tid=");
-    raw_uart_dec(thread_id);
-    raw_uart_str(":cpu=");
-    raw_uart_dec(cpu);
-    raw_uart_str(":injected_pc=");
-    raw_uart_hex(injected_pc);
-    raw_uart_str("]\n");
+    line.text("[RET_STACK_PC_ORACLE:aarch64:leg=T:FIRED:tid=");
+    line.dec(thread_id);
+    line.text(":cpu=");
+    line.dec(cpu);
+    line.text(":injected_pc=");
+    line.hex(injected_pc);
+    line.text("]\n");
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_floor_oracle"))]
@@ -323,6 +323,7 @@ pub(crate) fn inject_ret_floor_if_armed(thread_id: u64, resume_pc: u64) -> u64 {
     }
     #[cfg(not(feature = "resume_pc_oracle_disarm"))]
     {
+        let mut line = crate::serial_line::Line::new();
         if FLOOR_FIRED
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
@@ -331,12 +332,12 @@ pub(crate) fn inject_ret_floor_if_armed(thread_id: u64, resume_pc: u64) -> u64 {
         }
 
         FLOOR_INJECTED_PC.store(INJECTED_PC, Ordering::Release);
-        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
-        raw_uart_str("[RET_FLOOR_ORACLE:aarch64:leg=F:FIRED:tid=");
-        raw_uart_dec(thread_id);
-        raw_uart_str(":injected_pc=");
-        raw_uart_hex(INJECTED_PC);
-        raw_uart_str("]\n");
+
+        line.text("[RET_FLOOR_ORACLE:aarch64:leg=F:FIRED:tid=");
+        line.dec(thread_id);
+        line.text(":injected_pc=");
+        line.hex(INJECTED_PC);
+        line.text("]\n");
         INJECTED_PC
     }
 }
@@ -349,6 +350,7 @@ pub(crate) fn is_retzero_subject(thread_id: u64) -> bool {
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
 pub(crate) fn inject_exec_commit_if_armed(thread: &mut Thread) {
+    let mut line = crate::serial_line::Line::new();
     if EXEC_FIRED
         .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
         .is_err()
@@ -361,10 +363,9 @@ pub(crate) fn inject_exec_commit_if_armed(thread: &mut Thread) {
     EXEC_VICTIMS.store(1, Ordering::Release);
     EXEC_VICTIM_TID.store(thread.id(), Ordering::Release);
 
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-    raw_uart_str("[EXEC_COMMIT_DISARM_ORACLE:aarch64:FIRED:tid=");
-    raw_uart_dec(thread.id());
-    raw_uart_str("]\n");
+    line.text("[EXEC_COMMIT_DISARM_ORACLE:aarch64:FIRED:tid=");
+    line.dec(thread.id());
+    line.text("]\n");
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
@@ -447,6 +448,7 @@ pub(crate) fn inject_el1_frame_resume_pc_if_armed(frame: &mut Aarch64ExceptionFr
         EL1_OPPORTUNITIES.fetch_add(1, Ordering::AcqRel);
         #[cfg(not(feature = "resume_pc_oracle_disarm"))]
         {
+            let mut line = crate::serial_line::Line::new();
             #[cfg(feature = "resume_pc_el1_oracle")]
             let injected = frame as *mut Aarch64ExceptionFrame as u64 + 0x10;
             #[cfg(all(not(feature = "resume_pc_el1_oracle"), feature = "eret_zero_pc_oracle"))]
@@ -460,18 +462,15 @@ pub(crate) fn inject_el1_frame_resume_pc_if_armed(frame: &mut Aarch64ExceptionFr
             EL1_INJECTED_PC.store(injected, Ordering::Release);
             EL1_INJECTIONS.fetch_add(1, Ordering::AcqRel);
 
-            use crate::arch_impl::aarch64::context_switch::{
-                raw_uart_dec, raw_uart_hex, raw_uart_str,
-            };
-            raw_uart_str("[RESUME_PC_EL1_ORACLE:aarch64:leg=");
-            raw_uart_str(leg);
-            raw_uart_str(":FIRED:tid=");
-            raw_uart_dec(victim_tid);
-            raw_uart_str(":cpu=");
-            raw_uart_dec(cpu_id as u64);
-            raw_uart_str(":injected_pc=");
-            raw_uart_hex(injected);
-            raw_uart_str("]\n");
+            line.text("[RESUME_PC_EL1_ORACLE:aarch64:leg=");
+            line.text(leg);
+            line.text(":FIRED:tid=");
+            line.dec(victim_tid);
+            line.text(":cpu=");
+            line.dec(cpu_id as u64);
+            line.text(":injected_pc=");
+            line.hex(injected);
+            line.text("]\n");
         }
     }
 }
@@ -493,15 +492,11 @@ pub(crate) fn inject_el0_resume_pc_if_armed(thread: &mut Thread) -> Option<u64> 
     }
 
     let thread_id = thread.id();
-    let victim_tid = match EL0_VICTIM_TID.compare_exchange(
-        0,
-        thread_id,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    ) {
-        Ok(_) => thread_id,
-        Err(victim_tid) => victim_tid,
-    };
+    let victim_tid =
+        match EL0_VICTIM_TID.compare_exchange(0, thread_id, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => thread_id,
+            Err(victim_tid) => victim_tid,
+        };
     if thread_id != victim_tid {
         return None;
     }
@@ -516,11 +511,11 @@ pub(crate) fn inject_el0_resume_pc_if_armed(thread: &mut Thread) -> Option<u64> 
         {
             return None;
         }
-        let Ok(injection_index) = EL0_INJECTIONS.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |injections| (injections < 16).then_some(injections + 1),
-        ) else {
+        let Ok(injection_index) =
+            EL0_INJECTIONS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |injections| {
+                (injections < 16).then_some(injections + 1)
+            })
+        else {
             return None;
         };
 
@@ -546,19 +541,18 @@ pub(crate) fn inject_el0_resume_pc_if_armed(thread: &mut Thread) -> Option<u64> 
         EL0_INJECTED_PC.store(injected, Ordering::Release);
 
         if injection_index == 0 {
+            let mut line = crate::serial_line::Line::new();
             let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64;
-            use crate::arch_impl::aarch64::context_switch::{
-                raw_uart_dec, raw_uart_hex, raw_uart_str,
-            };
-            raw_uart_str("[RESUME_PC_EL0_ORACLE:aarch64:leg=");
-            raw_uart_str(leg);
-            raw_uart_str(":FIRED:tid=");
-            raw_uart_dec(thread_id);
-            raw_uart_str(":cpu=");
-            raw_uart_dec(cpu_id);
-            raw_uart_str(":injected_pc=");
-            raw_uart_hex(injected);
-            raw_uart_str("]\n");
+
+            line.text("[RESUME_PC_EL0_ORACLE:aarch64:leg=");
+            line.text(leg);
+            line.text(":FIRED:tid=");
+            line.dec(thread_id);
+            line.text(":cpu=");
+            line.dec(cpu_id);
+            line.text(":injected_pc=");
+            line.hex(injected);
+            line.text("]\n");
         }
         Some(saved)
     }
@@ -608,11 +602,11 @@ fn inject_el0_frame_resume_pc_if_armed(frame: &mut Aarch64ExceptionFrame) {
         {
             return;
         }
-        let Ok(injection_index) = EL0_INJECTIONS.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |injections| (injections < 16).then_some(injections + 1),
-        ) else {
+        let Ok(injection_index) =
+            EL0_INJECTIONS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |injections| {
+                (injections < 16).then_some(injections + 1)
+            })
+        else {
             return;
         };
 
@@ -640,18 +634,17 @@ fn inject_el0_frame_resume_pc_if_armed(frame: &mut Aarch64ExceptionFrame) {
         EL0_INJECTED_PC.store(injected, Ordering::Release);
 
         if injection_index == 0 {
-            use crate::arch_impl::aarch64::context_switch::{
-                raw_uart_dec, raw_uart_hex, raw_uart_str,
-            };
-            raw_uart_str("[RESUME_PC_EL0_ORACLE:aarch64:leg=");
-            raw_uart_str(leg);
-            raw_uart_str(":FIRED:tid=");
-            raw_uart_dec(thread_id);
-            raw_uart_str(":cpu=");
-            raw_uart_dec(cpu_id as u64);
-            raw_uart_str(":injected_pc=");
-            raw_uart_hex(injected);
-            raw_uart_str("]\n");
+            let mut line = crate::serial_line::Line::new();
+
+            line.text("[RESUME_PC_EL0_ORACLE:aarch64:leg=");
+            line.text(leg);
+            line.text(":FIRED:tid=");
+            line.dec(thread_id);
+            line.text(":cpu=");
+            line.dec(cpu_id as u64);
+            line.text(":injected_pc=");
+            line.hex(injected);
+            line.text("]\n");
         }
     }
 }
@@ -1079,29 +1072,28 @@ fn drain_departure_victim() {
             let after = ctx::RESUME_PC_DRAIN_ON_VICTIM_STACK.load(Ordering::Acquire);
             DEPARTURE_REFUSALS.store(after.saturating_sub(before), Ordering::Release);
             DEPARTURE_RECORD_STILL_PUBLISHED.store(
-                u64::from(crate::per_cpu_aarch64::eret_guard_record_is_published(cpu_id)),
+                u64::from(crate::per_cpu_aarch64::eret_guard_record_is_published(
+                    cpu_id,
+                )),
                 Ordering::Release,
             );
             DEPARTURE_PTR_NULLED.store(
                 u64::from(Aarch64PerCpu::current_thread_ptr().is_null()),
                 Ordering::Release,
             );
-            let (present, terminated, still_current) =
-                super::scheduler::with_scheduler(|sched| {
-                    let still_current =
-                        u64::from(sched.cpu_state[cpu_id].current_thread == Some(self_tid));
-                    match sched.get_thread(self_tid) {
-                        Some(thread) => (
-                            1u64,
-                            u64::from(
-                                thread.state == crate::task::thread::ThreadState::Terminated,
-                            ),
-                            still_current,
-                        ),
-                        None => (0u64, 0u64, still_current),
-                    }
-                })
-                .unwrap_or((0, 0, 0));
+            let (present, terminated, still_current) = super::scheduler::with_scheduler(|sched| {
+                let still_current =
+                    u64::from(sched.cpu_state[cpu_id].current_thread == Some(self_tid));
+                match sched.get_thread(self_tid) {
+                    Some(thread) => (
+                        1u64,
+                        u64::from(thread.state == crate::task::thread::ThreadState::Terminated),
+                        still_current,
+                    ),
+                    None => (0u64, 0u64, still_current),
+                }
+            })
+            .unwrap_or((0, 0, 0));
             DEPARTURE_VICTIM_PRESENT.store(present, Ordering::Release);
             DEPARTURE_VICTIM_TERMINATED.store(terminated, Ordering::Release);
             DEPARTURE_STILL_CURRENT.store(still_current, Ordering::Release);
@@ -1127,21 +1119,20 @@ fn report_foreign_record() {
     let planted = FOREIGN_PLANTED.load(Ordering::Acquire);
     let record_cpu = FOREIGN_RECORD_CPU.load(Ordering::Acquire);
     let canary_tid = FOREIGN_CANARY_TID.load(Ordering::Acquire);
-    let foreign_reports =
-        crate::arch_impl::aarch64::context_switch::RESUME_PC_FOREIGN_REPORTS.load(Ordering::Acquire);
+    let foreign_reports = crate::arch_impl::aarch64::context_switch::RESUME_PC_FOREIGN_REPORTS
+        .load(Ordering::Acquire);
     let still_published = u64::from(crate::per_cpu_aarch64::eret_guard_record_is_published(
         record_cpu as usize,
     ));
-    let (canary_present, canary_terminated) = super::scheduler::with_scheduler(|sched| {
-        match sched.get_thread(canary_tid) {
+    let (canary_present, canary_terminated) =
+        super::scheduler::with_scheduler(|sched| match sched.get_thread(canary_tid) {
             Some(thread) => (
                 1u64,
                 u64::from(thread.state == crate::task::thread::ThreadState::Terminated),
             ),
             None => (0u64, 0u64),
-        }
-    })
-    .unwrap_or((0, 0));
+        })
+        .unwrap_or((0, 0));
     let canary_progress = FOREIGN_CANARY_PROGRESS.load(Ordering::Acquire);
     let fatal = if crate::arch_impl::aarch64::exception::any_fatal_postmortem_captured() {
         1
@@ -1395,11 +1386,8 @@ fn report_el0_resume_pc() {
         not(feature = "resume_pc_oracle_disarm"),
         feature = "resume_pc_el0_frame_oracle"
     ))]
-    let passed = armed == 1
-        && injected >= 1
-        && el0_asm_refused >= 1
-        && el0_faults == 0
-        && fatal == 0;
+    let passed =
+        armed == 1 && injected >= 1 && el0_asm_refused >= 1 && el0_faults == 0 && fatal == 0;
     #[cfg(feature = "resume_pc_oracle_disarm")]
     let passed = armed == 1
         && opportunities >= 1
@@ -1591,7 +1579,6 @@ pub fn start() {
     }
 }
 
-
 // ── Saved-LR custody leg (feature `lr_poison_oracle`) ─────────────────────
 //
 // Reproduces the T3-G run-3 producer shape exactly: a small integer — the
@@ -1657,8 +1644,7 @@ fn arm_lr_poison_oracle() {
 /// into that class, so nothing would have noticed if one of them was lost.
 #[cfg(all(target_arch = "aarch64", feature = "lr_poison_oracle"))]
 pub(crate) fn inject_saved_lr_if_armed(
-    #[cfg_attr(feature = "resume_pc_oracle_disarm", allow(unused_variables))]
-    sched: &mut Scheduler,
+    #[cfg_attr(feature = "resume_pc_oracle_disarm", allow(unused_variables))] sched: &mut Scheduler,
     thread_id: u64,
 ) {
     if LR_LIVE.load(Ordering::Acquire) != 1 {
@@ -1675,6 +1661,7 @@ pub(crate) fn inject_saved_lr_if_armed(
 
     #[cfg(not(feature = "resume_pc_oracle_disarm"))]
     {
+        let mut line = crate::serial_line::Line::new();
         let Some(thread) = sched.get_thread_mut(thread_id) else {
             return;
         };
@@ -1682,12 +1669,11 @@ pub(crate) fn inject_saved_lr_if_armed(
         LR_INJECTED_WORD.store(victim_tid, Ordering::Release);
         LR_INJECTIONS.fetch_add(1, Ordering::AcqRel);
 
-        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-        raw_uart_str("[LR_POISON_ORACLE:aarch64:leg=L:FIRED:tid=");
-        raw_uart_dec(victim_tid);
-        raw_uart_str(":cpu=");
-        raw_uart_dec(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str("]\n");
+        line.text("[LR_POISON_ORACLE:aarch64:leg=L:FIRED:tid=");
+        line.dec(victim_tid);
+        line.text(":cpu=");
+        line.dec(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u64);
+        line.text("]\n");
     }
 }
 

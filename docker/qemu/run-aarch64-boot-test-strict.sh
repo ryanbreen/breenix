@@ -836,6 +836,9 @@ score_serial() {
         echo "Pin-guard oracle did not pass ($(grep -aE "$PIN_GUARD_ORACLE_PATTERN" "$serial_file" | tail -1))"
         return 1
     fi
+    if ! python3 "$BREENIX_ROOT/scripts/score-serial-interleave.py" "$serial_file"; then
+        return 1
+    fi
     return 0
 }
 

@@ -13,6 +13,10 @@ pub mod serial;
 #[cfg(target_arch = "aarch64")]
 pub mod serial_aarch64;
 #[cfg(target_arch = "aarch64")]
+pub mod serial_line;
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub mod serial_line_oracle;
+#[cfg(target_arch = "aarch64")]
 pub use serial_aarch64 as serial;
 pub mod arch_impl;
 pub mod drivers;
@@ -37,9 +41,9 @@ pub mod tls;
 #[cfg(target_arch = "aarch64")]
 pub use arch_impl::aarch64::elf;
 pub mod ipc;
-pub mod irq_safe_mutex;
 #[cfg(target_arch = "x86_64")]
 pub mod irq_log;
+pub mod irq_safe_mutex;
 #[cfg(target_arch = "x86_64")]
 pub mod keyboard;
 pub mod tty;

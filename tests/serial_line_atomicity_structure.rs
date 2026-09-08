@@ -758,22 +758,7 @@ fn raw_serial_primitive_census(sources: &[(String, String)]) -> Census {
 }
 
 const RAW_SERIAL_PRIMITIVE_ANCHORS: &[(&str, &str, usize)] = &[
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn raw_uart_char",
-        1,
-    ),
-    ("kernel/src/arch_impl/aarch64/smp.rs", "fn raw_uart_char", 1),
-    (
-        "kernel/src/arch_impl/aarch64/syscall_entry.rs",
-        "fn emit_el0_syscall_marker",
-        1,
-    ),
-    (
-        "kernel/src/graphics/particles.rs",
-        "fn animation_thread_entry::fn raw_char",
-        1,
-    ),
+    ("kernel/src/serial_aarch64.rs", "fn hardware_byte", 2),
     (
         "kernel/src/interrupts/context_switch.rs",
         "fn raw_serial_char",
@@ -790,14 +775,16 @@ const RAW_SERIAL_PRIMITIVE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn emergency_print::impl fmt::Write for EmergencySerial::fn write_str",
         1,
     ),
-    ("kernel/src/serial_aarch64.rs", "fn raw_serial_char", 2),
-    ("kernel/src/serial_aarch64.rs", "fn raw_serial_str", 2),
     (
         "kernel/src/syscall/handler.rs",
         "fn raw_serial_str_local",
         1,
     ),
-    ("kernel/src/tracing/output.rs", "fn raw_serial_char", 2),
+    (
+        "kernel/src/tracing/output.rs",
+        "#[cfg(target_arch=x86_64)] fn raw_serial_char",
+        1,
+    ),
 ];
 
 fn validate_raw_serial_primitive_census(sources: &[(String, String)]) -> Result<(), Vec<String>> {
@@ -808,278 +795,6 @@ fn validate_raw_serial_primitive_census(sources: &[(String, String)]) -> Result<
 }
 
 const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn check_inline_eret_resume_pc",
-        5,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn check_inline_save_resume_point",
-        7,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn check_need_resched_and_switch_arm64",
-        4,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dispatch_thread_locked",
-        13,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_all_dispatch_mismatch_snapshots",
-        7,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_all_eret_frame_anomaly_snapshots",
-        9,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_all_eret_guard_records",
-        9,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_all_idle_redirect_histories",
-        13,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_all_inline_save_skew_snapshots",
-        7,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_all_last_dispatched_tids",
-        4,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_all_save_skew_snapshots",
-        11,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_dispatch_trace",
-        12,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn dump_stack_pivot_alias_history",
-        9,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn emit_el0_entry_marker",
-        2,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn emit_schedule_boot_marker",
-        1,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn log_bad_thread_sp",
-        11,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn log_idle_thread_context",
-        11,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn log_last_defer_requeue_snapshot",
-        9,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn raw_uart_dec",
-        1,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn raw_uart_hex",
-        2,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn raw_uart_str",
-        1,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn record_inline_elr_divergence",
-        6,
-    ),
-    // `record_resume_pc_refusal` emits from refusal paths that hold the
-    // scheduler lock, where the locked writer is unavailable. It is capped at
-    // 16 emissions per boot and is never periodic; a torn record can only
-    // under-count the report-only census, never flip a verdict.
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn record_resume_pc_refusal",
-        11,
-    ),
-    // `emit_resume_pc_census` is the fatal-postmortem form and therefore must
-    // remain lock-free by construction.
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn emit_resume_pc_census",
-        9,
-    ),
-    // `drain_asm_resume_pc_refusals`, `record_resume_pc_refusal_locked`, and
-    // `emit_resume_pc_census_locked` use the locked writer and intentionally
-    // do not appear here. If they enter this raw-writer census, restore the
-    // locked write in production instead of admitting them to the test.
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn restore_kernel_context_inline",
-        13,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn save_kernel_context_inline",
-        22,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn save_userspace_context_inline",
-        11,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn set_next_ttbr0_for_thread",
-        6,
-    ),
-    // `take_inline_ret_dispatch_info` and the four ret-dispatch oracle injectors
-    // emit dispatch-path markers while the scheduler lock is held, so the
-    // locked writer is unavailable. All five are one-shot or emission-capped,
-    // never periodic. `[RET_DISPATCH_REFUSED:` is a service-sequence census
-    // only, never a gate condition: a torn line can only under-count the
-    // reported number, not flip a verdict.
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn take_inline_ret_dispatch_info",
-        10,
-    ),
-    // Saved-LR custody, PR-B round 3. `set_saved_lr` reports an EL1 saved link
-    // register that is not a kernel PC and `record_ret_stage_refusal` reports a
-    // ret-dispatch staging copy that disagreed with what was admitted; both run
-    // inside a dispatch with the scheduler lock held, so the locked writer is
-    // unavailable, and both are emission-capped at 8 per boot rather than
-    // periodic. `[LR_NONTEXT:` is census only. `[RET_STAGE_REFUSED:` IS a gate
-    // condition, and a torn line can only under-count it, never invent one.
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn set_saved_lr",
-        6,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/context_switch.rs",
-        "fn record_ret_stage_refusal",
-        6,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/exception.rs",
-        "fn defer_current_user_thread_sigsegv_exit",
-        6,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/exception.rs",
-        "fn dump_el1_fatal_frame_and_dispatch_trace",
-        13,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/exception.rs",
-        "fn dump_el1_first_fault",
-        23,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/exception.rs",
-        "fn dump_fatal_postmortem_once",
-        18,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/exception.rs",
-        "fn dump_fatal_postmortem_section",
-        1,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/exception.rs",
-        "fn dump_stack_classification",
-        6,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/exception.rs",
-        "fn handle_sync_exception",
-        196,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/exception.rs",
-        "fn raw_uart_hex_u32",
-        2,
-    ),
-    // The per-CPU stack-top ownership refusal record, in the one function both
-    // custody sides funnel through. It runs on the dispatch path, so it cannot
-    // take the serial lock; it is bounded to 16 emissions for the whole boot.
-    (
-        "kernel/src/arch_impl/aarch64/percpu.rs",
-        "fn record_percpu_stack_alien",
-        9,
-    ),
-    // The CPU-identity split record: a carried CPU index that disagreed with
-    // the hardware identity where the decision was made. Same constraints as
-    // the alien record above — dispatch path, no lock, bounded to 16 emissions
-    // for the whole boot — and deliberately its own literal so the shape can
-    // never again be absorbed by the alien record.
-    (
-        "kernel/src/arch_impl/aarch64/percpu.rs",
-        "fn record_cpu_identity_split",
-        6,
-    ),
-    // Failure-capture PR-7 took this row from 60 to 5. The dump is now an
-    // opening banner, the stalled duration in seconds and in ticks, and a
-    // closing banner, around one `capture::emit` call; the emitter's own bytes
-    // are counted against `kernel/src/capture/record.rs`, not against this row.
-    // The `fn dump_trace_counters` row that sat beside this one (10) is GONE
-    // rather than present at 0: the helper was deleted with the hand-rolled
-    // counter list it printed, and a `(file, item)` key with no matching call is
-    // not a census row. That is a 65-site reduction in THIS census and a 0-row
-    // change to the logging census in
-    // tests/critical_path_logging_census_structure.rs, which carried 0 anchors
-    // for either function.
-    (
-        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
-        "fn dump_lockup_state",
-        5,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
-        "fn print_hex_u64",
-        1,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
-        "fn print_timer_count_decimal",
-        1,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
-        "fn raw_serial_str",
-        1,
-    ),
-    (
-        "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
-        "fn timer_interrupt_handler",
-        6,
-    ),
     (
         "kernel/src/interrupts/context_switch.rs",
         "fn check_need_resched_and_switch",
@@ -1110,147 +825,40 @@ const UNLOCKED_MULTI_BYTE_WRITE_ANCHORS: &[(&str, &str, usize)] = &[
         "fn switch_to_thread",
         10,
     ),
-    // #608 F4: the timed-futex failure record. It fires only when a timed
-    // wait arbitrates to something other than ETIMEDOUT, is budgeted to 32
-    // lines a boot, and must stay lock-free because the futex wait reaches it
-    // with preemption disabled.
-    (
-        "kernel/src/syscall/futex_timeout_record.rs",
-        "fn record",
-        12,
-    ),
     (
         "kernel/src/syscall/handler.rs",
         "fn emit_ring3_syscall_marker",
         2,
     ),
     (
-        "kernel/src/task/ret_zero_pc_oracle.rs",
-        "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle_exec))] fn inject_exec_commit_if_armed",
+        "kernel/src/tracing/output.rs",
+        "#[cfg(target_arch=x86_64)] fn raw_serial_dec",
+        1,
+    ),
+    (
+        "kernel/src/tracing/output.rs",
+        "#[cfg(target_arch=x86_64)] fn raw_serial_hex",
         2,
     ),
     (
-        "kernel/src/task/ret_zero_pc_oracle.rs",
-        "#[cfg(all(target_arch=aarch64,feature=ret_zero_pc_oracle))] fn inject_ret_zero_pc_if_armed",
-        3,
-    ),
-    (
-        "kernel/src/task/ret_zero_pc_oracle.rs",
-        "#[cfg(all(target_arch=aarch64,feature=lr_poison_oracle))] fn inject_saved_lr_if_armed",
-        3,
-    ),
-    (
-        "kernel/src/task/ret_zero_pc_oracle.rs",
-        "#[cfg(all(target_arch=aarch64,feature=ret_stack_pc_oracle))] fn inject_ret_stack_pc_if_armed",
-        4,
-    ),
-    (
-        "kernel/src/task/ret_zero_pc_oracle.rs",
-        "#[cfg(all(target_arch=aarch64,feature=ret_floor_oracle))] fn inject_ret_floor_if_armed",
-        3,
-    ),
-    // The resume-PC oracle injectors emit one-shot markers while the scheduler
-    // lock is held, matching the existing ret-dispatch injector exception.
-    (
-        "kernel/src/task/ret_zero_pc_oracle.rs",
-        "#[cfg(all(target_arch=aarch64,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle),not(feature=resume_pc_el0_frame_oracle)))] fn inject_el0_resume_pc_if_armed",
-        6,
-    ),
-    (
-        "kernel/src/task/ret_zero_pc_oracle.rs",
-        "#[cfg(all(target_arch=aarch64,any(feature=resume_pc_el1_oracle,feature=eret_zero_pc_oracle,all(feature=resume_pc_el0_frame_oracle,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle)))))] fn inject_el1_frame_resume_pc_if_armed",
-        6,
-    ),
-    (
-        "kernel/src/task/ret_zero_pc_oracle.rs",
-        "#[cfg(all(target_arch=aarch64,feature=resume_pc_el0_frame_oracle,any(feature=resume_pc_el0_kernel_oracle,feature=resume_pc_el0_tid_oracle)))] fn inject_el0_frame_resume_pc_if_armed",
-        6,
-    ),
-    (
-        "kernel/src/task/scheduler.rs",
-        "#[cfg(target_arch=aarch64)] fn dump_cpu_state_history",
-        9,
-    ),
-    // The pinned-wake hold emits a one-shot marker from inside the scheduler
-    // lock with interrupts masked, where the logger's own lock would deadlock:
-    // the same exception the injectors above already carry. It fires at most
-    // once per boot, and on a healthy boot zero times.
-    // claim-lint:ok: 0 of 3 strict boots and 0 of 3 production boots at this
-    // head printed it --
-    // docs/planning/green-program/aarch64-testing/serials/slice3d/01-strict-x3.txt
-    // and 02-prod-boot1.txt with its 2 siblings
-    (
-        "kernel/src/task/scheduler.rs",
-        "impl Scheduler::fn hold_pinned_wake_for_home",
-        5,
-    ),
-    (
-        "kernel/src/test_framework/registry.rs",
-        "fn test_serial_output",
+        "kernel/src/tracing/output.rs",
+        "#[cfg(target_arch=x86_64)] fn raw_serial_hex16",
         1,
     ),
-    ("kernel/src/tracing/output.rs", "fn dump_all_buffers", 6),
-    ("kernel/src/tracing/output.rs", "fn dump_buffer", 7),
-    ("kernel/src/tracing/output.rs", "fn dump_counters", 11),
-    ("kernel/src/tracing/output.rs", "fn dump_event_summary", 6),
-    ("kernel/src/tracing/output.rs", "fn dump_latest_events", 3),
-    ("kernel/src/tracing/output.rs", "fn dump_providers", 7),
     (
         "kernel/src/tracing/output.rs",
-        "fn format_event_to_serial",
-        7,
+        "#[cfg(target_arch=x86_64)] fn raw_serial_str",
+        1,
     ),
-    ("kernel/src/tracing/output.rs", "fn raw_serial_dec", 1),
-    ("kernel/src/tracing/output.rs", "fn raw_serial_hex", 2),
-    ("kernel/src/tracing/output.rs", "fn raw_serial_hex16", 1),
-    ("kernel/src/tracing/output.rs", "fn raw_serial_str", 1),
-    // failure-trace-capture PR-2's ring-span self-check USED TO BE an anchor
-    // here: `mod ring_span_self_check::fn report`, 6 unlocked
-    // `raw_serial_str` calls, justified as "fires at most once per boot, from
-    // inside trace_timer_tick, where the logger's lock is unavailable".
-    //
-    // #847 (ruling R188) removed it from this census by removing the writes.
-    // The justification was sound about the lock and wrong about the
-    // consequence: a `-smp 4` aarch64 boot showed another CPU's serial line
-    // interleaving byte-for-byte with those 6 writes on the shared UART,
-    // corrupting the `[RING_SPAN:...]` marker the strict gate pins (~1 boot in
-    // 10). The tick now publishes its numbers to atomics and
-    // kernel/src/test_framework/registry.rs's `ring_span_report` boot test
-    // prints the marker from thread context through `serial_println!` -- the
-    // locked writer -- so the site is not an unlocked multi-byte writer any
-    // more and has no anchor. The 70 -> 69 anchor count (717 -> 711 call
-    // sites) is deliberate; see
-    // docs/planning/green-program/failure-capture/847-RING-SPAN-THREAD-PRINT-2026-09-06.md.
-    //
-    // NOT claimed: that the remaining anchors below are safe from the same
-    // interleaving. They are the same accepted trade-off #847 describes; what
-    // changed is one writer that did not have to make it.
-    // #822 removed the anchor that used to sit here:
-    // `impl TtyDevice::fn send_signal_to_foreground_nonblock`, 1 unlocked
-    // `raw_serial_str` call. It announced that the interrupt side could not
-    // acquire the console's `foreground_pgrp` mutex and was therefore dropping
-    // the Ctrl+C it had just resolved. That path reads a lock-free snapshot
-    // now, so there is no busy lock to degrade into and no drop to announce:
-    // the write is gone because its subject is gone, not because it was
-    // suppressed. The x86 arm of the same branch was a `serial_println!`,
-    // which this census does not count (it is the locked writer) but which was
-    // a lock taken from interrupt context; it is gone with it.
-    // The 69 -> 68 anchor count is deliberate; see
-    // docs/planning/green-program/irq-locks/822-TTY-IRQ-FG-2026-09-06.md.
-    //
-    // That same round's fix pass moved this anchor 1 -> 2. The x86_64 arm of
-    // the site below was the `serial_println!` the paragraph above says the
-    // census does not count: it was still there, reached on an ordinary
-    // Ctrl+C, taking SERIAL1 blocking from an interrupt entry with
-    // PROCESS_MANAGER held. It is now the same single unlocked
-    // `raw_serial_str` write the aarch64 arm makes, so the site trades 1 LOCKED
-    // formatted write for 1 unlocked 22-byte write and this census counts it. NOT claimed: that the unlocked write is free of the
-    // interleaving #847 measured -- it is the same accepted trade-off the
-    // anchors above make, and it is now made on both architectures.
+    (
+        "kernel/src/tracing/output.rs",
+        "#[cfg(target_arch=x86_64)] impl Line::fn text",
+        1,
+    ),
     (
         "kernel/src/tty/driver.rs",
         "impl TtyDevice::fn send_signal_to_process_nonblock",
-        2,
+        1,
     ),
 ];
 
@@ -1408,6 +1016,12 @@ fn validate_serial_module(source: &str) -> Result<(), &'static str> {
     let writer = function_body(source, "write_bytes_atomic")
         .ok_or("serial module is missing write_bytes_atomic body")?;
     let writer_mask = code_mask(writer);
+    if source.contains("#![cfg(target_arch = \"aarch64\")]") {
+        if !writer.contains("crate::serial_line::Line::new().bytes(bytes)") {
+            return Err("aarch64 batched writer must submit one stack record");
+        }
+        return Ok(());
+    }
     if identifier_offsets(writer, &writer_mask, "SERIAL1").len() != 1 {
         return Err("write_bytes_atomic must use the SERIAL1 port exactly once");
     }
@@ -1564,8 +1178,10 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         r#####"r###"x"###serial_println!"#####,
     ] {
         let mask = code_mask(fixture);
-        assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
-                   vec![fixture.find("serial_println!").unwrap()]);
+        assert_eq!(
+            code_offsets(fixture, &mask, "serial_println!"),
+            vec![fixture.find("serial_println!").unwrap()]
+        );
     }
     // A skipped ordinary identifier byte stays true in the default mask.
     // A skipped raw opener instead changes lexical state: the embedded quote
@@ -1577,7 +1193,231 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         r######"r#"x"#r##"a"b"##serial_println!"######,
     ] {
         let mask = code_mask(fixture);
-        assert_eq!(code_offsets(fixture, &mask, "serial_println!"),
-                   vec![fixture.find("serial_println!").unwrap()]);
+        assert_eq!(
+            code_offsets(fixture, &mask, "serial_println!"),
+            vec![fixture.find("serial_println!").unwrap()]
+        );
     }
+}
+
+// R247: derive architecture exclusions from cfg on module declarations and
+// enclosing items, rather than maintaining an exclusion list of writer names.
+fn cfg_excludes_aarch64(text: &str) -> bool {
+    fn evaluate(expr: &str) -> Option<bool> {
+        if let Some(arch) = expr.strip_prefix("target_arch=") {
+            return Some(arch == "aarch64");
+        }
+        for operator in ["all", "any", "not"] {
+            if let Some(inner) = expr
+                .strip_prefix(&format!("{operator}("))
+                .and_then(|s| s.strip_suffix(')'))
+            {
+                let mut depth = 0usize;
+                let mut start = 0;
+                let mut parts = Vec::new();
+                for (at, ch) in inner.char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        ',' if depth == 0 => {
+                            parts.push(evaluate(&inner[start..at]));
+                            start = at + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                if start < inner.len() {
+                    parts.push(evaluate(&inner[start..]));
+                }
+                return match operator {
+                    "not" => parts.first().copied().flatten().map(|v| !v),
+                    "all" if parts.contains(&Some(false)) => Some(false),
+                    "all" if parts.iter().all(|v| *v == Some(true)) => Some(true),
+                    "any" if parts.contains(&Some(true)) => Some(true),
+                    "any" if parts.iter().all(|v| *v == Some(false)) => Some(false),
+                    _ => None,
+                };
+            }
+        }
+        None // Feature and other predicates remain possible, not excluded.
+    }
+    let compact: String = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && *ch != '"')
+        .collect();
+    compact.split("#[cfg(").skip(1).any(|rest| {
+        rest.find(")]")
+            .is_some_and(|end| evaluate(&rest[..end]) == Some(false))
+    })
+}
+
+fn x86_module_paths(sources: &[(String, String)]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for (path, source) in sources {
+        let mask = code_mask(source);
+        let mut header = 0;
+        for (offset, name) in all_identifiers(source, &mask) {
+            if name != "mod" {
+                continue;
+            }
+            let end = source[offset..].find(';').map(|n| offset + n);
+            let Some(end) = end else {
+                continue;
+            };
+            if source[offset..end].contains('{') {
+                continue;
+            }
+            let boundary = source[..offset].rfind([';', '}', '{']).map_or(0, |n| n + 1);
+            header = header.max(boundary);
+            if cfg_excludes_aarch64(&source[header..offset]) {
+                let module = source[offset + 3..end].trim();
+                let parent = Path::new(path).parent().unwrap();
+                let stem = Path::new(path).file_stem().unwrap().to_str().unwrap();
+                let base = if matches!(stem, "mod" | "lib" | "main") {
+                    parent.to_path_buf()
+                } else {
+                    parent.join(stem)
+                };
+                paths.push(base.join(module).to_string_lossy().into_owned());
+            }
+            header = end + 1;
+        }
+    }
+    paths
+}
+
+fn aarch64_raw_census(sources: &[(String, String)]) -> Census {
+    let excluded = x86_module_paths(sources);
+    let mut result = Census::new();
+    for (path, source) in sources {
+        if excluded.iter().any(|prefix| {
+            path == &format!("{prefix}.rs") || path.starts_with(&format!("{prefix}/"))
+        }) || source.contains("#![cfg(target_arch = \"x86_64\")]")
+        {
+            continue;
+        }
+        let mask = code_mask(source);
+        let spans = rendered_item_spans(&item_spans(source, &mask));
+        // Raw serial API references are forbidden here as well as calls:
+        // this catches imports/aliases subsequently used in a byte loop.
+        let mut calls = unlocked_multi_byte_write_calls(source, &mask);
+        for (offset, name) in all_identifiers(source, &mask) {
+            if name.starts_with("raw_serial_") && !calls.iter().any(|(at, _)| *at == offset) {
+                calls.push((offset, name));
+            }
+        }
+        for offset in raw_serial_primitive_write_offsets(source, &mask) {
+            let item = item_path_at(&spans, offset);
+            if path == "kernel/src/serial_aarch64.rs" && item == "fn hardware_byte" {
+                continue;
+            }
+            calls.push((offset, "direct UART store"));
+        }
+        for (offset, name) in calls {
+            if source
+                .match_indices("#[cfg(target_arch = \"x86_64\")]")
+                .any(|(attr, text)| {
+                    let after = attr + text.len();
+                    next_code(source, &mask, after).is_some_and(|open| {
+                        let end = if source.as_bytes()[open] == b'{' {
+                            matching_brace(source, &mask, open)
+                        } else {
+                            source[open..].find(';').map(|n| open + n)
+                        };
+                        end.is_some_and(|end| open <= offset && offset < end)
+                    })
+                })
+            {
+                continue;
+            }
+            let item = item_path_at(&spans, offset);
+            if cfg_excludes_aarch64(&item) {
+                continue;
+            }
+            if path == "kernel/src/serial_line.rs" && item == "fn emit_owned" {
+                continue;
+            }
+            *result
+                .entry((path.clone(), format!("{item} -> {name}")))
+                .or_default() += 1;
+        }
+    }
+    result
+}
+
+#[test]
+fn aarch64_raw_writers_must_be_inside_serialized_emitter() {
+    let found = aarch64_raw_census(&kernel_sources());
+    assert!(
+        found.is_empty(),
+        "aarch64 raw writers outside line emitter: {found:#?}"
+    );
+}
+
+#[test]
+fn aarch64_census_detects_added_writer_and_cfg_exclusion() {
+    let added = vec![(
+        "kernel/src/new_writer.rs".into(),
+        "fn added() { raw_serial_str(\"marker\"); }".into(),
+    )];
+    assert_eq!(aarch64_raw_census(&added).len(), 1);
+    let excluded = vec![(
+        "kernel/src/new_writer.rs".into(),
+        "#[cfg(target_arch = \"x86_64\")] fn added() { raw_serial_str(\"marker\"); }".into(),
+    )];
+    assert!(aarch64_raw_census(&excluded).is_empty());
+}
+
+fn validate_uart_ownership(source: &str) -> bool {
+    let acquire = function_body(source, "acquire")
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let emit = function_body(source, "emit_owned").unwrap_or("");
+    let submit = function_body(source, "submit")
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    acquire.contains("compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)")
+        && source.contains("UART_OWNED.store(false, Ordering::Release)")
+        && source.contains("ticket: &Ticket")
+        && emit.contains("hardware_byte(byte, ticket)")
+        && submit.contains("if can_spin { 256 } else { 1 }")
+        && submit.contains("publish(record)")
+        && source.contains("slot.state.store(2, Ordering::Release)")
+        && source.contains("slot.state.store(0, Ordering::Release)")
+}
+
+#[test]
+fn uart_ownership_contract_and_delete_mutation() {
+    let source = repo_text("kernel/src/serial_line.rs");
+    assert!(validate_uart_ownership(&source));
+    let deleted = source.replace("UART_OWNED.store(false, Ordering::Release)", "");
+    assert!(!validate_uart_ownership(&deleted));
+}
+
+#[test]
+fn aarch64_exclusions_follow_cfg_boolean_structure() {
+    assert!(cfg_excludes_aarch64(
+        "#[cfg(all(target_arch = \"x86_64\", feature = \"boot_tests\"))]"
+    ));
+    assert!(cfg_excludes_aarch64(
+        "#[cfg(not(target_arch = \"aarch64\"))]"
+    ));
+    assert!(!cfg_excludes_aarch64(
+        "#[cfg(any(target_arch = \"x86_64\", feature = \"boot_tests\"))]"
+    ));
+    let source = vec![(
+        "kernel/src/added.rs".into(),
+        "fn added() { raw_serial_dec(123); }".into(),
+    )];
+    assert_eq!(aarch64_raw_census(&source).len(), 1);
+}
+
+#[test]
+fn aarch64_census_detects_raw_aliases() {
+    let alias = vec![("kernel/src/alias.rs".into(), "use crate::serial_aarch64::raw_serial_char as put; fn added(s: &[u8]) { for b in s { put(*b); } }".into())];
+    assert!(!aarch64_raw_census(&alias).is_empty());
 }
