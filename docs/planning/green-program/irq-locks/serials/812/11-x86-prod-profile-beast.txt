@@ -2,17 +2,17 @@ x86 qemus before: 0
 pgrep: pattern that searches for process name longer than 15 characters will result in zero matches
 Try `pgrep -f' option to match against the complete command line.
 Building the shipped x86_64 production kernel profile...
-   Compiling kernel v0.1.0 (/root/breenix-p812/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-p812)
+   Compiling kernel v0.1.0 (<isolated-checkout-130>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-138>)
     Finished `release` profile [optimized] target(s) in 15.69s
-   Compiling kernel v0.1.0 (/root/breenix-p812/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-p812)
+   Compiling kernel v0.1.0 (<isolated-checkout-130>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-138>)
     Finished `release` profile [optimized] target(s) in 16.44s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-p812/target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-130>/target/release/build/breenix-a14bb21948d9e08d/out/breenix-uefi.img (7405568 bytes)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-p812/target/ext2.img
+  Output: <isolated-checkout-130>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -233,8 +233,8 @@ drwxr-xr-x 3 root root   4096 Sep  5 16:13 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-p812/target/ext2.img
-  /root/breenix-p812/testdata/ext2.img
+  <isolated-checkout-130>/target/ext2.img
+  <isolated-checkout-130>/testdata/ext2.img
   Size: 256M
 
 Contents:

@@ -1,8 +1,8 @@
 REVISION=e8e16061d2aa3f483643fc036ce15d2033b8740e
 COMMAND=bash docker/qemu/run-x86-boot-tests-only.sh
 REVISION=e8e16061d2aa3f483643fc036ce15d2033b8740e
-Artifacts: /root/breenix-927a-tmp/breenix_x86_boot_tests_only.irCfwi
+Artifacts: <isolated-checkout-167>/breenix_x86_boot_tests_only.irCfwi
 [GATE_PREFLIGHT:structure_suites=64/65:critical_path_lines=260:pinned=120]
-GATE_PREFLIGHT: FAIL (1 of 65 structure suite(s) red: context_restore_structure -- per-suite logs under /root/breenix-927a-tmp/breenix_gate_structure_preflight.DAPcJi)
+GATE_PREFLIGHT: FAIL (1 of 65 structure suite(s) red: context_restore_structure -- per-suite logs under <isolated-checkout-167>/breenix_gate_structure_preflight.DAPcJi)
 FAIL: structure-suite preflight
-x86 boot_tests-only gate: FAIL (exit 1); artifacts: /root/breenix-927a-tmp/breenix_x86_boot_tests_only.irCfwi
+x86 boot_tests-only gate: FAIL (exit 1); artifacts: <isolated-checkout-167>/breenix_x86_boot_tests_only.irCfwi

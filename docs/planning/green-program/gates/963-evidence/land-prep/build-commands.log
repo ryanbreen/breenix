@@ -1,0 +1,6 @@
+Revision: 04fe4bc02861628c5a5a0eb5c8df2335e0a402b3
+aarch64: cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 --features boot_tests
+x86: cargo build --release --features boot_tests,testing,external_test_bins --bin qemu-uefi
+x86 missing userspace: ./userspace/programs/build.sh
+structure: bash scripts/run-structure-tests.sh
+strict: bash docker/qemu/run-aarch64-boot-test-strict.sh 1

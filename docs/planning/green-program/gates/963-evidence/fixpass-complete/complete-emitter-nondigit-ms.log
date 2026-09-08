@@ -1,0 +1,22 @@
+Revision: 76da053aa050e75e4c97b3e935ae5447baf357c5; working fixture patch plus named mutation complete-emitter-nondigit-ms
+== compiling gate_qmp_backstop_structure ==
+== running gate_qmp_backstop_structure fake_qmp_dump_precedes_sigterm_even_when_decode_fails ==
+
+running 1 test
+fake_qmp_dump_precedes_sigterm_even_when_decode_fails: socat present; asserting capture and SIGTERM ordering
+
+thread 'fake_qmp_dump_precedes_sigterm_even_when_decode_fails' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t963b/wt/tests/gate_qmp_backstop_structure.rs:587:5:
+[QMP_DUMP:capture=complete:reason=-:core=capture/guest-memory.elf:decoded_events=-:dump_ms=x3995]
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fake_qmp_dump_precedes_sigterm_even_when_decode_fails ... FAILED
+
+failures:
+
+failures:
+    fake_qmp_dump_precedes_sigterm_even_when_decode_fails
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22 filtered out; finished in 4.13s
+
+
+exit=101

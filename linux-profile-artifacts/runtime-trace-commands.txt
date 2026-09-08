@@ -2,7 +2,7 @@
 
 Probe:
 
-- Host: `wrb@10.211.55.3`
+- Host: `wrb@<probe-address>`
 - Kernel: `Linux probe 6.8.0-111-generic #111-Ubuntu SMP PREEMPT_DYNAMIC Sat Apr 11 22:59:23 UTC 2026 aarch64`
 - `bpftrace`: `/usr/bin/bpftrace`
 - `perf`: `/usr/bin/perf`

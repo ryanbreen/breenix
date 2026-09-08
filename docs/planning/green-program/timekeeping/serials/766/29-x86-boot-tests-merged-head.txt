@@ -1,4 +1,4 @@
-# run-x86-boot-tests.sh 1 at merged head 436f476a (breenix-x86 Incus container, /root/breenix-p766)
+# run-x86-boot-tests.sh 1 at merged head 436f476a (the x86 build environment, <isolated-checkout-217>
 14:PASS: 0 allocating call targets in 3 in-scope symbol(s), 14 edge(s) checked.
 449:  [GATE_BOOT_FACTS:boot=1:host_ms=1788725647978-1788726137356:qemu_at_start=0:load_at_start=6.71:qemu_at_end=0:load_at_end=1.91:qemu_cpu_s=483.00:guest_uptime_ms=NA:ended_by=scored_pass]
 464:x86 userspace gate: PASS - exited=110 expected>=105 nonzero=0 allowlist=0

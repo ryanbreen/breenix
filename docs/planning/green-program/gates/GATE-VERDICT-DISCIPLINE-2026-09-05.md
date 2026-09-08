@@ -453,8 +453,8 @@ these tests read):
 
 Each of the 6 repaired scripts gets one default-env run and one simulated
 preflight failure. aarch64 gates ran on this Mac; x86 gates ran on beast
-(`breenix-x86` Incus container, clone `/root/breenix-verdict` at `5a5c1ce4`,
-`BREENIX_GATE_TMP=/root/breenix-verdict-tmp`). Raw output for each of the 12
+(the x86 build environment, clone `<isolated-checkout-23>` at `5a5c1ce4`,
+`BREENIX_GATE_TMP=<isolated-checkout-90>`). Raw output for each of the 12
 runs (6 scripts x 2 runs) is saved as its own file under
 `docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/`,
 named in each run's own "Full output:" line below.
@@ -499,15 +499,15 @@ build userspace from source inside this worktree -- the same failure that
 blocks `cargo test` directly, per `scripts/run-structure-tests.sh`'s own
 header comment. Read-only artifacts already built from the same tree
 (`target/ext2-aarch64.img`, `userspace/programs/aarch64/*.elf`) were copied
-in from the main checkout (`/Users/wrb/fun/code/breenix`, `.gitignore`d
+in from the main checkout (`<local-checkout>`, `.gitignore`d
 build products, not repository content) rather than rebuilt, so these are
 genuine boot-and-adjudicate runs on the repaired scripts, exercising the
 repaired shell logic end to end, but the userspace/kernel binaries booted
 were not built by this run (no userspace or kernel source changed on this
 branch, so this substitution does not affect what the gates verify).
-Beast's existing reference clone (`/root/breenix/rust-fork`)
+Beast's existing reference clone (`<canonical-checkout>/rust-fork`)
 has the fork checked out, so both x86 gates on beast built the kernel,
-userspace, and ext2 disk from source in `/root/breenix-verdict` itself, no
+userspace, and ext2 disk from source in `<isolated-checkout-23>` itself, no
 substitution needed there.
 
 ### aarch64 (this Mac)
@@ -636,7 +636,7 @@ exit **2** (not 1 — `redden 2` preserving the script's own usage-error code
 through the trap, exactly as designed). Full output:
 `docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/coreproof-preflight-fail.txt`.
 
-### x86 (beast, `breenix-x86` container, clone `/root/breenix-verdict`)
+### x86 (beast, the x86 build environment, clone `<isolated-checkout-23>`)
 
 `pgrep -f qemu-system-x86_64` checked <= 2 before each boot (0 running both
 times).
@@ -644,7 +644,7 @@ times).
 **`run-x86-boot-tests.sh`** (`COUNT` defaults to 1)
 
 ```
-$ BREENIX_GATE_TMP=/root/breenix-verdict-tmp BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork/library ./docker/qemu/run-x86-boot-tests.sh
+$ BREENIX_GATE_TMP=<isolated-checkout-90> BREENIX_RUST_FORK_LIBRARY=<canonical-checkout>/rust-fork/library ./docker/qemu/run-x86-boot-tests.sh
 ...
 [RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=3:injected=1:pend_epoch=0:pend_hw=0:pend_shadow=1:pend_selectable=0]
 x86 frame-custody gate run 1: PASS
@@ -654,17 +654,17 @@ status 0 — the same PASS-path shape `run-x86-prod-profile-boot-test.sh`
 already uses, no `exit 0` needed. `pgrep -fl run-x86-boot-tests.sh` after
 that line printed found 0 matches -- the process had exited.
 `BREENIX_RUST_FORK_LIBRARY` points at beast's own long-lived reference
-clone's fork checkout (`/root/breenix/rust-fork`, a read-only reference:
+clone's fork checkout (`<canonical-checkout>/rust-fork`, a read-only reference:
 that clone was read from, and only from); the kernel, userspace, and ext2
 disk this run booted were built fresh, from source, inside
-`/root/breenix-verdict`. Full output (470 lines, covering each
+`<isolated-checkout-23>`. Full output (470 lines, covering each
 FRAME_CUSTODY/PT_CUSTODY/oracle line the gate asserts on):
 `docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/x86-boot-tests-default-pass.txt`.
 
 **`run-x86-tty-oracle-gate.sh`** (default: `--boots 1`)
 
 ```
-$ BREENIX_GATE_TMP=/root/breenix-verdict-tmp BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork/library ./docker/qemu/run-x86-tty-oracle-gate.sh
+$ BREENIX_GATE_TMP=<isolated-checkout-90> BREENIX_RUST_FORK_LIBRARY=<canonical-checkout>/rust-fork/library ./docker/qemu/run-x86-tty-oracle-gate.sh
 Building the shipped x86_64 production kernel profile...
      Running `target/release/qemu-uefi`
 Booting the x86_64 production profile with the TTY oracle (boot 1/1)...
@@ -674,7 +674,7 @@ PASS: x86 TTY oracle gate - 1/1 boots, 14 arms green on the shipped production p
 exit 0. No `--rebuild-userspace` was needed — the fresh clone's `cargo
 build` step (via the kernel's own build script) produced the ext2 image the
 gate needs as a side effect, so the run used fresh build output from
-`/root/breenix-verdict`, with only the fork library itself read from
+`<isolated-checkout-23>`, with only the fork library itself read from
 beast's reference clone. Full output:
 `docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/x86-tty-oracle-default-pass.txt`.
 
@@ -691,7 +691,7 @@ x86 frame-custody gate preflight: BREENIX_GATE_TMP must be an absolute path, got
 exit 1. Full output: `docs/planning/green-program/gates/serials/verdict-widened-2026-09-05/x86-boot-tests-preflight-fail.txt`.
 
 ```
-$ env BREENIX_GATE_TMP=/root/breenix-verdict-tmp-ggg...ggg(147 chars) ./docker/qemu/run-x86-tty-oracle-gate.sh
+$ env BREENIX_GATE_TMP=<isolated-checkout-91> chars) ./docker/qemu/run-x86-tty-oracle-gate.sh
 FAIL: console socket path exceeds the AF_UNIX sun_path limit of 107 chars: "..." is 144 chars -- shorten BREENIX_GATE_TMP
 x86 TTY oracle gate: FAIL (set -e abort at .../run-x86-tty-oracle-gate.sh:180, exit 1)
   failing command: false
@@ -796,7 +796,7 @@ is just a later count of the same growing suite.)
 (PASS), matching the F1-F6 proofs' own "Environment note": this worktree has
 no `rust-fork/` and no prebuilt userspace, so `userspace/programs/aarch64/*.elf`
 and `target/ext2-aarch64.img` were copied in from the main checkout
-(`/Users/wrb/fun/code/breenix`, gitignored build products, not repository
+(`<local-checkout>`, gitignored build products, not repository
 content; no userspace/kernel source changed on this branch) rather than
 rebuilt in this worktree.
 
@@ -818,7 +818,7 @@ aarch64 TTY oracle gate: FAIL (set -e abort at docker/qemu/run-aarch64-tty-oracl
 exit 1. Full output:
 `docs/planning/green-program/gates/serials/verdict-widened-landing-2026-09-05/aarch64-tty-oracle-landing-preflight-fail.txt`.
 
-**x86 (beast, `breenix-x86` container, `/root/breenix-verdict` at
+**x86 (beast, the x86 build environment, `<isolated-checkout-23>` at
 `8c87639a`)**. `pgrep -f qemu-system-x86_64` checked <= 2 before each boot
 (1, then 2, both within the cap). Build clean first:
 `cargo build --release --features boot_tests,testing,external_test_bins --bin
@@ -827,7 +827,7 @@ breenix`, `Finished release`), then that same output grepped for
 `^(warning|error)` -- 0 of 3 lines matched.
 
 ```
-$ BREENIX_GATE_TMP=/root/breenix-verdict-tmp BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork/library ./docker/qemu/run-x86-boot-tests.sh 1
+$ BREENIX_GATE_TMP=<isolated-checkout-90> BREENIX_RUST_FORK_LIBRARY=<canonical-checkout>/rust-fork/library ./docker/qemu/run-x86-boot-tests.sh 1
 ...
 [RECLAIM_DRAIN:nested=1:context_violations=0:selection_capped=3:injected=1:pend_epoch=0:pend_hw=0:pend_shadow=1:pend_selectable=0]
 x86 frame-custody gate run 1: PASS

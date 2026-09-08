@@ -10,11 +10,11 @@ BREENIX_QEMU_ACCEL=kvm BREENIX_QEMU_CPU=host \
 
 ## Where this ran, and why in an isolated checkout
 
-At launch time, beast's `breenix-x86` Incus container had two other
-active, unrelated lanes already running against the shared `/root/breenix`
+At launch time, beast's x86 build environment had two other
+active, unrelated lanes already running against the shared `<canonical-checkout>`
 checkout, both observed directly via `ps aux` inside the container (`ps
 aux` output, this session's own transcript): a 60-boot `#693` KVM soak
-battery (`/root/r693/driver.sh`, reading `./target/release/qemu-uefi`
+battery (`<host-artifact-dir-66>/driver.sh`, reading `./target/release/qemu-uefi`
 directly, mid-run at boot 9-17 throughout this measurement) and a second,
 unrelated tracing-validation battery against its own separate checkout
 elsewhere on the host. `run-ext2-lock-race-gate.sh` (no `--no-build` skip
@@ -22,21 +22,21 @@ available for a from-scratch feature combination) does `cargo build
 --release --features boot_tests,ext2_lock_race,...` writing to
 `target/release/qemu-uefi` and repacks `target/test_binaries.img` /
 `target/ext2.img` in place — the exact paths the `#693` battery's own
-driver script (`/root/r693/driver.sh`) re-reads once per loop iteration
+driver script (`<host-artifact-dir-66>/driver.sh`) re-reads once per loop iteration
 (~60s cadence, per its own `HARD_TIMEOUT`/poll structure). Running the gate
 build there would have clobbered a different lane's live evidence mid-soak.
 
 Per the task's own contention check, this measurement ran in a **separate,
-isolated clone** instead: `/root/breenix-748-kvm`, `git clone --no-hardlinks
-/root/breenix`, checked out to **main `3d601400`** (the exact commit named
-"main bytes"). The two things this checkout shares with `/root/breenix` are
+isolated clone** instead: `<isolated-checkout-14>`, `git clone --no-hardlinks
+<canonical-checkout>`, checked out to **main `3d601400`** (the exact commit named
+"main bytes"). The two things this checkout shares with `<canonical-checkout>` are
 a symlinked `rust-fork` (a large, static, read-only forked-Rust-std input
-already present as a real directory at `/root/breenix/rust-fork-real`, used
+already present as a real directory at `<rust-fork-checkout>`, used
 read-only by other isolated checkouts on this host by the same convention)
 and a copied (not shared) OVMF firmware pair; source tree, `target/` build
 output, `test_binaries.img`, and `ext2.img` are each independent copies
-built inside `/root/breenix-748-kvm` itself, not links back to
-`/root/breenix`. `/tmp/breenix_ext2_lock_race_gate_x86` (the gate script's hardcoded
+built inside `<isolated-checkout-14>` itself, not links back to
+`<canonical-checkout>`. `/tmp/breenix_ext2_lock_race_gate_x86` (the gate script's hardcoded
 output directory — not parameterized by checkout) was checked via `ls -la`
 and `ps aux` immediately before use: 1 stale file set from a prior day
 (mtime 2026-09-02 01:17 UTC) and 0 live processes referencing it.
@@ -53,12 +53,11 @@ alongside this document, so its contents are not independently checkable
 here -- **correction (review-707.md finding F7):** the sentence
 previously reasoned from that file's contents directly, which is the same
 dangling-artifact defect the #707 round's own B2 finding blocked on, in a
-different file). `incus info breenix-x86` showed the container's cgroup
-memory at 7.36GiB against an 8GiB `limits.memory`, coincident with two
+different file). Host diagnostics showed the build environment approaching its configured memory limit, coincident with two
 concurrent `cargo build` processes from other lanes finishing
 near-simultaneously — consistent with a cgroup OOM-kill under memory
 pressure from combined page cache across the concurrent checkouts on this
-shared, 8GiB-limited container, not an x86/KVM-specific failure. No other
+shared build environment, not an x86/KVM-specific failure. No other
 lane's process was touched to recover; the retry (15:06:05 UTC) ran to
 completion once builds elsewhere on the host had quieted (`ps aux` showed
 no active `cargo`/`rustc` processes at retry time).

@@ -1,0 +1,2 @@
+revision=45ff0a90b76e71671d9499542f6a2165181ee344
+{"schemaVersion": 1, "id": "7a8907f2-0d5b-4b18-a654-659053f9ea01", "arch": "x86_64", "profile": "boot-tests", "verdict": "PASS", "exitCode": 0, "startedAt": "2026-09-08T11:23:46.087000+00:00", "endedAt": "2026-09-08T11:31:33.861221+00:00", "command": ["docker/qemu/run-x86-boot-tests.sh"], "serials": ["serial_kernel.txt", "serial_user.txt"], "captures": ["gate_boot_facts.txt", "qemu.log"]}

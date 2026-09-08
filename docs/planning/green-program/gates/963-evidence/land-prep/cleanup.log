@@ -1,0 +1,4 @@
+Revision: 04fe4bc02861628c5a5a0eb5c8df2335e0a402b3
+QEMU command lines referencing this Mac lane: 0.
+Strict gate exited 0 after terminating its tracked QEMU. No x86 QEMU was launched by this slot.
+No name-based kill or other-lane process modification was performed.

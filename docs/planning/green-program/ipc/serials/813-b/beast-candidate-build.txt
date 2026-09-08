@@ -71,7 +71,7 @@
    Compiling usize_conversions v0.2.0
    Compiling pin-project-lite v0.2.17
    Compiling log v0.4.34
-   Compiling kernel v0.1.0 (/root/breenix-i813d/kernel)
+   Compiling kernel v0.1.0 (<isolated-checkout-115>/kernel)
    Compiling anyhow v1.0.104
    Compiling micromath v2.1.0
    Compiling futures-task v0.3.34
@@ -122,7 +122,7 @@
    Compiling lzma-rs v0.3.0
    Compiling sha2 v0.11.0
    Compiling rustls-webpki v0.103.15
-   Compiling breenix v0.1.0 (/root/breenix-i813d)
+   Compiling breenix v0.1.0 (<isolated-checkout-116>)
    Compiling tar v0.4.46
    Compiling base16ct v1.0.0
    Compiling ureq v3.4.1

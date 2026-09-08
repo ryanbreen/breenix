@@ -1,15 +1,15 @@
 # Green arc 5 (Bus+NIC blended) — PROVE round, 2026-08-31
 
 Branch `feat/green-bus-nic`, worked in an isolated worktree at
-`/Users/wrb/fun/code/breenix/.claude/worktrees/wf_395bb9a4-6a3-4`, detached
+`<local-checkout>`, detached
 at `c799790bfcd7cd5173bf0e3a44ae299a9cd8f28a` (the fix slot's own final head
 — `feat/green-bus-nic` the branch name was already checked out in a sibling
 worktree, so this slot worked from the exact commit SHA in detached HEAD;
 `origin/feat/green-bus-nic` confirmed == this SHA before starting). Read
 the fix round's own notes and review docs (session-scratchpad files not
 preserved in-repo — see the sweep-2 N6 note below) in full
-before starting. Task: run every leg named in the fix-round handoff to
-completion, fill every `PROVE-FILL` placeholder in the durable EVIDENCE/CONFIRM
+before starting. Task: run the legs named in the fix-round handoff to
+completion, fill the pending evidence placeholders in the durable EVIDENCE/CONFIRM
 docs with measured results, commit + push.
 
 All five legs run to completion. Logs originally under a session-scratchpad
@@ -67,7 +67,7 @@ Environment setup needed for any of this to build at all, matching the
 confirm/fix slots' own documented workaround for the pre-existing #719
 landmine: copied `Cargo.lock` from the pristine `main` checkout
 (`x86_64 v0.15.4`, known-good) into this worktree (gitignored, not
-committed), and symlinked `rust-fork -> /Users/wrb/fun/code/breenix-parallels/rust-fork`
+committed), and symlinked `rust-fork -> <rust-fork-checkout>`
 (also gitignored — `repo_symlink_hygiene`'s own tests confirm this is the
 sanctioned shape). Also needed: `scripts/create_ext2_disk.sh --arch aarch64`
 for the service-sequence gate (leg 2).
@@ -110,7 +110,7 @@ Logs: `fix2-prove/ss-gate-main.log` (unmutated 50-boot run),
 
 ## Leg 3 — beast
 
-Scratch clone `/root/breenix-gbus-prove` on `breenix-x86` at `c799790b`
+Scratch clone `<isolated-checkout-164>` on `<x86-build-environment>` at `c799790b`
 (fresh `git clone` + `git fetch origin feat/green-bus-nic` + `git checkout
 <sha>`, isolated from any other beast work; removed at the end).
 

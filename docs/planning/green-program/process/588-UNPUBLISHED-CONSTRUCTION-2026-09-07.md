@@ -218,8 +218,8 @@ Logs and serials under `docs/planning/green-program/process/serials/588/`:
 
 ### x86 attempts on beast
 
-The container `breenix-x86` was shared with other lanes for the whole round
-(load average 5 to 9.5 on 8 cores). Four attempts ran on the same clone of this
+The container `<x86-build-environment>` was shared with other lanes for the whole round
+(load average 5 to 9.5). Four attempts ran on the same clone of this
 branch at commit 66ef1730:
 
 1. Structure preflight green 62 of 62, boot reached
@@ -335,7 +335,7 @@ claim-lint:ok: #588; tests/teardown_structure.rs
 | --- | --- | --- |
 | scripts/run-structure-tests.sh, each of the 62 tests/*_structure.rs files | d6cef3cd, Mac | 62/62 suites pass; teardown_structure.rs 97/97 tests (was 95/95 before this pass) |
 | docker/qemu/run-aarch64-boot-test-strict.sh 1 | d6cef3cd, Mac | PASS 1/1 |
-| docker/qemu/run-x86-boot-tests.sh 1 | d6cef3cd, beast /root/breenix-588 | structure preflight 62/62, `x86 frame-custody gate run 1: PASS`, `INIT_DESIGNATION_ORACLE` counters match the prior round's run unchanged (construct_failed=2, construct_roots_retired=2, construct_residual=0) |
+| docker/qemu/run-x86-boot-tests.sh 1 | d6cef3cd, beast <isolated-checkout-165> | structure preflight 62/62, `x86 frame-custody gate run 1: PASS`, `INIT_DESIGNATION_ORACLE` counters match the prior round's run unchanged (construct_failed=2, construct_roots_retired=2, construct_residual=0) |
 
 New serials under `docs/planning/green-program/process/serials/588/`:
 `green-aarch64-strict-fixpass-boot1.txt`, `green-x86-fixpass-gate-run1.txt`,
@@ -412,7 +412,7 @@ succeeded`. Gate transcript and serial:
 `docs/planning/green-program/process/serials/588/green-aarch64-strict-landing-gate.txt`,
 `.../green-aarch64-strict-landing-boot1.txt`.
 
-**One x86 boot, beast (`/root/breenix-588`).** Three attempts at the merged
+**One x86 boot, beast (`<isolated-checkout-165>`).** Three attempts at the merged
 HEAD (`be7f6098`, then `2a4a9ce7` for the third once the citation-fix commit
 landed -- a docs-only change with no effect on the kernel build):
 

@@ -1,4 +1,4 @@
-[qemu-uefi] Using UEFI image: /root/breenix/target/release/build/breenix-20a8bf053cd759b7/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <canonical-checkout>/target/release/build/breenix-20a8bf053cd759b7/out/breenix-uefi.img (7405568 bytes)
 x86 userspace gate: PASS - exited=104 expected>=104 nonzero=0 allowlist=0
 [FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=1]
 [PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]

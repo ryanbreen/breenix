@@ -314,7 +314,7 @@ userspace" for a run whose own line reads `calls=0`.
 `Observed fcntl contention oracle marker count: 0`. Log:
 `serials/819-oracle-arming/06-branch-prod-profile-gate.txt`.
 
-### x86 (beast, `breenix-x86` Incus container)
+### x86 (beast, the x86 build environment)
 
 `cargo build --release --features testing,external_test_bins --bin qemu-uefi` --
 0 warnings (`grep -c warning` over the build log: 0).
@@ -498,7 +498,7 @@ Re-smoke ran at `165f49c0362e04c406cd007a3d3c7b21fbc59f79` (the fixture
 re-record commit above, pushed to `fix/819-fcntl-oracle-arming-rendezvous`)
 on the Mac at
 `/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/ld-fcntl-arm`
-and on beast at `/root/breenix-fcntlarm` (`BREENIX_GATE_TMP=/root/breenix-fcntlarm-tmp`).
+and on beast at `<isolated-checkout-207>` (`BREENIX_GATE_TMP=<isolated-checkout-208>`).
 
 ### Host-side suites
 
@@ -537,16 +537,16 @@ Production profile (`docker/qemu/run-aarch64-prod-profile-boot-test.sh`) x1:
 `Observed fcntl contention oracle marker count: 0`, `Observed IRQ-hold
 oracle marker count: 0`.
 
-### x86 (beast, `breenix-x86` container)
+### x86 (beast, the x86 build environment)
 
-Own clone at `/root/breenix-fcntlarm`, checked out from a local branch
-(`fix-819-import`) in `/root/breenix` that was force-updated to `FETCH_HEAD`
-after `git -C /root/breenix fetch origin fix/819-fcntl-oracle-arming-rendezvous`
+Own clone at `<isolated-checkout-207>`, checked out from a local branch
+(`fix-819-import`) in `<canonical-checkout>` that was force-updated to `FETCH_HEAD`
+after `git -C <canonical-checkout> fetch origin fix/819-fcntl-oracle-arming-rendezvous`
 -- the container's no-outbound-GitHub rule means a fresh `git clone
-/root/breenix /root/breenix-fcntlarm` does not itself carry a same-repo
+<canonical-checkout> <isolated-checkout-207>` does not itself carry a same-repo
 `fetch`'s dangling `FETCH_HEAD` as a ref the clone can see, so the
 intermediate named branch was needed. `rust-fork` symlinked to
-`/root/breenix/rust-fork-real`. `cargo build --release --features
+`<rust-fork-checkout>`. `cargo build --release --features
 testing,external_test_bins --bin qemu-uefi` piped through `grep -E
 "^(warning|error)"`: empty output (grep exit 1).
 
@@ -591,7 +591,7 @@ cleanly (`kernel/src/test_framework/registry.rs` in the first,
 the second).
 
 Full re-smoke ran again at `53523fb5` on the Mac and on beast
-(`/root/breenix-fcntlarm`, `git fetch`ed forward in place rather than
+(`<isolated-checkout-207>`, `git fetch`ed forward in place rather than
 re-cloned):
 
 ### Host-side suites
@@ -636,9 +636,9 @@ Production profile x1 at this head: `PASS: production profile reached
 bsshd with the futex oracle seam absent`, fcntl and IRQ-hold marker counts
 both 0.
 
-### x86 (beast, `breenix-x86` container)
+### x86 (beast, the x86 build environment)
 
-`/root/breenix-fcntlarm` updated in place (`git fetch /root/breenix
+`<isolated-checkout-207>` updated in place (`git fetch <canonical-checkout>
 fix-819-import && git reset --hard FETCH_HEAD`, no re-clone). Build and both
 gates (`run-x86-boot-tests.sh 1`, `run-x86-prod-profile-boot-test.sh`) re-run
 against the new head; results recorded in the PR description alongside the

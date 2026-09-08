@@ -8,10 +8,10 @@ fix is in this branch; the two counters landed by the instrument slot
 
 - Branch `exp/772-wasted-turns` at `c4e1e88a` (`8699af30` instrument +
   `c4e1e88a` measure, both on top of main `4103571a`).
-- Beast, VM `breenix-x86` (KVM), scratch clone `/root/breenix-772-measure`
+- Beast, VM `<x86-build-environment>` (KVM), scratch clone `<isolated-checkout-192>`
   cloned from `https://github.com/ryanbreen/breenix.git`, branch
   `exp/772-wasted-turns` checked out at `c4e1e88a`. The standing gate's own
-  clone at `/root/breenix` was read once (`rust-fork-real`, reused read-only
+  clone at `<canonical-checkout>` was read once (`rust-fork-real`, reused read-only
   via `BREENIX_RUST_FORK`) and not written to by this battery's 15 gate
   invocations or its scratch clone's checkout.
 - `docker/qemu/run-x86-gate.sh 4 full` (`testing,external_test_bins`),
@@ -75,7 +75,7 @@ file fd=<N>` pairs for the target tid (the counters' own open/read/close
 syscalls) and searches for the block/unblock/woken/restore sequence *only
 inside that window* (`window_pre`/`window_post` fields), so `turns` and the
 still-blocked counters are guaranteed to describe the same `read()` call.
-The fix was pushed to beast's `/root/measure_boot.py` after boot 8 of 60 (the
+The fix was pushed to beast's `<host-artifact-dir-193>` after boot 8 of 60 (the
 first 8 boots' *live* `turns` sidecar value, used only for the driver
 loop's stop-condition check, predates the fix); **every number in this
 report and in `772-exp-results-final.jsonl` was recomputed from the raw
@@ -124,7 +124,7 @@ every time.
 ## Gate verdicts (`x86-gate-verdict.sh`, `EXPECTED_EXITS=10`)
 
 43/60 `Test N: PASS`, 17/60 `Test N: FAIL`. Every FAIL has an identified
-failing process (`grep -h "not allowlisted" /root/772-exp-group-*.log`);
+failing process (`grep -h "not allowlisted" <host-artifact-dir-194>*.log`);
 none are unexplained:
 
 | failing process | count | signature |

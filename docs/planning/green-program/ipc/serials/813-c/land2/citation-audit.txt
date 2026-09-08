@@ -2369,7 +2369,7 @@ citation-audit.txt docker/qemu/run-aarch64-prod-profile-boot-test.sh:9 -> docker
 citation-audit.txt docker/qemu/run-aarch64-prod-profile-boot-test.sh:10 -> docker/qemu/run-aarch64-prod-profile-boot-test.sh:10: # suite (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is
 citation-audit.txt docker/qemu/run-aarch64-prod-profile-boot-test.sh:11 -> docker/qemu/run-aarch64-prod-profile-boot-test.sh:11: # red. BREENIX_GATE_SKIP_STRUCTURE=1 skips that step loudly.
 citation-audit.txt docker/qemu/run-aarch64-prod-profile-boot-test.sh:12 -> docker/qemu/run-aarch64-prod-profile-boot-test.sh:12: 
-citation-audit.txt docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `/root/breenix-p796`, `BREENIX_GATE_TMP=/root/breenix-p796-tmp`,
+citation-audit.txt docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `<isolated-checkout-124>`, `BREENIX_GATE_TMP=<isolated-checkout-125>`,
 citation-audit.txt docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:774 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:774: own clone per R20). Branch fetched from GitHub at this round's commit
 citation-audit.txt docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:775 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:775: `6bf0b6423430ff919dbe1b938db1f69c46102c7f`.
 citation-audit.txt docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:776 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:776: `pgrep -fl qemu-system-x86_64 | wc -l` read `0` before the run.
@@ -2431,7 +2431,7 @@ document-citation-audit.txt kernel/src/ipc/stdin.rs:221 -> kernel/src/ipc/stdin.
 document-citation-audit.txt kernel/src/syscall/handlers.rs:919 -> kernel/src/syscall/handlers.rs:919:                         // Check if data arrived during setup (race condition fix)
 document-citation-audit.txt kernel/src/task/scheduler.rs:3426 -> kernel/src/task/scheduler.rs:3426:     pub fn block_current_in_syscall(&mut self) {
 document-citation-audit.txt kernel/src/syscall/fifo.rs:86 -> kernel/src/syscall/fifo.rs:86: #[cfg(not(target_arch = "x86_64"))]
-document-citation-audit.txt docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `/root/breenix-p796`, `BREENIX_GATE_TMP=/root/breenix-p796-tmp`,
+document-citation-audit.txt docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `<isolated-checkout-124>`, `BREENIX_GATE_TMP=<isolated-checkout-125>`,
 document-citation-audit.txt docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:837 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:837: * **The oracle does not witness a successful `F_SETFD` under contention.** Its
 document-citation-audit.txt userspace/programs/src/futex_handoff_oracle.rs:68 -> userspace/programs/src/futex_handoff_oracle.rs:68: fn input_inject_negative_control() {
 document-citation-audit.txt docker/qemu/run-aarch64-prod-profile-boot-test.sh:707 -> docker/qemu/run-aarch64-prod-profile-boot-test.sh:707: python3 "$BREENIX_ROOT/scripts/score-input-inject-negative-control.py" "$SERIAL_FILE"
@@ -2473,7 +2473,7 @@ round-document kernel/src/ipc/stdin.rs:221 -> kernel/src/ipc/stdin.rs:221: pub f
 round-document kernel/src/syscall/handlers.rs:919 -> kernel/src/syscall/handlers.rs:919:                         // Check if data arrived during setup (race condition fix)
 round-document kernel/src/task/scheduler.rs:3426 -> kernel/src/task/scheduler.rs:3426:     pub fn block_current_in_syscall(&mut self) {
 round-document kernel/src/syscall/fifo.rs:86 -> kernel/src/syscall/fifo.rs:86: #[cfg(not(target_arch = "x86_64"))]
-round-document docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `/root/breenix-p796`, `BREENIX_GATE_TMP=/root/breenix-p796-tmp`,
+round-document docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:773: **x86 leg** (beast, `<isolated-checkout-124>`, `BREENIX_GATE_TMP=<isolated-checkout-125>`,
 round-document docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:837 -> docs/planning/green-program/syscalls/796-FCNTL-EAGAIN-2026-09-05.md:837: * **The oracle does not witness a successful `F_SETFD` under contention.** Its
 round-document kernel/src/task/softirq_tests.rs:228 -> HISTORICAL changed/removed:     assert!(
 round-document kernel/src/task/softirq_tests.rs:228 -> HISTORICAL changed/removed:     assert!(

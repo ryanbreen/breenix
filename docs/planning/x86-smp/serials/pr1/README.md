@@ -7,11 +7,11 @@ Branch `x86/smp-pr1-madt-enum`, head `e2717b88`, based on `origin/main`
 The 3 files whose names begin `round2-` were taken later, at `04c9a6ad`, for
 the review round that section 10 of that narrative describes.
 
-x86 evidence was taken on beast (the `breenix-x86` Incus VM) in the clone
-`/root/breenix-smp1`, with `BREENIX_GATE_TMP=/root/breenix-smp1-tmp` (R18).
+x86 evidence was taken on beast (the x86 build environment) in the clone
+`<isolated-checkout-20>`, with `BREENIX_GATE_TMP=<isolated-checkout-21>` (R18).
 aarch64 evidence was taken on the Mac in the worktree this branch was authored
 in. The gate reuses one working directory per leg
-(`/root/breenix-smp1-tmp/breenix_x86_smp_enum_<leg>/`) and clears it at the
+(`<isolated-checkout-21>/breenix_x86_smp_enum_<leg>/`) and clears it at the
 start of each run, so the container holds only the last run to use each path —
 the oracle and mutation runs overwrote two of the green run's three. The
 transcripts and excerpts committed here, taken from each run's own files at the

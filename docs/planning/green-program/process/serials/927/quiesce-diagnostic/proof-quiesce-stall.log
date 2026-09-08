@@ -1,14 +1,14 @@
 REVISION=5c35eba20aa61eb4f5acb4ddb334381dffa0961c
 COMMAND=bash docker/qemu/run-x86-boot-tests-only.sh
 REVISION=5c35eba20aa61eb4f5acb4ddb334381dffa0961c
-Artifacts: /root/breenix-927a-tmp/breenix_x86_boot_tests_only.0KQBOb
+Artifacts: <isolated-checkout-167>/breenix_x86_boot_tests_only.0KQBOb
 [GATE_PREFLIGHT:structure_suites=65/65:critical_path_lines=260:pinned=120]
-   Compiling kernel v0.1.0 (/root/breenix-927a/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-927a)
+   Compiling kernel v0.1.0 (<isolated-checkout-166>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-173>)
     Finished `release` profile [optimized] target(s) in 17.85s
 QEMU HOST LOCK: host qemu-system-x86_64 count before acquire: 0
 [PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]
 Traceback (most recent call last):
   File "<stdin>", line 8, in <module>
 AssertionError: missing/duplicate/mismatched PT_EXEC_COHORT_LITERAL
-x86 boot_tests-only gate: FAIL (exit 1); artifacts: /root/breenix-927a-tmp/breenix_x86_boot_tests_only.0KQBOb
+x86 boot_tests-only gate: FAIL (exit 1); artifacts: <isolated-checkout-167>/breenix_x86_boot_tests_only.0KQBOb

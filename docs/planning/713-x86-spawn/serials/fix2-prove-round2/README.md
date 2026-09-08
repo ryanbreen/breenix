@@ -66,7 +66,7 @@ the main checkout already carries.
 ## `beast-leg2/` — extended prod-profile gate ×5 at landed bytes
 
 Five sequential `docker/qemu/run-x86-prod-profile-boot-test.sh` runs on
-beast's `breenix-x86` Incus VM, all `exit=0`. Every run's pins:
+beast's x86 build environment, 5/5 `exit=0`. Run pins:
 
 ```
 PASS: x86 production profile reached steady state with the teardown census at rest

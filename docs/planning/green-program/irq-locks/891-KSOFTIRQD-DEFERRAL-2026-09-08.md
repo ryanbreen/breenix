@@ -207,7 +207,7 @@ future-incompatibility notice is the accepted toolchain notice documented in
 issues 559 and 945; no project-source warning suppression was added.
 
 An existing shared Git commit hook unexpectedly exported legacy issue data to
-`/Users/wrb/fun/code/breenix/.beads/issues.jsonl` on the first code commit.
+`<local-checkout>` on the first code commit.
 That side effect was reported immediately. Subsequent commits disable hooks
 with `core.hooksPath=/dev/null`; no shared file was reverted or edited manually.
 GitHub issues remain the work-tracking source.
@@ -420,7 +420,7 @@ future-incompatibility notice is the accepted toolchain notice under issues
 559 and 945, not a suppressed project warning.
 
 Beast launched the requested `bash docker/qemu/run-x86-boot-tests.sh` in
-`/root/breenix-s891`, with lane-local TMPDIR and BREENIX_GATE_TMP, at a
+`<isolated-checkout-133>`, with lane-local TMPDIR and BREENIX_GATE_TMP, at a
 one-minute load of 1.43; its QEMU-start facts later record 3.42. The R238 check did not require a wait. Missing x86
 userspace ELFs were built once. The [x86 gate](serials/891/review-fix/x86-gate.txt)
 exits 0 with 68/68 structure suites and 1/1 boot. Its userspace tally is
@@ -466,7 +466,7 @@ re-export, and their regression tests. The follow-up commit changes only
 documentation and evidence, so it does not require another kernel build.
 
 The first commit unexpectedly invoked the inherited core.hooksPath at
-`/Users/wrb/fun/code/breenix/.beads/hooks`, which reported exporting issues
+`<local-checkout>`, which reported exporting issues
 to the main checkout. Subsequent Git mutations use a command-local empty
 hooks path to avoid repeating that obsolete tracking hook. No persistent
 Git hook configuration was changed.
@@ -630,7 +630,7 @@ mergeCommit=null; `git log origin/main..HEAD` is nonempty.
 
 The failure evidence was committed and pushed before beast cleanup.
 The process-use census found 0 processes using either lane path, and
-`rm -rf /root/breenix-s891 /root/breenix-s891-tmp` completed. The Mac
+`rm -rf <isolated-checkout-133> <isolated-checkout-134>` completed. The Mac
 process census found 0 QEMUs using this lane; the battery QEMU was
 left untouched. This worktree and remote branch remain for recovery.
 No task-created stash exists. No later boot attempt was launched.

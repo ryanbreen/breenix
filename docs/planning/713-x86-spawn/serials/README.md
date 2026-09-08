@@ -1,7 +1,7 @@
 # #713 x86 SPAWN — evidence serials
 
-Preserved by the #713 fix-round-2 (N8), copied from the prove pass's
-evidence at beast's `breenix-x86` Incus VM (`/root/p713-prove/`) and the
+Preserved by the #713 fix-round-2 (N8), copied from the verification pass's
+evidence at beast's x86 build environment (`<host-artifact-dir-30>/`) and the
 local Mac scratchpad (leg4/leg5), per this project's standing habit of
 keeping gate serials with the campaign. `*.log` files were renamed `.txt`
 (this repo's `.gitignore` has a blanket `*.log` rule); boot-firmware/disk

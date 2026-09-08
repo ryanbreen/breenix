@@ -1,4 +1,4 @@
-=== re-smoke at the merged head 98ba6e64, beast /root/breenix-smp1 (re-cloned) ===
+=== re-smoke at the merged head 98ba6e64, beast <isolated-checkout-20> (re-cloned) ===
 
 --- cargo build --release --features testing,external_test_bins --bin qemu-uefi ---
 warning/error lines in the build log: 0
@@ -30,5 +30,5 @@ GATE_EXIT=0
 
 --- the enumeration marker in the zero-feature profile at this head ---
 [X86_SMP_ENUM:madt_cpus=1:enabled=1:x2apic=0:bsp_apic_id=0:cpuid_logical=0:present=1:online=1:max_cpus=1:src=madt:reason=none]
-/root/breenix-smp1-tmp/breenix_x86_prod_profile/serial_kernel.txt:1
-/root/breenix-smp1-tmp/breenix_x86_prod_profile/serial_user.txt:0
+<isolated-checkout-21>/breenix_x86_prod_profile/serial_kernel.txt:1
+<isolated-checkout-21>/breenix_x86_prod_profile/serial_user.txt:0

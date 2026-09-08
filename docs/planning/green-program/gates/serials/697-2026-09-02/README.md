@@ -16,15 +16,15 @@ true reaped-row count to 5 without moving the pin. The fix at `907f096a`
 derives the pin from the RING3_SMOKE roster in `kernel/src/main.rs` instead
 (#697 item 2, shape (b) of the fix notes). This round runs the unpatched-main
 bytes, the fixed branch, and a deliberate mutation of the derivation, each on
-beast (`breenix-x86` Incus VM), and preserves every boot's serials under this
+beast (the x86 build environment), and preserves every boot's serials under this
 directory. No kernel source changed in this round.
 
 ## Method
 
-Two fresh scratch clones on beast (`/root/breenix-697-prove-main` at
-`509802e5`, `/root/breenix-697-prove-branch` at `907f096a`), both cloned from
+Two fresh scratch clones on beast (`<isolated-checkout-95>` at
+`509802e5`, `<isolated-checkout-96>` at `907f096a`), both cloned from
 `https://github.com/ryanbreen/breenix.git`, neither derived from the host's
-own `/root/breenix` checkout. `docker/qemu/run-x86-boot-tests.sh`'s own
+own `<canonical-checkout>` checkout. `docker/qemu/run-x86-boot-tests.sh`'s own
 `set -e` + ERR-trap design aborts the whole script on the first failing
 assertion inside its `for i in 1..COUNT` loop, so a single invocation with
 `COUNT=N` cannot yield N independently-classified boots once any boot in the
@@ -182,9 +182,9 @@ gate), so the branch's existing 5-of-5 boot evidence above still applies to
 the corrected bytes, and this section adds one confirming boot at the new
 head rather than a full new battery.
 
-Fresh scratch clone `/root/breenix-697-r2-confirm` on beast (`breenix-x86`
-Incus VM), cloned from `https://github.com/ryanbreen/breenix.git` (not
-derived from the host's own `/root/breenix` checkout), checked out at
+Fresh scratch clone `<isolated-checkout-97>` on beast (`<x86-build-environment>`
+build environment), cloned from `https://github.com/ryanbreen/breenix.git` (not
+derived from the host's own `<canonical-checkout>` checkout), checked out at
 `3d1960ef`. One `run-x86-boot-tests.sh 1` invocation, result PASS:
 `r2-confirm/boot1-gate.txt:567` (`x86 frame-custody gate run 1: PASS`),
 census line `r2-confirm/boot1-gate.txt:564`

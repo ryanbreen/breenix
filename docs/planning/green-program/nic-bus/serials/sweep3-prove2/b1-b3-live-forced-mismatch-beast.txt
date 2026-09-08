@@ -1,5 +1,5 @@
 B1-B3 proof, live leg: gdb_chat.py's resync_symbols() correcting a REAL
-mismatch on a real boot, on beast (breenix-x86 container), at a6679e7c.
+mismatch on a real boot, on beast (the x86 build environment), at a6679e7c.
 
 The environment (this beast container, this host/QEMU/OVMF combination) has
 been observed to pick 0x10000000000 on every boot sampled by the fix round's
@@ -28,10 +28,10 @@ offset_line found after poll: INFO : virtual_address_offset: 0x10000000000
 CONTINUE result: {"success": true, "command": "continue", "output": "Continuing.\nProgram received signal SIGINT, Interrupt.\n0x00000100001b0fe0 in ?? ()", ...}
 REAL boot base = 0x10000000000, forced guess = 0x8000000000
 RESYNC RESULT: {"success": true, "resynced": true, "verified": true, "old_base": "0x8000000000", "base": "0x10000000000", "message": "Symbols were loaded at the WRONG base 0x8000000000; corrected to 0x10000000000"}
-GDB COMMANDS SENT DURING RESYNC (post-start): ["continue", "remove-symbol-file -a 0x80000a94f0", "add-symbol-file /root/breenix/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32 0x100000a94f0 -s .rodata 0x10000073700 -s .data 0x100003b9980 -s .bss 0x100003e3d80"]
+GDB COMMANDS SENT DURING RESYNC (post-start): ["continue", "remove-symbol-file -a 0x80000a94f0", "add-symbol-file <canonical-checkout>/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32 0x100000a94f0 -s .rodata 0x10000073700 -s .data 0x100003b9980 -s .bss 0x100003e3d80"]
 REMOVE-SYMBOL-FILE ISSUED: remove-symbol-file -a 0x80000a94f0
-RELOAD ADD-SYMBOL-FILE ISSUED: add-symbol-file /root/breenix/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32 0x100000a94f0 -s .rodata 0x10000073700 -s .data 0x100003b9980 -s .bss 0x100003e3d80
-POST-RESYNC info symbol $pc: {"success": true, "command": "info symbol $pc", "output": "kernel::logger::LogFrameBuffer::write_rendered_char + 62 in section .text of /root/breenix/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32", ...}
+RELOAD ADD-SYMBOL-FILE ISSUED: add-symbol-file <canonical-checkout>/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32 0x100000a94f0 -s .rodata 0x10000073700 -s .data 0x100003b9980 -s .bss 0x100003e3d80
+POST-RESYNC info symbol $pc: {"success": true, "command": "info symbol $pc", "output": "kernel::logger::LogFrameBuffer::write_rendered_char + 62 in section .text of <canonical-checkout>/target/x86_64-unknown-none/release/deps/artifact/kernel-a7b990755460db32/bin/kernel-a7b990755460db32", ...}
 
 CONCLUSION:
 - remove-symbol-file DID actually issue, against the STALE guess-based

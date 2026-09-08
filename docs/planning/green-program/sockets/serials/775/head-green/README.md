@@ -9,7 +9,7 @@ old string census is blind at this commit while the new one still reads.
 
 | item | value |
 |---|---|
-| repository | `/root/breenix-775` on the beast `breenix-x86` VM |
+| repository | `<isolated-checkout-53>` on the x86 build environment on beast |
 | commit booted | `365c20c2`, the branch head, unmodified |
 | harness | `docker/qemu/run-x86-gate.sh 2 full` — `GATE: PASS (2/2 boot tests passed; mode=full build=16s boot=300s total=324s)` |
 

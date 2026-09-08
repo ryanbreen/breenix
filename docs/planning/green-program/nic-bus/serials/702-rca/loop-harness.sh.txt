@@ -1,5 +1,5 @@
 #!/bin/bash
-# p702 catch harness - runs INSIDE the breenix-x86 incus container on beast.
+# p702 catch harness - runs INSIDE the x86 build environment on beast.
 # Loops boots of the run-x86-gate.sh "full" profile with QEMU gdbserver (-s,
 # no -S) enabled, watching serial for the #702 signature: output stalls with
 # the last kernel line being exactly "E1000 network device found" and none of
@@ -7,7 +7,7 @@
 # killing anything.
 set -u
 source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
-export BREENIX_RUST_FORK_LIBRARY=/root/breenix/rust-fork-real/library
+export BREENIX_RUST_FORK_LIBRARY=<rust-fork-checkout>/library
 # Match the profile #702 was measured on (run-x86-gate.sh): kvm accel, cpu host.
 export BREENIX_QEMU_ACCEL=kvm
 export BREENIX_QEMU_CPU=host

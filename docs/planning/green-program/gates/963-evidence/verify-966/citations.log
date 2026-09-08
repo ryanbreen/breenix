@@ -1,0 +1,91 @@
+revision=065ec2ce92b2deb892ec442a6b38350f3478ad8b
+Historical source audit re-derived by exact source text at this revision:
+tests/gate_qmp_backstop_structure.rs: historical 159 -> current 159:         .position(|l| is_kill_line(l))
+tests/gate_qmp_backstop_structure.rs: historical 163 -> current 163:         .position(|l| l.contains("local QMP_PRECHECK_PASS"))
+tests/gate_qmp_backstop_structure.rs: historical 209 -> current 209:         .position(|l| l.trim().starts_with("kill "))
+tests/gate_qmp_backstop_structure.rs: historical 213 -> current 213:         .position(|l| active_call(l, DRAIN_CALL))
+tests/gate_qmp_backstop_structure.rs: historical 253 -> current 253:                 pathlib.Path('dump-received').touch()
+tests/gate_qmp_backstop_structure.rs: historical 256 -> current 256:                         signal.pause()
+tests/gate_qmp_backstop_structure.rs: historical 274 -> current 274:     os.execvp('timeout', ['timeout'] + sys.argv[1:])
+tests/gate_qmp_backstop_structure.rs: historical 279 -> current 279: child = subprocess.Popen(command, start_new_session=True, env={k:v for k,v in os.environ.items() if k != 'BASH_ENV' and not k.startswith('BASH_FUNC_timeout')})
+tests/gate_qmp_backstop_structure.rs: historical 281 -> current 281:     while not pathlib.Path('dump-received').exists():
+tests/gate_qmp_backstop_structure.rs: historical 283 -> current 283:         time.sleep(.01)
+tests/gate_qmp_backstop_structure.rs: historical 285 -> current 285:     # operation whose response must be bounded. Suite timeout covers success.
+tests/gate_qmp_backstop_structure.rs: historical 288 -> current 288:             result = child.wait(timeout=budget)
+tests/gate_qmp_backstop_structure.rs: historical 294 -> current 295:         result = child.wait()
+tests/gate_qmp_backstop_structure.rs: historical 300 -> current 301:     child.wait()
+tests/gate_qmp_backstop_structure.rs: historical 323 -> current 411:         fs::write(dir.join("timeout.py"), FIXTURE_TIMEOUT).unwrap();
+tests/gate_qmp_backstop_structure.rs: historical 327 -> current 415: timeout() { python3 timeout.py "$@"; }
+tests/gate_qmp_backstop_structure.rs: historical 328 -> current 416: export -f timeout
+tests/gate_qmp_backstop_structure.rs: historical 351 -> current 439:                         .try_wait()
+tests/gate_qmp_backstop_structure.rs: historical 356 -> current 444:                 std::thread::sleep(std::time::Duration::from_millis(20));
+tests/gate_qmp_backstop_structure.rs: historical 361 -> current 449:     fn run(&self, pass: bool, budget: u32) -> (String, std::time::Duration) {
+tests/gate_qmp_backstop_structure.rs: historical 370 -> current 458:         // The suite timeout bounds setup. The fixture timeout starts only after
+tests/gate_qmp_backstop_structure.rs: historical 391 -> current 479:     fn terminate(&mut self) {
+tests/gate_qmp_backstop_structure.rs: historical 398 -> current 486:         let status = server.wait().unwrap();
+tests/gate_qmp_backstop_structure.rs: historical 410 -> current 498:             let _ = server.wait();
+tests/gate_qmp_backstop_structure.rs: historical 436 -> current 524,576:         eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+tests/gate_qmp_backstop_structure.rs: historical 446 -> current 534,566,570,583:     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+tests/gate_qmp_backstop_structure.rs: historical 448 -> current 536:     let position = |prefix: &str| log.lines().position(|l| l.starts_with(prefix)).unwrap();
+tests/gate_qmp_backstop_structure.rs: historical 449 -> current 537:     assert!(position("RECV stop ") < position("RECV dump-guest-memory "));
+tests/gate_qmp_backstop_structure.rs: historical 451 -> current 539:         position("RECV dump-guest-memory ") < position("SIGTERM "),
+tests/gate_qmp_backstop_structure.rs: historical 481 -> current 534,566,570,583:     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+tests/gate_qmp_backstop_structure.rs: historical 485 -> current 534,566,570,583:     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+tests/gate_qmp_backstop_structure.rs: historical 496 -> current 524,576:         eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+tests/gate_qmp_backstop_structure.rs: historical 500 -> current 580:     eprintln!("missing_socket_and_hung_dump_are_partial_and_bounded: socat present; asserting QMP timeout after dump command");
+tests/gate_qmp_backstop_structure.rs: historical 501 -> current TEXT CHANGED; historical only:     assert!(out.contains("capture=partial:reason=qmp_timeout:"), "{out}");
+tests/gate_qmp_backstop_structure.rs: historical 503 -> current 534,566,570,583:     eprintln!("fixture wall time: {elapsed:?} (setup covered by suite timeout)");
+tests/gate_qmp_backstop_structure.rs: historical 510 -> current 590:         "hang must reach dump"
+tests/gate_qmp_backstop_structure.rs: historical 617 -> current 697,768,797:     let output = Command::new("timeout")
+tests/gate_qmp_backstop_structure.rs: historical 688 -> current 697,768,797:     let output = Command::new("timeout")
+tests/gate_qmp_backstop_structure.rs: historical 717 -> current 697,768,797:     let output = Command::new("timeout")
+tests/gate_qmp_backstop_structure.rs: historical 747 -> current 827:     source.contains("timeout --kill-after=1 \"$budget_s\" bash \"$fc_sh\" --qmp \"$sock\"")
+tests/gate_qmp_backstop_structure.rs: historical 751 -> current 831: fn shipped_capture_deadline_and_mutations() {
+tests/gate_qmp_backstop_structure.rs: historical 755 -> current 835:         source.replace("timeout --kill-after=1", "timeout"),
+tests/gate_qmp_backstop_structure.rs: historical 757 -> current 837:         source.replace("timeout --kill-after=1 \"$budget_s\" bash", "bash"),
+tests/gate_qmp_backstop_structure.rs: historical 767 -> current 847: fn receipt_precedes_response_deadline() {
+tests/gate_qmp_backstop_structure.rs: historical 768 -> current 848:     let receipt = "while not pathlib.Path('dump-received').exists():";
+tests/gate_qmp_backstop_structure.rs: historical 769 -> current 849:     let deadline = "result = child.wait(timeout=budget)";
+tests/gate_qmp_backstop_structure.rs: historical 777 -> current 857:     assert!(FAKE_QMP.contains("pathlib.Path('dump-received').touch()"));
+docker/qemu/lib/gate-qmp-backstop.sh: historical 8 -> current 8: # cached globals: a caller's current timeout override must reach this call.
+docker/qemu/lib/gate-qmp-backstop.sh: historical 9 -> current 9: # The outer timeout bounds the entire forensic child, independently of its
+docker/qemu/lib/gate-qmp-backstop.sh: historical 11 -> current 11: # that ignores TERM. Decoding has its own timeout; dump_ms measures capture.
+docker/qemu/lib/gate-qmp-backstop.sh: historical 83 -> current 83:     # timeout treats 0 as unbounded; refuse it (and malformed budgets).
+docker/qemu/lib/gate-qmp-backstop.sh: historical 100 -> current 100:     timeout --kill-after=1 "$budget_s" bash "$fc_sh" --qmp "$sock" --output-dir "$output_dir" \
+docker/qemu/lib/gate-qmp-backstop.sh: historical 106 -> current 106:         decode_out="$(timeout --kill-after=1 "$budget_s" python3 "$decode_py" --parse "$core" --kernel "$kernel_elf" --validate 2>&1)" || true
+docker/qemu/lib/gate-qmp-backstop.sh: historical 112 -> current 112:         printf '[QMP_DUMP:capture=partial:reason=qmp_timeout:core=-:decoded_events=-:dump_ms=%s]\n' "$dump_ms"
+tests/gate_capture_drain_structure.rs: historical 215 -> current 215:             .position(|l| is_kill_line(l))
+tests/gate_capture_drain_structure.rs: historical 220 -> current 220:         .position(|l| l.contains("local CAPTURE_LINES"))
+tests/gate_capture_drain_structure.rs: historical 260 -> current 260: fn run_with_drain_lib(script: &str) -> (bool, String) {
+tests/gate_capture_drain_structure.rs: historical 399 -> current 399: sleep() {{ release_writer; }}
+scripts/forensic-capture.sh: historical 16 -> current 16: #   scripts/forensic-capture.sh --timeout 30 # Auto-capture after 30s of no output
+scripts/forensic-capture.sh: historical 24 -> current 24: #   /tmp/breenix-forensic-<timestamp>/
+scripts/forensic-capture.sh: historical 77 -> current 77:             echo "  --output-dir DIR  Capture directory (default: /tmp/breenix-forensic-<timestamp>)"
+scripts/forensic-capture.sh: historical 81 -> current 81:             echo "Output: /tmp/breenix-forensic-<timestamp>/"
+scripts/forensic-capture.sh: historical 132 -> current 132,134,144,146:         sleep 0.2
+scripts/forensic-capture.sh: historical 134 -> current 132,134,144,146:         sleep 0.2
+scripts/forensic-capture.sh: historical 136 -> current 136,151:         sleep 0.5
+scripts/forensic-capture.sh: historical 144 -> current 132,134,144,146:         sleep 0.2
+scripts/forensic-capture.sh: historical 146 -> current 132,134,144,146:         sleep 0.2
+scripts/forensic-capture.sh: historical 149 -> current 149:             sleep 0.3
+scripts/forensic-capture.sh: historical 151 -> current 136,151:         sleep 0.5
+scripts/forensic-capture.sh: historical 182 -> current 182:         sleep 1
+scripts/forensic-capture.sh: historical 188 -> current 188:     sleep 1
+scripts/forensic-capture.sh: historical 323 -> current 323:     # Run GDB with timeout
+scripts/forensic-capture.sh: historical 325 -> current 325:     timeout 30 "$GDB_BIN" --nx -batch -x "$GDB_CMDS" "$KERNEL_BIN" \
+Explicit file:line citations in round document, read at current HEAD:
+docker/qemu/lib/gate-qmp-backstop.sh:100:     timeout --kill-after=1 "$budget_s" bash "$fc_sh" --qmp "$sock" --output-dir "$output_dir" \
+docker/qemu/run-x86-boot-tests.sh:1070:     test "$passed" = true
+scripts/forensic-capture.sh:125: qmp_command() {
+scripts/forensic-capture.sh:132:         sleep 0.2
+tests/gate_capture_drain_structure.rs:399: sleep() {{ release_writer; }}
+tests/gate_qmp_backstop_structure.rs:253:                 pathlib.Path('dump-received').touch()
+tests/gate_qmp_backstop_structure.rs:291:             pathlib.Path('bounded').write_text(str(budget))
+tests/gate_qmp_backstop_structure.rs:306: fn partial_report(out: &str, reason: &str) -> bool {
+tests/gate_qmp_backstop_structure.rs:340: fn missing_socket_report_rejects_malformed_lines() {
+tests/gate_qmp_backstop_structure.rs:345: fn hung_dump_report_rejects_malformed_lines() {
+tests/gate_qmp_backstop_structure.rs:350: fn timeout_marker_requires_expiry_not_early_exit_124() {
+tests/gate_qmp_backstop_structure.rs:565:     assert!(partial_report(&out, "qmp_socket_missing"), "{out}");
+tests/gate_qmp_backstop_structure.rs:581:     assert!(partial_report(&out, "qmp_timeout"), "{out}");
+tests/gate_qmp_backstop_structure.rs:767: fn gqb_free_socket_removes_only_its_own_namespace_directory() {
+Round-document links: 64 checked; missing=[]

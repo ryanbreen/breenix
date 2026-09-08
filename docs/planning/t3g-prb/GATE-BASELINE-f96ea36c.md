@@ -263,19 +263,19 @@ question.
 - **No code changes** were made for any leg, on any host. Both hosts were confirmed free of QEMU
   processes at the end (`pgrep` empty on the Mac and on beast). No Parallels VM was started for this
   work (Parallels is not in the E1 gate list), so there was none to stop.
-- **Mac legs** ran strictly sequential, one QEMU at a time. **Beast leg** ran in Incus container
-  `breenix-x86` against `/root/bx-main`, a worktree hard-reset to `origin/main` at the same SHA.
+- **Mac legs** ran strictly sequential, one QEMU at a time. **Beast leg** ran in build environment
+  `<x86-build-environment>` against `<host-artifact-dir-231>`, a worktree hard-reset to `origin/main` at the same SHA.
 - **Disclosed infra fix (beast, not a repository change and not a re-run to erase a red):** the
   worktree's `rust-fork` symlink pointed at a stale Mac path
-  (`/Users/wrb/fun/code/breenix-parallels/rust-fork`), failing the first build with
-  `ERROR: forked Rust library not found`. It was repointed to `/root/breenix/rust-fork-real`. The
+  (`<rust-fork-checkout>`), failing the first build with
+  `ERROR: forked Rust library not found`. It was repointed to `<rust-fork-checkout>`. The
   kernel then built cleanly, userspace was rebuilt (141 binaries) and both test disks regenerated
-  before any boot batch ran. The four batches recorded above are the measurement; nothing in them was
+  before any boot batch ran. The four batches recorded above are the measurement; the recorded batches were not
   re-run.
 - **Evidence of record.** G5's gate directory is
   `/tmp/breenix_aarch64_service_sequence_gate_20260824T015303Z-62010` (host-local, ephemeral; 200/200
-  green, no specimens). G4's batch transcripts live on beast at `/root/bx-batch{1,2,3,4}.log` with
-  full serials at `/root/bx-batch2-fail-serial.txt` (13 MB) and `/root/bx-batch3-fail1-user.txt`.
+  green, no specimens). G4's batch transcripts live on beast at `<host-artifact-dir-232>,2,3,4}.log` with
+  full serials at `<host-artifact-dir-233>` (13 MB) and `<host-artifact-dir-234>`.
   **Correction to the E1 write-up:** its Mac-side pointer `scratchpad/580debt3/e1-beast.log` is a
   stub containing only the string `BATCH_1` — it is not a batch transcript, and the beast-host paths
   above are the evidence. The two small failing serials have been copied into

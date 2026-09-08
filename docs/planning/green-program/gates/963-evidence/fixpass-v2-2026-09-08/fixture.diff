@@ -1,0 +1,25 @@
+diff --git a/tests/gate_qmp_backstop_structure.rs b/tests/gate_qmp_backstop_structure.rs
+index 91db3030..ccdec3c5 100644
+--- a/tests/gate_qmp_backstop_structure.rs
++++ b/tests/gate_qmp_backstop_structure.rs
+@@ -348,0 +349,10 @@ fn hung_dump_report_rejects_malformed_lines() {
++#[test]
++fn invalid_budget_report_rejects_malformed_lines() {
++    rejects_malformed_partial_reports("invalid_budget");
++}
++
++#[test]
++fn missing_tool_report_rejects_malformed_lines() {
++    rejects_malformed_partial_reports("qmp_tool_missing");
++}
++
+@@ -519,4 +529 @@ fn fake_qmp_dump_precedes_sigterm_even_when_decode_fails() {
+-        assert!(
+-            out.starts_with("[QMP_DUMP:capture=partial:reason=qmp_tool_missing:core=-:decoded_events=-:dump_ms="),
+-            "{out}"
+-        );
++        assert!(partial_report(&out, "qmp_tool_missing"), "{out}");
+@@ -569 +576,2 @@ fn missing_socket_and_hung_dump_are_partial_and_bounded() {
+-    assert!(invalid.contains("reason=invalid_budget:"), "{invalid}");
++    assert!(partial_report(&invalid, "invalid_budget"), "{invalid}");
++    assert_eq!(invalid.lines().count(), 1);

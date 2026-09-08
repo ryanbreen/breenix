@@ -1,9 +1,9 @@
   RING3_SMOKE fork census: PRODUCTION_REAPED_ROWS=5
-   Compiling kernel v0.1.0 (/root/breenix-verdict/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-verdict)
+   Compiling kernel v0.1.0 (<isolated-checkout-23>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-102>)
     Finished `release` profile [optimized] target(s) in 1m 51s
 Guard: x86 kernel-thread dispatch allocation check (#791)
-  ELF:      /root/breenix-verdict/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
+  ELF:      <isolated-checkout-23>/target/x86_64-unknown-none/release/deps/artifact/kernel-3125f90c6e7b4961/bin/kernel-3125f90c6e7b4961
   sha256:   e8161bd18583e6850ec3d16cf38ad8f60295af85ababca9fa7c6d04b81155c33
   objdump:  /root/.rustup/toolchains/nightly-2025-06-24-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump
   readelf:  readelf
@@ -11,11 +11,11 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
   symbols in scope: 3
   call targets resolved: 19
 [0;32mPASS:[0m 0 allocating call targets in 3 in-scope symbol(s), 19 edge(s) checked.
-   Compiling kernel v0.1.0 (/root/breenix-verdict/kernel)
-   Compiling breenix v0.1.0 (/root/breenix-verdict)
+   Compiling kernel v0.1.0 (<isolated-checkout-23>/kernel)
+   Compiling breenix v0.1.0 (<isolated-checkout-102>)
     Finished `release` profile [optimized] target(s) in 16.22s
      Running `target/release/qemu-uefi`
-[qemu-uefi] Using UEFI image: /root/breenix-verdict/target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img (7405568 bytes)
+[qemu-uefi] Using UEFI image: <isolated-checkout-23>/target/release/build/breenix-74961d3be894a996/out/breenix-uefi.img (7405568 bytes)
    Compiling version_check v0.9.5
    Compiling proc-macro2 v1.0.107
    Compiling quote v1.0.47
@@ -34,7 +34,7 @@ Guard: x86 kernel-thread dispatch allocation check (#791)
    Compiling heck v0.3.3
    Compiling structopt-derive v0.4.18
    Compiling structopt v0.3.26
-   Compiling xtask v0.1.0 (/root/breenix-verdict/xtask)
+   Compiling xtask v0.1.0 (<isolated-checkout-23>/xtask)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.84s
      Running `target/debug/xtask create-test-disk`
 Creating test disk image...
@@ -197,7 +197,7 @@ Test disk created: target/test_binaries.img
   Disk size: 60424 sectors (29.50 MB)
 Creating ext2 disk image...
   Arch: x86_64
-  Output: /root/breenix-verdict/target/ext2.img
+  Output: <isolated-checkout-23>/target/ext2.img
   Size: 256MB
   busybox.elf not found, attempting to build...
 Error: x86_64-linux-musl-gcc not found in PATH
@@ -418,8 +418,8 @@ drwxr-xr-x 3 root root   4096 Sep  5 10:31 ..
 ext2 image created successfully
 
 ext2 disk created and copied to testdata/:
-  /root/breenix-verdict/target/ext2.img
-  /root/breenix-verdict/testdata/ext2.img
+  <isolated-checkout-23>/target/ext2.img
+  <isolated-checkout-23>/testdata/ext2.img
   Size: 256M
 
 Contents:
