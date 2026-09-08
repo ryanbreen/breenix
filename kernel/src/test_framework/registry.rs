@@ -1884,7 +1884,9 @@ fn test_ring_span_unfiltered_report() -> TestResult {
     use crate::tracing::providers::irq::unfiltered_ring_span_self_check;
 
     if !wait_for_ring_span_unfiltered_ready(RING_SPAN_UNFILTERED_READY_TIMEOUT_MS) {
-        return TestResult::Fail("unfiltered ring-span self-check did not publish before its deadline");
+        return TestResult::Fail(
+            "unfiltered ring-span self-check did not publish before its deadline",
+        );
     }
 
     if let Some(report) = unfiltered_ring_span_self_check::claim() {
@@ -1945,9 +1947,9 @@ pub fn run_x86_tracing_provider_gate() {
     crate::serial_println!("[TEST:process:deferred_fault_ring_overflow_injection:START]");
     let result = crate::tracing::providers::teardown::deferred_fault_ring_overflow_test();
     match result {
-        TestResult::Pass => crate::serial_println!(
-            "[TEST:process:deferred_fault_ring_overflow_injection:PASS]"
-        ),
+        TestResult::Pass => {
+            crate::serial_println!("[TEST:process:deferred_fault_ring_overflow_injection:PASS]")
+        }
         _ => crate::serial_println!(
             "[TEST:process:deferred_fault_ring_overflow_injection:FAIL:{}]",
             result.failure_message().unwrap_or("test failed")
@@ -3032,10 +3034,7 @@ fn run_loopback_recv_wake_test_inner(
         state: crate::task::thread::ThreadState::Running,
     }; scheduler::STRAND_CENSUS_CAPACITY];
     let mut census_nonprogress = [0u64; scheduler::STRAND_CENSUS_CAPACITY];
-    let census = scheduler::collect_strand_census(
-        &mut census_candidates,
-        &mut census_nonprogress,
-    );
+    let census = scheduler::collect_strand_census(&mut census_candidates, &mut census_nonprogress);
     let _ = kthread::kthread_stop(&reader);
     let _ = kthread::kthread_join(&reader);
     if let Some(handle) = &load {
@@ -3366,9 +3365,7 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
         }
     }
     if !loopback_quiescent {
-        return TestResult::Fail(
-            "loopback queue did not quiesce before the final-ACK race oracle",
-        );
+        return TestResult::Fail("loopback queue did not quiesce before the final-ACK race oracle");
     }
 
     if tcp::tcp_listen(LISTEN_PORT, 4, ProcessId::new(0)).is_err() {
@@ -3390,12 +3387,8 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
             65_535,
             &[],
         );
-        let syn_packet = ipv4::Ipv4Packet::build(
-            client_ip,
-            server_ip,
-            ipv4::PROTOCOL_TCP,
-            &syn_segment,
-        );
+        let syn_packet =
+            ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &syn_segment);
         let Some(syn_ip) = ipv4::Ipv4Packet::parse(&syn_packet) else {
             return TestResult::Fail("failed to parse synthetic SYN IPv4 packet");
         };
@@ -3416,7 +3409,9 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
         }
 
         let Some(server_ack) = tcp::with_tcp_connections(|connections| {
-            connections.get(&server).map(|connection| connection.send_next)
+            connections
+                .get(&server)
+                .map(|connection| connection.send_next)
         }) else {
             return TestResult::Fail("accepted child was not published");
         };
@@ -3434,12 +3429,8 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
             65_535,
             &[],
         );
-        let ack_packet = ipv4::Ipv4Packet::build(
-            client_ip,
-            server_ip,
-            ipv4::PROTOCOL_TCP,
-            &ack_segment,
-        );
+        let ack_packet =
+            ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &ack_segment);
         let Some(ack_ip) = ipv4::Ipv4Packet::parse(&ack_packet) else {
             tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
             return TestResult::Fail("failed to parse synthetic ACK IPv4 packet");
@@ -4362,9 +4353,7 @@ fn test_timer_interrupt_running() -> TestResult {
                 samples = samples.saturating_add(1);
                 let gap = timer::elapsed_ticks(sample, previous_sample);
                 max_gap_ticks = max_gap_ticks.max(gap);
-                if screened
-                    && counters_unchanged(previous_counters_after, counters_before)
-                {
+                if screened && counters_unchanged(previous_counters_after, counters_before) {
                     host_stall_ticks =
                         host_stall_ticks.saturating_add(gap.saturating_sub(stall_sample_ticks));
                 }
@@ -4463,9 +4452,8 @@ fn test_timer_interrupt_running() -> TestResult {
             if attempt >= max_attempts
                 || timer::elapsed_ticks(timer::rdtsc_serialized(), budget_start) >= budget_ticks
             {
-                let mut record = last_record.unwrap_or_else(|| {
-                    bare_liveness_record("starvation-attempts-exhausted")
-                });
+                let mut record = last_record
+                    .unwrap_or_else(|| bare_liveness_record("starvation-attempts-exhausted"));
                 record.reason = "starvation-attempts-exhausted";
                 emit_record(FAILURE_MARKER, &record);
                 return TestResult::Fail(
@@ -4624,111 +4612,112 @@ static CENSUS_WIDEN_PROBE_RUNS: AtomicU64 = AtomicU64::new(0);
 pub fn run_census_widen_oracle() -> bool {
     #[cfg(target_arch = "aarch64")]
     {
-    use crate::task::kthread::{
-        kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
-    };
-    use crate::task::scheduler::{
-        collect_strand_census, release_cpu_affine_thread_for_test, stale_peer_cpu_for_test,
-        StrandCandidate, StrandShape, STRAND_CENSUS_CAPACITY,
-    };
-    use crate::task::thread::{ThreadPrivilege, ThreadState};
+        use crate::task::kthread::{
+            kthread_has_exited_for_test, kthread_join, kthread_run_on_cpu_for_test,
+        };
+        use crate::task::scheduler::{
+            collect_strand_census, release_cpu_affine_thread_for_test, stale_peer_cpu_for_test,
+            StrandCandidate, StrandShape, STRAND_CENSUS_CAPACITY,
+        };
+        use crate::task::thread::{ThreadPrivilege, ThreadState};
 
-    if let Some(arm_target) = stale_peer_cpu_for_test() {
-        let mut candidates = [StrandCandidate {
-            tid: 0,
-            shape: StrandShape::Running,
-            privilege: ThreadPrivilege::Kernel,
-            state: ThreadState::Running,
-        }; STRAND_CENSUS_CAPACITY];
-        let mut baseline_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
-        let baseline = collect_strand_census(&mut candidates, &mut baseline_nonprogress);
+        if let Some(arm_target) = stale_peer_cpu_for_test() {
+            let mut candidates = [StrandCandidate {
+                tid: 0,
+                shape: StrandShape::Running,
+                privilege: ThreadPrivilege::Kernel,
+                state: ThreadState::Running,
+            }; STRAND_CENSUS_CAPACITY];
+            let mut baseline_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
+            let baseline = collect_strand_census(&mut candidates, &mut baseline_nonprogress);
 
-        CENSUS_WIDEN_PROBE_RUNS.store(0, AtomicOrdering::Release);
-        let slot_returns_before =
-            crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed;
-        let handle = kthread_run_on_cpu_for_test(
-            || {
-                CENSUS_WIDEN_PROBE_RUNS.fetch_add(1, AtomicOrdering::AcqRel);
-            },
-            "census-widen-probe",
-            arm_target,
-        );
+            CENSUS_WIDEN_PROBE_RUNS.store(0, AtomicOrdering::Release);
+            let slot_returns_before =
+                crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed;
+            let handle = kthread_run_on_cpu_for_test(
+                || {
+                    CENSUS_WIDEN_PROBE_RUNS.fetch_add(1, AtomicOrdering::AcqRel);
+                },
+                "census-widen-probe",
+                arm_target,
+            );
 
-        let mut tid = 0u64;
-        let mut baseline_reported = true;
-        let mut armed_reported = false;
-        let mut queued_nondispatching = 0u64;
-        let mut queued_nondispatch_ms = 0u64;
-        let mut cpu_silence_ms = 0u64;
-        let mut joined = false;
-        let mut retired = false;
+            let mut tid = 0u64;
+            let mut baseline_reported = true;
+            let mut armed_reported = false;
+            let mut queued_nondispatching = 0u64;
+            let mut queued_nondispatch_ms = 0u64;
+            let mut cpu_silence_ms = 0u64;
+            let mut joined = false;
+            let mut retired = false;
 
-        if let Ok(handle) = handle {
-            tid = handle.tid();
-            baseline_reported = baseline.is_none_or(|baseline| {
-                baseline.checked == 0
-                    || baseline.queued_on_nondispatching_cpu != 0
-                    || baseline.worst_queued_nondispatch_ms != 0
-                    || baseline_nonprogress[..baseline.nonprogress].contains(&tid)
-            });
+            if let Ok(handle) = handle {
+                tid = handle.tid();
+                baseline_reported = baseline.is_none_or(|baseline| {
+                    baseline.checked == 0
+                        || baseline.queued_on_nondispatching_cpu != 0
+                        || baseline.worst_queued_nondispatch_ms != 0
+                        || baseline_nonprogress[..baseline.nonprogress].contains(&tid)
+                });
 
-            let dwell_start = crate::time::get_ticks();
-            while !kthread_has_exited_for_test(&handle)
-                && crate::time::get_ticks().wrapping_sub(dwell_start) < CENSUS_WIDEN_DWELL_MS
-            {
-                crate::arch_halt();
-            }
-
-            let mut armed_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
-            let armed = collect_strand_census(&mut candidates, &mut armed_nonprogress);
-            if let Some(armed) = armed {
-                armed_reported = armed_nonprogress[..armed.nonprogress].contains(&tid);
-                queued_nondispatching = armed.queued_on_nondispatching_cpu;
-                queued_nondispatch_ms = armed.worst_queued_nondispatch_ms;
-                cpu_silence_ms = armed.worst_cpu_scheduler_silence_ms;
-            }
-
-            if release_cpu_affine_thread_for_test(tid) {
-                let join_start = crate::time::get_ticks();
-                loop {
-                    if kthread_has_exited_for_test(&handle) {
-                        joined = kthread_join(&handle).is_ok();
-                        break;
-                    }
-                    if crate::time::get_ticks().wrapping_sub(join_start) >= CENSUS_WIDEN_JOIN_MS {
-                        break;
-                    }
+                let dwell_start = crate::time::get_ticks();
+                while !kthread_has_exited_for_test(&handle)
+                    && crate::time::get_ticks().wrapping_sub(dwell_start) < CENSUS_WIDEN_DWELL_MS
+                {
                     crate::arch_halt();
                 }
-            }
 
-            // Seed the all-CPU retirement grace, then let scheduler boundaries
-            // advance around each halt before trying reclamation again. Keep this
-            // bounded attempt so `retired` remains useful evidence, but do not gate
-            // the verdict on it: retirement is asynchronous bookkeeping that needs
-            // every online CPU to cross a scheduler boundary, which this oracle
-            // cannot force. Registration ordering makes the probe non-interfering.
-            crate::task::scheduler::reclaim_terminated_threads();
-            for _ in 0..CENSUS_WIDEN_RETIRE_ROUNDS {
-                if crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed
-                    > slot_returns_before
-                {
-                    retired = true;
-                    break;
+                let mut armed_nonprogress = [0u64; STRAND_CENSUS_CAPACITY];
+                let armed = collect_strand_census(&mut candidates, &mut armed_nonprogress);
+                if let Some(armed) = armed {
+                    armed_reported = armed_nonprogress[..armed.nonprogress].contains(&tid);
+                    queued_nondispatching = armed.queued_on_nondispatching_cpu;
+                    queued_nondispatch_ms = armed.worst_queued_nondispatch_ms;
+                    cpu_silence_ms = armed.worst_cpu_scheduler_silence_ms;
                 }
-                crate::task::scheduler::nudge_retirement_grace_for_test();
-                crate::arch_halt();
-                crate::task::scheduler::reclaim_terminated_threads();
-            }
-        }
 
-        let passed = !baseline_reported
-            && armed_reported
-            && queued_nondispatching >= 1
-            && queued_nondispatch_ms >= 1
-            && cpu_silence_ms >= 1
-            && joined;
-        crate::serial_println!(
+                if release_cpu_affine_thread_for_test(tid) {
+                    let join_start = crate::time::get_ticks();
+                    loop {
+                        if kthread_has_exited_for_test(&handle) {
+                            joined = kthread_join(&handle).is_ok();
+                            break;
+                        }
+                        if crate::time::get_ticks().wrapping_sub(join_start) >= CENSUS_WIDEN_JOIN_MS
+                        {
+                            break;
+                        }
+                        crate::arch_halt();
+                    }
+                }
+
+                // Seed the all-CPU retirement grace, then let scheduler boundaries
+                // advance around each halt before trying reclamation again. Keep this
+                // bounded attempt so `retired` remains useful evidence, but do not gate
+                // the verdict on it: retirement is asynchronous bookkeeping that needs
+                // the online CPUs to cross a scheduler boundary, which this oracle
+                // cannot force. Registration ordering makes the probe non-interfering.
+                crate::task::scheduler::reclaim_terminated_threads();
+                for _ in 0..CENSUS_WIDEN_RETIRE_ROUNDS {
+                    if crate::memory::kernel_stack::kernel_stack_pool_counters().slots_freed
+                        > slot_returns_before
+                    {
+                        retired = true;
+                        break;
+                    }
+                    crate::task::scheduler::nudge_retirement_grace_for_test();
+                    crate::arch_halt();
+                    crate::task::scheduler::reclaim_terminated_threads();
+                }
+            }
+
+            let passed = !baseline_reported
+                && armed_reported
+                && queued_nondispatching >= 1
+                && queued_nondispatch_ms >= 1
+                && cpu_silence_ms >= 1
+                && joined;
+            crate::serial_println!(
             "[CENSUS_WIDEN_ORACLE:{}:arm_target={}:baseline_reported={}:armed_reported={}:tid={}:shape=ready_queued_nondispatching:queued_nondispatching={}:queued_nondispatch_ms={}:cpu_silence_ms={}:joined={}:retired={}:{}]",
             "aarch64",
             arm_target,
@@ -4742,13 +4731,13 @@ pub fn run_census_widen_oracle() -> bool {
             u64::from(retired),
             if passed { "PASS" } else { "FAIL" },
         );
-        return passed;
-    }
+            return passed;
+        }
 
-    crate::serial_println!(
+        crate::serial_println!(
         "[CENSUS_WIDEN_ORACLE:aarch64:arm_target=none:baseline_reported=1:armed_reported=0:tid=0:shape=ready_queued_nondispatching:queued_nondispatching=0:queued_nondispatch_ms=0:cpu_silence_ms=0:joined=0:retired=0:FAIL]",
     );
-    false
+        false
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -5377,7 +5366,9 @@ pub fn run_fcntl_pm_contention_oracle() -> TestResult {
             "[FCNTL_PM_CONTENTION_ORACLE:x86:arm=none:reason=uniprocessor_no_pm_contention_peer:online_cpus={}:SKIP]",
             crate::task::scheduler::online_cpu_count_snapshot(),
         );
-        TestResult::Fail("fcntl process-manager contention oracle has no arm on a uniprocessor boot")
+        TestResult::Fail(
+            "fcntl process-manager contention oracle has no arm on a uniprocessor boot",
+        )
     }
 }
 
@@ -5510,10 +5501,8 @@ struct UdpLockSocket {
 fn udp_lock_open_socket() -> Option<UdpLockSocket> {
     use crate::ipc::fd::{FdKind, FileDescriptor};
 
-    let pid = crate::process::with_process_manager(|manager| {
-        manager.all_pids().first().copied()
-    })
-    .flatten()?;
+    let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
+        .flatten()?;
 
     let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
     socket
@@ -5595,8 +5584,7 @@ fn udp_lock_holder_body(
         UDP_LOCK_ACTIVE.store(true, AtomicOrdering::Release);
 
         let mut sends = 0u64;
-        if crate::net::send_ipv4([127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet).is_ok()
-        {
+        if crate::net::send_ipv4([127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet).is_ok() {
             sends += 1;
         }
         UDP_LOCK_SENDS.store(sends, AtomicOrdering::Relaxed);
@@ -5610,12 +5598,8 @@ fn udp_lock_holder_body(
             }
             if elapsed >= next_send_us {
                 next_send_us = elapsed.saturating_add(UDP_LOCK_SEND_INTERVAL_US);
-                if crate::net::send_ipv4(
-                    [127, 0, 0, 1],
-                    crate::net::ipv4::PROTOCOL_UDP,
-                    &packet,
-                )
-                .is_ok()
+                if crate::net::send_ipv4([127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet)
+                    .is_ok()
                 {
                     sends += 1;
                     UDP_LOCK_SENDS.store(sends, AtomicOrdering::Relaxed);
@@ -5661,11 +5645,8 @@ pub fn run_udp_lock_oracle() -> bool {
             other => other,
         };
 
-        let packet = crate::net::udp::build_udp_packet(
-            UDP_LOCK_SRC_PORT,
-            UDP_LOCK_PORT,
-            UDP_LOCK_PAYLOAD,
-        );
+        let packet =
+            crate::net::udp::build_udp_packet(UDP_LOCK_SRC_PORT, UDP_LOCK_PORT, UDP_LOCK_PAYLOAD);
 
         let mut attempts = 0u64;
         let mut armed = 0u64;
@@ -5877,10 +5858,8 @@ struct UdpPortsLockSocket {
 fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
     use crate::ipc::fd::{FdKind, FileDescriptor};
 
-    let pid = crate::process::with_process_manager(|manager| {
-        manager.all_pids().first().copied()
-    })
-    .flatten()?;
+    let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
+        .flatten()?;
 
     let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
     socket
@@ -5934,7 +5913,8 @@ fn udp_ports_lock_received(open: &UdpPortsLockSocket) -> u64 {
 #[cfg(target_arch = "aarch64")]
 fn udp_ports_lock_holder_body() {
     UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.store(
-        u64::from(crate::arch_interrupts_enabled()), AtomicOrdering::Release,
+        u64::from(crate::arch_interrupts_enabled()),
+        AtomicOrdering::Release,
     );
     crate::per_cpu::preempt_disable();
     crate::socket::SOCKET_REGISTRY.with_udp_ports_masked(|_ports| {
@@ -5943,7 +5923,8 @@ fn udp_ports_lock_holder_body() {
             AtomicOrdering::Relaxed,
         );
         UDP_PORTS_LOCK_MASKED_IN_HOLD.store(
-            u64::from(!crate::arch_interrupts_enabled()), AtomicOrdering::Relaxed,
+            u64::from(!crate::arch_interrupts_enabled()),
+            AtomicOrdering::Relaxed,
         );
         let held_from = crate::tracing::trace_timestamp();
         UDP_PORTS_LOCK_ACTIVE.store(true, AtomicOrdering::Release);
@@ -6026,11 +6007,9 @@ pub fn run_udp_ports_lock_oracle() -> bool {
                     socket.rx_queue.lock().clear();
                 });
                 let refused_before = crate::socket::udp_ports_lookup_refused();
-                let Ok(handle) = kthread_run_on_cpu_for_test(
-                    udp_ports_lock_holder_body,
-                    "udp-ports-908",
-                    peer,
-                ) else {
+                let Ok(handle) =
+                    kthread_run_on_cpu_for_test(udp_ports_lock_holder_body, "udp-ports-908", peer)
+                else {
                     continue;
                 };
 
@@ -6074,8 +6053,12 @@ pub fn run_udp_ports_lock_oracle() -> bool {
                         crate::per_cpu::preempt_enable();
                         next_send_us = elapsed.saturating_add(UDP_PORTS_LOCK_SEND_INTERVAL_US);
                         if crate::net::send_ipv4(
-                            [127, 0, 0, 1], crate::net::ipv4::PROTOCOL_UDP, &packet,
-                        ).is_ok() {
+                            [127, 0, 0, 1],
+                            crate::net::ipv4::PROTOCOL_UDP,
+                            &packet,
+                        )
+                        .is_ok()
+                        {
                             sends += 1;
                         }
                     }
@@ -6098,7 +6081,8 @@ pub fn run_udp_ports_lock_oracle() -> bool {
                 }
 
                 holder_cpu = UDP_PORTS_LOCK_CPU.load(AtomicOrdering::Relaxed);
-                irqs_enabled_before = UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.load(AtomicOrdering::Acquire);
+                irqs_enabled_before =
+                    UDP_PORTS_LOCK_IRQS_ENABLED_BEFORE.load(AtomicOrdering::Acquire);
                 masked_in_hold = UDP_PORTS_LOCK_MASKED_IN_HOLD.load(AtomicOrdering::Relaxed);
                 hold_us = UDP_PORTS_LOCK_MEASURED_US.load(AtomicOrdering::Relaxed);
                 refused = crate::socket::udp_ports_lookup_refused().wrapping_sub(refused_before);
@@ -6319,10 +6303,8 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
 
     // deliver_to_socket resolves the port to a pid and then scans that
     // process's fd table, so the socket has to live in a real row.
-    let pid = crate::process::with_process_manager(|manager| {
-        manager.all_pids().first().copied()
-    })
-    .flatten()?;
+    let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
+        .flatten()?;
 
     let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
     socket
@@ -6383,11 +6365,8 @@ pub fn run_irq_hold_oracle() -> bool {
             release_cpu_affine_thread_for_test,
         };
 
-        let packet = crate::net::udp::build_udp_packet(
-            IRQ_HOLD_SRC_PORT,
-            IRQ_HOLD_PORT,
-            IRQ_HOLD_PAYLOAD,
-        );
+        let packet =
+            crate::net::udp::build_udp_packet(IRQ_HOLD_SRC_PORT, IRQ_HOLD_PORT, IRQ_HOLD_PAYLOAD);
 
         let mut attempts = 0u64;
         let mut armed = 0u64;
@@ -6583,7 +6562,6 @@ fn test_irq_hold_oracle() -> TestResult {
     }
 }
 
-
 // ===========================================================================
 // #821 -- the TTY input IRQ entry takes no blocking PROCESS_MANAGER acquisition
 // ===========================================================================
@@ -6646,6 +6624,10 @@ static TTY_IRQ_PM_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
 static TTY_IRQ_PM_HOLD_DONE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
+static TTY_IRQ_PM_HOLD_RELEASE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static TTY_IRQ_PM_HOLD_SAFETY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
 static TTY_IRQ_PM_HOLD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(target_arch = "aarch64")]
 static TTY_IRQ_PM_HOLD_MEASURED_US: AtomicU64 = AtomicU64::new(0);
@@ -6674,8 +6656,7 @@ fn tty_irq_pm_now_us() -> u64 {
     #[cfg(not(target_arch = "aarch64"))]
     {
         let (secs, nanos) = crate::time::timer::get_monotonic_time_ns();
-        secs.saturating_mul(1_000_000)
-            .saturating_add(nanos / 1_000)
+        secs.saturating_mul(1_000_000).saturating_add(nanos / 1_000)
     }
 }
 
@@ -6685,7 +6666,7 @@ struct TtyIrqPmConsoleSave {
     pgrp: Option<u64>,
 }
 
-/// aarch64 peer body: own PROCESS_MANAGER, masked, for a fixed window.
+/// aarch64 peer body: own PROCESS_MANAGER, masked, through the driver acknowledgement.
 ///
 /// `manager()` is used rather than `try_manager()` because the exposed shape
 /// under measurement is an ordinary blocking holder, and on aarch64 that
@@ -6705,7 +6686,14 @@ fn tty_irq_pm_holder_body() {
     let held_from = tty_irq_pm_now_us();
     loop {
         let elapsed = tty_irq_pm_now_us().wrapping_sub(held_from);
-        if elapsed >= TTY_IRQ_PM_HOLD_US {
+        if TTY_IRQ_PM_HOLD_RELEASE.load(AtomicOrdering::Acquire) && elapsed >= TTY_IRQ_PM_HOLD_US {
+            TTY_IRQ_PM_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
+            break;
+        }
+
+        // Bounded failure recovery; safety expiry rejects this hold witness.
+        if elapsed >= TTY_IRQ_PM_ARM_WAIT_US {
+            TTY_IRQ_PM_HOLD_SAFETY.store(true, AtomicOrdering::Release);
             TTY_IRQ_PM_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
             break;
         }
@@ -6740,8 +6728,7 @@ fn tty_irq_pm_return_console(
     tty.flush_input();
     tty.set_termios(&save.termios);
     tty.set_foreground_pgrp_raw_for_test(save.pgrp);
-    tty.get_foreground_pgrp() == save.pgrp
-        && tty.get_termios().c_lflag == save.termios.c_lflag
+    tty.get_foreground_pgrp() == save.pgrp && tty.get_termios().c_lflag == save.termios.c_lflag
 }
 
 /// Drive one byte through the input IRQ entry with preemption disabled, and
@@ -6817,6 +6804,10 @@ pub fn run_tty_irq_pm_oracle() -> bool {
     let mut hold_us = 0u64;
     #[cfg(target_arch = "aarch64")]
     let mut joined = 0u64;
+    #[cfg(target_arch = "aarch64")]
+    let mut peer_held_after = false;
+    #[cfg(target_arch = "aarch64")]
+    let mut peer_irqs_masked = false;
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -6828,22 +6819,31 @@ pub fn run_tty_irq_pm_oracle() -> bool {
             release_cpu_affine_thread_for_test,
         };
 
+        // Pin selection through injection: the selected peer must stay remote.
+        crate::per_cpu::preempt_disable();
         let peer = live_peer_cpu_for_test();
         let peer = match peer {
             Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
             other => other,
         };
-
-        if let Some(peer) = peer {
+        let handle = peer.and_then(|peer| {
             TTY_IRQ_PM_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
             TTY_IRQ_PM_HOLD_DONE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_PM_HOLD_RELEASE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_PM_HOLD_SAFETY.store(false, AtomicOrdering::Release);
             TTY_IRQ_PM_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
             TTY_IRQ_PM_HOLD_MEASURED_US.store(0, AtomicOrdering::Relaxed);
-
-            if let Ok(handle) =
-                kthread_run_on_cpu_for_test(tty_irq_pm_holder_body, "tty-irq-pm-821", peer)
-            {
-                arm = TTY_IRQ_PM_ARM_PEER_HOLD;
+            kthread_run_on_cpu_for_test(tty_irq_pm_holder_body, "tty-irq-pm-821", peer).ok()
+        });
+        if handle.is_some() {
+            arm = TTY_IRQ_PM_ARM_PEER_HOLD;
+            irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+            // Issue 959: model the level-triggered keyboard IRQ's masked entry.
+            // A timer/softirq inside this thread-context call is not TTY work.
+            // Keep the rendezvous masked too: an IRQ must not wait on the PM
+            // holder while that holder waits for this driver's acknowledgement.
+            crate::arch_without_interrupts(|| {
+                peer_irqs_masked = !crate::arch_interrupts_enabled();
                 let arm_start = tty_irq_pm_now_us();
                 while !TTY_IRQ_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
                     && !TTY_IRQ_PM_HOLD_DONE.load(AtomicOrdering::Acquire)
@@ -6851,30 +6851,36 @@ pub fn run_tty_irq_pm_oracle() -> bool {
                 {
                     core::hint::spin_loop();
                 }
-
-                if TTY_IRQ_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
-                    irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+                if TTY_IRQ_PM_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+                    && !TTY_IRQ_PM_HOLD_DONE.load(AtomicOrdering::Acquire)
+                {
                     pm_busy_probe = u64::from(crate::process::try_manager().is_none());
                     let injected = tty_irq_pm_inject(TTY_IRQ_PM_BYTE_B);
                     processed_b = injected.0;
                     entry_us = injected.1;
                     blocking_b = injected.2;
                     deferred_b = injected.3;
+                    peer_held_after = crate::process::try_manager().is_none()
+                        && !TTY_IRQ_PM_HOLD_DONE.load(AtomicOrdering::Acquire);
                 }
-
-                release_cpu_affine_thread_for_test(handle.tid());
-                let join_start = tty_irq_pm_now_us();
-                while !kthread_has_exited_for_test(&handle)
-                    && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_PM_JOIN_US
-                {
-                    crate::arch_halt();
-                }
-                if kthread_has_exited_for_test(&handle) {
-                    joined = u64::from(kthread_join(&handle).is_ok());
-                }
-                holder_cpu = TTY_IRQ_PM_HOLD_CPU.load(AtomicOrdering::Relaxed);
-                hold_us = TTY_IRQ_PM_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
+                // Release even after a failed arm; safety expiry is a failure.
+                TTY_IRQ_PM_HOLD_RELEASE.store(true, AtomicOrdering::Release);
+            });
+        }
+        crate::per_cpu::preempt_enable();
+        if let Some(handle) = handle {
+            release_cpu_affine_thread_for_test(handle.tid());
+            let join_start = tty_irq_pm_now_us();
+            while !kthread_has_exited_for_test(&handle)
+                && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_PM_JOIN_US
+            {
+                crate::arch_halt();
             }
+            if kthread_has_exited_for_test(&handle) {
+                joined = u64::from(kthread_join(&handle).is_ok());
+            }
+            holder_cpu = TTY_IRQ_PM_HOLD_CPU.load(AtomicOrdering::Relaxed);
+            hold_us = TTY_IRQ_PM_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
         }
     }
 
@@ -6931,6 +6937,9 @@ pub fn run_tty_irq_pm_oracle() -> bool {
     #[cfg(target_arch = "aarch64")]
     let passed = common_pass
         && arm == TTY_IRQ_PM_ARM_PEER_HOLD
+        && peer_held_after
+        && peer_irqs_masked
+        && !TTY_IRQ_PM_HOLD_SAFETY.load(AtomicOrdering::Acquire)
         && irqs_enabled_before == 1
         && pm_busy_probe == 1
         && holder_cpu != u64::MAX
@@ -7094,11 +7103,15 @@ static TTY_IRQ_FG_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
 static TTY_IRQ_FG_HOLD_DONE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
+static TTY_IRQ_FG_HOLD_RELEASE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static TTY_IRQ_FG_HOLD_SAFETY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
 static TTY_IRQ_FG_HOLD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(target_arch = "aarch64")]
 static TTY_IRQ_FG_HOLD_MEASURED_US: AtomicU64 = AtomicU64::new(0);
 
-/// aarch64 peer body: own `foreground_pgrp`, UNMASKED, for a fixed window.
+/// aarch64 peer body: own `foreground_pgrp`, UNMASKED, through the driver acknowledgement.
 ///
 /// Unmasked is the point. `tcsetpgrp` holds this lock with interrupts live, so
 /// that is the shape an input interrupt has to survive. Preemption is disabled
@@ -7121,7 +7134,16 @@ fn tty_irq_fg_holder_body() {
         let held_from = tty_irq_pm_now_us();
         loop {
             let elapsed = tty_irq_pm_now_us().wrapping_sub(held_from);
-            if elapsed >= TTY_IRQ_FG_HOLD_US {
+            if TTY_IRQ_FG_HOLD_RELEASE.load(AtomicOrdering::Acquire)
+                && elapsed >= TTY_IRQ_FG_HOLD_US
+            {
+                TTY_IRQ_FG_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
+                break;
+            }
+
+            // Bounded failure recovery; safety expiry rejects this hold witness.
+            if elapsed >= TTY_IRQ_FG_ARM_WAIT_US {
+                TTY_IRQ_FG_HOLD_SAFETY.store(true, AtomicOrdering::Release);
                 TTY_IRQ_FG_HOLD_MEASURED_US.store(elapsed, AtomicOrdering::Relaxed);
                 break;
             }
@@ -7175,7 +7197,9 @@ fn tty_irq_fg_inject(byte: u8) -> (u64, u64, u64, u64, u64, u64) {
 fn tty_irq_fg_pid_absent(pid: u64) -> bool {
     match crate::process::try_manager() {
         Some(manager) => match *manager {
-            Some(ref pm) => pm.get_process(crate::process::ProcessId::new(pid)).is_none(),
+            Some(ref pm) => pm
+                .get_process(crate::process::ProcessId::new(pid))
+                .is_none(),
             None => true,
         },
         None => false,
@@ -7260,6 +7284,10 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     let mut hold_us = 0u64;
     #[cfg(target_arch = "aarch64")]
     let mut joined = 0u64;
+    #[cfg(target_arch = "aarch64")]
+    let mut peer_held_after = false;
+    #[cfg(target_arch = "aarch64")]
+    let mut peer_irqs_masked = false;
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -7271,22 +7299,31 @@ pub fn run_tty_irq_fg_oracle() -> bool {
             release_cpu_affine_thread_for_test,
         };
 
+        // Pin selection through injection: the selected peer must stay remote.
+        crate::per_cpu::preempt_disable();
         let peer = live_peer_cpu_for_test();
         let peer = match peer {
             Some(0) => live_peer_cpu_for_test_excluding_cpu0().or(peer),
             other => other,
         };
-
-        if let Some(peer) = peer {
+        let handle = peer.and_then(|peer| {
             TTY_IRQ_FG_HOLD_ACTIVE.store(false, AtomicOrdering::Release);
             TTY_IRQ_FG_HOLD_DONE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_FG_HOLD_RELEASE.store(false, AtomicOrdering::Release);
+            TTY_IRQ_FG_HOLD_SAFETY.store(false, AtomicOrdering::Release);
             TTY_IRQ_FG_HOLD_CPU.store(u64::MAX, AtomicOrdering::Relaxed);
             TTY_IRQ_FG_HOLD_MEASURED_US.store(0, AtomicOrdering::Relaxed);
-
-            if let Ok(handle) =
-                kthread_run_on_cpu_for_test(tty_irq_fg_holder_body, "tty-irq-fg-822", peer)
-            {
-                arm = TTY_IRQ_FG_ARM_PEER_HOLD;
+            kthread_run_on_cpu_for_test(tty_irq_fg_holder_body, "tty-irq-fg-822", peer).ok()
+        });
+        if handle.is_some() {
+            arm = TTY_IRQ_FG_ARM_PEER_HOLD;
+            irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+            // Issue 959: model the level-triggered keyboard IRQ's masked entry.
+            // A timer/softirq inside this thread-context call is not TTY work.
+            // Keep the rendezvous masked too: an IRQ must not wait on the PM
+            // holder while that holder waits for this driver's acknowledgement.
+            crate::arch_without_interrupts(|| {
+                peer_irqs_masked = !crate::arch_interrupts_enabled();
                 let arm_start = tty_irq_pm_now_us();
                 while !TTY_IRQ_FG_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
                     && !TTY_IRQ_FG_HOLD_DONE.load(AtomicOrdering::Acquire)
@@ -7294,9 +7331,9 @@ pub fn run_tty_irq_fg_oracle() -> bool {
                 {
                     core::hint::spin_loop();
                 }
-
-                if TTY_IRQ_FG_HOLD_ACTIVE.load(AtomicOrdering::Acquire) {
-                    irqs_enabled_before = u64::from(crate::arch_interrupts_enabled());
+                if TTY_IRQ_FG_HOLD_ACTIVE.load(AtomicOrdering::Acquire)
+                    && !TTY_IRQ_FG_HOLD_DONE.load(AtomicOrdering::Acquire)
+                {
                     fg_busy_probe = u64::from(tty.foreground_pgrp_busy_for_test());
                     let injected = tty_irq_fg_inject(TTY_IRQ_FG_INTR_BYTE);
                     processed_b = injected.0;
@@ -7305,21 +7342,27 @@ pub fn run_tty_irq_fg_oracle() -> bool {
                     blocking_b = injected.3;
                     reads_b = injected.4;
                     calls_b = injected.5;
+                    peer_held_after = tty.foreground_pgrp_busy_for_test()
+                        && !TTY_IRQ_FG_HOLD_DONE.load(AtomicOrdering::Acquire);
                 }
-
-                release_cpu_affine_thread_for_test(handle.tid());
-                let join_start = tty_irq_pm_now_us();
-                while !kthread_has_exited_for_test(&handle)
-                    && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_FG_JOIN_US
-                {
-                    crate::arch_halt();
-                }
-                if kthread_has_exited_for_test(&handle) {
-                    joined = u64::from(kthread_join(&handle).is_ok());
-                }
-                holder_cpu = TTY_IRQ_FG_HOLD_CPU.load(AtomicOrdering::Relaxed);
-                hold_us = TTY_IRQ_FG_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
+                // Release even after a failed arm; safety expiry is a failure.
+                TTY_IRQ_FG_HOLD_RELEASE.store(true, AtomicOrdering::Release);
+            });
+        }
+        crate::per_cpu::preempt_enable();
+        if let Some(handle) = handle {
+            release_cpu_affine_thread_for_test(handle.tid());
+            let join_start = tty_irq_pm_now_us();
+            while !kthread_has_exited_for_test(&handle)
+                && tty_irq_pm_now_us().wrapping_sub(join_start) < TTY_IRQ_FG_JOIN_US
+            {
+                crate::arch_halt();
             }
+            if kthread_has_exited_for_test(&handle) {
+                joined = u64::from(kthread_join(&handle).is_ok());
+            }
+            holder_cpu = TTY_IRQ_FG_HOLD_CPU.load(AtomicOrdering::Relaxed);
+            hold_us = TTY_IRQ_FG_HOLD_MEASURED_US.load(AtomicOrdering::Relaxed);
         }
     }
 
@@ -7393,6 +7436,9 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     #[cfg(target_arch = "aarch64")]
     let passed = common_pass
         && arm == TTY_IRQ_FG_ARM_PEER_HOLD
+        && peer_held_after
+        && peer_irqs_masked
+        && !TTY_IRQ_FG_HOLD_SAFETY.load(AtomicOrdering::Acquire)
         && holder_cpu != u64::MAX
         && hold_us >= TTY_IRQ_FG_HOLD_US
         && entry_us < TTY_IRQ_FG_ENTRY_CEILING_US
@@ -10658,7 +10704,6 @@ static SYSCALL_TESTS: &[TestDef] = &[
         timeout_ms: 20000,
         stage: TestStage::ProcessContext,
     },
-
 ];
 
 /// Scheduler subsystem tests (Phase 4i)

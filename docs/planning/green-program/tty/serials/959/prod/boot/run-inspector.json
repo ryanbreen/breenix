@@ -1,0 +1,1 @@
+{"schemaVersion": 1, "id": "28fba847-583e-4bc4-b99b-56131f5b45ce", "arch": "aarch64", "profile": "prod", "verdict": "PASS", "exitCode": 0, "startedAt": "2026-09-08T06:54:54.299000+00:00", "endedAt": "2026-09-08T06:55:00.641657+00:00", "command": ["docker/qemu/run-aarch64-prod-profile-boot-test.sh"], "serials": ["serial.txt"], "captures": ["gate_boot_facts.txt"]}

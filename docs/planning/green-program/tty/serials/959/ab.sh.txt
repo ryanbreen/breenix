@@ -1,0 +1,20 @@
+Recorded lane launcher; source snapshots/revisions are in adjacent transcripts.
+#!/bin/bash
+set -eu
+export PATH=/opt/homebrew/bin:$PATH
+export BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library
+export TMPDIR="/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t959/wt/.tmp"
+export BREENIX_GATE_TMP="/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t959/wt/.gate-tmp"
+for side in control prb; do
+ cd "/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t959/ab-$side"
+ out="/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/t959/serials/ab-$side"
+ mkdir -p "$out"
+ git rev-parse HEAD > "$out/revision.txt"
+ cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 > "$out/build.log" 2>&1
+ set +e
+ bash docker/qemu/run-aarch64-boot-test-strict.sh 20 > "$out/strict20.log" 2>&1
+ result=$?
+ set -e
+ echo "$result" > "$out/exit.txt"
+ cp -R "$BREENIX_GATE_TMP" "$out/gate-tmp"
+done

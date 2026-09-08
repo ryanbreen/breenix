@@ -183,6 +183,9 @@ fn launch_init_from_elf(
     // From this point on, the init thread is being set as CPU 0's current thread,
     // and the scheduler can run normally.
     kernel::per_cpu_aarch64::preempt_enable();
+    // IRQs remain masked through ERET; CPU0's daemon can now be published
+    // without leaving it queued through the unschedulable boot phase.
+    kernel::task::softirqd::init_online_daemons();
 
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(init_thread);
@@ -1322,6 +1325,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             kernel::arch_impl::aarch64::smp::cpus_online() as usize,
         );
     }
+
+    kernel::task::softirqd::init_online_daemons();
+    #[cfg(all(feature = "boot_tests", not(feature = "testing")))]
+    kernel::task::softirq_tests::test_deferral();
 
     // Failure-capture PR-7's `edge=LOCKUP` oracle (test profile only, feature
     // `capture_lockup_oracle`). Placed here on purpose: SMP bring-up above has

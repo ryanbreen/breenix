@@ -1,0 +1,553 @@
+diff --git a/kernel/src/main_aarch64.rs b/kernel/src/main_aarch64.rs
+index 41dba688..aee0bdc0 100644
+--- a/kernel/src/main_aarch64.rs
++++ b/kernel/src/main_aarch64.rs
+@@ -1323,6 +1323,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
+         );
+     }
+ 
++    kernel::task::softirqd::init_online_daemons();
++    #[cfg(all(feature = "boot_tests", not(feature = "testing")))]
++    kernel::task::softirq_tests::test_deferral();
++
+     // Failure-capture PR-7's `edge=LOCKUP` oracle (test profile only, feature
+     // `capture_lockup_oracle`). Placed here on purpose: SMP bring-up above has
+     // finished, so a CPU1-pinned holder can actually be dispatched, and no
+diff --git a/kernel/src/task/kthread.rs b/kernel/src/task/kthread.rs
+index 63915224..7869b32f 100644
+--- a/kernel/src/task/kthread.rs
++++ b/kernel/src/task/kthread.rs
+@@ -63,15 +63,8 @@ where
+ 
+ /// Create a kernel thread whose per-CPU work requires it to stay on `cpu`.
+ ///
+-/// Unreached on this branch: the per-CPU daemons that need it are a separate
+-/// change. It is the production counterpart of `kthread_run_on_cpu_for_test`,
+-/// which places a thread for a boot-test gate through a test-only table rather
+-/// than through the thread's own pin.
+-pub fn kthread_run_on_cpu<F>(
+-    func: F,
+-    name: &str,
+-    cpu: usize,
+-) -> Result<KthreadHandle, KthreadError>
++/// Used by CPU-local softirq daemons and their deferral probe.
++pub fn kthread_run_on_cpu<F>(func: F, name: &str, cpu: usize) -> Result<KthreadHandle, KthreadError>
+ where
+     F: FnOnce() + Send + 'static,
+ {
+@@ -137,7 +130,11 @@ where
+     })
+ }
+ 
+-fn kthread_run_with<F, S>(func: F, name: &str, spawn_thread: S) -> Result<KthreadHandle, KthreadError>
++fn kthread_run_with<F, S>(
++    func: F,
++    name: &str,
++    spawn_thread: S,
++) -> Result<KthreadHandle, KthreadError>
+ where
+     F: FnOnce() + Send + 'static,
+     S: FnOnce(Box<Thread>),
+@@ -211,6 +208,13 @@ pub fn kthread_should_stop() -> bool {
+ /// Park current thread until unparked (sleep)
+ /// Use this in kthread wait loops instead of bare HLT to ensure kthread_stop() can wake promptly.
+ pub fn kthread_park() {
++    kthread_park_if(|| true);
++}
++
++/// Publish sleep intent before checking the work predicate. An unpark after
++/// publication clears the flag; work published earlier makes the predicate false.
++/// The predicate must be nonblocking and safe with interrupts enabled.
++pub fn kthread_park_if(should_park: impl FnOnce() -> bool) {
+     let handle = match current_kthread() {
+         Some(h) => h,
+         None => return, // Not a kthread, nothing to do
+@@ -222,7 +226,7 @@ pub fn kthread_park() {
+     // CRITICAL: Check should_stop AFTER setting parked to handle race with kthread_stop().
+     // If kthread_stop() was called before we set parked, we need to return immediately.
+     // If kthread_stop() is called after we set parked, it will call kthread_unpark().
+-    if handle.inner.should_stop.load(Ordering::Acquire) {
++    if !should_park() || handle.inner.should_stop.load(Ordering::Acquire) {
+         handle.inner.parked.store(false, Ordering::Release);
+         return;
+     }
+@@ -246,7 +250,10 @@ pub fn kthread_park() {
+             // thread from every per-CPU ready queue in the same acquisition, so
+             // there is no longer a caller-side dequeue to forget.
+             scheduler::with_scheduler(|sched| {
+-                sched.block_current();
++                // Serialize the final sleep decision with unpark's flag clear.
++                if handle.inner.parked.load(Ordering::Acquire) {
++                    sched.block_current();
++                }
+             });
+         });
+ 
+@@ -265,8 +272,8 @@ pub fn kthread_park() {
+ 
+ /// Unpark a parked thread (wake)
+ pub fn kthread_unpark(handle: &KthreadHandle) {
+-    handle.inner.parked.store(false, Ordering::Release);
+     scheduler::with_scheduler(|sched| {
++        handle.inner.parked.store(false, Ordering::Release);
+         sched.unblock(handle.inner.tid);
+     });
+     // CRITICAL: Set need_resched to ensure a context switch happens soon.
+diff --git a/kernel/src/task/mod.rs b/kernel/src/task/mod.rs
+index bbccb79f..09acf94b 100644
+--- a/kernel/src/task/mod.rs
++++ b/kernel/src/task/mod.rs
+@@ -49,7 +49,7 @@ pub mod timer_wake_oracle;
+ pub mod kthread;
+ #[cfg(feature = "testing")]
+ pub mod kthread_tests;
+-#[cfg(feature = "testing")]
++#[cfg(any(feature = "testing", feature = "boot_tests"))]
+ pub mod softirq_tests;
+ pub mod softirqd;
+ pub mod workqueue;
+diff --git a/kernel/src/task/scheduler.rs b/kernel/src/task/scheduler.rs
+index 25985ce5..8e3a3015 100644
+--- a/kernel/src/task/scheduler.rs
++++ b/kernel/src/task/scheduler.rs
+@@ -5538,9 +5538,7 @@ pub fn spawn(thread: Box<Thread>) {
+ /// Add a production thread that must remain on `cpu`.
+ ///
+ /// The pin it stamps is a `per_cpu_worker` pin: the caller is publishing a
+-/// thread whose work lives in that CPU's per-CPU state. It has 0 callers in
+-/// this tree -- the per-CPU softirq daemons that will use it are a separate
+-/// change -- so no thread the kernel builds carries a pin today.
++/// thread whose work lives in that CPU's per-CPU state, such as ksoftirqd.
+ pub fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
+     note_scheduler_publication();
+     without_interrupts(|| {
+diff --git a/kernel/src/task/softirq_tests.rs b/kernel/src/task/softirq_tests.rs
+index 20ed2a56..46eaf64e 100644
+--- a/kernel/src/task/softirq_tests.rs
++++ b/kernel/src/task/softirq_tests.rs
+@@ -11,8 +11,9 @@
+ 
+ use crate::task::softirqd::{do_softirq, raise_softirq, register_softirq_handler, SoftirqType};
+ use crate::{arch_enable_interrupts, arch_halt};
+-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
++use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+ 
++#[cfg(feature = "testing")]
+ pub fn test_softirq() {
+     static TIMER_HANDLER_CALLED: AtomicU32 = AtomicU32::new(0);
+     static NET_RX_HANDLER_CALLED: AtomicU32 = AtomicU32::new(0);
+@@ -140,100 +141,7 @@ pub fn test_softirq() {
+     );
+     log::info!("SOFTIRQ_TEST: nested interrupt rejection passed");
+ 
+-    // Test 7: Iteration limit and ksoftirqd deferral
+-    // A handler that re-raises itself will exceed MAX_SOFTIRQ_RESTART=10
+-    // After the limit, remaining work is deferred to ksoftirqd
+-    log::info!("SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...");
+-    static ITERATION_COUNT: AtomicU32 = AtomicU32::new(0);
+-    static KSOFTIRQD_PROCESSED: AtomicBool = AtomicBool::new(false);
+-    const MAX_SOFTIRQ_RESTART: u32 = 10;
+-    // TARGET must exceed 2 * MAX_SOFTIRQ_RESTART to force ksoftirqd involvement:
+-    // - test's do_softirq(): 10 iterations, hits limit, wakes ksoftirqd
+-    // - timer's irq_exit do_softirq(): 10 more iterations, hits limit, wakes ksoftirqd
+-    // - ksoftirqd finally runs and processes remaining iterations
+-    const TARGET_ITERATIONS: u32 = 25;
+-
+-    ITERATION_COUNT.store(0, Ordering::SeqCst);
+-    KSOFTIRQD_PROCESSED.store(false, Ordering::SeqCst);
+-
+-    // Get ksoftirqd tid for later comparison
+-    let ksoftirqd_tid = crate::task::softirqd::ksoftirqd_tid();
+-
+-    // Register a handler that re-raises itself until TARGET_ITERATIONS
+-    // and tracks whether it runs in ksoftirqd context
+-    register_softirq_handler(SoftirqType::Tasklet, |_softirq| {
+-        let count = ITERATION_COUNT.fetch_add(1, Ordering::SeqCst);
+-
+-        // Check if we're running in ksoftirqd context
+-        if let Some(ksoft_tid) = crate::task::softirqd::ksoftirqd_tid() {
+-            if let Some(current_tid) = crate::task::scheduler::current_thread_id() {
+-                if current_tid == ksoft_tid {
+-                    KSOFTIRQD_PROCESSED.store(true, Ordering::SeqCst);
+-                }
+-            }
+-        }
+-
+-        if count + 1 < TARGET_ITERATIONS {
+-            raise_softirq(SoftirqType::Tasklet);
+-        }
+-    });
+-
+-    raise_softirq(SoftirqType::Tasklet);
+-    do_softirq();
+-
+-    // After do_softirq() returns at iteration limit, some iterations should be done
+-    let count_after_dosoftirq = ITERATION_COUNT.load(Ordering::SeqCst);
+-    assert!(
+-        count_after_dosoftirq <= MAX_SOFTIRQ_RESTART,
+-        "do_softirq() should stop at iteration limit: got {}, expected <= {}",
+-        count_after_dosoftirq,
+-        MAX_SOFTIRQ_RESTART
+-    );
+-    log::info!(
+-        "SOFTIRQ_TEST: After do_softirq(): {} iterations (limit={})",
+-        count_after_dosoftirq,
+-        MAX_SOFTIRQ_RESTART
+-    );
+-
+-    // If ksoftirqd is working, remaining iterations will be processed
+-    // Give ksoftirqd some time to process deferred softirqs
+-    // Note: Remaining work can be processed by either:
+-    // 1. irq_exit's do_softirq() during timer interrupts, or
+-    // 2. ksoftirqd when it gets scheduled
+-    // We use yield_current() + HLT to ensure scheduling opportunities
+-    unsafe {
+-        arch_enable_interrupts();
+-    } // Ensure interrupts are enabled
+-    for _ in 0..100 {
+-        // yield_current() sets need_resched, ensuring a context switch opportunity
+-        // when the next interrupt occurs
+-        crate::task::scheduler::yield_current();
+-        arch_halt();
+-        let current = ITERATION_COUNT.load(Ordering::SeqCst);
+-        if current >= TARGET_ITERATIONS {
+-            break;
+-        }
+-    }
+-
+-    let final_count = ITERATION_COUNT.load(Ordering::SeqCst);
+-    assert!(
+-        final_count >= TARGET_ITERATIONS,
+-        "ksoftirqd should have processed deferred softirqs: got {} iterations, expected {}",
+-        final_count,
+-        TARGET_ITERATIONS
+-    );
+-
+-    // Verify ksoftirqd specifically processed the deferred work
+-    let ksoftirqd_did_work = KSOFTIRQD_PROCESSED.load(Ordering::SeqCst);
+-    assert!(
+-        ksoftirqd_did_work,
+-        "ksoftirqd should have processed deferred softirqs (tid={:?})",
+-        ksoftirqd_tid
+-    );
+-    log::info!(
+-        "SOFTIRQ_TEST: iteration limit passed ({} total iterations, ksoftirqd verified)",
+-        final_count
+-    );
++    let deferral_ok = test_deferral();
+ 
+     // Test 8: Verify ksoftirqd is initialized (keep original test)
+     log::info!("SOFTIRQ_TEST: Verifying ksoftirqd is initialized...");
+@@ -243,7 +151,9 @@ pub fn test_softirq() {
+     );
+     log::info!("SOFTIRQ_TEST: ksoftirqd verification passed");
+ 
+-    log::info!("SOFTIRQ_TEST: all tests passed");
++    if deferral_ok {
++        log::info!("SOFTIRQ_TEST: all tests passed");
++    }
+ 
+     // CRITICAL: Restore the real network softirq handler!
+     // The tests above registered test handlers that override the real ones.
+@@ -253,3 +163,143 @@ pub fn test_softirq() {
+ 
+     log::info!("=== SOFTIRQ TEST: Completed ===");
+ }
++
++// This probe owns Tasklet until ACTIVE is cleared. Interrupt exits may service
++// it, but cannot complete the probe: a callback from the daemon is required.
++static ACTIVE: AtomicBool = AtomicBool::new(false);
++static GUEST_DONE: AtomicBool = AtomicBool::new(false);
++static ITERATIONS: AtomicU32 = AtomicU32::new(0);
++static DISPATCH_BASE: AtomicU64 = AtomicU64::new(0);
++static WAITED_TICKS: AtomicU64 = AtomicU64::new(0);
++static WAITED_NS: AtomicU64 = AtomicU64::new(0);
++static DISPATCHES: AtomicU64 = AtomicU64::new(0);
++static PROBE_CPU: AtomicU64 = AtomicU64::new(0);
++static VERDICT: AtomicU32 = AtomicU32::new(0);
++const TARGET_ITERATIONS: u32 = 25;
++const WAIT_TICKS: u64 = 250;
++const WALL_LIMIT_NS: u64 = 15_000_000_000;
++
++fn counter_ns() -> u64 {
++    crate::tracing::timestamp_to_nanos(crate::tracing::trace_timestamp())
++}
++
++fn deferral_handler(_softirq: SoftirqType) {
++    if !ACTIVE.load(Ordering::Acquire) {
++        return;
++    }
++    let iterations = ITERATIONS.fetch_add(1, Ordering::Relaxed) + 1;
++    let dispatches = crate::task::softirqd::KSOFTIRQD_TASKLET_DISPATCHES
++        .get_cpu(crate::task::softirqd::current_cpu())
++        .wrapping_sub(DISPATCH_BASE.load(Ordering::Relaxed));
++    if !(dispatches > 0 && iterations >= TARGET_ITERATIONS) {
++        raise_softirq(SoftirqType::Tasklet);
++    }
++}
++
++fn deferral_probe() {
++    use crate::task::softirqd::{current_cpu, KSOFTIRQD_TASKLET_DISPATCHES};
++    use crate::tracing::providers::counters::TIMER_TICK_TOTAL;
++    if !ACTIVE.load(Ordering::Acquire) {
++        return;
++    }
++    let cpu = current_cpu();
++    PROBE_CPU.store(cpu as u64, Ordering::Relaxed);
++    let base = KSOFTIRQD_TASKLET_DISPATCHES.get_cpu(cpu);
++    DISPATCH_BASE.store(base, Ordering::Relaxed);
++    let ticks = TIMER_TICK_TOTAL.get_cpu(cpu);
++    let wall = counter_ns();
++    // Keep the initial limit observation together: IRQ-exit service must not
++    // race the count read immediately following the explicit do_softirq call.
++    let initial = crate::arch_without_interrupts(|| {
++        raise_softirq(SoftirqType::Tasklet);
++        do_softirq();
++        ITERATIONS.load(Ordering::Relaxed)
++    });
++    unsafe {
++        arch_enable_interrupts();
++    }
++    loop {
++        let elapsed_ticks = TIMER_TICK_TOTAL.get_cpu(cpu).wrapping_sub(ticks);
++        let elapsed_ns = counter_ns().saturating_sub(wall);
++        let dispatches = KSOFTIRQD_TASKLET_DISPATCHES.get_cpu(cpu).wrapping_sub(base);
++        let iterations = ITERATIONS.load(Ordering::Acquire);
++        WAITED_TICKS.store(elapsed_ticks, Ordering::Relaxed);
++        WAITED_NS.store(elapsed_ns, Ordering::Relaxed);
++        DISPATCHES.store(dispatches, Ordering::Relaxed);
++        if initial != 10 {
++            VERDICT.store(2, Ordering::Relaxed);
++            break;
++        }
++        if dispatches > 0 && iterations >= TARGET_ITERATIONS {
++            VERDICT.store(1, Ordering::Relaxed);
++            break;
++        }
++        // Delivered local timer interrupts are guest execution evidence. A
++        // host pause cannot spend this budget merely by advancing the TSC/CNTVCT.
++        if elapsed_ticks >= WAIT_TICKS {
++            VERDICT.store(2, Ordering::Relaxed);
++            break;
++        }
++        if elapsed_ns >= WALL_LIMIT_NS || !ACTIVE.load(Ordering::Acquire) {
++            VERDICT.store(3, Ordering::Relaxed);
++            break;
++        }
++        crate::task::scheduler::yield_current();
++        arch_halt();
++    }
++    ACTIVE.store(false, Ordering::Release);
++    crate::per_cpu::clear_softirq(SoftirqType::Tasklet.as_nr());
++    GUEST_DONE.store(true, Ordering::Release);
++}
++
++/// Emit a non-panicking deferral verdict. The host scorer rejects `lost` and
++/// reports `starved` as an infrastructure outcome, without a kernel-red marker.
++pub fn test_deferral() -> bool {
++    ITERATIONS.store(0, Ordering::Relaxed);
++    GUEST_DONE.store(false, Ordering::Relaxed);
++    WAITED_TICKS.store(0, Ordering::Relaxed);
++    WAITED_NS.store(0, Ordering::Relaxed);
++    DISPATCHES.store(0, Ordering::Relaxed);
++    VERDICT.store(0, Ordering::Relaxed);
++    ACTIVE.store(true, Ordering::Release);
++    register_softirq_handler(SoftirqType::Tasklet, deferral_handler);
++    let start = counter_ns();
++    #[cfg(target_arch = "aarch64")]
++    {
++        // CPU0 is still the unschedulable boot stack in the testing profile.
++        // Exercise local ownership on a schedulable CPU using a real pinned
++        // kthread, without moving the loader or boot sequence to a new stack.
++        if crate::arch_impl::aarch64::smp::cpus_online() > 1 {
++            if crate::task::kthread::kthread_run_on_cpu(deferral_probe, "softirq-probe", 1).is_err()
++            {
++                VERDICT.store(2, Ordering::Relaxed);
++                GUEST_DONE.store(true, Ordering::Release);
++            }
++        }
++        while !GUEST_DONE.load(Ordering::Acquire)
++            && counter_ns().saturating_sub(start) < WALL_LIMIT_NS
++        {
++            core::hint::spin_loop();
++        }
++    }
++    #[cfg(target_arch = "x86_64")]
++    deferral_probe();
++    if !GUEST_DONE.load(Ordering::Acquire) {
++        ACTIVE.store(false, Ordering::Release);
++        VERDICT.store(3, Ordering::Relaxed);
++    }
++    let verdict = match VERDICT.load(Ordering::Acquire) {
++        1 => "ok",
++        2 => "lost",
++        _ => "starved",
++    };
++    crate::serial_println!(
++        "[SOFTIRQ_DEFERRAL_ORACLE:arch={}:cpu={}:budget_ticks={}:wait_ticks={}:wait_ns={}:dispatches={}:iterations={}:verdict={}]",
++        if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86" },
++        PROBE_CPU.load(Ordering::Relaxed), WAIT_TICKS,
++        WAITED_TICKS.load(Ordering::Relaxed),
++        counter_ns().saturating_sub(start).max(WAITED_NS.load(Ordering::Relaxed)),
++        DISPATCHES.load(Ordering::Relaxed), ITERATIONS.load(Ordering::Relaxed), verdict
++    );
++    verdict == "ok"
++}
+diff --git a/kernel/src/task/softirqd.rs b/kernel/src/task/softirqd.rs
+index 450df4ed..68227040 100644
+--- a/kernel/src/task/softirqd.rs
++++ b/kernel/src/task/softirqd.rs
+@@ -15,10 +15,12 @@
+ 
+ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+ 
+-use spin::Mutex;
++#[cfg(target_arch = "x86_64")]
++use crate::arch_impl::PerCpuOps;
++use alloc::boxed::Box;
+ 
+ use super::kthread::{
+-    kthread_park, kthread_run, kthread_should_stop, kthread_unpark, KthreadHandle,
++    kthread_park_if, kthread_run_on_cpu, kthread_should_stop, kthread_unpark, KthreadHandle,
+ };
+ use crate::per_cpu;
+ 
+@@ -109,8 +111,34 @@ static SOFTIRQ_HANDLERS: [AtomicPtr<()>; NR_SOFTIRQS] = [
+     AtomicPtr::new(core::ptr::null_mut()),
+ ];
+ 
+-/// Per-CPU ksoftirqd handle (single CPU for now)
+-static KSOFTIRQD: Mutex<Option<KthreadHandle>> = Mutex::new(None);
++// Published handles live for the kernel lifetime. IRQ readers borrow these
++// immutable handles without a lock; shutdown stops workers but retains storage.
++static KSOFTIRQD: [AtomicPtr<KthreadHandle>; 8] =
++    [const { AtomicPtr::new(core::ptr::null_mut()) }; 8];
++
++pub(crate) fn current_cpu() -> usize {
++    #[cfg(target_arch = "aarch64")]
++    {
++        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
++    }
++    #[cfg(target_arch = "x86_64")]
++    {
++        crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize
++    }
++}
++
++#[cfg(any(feature = "testing", feature = "boot_tests"))]
++pub(crate) static KSOFTIRQD_TASKLET_DISPATCHES: crate::tracing::counter::TraceCounter =
++    crate::tracing::counter::TraceCounter::new(
++        "KSOFTIRQD_TASKLET_DISPATCHES",
++        "Daemon tasklet callbacks",
++    );
++
++fn local_handle() -> Option<&'static KthreadHandle> {
++    let ptr = KSOFTIRQD.get(current_cpu())?.load(Ordering::Acquire);
++    // The slots retain their allocations for the kernel lifetime.
++    unsafe { ptr.as_ref() }
++}
+ 
+ /// Flag indicating softirq system is initialized
+ static SOFTIRQ_INITIALIZED: AtomicBool = AtomicBool::new(false);
+@@ -119,7 +147,7 @@ static SOFTIRQ_INITIALIZED: AtomicBool = AtomicBool::new(false);
+ /// Returns None if softirq system is not initialized
+ #[allow(dead_code)] // Part of public softirq API surface
+ pub fn ksoftirqd_tid() -> Option<u64> {
+-    KSOFTIRQD.lock().as_ref().map(|h| h.tid())
++    local_handle().map(|h| h.tid())
+ }
+ 
+ /// Register a softirq handler
+@@ -233,7 +261,7 @@ pub fn do_softirq() -> bool {
+ 
+ /// Wake up ksoftirqd to process remaining softirqs
+ fn wakeup_ksoftirqd() {
+-    if let Some(ref handle) = *KSOFTIRQD.lock() {
++    if let Some(handle) = local_handle() {
+         kthread_unpark(handle);
+     }
+ }
+@@ -241,8 +269,6 @@ fn wakeup_ksoftirqd() {
+ /// ksoftirqd kernel thread function
+ /// Processes softirqs that were deferred due to high load
+ fn ksoftirqd_fn() {
+-    log::info!("KSOFTIRQD_SPAWN: ksoftirqd/0 started");
+-
+     // Enable interrupts so timer can preempt us and switch to other threads
+     unsafe {
+         arch_enable_interrupts();
+@@ -270,6 +296,10 @@ fn ksoftirqd_fn() {
+                 if !handler_ptr.is_null() {
+                     let handler: SoftirqHandler = unsafe { core::mem::transmute(handler_ptr) };
+                     if let Some(softirq_type) = SoftirqType::from_nr(nr) {
++                        #[cfg(any(feature = "testing", feature = "boot_tests"))]
++                        if softirq_type == SoftirqType::Tasklet {
++                            KSOFTIRQD_TASKLET_DISPATCHES.increment();
++                        }
+                         handler(softirq_type);
+                     }
+                 }
+@@ -283,7 +313,7 @@ fn ksoftirqd_fn() {
+             // This handles handlers that re-raised softirqs
+         } else {
+             // No work - park until woken by wakeup_ksoftirqd()
+-            kthread_park();
++            kthread_park_if(|| per_cpu::softirq_pending() == 0);
+         }
+     }
+ }
+@@ -298,20 +328,29 @@ pub fn init_softirq() {
+ 
+     log::info!("SOFTIRQ_INIT: Initializing softirq subsystem");
+ 
+-    // Spawn ksoftirqd thread
+-    match kthread_run(ksoftirqd_fn, "ksoftirqd/0") {
+-        Ok(handle) => {
+-            *KSOFTIRQD.lock() = Some(handle);
+-            log::info!("SOFTIRQ_INIT: ksoftirqd spawned successfully");
+-        }
+-        Err(e) => {
+-            log::error!("SOFTIRQ_INIT: Failed to spawn ksoftirqd: {:?}", e);
+-        }
+-    }
++    init_online_daemons();
+ 
+     log::info!("SOFTIRQ_INIT: Softirq subsystem initialized");
+ }
+ 
++/// Called by the boot CPU at initial setup and after secondary CPU bringup.
++/// The boot coordinator serializes these calls; published slots are retained.
++pub fn init_online_daemons() {
++    #[cfg(target_arch = "aarch64")]
++    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
++    #[cfg(target_arch = "x86_64")]
++    let online = 1;
++    for cpu in 0..online.min(KSOFTIRQD.len()) {
++        if !KSOFTIRQD[cpu].load(Ordering::Acquire).is_null() {
++            continue;
++        }
++        let name = alloc::format!("ksoftirqd/{cpu}");
++        let handle = kthread_run_on_cpu(ksoftirqd_fn, &name, cpu)
++            .expect("could not spawn CPU-local ksoftirqd");
++        KSOFTIRQD[cpu].store(Box::into_raw(Box::new(handle)), Ordering::Release);
++    }
++}
++
+ /// Shutdown the softirq subsystem
+ #[allow(dead_code)] // Part of public API for clean system shutdown
+ pub fn shutdown_softirq() {
+@@ -322,9 +361,11 @@ pub fn shutdown_softirq() {
+     log::info!("Shutting down softirq subsystem");
+ 
+     // Stop ksoftirqd
+-    if let Some(handle) = KSOFTIRQD.lock().take() {
+-        let _ = super::kthread::kthread_stop(&handle);
+-        let _ = super::kthread::kthread_join(&handle);
++    for slot in &KSOFTIRQD {
++        if let Some(handle) = unsafe { slot.load(Ordering::Acquire).as_ref() } {
++            let _ = super::kthread::kthread_stop(handle);
++            let _ = super::kthread::kthread_join(handle);
++        }
+     }
+ 
+     SOFTIRQ_INITIALIZED.store(false, Ordering::Release);

@@ -1,0 +1,10 @@
+Publish the CPU0 softirq daemon at the aarch64 init handoff
+
+The pinned CPU0 worker cannot run while kernel_main retains its boot
+preemption pin. Its early Ready publication tripped the existing strand
+census in three strict boots. Defer that publication until the pin is
+released with interrupts still masked before the init ERET. Keep the
+existing census assertion and add a publication-order ratchet.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

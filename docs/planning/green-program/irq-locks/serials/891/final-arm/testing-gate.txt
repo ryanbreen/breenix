@@ -1,0 +1,23 @@
+a15ffa600817ce100dce7d8a4c268c1fb6119099
+Building the ARM64 testing profile...
+   Compiling kernel v0.1.0 (/private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/kernel)
+    Finished `release` profile [optimized] target(s) in 5.54s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Guard: kernel FP/SIMD instruction check
+  ELF:       /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   /Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/scripts/kernel-neon-allowlist.txt
+[0;32mPASS:[0m 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 0).
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+[FAIL] Testing boot 1: loader-marker-missing loaded-line-missing -- marker=0 loaded=0 lockup=none stalls_before_lockup=0 ext2_stalls=0 kernel_panic=0 wedge_fail=0 strand_first=0 el1_abort=0 userspace_panic=0 userspace_abort=0 boot_tests_fail=0 init_oracle=0
+       preserved serial: /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/.gate-tmp/breenix_testing_profile_failures/20260908T055221Z-boot1.txt
+
+Testing profile, 1 boots:
+  marker + loaded: 0/1
+  post-loader lockup, #728-signature: 0/1
+  post-loader lockup, UNATTRIBUTED: 0/1
+  userspace panics (counted, not scored): 0
+  reds: 1/1
+FAIL: 1/1 testing-profile boots were red
+GATE_EXIT=1

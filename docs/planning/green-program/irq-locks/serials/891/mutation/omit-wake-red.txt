@@ -1,0 +1,24 @@
+== compiling softirq_deferral_structure ==
+== running softirq_deferral_structure  ==
+
+running 5 tests
+test oracle_requires_daemon_dispatch_and_guest_ticks ... ok
+test daemon_is_cpu_local_and_checks_pending_after_park_publication ... ok
+test limit_wakes_daemon_and_counter_is_at_callback ... FAILED
+test scorers_require_oracle ... ok
+test scorer_rejects_forged_ok_and_reports_starvation_separately ... ok
+
+failures:
+
+---- limit_wakes_daemon_and_counter_is_at_callback stdout ----
+
+thread 'limit_wakes_daemon_and_counter_is_at_callback' panicked at /private/tmp/claude-501/-Users-wrb-fun-code-breenix/d69ffb9d-4539-4cf3-8a3d-a872ff7c830b/scratchpad/s891/wt/tests/softirq_deferral_structure.rs:38:5:
+assertion failed: limit.contains("wakeup_ksoftirqd();")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    limit_wakes_daemon_and_counter_is_at_callback
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

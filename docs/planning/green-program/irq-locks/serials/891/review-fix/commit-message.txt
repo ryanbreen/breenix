@@ -1,0 +1,11 @@
+Preserve strict-gate starvation outcomes and validate the backstop
+
+Keep exit 2 distinct in score-only mode, frozen boot scoring, imports,
+and mixed-iteration summaries. Reject starvation before the 15-second
+counter-clock backstop and format the softirq API re-export.
+
+Add behavioral regressions and mutation evidence for findings V-1, V-2,
+and V-3. Record the requested gate reruns and their tested source provenance.
+
+Co-authored-by: Ryan Breen <ryan@ryanbreen.com>
+Co-authored-by: Claude Code <noreply@anthropic.com>

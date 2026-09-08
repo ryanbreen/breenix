@@ -1149,3 +1149,78 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         assert!(mask[offset], "raw-string close swallowed the next byte");
     }
 }
+
+// Issue 959: a timed peer hold is not a rendezvous. Keep the busy probes and
+// measured entry in one masked driver window, and release only after both.
+fn validate_peer_hold_rendezvous(registry: &str) -> Result<(), String> {
+    for kind in ["pm", "fg"] {
+        let upper = kind.to_uppercase();
+        let prefix = format!("TTY_IRQ_{upper}");
+        let holder = normalized_code(function_body(registry, &format!("tty_irq_{kind}_holder_body"))
+            .ok_or("missing holder")?);
+        for required in [
+            format!("{prefix}_HOLD_RELEASE.load(AtomicOrdering::Acquire)"),
+            format!("{prefix}_HOLD_SAFETY.store(true, AtomicOrdering::Release)"),
+        ] {
+            if !holder.contains(&required) { return Err(format!("{kind}: holder lacks {required}")); }
+        }
+        let driver = function_body(registry, &format!("run_tty_irq_{kind}_oracle"))
+            .ok_or("missing driver")?;
+        let mask = code_mask(driver);
+        let at = driver.find("crate::arch_without_interrupts(|| {")
+            .ok_or_else(|| format!("{kind}: missing masked rendezvous"))?;
+        let open = at + driver[at..].find('{').unwrap();
+        let window = normalized_code(braced_block(driver, &mask, open).ok_or("missing window")?);
+        let probe = if kind == "pm" { "crate::process::try_manager().is_none()" }
+                    else { "tty.foreground_pgrp_busy_for_test()" };
+        let inject = format!("tty_irq_{kind}_inject(");
+        let release = format!("{prefix}_HOLD_RELEASE.store(true, AtomicOrdering::Release)");
+        let first = window.find(probe).ok_or("missing busy probe")?;
+        let injection = window.find(&inject).ok_or("missing masked injection")?;
+        let last = window.rfind(probe).ok_or("missing post-entry busy probe")?;
+        let released = window.find(&release).ok_or("missing release acknowledgement")?;
+        if !(first < injection && injection < last && last < released) {
+            return Err(format!("{kind}: probes/injection/release are not ordered"));
+        }
+        let driver = normalized_code(driver);
+        for required in [
+            "&& peer_held_after".to_string(),
+            "&& peer_irqs_masked".to_string(),
+            format!("&& !{prefix}_HOLD_SAFETY.load(AtomicOrdering::Acquire)"),
+            format!("{prefix}_HOLD_RELEASE.store(false, AtomicOrdering::Release)"),
+            format!("{prefix}_HOLD_SAFETY.store(false, AtomicOrdering::Release)"),
+            format!("&& entry_us < {prefix}_ENTRY_CEILING_US"),
+        ] {
+            if !driver.contains(&required) { return Err(format!("{kind}: driver lacks {required}")); }
+        }
+        if !normalized_code(registry).contains(&format!("const {prefix}_ENTRY_CEILING_US: u64 = 1_000;")) {
+            return Err(format!("{kind}: entry ceiling changed"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn peer_hold_rendezvous_covers_both_lock_probes() {
+    validate_peer_hold_rendezvous(&repo_text("kernel/src/test_framework/registry.rs"))
+        .expect("issue 959 peer hold must cover the measured IRQ entry");
+}
+
+#[test]
+fn peer_hold_rendezvous_rejects_time_only_and_unmasked_mutations() {
+    let source = repo_text("kernel/src/test_framework/registry.rs");
+    validate_peer_hold_rendezvous(&source).expect("control");
+    for kind in ["PM", "FG"] {
+        for (from, to) in [
+            (format!("TTY_IRQ_{kind}_HOLD_RELEASE.load(AtomicOrdering::Acquire)"), "true".to_string()),
+            (format!("&& !TTY_IRQ_{kind}_HOLD_SAFETY.load(AtomicOrdering::Acquire)"), "".to_string()),
+        ] {
+            assert!(source.contains(&from));
+            assert!(validate_peer_hold_rendezvous(&source.replace(&from, &to)).is_err(), "{from}");
+        }
+    }
+    let unmasked = source.replace("crate::arch_without_interrupts(|| {", "unmasked(|| {");
+    assert!(validate_peer_hold_rendezvous(&unmasked).is_err());
+    let no_after = source.replace("&& peer_held_after", "");
+    assert!(validate_peer_hold_rendezvous(&no_after).is_err());
+}

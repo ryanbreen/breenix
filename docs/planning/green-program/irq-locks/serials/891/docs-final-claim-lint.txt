@@ -1,0 +1,3 @@
+claim-lint: clean (120 file(s) checked, changed hunks vs c93ecf5297f4).
+claim-lint: 84 pre-existing finding(s) outside this branch's changed hunks not reported (--whole-file shows them).
+claim-lint: 5 target(s) SKIPPED, not checked (extension not in ['.md', '.py', '.rs', '.sh', '.txt']): docs/planning/green-program/irq-locks/serials/891/baseline/baseline.gdb, docs/planning/green-program/irq-locks/serials/891/baseline/debug-sections.ld, docs/planning/green-program/irq-locks/serials/891/baseline/x86-gdb/probe.gdb, docs/planning/green-program/irq-locks/serials/891/baseline/x86-gdb2/probe.gdb, docs/planning/green-program/irq-locks/serials/891/testing-diagnostic-followup.diff

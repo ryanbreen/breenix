@@ -1,0 +1,16 @@
+Recorded lane launcher; source snapshots/revisions are in adjacent transcripts.
+#!/bin/bash
+set -eu
+export PATH=/opt/homebrew/bin:$PATH
+export TMPDIR="$PWD/.tmp" BREENIX_GATE_TMP="$PWD/.gate-tmp"
+export BREENIX_RUST_FORK_LIBRARY=/Users/wrb/fun/code/breenix-parallels/rust-fork/library
+OUT="$PWD/../serials/fix"
+mkdir -p "$OUT"
+git rev-parse HEAD > "$OUT/revision.txt"
+{ git rev-parse HEAD; cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64; } > "$OUT/build.txt" 2>&1
+set +e
+{ git rev-parse HEAD; bash docker/qemu/run-aarch64-boot-test-strict.sh 20; } > "$OUT/strict20.txt" 2>&1
+result=$?
+set -e
+echo "$result" > "$OUT/strict20.exit"
+cp -R "$BREENIX_GATE_TMP" "$OUT/gate-tmp"
